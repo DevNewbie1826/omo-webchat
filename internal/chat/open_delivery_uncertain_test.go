@@ -6,18 +6,15 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // slowCompletingPipe records every write ENTRY, then completes the write only
-// after hold has elapsed. hold sits between one and two send timeouts: the
-// caller's Send always gives up before the write lands (the delivery-unknown
-// state the manager must not retry), yet the writer is free again well within
-// a follow-up Send's own deadline, so any second command reaches the pipe -
-// and is recorded - before that second Send can return. Entry recording is
-// synchronous with the write, so it orders strictly before the Send that
-// issued it returns.
+// after hold has elapsed. hold exceeds a single send timeout so the caller's
+// Send always gives up before the write lands - the delivery-unknown state the
+// manager must not retry. Entry recording is synchronous with the write.
 type slowCompletingPipe struct {
 	hold    time.Duration
 	entries chan []byte
@@ -37,16 +34,35 @@ func (p *slowCompletingPipe) Close() error { return nil }
 // command can still reach the provider afterwards and orphan a provider-side
 // session.
 //
-// The witness is deterministic. A reverted guard runs the fallback open inside
-// AcquireAttach and that fallback awaits its own Send, which cannot return
-// before the writer has entered the pipe with the second command. So a second
-// entry is always recorded before AcquireAttach returns, and asserting the
-// entry count after the acquire result cannot race the fallback.
+// The witness is deterministic and independent of writer scheduling. It counts
+// ENQUEUES (Process.afterEnqueue), not pipe entries. A reverted guard runs the
+// fallback open inside AcquireAttach on a background context; that fallback's
+// Send cannot return until it has enqueued its frame and then timed out, so a
+// second enqueue is guaranteed to fire before AcquireAttach returns. Keying on
+// pipe entry instead would be racy: the writer might not have dequeued the
+// fallback frame yet (or the frame could be discarded as expired before entry).
+// Enqueue happens-before AcquireAttach's return, so asserting the enqueue count
+// afterwards cannot miss the fallback regardless of how slowly the first write
+// entered the pipe.
 func TestResumedOpenSendTimeoutDoesNotIssueFallbackOpen(t *testing.T) {
 	const sendTimeout = 500 * time.Millisecond
-	pipe := &slowCompletingPipe{hold: sendTimeout + sendTimeout/2, entries: make(chan []byte, 8)}
+	// hold exceeds one send timeout so the first Send always times out with the
+	// write still in flight (delivery unknown). Its exact value never gates the
+	// witness because the witness observes enqueue, not write entry.
+	pipe := &slowCompletingPipe{hold: 3 * sendTimeout, entries: make(chan []byte, 8)}
 	proc := &Process{stdin: pipe, sendTimeout: sendTimeout}
 	t.Cleanup(proc.stopWriter)
+
+	var enqueues atomic.Int64
+	enqueued := make(chan struct{}, 8)
+	proc.afterEnqueue = func(*writeRequest) {
+		enqueues.Add(1)
+		select {
+		case enqueued <- struct{}{}:
+		default:
+		}
+	}
+
 	provider := &sharedProvider{
 		proc:     proc,
 		state:    sharedProviderStarted,
@@ -70,6 +86,14 @@ func TestResumedOpenSendTimeoutDoesNotIssueFallbackOpen(t *testing.T) {
 		result <- err
 	}()
 
+	// The first (resume) open must enqueue and reach the pipe as an
+	// open_session with a sessionPath, so the scenario under test really is a
+	// resumed open whose write is stuck in flight.
+	select {
+	case <-enqueued:
+	case <-time.After(10 * time.Second):
+		t.Fatal("resume open never enqueued")
+	}
 	var first []byte
 	select {
 	case first = <-pipe.entries:
@@ -93,12 +117,13 @@ func TestResumedOpenSendTimeoutDoesNotIssueFallbackOpen(t *testing.T) {
 		t.Fatal("timed-out resume did not return")
 	}
 
-	// AcquireAttach has returned; a reverted guard would already have recorded
-	// its fallback command here.
-	select {
-	case raw := <-pipe.entries:
-		t.Fatalf("delivery-unknown resume issued a second open command: %s", raw)
-	default:
+	// AcquireAttach has returned. A reverted guard's fallback open runs a
+	// second Send on a background context, which cannot return - and therefore
+	// AcquireAttach cannot return - before that Send has enqueued. So the total
+	// enqueue count is fixed at exactly one here for the correct guard; a second
+	// enqueue is a delivery-unknown resume that wrongly issued a fallback open.
+	if got := enqueues.Load(); got != 1 {
+		t.Fatalf("enqueue count after acquire = %d, want exactly 1 (a second enqueue means a fallback open was issued for a delivery-unknown resume)", got)
 	}
 }
 
