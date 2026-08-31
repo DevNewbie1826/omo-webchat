@@ -107,13 +107,18 @@ func (s *Session) markLocalCommand(raw json.RawMessage) {
 // completeRun clears the in-flight run state and emits run.done exactly once
 // per armed run. lifecycleMu stays held through frame delivery, so admission
 // cannot arm the next run before the prior terminal frame is observable.
-// Snapshot persistence is registered before frame delivery, then runs after
-// lifecycleMu is released: store I/O never delays admission or run.done, while
-// Close can drain every attempt whose completion was observable.
+// The cached activity pair is reconciled in the terminal state transition,
+// before run.done can trigger a refresh or attach. Snapshot persistence is
+// registered before frame delivery, then runs after lifecycleMu is released:
+// store I/O never delays admission or run.done, while Close can drain every
+// attempt whose completion was observable.
 func (s *Session) completeRun() {
 	s.lifecycleMu.Lock()
 	s.mu.Lock()
 	reason, completed := s.completeRunLocked()
+	if completed {
+		s.reconcileActivityCacheLocked(s.lastActivitySnapshots[activitySnapshotOrder[1]])
+	}
 	s.mu.Unlock()
 	if completed {
 		s.activityPersistence.Add(1)
@@ -122,7 +127,6 @@ func (s *Session) completeRun() {
 	s.lifecycleMu.Unlock()
 	if completed {
 		defer s.activityPersistence.Done()
-		s.reconcileCachedActivity()
 		s.persistActivitySnapshot()
 	}
 }

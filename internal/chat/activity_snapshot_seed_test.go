@@ -1,9 +1,11 @@
 package chat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -197,6 +199,52 @@ func TestSettleDemotesTasksOfTerminalDagRuns(t *testing.T) {
 		t.Fatalf("persisted t2 (no dag evidence) status = %q, want still running; payload: %s", got, calls[0].Task)
 	}
 }
+
+type runDoneSnapshotWriter struct {
+	s        *Session
+	once     sync.Once
+	observed chan ActivitySnapshotPair
+}
+
+func (w *runDoneSnapshotWriter) WriteJSON(frame []byte) error {
+	var envelope struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(frame, &envelope) == nil && envelope.Type == "run.done" {
+		w.once.Do(func() { w.observed <- w.s.ActivitySnapshot() })
+	}
+	return nil
+}
+
+// A terminal dag can arrive before a late running task snapshot. The settle
+// sweep must reconcile that reverse-ordered pair before run.done is published,
+// so a refresh triggered by run.done can never replay the contradictory pair.
+func TestSettleReconcilesLateTaskBeforeRunDone(t *testing.T) {
+	s := newTestSession("chat-ghost-reverse", nil)
+	var persisted []ActivitySnapshotPair
+	s.onActivitySnapshot = func(_ *Session, pair ActivitySnapshotPair) bool {
+		persisted = append(persisted, pair)
+		return true
+	}
+
+	dispatchEvent(s, "agent_start", `{"type":"agent_start"}`)
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":{"runs":[{"status":"failed","nodes":[{"task_id":"late","state":"failed"}]}]}}`)
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"tasks":[{"task_id":"late","status":"running"}]}}`)
+
+	writer := &runDoneSnapshotWriter{s: s, observed: make(chan ActivitySnapshotPair, 1)}
+	detach := s.Attach(writer)
+	defer detach()
+	dispatchEvent(s, "agent_settled", `{"type":"agent_settled"}`)
+
+	observed := <-writer.observed
+	if !bytes.Contains(observed.Task, []byte(`"status":"failed"`)) {
+		t.Fatalf("cache at run.done = %s, want late task reconciled to failed", observed.Task)
+	}
+	if len(persisted) != 1 || !persisted[0].Equal(observed) {
+		t.Fatalf("persisted pair = %+v, want cached pair observed at run.done %+v", persisted, observed)
+	}
+}
+
 func TestSessionCloseWaitsForActivityPersistence(t *testing.T) {
 	s := newTestSession("chat-persist-close", nil)
 	persistStarted := make(chan struct{})
