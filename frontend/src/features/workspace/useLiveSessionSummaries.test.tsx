@@ -7,6 +7,8 @@ import { useLiveSessions } from "./useLiveSessions";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 
 /** Payload shapes reused from features/split/activityParse.test.ts fixtures. */
+const FRESH_TASK_UPDATED_AT = new Date(Date.now() - 1000).toISOString();
+
 const TASK_PAYLOAD = {
   parent_session_id: "s1",
   truncated_tasks: false,
@@ -15,7 +17,7 @@ const TASK_PAYLOAD = {
       task_id: "t1",
       name: "Greeter",
       status: "running",
-      updated_at: "2026-08-19T10:01:00.000Z",
+      updated_at: FRESH_TASK_UPDATED_AT,
       live_progress: {
         activity: "thinking",
         started_at: 1788077455758,
@@ -70,6 +72,8 @@ function okResponse(body: unknown): Response {
 }
 
 describe("summarizeLiveSession", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("counts running and done tasks and aggregates dag progress", () => {
     const summary = summarizeLiveSession({
       id: "s1",
@@ -107,6 +111,40 @@ describe("summarizeLiveSession", () => {
     expect(garbage.doneCount).toBe(0);
     expect(garbage.dagTotal).toBe(0);
     expect(garbage.lastLine).toBeNull();
+  });
+
+  it("drops stale quiet agents from the running count", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:02:00.000Z"));
+    const summary = summarizeLiveSession({
+      id: "stale",
+      title: "Quiet agent",
+      task: {
+        tasks: [{ task_id: "t1", name: "Quiet", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
+      },
+      dag: null,
+    });
+
+    expect(summary.runningCount).toBe(0);
+    expect(summary.doneCount).toBe(0);
+  });
+
+  it("keeps counting fresh running agents", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:02:00.000Z"));
+    const summary = summarizeLiveSession({
+      id: "fresh",
+      title: "Active agents",
+      task: {
+        tasks: [
+          { task_id: "fresh", name: "Fresh", status: "running", updated_at: "2026-08-19T10:01:59.000Z" },
+          { task_id: "unknown", name: "Unknown timestamp", status: "running" },
+        ],
+      },
+      dag: null,
+    });
+
+    expect(summary.runningCount).toBe(2);
   });
 
   it("takes lastLine from the most recent task's live progress", () => {

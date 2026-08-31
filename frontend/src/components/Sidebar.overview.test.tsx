@@ -27,6 +27,7 @@ const LIVE_RESPONSE = {
             task_id: "t1",
             name: "Greeter",
             status: "running",
+            updated_at: new Date(Date.now() - 1000).toISOString(),
             live_progress: { activity: "thinking", last_assistant_line: "ls" },
           },
         ],

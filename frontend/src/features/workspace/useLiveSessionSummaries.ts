@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
-import { taskStatusCounts } from "../split/activityShelfModel";
+import { lastActivityMs, taskStatusCounts } from "../split/activityShelfModel";
 import type { ActivityTask } from "../split/activityTypes";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
@@ -8,6 +8,9 @@ import type { LiveSessionInfo } from "./workspace";
 /** Per-session rollup shown by the sessions overview and the tree badge.
  * Counts tolerate null or malformed payloads: unparseable input counts as
  * "no activity", never as an error. */
+/** Mirrors SEVERED_ACTIVITY_MS: quiet running tasks no longer count as active. */
+export const STALE_RUNNING_WINDOW_MS = 90_000;
+
 export interface LiveSessionSummary {
   readonly id: string;
   readonly title: string;
@@ -40,6 +43,13 @@ export function summarizeLiveSession(info: LiveSessionInfo): LiveSessionSummary 
   const tasks = (info.task == null ? null : parseTaskUpdated(info.task))?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
   const counts = taskStatusCounts(tasks);
+  const nowMs = Date.now();
+  // Unknown or malformed timestamps count conservatively as running.
+  const runningCount = tasks.filter((task) => {
+    if (task.status !== "running") return false;
+    const lastMs = lastActivityMs(task);
+    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
+  }).length;
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -49,7 +59,7 @@ export function summarizeLiveSession(info: LiveSessionInfo): LiveSessionSummary 
   return {
     id: info.id,
     title: info.title,
-    runningCount: counts.running,
+    runningCount,
     doneCount: counts.done,
     dagDone,
     dagTotal,
