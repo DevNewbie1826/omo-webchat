@@ -64,6 +64,10 @@ function cacheHitRateOf(tokens: unknown): number | null {
 }
 
 export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (frame: ChatServerFrame) => void {
+  const clearLiveSurfaces = (): void => {
+    bindings.clearLiveSurfaces();
+    bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
+  };
   return (frame): void => {
     switch (frame.type) {
       case "messageDelta":
@@ -124,8 +128,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "run.done": {
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
-        bindings.clearLiveSurfaces();
-        bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
+        clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {
           bindings.messageVersionRef.current += 1;
@@ -161,7 +164,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (!isPromptTerminalError(frame)) return;
         const active = bindings.activeRunRef.current;
         bindings.submitLatchRef.current = false;
-        bindings.clearLiveSurfaces();
+        clearLiveSurfaces();
         if (active) {
           bindings.messageVersionRef.current += 1;
           bindings.pendingRef.current = bindings.pendingRef.current.filter((pending) => pending.id !== active.id);
@@ -192,6 +195,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         bindings.runningRef.current = frame.isStreaming;
         bindings.setRunning(frame.isStreaming);
+        bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, frame.isStreaming));
         bindings.setIsCompacting(frame.isCompacting);
         return;
       case "stats":
@@ -227,9 +231,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         if ((reconciliation.outcome === "missing" || reconciliation.outcome === "stalled") && reconciliation.uncertain) {
           bindings.recoverLostRun(reconciliation.uncertain);
+          bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
         } else if (reconciliation.outcome === "completed") {
           bindings.submitLatchRef.current = false;
-          bindings.clearLiveSurfaces();
+          clearLiveSurfaces();
         }
         if (reconciliation.outcome === "completed") {
           bindings.runningRef.current = false;

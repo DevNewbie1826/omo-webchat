@@ -6,7 +6,7 @@ import {
   compactTokRate,
   statusKind,
   statusLabel,
-  TERMINAL_TASK_STATUSES,
+  taskStatusCounts,
   type StatusKind,
 } from "./activityShelfModel";
 import type { ActivityTask, TodoPhase, TodoTask } from "./activityTypes";
@@ -91,13 +91,13 @@ export function AgentSection({ tasks, nowMs, runInFlight, t }: {
   readonly runInFlight: boolean;
   readonly t: Translate;
 }) {
-  const running = tasks.filter((task) => !TERMINAL_TASK_STATUSES.has(task.status)).length;
+  const { running, done } = taskStatusCounts(tasks);
   return (
     <section className="th-activity-section">
       <div className="th-activity-section-head">
         <span className="th-activity-section-title">{t("activity.agents")}</span>
         <span className="th-activity-section-counts">
-          {t("activity.agentCounts", { running, done: tasks.length - running })}
+          {t("activity.agentCounts", { running, done })}
         </span>
       </div>
       <ul className="th-activity-agents">

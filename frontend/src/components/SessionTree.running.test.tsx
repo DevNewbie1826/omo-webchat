@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
@@ -32,13 +33,14 @@ const sessions = [
   { id: "tm-idle", name: "Idle chat", source: "stored" as const, recencyMs: 1 },
 ];
 
-function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, number>): void {
+function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, number>, touchActions = false): void {
   const root = (container as HTMLDivElement & { __root?: Root }).__root!;
   act(() => {
     root.render(
       <I18nContext.Provider value={i18n}>
         <SessionTree
           workspaces={[workspace]}
+          touchActions={touchActions}
           liveSessions={new Set(["tm-live", "tm-idle"])}
           runningCounts={runningCounts}
           activeTerminalId={null}
@@ -106,6 +108,21 @@ describe("SessionTree running-agent badge", () => {
     const idle = row("Idle chat");
     expect(idle.querySelector(".th-tree-running")).toBeNull();
     expect(idle.querySelector(".th-tree-live")).not.toBeNull();
+  });
+
+  it("keeps the badge exposed in touch mode and while row actions are focused", () => {
+    tree(container, new Map([["tm-live", 2]]), true);
+
+    expect(container.querySelector(".th-tree")?.classList.contains("th-tree--touch")).toBe(true);
+    const live = row("Live chat");
+    const action = live.querySelector<HTMLButtonElement>(".th-tree-actions button");
+    act(() => action?.focus());
+    const chip = live.querySelector(".th-tree-running");
+    expect(chip).not.toBeNull();
+    expect(chip?.getAttribute("aria-hidden")).toBeNull();
+
+    const css = readFileSync("src/styles/session-tree.css", "utf8");
+    expect(css).not.toMatch(/(?:focus-within|th-tree--touch)[^{]*\.th-tree-running\s*\{[^}]*display:\s*none/);
   });
 
   it("renders no chip at all without running counts", () => {

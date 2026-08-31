@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { summarizeLiveSession, useLiveSessionSummaries } from "./useLiveSessionSummaries";
 import { useLiveSessions } from "./useLiveSessions";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
-import type { LiveSessionInfo } from "./workspace";
 
 /** Payload shapes reused from features/split/activityParse.test.ts fixtures. */
 const TASK_PAYLOAD = {
@@ -30,6 +29,8 @@ const TASK_PAYLOAD = {
     },
     { task_id: "t2", name: "Done one", status: "completed", updated_at: "2026-08-19T10:00:30.000Z" },
     { task_id: "t3", name: "Waiting", status: "pending", updated_at: "2026-08-19T10:00:10.000Z" },
+    { task_id: "t4", name: "Failed", status: "failed", updated_at: "2026-08-19T10:00:05.000Z" },
+    { task_id: "t5", name: "Cancelled", status: "cancelled", updated_at: "2026-08-19T10:00:01.000Z" },
   ],
 };
 
@@ -81,7 +82,7 @@ describe("summarizeLiveSession", () => {
       id: "s1",
       title: "Refactor auth",
       runningCount: 1,
-      doneCount: 1,
+      doneCount: 3,
       dagDone: 2,
       dagTotal: 3,
       lastLine: "ls",
@@ -157,6 +158,7 @@ describe("live polling hooks", () => {
     act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   function Host({ enabled }: { readonly enabled: boolean }): null {
@@ -186,7 +188,7 @@ describe("live polling hooks", () => {
       id: "s1",
       title: "Refactor auth",
       runningCount: 1,
-      doneCount: 1,
+      doneCount: 3,
       dagDone: 2,
       dagTotal: 3,
       lastLine: "ls",
@@ -195,6 +197,28 @@ describe("live polling hooks", () => {
     expect(captured.summaries[2]).toMatchObject({ id: "legacy", title: "" });
     expect(captured.ids).toBeInstanceOf(Set);
     expect(Array.from(captured.ids)).toEqual(["s1", "s2", "legacy"]);
+  });
+
+  it("does not let a stopped request apply or start a duplicate chain after resubscribe", async () => {
+    vi.useFakeTimers();
+    const requests: Array<(response: Response) => void> = [];
+    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => requests.push(resolve)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => root.render(<Host enabled={true} />));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => root.render(<Host enabled={false} />));
+    await act(async () => root.render(<Host enabled={true} />));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => requests[0]?.(okResponse({ sessions: [{ id: "stale", title: "Stale" }] })));
+    expect(captured.summaries).toEqual([]);
+    await act(async () => requests[1]?.(okResponse({ sessions: [{ id: "fresh", title: "Fresh" }] })));
+    expect(captured.summaries.map((summary) => summary.id)).toEqual(["fresh"]);
+
+    await act(async () => vi.advanceTimersByTime(4000));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await act(async () => requests[2]?.(okResponse({ sessions: [] })));
   });
 
   it("returns empty state and never fetches while disabled", async () => {

@@ -217,8 +217,10 @@ describe("ActivityShelf", () => {
               tasks: [
                 makeTask({ taskId: "a" }),
                 makeTask({ taskId: "b", updatedAt: iso(45_000) }),
+                makeTask({ taskId: "pending", status: "pending" }),
                 makeTask({ taskId: "c", status: "completed" }),
                 makeTask({ taskId: "d", status: "failed" }),
+                makeTask({ taskId: "cancelled", status: "cancelled" }),
               ],
             })}
           />
@@ -230,7 +232,7 @@ describe("ActivityShelf", () => {
       harness.container.querySelector(".th-activity-section-counts"),
       "agents roster counts",
     );
-    expect(counts.textContent).toBe("2 running / 2 done");
+    expect(counts.textContent).toBe("2 running / 3 done");
   });
 
   it("advances live ages once per second and stops ticking after work becomes terminal", () => {

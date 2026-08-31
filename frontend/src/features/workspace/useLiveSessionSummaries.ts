@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
+import { taskStatusCounts } from "../split/activityShelfModel";
 import type { ActivityTask } from "../split/activityTypes";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
@@ -17,18 +18,6 @@ export interface LiveSessionSummary {
   /** Most recent live_progress last_assistant_line or activity across tasks;
    * null when no task reports one. */
   readonly lastLine: string | null;
-}
-
-// Status vocabulary mirrors the activity shelf: "running" is alive work and
-// "completed" is finished work; every other status counts as neither.
-function countStatuses(tasks: readonly ActivityTask[]): { running: number; done: number } {
-  let running = 0;
-  let done = 0;
-  for (const task of tasks) {
-    if (task.status === "running") running += 1;
-    else if (task.status === "completed") done += 1;
-  }
-  return { running, done };
 }
 
 function lastLineOf(tasks: readonly ActivityTask[]): string | null {
@@ -50,7 +39,7 @@ function lastLineOf(tasks: readonly ActivityTask[]): string | null {
 export function summarizeLiveSession(info: LiveSessionInfo): LiveSessionSummary {
   const tasks = (info.task == null ? null : parseTaskUpdated(info.task))?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
-  const counts = countStatuses(tasks);
+  const counts = taskStatusCounts(tasks);
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {

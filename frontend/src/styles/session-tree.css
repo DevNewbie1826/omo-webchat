@@ -96,13 +96,9 @@
   }
 }
 
-.th-tree-node:hover .th-tree-running,
-.th-tree-node:focus-within .th-tree-running {
-  display: none;
-}
-
-.th-tree--touch .th-tree-running {
-  display: none;
+.th-tree--touch .th-tree-node {
+  gap: var(--th-space-1);
+  padding-inline: var(--th-space-1);
 }
 
 /* The selected row changes only to emphasize weight; the --th-active fill is

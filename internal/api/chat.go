@@ -285,7 +285,7 @@ func (s *Server) routeMessage(h *connHandler, data []byte) {
 	// Every non-create/ping command must target the chat bound to this socket.
 	// Rejecting a mismatched sessionId keeps a stale or misaddressed frame from
 	// aborting, mutating, or querying another chat sharing the manager.
-	if bound, _ := h.snapshot(); cf.SessionID != bound {
+	if bound, _ := h.snapshot(); cf.SessionID != bound && !(cf.Type == "activity.refresh" && bound == "") {
 		h.sendError("session_mismatch", "frame sessionId does not match this socket's chat")
 		return
 	}

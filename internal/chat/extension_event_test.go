@@ -172,6 +172,7 @@ type cancellableReplayWriter struct {
 	frames  [][]byte
 	entered chan struct{}
 	release chan struct{}
+	written chan struct{}
 	once    sync.Once
 }
 
@@ -180,6 +181,12 @@ func (w *cancellableReplayWriter) WriteJSON(frame []byte) error {
 	w.frames = append(w.frames, append([]byte(nil), frame...))
 	first := len(w.frames) == 1
 	w.mu.Unlock()
+	if w.written != nil {
+		select {
+		case w.written <- struct{}{}:
+		default:
+		}
+	}
 	if first {
 		close(w.entered)
 		<-w.release
@@ -258,6 +265,44 @@ func TestActivitySnapshotReplayPrecedesFollowingLiveFrame(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"omo.task.updated", "omo.dag.updated", "omo.dag.heartbeat"}) {
 		t.Fatalf("delivered event order = %v, want replay task, replay dag, then live heartbeat", names)
+	}
+}
+
+func TestActivityRefreshUsesRequestingAttachmentFIFO(t *testing.T) {
+	s := newTestSession("chat-ext-refresh-order", nil)
+	requester := &cancellableReplayWriter{entered: make(chan struct{}), release: make(chan struct{}), written: make(chan struct{}, 4)}
+	detach := s.Attach(requester)
+	defer detach()
+	bystander := newCollectWriter()
+	s.Attach(bystander)
+
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"generation":"cached"}}`)
+	select {
+	case <-requester.entered:
+	case <-time.After(time.Second):
+		t.Fatal("cached frame did not enter requesting attachment")
+	}
+
+	s.ReplayActivitySnapshot(requester)
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":{"generation":"live"}}`)
+	if got := len(requester.snapshot()); got != 1 {
+		t.Fatalf("requester had %d writes while its first FIFO delivery was blocked, want 1", got)
+	}
+	_ = requester.Close()
+
+	deadline := time.After(2 * time.Second)
+	for len(requester.snapshot()) < 3 {
+		select {
+		case <-requester.written:
+		case <-deadline:
+			t.Fatalf("requester frames = %d, want cached live, refresh replay, then newer live", len(requester.snapshot()))
+		}
+	}
+	if names := extEventNames(collectExtEventFrames(t, requester.snapshot())); !reflect.DeepEqual(names, []string{"omo.task.updated", "omo.task.updated", "omo.dag.updated"}) {
+		t.Fatalf("requester event order = %v, want cached live, refresh replay, then newer live", names)
+	}
+	if got := len(collectExtEventFrames(t, bystander.snapshot())); got != 2 {
+		t.Fatalf("bystander received %d events, want only the two live broadcasts", got)
 	}
 }
 

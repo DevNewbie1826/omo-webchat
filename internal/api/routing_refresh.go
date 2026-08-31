@@ -12,7 +12,5 @@ func (s *Server) handleActivityRefresh(h *connHandler) {
 		h.sendError("no_session", "create a chat session first")
 		return
 	}
-	for _, frame := range sess.ActivitySnapshotFrames() {
-		_ = h.WriteJSON(frame)
-	}
+	sess.ReplayActivitySnapshot(h)
 }

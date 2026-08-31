@@ -24,8 +24,8 @@ const listeners = new Set<() => void>();
 let sessions: readonly LiveSessionInfo[] = EMPTY_SESSIONS;
 let polling = false;
 let timer: number | undefined;
-let stallGuard: number | undefined;
 let activeCtrl: AbortController | undefined;
+let generation = 0;
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -41,20 +41,22 @@ function apply(next: readonly LiveSessionInfo[]): void {
 
 function tick(): void {
   if (!polling) return;
+  const requestGeneration = generation;
   let settled = false;
   let superseded = false;
   const ctrl = new AbortController();
   activeCtrl = ctrl;
+  let stallGuard: number | undefined;
   const reschedule = (): void => {
     if (settled) return;
     settled = true;
     if (stallGuard !== undefined) window.clearTimeout(stallGuard);
     if (activeCtrl === ctrl) activeCtrl = undefined;
-    if (polling) timer = window.setTimeout(tick, POLL_MS);
+    if (polling && generation === requestGeneration) timer = window.setTimeout(tick, POLL_MS);
   };
   void listLiveSessions(ctrl.signal).then(
     (infos) => {
-      if (polling && !superseded) apply(infos);
+      if (polling && generation === requestGeneration && !superseded) apply(infos);
       reschedule();
     },
     reschedule,
@@ -74,13 +76,10 @@ function startPolling(): void {
 
 function stopPolling(): void {
   polling = false;
+  generation += 1;
   if (timer !== undefined) {
     window.clearTimeout(timer);
     timer = undefined;
-  }
-  if (stallGuard !== undefined) {
-    window.clearTimeout(stallGuard);
-    stallGuard = undefined;
   }
   activeCtrl?.abort();
   activeCtrl = undefined;

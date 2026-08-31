@@ -183,11 +183,20 @@ func TestWebSocketActivityRefreshPullsSnapshotToRequestingClient(t *testing.T) {
 		t.Fatalf("pulled dag data = %s, want the mock dag payload verbatim", events[1].Data)
 	}
 
-	// The refresh is unicast: once the requester has synchronously received
-	// both frames the handler is done, and the bystander's quiesced stream
-	// must be unchanged — no leakage of the refreshed frames.
-	if leaked := len(bystander.snapshot()) - bystanderStart; leaked != 0 {
-		t.Fatalf("bystander received %d frames from the refresh, want 0; have: %s", leaked, bystander.types())
+	// Round-trip a bystander query after the refresh so its FIFO is known to
+	// have drained before checking for unicast leakage.
+	statsBefore := bystander.countType("stats")
+	writeFrame(t, client2, map[string]any{"type": "chat.stats", "sessionId": chat.ID})
+	deadline := time.After(3 * time.Second)
+	for bystander.countType("stats") <= statsBefore {
+		select {
+		case <-bystander.notify:
+		case <-deadline:
+			t.Fatalf("timed out waiting for post-refresh bystander sentinel; have: %s", bystander.types())
+		}
+	}
+	if leaked := len(collectExtEvents(bystander.snapshot()[bystanderStart:])); leaked != 0 {
+		t.Fatalf("bystander received %d extensionEvent frames from the refresh, want 0; have: %s", leaked, bystander.types())
 	}
 }
 
@@ -232,7 +241,7 @@ func TestWebSocketActivityRefreshWithoutSession(t *testing.T) {
 	t.Cleanup(func() { _ = client.WriteClose(1000, nil) })
 	go client.ReadLoop()
 
-	writeFrame(t, client, map[string]any{"type": "activity.refresh"})
+	writeFrame(t, client, map[string]any{"type": "activity.refresh", "sessionId": "unattached-client-session"})
 	collector.waitFor(t, "error", 3*time.Second)
 	var errFrame struct {
 		Code string `json:"code"`

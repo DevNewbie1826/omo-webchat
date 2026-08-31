@@ -18,6 +18,18 @@ export const TERMINAL_DAG_STATUSES: ReadonlySet<string> = new Set([
   "failed",
   "cancelled",
 ]);
+
+export function taskStatusCounts(
+  tasks: readonly ActivityTask[],
+): { readonly running: number; readonly done: number } {
+  let running = 0;
+  let done = 0;
+  for (const task of tasks) {
+    if (task.status === "running") running += 1;
+    else if (TERMINAL_TASK_STATUSES.has(task.status)) done += 1;
+  }
+  return { running, done };
+}
 const KNOWN_STATUSES: ReadonlySet<string> = new Set([
   "running",
   "completed",

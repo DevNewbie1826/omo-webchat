@@ -117,16 +117,13 @@ func (s *Session) persistActivitySnapshot() {
 	s.mu.Unlock()
 }
 
-// ActivitySnapshotFrames returns the session's cached activity snapshot
-// frames in replay order — the exact frames attach replay sends, task first,
-// dag second. The delivery barrier is held across the capture, so the
-// returned frames are the committed cache state at a single point in time: a
-// concurrent provider frame either precedes this snapshot entirely or queues
-// behind it, never interleaves a newer value into a stale replay.
-func (s *Session) ActivitySnapshotFrames() [][]byte {
+// ReplayActivitySnapshot unicasts the cached activity frames through the
+// requesting attachment's existing FIFO. Holding the delivery barrier through
+// enqueue keeps a following live provider frame behind the replay.
+func (s *Session) ReplayActivitySnapshot(writer FrameWriter) {
 	s.barrier.Lock()
 	defer s.barrier.Unlock()
-	return s.activitySnapshots()
+	s.frames.writeToWriter(writer, s.activitySnapshots())
 }
 
 // ActivitySnapshot returns a clone of the cached task/dag payloads. A side

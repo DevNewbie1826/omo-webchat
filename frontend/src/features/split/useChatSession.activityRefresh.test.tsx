@@ -70,6 +70,24 @@ describe("useChatSession activity freshness wiring", () => {
     expect(current?.activities.runInFlight ?? false).toBe(false);
   });
 
+  it("synchronizes freshness from attach state and terminal cleanup", () => {
+    act(() => {
+      deliver({ type: "state", sessionId: session.id, isStreaming: true, isCompacting: false });
+    });
+    expect(current?.activities.runInFlight).toBe(true);
+
+    act(() => {
+      deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false });
+    });
+    expect(current?.activities.runInFlight).toBe(false);
+
+    act(() => {
+      deliver({ type: "run.started", sessionId: session.id });
+      deliver({ type: "error", sessionId: session.id, code: "send_failed", message: "failed" });
+    });
+    expect(current?.activities.runInFlight).toBe(false);
+  });
+
   it("sends activity.refresh when the websocket reconnects, not on the initial open", () => {
     expect(sent).toEqual([]);
 
