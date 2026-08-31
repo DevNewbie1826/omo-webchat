@@ -243,6 +243,24 @@ describe("SplitView empty pane", () => {
 			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
 		});
 
+		it("hides chats already placed in other panes", () => {
+			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(["chat-a1"]));
+			expect(rowNames()).toEqual(["add picker tests"]);
+		});
+
+		it("falls back to the first workspace when the selected one disappears", () => {
+			const onCreateTerminal = vi.fn();
+			const node = leaf(null);
+			render(node, makeActions({ onCreateTerminal }), true, new Map(), workspaces);
+			chooseWorkspace("ws-beta");
+			render(node, makeActions({ onCreateTerminal }), true, new Map(), [workspaces[0]!]);
+			expect(pickerSelect().value).toBe("ws-alpha");
+			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
+			const createButton = container.querySelector<HTMLButtonElement>(".th-picker-pane-create button");
+			act(() => createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+			expect(onCreateTerminal).toHaveBeenCalledWith(node.id, "ws-alpha");
+		});
+
 		it("re-filters the list when the dropdown changes", () => {
 			render(leaf(null), makeActions(), true, new Map(), workspaces);
 
