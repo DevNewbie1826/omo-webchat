@@ -6,7 +6,7 @@ import { parseChatServerFrame } from "./chatWsParse";
 
 export { parseChatServerFrame, sanitizeJson } from "./chatWsParse";
 
-type JsonObject = { readonly [key: string]: JsonValue };
+export type JsonObject = { readonly [key: string]: JsonValue };
 export type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
 
 export interface ContextUsage {
@@ -105,7 +105,8 @@ export type ChatServerFrame =
   | { readonly type: "run.done"; readonly sessionId: string; readonly reason: string }
   | { readonly type: "ack"; readonly sessionId?: string; readonly command: string; readonly id?: string; readonly requestId?: string }
   | { readonly type: "control.result"; readonly sessionId: string; readonly command: string; readonly requestId?: string; readonly success: boolean; readonly message?: string }
-  | { readonly type: "error"; readonly sessionId?: string; readonly code?: string; readonly command?: FailedRpcCommand; readonly requestId?: string; readonly dangling?: boolean; readonly candidates?: readonly ResumeCandidate[]; readonly message: string };
+  | { readonly type: "error"; readonly sessionId?: string; readonly code?: string; readonly command?: FailedRpcCommand; readonly requestId?: string; readonly dangling?: boolean; readonly candidates?: readonly ResumeCandidate[]; readonly message: string }
+  | { readonly type: "notice"; readonly sessionId: string; readonly kind: string; readonly payload?: JsonObject };
 
 export interface ChatImage {
   readonly data: string;

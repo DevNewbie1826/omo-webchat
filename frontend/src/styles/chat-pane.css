@@ -357,6 +357,48 @@
   color: var(--th-text);
 }
 
+/* Server notice stack: the advisory lane above the transcript, matching the
+   .th-chat-status lane width. The info tone extends the .th-alert family with
+   the theme-independent reference blue; the warning tone reuses the shared
+   .th-alert--warning modifier unchanged. */
+.th-notice-stack {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  margin: var(--th-space-2) auto 0;
+}
+
+.th-alert--info {
+  background: color-mix(in srgb, var(--th-send) 12%, transparent);
+  border-color: var(--th-send);
+  color: var(--th-text);
+}
+
+.th-notice-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
+}
+
+.th-notice-title {
+  font-weight: var(--th-weight-announce);
+}
+
+.th-notice-detail {
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-notice-dismiss {
+  flex: none;
+}
+
 @container chat-pane (max-width: 600px) {
   .th-chat-pane .th-termhead-path,
   .th-chat-pane .th-thinking-select {

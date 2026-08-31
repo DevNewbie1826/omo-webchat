@@ -1,4 +1,4 @@
-import type { ChatServerFrame, CommandEntry, ContextUsage, ResumeCandidate } from "../../lib/chatWs";
+import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
@@ -52,6 +52,7 @@ interface ChatFrameHandlerBindings {
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setRetryDraft: StateSetter<(ChatDraft & { readonly version: number }) | null>;
+  readonly pushNotice: (kind: string, payload: JsonObject | null) => void;
 }
 
 function cacheHitRateOf(tokens: unknown): number | null {
@@ -173,6 +174,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         return;
       }
+      case "notice":
+        bindings.pushNotice(frame.kind, frame.payload ?? null);
+        return;
       case "approval":
         bindings.setPendingApproval(chatState.approvalRequestOf(frame));
         return;

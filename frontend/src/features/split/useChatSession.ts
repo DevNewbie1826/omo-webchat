@@ -227,6 +227,7 @@ export function useChatSession(
     retryDraft: frameState.retryDraft,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
+    notices: frameState.notices,
     submit,
     compact,
     steer,

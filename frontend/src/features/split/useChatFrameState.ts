@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { ChatClient, CommandEntry, ContextUsage, ResumeCandidate } from "../../lib/chatWs";
+import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
@@ -20,6 +20,17 @@ import { createChatFrameHandler } from "./useChatFrameHandler";
 export interface MissingOriginal {
   readonly candidates: readonly ResumeCandidate[];
 }
+
+/** One server advisory shown as a dismissible banner above the transcript. */
+export interface ChatNotice {
+  readonly id: number;
+  readonly kind: string;
+  readonly payload: JsonObject | null;
+  readonly at: number;
+}
+
+/** Newest-first cap on the visible advisory stack. */
+const NOTICE_LIMIT = 5;
 
 export function useChatFrameState() {
   const controls = useConfirmedControls();
@@ -45,6 +56,7 @@ export function useChatFrameState() {
   const [retryDraft, setRetryDraft] = useState<(ChatDraft & { readonly version: number }) | null>(null);
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
+  const [notices, setNotices] = useState<readonly ChatNotice[]>([]);
   const messagesRef = useRef<readonly UiMessage[]>([]);
   const runningRef = useRef(false);
   const submitLatchRef = useRef(false);
@@ -59,6 +71,7 @@ export function useChatFrameState() {
   const toolCallsRef = useRef<Readonly<Record<string, ToolEntry>>>({});
   const historyLoadedRef = useRef(false);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
+  const noticeIdRef = useRef(0);
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
     messagesRef.current = next;
@@ -72,6 +85,14 @@ export function useChatFrameState() {
     activitiesRef.current = next;
     setActivities(next);
     setActivitiesVersion((version) => version + 1);
+  };
+
+  // Notices are newest-first and capped: a chatty server cannot flood the
+  // pane, and no dismissed-by-age advisory is persisted anywhere.
+  const pushNotice = (kind: string, payload: JsonObject | null): void => {
+    setNotices((current) =>
+      [{ id: ++noticeIdRef.current, kind, payload, at: Date.now() }, ...current].slice(0, NOTICE_LIMIT),
+    );
   };
 
   // Clear every transient live surface; shared by run completion, terminal
@@ -130,6 +151,7 @@ export function useChatFrameState() {
     setPendingApproval,
     setRestoreVersion,
     setRetryDraft,
+    pushNotice,
   });
 
   const submit = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
@@ -208,6 +230,7 @@ export function useChatFrameState() {
     retryDraft,
     activities,
     activitiesVersion,
+    notices,
     handleFrame,
     submit,
     steer,
