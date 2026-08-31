@@ -31,8 +31,17 @@ func (p *cancellableBlockingPipe) Close() error {
 	return nil
 }
 
-func TestOpenSessionCancellationTerminatesBlockedProviderWrite(t *testing.T) {
+// A cancelled open must be local to the open that is being cancelled: the
+// provider wedged mid-write stays wedged for impl-A to unblock, but the
+// cancellation itself must not terminate the process and mass-evict every
+// sibling session. RED until impl-B removes the p.close escalation from the
+// open write cancel arm (shared_provider_requests.go).
+func TestOpenSessionWriteCancellationIsLocal(t *testing.T) {
 	pipe := &cancellableBlockingPipe{started: make(chan struct{}), release: make(chan struct{})}
+	// Releases the wedged writer once the assertions are done so the abandoned
+	// Send goroutine can drain; a no-op when the provider was (wrongly) killed,
+	// because closeProcess below already released it.
+	defer pipe.Close()
 	provider := &sharedProvider{
 		proc:     &Process{stdin: pipe},
 		state:    sharedProviderStarted,
@@ -64,12 +73,16 @@ func TestOpenSessionCancellationTerminatesBlockedProviderWrite(t *testing.T) {
 	}
 	select {
 	case <-provider.done:
+		t.Fatal("cancelled open write terminated the shared provider: one session's cancelled open mass-evicted every sibling (RED: open cancel arm calls p.close)")
 	default:
-		t.Fatal("blocked open write did not terminate the shared provider")
 	}
 	provider.mu.Lock()
+	state := provider.state
 	pending := len(provider.pending)
 	provider.mu.Unlock()
+	if state != sharedProviderStarted {
+		t.Fatalf("provider state after cancelled open = %d, want still started", state)
+	}
 	if pending != 0 {
 		t.Fatalf("cancelled open left %d pending requests", pending)
 	}
@@ -131,7 +144,7 @@ else if(x.type==='release_close')send({type:'response',command:'close_session',s
 	manager := NewManager()
 	t.Cleanup(manager.CloseAll)
 	writer := newCollectWriter()
-	session, _, _, err := manager.AcquireAttach(context.Background(), SessionOptions{ID: "chat-close-ack", Binary: node, Args: []string{"-e", script, "--"}}, writer)
+	session, _, _, err := manager.AcquireAttach(context.Background(), SessionOptions{ID: "chat-close-ack", Binary: node, Args: []string{"-e", script, "--"}, ProviderContext: context.Background()}, writer)
 	if err != nil {
 		t.Fatal(err)
 	}
