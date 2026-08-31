@@ -91,7 +91,7 @@ var (
 	roundtripChatKeys = map[string]bool{
 		"id": true, "name": true, "pisessionid": true, "wsid": true, "cwd": true,
 		"sessiondir": true, "provider": true, "model": true, "createdat": true,
-		"lastentryid": true,
+		"lastusedat": true, "lastentryid": true,
 	}
 	roundtripWorkspaceKeys = map[string]bool{
 		"id": true, "name": true, "path": true, "chats": true, "terminals": true,

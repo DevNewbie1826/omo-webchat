@@ -58,4 +58,22 @@ func TestChatLastUsedAtRoundTrips(t *testing.T) {
 	if got.LastUsedAt != stamp {
 		t.Fatalf("reloaded lastUsedAt = %d, want %d", got.LastUsedAt, stamp)
 	}
+
+	if _, err := reloaded.UpdateChat(ws.ID, used.ID, func(c *Chat) { c.LastUsedAt = 0 }); err != nil {
+		t.Fatalf("clear lastUsedAt: %v", err)
+	}
+	cleared, err := Load(context.Background(), logger)
+	if err != nil {
+		t.Fatalf("reload cleared store: %v", err)
+	}
+	got, err = cleared.GetChat(ws.ID, used.ID)
+	if err != nil {
+		t.Fatalf("reload cleared chat: %v", err)
+	}
+	if got.LastUsedAt != 0 {
+		t.Fatalf("cleared lastUsedAt = %d, want 0", got.LastUsedAt)
+	}
+	if raw, ok := mustFields(t, rawChats(t, path)[used.ID])["lastUsedAt"]; ok {
+		t.Fatalf("cleared chat emitted lastUsedAt %s, want omitted", raw)
+	}
 }
