@@ -129,9 +129,18 @@ describe("TranscriptNoticeRow", () => {
     expect(container.querySelector(".th-alert--info")).not.toBeNull();
   });
 
-  it("renders retry_fallback_exhausted with a warning tone", () => {
+  it("localizes fallback success instead of rendering its wire kind", () => {
+    renderRow(notice(1, "retry_fallback_succeeded", { to: "zai/glm" }));
+    expect(container.textContent).toContain("notice.fallbackSucceeded");
+    expect(container.textContent).toContain("zai/glm");
+    expect(container.textContent).not.toContain("retry_fallback_succeeded");
+  });
+
+  it("localizes fallback exhaustion with a warning tone", () => {
     renderRow(notice(1, "retry_fallback_exhausted", { chainKey: "main" }));
-    expect(container.textContent).toContain("retry_fallback_exhausted");
+    expect(container.textContent).toContain("notice.fallbackExhausted");
+    expect(container.textContent).toContain("main");
+    expect(container.textContent).not.toContain("retry_fallback_exhausted");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
   });
 

@@ -87,6 +87,20 @@ const Markdown = memo(({ text }: { readonly text: string }) => (
   </ReactMarkdown>
 ));
 
+export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly string[] {
+  let messageOrdinal = 0;
+  return items.map((item) => {
+    if (item.kind === "notice") return `notice:${item.notice.id}`;
+    const message = item.message;
+    const fallback = messageOrdinal++;
+    if (message.id !== undefined) return `message:${message.id}`;
+    if (message.optimisticId !== undefined) return `optimistic:${message.optimisticId}`;
+    // Notice insertion/dismissal does not change the authoritative message
+    // ordinal, so even legacy id-less messages retain their virtual row.
+    return `message-ordinal:${fallback}`;
+  });
+}
+
 interface ChatTranscriptProps {
   /** Unified render list: conversation entries merged with notice blocks. */
   readonly items: readonly TranscriptItem[];
@@ -157,8 +171,10 @@ export function ChatTranscript({
     }
   }, [historyToolIds, toolCalls]);
 
+  const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
   const virtualizer = useVirtualizer({
     count: items.length,
+    getItemKey: (index) => itemKeys[index] ?? `missing:${index}`,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 4,

@@ -1,8 +1,11 @@
 package chat
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
-func (s *Session) forwardApproval(raw json.RawMessage) {
+func (s *Session) forwardApproval(raw json.RawMessage, receivedAt time.Time) {
 	var req struct {
 		ID          string   `json:"id"`
 		Method      string   `json:"method"`
@@ -23,7 +26,7 @@ func (s *Session) forwardApproval(raw json.RawMessage) {
 		if err != nil {
 			return
 		}
-		s.forwardNotice("extension_notify", payload)
+		s.forwardNotice("extension_notify", payload, receivedAt)
 		return
 	default:
 		return

@@ -99,7 +99,10 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 		// record. A failed write only logs; forwarding is never broken.
 		OnNoticePersist: func(source *chat.Session, notices []chat.NoticeRecord) bool {
 			if s.chats.Get(req.ChatID) != source {
-				return true
+				// Opening and stale sessions both skip the store write without
+				// advancing their success marker. Registration wakes an opening
+				// session's worker once the route becomes authoritative.
+				return false
 			}
 			if _, err := s.store.UpdateChat(req.WsID, req.ChatID, func(record *store.Chat) {
 				record.Notices = notices

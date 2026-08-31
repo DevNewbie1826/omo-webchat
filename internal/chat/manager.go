@@ -200,6 +200,7 @@ retry:
 	}
 	s.seedActivitySnapshots(opts.SeedActivity)
 	s.seedNotices(opts.SeedNotices)
+	s.startNoticePersistence()
 	s.lifecycleMu.Lock()
 	detach, replay := s.attachLocked(writer)
 	s.lifecycleMu.Unlock()
@@ -239,6 +240,9 @@ retry:
 	}
 	if openErr != nil {
 		detach()
+		// The logical session never became manager-owned, so no later Close path
+		// can drain its per-session persistence goroutine.
+		s.stopNoticePersistence()
 		m.mu.Lock()
 		delete(m.pending, opts.ID)
 		m.mu.Unlock()
@@ -295,6 +299,10 @@ retry:
 	m.sessions[opts.ID] = s
 	provider.mu.Unlock()
 	m.mu.Unlock()
+	// Provider events can arrive before registration. Their asynchronous
+	// persistence attempt deliberately remains dirty; registration immediately
+	// wakes the worker so the durable log cannot be lost on restart.
+	s.queueNoticePersistence()
 	exitGate.open()
 	if identityGate != nil {
 		if err := identityGate.open(); err != nil {

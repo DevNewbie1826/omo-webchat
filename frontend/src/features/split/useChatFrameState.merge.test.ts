@@ -29,12 +29,21 @@ describe("mergeTranscriptItems", () => {
     expect(merged).toEqual(["early", "n1", "late"]);
   });
 
-  it("keeps ts=0 entries in their relative array order", () => {
+  it("preserves authoritative message order when ts-less optimistic entries are interleaved", () => {
     const merged = labels(
       [message(0, "a"), message(500, "b"), message(0, "c"), message(0, "d")],
       [notice(1, 250)],
     );
-    expect(merged).toEqual(["a", "c", "d", "n1", "b"]);
+    expect(merged).toEqual(["a", "n1", "b", "c", "d"]);
+    expect(merged.filter((label) => !label.startsWith("n"))).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("keeps same-millisecond notices in receipt order after tied messages", () => {
+    const merged = labels(
+      [message(100, "first"), message(100, "second"), message(300, "late")],
+      [notice(3, 100), notice(1, 100), notice(2, 100)],
+    );
+    expect(merged).toEqual(["first", "second", "n1", "n2", "n3", "late"]);
   });
 
   it("renders a notice after the entries sharing its timestamp on a tie", () => {

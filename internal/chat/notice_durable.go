@@ -36,6 +36,40 @@ type NoticeRecord struct {
 	At      time.Time       `json:"at"`
 }
 
+// UnmarshalJSON tolerates damaged persisted notice elements by decoding them
+// to the zero record. This keeps one bad advisory from preventing the entire
+// state file from loading; seedNotices performs the final allowlist filtering.
+func (r *NoticeRecord) UnmarshalJSON(raw []byte) error {
+	var fields struct {
+		Kind    json.RawMessage `json:"kind"`
+		Payload json.RawMessage `json:"payload"`
+		At      json.RawMessage `json:"at"`
+	}
+	if json.Unmarshal(raw, &fields) != nil {
+		*r = NoticeRecord{}
+		return nil
+	}
+	var kind, stamp string
+	if json.Unmarshal(fields.Kind, &kind) != nil || json.Unmarshal(fields.At, &stamp) != nil {
+		*r = NoticeRecord{}
+		return nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil || at.IsZero() {
+		*r = NoticeRecord{}
+		return nil
+	}
+	if len(fields.Payload) > 0 {
+		var payload map[string]json.RawMessage
+		if json.Unmarshal(fields.Payload, &payload) != nil || payload == nil {
+			*r = NoticeRecord{}
+			return nil
+		}
+	}
+	*r = NoticeRecord{Kind: kind, Payload: append(json.RawMessage(nil), fields.Payload...), At: at}
+	return nil
+}
+
 // Clone deep-copies the payload, so a record can be handed across the session
 // boundary without aliasing the log or the store.
 func (r NoticeRecord) Clone() NoticeRecord {
@@ -102,7 +136,7 @@ func (s *Session) seedNotices(seed []NoticeRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, rec := range seed {
-		if rec.Kind == "" || rec.At.IsZero() {
+		if !durableNoticeKinds[rec.Kind] || rec.At.IsZero() || !validNoticePayload(rec.Payload) {
 			continue
 		}
 		s.durableNotices = append(s.durableNotices, rec.Clone())
@@ -110,6 +144,14 @@ func (s *Session) seedNotices(seed []NoticeRecord) {
 	if len(s.durableNotices) > maxDurableNotices {
 		s.durableNotices = s.durableNotices[len(s.durableNotices)-maxDurableNotices:]
 	}
+}
+
+func validNoticePayload(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	return json.Unmarshal(raw, &payload) == nil && payload != nil
 }
 
 // durableNoticeFrames copies and marshals the durable log as notice frames in
@@ -161,6 +203,89 @@ func (s *Session) persistDurableNotices() {
 		return
 	}
 	s.mu.Lock()
-	s.noticesPersisted = cloneNoticeRecords(snapshot)
+	// Do not let an older in-flight snapshot move the marker behind a newer
+	// successful write (the worker serializes calls, but the log may grow while
+	// the callback is running).
+	if len(snapshot) >= len(s.noticesPersisted) {
+		s.noticesPersisted = cloneNoticeRecords(snapshot)
+	}
 	s.mu.Unlock()
+}
+
+type noticePersistenceRequest struct {
+	flush bool
+	ack   chan struct{}
+}
+
+func (s *Session) startNoticePersistence() {
+	s.mu.Lock()
+	if s.onNoticePersist == nil || s.noticePersistWork != nil {
+		s.mu.Unlock()
+		return
+	}
+	work := make(chan noticePersistenceRequest, 1)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.noticePersistWork = work
+	s.noticePersistStop = stop
+	s.noticePersistDone = done
+	s.mu.Unlock()
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case request := <-work:
+				if request.flush {
+					s.persistDurableNotices()
+				}
+				if request.ack != nil {
+					close(request.ack)
+				}
+			case <-stop:
+				// Flush the latest dirty snapshot after all provider delivery has
+				// stopped, then make Close a deterministic persistence boundary.
+				s.persistDurableNotices()
+				return
+			}
+		}
+	}()
+}
+
+func (s *Session) queueNoticePersistence() {
+	s.mu.Lock()
+	work := s.noticePersistWork
+	s.mu.Unlock()
+	if work == nil {
+		return
+	}
+	select {
+	case work <- noticePersistenceRequest{flush: true}:
+	default:
+	}
+}
+
+func (s *Session) drainNoticePersistence() {
+	s.mu.Lock()
+	work := s.noticePersistWork
+	s.mu.Unlock()
+	if work == nil {
+		return
+	}
+	ack := make(chan struct{})
+	work <- noticePersistenceRequest{ack: ack}
+	<-ack
+}
+
+func (s *Session) stopNoticePersistence() {
+	s.mu.Lock()
+	stop := s.noticePersistStop
+	done := s.noticePersistDone
+	s.noticePersistWork = nil
+	s.noticePersistStop = nil
+	s.mu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
 }

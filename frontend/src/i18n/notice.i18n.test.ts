@@ -5,6 +5,8 @@ import ko from "./locales/ko.json";
 const KEYS = [
   "notice.fallbackApplied",
   "notice.fallbackReverted",
+  "notice.fallbackSucceeded",
+  "notice.fallbackExhausted",
   "notice.fallbackAborted",
   "notice.fallbackReason",
   "notice.highReasoningWarning",

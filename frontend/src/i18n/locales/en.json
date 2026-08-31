@@ -187,6 +187,8 @@
   "chat.compactDescription": "Compact the conversation to free up context",
   "notice.fallbackApplied": "Provider fallback applied",
   "notice.fallbackReverted": "Provider fallback reverted",
+  "notice.fallbackSucceeded": "Provider fallback succeeded",
+  "notice.fallbackExhausted": "Provider fallback exhausted",
   "notice.fallbackAborted": "Server fallback aborted",
   "notice.fallbackReason": "Reason",
   "notice.highReasoningWarning": "High-reasoning model warning",

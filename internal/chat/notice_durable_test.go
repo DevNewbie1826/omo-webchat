@@ -226,48 +226,119 @@ func assertSnapshotThenNoticesReplay(t *testing.T, late *collectWriter, pass int
 // durable notice with the full log, skipped when the log is unchanged since
 // the last successful write, and retried with the full log after a failure.
 func TestOnNoticePersistWriteThroughAndChangedGuard(t *testing.T) {
-	var calls [][]NoticeRecord
+	calls := make(chan []NoticeRecord, 4)
 	writer := newCollectWriter()
 	s := newTestSession("chat-notice-persist", writer)
+	callNumber := 0 // worker-owned
 	s.mu.Lock()
 	s.onNoticePersist = func(_ *Session, notices []NoticeRecord) bool {
-		snapshot := make([]NoticeRecord, len(notices))
-		for i, rec := range notices {
-			snapshot[i] = rec.Clone()
-		}
-		calls = append(calls, snapshot)
-		return len(calls) != 2 // second write fails, must retry on the next notice
+		callNumber++
+		calls <- cloneNoticeRecords(notices)
+		return callNumber != 2 // second write fails, must retry on the next notice
 	}
 	s.mu.Unlock()
+	s.startNoticePersistence()
+	t.Cleanup(s.stopNoticePersistence)
 
 	dispatchEvent(s, "retry_fallback_applied", `{"type":"retry_fallback_applied","sessionId":"rpc-1","n":1}`)
-	if len(calls) != 1 || len(calls[0]) != 1 {
-		t.Fatalf("after first durable notice calls = %+v, want one call with one record", calls)
+	s.drainNoticePersistence()
+	first := <-calls
+	if len(first) != 1 {
+		t.Fatalf("first durable write = %+v, want one record", first)
 	}
-	dispatchEvent(s, "retry_fallback_applied", `{"type":"retry_fallback_applied","sessionId":"rpc-1","n":2}`) // write fails
-	if len(calls) != 2 {
-		t.Fatalf("failed durable writes = %d, want 2 calls", len(calls))
+	dispatchEvent(s, "retry_fallback_applied", `{"type":"retry_fallback_applied","sessionId":"rpc-1","n":2}`)
+	s.drainNoticePersistence()
+	if failed := <-calls; len(failed) != 2 {
+		t.Fatalf("failed durable write = %+v, want the full 2-record log", failed)
 	}
 	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","sessionId":"rpc-1","n":3}`)
-	if len(calls) != 3 {
-		t.Fatalf("calls after failed write = %d, want a retry (3 calls)", len(calls))
-	}
-	if len(calls[2]) != 3 {
-		t.Fatalf("retry handed %+v, want the full 3-record log", calls[2])
+	s.drainNoticePersistence()
+	retry := <-calls
+	if len(retry) != 3 {
+		t.Fatalf("retry handed %+v, want the full 3-record log", retry)
 	}
 	for i, want := range []float64{1, 2, 3} {
 		var got map[string]any
-		if err := json.Unmarshal(calls[2][i].Payload, &got); err != nil {
-			t.Fatalf("record %d payload is not valid JSON: %v (%s)", i, err, calls[2][i].Payload)
+		if err := json.Unmarshal(retry[i].Payload, &got); err != nil {
+			t.Fatalf("record %d payload is not valid JSON: %v (%s)", i, err, retry[i].Payload)
 		}
 		if got["n"] != want {
-			t.Fatalf("retry record %d = %s, want n=%v", i, calls[2][i].Payload, want)
+			t.Fatalf("retry record %d = %s, want n=%v", i, retry[i].Payload, want)
 		}
 	}
-	// The guard: no further durable notice, no further calls — and the
-	// callback receiving a copy must not alias the session log.
-	if log := durableLog(s); len(log) != 3 || len(calls) != 3 {
-		t.Fatalf("final log = %+v with %d calls, want a stable 3-record log and 3 calls", log, len(calls))
+	// A worker barrier makes the unchanged guard deterministic: if the callback
+	// ran, its buffered call would be observable after the drain acknowledges.
+	s.queueNoticePersistence()
+	s.drainNoticePersistence()
+	select {
+	case unexpected := <-calls:
+		t.Fatalf("unchanged log was persisted again: %+v", unexpected)
+	default:
+	}
+}
+
+func TestCloseDrainsNoticePersistenceWorker(t *testing.T) {
+	persisted := make(chan []NoticeRecord, 1)
+	s := newTestSession("chat-notice-close", nil)
+	s.mu.Lock()
+	s.onNoticePersist = func(_ *Session, notices []NoticeRecord) bool {
+		persisted <- cloneNoticeRecords(notices)
+		return true
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","sessionId":"rpc-1"}`)
+	if err := s.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+	select {
+	case records := <-persisted:
+		if len(records) != 1 {
+			t.Fatalf("persisted records at Close = %+v, want one", records)
+		}
+	default:
+		t.Fatal("Close returned before the notice worker persisted its dirty log")
+	}
+}
+
+func TestNoticePersistenceRegistrationWindowRetriesAfterRouteActivation(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.CloseAll)
+	s := newTestSession("chat-opening-notice", nil)
+	attempts := make(chan bool, 2)
+	s.mu.Lock()
+	s.onNoticePersist = func(source *Session, _ []NoticeRecord) bool {
+		current := manager.Get(source.ID()) == source
+		attempts <- current
+		return current
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	t.Cleanup(s.stopNoticePersistence)
+
+	manager.mu.Lock()
+	manager.pending[s.ID()] = true
+	manager.mu.Unlock()
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","sessionId":"rpc-1"}`)
+	s.drainNoticePersistence()
+	if current := <-attempts; current {
+		t.Fatal("pre-registration notice write was treated as successful")
+	}
+	if len(s.noticesPersisted) != 0 {
+		t.Fatal("skipped pre-registration write advanced the success marker")
+	}
+
+	manager.mu.Lock()
+	delete(manager.pending, s.ID())
+	manager.sessions[s.ID()] = s
+	manager.mu.Unlock()
+	s.queueNoticePersistence()
+	s.drainNoticePersistence()
+	if current := <-attempts; !current {
+		t.Fatal("registration flush did not persist against the authoritative route")
+	}
+	if len(s.noticesPersisted) != 1 {
+		t.Fatalf("persisted marker length = %d, want 1 after registration flush", len(s.noticesPersisted))
 	}
 }
 
@@ -329,6 +400,7 @@ func TestSeedNoticesDropsMalformedRecords(t *testing.T) {
 	s.seedNotices([]NoticeRecord{
 		{Kind: "", Payload: json.RawMessage(`{"malformed":"empty kind"}`), At: base},
 		{Kind: "retry_fallback_applied", Payload: json.RawMessage(`{"ok":true}`), At: base},
+		{Kind: "unknown_future_notice", Payload: json.RawMessage(`{"not":"durable"}`), At: base},
 		{Kind: "high_reasoning_warning", Payload: json.RawMessage(`{"malformed":"zero time"}`)},
 	})
 	log := durableLog(s)

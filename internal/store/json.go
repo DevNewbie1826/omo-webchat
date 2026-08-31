@@ -115,8 +115,26 @@ func (c *Chat) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	*c = Chat(fields)
+	if len(c.Notices) > 0 {
+		valid := c.Notices[:0]
+		for _, notice := range c.Notices {
+			if notice.Kind == "" || notice.At.IsZero() || !validStoredNoticePayload(notice.Payload) {
+				continue
+			}
+			valid = append(valid, notice)
+		}
+		c.Notices = valid
+	}
 	c.extra = extra
 	return nil
+}
+
+func validStoredNoticePayload(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	return json.Unmarshal(raw, &payload) == nil && payload != nil
 }
 
 func (ws Workspace) MarshalJSON() ([]byte, error) {

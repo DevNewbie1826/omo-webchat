@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
 // readFrames reads provider frames from dec until EOF, emitting one or more
@@ -48,6 +49,7 @@ func (p *Process) readFrames(dec *json.Decoder, out chan<- Event) error {
 // object closes, so a malformed trailing frame surfaces a fatal decode error
 // rather than marking an incomplete history as fully loaded.
 func readFrameObject(dec *json.Decoder, out chan<- Event) error {
+	receivedAt := time.Now().UTC()
 	fields := make(map[string]json.RawMessage)
 	var typ, command, sessionID, requestID string
 	success := false
@@ -102,7 +104,7 @@ func readFrameObject(dec *json.Decoder, out chan<- Event) error {
 	if err != nil {
 		return fmt.Errorf("chat: reconstruct frame: %w", err)
 	}
-	out <- Event{Type: typ, Raw: raw}
+	out <- Event{Type: typ, Raw: raw, ReceivedAt: receivedAt}
 	return nil
 }
 

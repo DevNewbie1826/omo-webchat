@@ -187,6 +187,8 @@
   "chat.compactDescription": "대화를 압축해 컨텍스트를 확보합니다",
   "notice.fallbackApplied": "프로바이더 폴백 적용",
   "notice.fallbackReverted": "프로바이더 폴백 해제",
+  "notice.fallbackSucceeded": "프로바이더 폴백 성공",
+  "notice.fallbackExhausted": "프로바이더 폴백 모두 소진",
   "notice.fallbackAborted": "서버 폴백 중단",
   "notice.fallbackReason": "사유",
   "notice.highReasoningWarning": "고추론 모델 경고",

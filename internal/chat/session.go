@@ -150,8 +150,11 @@ type Session struct {
 	// equal to the marker is never written again; a failed write leaves the
 	// marker in place so the next durable notice retries. Guarded by mu.
 	noticesPersisted []NoticeRecord
-	// onNoticePersist persists the durable log at the notice write boundary.
-	onNoticePersist func(session *Session, notices []NoticeRecord) bool
+	// onNoticePersist persists the durable log on the session-owned worker.
+	onNoticePersist   func(session *Session, notices []NoticeRecord) bool
+	noticePersistWork chan noticePersistenceRequest
+	noticePersistStop chan struct{}
+	noticePersistDone chan struct{}
 	// providerRunActive latches a provider-initiated run (omo wake/triggerTurn)
 	// that no client prompt armed: agent_start sets it (emitting run.started)
 	// and agent_settled clears it (emitting run.done). An explicit latch — not
@@ -225,6 +228,7 @@ func StartSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 	}
 	s.seedActivitySnapshots(opts.SeedActivity)
 	s.seedNotices(opts.SeedNotices)
+	s.startNoticePersistence()
 	go s.pump()
 	return s, nil
 }
@@ -375,6 +379,7 @@ func (s *Session) Close() error {
 		// run.done frame is published. Once done is latched above, no later
 		// attempt can register, so waiting here makes Close the deterministic
 		// boundary after which no store write can remain in flight.
+		s.stopNoticePersistence()
 		s.activityPersistence.Wait()
 		if owner != nil {
 			owner.sessionClosed(s)

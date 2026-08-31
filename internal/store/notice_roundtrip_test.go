@@ -79,6 +79,36 @@ func loadNoticesStore(t *testing.T) (*Store, string) {
 // The persisted durable-notice log must round-trip through Load, survive
 // unrelated flushes alongside unknown fields, and be replaceable through
 // UpdateChat with the replacement still on disk after a reload.
+func TestMalformedNoticeElementsAreDroppedWithoutFailingStoreLoad(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := StateDir()
+	if err != nil {
+		t.Fatalf("state dir: %v", err)
+	}
+	fixture := `{"workspaces":[{"id":"ws","name":"ws","path":"/tmp","chats":[{"id":"chat","name":"chat","wsId":"ws","cwd":"/tmp","provider":"omo","createdAt":1,"notices":[` +
+		`{"kind":"retry_fallback_applied","payload":{"ok":true},"at":"2026-01-02T03:04:05Z"},` +
+		`{"kind":"high_reasoning_warning","payload":{},"at":"not-a-time"},` +
+		`{"kind":7,"payload":{},"at":"2026-01-02T03:04:06Z"},` +
+		`{"kind":"retry_fallback_exhausted","payload":"bad","at":"2026-01-02T03:04:07Z"}` +
+		`]}]}]}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := LoadDir(dir, logger)
+	if err != nil {
+		t.Fatalf("one malformed notice failed the whole store load: %v", err)
+	}
+	loaded, err := st.GetChat("ws", "chat")
+	if err != nil {
+		t.Fatalf("get chat: %v", err)
+	}
+	if len(loaded.Notices) != 1 || loaded.Notices[0].Kind != "retry_fallback_applied" {
+		t.Fatalf("loaded notices = %+v, want only the valid record", loaded.Notices)
+	}
+}
+
 func TestChatNoticesRoundTrip(t *testing.T) {
 	st, dir := loadNoticesStore(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

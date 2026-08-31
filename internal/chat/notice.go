@@ -12,8 +12,10 @@ import (
 // delivery barrier as the live broadcast, so a concurrent attach can never
 // see the live notice without the replay log containing it (and vice versa).
 // Transient kinds stay purely ephemeral — never logged, never persisted.
-func (s *Session) forwardNotice(kind string, payload json.RawMessage) {
-	at := time.Now().UTC()
+func (s *Session) forwardNotice(kind string, payload json.RawMessage, at time.Time) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
 	frame := &NoticeFrame{Type: "notice", SessionID: s.id, Kind: kind, Payload: payload, At: at.Format(time.RFC3339Nano)}
 	if !durableNoticeKinds[kind] {
 		s.send(frame)
@@ -27,7 +29,7 @@ func (s *Session) forwardNotice(kind string, payload json.RawMessage) {
 	s.writeFrame(b)
 	s.rememberDurableNotice(kind, payload, at)
 	s.barrier.Unlock()
-	s.persistDurableNotices()
+	s.queueNoticePersistence()
 }
 
 // advisoryNoticePayload returns the raw event object without its routing

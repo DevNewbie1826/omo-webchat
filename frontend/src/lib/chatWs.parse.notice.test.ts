@@ -63,6 +63,9 @@ describe("parseChatServerFrame notice", () => {
       at: "2026-01-02T03:04:05.123456789Z",
     });
     expect(frame?.type === "notice" && frame.at).toBe(Date.parse("2026-01-02T03:04:05.123456789Z"));
+    expect(frame?.type === "notice" && frame.serverIdentity).toBe(
+      "auto_retry_start\u00002026-01-02T03:04:05.123456789Z\u0000null",
+    );
     const seconds = parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k", at: "2026-01-02T03:04:05Z" });
     expect(seconds?.type === "notice" && seconds.at).toBe(Date.parse("2026-01-02T03:04:05Z"));
   });

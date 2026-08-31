@@ -31,10 +31,20 @@ export interface ChatNotice {
   readonly kind: string;
   readonly payload: JsonObject | null;
   readonly at: number;
+  readonly serverIdentity?: string;
 }
 
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
+
+const DURABLE_NOTICE_KINDS: ReadonlySet<string> = new Set([
+  "retry_fallback_applied",
+  "retry_fallback_reverted",
+  "retry_fallback_succeeded",
+  "retry_fallback_exhausted",
+  "server_fallback_aborted",
+  "high_reasoning_warning",
+]);
 
 /**
  * One row of the unified transcript render list: a conversation entry or an
@@ -44,36 +54,32 @@ export type TranscriptItem =
   | { readonly kind: "message"; readonly message: UiMessage }
   | { readonly kind: "notice"; readonly notice: ChatNotice };
 
-function transcriptTimeKey(item: TranscriptItem): number {
-  // Messages without a server timestamp (ts = 0) all share the zero key, so
-  // the stable sort below keeps their relative array order intact.
-  return item.kind === "notice" ? item.notice.at : (item.message.ts ?? 0);
-}
-
 /**
- * Merge conversation entries and advisories into one chronologically ordered
- * render list. Entries sort by ts, notices by their server `at` stamp; a tie
- * places the notice AFTER the entries sharing its timestamp, and equal-key
- * items of the same kind keep their input order (stable).
+ * Preserve the authoritative message order exactly and merge notices around
+ * timestamped message boundaries. Timestamp-less optimistic/steer messages
+ * therefore stay where they were sent. Notice ties use receipt id (oldest
+ * first), and a notice follows every message sharing its millisecond.
  */
 export function mergeTranscriptItems(
   messages: readonly UiMessage[],
   notices: readonly ChatNotice[],
 ): readonly TranscriptItem[] {
-  const items: readonly TranscriptItem[] = [
-    ...messages.map((message): TranscriptItem => ({ kind: "message", message })),
-    ...notices.map((notice): TranscriptItem => ({ kind: "notice", notice })),
-  ];
-  return items
-    .map((item, index) => ({ item, index }))
-    .sort((a, b) => {
-      const keyA = transcriptTimeKey(a.item);
-      const keyB = transcriptTimeKey(b.item);
-      if (keyA !== keyB) return keyA - keyB;
-      if (a.item.kind !== b.item.kind) return a.item.kind === "notice" ? 1 : -1;
-      return a.index - b.index;
-    })
-    .map(({ item }) => item);
+  const orderedNotices = [...notices].sort((a, b) => a.at - b.at || a.id - b.id);
+  const items: TranscriptItem[] = [];
+  let noticeIndex = 0;
+  for (const message of messages) {
+    const ts = message.ts ?? 0;
+    if (ts > 0) {
+      while (noticeIndex < orderedNotices.length && orderedNotices[noticeIndex]!.at < ts) {
+        items.push({ kind: "notice", notice: orderedNotices[noticeIndex++]! });
+      }
+    }
+    items.push({ kind: "message", message });
+  }
+  while (noticeIndex < orderedNotices.length) {
+    items.push({ kind: "notice", notice: orderedNotices[noticeIndex++]! });
+  }
+  return items;
 }
 
 export function useChatFrameState() {
@@ -134,10 +140,20 @@ export function useChatFrameState() {
   // Notices are retained newest-first and capped: a chatty server cannot
   // flood the pane, and the wide limit admits a durable server replay on
   // attach. Dismissal never touches this list — it is a view-local hide.
-  const pushNotice = (kind: string, payload: JsonObject | null, at?: number): void => {
-    setNotices((current) =>
-      [{ id: ++noticeIdRef.current, kind, payload, at: at ?? Date.now() }, ...current].slice(0, NOTICE_LIMIT),
-    );
+  const pushNotice = (kind: string, payload: JsonObject | null, at?: number, serverIdentity?: string): void => {
+    setNotices((current) => {
+      if (DURABLE_NOTICE_KINDS.has(kind) && serverIdentity !== undefined &&
+          current.some((notice) => notice.serverIdentity === serverIdentity)) {
+        return current;
+      }
+      return [{
+        id: ++noticeIdRef.current,
+        kind,
+        payload,
+        at: at ?? Date.now(),
+        ...(serverIdentity !== undefined ? { serverIdentity } : {}),
+      }, ...current].slice(0, NOTICE_LIMIT);
+    });
   };
 
   // Clear every transient live surface; shared by run completion, terminal

@@ -53,6 +53,26 @@ function NoticeBody({ notice }: { readonly notice: ChatNotice }) {
         </>
       );
     }
+    case "retry_fallback_succeeded": {
+      const target = payloadString(payload, "to");
+      return (
+        <>
+          <strong className="th-notice-title">{t("notice.fallbackSucceeded")}</strong>
+          {target !== null && <span className="th-notice-detail">{target}</span>}
+        </>
+      );
+    }
+    case "retry_fallback_exhausted": {
+      const chain = payloadString(payload, "chainKey");
+      const reason = payloadString(payload, "reason");
+      return (
+        <>
+          <strong className="th-notice-title">{t("notice.fallbackExhausted")}</strong>
+          {chain !== null && <span className="th-notice-detail">{chain}</span>}
+          {reason !== null && <span className="th-notice-detail">{t("notice.fallbackReason")}: {reason}</span>}
+        </>
+      );
+    }
     case "server_fallback_aborted": {
       const line = arrowLine(payloadString(payload, "from"), payloadString(payload, "to"));
       return (

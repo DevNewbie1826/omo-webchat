@@ -1,6 +1,7 @@
 import type { AssistantMessage, ContentBlock } from "../../lib/chatWs";
 
 export interface UiMessage extends AssistantMessage {
+  readonly id?: string;
   readonly optimisticId?: number;
 }
 
@@ -85,7 +86,7 @@ function toolResultText(content: unknown): string {
  * matching invocation exists, keep one contained tool block instead of letting
  * the output detach into a plain-text row.
  */
-function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<string, unknown>>): void {
+function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<string, unknown>>, entryId: unknown): void {
   const toolCallId = message["toolCallId"];
   const toolName = message["toolName"];
   const isError = message["isError"];
@@ -118,7 +119,7 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
       return;
     }
   }
-  messages.push({ role: "assistant", blocks: [result], ts: 0 });
+  messages.push({ ...(typeof entryId === "string" ? { id: entryId } : {}), role: "assistant", blocks: [result], ts: 0 });
 }
 
 export function messageText(message: AssistantMessage): string {
@@ -147,7 +148,9 @@ export function parseEntries(entries: unknown): UiMessage[] {
       const customType = entry["customType"];
       const content = entry["content"];
       if (typeof customType !== "string" || typeof content !== "string") continue;
+      const id = entry["id"];
       messages.push({
+        ...(typeof id === "string" ? { id } : {}),
         role: "custom",
         customType,
         blocks: [{ kind: "text", text: content }],
@@ -161,12 +164,14 @@ export function parseEntries(entries: unknown): UiMessage[] {
     const role = message["role"];
     if (typeof role !== "string") continue;
     if (role === "toolResult") {
-      mergeToolResultMessage(messages, message);
+      mergeToolResultMessage(messages, message, entry["id"]);
       continue;
     }
     const timestamp = message["timestamp"];
     const model = message["model"];
+    const id = entry["id"];
     messages.push({
+      ...(typeof id === "string" ? { id } : {}),
       role,
       blocks: parseBlocks(message["content"]),
       ts: typeof timestamp === "number" ? timestamp : 0,
