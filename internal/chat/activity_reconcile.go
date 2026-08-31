@@ -4,10 +4,6 @@ import (
 	"encoding/json"
 )
 
-// statusCompleted is the demoted status a ghost running row receives when the
-// dag run it belongs to has already finished.
-const statusCompleted = "completed"
-
 // terminalTaskStatuses mirrors the frontend TERMINAL_TASK_STATUSES
 // (activityShelfModel.ts): task statuses that never revert to running.
 var terminalTaskStatuses = map[string]bool{
@@ -30,10 +26,10 @@ var terminalDagStatuses = map[string]bool{
 
 // reconcileActivityPair demotes ghost running rows in the pair's task payload:
 // any non-terminal task whose task_id belongs to a node of a terminal dag run
-// is rewritten to "completed". Both payloads are parsed minimally and guarded:
-// any malformed piece leaves the pair untouched. When nothing changes, the
-// ORIGINAL pair value is returned so the byte-identity persist dedup still
-// suppresses the write.
+// is rewritten to the node's terminal outcome, falling back to the run outcome.
+// Both payloads are parsed minimally and guarded: any malformed piece leaves
+// the pair untouched. When nothing changes, the ORIGINAL pair value is
+// returned so the byte-identity persist dedup still suppresses the write.
 func reconcileActivityPair(pair ActivitySnapshotPair) ActivitySnapshotPair {
 	task, changed := reconcileTaskPayload(pair.Task, pair.Dag)
 	if !changed {
@@ -43,10 +39,12 @@ func reconcileActivityPair(pair ActivitySnapshotPair) ActivitySnapshotPair {
 }
 
 // reconcileTaskPayload applies the demotion to one task payload given the dag
-// payload. It returns the rewritten payload and whether it changed.
+// payload. It returns the rewritten payload and whether it changed. Task rows
+// use RawMessage fields so unrelated values never pass through float64 or
+// another lossy generic representation.
 func reconcileTaskPayload(task, dag json.RawMessage) (json.RawMessage, bool) {
-	ids := terminalDagRunTaskIDs(dag)
-	if len(ids) == 0 || len(task) == 0 {
+	outcomes := terminalDagRunTaskOutcomes(dag)
+	if len(outcomes) == 0 || len(task) == 0 {
 		return nil, false
 	}
 	var doc map[string]json.RawMessage
@@ -57,21 +55,26 @@ func reconcileTaskPayload(task, dag json.RawMessage) (json.RawMessage, bool) {
 	if !ok {
 		return nil, false
 	}
-	var tasks []map[string]any
+	var tasks []map[string]json.RawMessage
 	if json.Unmarshal(rawTasks, &tasks) != nil || tasks == nil {
 		return nil, false
 	}
 	changed := false
 	for _, row := range tasks {
-		id, ok := row["task_id"].(string)
-		if !ok || id == "" {
+		rawID, hasID := row["task_id"]
+		rawStatus, hasStatus := row["status"]
+		if !hasID || !hasStatus {
 			continue
 		}
-		status, _ := row["status"].(string)
-		if terminalTaskStatuses[status] || !ids[id] {
+		var id, status string
+		if json.Unmarshal(rawID, &id) != nil || id == "" || json.Unmarshal(rawStatus, &status) != nil {
 			continue
 		}
-		row["status"] = statusCompleted
+		outcome, vouched := outcomes[id]
+		if terminalTaskStatuses[status] || !vouched {
+			continue
+		}
+		row["status"], _ = json.Marshal(outcome.status)
 		changed = true
 	}
 	if !changed {
@@ -85,9 +88,15 @@ func reconcileTaskPayload(task, dag json.RawMessage) (json.RawMessage, bool) {
 	return out, true
 }
 
-// terminalDagRunTaskIDs collects the task_ids of nodes belonging to terminal
-// dag runs. Malformed dag payloads yield no ids, disabling demotion.
-func terminalDagRunTaskIDs(dag json.RawMessage) map[string]bool {
+type dagTaskOutcome struct {
+	status   string
+	fromNode bool
+}
+
+// terminalDagRunTaskOutcomes collects the terminal outcome for each task_id
+// belonging to a terminal dag run. A node's own terminal state is more
+// specific and wins over a run-level fallback regardless of payload order.
+func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
 	if len(dag) == 0 {
 		return nil
 	}
@@ -96,13 +105,14 @@ func terminalDagRunTaskIDs(dag json.RawMessage) map[string]bool {
 			Status string `json:"status"`
 			Nodes  []struct {
 				TaskID string `json:"task_id"`
+				State  string `json:"state"`
 			} `json:"nodes"`
 		} `json:"runs"`
 	}
 	if json.Unmarshal(dag, &doc) != nil {
 		return nil
 	}
-	var ids map[string]bool
+	var outcomes map[string]dagTaskOutcome
 	for _, run := range doc.Runs {
 		if !terminalDagStatuses[run.Status] {
 			continue
@@ -111,13 +121,20 @@ func terminalDagRunTaskIDs(dag json.RawMessage) map[string]bool {
 			if node.TaskID == "" {
 				continue
 			}
-			if ids == nil {
-				ids = make(map[string]bool)
+			outcome := dagTaskOutcome{status: run.Status}
+			if terminalDagStatuses[node.State] {
+				outcome = dagTaskOutcome{status: node.State, fromNode: true}
 			}
-			ids[node.TaskID] = true
+			if previous, exists := outcomes[node.TaskID]; exists && previous.fromNode && !outcome.fromNode {
+				continue
+			}
+			if outcomes == nil {
+				outcomes = make(map[string]dagTaskOutcome)
+			}
+			outcomes[node.TaskID] = outcome
 		}
 	}
-	return ids
+	return outcomes
 }
 
 // dagHasTerminalRun reports whether the dag payload carries at least one
@@ -151,13 +168,4 @@ func (s *Session) reconcileActivityCacheLocked(dag json.RawMessage) {
 		return
 	}
 	s.lastActivitySnapshots[activitySnapshotOrder[0]] = task
-}
-
-// reconcileCachedActivity applies the sweep to the cached pair before it is
-// handed to persistence. Called with no session locks held; persistence itself
-// stays settle-driven and unchanged.
-func (s *Session) reconcileCachedActivity() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.reconcileActivityCacheLocked(s.lastActivitySnapshots[activitySnapshotOrder[1]])
 }
