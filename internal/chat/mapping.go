@@ -18,6 +18,13 @@ func (s *Session) forwardApproval(raw json.RawMessage) {
 	}
 	switch req.Method {
 	case "select", "confirm", "input", "editor":
+	case "notify":
+		payload, err := json.Marshal(noticePayload{ID: req.ID, Message: req.Message, Title: req.Title})
+		if err != nil {
+			return
+		}
+		s.forwardNotice("extension_notify", payload)
+		return
 	default:
 		return
 	}
@@ -33,6 +40,14 @@ func (s *Session) forwardApproval(raw json.RawMessage) {
 		Placeholder: req.Placeholder,
 		Timeout:     req.Timeout,
 	})
+}
+
+// noticePayload is the extension_notify notice body: only the fields the
+// request actually carries appear in the marshaled payload.
+type noticePayload struct {
+	ID      string `json:"id,omitempty"`
+	Message string `json:"message,omitempty"`
+	Title   string `json:"title,omitempty"`
 }
 
 func (s *Session) forwardMessageDelta(raw json.RawMessage) {

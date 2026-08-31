@@ -1,5 +1,14 @@
-import type { ChatServerFrame } from "./chatWs";
-import { mapRecords, optBoolean, optString, parseResumeCandidate, reqBoolean, reqString } from "./chatWsParseFields";
+import type { ChatServerFrame, JsonObject } from "./chatWs";
+import {
+  isRecord,
+  mapRecords,
+  optBoolean,
+  optString,
+  parseResumeCandidate,
+  reqBoolean,
+  reqString,
+  sanitizeJson,
+} from "./chatWsParseFields";
 
 type LifecycleFrameType =
   | "compaction.started"
@@ -8,7 +17,8 @@ type LifecycleFrameType =
   | "run.done"
   | "ack"
   | "control.result"
-  | "error";
+  | "error"
+  | "notice";
 
 export function parseLifecycleFrame(
   type: LifecycleFrameType,
@@ -65,6 +75,22 @@ export function parseLifecycleFrame(
         ...(requestId !== undefined ? { requestId } : {}),
         success,
         ...(message !== undefined ? { message } : {}),
+      };
+    }
+    case "notice": {
+      if (sessionId === null) return null;
+      const kind = reqString(msg, "kind");
+      if (kind === null || kind.length === 0) return null;
+      // payload is an opaque server-side record: present-but-non-object rejects
+      // the frame; a valid record is sanitized to plain JSON before it can
+      // reach state or the DOM.
+      const rawPayload = msg["payload"];
+      if (rawPayload !== undefined && !isRecord(rawPayload)) return null;
+      return {
+        type: "notice",
+        sessionId,
+        kind,
+        ...(rawPayload !== undefined ? { payload: sanitizeJson(rawPayload) as JsonObject } : {}),
       };
     }
     case "error": {

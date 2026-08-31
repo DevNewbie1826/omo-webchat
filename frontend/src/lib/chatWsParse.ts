@@ -34,6 +34,7 @@ const SERVER_FRAME_TYPES: ReadonlySet<string> = new Set([
   "ack",
   "control.result",
   "error",
+  "notice",
 ]);
 
 export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
@@ -66,6 +67,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "ack":
     case "control.result":
     case "error":
+    case "notice":
       return parseLifecycleFrame(type, msg, sessionId);
     default:
       return null;
