@@ -236,7 +236,12 @@ func TestSettleReconcilesLateTaskBeforeRunDone(t *testing.T) {
 	defer detach()
 	dispatchEvent(s, "agent_settled", `{"type":"agent_settled"}`)
 
-	observed := <-writer.observed
+	var observed ActivitySnapshotPair
+	select {
+	case observed = <-writer.observed:
+	case <-time.After(time.Second):
+		t.Fatal("run.done did not expose an activity snapshot")
+	}
 	if !bytes.Contains(observed.Task, []byte(`"status":"failed"`)) {
 		t.Fatalf("cache at run.done = %s, want late task reconciled to failed", observed.Task)
 	}
