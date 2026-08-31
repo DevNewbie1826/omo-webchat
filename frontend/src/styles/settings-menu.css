@@ -1,0 +1,170 @@
+
+.th-settings-menu {
+  position: relative;
+}
+
+.th-settings-panel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 60;
+  width: 240px;
+  padding: var(--th-space-2);
+  background: var(--th-surface-raised);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius);
+  box-shadow: var(--th-shadow-raised);
+  animation: th-settings-in var(--th-dur-fast) var(--th-ease);
+}
+
+@keyframes th-settings-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.th-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  padding: var(--th-space-1) 0;
+}
+
+.th-settings-label {
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--th-faint);
+}
+
+.th-settings-seg {
+  display: flex;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  overflow: hidden;
+}
+
+.th-settings-seg-btn {
+  flex: 1;
+  padding: var(--th-space-1) 0;
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-muted);
+  background: transparent;
+  transition: background var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-settings-seg-btn + .th-settings-seg-btn {
+  border-left: 1px solid var(--th-border);
+}
+
+.th-settings-seg-btn:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-settings-seg-btn--on {
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-settings-seg-btn--on:hover {
+  background: var(--th-accent-hover);
+  color: var(--th-accent-fg);
+}
+
+.th-settings-select {
+  width: 100%;
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  color: var(--th-text);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  cursor: pointer;
+}
+
+.th-settings-size {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+}
+
+.th-settings-size-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  transition: background var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-settings-size-btn:hover:not(:disabled) {
+  background: var(--th-hover);
+  border-color: var(--th-border-strong);
+}
+
+.th-settings-size-btn:disabled {
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+  cursor: not-allowed;
+}
+
+.th-settings-size-value {
+  flex: 1;
+  text-align: center;
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text);
+}
+
+.th-settings-divider {
+  height: 1px;
+  margin: var(--th-space-1) 0;
+  background: var(--th-border);
+}
+
+.th-settings-item {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: 100%;
+  padding: var(--th-space-2) var(--th-space-2);
+  border-radius: var(--th-radius-sm);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-align: left;
+  transition: background var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-settings-item:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}

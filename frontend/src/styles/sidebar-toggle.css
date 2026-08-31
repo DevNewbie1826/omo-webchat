@@ -1,0 +1,64 @@
+
+.th-sidebar-toggle {
+  position: absolute;
+  top: 8px;
+  right: -13px;
+  /* --collapse-x slides the toggle from the sidebar seam to its pinned
+     collapsed position in lockstep with the sidebar width transition, so it
+     tracks the collapsing edge instead of teleporting. */
+  --collapse-x: 0px;
+  transform: translateX(var(--collapse-x));
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--th-border-raised);
+  background: var(--th-surface-raised);
+  color: var(--th-muted);
+  box-shadow: var(--th-shadow-raised);
+  z-index: 50;
+  transition: color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease),
+    transform var(--th-dur-slow) var(--th-ease);
+}
+
+.th-sidebar-toggle:hover {
+  color: var(--th-text);
+  background: var(--th-hover);
+  transform: translateX(var(--collapse-x)) scale(1.08);
+}
+
+.th-sidebar-toggle svg {
+  /* IconChevron points RIGHT by default: flip it so the expanded sidebar
+     advertises collapse (LEFT); the collapsed override below restores RIGHT
+     as the expand affordance. */
+  transform: rotate(180deg);
+  transition: transform var(--th-dur-slow) var(--th-ease);
+}
+
+.th-sidebar--collapsed .th-sidebar-toggle svg {
+  transform: rotate(0deg);
+}
+
+/* When collapsed the sidebar is zero-width, so an edge-mounted toggle (right:
+   -13px) would sit off-screen. Slide it to left:8 via --collapse-x (translateX of
+   21px) rather than swapping the right/left anchor — that swap is not
+   transitionable and made the toggle jump ahead of the width animation. */
+.th-sidebar--collapsed .th-sidebar-toggle {
+  --collapse-x: 21px;
+  color: var(--th-text-dim);
+  background: var(--th-surface);
+  border-color: var(--th-border-strong);
+}
+
+.th-sidebar--collapsed .th-sidebar-inner {
+  visibility: hidden;
+}
+
+@media (max-width: 768px) {
+  .th-sidebar-toggle {
+    display: none;
+  }
+}

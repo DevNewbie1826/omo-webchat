@@ -1,0 +1,68 @@
+.th-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--th-space-6);
+  background: var(--th-backdrop);
+  animation: th-fade-in var(--th-dur) var(--th-ease);
+}
+
+.th-modal-backdrop {
+  position: absolute;
+  inset: 0;
+}
+
+.th-modal {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  background: var(--th-surface-overlay);
+  border: 1px solid var(--th-border-overlay);
+  border-radius: var(--th-radius-lg);
+  box-shadow: var(--th-shadow-overlay);
+  animation: th-modal-in var(--th-dur-slow) var(--th-ease);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+@keyframes th-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.th-modal-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--th-radius-sm);
+  color: var(--th-muted);
+  transition: color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-modal-close:hover {
+  color: var(--th-text);
+  background: var(--th-hover);
+}
+
+.th-modal .th-btn {
+  height: auto;
+  min-height: 44px;
+}

@@ -1,0 +1,130 @@
+
+.th-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--th-space-3);
+  color: var(--th-faint);
+  padding: var(--th-space-6);
+  text-align: center;
+  /* Positioning context for .th-empty-menu: anchors the button inside the
+     pane (already below #root's safe-area padding) instead of #root's padding
+     box, where it hides under the status bar on notched phones. */
+  position: relative;
+}
+
+.th-empty-glyph {
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+  color: var(--th-muted);
+  border: 1px dashed var(--th-border-strong);
+  border-radius: var(--th-radius);
+  padding: var(--th-space-3) var(--th-space-5);
+  background: var(--th-surface);
+}
+
+.th-empty-title {
+  font-size: var(--th-type-display-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-display-line);
+  letter-spacing: var(--th-type-display-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-empty-hint {
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  color: var(--th-muted);
+  max-width: 340px;
+  /* Korean wraps at word boundaries only; the anywhere fallback still saves a
+     single over-long token from overflowing. Same pattern as .th-alert. */
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+/* Touch and narrow layouts get the full 44px target; dense desktop keeps 34px. */
+@media (max-width: 768px), (pointer: coarse) {
+  .th-empty .th-btn {
+    min-height: 44px;
+  }
+}
+
+/* Descendant selector (0,2,0) beats .th-btn-icon's 28px (0,1,0) regardless
+   of import order, keeping the 44px touch target on mobile. */
+.th-empty .th-empty-menu {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 44px;
+  height: 44px;
+}
+
+/* In-flow banner at the top of the main pane (first child of .th-main).
+   Reserving real layout height means it can never overlap the transcript,
+   pane header, composer, or palettes at any width, scroll position, or
+   message length — including wrapped multi-line text. */
+.th-toast {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  margin: var(--th-space-2) var(--th-space-3) 0;
+  padding: var(--th-space-2) var(--th-space-4);
+  border-radius: var(--th-radius);
+  border: 1px solid var(--th-border-raised);
+  background: var(--th-surface-raised);
+  color: var(--th-text);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  box-shadow: var(--th-shadow-raised);
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+  animation: th-toast-in var(--th-dur-slow) var(--th-ease);
+}
+
+.th-toast--success {
+  border-color: var(--th-success);
+  color: var(--th-success);
+}
+
+.th-toast--error {
+  border-color: var(--th-error);
+  color: var(--th-error);
+}
+
+@keyframes th-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--th-border);
+  border-radius: 5px;
+  border: 2px solid var(--th-bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--th-border-strong);
+}

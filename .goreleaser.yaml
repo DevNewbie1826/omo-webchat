@@ -1,0 +1,39 @@
+version: 2
+
+project_name: omo-webchat
+
+before:
+  hooks:
+    - sh -c "cd frontend && npm ci && npm run build"
+
+builds:
+  - id: omo-webchat
+    main: ./cmd/server
+    binary: omo-webchat
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - formats:
+      - tar.gz
+    # Must match the asset name install.sh downloads: omo-webchat_<os>_<arch>.tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  name_template: "v{{ .Version }}"
+
+changelog:
+  use: git

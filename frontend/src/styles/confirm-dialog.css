@@ -1,0 +1,26 @@
+
+.th-confirm {
+  padding: var(--th-space-5) var(--th-space-6) var(--th-space-5);
+}
+
+.th-confirm-title {
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+}
+
+.th-confirm-message {
+  margin-top: var(--th-space-2);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  color: var(--th-muted);
+}
+
+.th-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--th-space-2);
+  margin-top: var(--th-space-5);
+}

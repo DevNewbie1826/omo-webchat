@@ -1,0 +1,123 @@
+import type { ChatServerFrame } from "./chatWs";
+import {
+  isRecord,
+  mapRecords,
+  optBoolean,
+  optNumber,
+  optString,
+  optStringArray,
+  parseCommandEntry,
+  parseContextUsage,
+  parseModelEntry,
+  reqBoolean,
+  reqString,
+  sanitizeJson,
+} from "./chatWsParseFields";
+
+type SessionFrameType = "state" | "stats" | "extensionEvent" | "approval" | "commands" | "models" | "entries";
+
+export function parseSessionFrame(
+  type: SessionFrameType,
+  msg: Record<string, unknown>,
+  sessionId: string | null,
+): ChatServerFrame | null {
+  switch (type) {
+    case "state": {
+      if (sessionId === null) return null;
+      const isStreaming = reqBoolean(msg, "isStreaming");
+      const isCompacting = reqBoolean(msg, "isCompacting");
+      if (isStreaming === null || isCompacting === null) return null;
+      const thinkingLevel = optString(msg, "thinkingLevel");
+      const sessionName = optString(msg, "sessionName");
+      if (thinkingLevel === null || sessionName === null) return null;
+      const rawModel = msg["model"];
+      let model: { readonly provider: string; readonly modelId: string } | null | undefined;
+      if (rawModel === undefined) model = undefined;
+      else if (rawModel === null) model = null;
+      else if (isRecord(rawModel)) {
+        const provider = reqString(rawModel, "provider");
+        const modelId = reqString(rawModel, "modelId");
+        if (provider === null || modelId === null) return null;
+        model = { provider, modelId };
+      } else return null;
+      return {
+        type: "state",
+        sessionId,
+        isStreaming,
+        isCompacting,
+        ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+        ...(model !== undefined ? { model } : {}),
+        ...(sessionName !== undefined ? { sessionName } : {}),
+      };
+    }
+    case "stats": {
+      if (sessionId === null) return null;
+      const cost = optNumber(msg, "cost");
+      const contextUsage = parseContextUsage(msg["contextUsage"]);
+      const tokens = msg["tokens"];
+      if (cost === null || contextUsage === null) return null;
+      if (cost === undefined && contextUsage === undefined && tokens === undefined) return null;
+      return {
+        type: "stats",
+        sessionId,
+        ...(cost !== undefined ? { cost } : {}),
+        ...(contextUsage !== undefined ? { contextUsage } : {}),
+        ...(tokens !== undefined ? { tokens: sanitizeJson(tokens) } : {}),
+      };
+    }
+    case "extensionEvent": {
+      if (sessionId === null) return null;
+      const name = reqString(msg, "name");
+      const data = msg["data"];
+      if (name === null || name.length === 0) return null;
+      if (data !== undefined && !isRecord(data)) return null;
+      return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
+    }
+    case "approval": {
+      if (sessionId === null) return null;
+      const id = reqString(msg, "id");
+      const method = msg["method"];
+      if (id === null) return null;
+      if (method !== "select" && method !== "confirm" && method !== "input" && method !== "editor") return null;
+      const title = optString(msg, "title");
+      const message = optString(msg, "message");
+      const options = optStringArray(msg, "options");
+      const prefill = optString(msg, "prefill");
+      const placeholder = optString(msg, "placeholder");
+      if (title === null || message === null || options === null || prefill === null || placeholder === null) return null;
+      return {
+        type: "approval",
+        sessionId,
+        id,
+        method,
+        ...(title !== undefined ? { title } : {}),
+        ...(message !== undefined ? { message } : {}),
+        ...(options !== undefined ? { options } : {}),
+        ...(prefill !== undefined ? { prefill } : {}),
+        ...(placeholder !== undefined ? { placeholder } : {}),
+      };
+    }
+    case "commands": {
+      if (sessionId === null) return null;
+      const commands = mapRecords(msg["commands"], parseCommandEntry);
+      if (commands === null) return null;
+      return { type: "commands", sessionId, commands };
+    }
+    case "models": {
+      if (sessionId === null) return null;
+      const models = mapRecords(msg["models"], parseModelEntry);
+      if (models === null) return null;
+      return { type: "models", sessionId, models };
+    }
+    case "entries": {
+      if (sessionId === null) return null;
+      const entries = msg["entries"];
+      if (entries === undefined) return null;
+      const leafId = optString(msg, "leafId");
+      if (leafId === null) return null;
+      const final = optBoolean(msg, "final");
+      if (final === null) return null;
+      return { type: "entries", sessionId, entries: sanitizeJson(entries), ...(leafId !== undefined ? { leafId } : {}), ...(final !== undefined ? { final } : {}) };
+    }
+  }
+}

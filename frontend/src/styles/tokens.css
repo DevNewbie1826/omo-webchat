@@ -1,0 +1,239 @@
+/**
+ * Application design tokens.
+ *
+ * Two colour themes share this file:
+ *   :root                - the dark theme (the app's default and no-script
+ *                          fallback), plus every theme-independent token
+ *                          (geometry, type, radius, motion).
+ *   [data-theme="light"] - the light theme, re-valuing every colour, state,
+ *                          elevation, focus, status, and shadow token.
+ * index.html sets data-theme pre-paint and theme.ts keeps it in sync, so the
+ * attribute alone selects the palette. Both scopes declare the same colour
+ * token names (enforced by contrast.test.ts) and set their own color-scheme
+ * so native controls, scrollbars, and the caret follow the active theme.
+ *
+ * Elevation follows DESIGN.md's ladder. Dark lifts surfaces by white
+ * luminance steps with whisper borders and no shadows (dark-on-dark drop
+ * shadows do not read as depth) and separates Overlay with a Canvas-derived
+ * scrim. Light keeps every grey in one warm-neutral temperature family,
+ * steps fills upward in luminance, and carries elevation primarily through
+ * low-chroma downward shadows resolved from --th-shadow-color.
+ */
+
+:root {
+  /* Canvas - opaque lowest-luminance neutral. */
+  --th-bg: #0a0a0a;
+  /* Surface - a 2% white luminance lift over Canvas. */
+  --th-surface: #0f0f0f;
+  /* Raised - a 4% white luminance lift over Canvas. */
+  --th-surface-raised: #141414;
+  /* User - the authorship surface for the user chat bubble: one step above
+     Raised so the bubble reads at a glance without accent decoration. */
+  --th-surface-user: #1c1c1c;
+  /* Overlay - a 5% white luminance lift over Canvas. */
+  --th-surface-overlay: #161616;
+  --th-hover: #1f1f1f;
+  --th-active: #262626;
+
+  /* Per-level whisper borders; components consume the token matching their fill. */
+  --th-border-surface: rgba(255, 255, 255, 0.06);
+  --th-border-raised: rgba(255, 255, 255, 0.08);
+  --th-border-user: rgba(255, 255, 255, 0.12);
+  --th-border-overlay: rgba(255, 255, 255, 0.10);
+  --th-border: var(--th-border-surface);
+  --th-border-strong: var(--th-border-overlay);
+
+  --th-text: #ededed;
+  --th-text-dim: #b3b3b3;
+  --th-muted: #999999;
+  /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
+     staying below --th-muted in the hierarchy. */
+  --th-faint: #8d8d8d;
+  --th-disabled-fg: #8d8d8d;
+  --th-disabled-bg: #0f0f0f;
+
+  --th-accent: #ffffff;
+  --th-accent-fg: #0a0a0a;
+  --th-accent-hover: #e2e2e2;
+
+  /* Composer send action: the approved reference's blue, expressed only as
+     tokens so component CSS never hardcodes it. */
+  --th-send: #3b82f6;
+  --th-send-hover: #2563eb;
+  --th-send-fg: #ffffff;
+
+  --th-error: #ea565b;
+  --th-error-fg: #0a0a0a;
+  --th-error-bg: rgba(229, 72, 77, 0.12);
+  --th-success: #30a46c;
+  --th-success-bg: rgba(48, 164, 108, 0.12);
+  --th-warning: #f5a623;
+  --th-warning-bg: rgba(245, 166, 35, 0.12);
+
+  /* Focus treatment: a visible 3px halo (~3.2:1 over Surface), not a lift. */
+  --th-ring: rgba(255, 255, 255, 0.35);
+  /* Decorative only; carries no elevation job. */
+  --th-glow: rgba(255, 255, 255, 0.06);
+
+  /* Dark elevation is luminance steps and borders, so the level shadows are
+     none; the shadow tint exists for parity with the light scope. */
+  --th-shadow-color: #000000;
+  --th-shadow-surface: none;
+  --th-shadow-raised: none;
+  --th-shadow-overlay: none;
+  /* Migration aliases: the size-named shadows resolve to their level's role. */
+  --th-shadow-sm: var(--th-shadow-surface);
+  --th-shadow: var(--th-shadow-raised);
+  --th-shadow-lg: var(--th-shadow-overlay);
+  /* Canvas-derived 60% scrim separating Overlay from every pane. */
+  --th-backdrop: rgba(10, 10, 10, 0.60);
+
+  --th-radius-sm: 6px;
+  --th-radius: 8px;
+  --th-radius-lg: 12px;
+  --th-radius-pill: 999px;
+
+  --th-font-mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
+  --th-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR",
+    "Helvetica Neue", Arial, sans-serif;
+
+  /* User-controlled base of the type scale; app-config.ts overrides it inline
+     on <html> from the font-size setting. The default keeps the scale valid
+     before hydration. */
+  --th-font-size: 14px;
+
+  /* Type scale (DESIGN.md "Type scale"). Every text font-size consumes one
+     tier as a complete style - size, line-height, and tracking together - so
+     a change to --th-font-size moves the full hierarchy. Tracking tightens as
+     text gets larger; uppercase does not create an additional tier. */
+  --th-type-display-size: calc(var(--th-font-size) * 1.7143);
+  --th-type-display-line: 1.15;
+  --th-type-display-tracking: -0.025em;
+  --th-type-title-size: calc(var(--th-font-size) * 1.2857);
+  --th-type-title-line: 1.25;
+  --th-type-title-tracking: -0.018em;
+  --th-type-input-size: calc(var(--th-font-size) * 1.1429);
+  --th-type-input-line: 1.4;
+  --th-type-input-tracking: -0.008em;
+  --th-type-body-size: var(--th-font-size);
+  --th-type-body-line: 1.6;
+  --th-type-body-tracking: -0.005em;
+  --th-type-secondary-size: calc(var(--th-font-size) * 0.9286);
+  --th-type-secondary-line: 1.45;
+  --th-type-secondary-tracking: 0;
+  --th-type-label-size: calc(var(--th-font-size) * 0.8571);
+  --th-type-label-line: 1.35;
+  --th-type-label-tracking: 0.01em;
+  --th-type-micro-size: calc(var(--th-font-size) * 0.7857);
+  --th-type-micro-line: 1.3;
+  --th-type-micro-tracking: 0.02em;
+
+  /* The only three text weights. Fonts without an exact intermediate weight
+     use the browser's nearest available face; components never substitute ad
+     hoc 500/600/700 values. */
+  --th-weight-read: 400;
+  --th-weight-emphasize: 510;
+  --th-weight-announce: 590;
+
+  /* Spacing scale (DESIGN.md). Layout spacing and indentation consume only
+     these 4px-base steps; structural dimensions remain independent. */
+  --th-space-0: 0;
+  --th-space-0-5: 2px;
+  --th-space-1: 4px;
+  --th-space-2: 8px;
+  --th-space-3: 12px;
+  --th-space-4: 16px;
+  --th-space-5: 20px;
+  --th-space-6: 24px;
+  --th-space-8: 32px;
+  --th-space-9: 36px;
+  --th-space-11: 44px;
+  --th-space-12: 48px;
+
+  --th-sidebar-w: 288px;
+  --th-header-h: 44px;
+  --th-node-h: 34px;
+
+  --th-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --th-dur-fast: 120ms;
+  --th-dur: 180ms;
+  --th-dur-slow: 180ms;
+
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  /* One temperature family: every neutral below is a warm grey (R>=G>=B),
+     and elevation is a luminance ladder from Canvas up to Overlay. */
+  /* Canvas - low-chroma light neutral, deliberately not pure white. */
+  --th-bg: #eeedeb;
+  /* Surface - one luminance step above Canvas. */
+  --th-surface: #f7f6f4;
+  /* Raised / Overlay - the theme's highest opaque neutral surface. */
+  --th-surface-raised: #fdfcfa;
+  --th-surface-overlay: #fdfcfa;
+  /* User - the authorship surface for the user chat bubble: pure white so
+     the bubble reads at a glance against the warm canvas. */
+  --th-surface-user: #ffffff;
+  /* State treatments darken on a light canvas. */
+  --th-hover: #e5e4e2;
+  --th-active: #d9d8d5;
+
+  /* Borders resolved from the shadow tint at each elevation level. */
+  --th-border-surface: rgba(38, 34, 31, 0.10);
+  --th-border-raised: rgba(38, 34, 31, 0.12);
+  --th-border-user: rgba(38, 34, 31, 0.14);
+  --th-border-overlay: rgba(38, 34, 31, 0.14);
+  --th-border: var(--th-border-surface);
+  --th-border-strong: var(--th-border-overlay);
+
+  --th-text: #1b1a19;
+  --th-text-dim: #454341;
+  --th-muted: #57544f;
+  /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
+     staying below --th-muted in the hierarchy. */
+  --th-faint: #5e5c58;
+  --th-disabled-fg: #5e5c58;
+  --th-disabled-bg: #f7f6f4;
+
+  /* The dark theme's white primary action inverts: near-black fill, white
+     label; as link or emphasis text it keeps >=4.5:1 on every fill. */
+  --th-accent: #1b1a19;
+  --th-accent-fg: #ffffff;
+  --th-accent-hover: #35322f;
+
+  /* The reference blue is theme-independent. */
+  --th-send: #3b82f6;
+  --th-send-hover: #2563eb;
+  --th-send-fg: #ffffff;
+
+  /* Status hues deepened for light fills; semantic identity unchanged. */
+  --th-error: #b3252e;
+  --th-error-fg: #ffffff;
+  --th-error-bg: rgba(179, 37, 46, 0.12);
+  --th-success: #146c43;
+  --th-success-bg: rgba(20, 108, 67, 0.12);
+  --th-warning: #8a5200;
+  --th-warning-bg: rgba(138, 82, 0, 0.12);
+
+  /* Focus treatment: a visible 3px halo (~3.1:1 over Surface). */
+  --th-ring: rgba(38, 34, 31, 0.50);
+  /* Decorative only; carries no elevation job. */
+  --th-glow: rgba(38, 34, 31, 0.05);
+
+  /* Light elevation is carried by low-chroma downward shadows resolved from
+     the theme's shadow tint, at the ladder's per-level geometry and alpha. */
+  --th-shadow-color: #26221f;
+  --th-shadow-surface: 0 1px 2px color-mix(in srgb, var(--th-shadow-color) 8%, transparent);
+  --th-shadow-raised: 0 6px 18px -6px color-mix(in srgb, var(--th-shadow-color) 12%, transparent);
+  --th-shadow-overlay: 0 18px 48px -12px color-mix(in srgb, var(--th-shadow-color) 18%, transparent);
+  /* Migration aliases: the size-named shadows resolve to their level's role. */
+  --th-shadow-sm: var(--th-shadow-surface);
+  --th-shadow: var(--th-shadow-raised);
+  --th-shadow-lg: var(--th-shadow-overlay);
+  /* 28% shadow-tint scrim; never assumes the Canvas is black. */
+  --th-backdrop: rgba(38, 34, 31, 0.28);
+
+  color-scheme: light;
+}

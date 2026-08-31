@@ -1,0 +1,170 @@
+
+.th-split {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.th-split--h {
+  flex-direction: row;
+}
+
+.th-split--v {
+  flex-direction: column;
+}
+
+.th-split-child {
+  display: flex;
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.th-pane-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Floating close for empty panes (the picker has no header of its own). */
+.th-pane-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+}
+
+.th-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.th-divider {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--th-border);
+  transition: background var(--th-dur-fast) var(--th-ease);
+  touch-action: none;
+}
+
+.th-split--h > .th-divider {
+  width: 4px;
+  cursor: col-resize;
+}
+
+.th-split--v > .th-divider {
+  height: 4px;
+  cursor: row-resize;
+}
+
+.th-divider:hover,
+.th-divider:active {
+  background: var(--th-accent);
+}
+
+/* Safe centering: when the list overflows the scrollport, alignment falls
+   back to start so the title and first sessions are not clipped above (or,
+   cross-axis, left of) the reachable area. The plain-center lines are the
+   fallback for engines without the safe keyword. */
+.th-picker-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-items: safe center;
+  justify-content: center;
+  justify-content: safe center;
+  gap: var(--th-space-3);
+  padding: var(--th-space-5);
+  background: var(--th-bg);
+  overflow-y: auto;
+}
+
+.th-picker-pane-title {
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--th-faint);
+}
+
+.th-picker-pane-empty {
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  color: var(--th-muted);
+}
+
+.th-picker-pane-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  width: 100%;
+  max-width: 280px;
+}
+
+.th-picker-pane-item {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: 100%;
+  min-width: 0;
+  padding: var(--th-space-2) var(--th-space-2);
+  border-radius: var(--th-radius-sm);
+  border: 1px solid var(--th-border);
+  background: var(--th-surface);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-align: left;
+  transition: background var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-picker-pane-item:hover {
+  background: var(--th-hover);
+  border-color: var(--th-border-strong);
+  color: var(--th-text);
+}
+
+/* Every label stays on one line so all cards share one stable height. The
+   session name owns the full row and ellipsizes; its workspace context lives
+   in the row's title and aria-label instead of visible spans. */
+.th-picker-pane-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The workspace filter doubles as the new-session target; it sits under the
+   title and spans the list's width so the pane keeps one stable column. */
+.th-picker-pane > select {
+  width: 100%;
+  max-width: 280px;
+  padding: var(--th-space-1) var(--th-space-2);
+  border-radius: var(--th-radius-sm);
+  border: 1px solid var(--th-border);
+  background: var(--th-surface);
+  color: var(--th-text);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-picker-pane-create {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+}

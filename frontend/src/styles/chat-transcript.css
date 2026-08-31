@@ -1,0 +1,358 @@
+.th-chat-scrollport {
+  position: relative;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.th-chat-body {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--th-space-5) 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+}
+
+.th-chat-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.th-chat-body::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--th-border-strong);
+}
+
+.th-chat-content,
+.th-chat-history {
+  width: 100%;
+  min-width: 0;
+}
+
+.th-chat-row,
+.th-chat-live {
+  width: min(
+    var(--th-chat-max),
+    calc(100% + var(--th-chat-scrollbar) + var(--th-chat-scrollbar) - var(--th-chat-gutter) - var(--th-chat-gutter))
+  );
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.th-chat-row {
+  left: 50%;
+  display: flex;
+  padding: var(--th-space-2) 0;
+  margin: 0;
+  translate: -50% 0;
+}
+
+.th-chat-row--user {
+  justify-content: flex-end;
+}
+
+.th-chat-row--assistant {
+  justify-content: flex-start;
+}
+
+.th-chat-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  padding: var(--th-space-2) 0;
+}
+
+.th-chat-msg {
+  width: 100%;
+  min-width: 0;
+  max-width: 80%;
+  padding: var(--th-space-2) var(--th-space-3);
+  overflow-wrap: anywhere;
+  color: var(--th-text);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  /* Declared, not inherited: the read weight every role starts from, so the
+     user bubble's emphasize weight below is a real contrast, not a default. */
+  font-weight: var(--th-weight-read);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.th-chat-msg > span {
+  max-width: min(68ch, 100%);
+  overflow-wrap: anywhere;
+}
+
+/* Authorship rides three redundant channels: the dedicated user surface
+   (pinned by styleContracts) lifts the bubble one step above Raised so it
+   reads at a glance without decoration - no accent bar, no emphasize weight,
+   prose keeps the declared read weight above - and a localized accessible
+   group label names the author for assistive tech. */
+.th-chat-msg--user {
+  border: 1px solid var(--th-border-user);
+  border-radius: var(--th-radius-lg) var(--th-radius-lg) 4px var(--th-radius-lg);
+  background: var(--th-surface-user);
+  box-shadow: var(--th-shadow-raised);
+}
+
+.th-chat-msg--assistant,
+.th-chat-msg--toolResult,
+.th-chat-msg--bashExecution,
+.th-chat-msg--custom,
+.th-chat-msg--streaming {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.th-chat-msg--assistant,
+.th-chat-msg--toolResult,
+.th-chat-msg--bashExecution,
+.th-chat-msg--custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+}
+
+/* Aux blocks (tool cards, thinking) sit 8px apart; adjacent prose keeps the
+   12px rhythm the 14px chat body has always had. */
+.th-chat-msg--assistant > .th-chat-markdown + .th-chat-markdown {
+  margin-top: var(--th-space-1);
+}
+
+.th-chat-msg--streaming {
+  max-width: min(68ch, 100%);
+}
+
+.th-chat-msg--streaming::after {
+  content: "▍";
+  color: var(--th-text-dim);
+}
+
+.th-chat-thinking {
+  max-width: 100%;
+  padding: var(--th-space-0-5) 0 var(--th-space-0-5) var(--th-space-3);
+  border: 0;
+  border-left: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-chat-thinking summary {
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  cursor: pointer;
+}
+
+.th-chat-thinking pre {
+  max-height: 200px;
+  margin-top: var(--th-space-1);
+  overflow: auto;
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  color: var(--th-faint);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.th-chat-done {
+  padding: var(--th-space-0-5) 0;
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-chat-error {
+  color: var(--th-error);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+
+.th-chat-scroll-bottom {
+  position: absolute;
+  right: max(var(--th-chat-gutter), calc((100% - var(--th-chat-max)) / 2 + 8px));
+  bottom: 16px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--th-border-raised);
+  border-radius: 50%;
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-raised);
+  color: var(--th-text);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-chat-markdown {
+  white-space: normal;
+}
+
+.th-chat-markdown > :first-child {
+  margin-top: 0;
+}
+
+.th-chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.th-chat-markdown p {
+  margin: 0 0 var(--th-space-3);
+  line-height: var(--th-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.th-chat-markdown h1,
+.th-chat-markdown h2,
+.th-chat-markdown h3,
+.th-chat-markdown h4,
+.th-chat-markdown h5,
+.th-chat-markdown h6 {
+  margin: var(--th-space-4) 0 var(--th-space-2);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  font-weight: var(--th-weight-announce);
+}
+
+/* h1 alone steps up to the Title tier; lower headings keep Body size at the
+   announce weight, per DESIGN.md's markdown rule. */
+.th-chat-markdown h1 {
+  font-size: var(--th-type-title-size);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+}
+
+.th-chat-markdown ul,
+.th-chat-markdown ol {
+  margin: 0 0 var(--th-space-3);
+  padding-left: var(--th-space-6);
+}
+
+.th-chat-markdown li { margin: var(--th-space-1) 0; }
+
+.th-chat-markdown pre {
+  margin: 0 0 var(--th-space-3);
+  padding: var(--th-space-2) var(--th-space-3);
+  overflow-x: auto;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+}
+
+.th-chat-markdown pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  white-space: pre;
+}
+
+.th-chat-markdown code {
+  padding: 0 var(--th-space-1);
+  border-radius: calc(var(--th-radius-sm) - 2px);
+  background: var(--th-hover);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
+.th-chat-markdown blockquote {
+  margin: 0 0 var(--th-space-3);
+  padding: var(--th-space-1) 0 var(--th-space-1) var(--th-space-4);
+  border-left: 3px solid var(--th-border);
+  color: var(--th-muted);
+}
+
+.th-chat-markdown a {
+  color: var(--th-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.th-chat-markdown hr {
+  margin: var(--th-space-4) 0;
+  border: 0;
+  border-top: 1px solid var(--th-border);
+}
+
+.th-chat-markdown table {
+  margin: 0 0 var(--th-space-3);
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
+.th-chat-markdown th,
+.th-chat-markdown td {
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 1px solid var(--th-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.th-chat-markdown th {
+  background: var(--th-hover);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-markdown tr:nth-child(even) td {
+  background: var(--th-surface);
+}
+
+.th-chat-markdown input[type="checkbox"] {
+  margin-inline-end: var(--th-space-2);
+}
+
+.th-chat-msg--steer {
+  display: flex;
+  gap: var(--th-space-1);
+  align-items: baseline;
+  padding: var(--th-space-1) var(--th-space-2);
+  border-left: 2px solid var(--th-border);
+  color: var(--th-muted);
+  /* Steer rows nest inside the emphasized user bubble; keep their resolved
+     weight at read so the annotation stays as quiet as before. */
+  font-weight: var(--th-weight-read);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  font-style: italic;
+}
+
+.th-chat-steer-mark {
+  flex: none;
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-steer-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+

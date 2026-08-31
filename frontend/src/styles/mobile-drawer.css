@@ -1,0 +1,36 @@
+
+.th-backdrop {
+  display: none;
+}
+
+.th-mobile-menu {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .th-backdrop {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    height: calc(var(--th-vh-unit, 1vh) * 100);
+    width: 100%;
+    background: var(--th-backdrop);
+    z-index: 35;
+    animation: th-fade-in var(--th-dur) var(--th-ease);
+  }
+
+  .th-mobile-menu {
+    display: inline-flex;
+  }
+}
+
+@keyframes th-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

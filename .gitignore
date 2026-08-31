@@ -1,0 +1,13 @@
+.DS_Store
+.omo/
+.senpi/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+bin/
+*.log
+*.test
+omo-webchat
+.env
+.qa/
+*.prof

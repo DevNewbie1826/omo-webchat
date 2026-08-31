@@ -1,0 +1,128 @@
+.th-new-chat {
+  width: 100%;
+  padding: var(--th-space-12) var(--th-space-6) var(--th-space-6);
+}
+
+.th-new-chat-title {
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+  margin-bottom: var(--th-space-1);
+}
+
+.th-new-chat-description {
+  color: var(--th-muted);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  margin-bottom: var(--th-space-4);
+}
+
+.th-provider-cards {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  /* One card fills the whole row; two or more share it evenly. The min()
+     guard keeps the track minimum inside ultra-narrow containers. */
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: var(--th-space-2);
+}
+
+.th-provider-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--th-space-1);
+  min-width: 0;
+  padding: var(--th-space-3);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius);
+  background: var(--th-surface-raised);
+  text-align: left;
+}
+
+.th-provider-card:hover:not(:has(input:disabled)) {
+  border-color: var(--th-muted);
+}
+
+.th-provider-radio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.th-provider-card:has(.th-provider-radio:focus-visible) {
+  outline: 2px solid var(--th-accent);
+  outline-offset: 2px;
+}
+
+.th-provider-card--selected {
+  border-color: var(--th-accent);
+  box-shadow: 0 0 0 1px var(--th-accent);
+}
+
+.th-provider-card:has(input:disabled) {
+  cursor: not-allowed;
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+}
+
+.th-provider-card:has(input:disabled) :is(.th-provider-card-name, .th-provider-card-binary) {
+  color: var(--th-disabled-fg);
+}
+
+.th-provider-card-name {
+  width: 100%;
+  overflow-wrap: anywhere;
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  white-space: normal;
+}
+
+.th-provider-card-binary {
+  color: var(--th-text-dim);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
+.th-provider-card-status {
+  color: var(--th-success);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-provider-card-status--unavailable,
+.th-new-chat-error {
+  color: var(--th-error);
+}
+
+.th-new-chat-error {
+  margin-top: var(--th-space-2);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+
+.th-new-chat-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--th-space-2);
+  margin-top: var(--th-space-4);
+}
+
+@media (max-width: 420px) {
+  .th-provider-cards {
+    grid-template-columns: 1fr;
+  }
+}

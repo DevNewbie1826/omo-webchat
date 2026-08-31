@@ -1,0 +1,77 @@
+.th-approval-card {
+  width: 100%;
+  padding: var(--th-space-12) var(--th-space-4) var(--th-space-4);
+}
+
+.th-approval-title {
+  margin-bottom: var(--th-space-2);
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+}
+
+.th-approval-message {
+  margin-bottom: var(--th-space-3);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  white-space: pre-wrap;
+}
+
+.th-approval-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-2);
+}
+
+.th-approval-options .th-btn {
+  padding: var(--th-space-2) var(--th-space-3);
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-options .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-approval-form {
+  display: flex;
+  gap: var(--th-space-2);
+}
+
+.th-approval-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--th-space-2) var(--th-space-3);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-bg);
+  color: var(--th-text);
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+}
+
+.th-approval-editor {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.th-approval-input:focus {
+  border-color: var(--th-border-strong);
+}
+
+@media (max-width: 420px) {
+  .th-approval-form {
+    flex-wrap: wrap;
+  }
+
+  .th-approval-input {
+    flex-basis: 100%;
+  }
+}

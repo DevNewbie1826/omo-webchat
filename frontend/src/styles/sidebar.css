@@ -1,0 +1,145 @@
+.th-sidebar {
+  position: relative;
+  width: var(--th-sidebar-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--th-surface);
+  border-right: 1px solid var(--th-border-surface);
+  box-shadow: var(--th-shadow-surface);
+  transition: width var(--th-dur-slow) var(--th-ease),
+    transform var(--th-dur-slow) var(--th-ease);
+  z-index: 40;
+}
+
+.th-sidebar--collapsed {
+  width: 0;
+  border-right-color: transparent;
+}
+
+.th-sidebar-inner {
+  width: var(--th-sidebar-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.th-sidebar-nav {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  height: var(--th-header-h);
+  padding: 0 var(--th-space-3);
+  border-bottom: 1px solid var(--th-border);
+}
+
+.th-sidebar-logo {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-text);
+  white-space: nowrap;
+}
+
+.th-sidebar-logo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--th-success);
+}
+
+.th-sidebar-nav-actions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--th-space-0-5);
+}
+
+.th-sidebar-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--th-space-2);
+}
+
+.th-sidebar-section-label {
+  padding: var(--th-space-1) var(--th-space-2) var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--th-faint);
+  white-space: nowrap;
+}
+
+.th-sidebar-empty {
+  padding: var(--th-space-4) var(--th-space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+}
+
+.th-sidebar-empty-title {
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-sidebar-empty-hint {
+  font-size: var(--th-type-body-size);
+  color: var(--th-muted);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+
+.th-sidebar-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  padding: var(--th-space-2) var(--th-space-3);
+  border-top: 1px solid var(--th-border);
+}
+
+@media (max-width: 768px) {
+  .th-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    /* fixed positioning anchors to the layout viewport, which on iOS extends
+       behind the URL bar / keyboard — size to the visual viewport instead so
+       the footer stays visible. */
+    height: calc(var(--th-vh-unit, 1vh) * 100);
+    width: var(--th-sidebar-w);
+    transform: translateX(0);
+    background: var(--th-surface-overlay);
+    border-right-color: var(--th-border-overlay);
+    box-shadow: var(--th-shadow-overlay);
+    /* Fixed elements are contained by #root's padding box (it has a
+       transform), so #root's safe-area padding does not reach the sidebar;
+       carve the insets out here too. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .th-sidebar--collapsed {
+    width: var(--th-sidebar-w);
+    transform: translateX(-100%);
+    border-right-color: transparent;
+    box-shadow: none;
+    pointer-events: none;
+    transition: transform var(--th-dur-slow) var(--th-ease),
+      visibility 0s linear var(--th-dur-slow);
+    visibility: hidden;
+  }
+}

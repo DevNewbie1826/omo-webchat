@@ -1,0 +1,77 @@
+
+.th-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.th-termhead {
+  height: var(--th-header-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: 0 var(--th-space-3);
+  border-bottom: 1px solid var(--th-border-surface);
+  background: var(--th-surface);
+  box-shadow: var(--th-shadow-surface);
+}
+
+/* Top-bar hierarchy (DESIGN.md "Type scale"): the primary title is Secondary
+   at emphasize weight; path, provider, and model metadata are Label. */
+.th-termhead-name {
+  font-family: var(--th-font-sans);
+  font-size: var(--th-type-secondary-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  color: var(--th-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.th-termhead-path {
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.th-termhead-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  margin-left: auto;
+}
+
+/* Provider identity is quiet Label-tier metadata beside the path and model,
+   never an uppercase pill outranking the session name. This selector must
+   outrank the legacy pill rule in chat-pane.css, which imports later. */
+.th-termhead .th-provider-badge {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--th-muted);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-transform: none;
+}
+
+@media (max-width: 768px) {
+  .th-termhead-path {
+    display: none;
+  }
+}

@@ -1,0 +1,96 @@
+
+.th-login {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--th-space-6);
+  background:
+    radial-gradient(ellipse 60% 45% at 50% -5%, var(--th-glow), transparent),
+    var(--th-bg);
+}
+
+.th-login-card {
+  width: 100%;
+  max-width: 380px;
+  padding: var(--th-space-8) var(--th-space-8) var(--th-space-6);
+  background: var(--th-surface);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-lg);
+  box-shadow: var(--th-shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-4);
+  animation: th-modal-in var(--th-dur-slow) var(--th-ease);
+}
+
+.th-login-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-muted);
+}
+
+.th-login-brand-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--th-success);
+  box-shadow: 0 0 10px var(--th-success);
+}
+
+.th-login-title {
+  font-size: var(--th-type-display-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-display-line);
+  letter-spacing: var(--th-type-display-tracking);
+  color: var(--th-text);
+}
+
+.th-login-sub {
+  margin-top: calc(-1 * var(--th-space-2));
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  color: var(--th-muted);
+}
+
+.th-login-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-faint);
+}
+
+.th-login-lang {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  /* Never let the footnote squeeze the button onto two lines. */
+  flex: none;
+  white-space: nowrap;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border-radius: 4px;
+  transition: color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-login-lang:hover {
+  color: var(--th-text);
+  background: var(--th-hover);
+}

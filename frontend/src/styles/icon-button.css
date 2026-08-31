@@ -1,0 +1,31 @@
+
+.th-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--th-radius-sm);
+  color: var(--th-muted);
+  transition: color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-btn-icon:hover {
+  color: var(--th-text);
+  background: var(--th-hover);
+}
+
+.th-btn-icon:active {
+  background: var(--th-active);
+}
+
+.th-btn-icon--on {
+  color: var(--th-text);
+  background: var(--th-active);
+}
+
+.th-btn-icon--danger:hover {
+  color: var(--th-error);
+  background: var(--th-error-bg);
+}

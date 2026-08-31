@@ -1,0 +1,221 @@
+/* Tool-execution block (DESIGN.md "Tool-execution block anatomy"): one
+   disclosure per invocation at Surface elevation, receding behind Body-tier
+   prose through smaller type, compact spacing, and dim/muted text - never
+   whole-block opacity. Spacing uses --th-space-* tokens; the px fallbacks are
+   the contract values, in effect only until tokens.css declares them. */
+
+.th-tool {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  /* Surface elevation: outline only, no independent shadow. */
+}
+
+/* The entire header is the disclosure button: 48px minimum, 8px block / 12px
+   inline padding, 2px between its two text lines, identical in both states. */
+.th-tool-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--th-space-12);
+  gap: var(--th-space-0-5);
+  padding: var(--th-space-2) var(--th-space-3);
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-tool-head:hover {
+  background: var(--th-hover);
+}
+
+/* The block clips its outline, so draw the keyboard focus ring inside it. */
+.th-tool-head:focus-visible {
+  outline-offset: -2px;
+}
+
+.th-tool-line {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-tool-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--th-faint);
+  transition: transform var(--th-dur) var(--th-ease);
+}
+
+.th-tool-chevron--open {
+  transform: rotate(90deg);
+}
+
+/* Status glyph: the non-colour signal beside the localized status word. */
+.th-tool-glyph {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+}
+
+/* Running: a spinner ring. Reduced motion stops the spin globally; the open
+   segment keeps the static ring distinct from the check and exclamation. */
+.th-tool-glyph--running {
+  border: 1.5px solid var(--th-warning);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: th-tool-spin 700ms linear infinite;
+}
+
+.th-tool-glyph--ok {
+  color: var(--th-success);
+}
+
+.th-tool-glyph--error {
+  color: var(--th-error);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: 1;
+}
+
+@keyframes th-tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Operation title: Label tier, receding dim, truncating before the status. */
+.th-tool-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--th-text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Localized status word: Micro tier, trailing, colour only as a third cue. */
+.th-tool-status {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  white-space: nowrap;
+}
+
+.th-tool-status--running { color: var(--th-warning); }
+.th-tool-status--ok { color: var(--th-success); }
+.th-tool-status--error { color: var(--th-error); }
+
+/* Second header line: single-line mono invocation summary plus the first
+   non-empty output line. The invocation is preserved; the preview truncates. */
+.th-tool-summary {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--th-muted);
+  font-family: var(--th-font-mono);
+  white-space: nowrap;
+}
+
+.th-tool-cmd {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-tool-sep {
+  flex: none;
+  color: var(--th-faint);
+}
+
+.th-tool-preview {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--th-type-label-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Expanded body: inset Canvas well, 12px padding, 12px between sections. */
+.th-tool-body {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  gap: var(--th-space-3);
+  padding: var(--th-space-3);
+  border-top: 1px solid var(--th-border);
+  background: var(--th-bg);
+  color: var(--th-text-dim);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.th-tool-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
+}
+
+.th-tool-caption {
+  color: var(--th-faint);
+  font-family: var(--th-font-sans);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-tool-io {
+  min-width: 0;
+  color: var(--th-text-dim);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  /* <pre> defaults to white-space: pre in the UA sheet, which overrides the
+     body's inherited pre-wrap and hard-clips long lines; restate it here so
+     command and output text preserves whitespace yet wraps (DESIGN.md). */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Internally scrollable output region: a long execution cannot take over the
+   conversation scrollport. */
+.th-tool-output {
+  max-height: min(360px, 45dvh);
+  overflow: auto;
+}

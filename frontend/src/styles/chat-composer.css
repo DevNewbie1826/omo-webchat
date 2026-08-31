@@ -1,0 +1,362 @@
+.th-chat-input {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  /* A small bottom inset keeps the textarea off the keyboard / bottom edge
+     on touch devices; the element still docks full-bleed (this padding is
+     internal and painted with the input background). */
+  padding: var(--th-space-3) 0 var(--th-space-1);
+  background: var(--th-bg);
+}
+
+/* Desktop (mouse) gets a little more breathing room at the bottom. */
+@media (hover: hover) and (pointer: fine) {
+  .th-chat-input {
+    padding-bottom: var(--th-space-4);
+  }
+}
+
+/* Unified capsule: one bordered pill owns the attachment action, the
+   multiline input, and the send/stop slot. */
+.th-chat-input-inner {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--th-space-1);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  margin: 0 auto;
+  padding: var(--th-space-1);
+  border: 1px solid var(--th-border);
+  border-color: var(--th-border-surface);
+  /* Bounded radius: clamps to a 25px half-height pill at the 50px one-line
+     shell, but stops growing with multiline height. */
+  border-radius: 26px;
+  background: var(--th-surface);
+  box-shadow: var(--th-shadow-surface);
+  transition:
+    border-color var(--th-dur-fast) var(--th-ease),
+    box-shadow var(--th-dur-fast) var(--th-ease);
+}
+
+/* The capsule is the single focus surface; the bare textarea has no ring. */
+.th-chat-input-inner:focus-within {
+  border-color: var(--th-border-strong);
+  box-shadow: 0 0 0 3px var(--th-ring);
+}
+
+.th-chat-input textarea {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 36px;
+  max-height: 160px;
+  padding: var(--th-space-2) var(--th-space-0-5);
+  resize: none;
+  overflow-y: auto;
+  border: 0;
+  background: transparent;
+  color: var(--th-text);
+  font: inherit;
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+}
+
+.th-chat-input textarea:focus {
+  outline: none;
+}
+
+.th-chat-input textarea::placeholder {
+  color: var(--th-muted);
+}
+
+/* Send and Stop share one fixed circular slot; only the glyph swaps, so the
+   control — and the capsule — never shift between states. */
+.th-chat-input .th-chat-send-btn {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--th-send);
+  color: var(--th-send-fg);
+}
+
+.th-chat-input .th-chat-send-btn:hover:not(:disabled):not(.th-btn--danger) {
+  background: var(--th-send-hover);
+}
+
+.th-chat-input .th-btn--danger {
+  background: var(--th-error);
+  color: var(--th-error-fg);
+}
+
+/* The visible control is the glyph alone; the name stays machine-readable. */
+.th-chat-send-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+/* Plus attachment action: a ghost circle inside the capsule. */
+.th-chat-attach-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--th-muted);
+  transition:
+    background var(--th-dur-fast) var(--th-ease),
+    color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-chat-attach-btn:hover:not(:disabled) {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-chat-attach-btn:disabled,
+.th-chat-attach-btn:disabled:hover {
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+  cursor: not-allowed;
+}
+
+.th-chat-attach-wrap {
+  flex: none;
+  display: inline-flex;
+}
+
+/* A pending attachment is a compact chip on its own row above the capsule;
+   it hugs its content instead of stretching full width. */
+.th-chat-attach-chip {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  min-width: 0;
+  max-width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  height: 32px;
+  margin-bottom: var(--th-space-1);
+  padding: var(--th-space-0-5) var(--th-space-1) var(--th-space-0-5) var(--th-space-0-5);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius);
+  background: var(--th-surface-raised);
+}
+
+.th-chat-attach-thumb {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: calc(var(--th-radius-sm) - 2px);
+}
+
+.th-chat-attach-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--th-text);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-chat-attach-remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: calc(var(--th-radius-sm) - 2px);
+  background: transparent;
+  color: var(--th-muted);
+}
+
+.th-chat-attach-remove:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-chat-input--dragover {
+  background: var(--th-hover);
+}
+
+.th-chat-input--dragover .th-chat-input-inner {
+  outline: 2px dashed var(--th-border-strong);
+  outline-offset: 2px;
+}
+
+.th-chat-drop-hint {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  text-align: center;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-chat-queued {
+  flex: none;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: 0 auto var(--th-space-1);
+  overflow: hidden;
+  color: var(--th-accent);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-chat-slash {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  max-height: min(240px, 40dvh);
+  margin: 0;
+  padding: var(--th-space-1);
+  overflow-y: auto;
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-raised);
+  list-style: none;
+}
+
+.th-chat-slash > button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: var(--th-space-2) var(--th-space-2);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: transparent;
+  color: var(--th-text);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-chat-slash > button:hover,
+.th-chat-slash > button[aria-selected="true"] {
+  background: var(--th-hover);
+}
+
+.th-chat-slash strong {
+  color: var(--th-accent);
+  font-family: var(--th-font-mono);
+}
+
+.th-chat-slash span {
+  color: var(--th-muted);
+}
+
+.th-chat-files strong {
+  color: var(--th-text);
+}
+
+.th-chat-files-path {
+  margin-left: var(--th-space-2);
+  color: var(--th-muted);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-align: left;
+  direction: ltr;
+}
+
+.th-chat-files-status {
+  padding: var(--th-space-2) var(--th-space-2);
+  color: var(--th-muted);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+.th-chat-files > button > svg {
+  flex: none;
+  vertical-align: middle;
+  margin-right: var(--th-space-0-5);
+  color: var(--th-muted);
+}
+
+.th-chat-files-up {
+  display: inline-block;
+  width: 13px;
+  margin-right: var(--th-space-0-5);
+  text-align: center;
+  vertical-align: middle;
+  color: var(--th-muted);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-files-capped {
+  padding: var(--th-space-1) var(--th-space-2);
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  border-top: 1px solid var(--th-border);
+}
+
+@container chat-pane (max-width: 420px) {
+  .th-chat-input {
+    padding-top: var(--th-space-2);
+  }
+
+  .th-chat-input-inner {
+    padding: var(--th-space-1);
+  }
+
+  /* Narrow panes and phones get full 44px touch targets. */
+  .th-chat-attach-btn,
+  .th-chat-input .th-chat-send-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .th-chat-input textarea {
+    min-height: 44px;
+    padding: var(--th-space-3) var(--th-space-0-5);
+  }
+
+  .th-chat-attach-name {
+    display: none;
+  }
+}

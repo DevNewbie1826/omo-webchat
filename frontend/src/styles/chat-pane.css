@@ -1,0 +1,409 @@
+.th-chat-pane {
+  --th-chat-max: 760px;
+  --th-chat-gutter: 24px;
+  --th-chat-scrollbar: 6px;
+  container: chat-pane / inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--th-bg);
+  color: var(--th-text);
+}
+
+.th-chat-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.th-chat-pane .th-termhead {
+  flex: 0 0 var(--th-header-h);
+  width: 100%;
+  min-width: 0;
+  height: var(--th-header-h);
+  padding: 0 var(--th-space-2) 0 var(--th-space-5);
+  gap: var(--th-space-1);
+}
+
+.th-chat-pane .th-termhead-name {
+  flex: 0 1 auto;
+  min-width: 42px;
+  max-width: 240px;
+  overflow: hidden;
+  font-family: var(--th-font-sans);
+  font-size: var(--th-type-secondary-size);
+  text-overflow: ellipsis;
+}
+
+.th-chat-pane .th-termhead-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--th-type-label-size);
+}
+
+.th-chat-pane .th-termhead-actions {
+  flex: none;
+  margin-left: 0;
+  gap: 0;
+}
+
+.th-chat-pane .th-mobile-menu,
+.th-chat-pane .th-files-toggle,
+.th-chat-pane .th-disconnect-btn,
+.th-chat-pane .th-termhead-actions .th-btn-icon {
+  flex: none;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+}
+
+.th-provider-badge {
+  flex: none;
+  max-width: 72px;
+  overflow: hidden;
+  padding: var(--th-space-0-5) var(--th-space-2);
+  border-radius: 999px;
+  background: var(--th-hover);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.th-chat-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-3);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  min-height: 24px;
+  margin: 0 auto;
+  padding: 0 var(--th-space-0-5);
+  overflow-x: auto;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.th-chat-status::-webkit-scrollbar {
+  display: none;
+}
+
+.th-chat-status-item {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--th-space-1);
+  white-space: nowrap;
+}
+
+.th-chat-status-num {
+  font-family: var(--th-font-mono);
+  color: var(--th-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-chat-status-item--live {
+  color: var(--th-muted);
+}
+
+.th-chat-status-item--warn {
+  color: var(--th-warning, var(--th-text));
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-chat-status-spinner {
+  width: 9px;
+  height: 9px;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: th-chat-status-spin 700ms linear infinite;
+}
+
+@keyframes th-chat-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.th-chat-loading {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--th-space-6);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+}
+
+.th-thinking-select {
+  flex: none;
+  /* Scales with its Label tier and leaves room for localized text plus the
+     native chevron at the maximum user font size. */
+  max-width: 10em;
+  min-width: 0;
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border: 0;
+  background: transparent;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  cursor: pointer;
+}
+
+.th-thinking-select:hover {
+  color: var(--th-text-dim);
+}
+
+.th-model-picker {
+  position: relative;
+  flex: none;
+}
+
+.th-model-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  max-width: 160px;
+  min-width: 0;
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border: 0;
+  background: transparent;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  cursor: pointer;
+}
+
+.th-model-picker-btn:hover {
+  color: var(--th-text-dim);
+}
+
+.th-model-picker-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-model-picker-icon {
+  display: none;
+}
+
+.th-model-picker-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: min(260px, 80vw);
+  max-height: min(280px, 50dvh);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface-raised);
+  box-shadow: var(--th-shadow-raised);
+}
+
+.th-model-picker-search {
+  flex: none;
+  width: 100%;
+  padding: var(--th-space-2) var(--th-space-2);
+  border: 0;
+  border-bottom: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text);
+  font: inherit;
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+}
+
+.th-model-picker-search:focus {
+  outline: none;
+}
+
+.th-model-picker-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--th-space-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+}
+
+.th-model-picker-list > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--th-space-0-5);
+  width: 100%;
+  padding: var(--th-space-2) var(--th-space-2);
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: transparent;
+  color: var(--th-text);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-align: left;
+}
+
+.th-model-picker-list > button:hover,
+.th-model-picker-list > button[aria-selected="true"] {
+  background: var(--th-hover);
+}
+
+.th-model-picker-list strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: var(--th-weight-emphasize);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-model-picker-list span {
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-files-toggle {
+  padding: 0 var(--th-space-2);
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: transparent;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  white-space: nowrap;
+}
+
+.th-files-toggle:hover {
+  color: var(--th-text);
+}
+
+.th-files-toggle--on {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-thinking-in-picker {
+  display: none;
+  flex: none;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  padding: var(--th-space-1) var(--th-space-2);
+  border-bottom: 1px solid var(--th-border);
+}
+
+.th-thinking-in-picker-label {
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-thinking-in-picker-levels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-0-5);
+}
+
+.th-thinking-level {
+  padding: var(--th-space-0-5) var(--th-space-1);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: transparent;
+  color: var(--th-muted);
+  font-size: var(--th-type-label-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  cursor: pointer;
+}
+
+.th-thinking-level--active {
+  background: var(--th-hover);
+  border-color: var(--th-border-strong);
+  color: var(--th-text);
+}
+
+@container chat-pane (max-width: 600px) {
+  .th-chat-pane .th-termhead-path,
+  .th-chat-pane .th-thinking-select {
+    display: none;
+  }
+
+  .th-chat-pane .th-thinking-in-picker {
+    display: flex;
+  }
+
+  .th-chat-pane .th-model-picker-icon {
+    display: inline-flex;
+  }
+
+  .th-chat-pane .th-model-picker-label {
+    display: block;
+    max-width: 80px;
+  }
+
+  .th-chat-pane .th-model-picker-btn {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .th-chat-pane .th-termhead-name {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .th-chat-pane .th-termhead-actions > :nth-child(-n + 2) {
+    display: none;
+  }
+}
+
+@container chat-pane (max-width: 420px) {
+  .th-chat-main {
+    --th-chat-gutter: 12px;
+  }
+}
+
+@container chat-pane (max-width: 340px) {
+  .th-chat-main {
+    --th-chat-gutter: 8px;
+  }
+
+  .th-files-toggle {
+    padding-inline: var(--th-space-1);
+  }
+}

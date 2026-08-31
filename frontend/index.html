@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="omo-webchat" />
+  <title>omo-webchat</title>
+  <script>
+    // Set the document language before first paint (module scripts are
+    // deferred, so without this the pre-hydration document would keep the
+    // static fallback). Mirrors the detectLang precedence in src/i18n:
+    // stored choice -> Korean navigator -> en.
+    (function () {
+      var stored = null;
+      try {
+        stored = window.localStorage.getItem("th-lang");
+      } catch (e) {
+        // Private modes may throw on localStorage; fall through to navigator.
+      }
+      document.documentElement.lang =
+        stored === "en" || stored === "ko"
+          ? stored
+          : (navigator.language || "").toLowerCase().indexOf("ko") === 0
+            ? "ko"
+            : "en";
+    })();
+  </script>
+  <script>
+    // Apply the color theme before first paint (module scripts are deferred,
+    // so without this a stored or OS-level light preference would flash dark
+    // on every reload). Mirrors detectTheme/resolveTheme in src/lib/theme.ts:
+    // valid stored choice -> system preference -> dark (historical default).
+    (function () {
+      var stored = null;
+      try {
+        stored = window.localStorage.getItem("th-theme");
+      } catch (e) {
+        // Private modes may throw on localStorage; fall through to system.
+      }
+      var resolved =
+        stored === "light" || stored === "dark"
+          ? stored
+          : window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: light)").matches
+            ? "light"
+            : "dark";
+      document.documentElement.setAttribute("data-theme", resolved);
+      document.documentElement.style.setProperty("color-scheme", resolved);
+      // Move the browser/PWA chrome with the resolved theme (the static
+      // metas above keep the dark default only for no-JS). Mirrors
+      // THEME_CHROME_COLORS / APPLE_STATUS_BAR_STYLES in src/lib/theme.ts.
+      var themeColorMeta = document.querySelector('meta[name="theme-color"]');
+      if (themeColorMeta) {
+        themeColorMeta.setAttribute("content", resolved === "light" ? "#eeedeb" : "#0a0a0a");
+      }
+      var statusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+      if (statusBarMeta) {
+        statusBarMeta.setAttribute("content", resolved === "light" ? "default" : "black-translucent");
+      }
+    })();
+  </script>
+  <script>
+    // Track the visual viewport at parse time (before first paint):
+    //  - --th-vh-unit: 1% of the visible height. iOS reports 1vh as the max
+    //    viewport behind the URL bar, which otherwise overflows on first load.
+    //  - --th-vv-top / --th-vv-left: the visual viewport's pan offset. When
+    //    the keyboard opens, iOS pans the visual viewport to keep the focused
+    //    input visible; #root translates by this offset to stay glued to the
+    //    visible region instead of being carried off-screen (see global.css).
+    (function () {
+      var rootStyle = document.documentElement.style;
+      var baselineWidth = 0;
+      var baselineHeight = 0;
+      var set = function () {
+        var vv = window.visualViewport;
+        var h = vv ? vv.height : window.innerHeight;
+        var w = vv ? vv.width : window.innerWidth;
+        if (!baselineWidth || Math.abs(w - baselineWidth) > 1) {
+          baselineWidth = w;
+          baselineHeight = h;
+        } else if (h > baselineHeight) {
+          baselineHeight = h;
+        }
+        rootStyle.setProperty("--th-vh-unit", h * 0.01 + "px");
+        rootStyle.setProperty("--th-vv-top", vv ? vv.offsetTop + "px" : "0px");
+        rootStyle.setProperty("--th-vv-left", vv ? vv.offsetLeft + "px" : "0px");
+        document.documentElement.toggleAttribute(
+          "data-th-keyboard-open",
+          baselineHeight - h > 100,
+        );
+      };
+      var reset = function () {
+        baselineWidth = 0;
+        set();
+      };
+      set();
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener("resize", set);
+        window.visualViewport.addEventListener("scroll", set);
+      }
+      window.addEventListener("scroll", set, { passive: true });
+      window.addEventListener("orientationchange", reset);
+      window.addEventListener("pageshow", reset);
+    })();
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

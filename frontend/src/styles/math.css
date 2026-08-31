@@ -1,0 +1,25 @@
+/* KaTeX output scoped into the design system (DESIGN.md "Theme contract"):
+   formulas inherit the surrounding type tier's size and the surrounding text
+   colour instead of KaTeX's own values, in both themes. No literal colours -
+   token references only. */
+
+.th-chat-markdown .katex {
+  /* Formula glyphs, fraction rules, and radicals draw from currentColor, so
+     inheriting keeps math on the same text token as the prose around it. */
+  color: inherit;
+  /* Keep KaTeX's font family (its math glyphs) but take the size from the
+     surrounding Body tier, so --th-font-size scales math with the prose. */
+  font-size: var(--th-type-body-size);
+}
+
+/* Display math keeps the reading column's paragraph rhythm. */
+.th-chat-markdown .katex-display {
+  margin: 0 0 var(--th-space-3);
+}
+
+/* KaTeX renders malformed source inline with its own hardcoded inline error
+   colour; re-token it to the theme error colour. The !important is required
+   to beat the library's inline style. */
+.th-chat-markdown .katex-error {
+  color: var(--th-error) !important;
+}

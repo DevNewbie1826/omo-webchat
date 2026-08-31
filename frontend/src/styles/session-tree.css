@@ -1,0 +1,230 @@
+
+.th-tree,
+.th-tree > .th-tree-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+}
+
+/* Desktop sidebar rows (DESIGN.md "Spacing scale"): 36px minimum height, 8px
+   inline padding, 8px between icon and label, 2px between adjacent rows. */
+.th-tree-node {
+  display: flex;
+  position: relative;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-height: var(--th-space-9);
+  padding: 0 var(--th-space-2);
+  border-radius: var(--th-radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--th-dur-fast) var(--th-ease);
+}
+
+/* Coarse pointers grow rows to 44px targets without changing the text tier. */
+@media (pointer: coarse) {
+  .th-tree-node {
+    min-height: var(--th-space-11);
+  }
+}
+
+.th-tree-node:hover {
+  background: var(--th-hover);
+}
+
+.th-tree-node--active {
+  background: var(--th-active);
+}
+
+.th-tree-node--disabled {
+  cursor: default;
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+}
+
+.th-tree-node--disabled :is(.th-tree-label, .th-tree-icon, .th-tree-source) {
+  color: var(--th-disabled-fg);
+}
+
+.th-tree-node--disabled:hover {
+  background: transparent;
+}
+
+.th-tree-live {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--th-success);
+  z-index: 1;
+}
+
+/* The selected row changes only to emphasize weight; the --th-active fill is
+   the state treatment, never a different size or colour. */
+.th-tree-node--active .th-tree-label {
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-tree-chevron {
+  display: inline-flex;
+  flex: none;
+  color: var(--th-faint);
+  transition: transform var(--th-dur) var(--th-ease);
+}
+
+.th-tree-chevron--open {
+  transform: rotate(90deg);
+}
+
+.th-tree-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--th-muted);
+}
+
+.th-tree-node--active > .th-tree-icon {
+  color: var(--th-text);
+}
+
+.th-tree-placed {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--th-faint);
+  transition: background var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-tree-placed--on {
+  background: var(--th-success);
+  border-color: var(--th-success);
+}
+
+.th-tree-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  color: var(--th-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.th-tree-source {
+  flex: none;
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-faint);
+}
+
+.th-tree-count {
+  flex: none;
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  color: var(--th-faint);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-pill);
+  padding: 0 var(--th-space-1);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-tree-actions {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: var(--th-space-0-5);
+}
+
+.th-tree-node:hover .th-tree-actions,
+.th-tree-node:focus-within .th-tree-actions {
+  display: inline-flex;
+}
+
+.th-tree-node:hover .th-tree-count,
+.th-tree-node:focus-within .th-tree-count {
+  display: none;
+}
+
+.th-tree-actions .th-btn-icon {
+  width: 24px;
+  height: 24px;
+}
+
+.th-tree--touch .th-tree-actions {
+  display: inline-flex;
+}
+
+.th-tree--touch .th-tree-count {
+  display: none;
+}
+
+.th-tree-children {
+  min-width: 0;
+  margin: 0 0 0 var(--th-space-3);
+  padding: 0 0 0 var(--th-space-2);
+  border: 0;
+  border-left: 1px solid var(--th-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+  overflow: hidden;
+}
+
+.th-tree-children--closed {
+  display: none;
+}
+
+/* Pagination affordance at the end of an expanded workspace's session list.
+   Dashed border echoes .th-btn-add, the sidebar's other additive action. */
+.th-tree-more {
+  margin: var(--th-space-0-5);
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 1px dashed var(--th-border);
+  border-radius: var(--th-radius-sm);
+  color: var(--th-muted);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-align: left;
+  transition: color var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-tree-more:hover:not(:disabled) {
+  color: var(--th-text-dim);
+  border-color: var(--th-border-strong);
+  background: var(--th-hover);
+}
+
+.th-tree-more:disabled {
+  background: var(--th-disabled-bg);
+  color: var(--th-disabled-fg);
+  cursor: default;
+}
+
+.th-tree-rename {
+  flex: 1;
+  min-width: 0;
+  background: var(--th-bg);
+  border: 1px solid var(--th-border-strong);
+  border-radius: var(--th-radius-sm);
+  padding: var(--th-space-0-5) var(--th-space-1);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+  color: var(--th-text);
+}
+
+.th-tree-rename:focus {
+  border-color: var(--th-accent);
+}
