@@ -145,16 +145,18 @@ type Session struct {
 	// barrier, and replayed to every later attach — a second attach receives
 	// it again, because the log is session state, not a consumed replay.
 	// Guarded by mu.
-	durableNotices []NoticeRecord
+	durableNotices     []NoticeRecord
+	noticeNamespace    string
+	nextNoticeSequence uint64
 	// noticesPersisted mirrors the log as last successfully persisted. A log
 	// equal to the marker is never written again; a failed write leaves the
 	// marker in place so the next durable notice retries. Guarded by mu.
 	noticesPersisted []NoticeRecord
 	// onNoticePersist persists the durable log on the session-owned worker.
-	onNoticePersist   func(session *Session, notices []NoticeRecord) bool
-	noticePersistWork chan noticePersistenceRequest
-	noticePersistStop chan struct{}
-	noticePersistDone chan struct{}
+	onNoticePersist     func(session *Session, notices []NoticeRecord) bool
+	noticePersistenceMu sync.Mutex
+	noticePersistWork   chan noticePersistenceRequest
+	noticePersistDone   chan struct{}
 	// providerRunActive latches a provider-initiated run (omo wake/triggerTurn)
 	// that no client prompt armed: agent_start sets it (emitting run.started)
 	// and agent_settled clears it (emitting run.done). An explicit latch — not
@@ -370,7 +372,23 @@ func (s *Session) Close() error {
 
 		if !alreadyDone {
 			if shared != nil {
+				// Snapshot the route before closeSession detaches it. Closing its
+				// queue is not itself a drain: wait for the route worker to finish
+				// every already-queued provider event before stopping persistence.
+				s.mu.Lock()
+				handle := s.routingHandle
+				s.mu.Unlock()
+				shared.mu.Lock()
+				route := shared.sessions[handle]
+				if route != nil && route.session != s {
+					route = nil
+				}
+				shared.mu.Unlock()
 				s.closeErr = shared.closeSession(s)
+				if route != nil {
+					route.init()
+					<-route.stopped
+				}
 			} else if proc != nil {
 				s.closeErr = proc.Close()
 			}
@@ -437,8 +455,19 @@ func (s *Session) providerExited(termination providerTermination) {
 	}
 	s.providerExitPending = false
 	callback := s.onExit
+	owner := s.owner
 	s.mu.Unlock()
 	s.lifecycleMu.Unlock()
+
+	// The terminal route item follows every queued provider event, so no later
+	// durable append can register. Drain and stop the worker while this session's
+	// manager generation is still authoritative, then revoke it before a
+	// replacement can register.
+	s.stopNoticePersistence()
+	s.activityPersistence.Wait()
+	if owner != nil {
+		owner.sessionClosed(s)
+	}
 
 	switch termination.kind {
 	case providerTerminationDecodeFailed:

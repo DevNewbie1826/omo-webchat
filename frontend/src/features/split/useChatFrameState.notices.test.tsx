@@ -75,7 +75,7 @@ describe("useChatFrameState notice durability", () => {
     expect(captured?.notices.some((notice) => messageOf(notice) === "n1")).toBe(false);
   });
 
-  it("reconciles a durable reconnect replay by stable server identity", () => {
+  it("reconciles a durable reconnect replay by server notice id", () => {
     renderProbe();
     const replay = {
       type: "notice",
@@ -83,13 +83,30 @@ describe("useChatFrameState notice durability", () => {
       kind: "retry_fallback_succeeded",
       payload: { to: "provider/model" },
       at: "2026-01-02T03:04:05.123456789Z",
+      nid: "session-a:1",
     };
     act(() => {
       deliver(replay);
       deliver(replay);
     });
     expect(captured?.notices).toHaveLength(1);
-    expect(captured?.notices[0]?.serverIdentity).toBeDefined();
+    expect(captured?.notices[0]?.nid).toBe("session-a:1");
+  });
+
+  it("renders identical durable notices when their server ids differ", () => {
+    renderProbe();
+    const notice = {
+      type: "notice",
+      sessionId: "chat-1",
+      kind: "high_reasoning_warning",
+      payload: { modelId: "same" },
+      at: "2026-01-02T03:04:05.123456789Z",
+    };
+    act(() => {
+      deliver({ ...notice, nid: "session-a:1" });
+      deliver({ ...notice, nid: "session-a:2" });
+    });
+    expect(captured?.notices).toHaveLength(2);
   });
 
   it("uses the server at stamp, parsed to epoch milliseconds", () => {

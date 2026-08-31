@@ -55,17 +55,16 @@ describe("parseChatServerFrame notice", () => {
     expect(parseChatServerFrame({ type: "notice", kind: "auto_retry_start" })).toBeNull();
   });
 
-  it("parses the server at stamp (RFC3339Nano string) to epoch milliseconds", () => {
+  it("parses the server at stamp and notice id", () => {
     const frame = parseChatServerFrame({
       type: "notice",
       sessionId: "chat-1",
       kind: "auto_retry_start",
       at: "2026-01-02T03:04:05.123456789Z",
+      nid: "session-a:1",
     });
     expect(frame?.type === "notice" && frame.at).toBe(Date.parse("2026-01-02T03:04:05.123456789Z"));
-    expect(frame?.type === "notice" && frame.serverIdentity).toBe(
-      "auto_retry_start\u00002026-01-02T03:04:05.123456789Z\u0000null",
-    );
+    expect(frame?.type === "notice" && frame.nid).toBe("session-a:1");
     const seconds = parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k", at: "2026-01-02T03:04:05Z" });
     expect(seconds?.type === "notice" && seconds.at).toBe(Date.parse("2026-01-02T03:04:05Z"));
   });

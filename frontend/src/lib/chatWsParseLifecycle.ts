@@ -99,18 +99,16 @@ export function parseLifecycleFrame(
       const rawPayload = msg["payload"];
       if (rawPayload !== undefined && !isRecord(rawPayload)) return null;
       const at = optAtMs(msg);
+      const nid = optString(msg, "nid");
+      if (nid === null) return null;
       const payload = rawPayload !== undefined ? sanitizeJson(rawPayload) as JsonObject : undefined;
-      const rawAt = msg["at"];
-      const serverIdentity = at !== undefined && typeof rawAt === "string"
-        ? `${kind}\u0000${rawAt}\u0000${JSON.stringify(payload ?? null)}`
-        : undefined;
       return {
         type: "notice",
         sessionId,
         kind,
         ...(payload !== undefined ? { payload } : {}),
         ...(at !== undefined ? { at } : {}),
-        ...(serverIdentity !== undefined ? { serverIdentity } : {}),
+        ...(nid !== undefined && nid.length > 0 ? { nid } : {}),
       };
     }
     case "error": {

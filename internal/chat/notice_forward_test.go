@@ -14,6 +14,7 @@ type noticeEnvelope struct {
 	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload"`
 	At        string          `json:"at"`
+	NID       string          `json:"nid"`
 }
 
 func collectNoticeFrames(t *testing.T, frames [][]byte) []noticeEnvelope {

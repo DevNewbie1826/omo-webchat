@@ -277,6 +277,83 @@ func TestOnNoticePersistWriteThroughAndChangedGuard(t *testing.T) {
 	}
 }
 
+func TestSlowNoticePersistenceWritesEveryAppendSnapshotInOrder(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	calls := make(chan []NoticeRecord, 4)
+	s := newTestSession("chat-notice-ordered", nil)
+	call := 0
+	s.mu.Lock()
+	s.onNoticePersist = func(_ *Session, notices []NoticeRecord) bool {
+		call++
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		calls <- cloneNoticeRecords(notices)
+		return true
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	t.Cleanup(s.stopNoticePersistence)
+
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":1}`)
+	<-firstStarted
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":2}`)
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":3}`)
+	close(releaseFirst)
+	s.drainNoticePersistence()
+
+	for wantLen := 1; wantLen <= 3; wantLen++ {
+		got := <-calls
+		if len(got) != wantLen {
+			t.Fatalf("write %d snapshot length = %d, want %d: %+v", wantLen, len(got), wantLen, got)
+		}
+		for i := range got {
+			var payload struct {
+				N int `json:"n"`
+			}
+			if err := json.Unmarshal(got[i].Payload, &payload); err != nil || payload.N != i+1 {
+				t.Fatalf("write %d record %d = %s, want n=%d (err=%v)", wantLen, i, got[i].Payload, i+1, err)
+			}
+		}
+	}
+}
+
+func TestIdenticalDurableNoticesHaveDistinctPersistedReplayIDs(t *testing.T) {
+	persisted := make(chan []NoticeRecord, 2)
+	s := newTestSession("chat-notice-distinct", nil)
+	s.mu.Lock()
+	s.onNoticePersist = func(_ *Session, notices []NoticeRecord) bool {
+		persisted <- cloneNoticeRecords(notices)
+		return true
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	t.Cleanup(s.stopNoticePersistence)
+
+	raw := `{"type":"high_reasoning_warning","modelId":"same"}`
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	s.forwardNotice("high_reasoning_warning", advisoryNoticePayload(json.RawMessage(raw)), at)
+	s.forwardNotice("high_reasoning_warning", advisoryNoticePayload(json.RawMessage(raw)), at)
+	s.drainNoticePersistence()
+	<-persisted
+	last := <-persisted
+	if len(last) != 2 || last[0].NID == "" || last[1].NID == "" || last[0].NID == last[1].NID {
+		t.Fatalf("persisted identical notices have ids %q and %q, want two non-empty distinct ids", last[0].NID, last[1].NID)
+	}
+
+	late := newCollectWriter()
+	s.Attach(late)
+	frames := collectNoticeFrames(t, late.snapshot())
+	if len(frames) != 2 {
+		t.Fatalf("replayed notices = %d, want 2", len(frames))
+	}
+	if frames[0].NID != last[0].NID || frames[1].NID != last[1].NID {
+		t.Fatalf("replayed notice ids = [%q %q], want persisted ids [%q %q]", frames[0].NID, frames[1].NID, last[0].NID, last[1].NID)
+	}
+}
+
 func TestCloseDrainsNoticePersistenceWorker(t *testing.T) {
 	persisted := make(chan []NoticeRecord, 1)
 	s := newTestSession("chat-notice-close", nil)
@@ -298,6 +375,103 @@ func TestCloseDrainsNoticePersistenceWorker(t *testing.T) {
 		}
 	default:
 		t.Fatal("Close returned before the notice worker persisted its dirty log")
+	}
+}
+
+func TestManagerRetainsPersistenceGenerationThroughDisconnectDrain(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.CloseAll)
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	persisted := make(chan []NoticeRecord, 2)
+	s := newTestSession("chat-retiring-persist", nil)
+	s.owner = manager
+	call := 0
+	s.mu.Lock()
+	s.onNoticePersist = func(source *Session, notices []NoticeRecord) bool {
+		return manager.PersistIfGeneration(source, func() bool {
+			call++
+			if call == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			persisted <- cloneNoticeRecords(notices)
+			return true
+		})
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	manager.mu.Lock()
+	manager.sessions[s.ID()] = s
+	manager.generations[s.ID()] = s
+	manager.mu.Unlock()
+
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":1}`)
+	<-firstStarted
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":2}`)
+	stopped := make(chan struct{})
+	go func() {
+		manager.StopIfCurrent(s.ID(), s)
+		close(stopped)
+	}()
+	close(releaseFirst)
+	<-stopped
+
+	first, second := <-persisted, <-persisted
+	if len(first) != 1 || len(second) != 2 {
+		t.Fatalf("disconnect writes lengths = %d, %d; want 1, 2", len(first), len(second))
+	}
+}
+
+func TestProviderExitStopsNoticePersistenceWorker(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.CloseAll)
+	s := newTestSession("chat-provider-exit-worker", nil)
+	s.owner = manager
+	s.mu.Lock()
+	s.onNoticePersist = func(*Session, []NoticeRecord) bool { return true }
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	s.mu.Lock()
+	done := s.noticePersistDone
+	s.mu.Unlock()
+	manager.mu.Lock()
+	manager.sessions[s.ID()] = s
+	manager.generations[s.ID()] = s
+	manager.mu.Unlock()
+
+	s.providerExited(providerTermination{kind: providerTerminationIntentional})
+	select {
+	case <-done:
+	default:
+		t.Fatal("provider exit returned without stopping the notice persistence worker")
+	}
+	if manager.PersistIfGeneration(s, func() bool { return true }) {
+		t.Fatal("provider-exited generation remained authoritative")
+	}
+}
+
+func TestRetiredWorkerCannotOverwriteReplacementGeneration(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.CloseAll)
+	old := newTestSession("chat-generation", nil)
+	old.owner = manager
+	manager.mu.Lock()
+	manager.sessions[old.ID()] = old
+	manager.generations[old.ID()] = old
+	delete(manager.sessions, old.ID())
+	delete(manager.generations, old.ID())
+	replacement := newTestSession(old.ID(), nil)
+	manager.sessions[replacement.ID()] = replacement
+	manager.generations[replacement.ID()] = replacement
+	manager.mu.Unlock()
+
+	value := "replacement"
+	if manager.PersistIfGeneration(old, func() bool { value = "old"; return true }) {
+		t.Fatal("retired worker was accepted as the current persistence generation")
+	}
+	if value != "replacement" {
+		t.Fatalf("retired worker overwrote replacement value: %q", value)
 	}
 }
 

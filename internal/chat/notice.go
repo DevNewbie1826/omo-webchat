@@ -21,14 +21,16 @@ func (s *Session) forwardNotice(kind string, payload json.RawMessage, at time.Ti
 		s.send(frame)
 		return
 	}
+	s.barrier.Lock()
+	frame.NID = s.rememberDurableNotice(kind, payload, at)
 	b, err := json.Marshal(frame)
+	if err == nil {
+		s.writeFrame(b)
+	}
+	s.barrier.Unlock()
 	if err != nil {
 		return
 	}
-	s.barrier.Lock()
-	s.writeFrame(b)
-	s.rememberDurableNotice(kind, payload, at)
-	s.barrier.Unlock()
 	s.queueNoticePersistence()
 }
 

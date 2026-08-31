@@ -98,19 +98,15 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 		// can fire with no run): append the changed durable log to the chat
 		// record. A failed write only logs; forwarding is never broken.
 		OnNoticePersist: func(source *chat.Session, notices []chat.NoticeRecord) bool {
-			if s.chats.Get(req.ChatID) != source {
-				// Opening and stale sessions both skip the store write without
-				// advancing their success marker. Registration wakes an opening
-				// session's worker once the route becomes authoritative.
-				return false
-			}
-			if _, err := s.store.UpdateChat(req.WsID, req.ChatID, func(record *store.Chat) {
-				record.Notices = notices
-			}); err != nil {
-				s.logger.Warn("durable notice persist failed", "err", err, "chatId", req.ChatID)
-				return false
-			}
-			return true
+			return s.chats.PersistIfGeneration(source, func() bool {
+				if _, err := s.store.UpdateChat(req.WsID, req.ChatID, func(record *store.Chat) {
+					record.Notices = notices
+				}); err != nil {
+					s.logger.Warn("durable notice persist failed", "err", err, "chatId", req.ChatID)
+					return false
+				}
+				return true
+			})
 		},
 		OnResumeIdentity: func(source *chat.Session, identity chat.ResumeIdentity) error {
 			if s.chats.Get(req.ChatID) != source {

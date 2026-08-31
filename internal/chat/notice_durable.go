@@ -2,7 +2,11 @@ package chat
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +38,7 @@ type NoticeRecord struct {
 	Kind    string          `json:"kind"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 	At      time.Time       `json:"at"`
+	NID     string          `json:"nid,omitempty"`
 }
 
 // UnmarshalJSON tolerates damaged persisted notice elements by decoding them
@@ -44,13 +49,18 @@ func (r *NoticeRecord) UnmarshalJSON(raw []byte) error {
 		Kind    json.RawMessage `json:"kind"`
 		Payload json.RawMessage `json:"payload"`
 		At      json.RawMessage `json:"at"`
+		NID     json.RawMessage `json:"nid"`
 	}
 	if json.Unmarshal(raw, &fields) != nil {
 		*r = NoticeRecord{}
 		return nil
 	}
-	var kind, stamp string
+	var kind, stamp, nid string
 	if json.Unmarshal(fields.Kind, &kind) != nil || json.Unmarshal(fields.At, &stamp) != nil {
+		*r = NoticeRecord{}
+		return nil
+	}
+	if len(fields.NID) > 0 && json.Unmarshal(fields.NID, &nid) != nil {
 		*r = NoticeRecord{}
 		return nil
 	}
@@ -66,7 +76,7 @@ func (r *NoticeRecord) UnmarshalJSON(raw []byte) error {
 			return nil
 		}
 	}
-	*r = NoticeRecord{Kind: kind, Payload: append(json.RawMessage(nil), fields.Payload...), At: at}
+	*r = NoticeRecord{Kind: kind, Payload: append(json.RawMessage(nil), fields.Payload...), At: at, NID: nid}
 	return nil
 }
 
@@ -77,6 +87,7 @@ func (r NoticeRecord) Clone() NoticeRecord {
 		Kind:    r.Kind,
 		Payload: append(json.RawMessage(nil), r.Payload...),
 		At:      r.At,
+		NID:     r.NID,
 	}
 }
 
@@ -99,7 +110,7 @@ func equalNotices(a, b []NoticeRecord) bool {
 		return false
 	}
 	for i := range a {
-		if a[i].Kind != b[i].Kind || !bytes.Equal(a[i].Payload, b[i].Payload) || !a[i].At.Equal(b[i].At) {
+		if a[i].Kind != b[i].Kind || !bytes.Equal(a[i].Payload, b[i].Payload) || !a[i].At.Equal(b[i].At) || a[i].NID != b[i].NID {
 			return false
 		}
 	}
@@ -111,17 +122,35 @@ func equalNotices(a, b []NoticeRecord) bool {
 // barrier, so the log and the live broadcast commit together: a concurrent
 // attach can never replay a log that misses a notice it is about to receive
 // live.
-func (s *Session) rememberDurableNotice(kind string, payload json.RawMessage, at time.Time) {
+var noticeNamespaceSequence atomic.Uint64
+
+func (s *Session) nextNoticeIDLocked() string {
+	if s.noticeNamespace == "" {
+		var random [12]byte
+		if _, err := rand.Read(random[:]); err == nil {
+			s.noticeNamespace = hex.EncodeToString(random[:])
+		} else {
+			s.noticeNamespace = fmt.Sprintf("%x-%x", time.Now().UnixNano(), noticeNamespaceSequence.Add(1))
+		}
+	}
+	s.nextNoticeSequence++
+	return fmt.Sprintf("%s:%x", s.noticeNamespace, s.nextNoticeSequence)
+}
+
+func (s *Session) rememberDurableNotice(kind string, payload json.RawMessage, at time.Time) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	nid := s.nextNoticeIDLocked()
 	s.durableNotices = append(s.durableNotices, NoticeRecord{
 		Kind:    kind,
 		Payload: append(json.RawMessage(nil), payload...),
 		At:      at,
+		NID:     nid,
 	})
 	if len(s.durableNotices) > maxDurableNotices {
 		s.durableNotices = s.durableNotices[len(s.durableNotices)-maxDurableNotices:]
 	}
+	return nid
 }
 
 // seedNotices pre-loads the durable notice log from a persisted chat record.
@@ -135,10 +164,15 @@ func (s *Session) seedNotices(seed []NoticeRecord) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	seenIDs := make(map[string]bool, len(seed))
 	for _, rec := range seed {
 		if !durableNoticeKinds[rec.Kind] || rec.At.IsZero() || !validNoticePayload(rec.Payload) {
 			continue
 		}
+		if rec.NID == "" || seenIDs[rec.NID] {
+			rec.NID = s.nextNoticeIDLocked()
+		}
+		seenIDs[rec.NID] = true
 		s.durableNotices = append(s.durableNotices, rec.Clone())
 	}
 	if len(s.durableNotices) > maxDurableNotices {
@@ -170,6 +204,7 @@ func (s *Session) durableNoticeFrames() [][]byte {
 			Kind:      rec.Kind,
 			Payload:   rec.Payload,
 			At:        rec.At.Format(time.RFC3339Nano),
+			NID:       rec.NID,
 		})
 		if err == nil {
 			frames = append(frames, b)
@@ -186,35 +221,26 @@ func (s *Session) durableNoticeFrames() [][]byte {
 // failed write is retried by the next durable notice. Called with no session
 // locks held; the callback must not block the session, and its failure never
 // breaks forwarding — the live frame and the replay log are already committed.
-func (s *Session) persistDurableNotices() {
+func (s *Session) persistDurableNotices(snapshot []NoticeRecord) {
 	s.mu.Lock()
 	callback := s.onNoticePersist
-	if callback == nil {
+	if callback == nil || equalNotices(snapshot, s.noticesPersisted) {
 		s.mu.Unlock()
 		return
 	}
-	if equalNotices(s.durableNotices, s.noticesPersisted) {
-		s.mu.Unlock()
-		return
-	}
-	snapshot := cloneNoticeRecords(s.durableNotices)
 	s.mu.Unlock()
 	if !callback(s, snapshot) {
 		return
 	}
 	s.mu.Lock()
-	// Do not let an older in-flight snapshot move the marker behind a newer
-	// successful write (the worker serializes calls, but the log may grow while
-	// the callback is running).
-	if len(snapshot) >= len(s.noticesPersisted) {
-		s.noticesPersisted = cloneNoticeRecords(snapshot)
-	}
+	s.noticesPersisted = cloneNoticeRecords(snapshot)
 	s.mu.Unlock()
 }
 
 type noticePersistenceRequest struct {
-	flush bool
-	ack   chan struct{}
+	snapshot []NoticeRecord
+	ack      chan struct{}
+	stop     bool
 }
 
 func (s *Session) startNoticePersistence() {
@@ -223,28 +249,21 @@ func (s *Session) startNoticePersistence() {
 		s.mu.Unlock()
 		return
 	}
-	work := make(chan noticePersistenceRequest, 1)
-	stop := make(chan struct{})
+	work := make(chan noticePersistenceRequest, maxDurableNotices)
 	done := make(chan struct{})
 	s.noticePersistWork = work
-	s.noticePersistStop = stop
 	s.noticePersistDone = done
 	s.mu.Unlock()
 	go func() {
 		defer close(done)
-		for {
-			select {
-			case request := <-work:
-				if request.flush {
-					s.persistDurableNotices()
-				}
-				if request.ack != nil {
-					close(request.ack)
-				}
-			case <-stop:
-				// Flush the latest dirty snapshot after all provider delivery has
-				// stopped, then make Close a deterministic persistence boundary.
-				s.persistDurableNotices()
+		for request := range work {
+			if request.snapshot != nil {
+				s.persistDurableNotices(request.snapshot)
+			}
+			if request.ack != nil {
+				close(request.ack)
+			}
+			if request.stop {
 				return
 			}
 		}
@@ -252,40 +271,44 @@ func (s *Session) startNoticePersistence() {
 }
 
 func (s *Session) queueNoticePersistence() {
+	s.noticePersistenceMu.Lock()
+	defer s.noticePersistenceMu.Unlock()
 	s.mu.Lock()
 	work := s.noticePersistWork
+	snapshot := cloneNoticeRecords(s.durableNotices)
 	s.mu.Unlock()
-	if work == nil {
-		return
-	}
-	select {
-	case work <- noticePersistenceRequest{flush: true}:
-	default:
+	if work != nil {
+		work <- noticePersistenceRequest{snapshot: snapshot}
 	}
 }
 
 func (s *Session) drainNoticePersistence() {
+	s.noticePersistenceMu.Lock()
 	s.mu.Lock()
 	work := s.noticePersistWork
 	s.mu.Unlock()
 	if work == nil {
+		s.noticePersistenceMu.Unlock()
 		return
 	}
 	ack := make(chan struct{})
 	work <- noticePersistenceRequest{ack: ack}
+	s.noticePersistenceMu.Unlock()
 	<-ack
 }
 
 func (s *Session) stopNoticePersistence() {
+	s.noticePersistenceMu.Lock()
 	s.mu.Lock()
-	stop := s.noticePersistStop
+	work := s.noticePersistWork
 	done := s.noticePersistDone
 	s.noticePersistWork = nil
-	s.noticePersistStop = nil
 	s.mu.Unlock()
-	if stop == nil {
+	if work == nil {
+		s.noticePersistenceMu.Unlock()
 		return
 	}
-	close(stop)
+	work <- noticePersistenceRequest{stop: true}
+	s.noticePersistenceMu.Unlock()
 	<-done
 }

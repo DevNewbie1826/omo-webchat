@@ -31,20 +31,11 @@ export interface ChatNotice {
   readonly kind: string;
   readonly payload: JsonObject | null;
   readonly at: number;
-  readonly serverIdentity?: string;
+  readonly nid?: string;
 }
 
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
-
-const DURABLE_NOTICE_KINDS: ReadonlySet<string> = new Set([
-  "retry_fallback_applied",
-  "retry_fallback_reverted",
-  "retry_fallback_succeeded",
-  "retry_fallback_exhausted",
-  "server_fallback_aborted",
-  "high_reasoning_warning",
-]);
 
 /**
  * One row of the unified transcript render list: a conversation entry or an
@@ -140,10 +131,9 @@ export function useChatFrameState() {
   // Notices are retained newest-first and capped: a chatty server cannot
   // flood the pane, and the wide limit admits a durable server replay on
   // attach. Dismissal never touches this list — it is a view-local hide.
-  const pushNotice = (kind: string, payload: JsonObject | null, at?: number, serverIdentity?: string): void => {
+  const pushNotice = (kind: string, payload: JsonObject | null, at?: number, nid?: string): void => {
     setNotices((current) => {
-      if (DURABLE_NOTICE_KINDS.has(kind) && serverIdentity !== undefined &&
-          current.some((notice) => notice.serverIdentity === serverIdentity)) {
+      if (nid !== undefined && current.some((notice) => notice.nid === nid)) {
         return current;
       }
       return [{
@@ -151,7 +141,7 @@ export function useChatFrameState() {
         kind,
         payload,
         at: at ?? Date.now(),
-        ...(serverIdentity !== undefined ? { serverIdentity } : {}),
+        ...(nid !== undefined ? { nid } : {}),
       }, ...current].slice(0, NOTICE_LIMIT);
     });
   };

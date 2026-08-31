@@ -187,6 +187,7 @@ type NoticeFrame struct {
 	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload"`
 	At        string          `json:"at"`
+	NID       string          `json:"nid,omitempty"`
 }
 
 // CompactionStartedFrame reports a provider compaction_start (manual or

@@ -32,6 +32,8 @@ const (
 type Manager struct {
 	mu                  sync.Mutex
 	sessions            map[string]*Session
+	generations         map[string]*Session
+	generationDone      map[string]chan struct{}
 	pending             map[string]bool
 	provider            *sharedProvider
 	logger              *slog.Logger
@@ -46,7 +48,7 @@ type Manager struct {
 }
 
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[string]*Session), pending: make(map[string]bool), idleFor: 30 * time.Minute, now: time.Now, stopSweep: make(chan struct{}), sweepDone: make(chan struct{})}
+	m := &Manager{sessions: make(map[string]*Session), generations: make(map[string]*Session), generationDone: make(map[string]chan struct{}), pending: make(map[string]bool), idleFor: 30 * time.Minute, now: time.Now, stopSweep: make(chan struct{}), sweepDone: make(chan struct{})}
 	go m.sweep()
 	return m
 }
@@ -146,6 +148,19 @@ retry:
 		existing.lifecycleMu.Unlock()
 		replay()
 		return existing, false, detach, nil
+	}
+	if m.generations[opts.ID] != nil {
+		done := m.generationDone[opts.ID]
+		m.mu.Unlock()
+		if done == nil {
+			return nil, false, nil, fmt.Errorf("chat: session %s is retiring", opts.ID)
+		}
+		select {
+		case <-done:
+			goto retry
+		case <-ctx.Done():
+			return nil, false, nil, ctx.Err()
+		}
 	}
 	if m.pending[opts.ID] {
 		m.mu.Unlock()
@@ -297,6 +312,8 @@ retry:
 		return existing, false, detach, nil
 	}
 	m.sessions[opts.ID] = s
+	m.generations[opts.ID] = s
+	m.generationDone[opts.ID] = make(chan struct{})
 	provider.mu.Unlock()
 	m.mu.Unlock()
 	// Provider events can arrive before registration. Their asynchronous
@@ -325,6 +342,20 @@ func (m *Manager) Get(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[id]
+}
+
+// PersistIfGeneration runs persist only while source is the authoritative
+// active or retiring generation for its chat ID. Holding Manager.mu across
+// the store mutation makes the generation check and write one replacement
+// boundary: an old worker can never pass the check and then overwrite a newly
+// registered session's record.
+func (m *Manager) PersistIfGeneration(source *Session, persist func() bool) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if source == nil || m.generations[source.ID()] != source {
+		return false
+	}
+	return persist()
 }
 
 func (m *Manager) LiveIDs() []string {
@@ -390,7 +421,18 @@ func (m *Manager) StopIfCurrent(id string, session *Session) bool {
 }
 
 func (m *Manager) sessionClosed(session *Session) {
-	m.evictSession(session)
+	m.mu.Lock()
+	if m.sessions[session.ID()] == session {
+		delete(m.sessions, session.ID())
+	}
+	if m.generations[session.ID()] == session {
+		delete(m.generations, session.ID())
+		if done := m.generationDone[session.ID()]; done != nil {
+			close(done)
+		}
+		delete(m.generationDone, session.ID())
+	}
+	m.mu.Unlock()
 	m.releaseProviderIfIdle()
 }
 

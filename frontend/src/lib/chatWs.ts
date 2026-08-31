@@ -107,9 +107,9 @@ export type ChatServerFrame =
   | { readonly type: "control.result"; readonly sessionId: string; readonly command: string; readonly requestId?: string; readonly success: boolean; readonly message?: string }
   | { readonly type: "error"; readonly sessionId?: string; readonly code?: string; readonly command?: FailedRpcCommand; readonly requestId?: string; readonly dangling?: boolean; readonly candidates?: readonly ResumeCandidate[]; readonly message: string }
   // `at` arrives on the wire as an RFC3339Nano string; the lifecycle parse
-  // boundary converts it to epoch milliseconds and retains an exact identity
-  // for reconnect replay reconciliation.
-  | { readonly type: "notice"; readonly sessionId: string; readonly kind: string; readonly payload?: JsonObject; readonly at?: number; readonly serverIdentity?: string };
+  // boundary converts it to epoch milliseconds. Durable notices also carry
+  // the server-assigned identity used for reconnect replay reconciliation.
+  | { readonly type: "notice"; readonly sessionId: string; readonly kind: string; readonly payload?: JsonObject; readonly at?: number; readonly nid?: string };
 
 export interface ChatImage {
   readonly data: string;
