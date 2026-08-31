@@ -153,6 +153,50 @@ func TestRunCompletionPersistsActivityPair(t *testing.T) {
 	}
 }
 
+// A task row whose dag node belongs to a TERMINAL dag run must not persist as
+// "running": at settle the run-level dag status is authoritative, so the ghost
+// row is demoted to "completed". A running row with no dag evidence is left
+// untouched — demotion requires the dag to vouch for the task.
+func TestSettleDemotesTasksOfTerminalDagRuns(t *testing.T) {
+	s := newTestSession("chat-ghost-settle", nil)
+	// A task row whose dag node belongs to a TERMINAL dag run must not persist as
+	var calls []ActivitySnapshotPair
+	s.onActivitySnapshot = func(source *Session, pair ActivitySnapshotPair) bool {
+		if source != s {
+			t.Errorf("persist callback source = %v, want the session itself", source)
+		}
+		calls = append(calls, pair)
+		return true
+	}
+
+	dispatchEvent(s, "agent_start", `{"type":"agent_start"}`)
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"parent_session_id":"chat-ghost-settle","truncated_tasks":false,"tasks":[{"task_id":"t1","name":"ghost","task_summary":"ghost","status":"running","category":"quick","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:01Z","live_progress":{"step":"wait"}},{"task_id":"t2","name":"live","task_summary":"live","status":"running","category":"quick","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:01Z"}]}}`)
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":{"parent_session_id":"chat-ghost-settle","truncated_runs":false,"runs":[{"run_id":"r1","run_key":"r1","name":"r1","status":"completed","nodes":[{"id":"n1","label":"ghost","state":"completed","task_id":"t1"}],"edges":[],"waves":1}]}}`)
+	dispatchEvent(s, "agent_settled", `{"type":"agent_settled"}`)
+	if len(calls) != 1 {
+		t.Fatalf("persist calls after settled run = %d, want 1", len(calls))
+	}
+
+	var taskPayload struct {
+		Tasks []struct {
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(calls[0].Task, &taskPayload); err != nil {
+		t.Fatalf("persisted task payload is not valid JSON: %v (%s)", err, calls[0].Task)
+	}
+	statuses := map[string]string{}
+	for _, row := range taskPayload.Tasks {
+		statuses[row.TaskID] = row.Status
+	}
+	if got := statuses["t1"]; got != "completed" {
+		t.Fatalf("persisted t1 (node of terminal dag run) status = %q, want completed; payload: %s", got, calls[0].Task)
+	}
+	if got := statuses["t2"]; got != "running" {
+		t.Fatalf("persisted t2 (no dag evidence) status = %q, want still running; payload: %s", got, calls[0].Task)
+	}
+}
 func TestSessionCloseWaitsForActivityPersistence(t *testing.T) {
 	s := newTestSession("chat-persist-close", nil)
 	persistStarted := make(chan struct{})

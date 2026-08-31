@@ -122,6 +122,7 @@ func (s *Session) completeRun() {
 	s.lifecycleMu.Unlock()
 	if completed {
 		defer s.activityPersistence.Done()
+		s.reconcileCachedActivity()
 		s.persistActivitySnapshot()
 	}
 }

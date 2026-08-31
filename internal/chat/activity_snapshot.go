@@ -58,6 +58,14 @@ func (s *Session) rememberActivitySnapshot(name string, data json.RawMessage) {
 		s.lastActivitySnapshots = make(map[string]json.RawMessage)
 	}
 	s.lastActivitySnapshots[name] = append(json.RawMessage(nil), data...)
+	// A dag update that reports a terminal run is authoritative evidence that
+	// its task rows can no longer make progress: demote the ghost running rows
+	// the cached task payload still carries, under the same lock section so a
+	// concurrent attach can never replay a pair the dag already contradicts.
+	// No persistence here — persisting stays settle-driven.
+	if name == activitySnapshotOrder[1] && dagHasTerminalRun(data) {
+		s.reconcileActivityCacheLocked(data)
+	}
 }
 
 // seedActivitySnapshots pre-loads the replayable cache from a persisted chat
