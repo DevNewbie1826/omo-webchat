@@ -254,6 +254,48 @@ describe("liveBadgeStore", () => {
 
     expect(captured.overrides.has("s-expire")).toBe(false);
   });
+
+  it("merges a stale running task frame with a running dag node as runningCount 1", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:14:26.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", {
+        tasks: [{
+          task_id: "st_01a058e3",
+          name: "pin",
+          status: "running",
+          updated_at: "2026-08-19T10:00:00.000Z",
+        }],
+      });
+      ingestExtensionEvent("s1", "omo.dag.updated", {
+        runs: [{
+          run_id: "r1",
+          run_key: "plan",
+          name: "Ship",
+          status: "running",
+          counts: {
+            total: 1,
+            pending: 0,
+            blocked: 0,
+            scheduled: 0,
+            running: 1,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+          },
+          nodes: [{ id: "n1", prompt: "do", depends_on: [], state: "running", task_id: "st_01a058e3" }],
+          edges: [],
+          waves: [],
+        }],
+      });
+    });
+
+    expect(captured.merged[0]?.runningCount).toBe(1);
+  });
 });
 
 describe("Sidebar badge over WS overrides", () => {
