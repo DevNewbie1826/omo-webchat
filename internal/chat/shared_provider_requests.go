@@ -38,11 +38,13 @@ func (p *sharedProvider) openSession(ctx context.Context, s *Session, opts Sessi
 	} else {
 		cmd["cwd"] = opts.Cwd
 	}
-	// Process.Send may block in the OS pipe or behind another blocked writer.
-	// Keep both the write and response under the caller's open deadline. If the
-	// write wedges, terminating the shared provider is the only way to release
-	// Process.writeMu for every sibling; p.close converges on the existing pump
-	// and providerExited teardown path.
+	// Process.Send is finite (single writer goroutine, bounded queue, one
+	// per-Send deadline), so a wedged write fails only its own caller instead
+	// of wedging every sibling behind writeMu. Keep both the write and the
+	// response under the caller's open deadline; a cancelled or expired open
+	// releases only its own pending request and fails its own caller. The
+	// provider stays up for its siblings: its lifetime belongs to the manager
+	// (CloseAll, idle release) and to the pump's EOF/decode path.
 	sendResult := make(chan error, 1)
 	go func() { sendResult <- p.proc.Send(cmd) }()
 	select {
@@ -53,11 +55,25 @@ func (p *sharedProvider) openSession(ctx context.Context, s *Session, opts Sessi
 		}
 	case <-ctx.Done():
 		p.removePending(id)
-		_ = p.close()
 		return ctx.Err()
 	case <-p.done:
-		p.removePending(id)
-		return errors.New("chat: provider process ended while writing open_session")
+		// The landed write and provider death can become ready together: the
+		// writer goroutine publishes its result one channel hop later than the
+		// exit path publishes p.done, so a plain select would report a frame the
+		// provider already received as a write failure at random. Let the writer
+		// resolve first — on a dead process it returns promptly, either with the
+		// completed write or with the pipe error — and only treat the open as a
+		// write failure when it never resolves.
+		select {
+		case err := <-sendResult:
+			if err != nil {
+				p.removePending(id)
+				return err
+			}
+		case <-time.After(closeSessionTimeout):
+			p.removePending(id)
+			return errors.New("chat: provider process ended while writing open_session")
+		}
 	}
 
 	var ev Event
@@ -68,8 +84,10 @@ func (p *sharedProvider) openSession(ctx context.Context, s *Session, opts Sessi
 		}
 		ev = received
 	case <-ctx.Done():
+		// A cancelled or expired open is local: drop this open's pending
+		// request and fail this caller only. The provider and every attached
+		// sibling stay up.
 		p.removePending(id)
-		_ = p.close()
 		return ctx.Err()
 	case <-p.done:
 		// p.done closes before the exit path closes every pending response
@@ -226,12 +244,13 @@ func (p *sharedProvider) closeSessionHandle(handle string, s *Session) error {
 	case <-p.done:
 		return nil
 	case <-timedOut:
-		// Process.Send may be holding writeMu forever. Killing the shared
-		// process is the only way to release it; treating this as a local
-		// session failure would wedge every sibling command. Go through the
-		// provider's single shutdown owner so a concurrent idle release or
-		// CloseAll cannot close the Process a second time.
-		_ = p.close()
+		// A write-timeout close is local to this session: the defer above has
+		// already removed the pending request and torn down this route. Send is
+		// finite (writer goroutine, bounded queue, per-Send deadline), so a
+		// wedged write fails only its own caller and cannot wedge sibling
+		// commands behind writeMu. The provider stays up for its siblings; its
+		// lifetime remains with the manager (CloseAll, idle release) and the
+		// pump's EOF/decode path.
 		return errors.New("chat: close_session write timed out")
 	}
 
