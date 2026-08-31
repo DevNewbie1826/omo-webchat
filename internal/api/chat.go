@@ -225,8 +225,22 @@ func (s *Server) handleListProviders(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) {
-	ids := s.chats.LiveIDs()
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": ids})
+	summaries := s.chats.LiveSummaries()
+	titles := s.liveChatTitles()
+	sessions := make([]liveSessionResponse, 0, len(summaries))
+	for _, summary := range summaries {
+		title := summary.Title
+		if title == "" {
+			title = titles[summary.ID]
+		}
+		sessions = append(sessions, liveSessionResponse{
+			ID:    summary.ID,
+			Title: title,
+			Task:  rawOrNull(summary.Pair.Task),
+			Dag:   rawOrNull(summary.Pair.Dag),
+		})
+	}
+	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
 }
 
 func (s *Server) agentAvailable(providerID string) (bool, error) {
@@ -271,7 +285,7 @@ func (s *Server) routeMessage(h *connHandler, data []byte) {
 	// Every non-create/ping command must target the chat bound to this socket.
 	// Rejecting a mismatched sessionId keeps a stale or misaddressed frame from
 	// aborting, mutating, or querying another chat sharing the manager.
-	if bound, _ := h.snapshot(); cf.SessionID != bound {
+	if bound, _ := h.snapshot(); cf.SessionID != bound && !(cf.Type == "activity.refresh" && bound == "") {
 		h.sendError("session_mismatch", "frame sessionId does not match this socket's chat")
 		return
 	}
@@ -300,6 +314,8 @@ func (s *Server) routeMessage(h *connHandler, data []byte) {
 		if _, session := h.snapshot(); session != nil {
 			_ = session.QueryStats()
 		}
+	case "activity.refresh":
+		s.handleActivityRefresh(h)
 	case "chat.resume":
 		s.handleChatResume(h, cf.Raw)
 	case "chat.close":

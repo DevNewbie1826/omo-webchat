@@ -14,16 +14,47 @@ import type {
   ActivityState,
   ActivityTask,
 } from "./activityTypes";
-import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES } from "./activityShelfModel";
+import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from "./activityShelfModel";
 
 /* The terminal-status rule lives once in activityShelfModel.ts (exported for
    the shelf); this module imports it instead of keeping a second copy that
    could drift. */
 
-export const STALE_ACTIVITY_MS = 120_000;
+// Measured against real omo captures: active work emits event bursts with a
+// max quiet gap of ~6.7s, so 30s of quiet means something stalled and 90s
+// means the signal is gone.
+export const STALE_ACTIVITY_MS = 30_000;
+export const SEVERED_ACTIVITY_MS = 90_000;
 
 export function emptyActivityState(): ActivityState {
   return { tasks: new Map(), dags: new Map(), todo: null, heartbeats: new Map() };
+}
+
+/**
+ * Flip the chat-run latch that gates shelf staleness. Wired to the
+ * run.started/run.done frames in useChatFrameHandler; a no-op (same
+ * reference) when the flag already matches so the version bump stays honest.
+ */
+export function applyRunFlight(state: ActivityState, inFlight: boolean): ActivityState {
+  if ((state.runInFlight ?? false) === inFlight) return state;
+  return { ...state, runInFlight: inFlight };
+}
+
+export type AgentFreshness = "fresh" | "stale" | "severed";
+
+/**
+ * Freshness of an agent row, judged only while a run is in flight: an idle
+ * pane never cries stale. >30s of quiet is stale; >90s means the run is in
+ * flight but the agent has gone silent - a distinct severed state.
+ */
+export function agentFreshness(task: ActivityTask, nowMs: number, runInFlight: boolean): AgentFreshness {
+  if (!runInFlight || TERMINAL_TASK_STATUSES.has(task.status)) return "fresh";
+  const lastMs = lastActivityMs(task);
+  if (lastMs === null) return "fresh";
+  const quietMs = nowMs - lastMs;
+  if (quietMs > SEVERED_ACTIVITY_MS) return "severed";
+  if (quietMs > STALE_ACTIVITY_MS) return "stale";
+  return "fresh";
 }
 
 function isTerminalTask(task: ActivityTask): boolean {

@@ -14,6 +14,14 @@ import {
 } from "./ActivityShelf.support";
 import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
+import type { ActivityTask } from "./activityTypes";
+
+/** Renders the interpolation vars for the keys under test; keys otherwise. */
+const formatVarsT = (key: string, vars?: Readonly<Record<string, string | number>>): string => {
+  if (key === "activity.tokensPerSecond") return `${String(vars?.["n"])} tok/s`;
+  if (key === "activity.agentCounts") return `${String(vars?.["running"])} running / ${String(vars?.["done"])} done`;
+  return key;
+};
 
 describe("ActivityShelf", () => {
   let harness: ActivityShelfHarness;
@@ -121,20 +129,110 @@ describe("ActivityShelf", () => {
     expect(doneRow?.textContent).not.toContain("activity.completedAgo");
   });
 
-  it("flags non-terminal agents without a recent update as stale", () => {
-    renderShelf(
-      harness,
-      activityState({
-        tasks: [
-          makeTask({ taskId: "fresh" }),
-          makeTask({ taskId: "stale", updatedAt: iso(300_000) }),
-        ],
-      }),
-    );
+  it("flags non-terminal agents stale past 30s of quiet only while a run is in flight", () => {
+    const tasks = (): readonly ActivityTask[] => [
+      makeTask({ taskId: "fresh" }),
+      makeTask({ taskId: "stale", updatedAt: iso(45_000) }),
+    ];
+    renderShelf(harness, activityState({ tasks: tasks() }));
     openShelf(harness.container);
+    // Idle pane: staleness is judged only while a run is in flight.
+    expect(harness.container.querySelectorAll(".th-activity-stale").length).toBe(0);
+
+    renderShelf(harness, { ...activityState({ tasks: tasks() }), runInFlight: true });
     const staleRows = harness.container.querySelectorAll(".th-activity-stale");
     expect(staleRows.length).toBe(1);
     expect(staleRows[0]?.textContent).toContain("activity.stale");
+  });
+
+  it("marks agents silent past 90s of an in-flight run as severed, distinct from stale", () => {
+    renderShelf(
+      harness,
+      {
+        ...activityState({ tasks: [makeTask({ taskId: "gone-quiet", updatedAt: iso(120_000) })] }),
+        runInFlight: true,
+      },
+    );
+    openShelf(harness.container);
+    const severedRows = harness.container.querySelectorAll(".th-activity-severed");
+    expect(severedRows.length).toBe(1);
+    expect(severedRows[0]?.className).not.toContain("th-activity-stale");
+    expect(severedRows[0]?.textContent).toContain("activity.severed");
+    expect(severedRows[0]?.textContent).not.toContain("activity.stale");
+    expect(requireElement(
+      harness.container.querySelector(".th-activity-severed-note"),
+      "severed note",
+    ).textContent).toContain("activity.severed");
+  });
+
+  it("renders the last assistant line, a compact tok/s rate, and the tool call count", () => {
+    act(() => {
+      harness.root.render(
+        <I18nContext.Provider value={{ ...i18n, t: formatVarsT }}>
+          <ActivityShelf
+            activities={activityState({
+              tasks: [
+                makeTask({
+                  liveProgress: {
+                    currentTool: "ripgrep",
+                    turns: 4,
+                    lastAssistantLine: "Patching useChatSession.ts",
+                    tokensPerSecond: 6589,
+                    toolCalls: 12,
+                  },
+                }),
+              ],
+            })}
+          />
+        </I18nContext.Provider>,
+      );
+    });
+    openShelf(harness.container);
+    const row = requireElement(harness.container.querySelector(".th-activity-agent"), "agent row");
+    const lastLine = requireElement(
+      row.querySelector(".th-activity-agent-lastline"),
+      "last assistant line",
+    );
+    expect(lastLine.textContent).toBe("Patching useChatSession.ts");
+    expect(row.textContent).toContain("6.6k tok/s");
+    expect(row.textContent).toContain("activity.toolCalls");
+    expect(row.textContent).toContain("12");
+  });
+
+  it("omits the live progress fields the stream has not provided", () => {
+    renderShelf(harness, activityState({ tasks: [makeTask()] }));
+    openShelf(harness.container);
+    const row = requireElement(harness.container.querySelector(".th-activity-agent"), "agent row");
+    expect(row.querySelector(".th-activity-agent-lastline")).toBeNull();
+    expect(row.textContent).not.toContain("tok/s");
+    expect(row.textContent).not.toContain("activity.toolCalls");
+  });
+
+  it("shows running and done roster counts in the agents section header", () => {
+    act(() => {
+      harness.root.render(
+        <I18nContext.Provider value={{ ...i18n, t: formatVarsT }}>
+          <ActivityShelf
+            activities={activityState({
+              tasks: [
+                makeTask({ taskId: "a" }),
+                makeTask({ taskId: "b", updatedAt: iso(45_000) }),
+                makeTask({ taskId: "pending", status: "pending" }),
+                makeTask({ taskId: "c", status: "completed" }),
+                makeTask({ taskId: "d", status: "failed" }),
+                makeTask({ taskId: "cancelled", status: "cancelled" }),
+              ],
+            })}
+          />
+        </I18nContext.Provider>,
+      );
+    });
+    openShelf(harness.container);
+    const counts = requireElement(
+      harness.container.querySelector(".th-activity-section-counts"),
+      "agents roster counts",
+    );
+    expect(counts.textContent).toBe("2 running / 3 done");
   });
 
   it("advances live ages once per second and stops ticking after work becomes terminal", () => {

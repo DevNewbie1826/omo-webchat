@@ -106,4 +106,6 @@ export interface ActivityState {
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
+  /** True between chat run.started and run.done; gates shelf staleness. */
+  readonly runInFlight?: boolean;
 }

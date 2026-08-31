@@ -1,0 +1,132 @@
+/* Sessions overview panel — modal content on Overlay elevation, mirroring the
+   .th-stats content block geometry inside .th-modal. */
+
+.th-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-3);
+  padding: var(--th-space-4) var(--th-space-5) var(--th-space-5);
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.th-overview-title {
+  margin: 0;
+  font-size: var(--th-type-title-size);
+  font-weight: var(--th-weight-announce);
+  line-height: var(--th-type-title-line);
+  letter-spacing: var(--th-type-title-tracking);
+  color: var(--th-text);
+}
+
+.th-overview-empty {
+  padding: var(--th-space-4) 0;
+  text-align: center;
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  color: var(--th-muted);
+}
+
+.th-overview-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+}
+
+.th-overview-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  padding: var(--th-space-2) var(--th-space-3);
+  text-align: left;
+  background: var(--th-surface);
+  border: 1px solid var(--th-border-surface);
+  border-radius: var(--th-radius-sm);
+  transition: background var(--th-dur-fast) var(--th-ease),
+    border-color var(--th-dur-fast) var(--th-ease);
+}
+
+.th-overview-card:hover {
+  background: var(--th-hover);
+  border-color: var(--th-border-strong);
+}
+
+.th-overview-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--th-ring);
+}
+
+.th-overview-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+}
+
+.th-overview-card-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--th-type-secondary-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  color: var(--th-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Alive pulse treatment, shared with the tree badge: success-hued pill whose
+   dot breathes while agents run (disabled globally under reduced motion). */
+.th-overview-card-running {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--th-space-0-5);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  color: var(--th-success);
+  border: 1px solid var(--th-success);
+  border-radius: var(--th-radius-pill);
+  padding: 0 var(--th-space-1);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-overview-card-running-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--th-success);
+  animation: th-overview-running-blink calc(var(--th-dur-slow) * 4) var(--th-ease) infinite alternate;
+}
+
+@keyframes th-overview-running-blink {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.35;
+  }
+}
+
+.th-overview-card-meta {
+  display: flex;
+  gap: var(--th-space-3);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-muted);
+}
+
+.th-overview-card-line {
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

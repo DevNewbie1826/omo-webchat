@@ -18,6 +18,18 @@ export const TERMINAL_DAG_STATUSES: ReadonlySet<string> = new Set([
   "failed",
   "cancelled",
 ]);
+
+export function taskStatusCounts(
+  tasks: readonly ActivityTask[],
+): { readonly running: number; readonly done: number } {
+  let running = 0;
+  let done = 0;
+  for (const task of tasks) {
+    if (task.status === "running") running += 1;
+    else if (TERMINAL_TASK_STATUSES.has(task.status)) done += 1;
+  }
+  return { running, done };
+}
 const KNOWN_STATUSES: ReadonlySet<string> = new Set([
   "running",
   "completed",
@@ -85,6 +97,14 @@ export function agoText(deltaMs: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h`;
+}
+
+/** Compact token-rate formatting for the shelf: 6589 -> "6.6k", 6589123 -> "6.6M". */
+export function compactTokRate(tokensPerSecond: number): string {
+  const rate = Math.max(0, tokensPerSecond);
+  if (rate >= 1_000_000) return `${Math.round(rate / 100_000) / 10}M`;
+  if (rate >= 1000) return `${Math.round(rate / 100) / 10}k`;
+  return String(Math.round(rate));
 }
 
 export function todoCounts(

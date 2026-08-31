@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
-import { IconChevron, IconLogOut, IconPlus, IconX } from "./icons";
+import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons";
 import { SettingsMenu } from "./SettingsMenu";
+import { OverviewPanel } from "../features/workspace/OverviewPanel";
+import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { useMediaQuery } from "../lib/useMediaQuery";
@@ -63,6 +65,14 @@ export function Sidebar({
   const isMobile = useMediaQuery(MOBILE_QUERY);
   const showTreeActions = useMediaQuery("(hover: none)");
   const [statsOpen, setStatsOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  // The overview poller is shared with App's live-session poll; the sidebar
+  // derives running-agent counts for the tree badges and the overview panel.
+  const summaries = useLiveSessionSummaries(true);
+  const runningCounts = useMemo(
+    () => new Map(summaries.filter((s) => s.runningCount > 0).map((s) => [s.id, s.runningCount])),
+    [summaries],
+  );
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
     <>
@@ -86,6 +96,15 @@ export function Sidebar({
               {t("sidebar.nav.brand")}
             </span>
             <div className="th-sidebar-nav-actions">
+              <button
+                type="button"
+                className="th-btn-icon"
+                title={t("sidebar.overview")}
+                aria-label={t("sidebar.overview")}
+                onClick={() => setOverviewOpen(true)}
+              >
+                <IconActivity size={15} />
+              </button>
               <button
                 type="button"
                 className="th-btn-icon"
@@ -125,6 +144,7 @@ export function Sidebar({
                 activeTerminalId={activeTerminalId}
                 placedSessions={placedSessions}
                 liveSessions={liveSessions}
+                runningCounts={runningCounts}
                 expanded={expanded}
                 sessionLists={sessionLists}
                 sessionPages={sessionPages}
@@ -167,6 +187,15 @@ export function Sidebar({
         </button>
       </aside>
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
+      <OverviewPanel
+        open={overviewOpen}
+        onClose={() => setOverviewOpen(false)}
+        summaries={summaries}
+        workspaces={workspaces}
+        sessionLists={sessionLists}
+        onSelect={onSelectTerminal}
+        onImport={onImportSession}
+      />
     </>
   );
 }

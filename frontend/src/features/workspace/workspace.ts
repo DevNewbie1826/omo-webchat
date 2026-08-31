@@ -35,8 +35,38 @@ export interface Workspace {
   readonly chats: readonly Terminal[];
 }
 
+/** One entry of GET /api/sessions/live: a live session plus its latest raw
+ * activity payloads (`omo.task.updated` / `omo.dag.updated`, or null when the
+ * session carries none). Payloads stay raw here; activityParse turns them into
+ * UI state. */
+export interface LiveSessionInfo {
+  readonly id: string;
+  readonly title: string;
+  readonly task: unknown;
+  readonly dag: unknown;
+}
+
 interface LiveSessionsResponse {
-  readonly sessions: readonly string[];
+  readonly sessions: readonly unknown[];
+}
+
+// Tolerant of both the enriched contract and the pre-enrichment id-only
+// response, so an older backend keeps the live indicator working.
+function parseLiveSession(value: unknown): LiveSessionInfo | null {
+  if (typeof value === "string") {
+    return value.length > 0 ? { id: value, title: "", task: null, dag: null } : null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const id = record["id"];
+  if (typeof id !== "string" || id.length === 0) return null;
+  const title = record["title"];
+  return {
+    id,
+    title: typeof title === "string" ? title : "",
+    task: record["task"] ?? null,
+    dag: record["dag"] ?? null,
+  };
 }
 
 /** Where a session-history entry came from: a stored chat row or an omo
@@ -82,9 +112,14 @@ export async function listWorkspaces(): Promise<readonly Workspace[]> {
   return apiJson<readonly Workspace[]>("/api/workspaces");
 }
 
-export async function listLiveSessions(signal?: AbortSignal): Promise<readonly string[]> {
+export async function listLiveSessions(signal?: AbortSignal): Promise<readonly LiveSessionInfo[]> {
   const response = await apiJson<LiveSessionsResponse>("/api/sessions/live", signal ? { signal } : {});
-  return response.sessions;
+  const sessions: LiveSessionInfo[] = [];
+  for (const entry of response.sessions) {
+    const parsed = parseLiveSession(entry);
+    if (parsed !== null) sessions.push(parsed);
+  }
+  return sessions;
 }
 
 export async function createWorkspace(name: string, path: string): Promise<Workspace> {

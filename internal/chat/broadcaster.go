@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ const subscriberQueueSize = sessionQueueSize
 type frameSubscription struct {
 	deliver FrameSubscriber
 	closer  FrameWriterCanceller
+	writer  FrameWriter
 	// queue and quit exist only for cancellable subscriptions: writers that
 	// opted into the cancellation contract by implementing Close are exactly
 	// the ones allowed to block indefinitely, so their delivery runs on a
@@ -73,12 +75,12 @@ func newBroadcaster() *broadcaster {
 	}
 }
 
-func (b *broadcaster) add(subscriber FrameSubscriber, closer FrameWriterCanceller) uint64 {
+func (b *broadcaster) add(subscriber FrameSubscriber, closer FrameWriterCanceller, writer FrameWriter) uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++
 	id := b.nextID
-	sub := &frameSubscription{deliver: subscriber, closer: closer}
+	sub := &frameSubscription{deliver: subscriber, closer: closer, writer: writer}
 	if closer != nil {
 		sub.queue = make(chan []byte, subscriberQueueSize)
 		sub.quit = make(chan struct{})
@@ -118,6 +120,29 @@ func (b *broadcaster) write(frame []byte) {
 	// delivery path below.
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
+		b.writeTo(id, frame)
+	}
+}
+
+// writeToWriter unicasts frames through the target attachment's normal FIFO.
+// The caller holds the session delivery barrier, ordering the replay before
+// every later live broadcast.
+func (b *broadcaster) writeToWriter(writer FrameWriter, frames [][]byte) {
+	b.mu.Lock()
+	var id uint64
+	target := reflect.ValueOf(writer)
+	for candidate, sub := range b.subscribers {
+		attached := reflect.ValueOf(sub.writer)
+		if target.IsValid() && attached.IsValid() && target.Type() == attached.Type() && target.Type().Comparable() && target.Interface() == attached.Interface() {
+			id = candidate
+			break
+		}
+	}
+	b.mu.Unlock()
+	if id == 0 {
+		return
+	}
+	for _, frame := range frames {
 		b.writeTo(id, frame)
 	}
 }
@@ -211,9 +236,9 @@ func (b *broadcaster) drain(id uint64, sub *frameSubscription) {
 					return
 				default:
 					sub.delivering = true
-			}
+				}
 				b.mu.Unlock()
-			ok = true
+				ok = true
 			case <-sub.quit:
 				return
 			}
@@ -321,7 +346,7 @@ func (s *Session) attachLocked(writer FrameWriter) (detach func(), replay func()
 	// The caller releases lifecycle/manager locks before replay performs I/O,
 	// while the retained barrier keeps every following live frame behind it.
 	s.barrier.Lock()
-	id := s.frames.add(subscribe, closer)
+	id := s.frames.add(subscribe, closer, writer)
 	snapshots := s.activitySnapshots()
 	var once sync.Once
 	detach = func() {

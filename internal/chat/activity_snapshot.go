@@ -117,6 +117,28 @@ func (s *Session) persistActivitySnapshot() {
 	s.mu.Unlock()
 }
 
+// ReplayActivitySnapshot unicasts the cached activity frames through the
+// requesting attachment's existing FIFO. Holding the delivery barrier through
+// enqueue keeps a following live provider frame behind the replay.
+func (s *Session) ReplayActivitySnapshot(writer FrameWriter) {
+	s.barrier.Lock()
+	defer s.barrier.Unlock()
+	s.frames.writeToWriter(writer, s.activitySnapshots())
+}
+
+// ActivitySnapshot returns a clone of the cached task/dag payloads. A side
+// that has never been cached is nil, matching JSON-null semantics for the
+// live-sessions listing. The copy runs under the session lock so both sides
+// are observed at one cache generation.
+func (s *Session) ActivitySnapshot() ActivitySnapshotPair {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ActivitySnapshotPair{
+		Task: append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[0]]...),
+		Dag:  append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[1]]...),
+	}
+}
+
 // activitySnapshots copies and marshals each cached activity snapshot in
 // replay order. The caller holds the delivery barrier, so this snapshot is the
 // exact prefix a newly registered subscriber must receive before live frames.

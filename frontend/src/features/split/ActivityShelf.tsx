@@ -190,7 +190,9 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
             style={height === null ? undefined : { height: `${height}px` }}
           >
-            {tasks.length > 0 && <AgentSection tasks={tasks} nowMs={nowMs} t={t} />}
+            {tasks.length > 0 && (
+              <AgentSection tasks={tasks} nowMs={nowMs} runInFlight={activities.runInFlight === true} t={t} />
+            )}
             {dags.length > 0 && (
               <DagSection dags={dags} t={t} view={view} onViewChange={setView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} />
             )}
