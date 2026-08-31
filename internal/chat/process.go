@@ -6,11 +6,36 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
+
+const (
+	// DefaultSendTimeout bounds every Send: one absolute deadline covers both
+	// waiting for queue space and waiting for the frame's own write
+	// completion. Zero-value options mean these defaults (per-process fields,
+	// never package globals, so concurrent tests cannot race them).
+	DefaultSendTimeout = 10 * time.Second
+	// DefaultSendQueueDepth is the FIFO depth feeding the single writer
+	// goroutine.
+	DefaultSendQueueDepth = 64
+
+	// stderrRotateBytes is the per-file budget of the provider-stderr sink.
+	// One backup file carries the same budget, so captured stderr is hard-
+	// capped at twice this size on disk.
+	stderrRotateBytes = 10 << 20
+	stderrDirPerm     = 0o700
+	stderrFilePerm    = 0o600
+)
+
+// ErrSendTimeout is the timeout family returned by Send: both a full queue
+// and a write that did not complete in time wrap it (plus
+// context.DeadlineExceeded), so callers can errors.Is against either.
+var ErrSendTimeout = errors.New("chat: provider command write timed out")
 
 type Event struct {
 	Type       string            `json:"-"`
@@ -28,15 +53,68 @@ type ProcessOptions struct {
 	Args   []string
 	Cwd    string
 	Env    []string
+	// StderrPath captures the provider's stderr into a bounded rotating file
+	// pair (path plus one .1 backup, 10MiB each). Opening the sink is part of
+	// starting the provider: an open failure fails the start. Empty leaves
+	// stderr unwired (/dev/null).
+	StderrPath string
+	// SendTimeout bounds each Send (enqueue wait plus write-completion wait
+	// under one absolute deadline). Zero means DefaultSendTimeout.
+	SendTimeout time.Duration
+	// SendQueueDepth is the writer queue bound. Zero means
+	// DefaultSendQueueDepth.
+	SendQueueDepth int
+	// beforeStart is a package-test synchronization hook used to inspect a
+	// process at the exec start boundary. Production callers leave it nil.
+	beforeStart func(*Process)
 }
 
+// writeRequest is one marshaled JSONL frame travelling to the writer
+// goroutine. deadline is the caller's absolute completion deadline: the
+// writer discards an expired frame that has not been written yet, but never
+// abandons a write already in flight — the deadline bounds the caller's wait,
+// and the syscall itself is released by the provider lifecycle (process
+// death closes the pipe).
+type writeRequest struct {
+	frame    []byte
+	deadline time.Time
+	// done is buffered so a caller already released by its own deadline can
+	// never block the writer on completion.
+	done chan error
+}
+
+func (r *writeRequest) complete(err error) { r.done <- err }
+
 type Process struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
-	ctx     context.Context
-	cancel  context.CancelFunc
-	writeMu sync.Mutex
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// Finite-send machinery. ONE writer goroutine owns stdin; Senders never
+	// touch it. The writer reads p.stdin on every write so a test may swap
+	// the field to observe or wedge the stream after Start.
+	writeQueue      chan *writeRequest
+	writerClose     chan struct{} // closed by Close to release the writer
+	writerDone      chan struct{} // closed when the writer goroutine has exited
+	writerOnce      sync.Once
+	closeWriterOnce sync.Once
+	sendTimeout     time.Duration
+	sendQueueDepth  int
+	// Test synchronization hooks. They are set only before the first Send and
+	// let concurrency tests observe queue/dequeue boundaries without polling.
+	afterEnqueue func(*writeRequest)
+	// A real write error is terminal for the pipe: it is latched here and
+	// drains every queued waiter; later Sends fail fast with it.
+	stickyMu  sync.Mutex
+	stickyErr error
+
+	// stderrDone closes when a configured capture pipe reaches EOF and its sink
+	// is closed. Reaping never waits on it because detached descendants may
+	// legitimately retain the stderr descriptor.
+	stderrDone chan struct{}
+
 	// waitReturned closes once cmd.Wait has stored the raw result, so the
 	// reaper and CloseAfterEOF can observe the leader's exit without
 	// consuming the channel.
@@ -94,6 +172,15 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 		cancel()
 		return nil, fmt.Errorf("chat: stdin pipe: %w", err)
 	}
+	p := &Process{
+		ctx:             ctx,
+		cancel:          cancel,
+		sendTimeout:     opts.SendTimeout,
+		sendQueueDepth:  opts.SendQueueDepth,
+		waitReturned:    make(chan struct{}),
+		parentWatchDone: make(chan struct{}),
+		exited:          make(chan struct{}),
+	}
 	// Own the stdout pipe rather than using cmd.StdoutPipe so cmd.Wait reaps
 	// the leader without waiting for, or closing, the read end. A descendant
 	// that inherits stdout would otherwise keep Wait—and every shutdown path
@@ -104,29 +191,442 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 		return nil, fmt.Errorf("chat: stdout pipe: %w", err)
 	}
 	cmd.Stdout = pw
-	cmd.Stderr = nil
+	// Own the stderr pipe like stdout: an *os.File is passed to the child as
+	// a raw fd, so cmd.Wait never waits for stderr EOF — a descendant that
+	// inherited stderr can hold it open without ever blocking a reap. The
+	// drain goroutine below is the only reader and is fully detached.
+	var stderrR, stderrW *os.File
+	var sink *stderrSink
+	if opts.StderrPath != "" {
+		p.stderrDone = make(chan struct{})
+		// Opening the capture sink is part of starting the provider.
+		sink, err = openStderrSink(opts.StderrPath)
+		if err != nil {
+			cancel()
+			_ = stdin.Close()
+			_ = pr.Close()
+			_ = pw.Close()
+			return nil, fmt.Errorf("chat: provider stderr sink: %w", err)
+		}
+		stderrR, stderrW, err = os.Pipe()
+		if err != nil {
+			cancel()
+			_ = stdin.Close()
+			_ = pr.Close()
+			_ = pw.Close()
+			_ = sink.Close()
+			return nil, fmt.Errorf("chat: stderr pipe: %w", err)
+		}
+		cmd.Stderr = stderrW
+	}
+	if opts.beforeStart != nil {
+		opts.beforeStart(p)
+	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = stdin.Close()
 		_ = pr.Close()
 		_ = pw.Close()
+		if stderrR != nil {
+			_ = stderrR.Close()
+			_ = stderrW.Close()
+			_ = sink.Close()
+		}
 		return nil, fmt.Errorf("chat: start %s: %w", opts.Binary, err)
 	}
-	// The child group owns the write end now; the parent must release it or
-	// stdout never reaches EOF when the group dies.
+	p.cmd = cmd
+	p.stdin = stdin
+	p.stdout = pr
+	// No writer goroutine exists until every startup operation has succeeded.
+	// This keeps failed starts from leaking a goroutine waiting on an orphaned
+	// queue.
+	p.writerOnce.Do(p.spawnWriter)
+	// The child group owns the write ends now; the parent must release them
+	// or stdout/stderr never reach EOF when the group dies.
 	_ = pw.Close()
-	p := &Process{
-		cmd:             cmd,
-		stdin:           stdin,
-		stdout:          pr,
-		ctx:             ctx,
-		cancel:          cancel,
-		waitReturned:    make(chan struct{}),
-		parentWatchDone: make(chan struct{}),
-		exited:          make(chan struct{}),
+	if stderrW != nil {
+		_ = stderrW.Close()
+		go drainStderr(stderrR, sink, p.stderrDone)
 	}
 	go p.watchParent(parent)
 	go p.reap()
 	return p, nil
+}
+
+// spawnWriter constructs the finite-send plumbing and starts the single
+// writer goroutine. It runs through writerOnce so a hand-built Process (tests)
+// lazily gets the same machinery on its first Send or Close.
+func (p *Process) spawnWriter() {
+	if p.sendTimeout <= 0 {
+		p.sendTimeout = DefaultSendTimeout
+	}
+	if p.sendQueueDepth <= 0 {
+		p.sendQueueDepth = DefaultSendQueueDepth
+	}
+	if p.writeQueue == nil {
+		p.writeQueue = make(chan *writeRequest, p.sendQueueDepth)
+	}
+	if p.writerClose == nil {
+		p.writerClose = make(chan struct{})
+	}
+	p.writerDone = make(chan struct{})
+	go p.writeLoop()
+}
+
+func (p *Process) writeLoop() {
+	defer close(p.writerDone)
+	for {
+		select {
+		case req := <-p.writeQueue:
+			p.writeOne(req)
+		case <-p.writerClose:
+			// Released by every terminal path: drain whatever is still queued
+			// without writing and exit. Send observes writerClose directly, so
+			// callers racing shutdown fail immediately rather than waiting for
+			// their command deadline.
+			for {
+				select {
+				case req := <-p.writeQueue:
+					if err := p.stickyWriteError(); err != nil {
+						req.complete(err)
+						continue
+					}
+					req.complete(errors.New("chat: provider write cancelled by close"))
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+// writeOne handles one dequeued frame. An expired frame is discarded without
+// writing — its caller was already released. A frame whose OS write has begun
+// is never abandoned: if the provider is wedged, the write stays in flight
+// until the provider lifecycle (process death) closes the pipe and returns
+// EPIPE, which latches the sticky error and drains the queue.
+func (p *Process) writeOne(req *writeRequest) {
+	select {
+	case <-p.writerClose:
+		req.complete(errors.New("chat: provider write cancelled by close"))
+		return
+	default:
+	}
+	if err := p.stickyWriteError(); err != nil {
+		req.complete(err)
+		return
+	}
+	if !req.deadline.IsZero() && time.Now().After(req.deadline) {
+		req.complete(p.writeTimeoutError("frame expired before write"))
+		return
+	}
+	// p.stdin is read at write time so a swapped writer (tests) is honored.
+	_, err := p.stdin.Write(req.frame)
+	if err != nil {
+		err = fmt.Errorf("chat: write command: %w", err)
+		p.setSticky(err)
+	}
+	req.complete(err)
+}
+
+func (p *Process) setSticky(err error) {
+	p.stickyMu.Lock()
+	if p.stickyErr == nil {
+		p.stickyErr = err
+	}
+	p.stickyMu.Unlock()
+}
+
+func (p *Process) stickyWriteError() error {
+	p.stickyMu.Lock()
+	defer p.stickyMu.Unlock()
+	return p.stickyErr
+}
+
+func (p *Process) writeTimeoutError(reason string) error {
+	return fmt.Errorf("chat: command not written (%s) within %s: %w (%w)", reason, p.sendTimeout, ErrSendTimeout, context.DeadlineExceeded)
+}
+
+// Send marshals cmd into one JSONL frame and hands it to the process's single
+// writer goroutine. It then waits for THAT frame's completion under ONE
+// absolute deadline that covers both the queue-full wait and the write itself
+// — the deadline is never reset once the writer dequeues the frame. A full
+// queue and a write that did not complete in time return the same
+// errors.Is-able timeout family (ErrSendTimeout and context.DeadlineExceeded).
+// A real write error latches and is returned (sticky) to every later sender.
+func (p *Process) Send(cmd map[string]any) error {
+	b, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("chat: marshal command: %w", err)
+	}
+	p.writerOnce.Do(p.spawnWriter)
+	if err := p.stickyWriteError(); err != nil {
+		return err
+	}
+	frame := make([]byte, 0, len(b)+1)
+	frame = append(frame, b...)
+	frame = append(frame, '\n')
+	deadline := time.Now().Add(p.sendTimeout)
+	req := &writeRequest{frame: frame, deadline: deadline, done: make(chan error, 1)}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-p.writerClose:
+		return errors.New("chat: provider is closing")
+	case p.writeQueue <- req:
+		if p.afterEnqueue != nil {
+			p.afterEnqueue(req)
+		}
+	case <-timer.C:
+		return p.writeTimeoutError("queue is full")
+	}
+	select {
+	case <-p.writerClose:
+		return errors.New("chat: provider is closing")
+	case err := <-req.done:
+		return err
+	case <-timer.C:
+		return p.writeTimeoutError("write did not complete")
+	}
+}
+
+// stderrSink appends the provider's stderr into a bounded rotating file pair:
+// the active file carries at most stderrRotateBytes and is rotated into a
+// single backup with the same budget when full (hard total: two files). A
+// write crossing the budget boundary is split at the boundary; a single
+// chunk larger than the budget keeps only its latest tail beyond the kept
+// files. Sink failures are logged once and then degrade to discard-mode so
+// the drain can never block the provider.
+type stderrSink struct {
+	path    string // active file
+	backup  string // rotated backup
+	file    *os.File
+	written int64
+	logged  bool
+}
+
+func enforceStderrPathPerm(path string) error {
+	if err := os.Chmod(path, stderrFilePerm); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != stderrFilePerm {
+		return fmt.Errorf("mode is %04o, want %04o", info.Mode().Perm(), stderrFilePerm)
+	}
+	return nil
+}
+
+func enforceStderrFilePerm(file *os.File) error {
+	if err := file.Chmod(stderrFilePerm); err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != stderrFilePerm {
+		return fmt.Errorf("mode is %04o, want %04o", info.Mode().Perm(), stderrFilePerm)
+	}
+	return nil
+}
+
+// normalizeStderrFile enforces the per-file size and permission contract on
+// a pre-existing sink file. Oversized files retain their latest bytes.
+func normalizeStderrFile(path string) error {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() <= stderrRotateBytes {
+		return enforceStderrPathPerm(path)
+	}
+
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if _, err := src.Seek(info.Size()-stderrRotateBytes, io.SeekStart); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".stderr-tail-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := enforceStderrFilePerm(tmp); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := io.CopyN(tmp, src, stderrRotateBytes); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return enforceStderrPathPerm(path)
+}
+
+// openStderrSink opens the capture sink. Both members of a pre-existing pair
+// are normalized before use. An oversized active file becomes the bounded
+// backup and a fresh active file is created.
+func openStderrSink(path string) (*stderrSink, error) {
+	if err := os.MkdirAll(filepath.Dir(path), stderrDirPerm); err != nil {
+		return nil, fmt.Errorf("create stderr log directory: %w", err)
+	}
+	backup := path + ".1"
+	if err := normalizeStderrFile(backup); err != nil {
+		return nil, fmt.Errorf("normalize stderr backup: %w", err)
+	}
+	if info, err := os.Stat(path); err == nil {
+		if info.Size() > stderrRotateBytes {
+			if err := normalizeStderrFile(path); err != nil {
+				return nil, fmt.Errorf("normalize oversized stderr log: %w", err)
+			}
+			if err := os.Rename(path, backup); err != nil {
+				return nil, fmt.Errorf("rotate oversized stderr log: %w", err)
+			}
+			if err := enforceStderrPathPerm(backup); err != nil {
+				return nil, fmt.Errorf("chmod stderr backup: %w", err)
+			}
+		} else if err := enforceStderrPathPerm(path); err != nil {
+			return nil, fmt.Errorf("chmod stderr log: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat stderr log: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, stderrFilePerm)
+	if err != nil {
+		return nil, fmt.Errorf("open stderr log: %w", err)
+	}
+	if err := enforceStderrFilePerm(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("chmod stderr log: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat stderr log: %w", err)
+	}
+	return &stderrSink{path: path, backup: backup, file: f, written: info.Size()}, nil
+}
+
+// Write implements io.Writer for the stderr drain. It always consumes the
+// whole chunk and never returns an error: the first sink failure logs once
+// and switches the sink to discard mode so the drain goroutine keeps reading
+// and the provider can never block on its stderr.
+func (s *stderrSink) Write(p []byte) (int, error) {
+	total := len(p)
+	for len(p) > 0 {
+		if s.file == nil {
+			return total, nil
+		}
+		space := stderrRotateBytes - s.written
+		if space <= 0 {
+			if !s.rotate() {
+				return total, nil
+			}
+			continue
+		}
+		n := len(p)
+		if int64(n) > space {
+			n = int(space)
+		}
+		written, err := s.file.Write(p[:n])
+		s.written += int64(written)
+		if err == nil && written != n {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			s.fail(err)
+			return total, nil
+		}
+		p = p[written:]
+		if s.written >= stderrRotateBytes && !s.rotate() {
+			return total, nil
+		}
+	}
+	return total, nil
+}
+
+// rotate moves the active file to the single backup slot and starts a fresh
+// one. It returns false (and latches the failure) when capture cannot
+// continue.
+func (s *stderrSink) rotate() bool {
+	if err := s.file.Close(); err != nil {
+		s.fail(err)
+		return false
+	}
+	s.file = nil
+	if err := os.Rename(s.path, s.backup); err != nil && !os.IsNotExist(err) {
+		s.fail(err)
+		return false
+	}
+	f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, stderrFilePerm)
+	if err != nil {
+		s.fail(err)
+		return false
+	}
+	if err := enforceStderrFilePerm(f); err != nil {
+		_ = f.Close()
+		s.fail(err)
+		return false
+	}
+	s.file = f
+	s.written = 0
+	return true
+}
+
+// fail logs the first sink error once (structured) and discards everything
+// after it.
+func (s *stderrSink) fail(err error) {
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
+	if s.logged {
+		return
+	}
+	s.logged = true
+	slog.Warn("provider stderr capture failed; discarding provider stderr", "path", s.path, "err", err)
+}
+
+// Close flushes the sink boundary: it closes the active file and stops all
+// further capture. Called only by the drain goroutine at EOF.
+func (s *stderrSink) Close() error {
+	if s.file == nil {
+		return nil
+	}
+	err := s.file.Close()
+	s.file = nil
+	return err
+}
+
+// drainStderr copies the provider's stderr into the rotating sink until EOF.
+// It is fully detached from the reaper: cmd.Wait never observes this pipe,
+// so nothing here can delay an exit; a sink failure degrades to discard
+// mode inside Write.
+func drainStderr(src *os.File, sink *stderrSink, done chan<- struct{}) {
+	defer close(done)
+	_, _ = io.Copy(sink, src)
+	_ = src.Close()
+	_ = sink.Close()
 }
 
 // watchParent forwards parent cancellation into cancelWith so the kill is
@@ -145,19 +645,6 @@ func (p *Process) watchParent(parent context.Context) {
 			p.cancelWith("parent")
 		}
 	}
-}
-
-func (p *Process) Send(cmd map[string]any) error {
-	b, err := json.Marshal(cmd)
-	if err != nil {
-		return fmt.Errorf("chat: marshal command: %w", err)
-	}
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("chat: write command: %w", err)
-	}
-	return nil
 }
 
 // Events forwards stdout frames until the pipe closes. The reaper kills the
@@ -228,6 +715,9 @@ func (p *Process) reap() {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == -1 {
 		err = nil
 	}
+	// Process exit is terminal even when no caller invokes Close. Closing stdin
+	// releases any in-flight write; writerClose rejects and drains all others.
+	p.stopWriter()
 	p.closeErr = err
 	close(p.exited)
 }
@@ -308,12 +798,25 @@ func (p *Process) ExitSummary() string {
 	}
 }
 
-// Close kills the process group and reaps the leader. Every shutdown path
-// (Session.Close, Manager.Stop) converges here: cancel is idempotent and the
-// reaper runs cmd.Wait exactly once, so every caller observes the same
-// cached result.
+// Close kills the process group and reaps the leader, then reaps the stdin
+// writer goroutine. The writer is released by both hands: closing
+// writerClose ends its select loop, and the group kill closes the pipe read
+// end, so any in-flight OS write returns EPIPE and the queue drains. A
+// wedged writer therefore never outlives Close (the syscall release belongs
+// to the provider lifecycle, not to any caller deadline).
+func (p *Process) stopWriter() {
+	p.writerOnce.Do(p.spawnWriter)
+	p.closeWriterOnce.Do(func() { close(p.writerClose) })
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
+	<-p.writerDone
+}
+
 func (p *Process) Close() error {
+	// Attribute shutdown before closing stdin can make the child exit.
 	p.cancelWith("session_close")
+	p.stopWriter()
 	<-p.exited
 	return p.closeErr
 }
@@ -329,6 +832,7 @@ func (p *Process) Close() error {
 func (p *Process) CloseAfterEOF() error {
 	select {
 	case <-p.exited:
+		p.stopWriter()
 		return p.closeErr
 	default:
 	}
@@ -338,6 +842,7 @@ func (p *Process) CloseAfterEOF() error {
 	if !ready {
 		p.cancelWith("pump_eof")
 	}
+	p.stopWriter()
 	<-p.exited
 	return p.closeErr
 }

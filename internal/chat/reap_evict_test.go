@@ -87,10 +87,11 @@ func TestManagerEvictsSessionOnUnexpectedEOF(t *testing.T) {
 	t.Cleanup(manager.CloseAll)
 	exited := make(chan *Session, 1)
 	opts := SessionOptions{
-		ID:     "chat-eof",
-		Binary: node,
-		Args:   []string{"-e", `let b='';process.stdin.on('data',c=>{b+=c;const n=b.indexOf('\n');if(n<0)return;const x=JSON.parse(b.slice(0,n));process.stdout.write(JSON.stringify({type:'response',command:'open_session',success:true,id:x.id,sessionId:'rpc-1',data:{sessionId:'rpc-1',state:{sessionId:'durable-1'}}})+'\n',()=>setImmediate(()=>process.exit(0)))})`, "--"},
-		OnExit: func(s *Session) { exited <- s },
+		ID:              "chat-eof",
+		Binary:          node,
+		Args:            []string{"-e", `let b='';process.stdin.on('data',c=>{b+=c;const n=b.indexOf('\n');if(n<0)return;const x=JSON.parse(b.slice(0,n));process.stdout.write(JSON.stringify({type:'response',command:'open_session',success:true,id:x.id,sessionId:'rpc-1',data:{sessionId:'rpc-1',state:{sessionId:'durable-1'}}})+'\n',()=>setImmediate(()=>process.exit(0)))})`, "--"},
+		OnExit:          func(s *Session) { exited <- s },
+		ProviderContext: context.Background(),
 	}
 	session, _, err := manager.Acquire(context.Background(), opts)
 	if err != nil {

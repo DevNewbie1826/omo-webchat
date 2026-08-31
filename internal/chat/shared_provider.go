@@ -72,9 +72,10 @@ func startSharedProvider(ctx context.Context, opts SessionOptions, onExit func(*
 		args = append(args, "--multi-session")
 	}
 	proc, err := Start(ctx, ProcessOptions{
-		Binary: opts.Binary,
-		Args:   args,
-		Env:    EnsureExtensionEventsCapability(opts.Env),
+		Binary:     opts.Binary,
+		Args:       args,
+		Env:        EnsureExtensionEventsCapability(opts.Env),
+		StderrPath: opts.StderrPath,
 	})
 	if err != nil {
 		return nil, err

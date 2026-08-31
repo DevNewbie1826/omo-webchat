@@ -73,6 +73,7 @@ func TestManagerSharesOneProviderAndDemultiplexesSessions(t *testing.T) {
 	baseArgs := []string{node, mockPiScript(t)}
 	sessionA, started, _, err := manager.AcquireAttach(context.Background(), SessionOptions{
 		ID: "chat-a", Binary: wrapper, Args: baseArgs, Env: os.Environ(), Cwd: t.TempDir(),
+		ProviderContext: context.Background(),
 	}, writerA)
 	if err != nil || !started {
 		t.Fatalf("attach chat-a = started %v, err %v", started, err)
@@ -132,6 +133,7 @@ func TestSharedProviderDeathFinishesEveryAttachedSession(t *testing.T) {
 	base := SessionOptions{Binary: node, Args: []string{mockPiScript(t)}, Env: os.Environ(), OnExit: func(session *Session) { exited <- session }}
 	optsA := base
 	optsA.ID = "chat-death-a"
+	optsA.ProviderContext = context.Background()
 	sessionA, _, _, err := manager.AcquireAttach(context.Background(), optsA, writerA)
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +184,7 @@ func TestManagerRestartsProviderAndReopensDurableSessionPath(t *testing.T) {
 	}
 	wrapper := writeSpawnCountingProviderWrapper(t, spawnLog)
 	env := append(os.Environ(), "MOCK_PI_LOG_JSON="+rpcLog, "MOCK_PI_RESUME_IDENTITY="+sessionPath)
-	base := SessionOptions{ID: "chat-reopen", Binary: wrapper, Args: []string{node, mockPiScript(t)}, Env: env, Cwd: dir}
+	base := SessionOptions{ID: "chat-reopen", Binary: wrapper, Args: []string{node, mockPiScript(t)}, Env: env, Cwd: dir, ProviderContext: context.Background()}
 
 	manager := NewManager()
 	t.Cleanup(manager.CloseAll)

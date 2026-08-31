@@ -136,10 +136,11 @@ func TestManagerStartNeverKeepsDeadSession(t *testing.T) {
 	t.Cleanup(manager.CloseAll)
 	exited := make(chan struct{})
 	opts := SessionOptions{
-		ID:     "chat-dead",
-		Binary: node,
-		Args:   []string{"-e", `let b='';process.stdin.on('data',c=>{b+=c;const n=b.indexOf('\n');if(n<0)return;const x=JSON.parse(b.slice(0,n));process.stdout.write(JSON.stringify({type:'response',command:'open_session',success:true,id:x.id,sessionId:'rpc-1',data:{sessionId:'rpc-1',state:{sessionId:'durable-1'}}})+'\n',()=>process.exit(0))})`, "--"},
-		OnExit: func(*Session) { close(exited) },
+		ID:              "chat-dead",
+		Binary:          node,
+		Args:            []string{"-e", `let b='';process.stdin.on('data',c=>{b+=c;const n=b.indexOf('\n');if(n<0)return;const x=JSON.parse(b.slice(0,n));process.stdout.write(JSON.stringify({type:'response',command:'open_session',success:true,id:x.id,sessionId:'rpc-1',data:{sessionId:'rpc-1',state:{sessionId:'durable-1'}}})+'\n',()=>process.exit(0))})`, "--"},
+		OnExit:          func(*Session) { close(exited) },
+		ProviderContext: context.Background(),
 	}
 	if _, _, err := manager.Acquire(context.Background(), opts); err != nil {
 		t.Fatalf("start session: %v", err)

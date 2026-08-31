@@ -171,12 +171,13 @@ retry:
 	m.pending[opts.ID] = true
 	provider := m.provider
 	if provider == nil {
-		var err error
-		providerCtx := opts.ProviderContext
-		if providerCtx == nil {
-			providerCtx = ctx
+		if opts.ProviderContext == nil {
+			delete(m.pending, opts.ID)
+			m.mu.Unlock()
+			return nil, false, nil, fmt.Errorf("chat: ProviderContext is required to start a provider")
 		}
-		provider, err = startSharedProvider(providerCtx, opts, m.providerExited)
+		var err error
+		provider, err = startSharedProvider(opts.ProviderContext, opts, m.providerExited)
 		if err != nil {
 			delete(m.pending, opts.ID)
 			m.mu.Unlock()
@@ -223,7 +224,12 @@ retry:
 	s.lifecycleMu.Unlock()
 	replay()
 	openErr := m.openSessionWithRetry(ctx, provider, s, opts)
-	if openErr != nil && opts.PiSessionID != "" {
+	// A timeout or cancellation leaves delivery of this non-idempotent open
+	// uncertain: the writer may still complete after the caller returns. Never
+	// issue a fallback open in that case, or one logical acquire can create two
+	// provider-side sessions.
+	openDeliveryUncertain := errors.Is(openErr, ErrSendTimeout) || errors.Is(openErr, context.Canceled) || errors.Is(openErr, context.DeadlineExceeded)
+	if openErr != nil && opts.PiSessionID != "" && !openDeliveryUncertain {
 		// A stale durable path must not brick the chat. Report the failed
 		// resume and open a fresh cwd-backed logical session on the same
 		// provider. The fallback session captures its identity in memory only:

@@ -110,11 +110,12 @@ func TestManagerEvictsOnceWhenLeaderExitMaskedByDescendant(t *testing.T) {
 	exited := make(chan *Session, 2)
 	writer := newCollectWriter()
 	opts := SessionOptions{
-		ID:     "chat-masked",
-		Binary: sh,
-		Args:   []string{"-c", maskedMultiSessionScript(fifo)},
-		Env:    os.Environ(),
-		OnExit: func(s *Session) { exited <- s },
+		ID:              "chat-masked",
+		Binary:          sh,
+		Args:            []string{"-c", maskedMultiSessionScript(fifo)},
+		Env:             os.Environ(),
+		OnExit:          func(s *Session) { exited <- s },
+		ProviderContext: context.Background(),
 	}
 	session, _, detach, err := manager.AcquireAttach(context.Background(), opts, writer)
 	if err != nil {

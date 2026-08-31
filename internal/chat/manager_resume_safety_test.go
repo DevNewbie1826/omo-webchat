@@ -238,6 +238,7 @@ func TestAcquireAttachRetriesTransientSessionPathInUseAndKeepsIdentity(t *testin
 		Provider:         "omo",
 		PiSessionID:      stored,
 		OnResumeIdentity: identities.persist,
+		ProviderContext:  context.Background(),
 	}, writer)
 	if detach != nil {
 		t.Cleanup(detach)

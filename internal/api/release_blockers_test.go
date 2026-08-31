@@ -107,6 +107,7 @@ func TestDeleteWorkspaceSerializesCreateAndStopsEveryActiveChat(t *testing.T) {
 		// provider appends, so all three chats run on one provider process.
 		if _, _, err := harness.server.chats.Acquire(context.Background(), chat.SessionOptions{
 			ID: record.ID, Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ(),
+			ProviderContext: context.Background(),
 		}); err != nil {
 			t.Fatalf("start %s: %v", name, err)
 		}

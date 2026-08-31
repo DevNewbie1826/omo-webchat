@@ -39,7 +39,7 @@ type ExitCallback func(*Session)
 type SessionOptions struct {
 	// ProviderContext owns the shared process lifetime when this acquire starts
 	// it. The AcquireAttach context bounds only this logical session's open.
-	// When nil, AcquireAttach uses its context for backward compatibility.
+	// It is required when a new shared provider must be started.
 	ProviderContext context.Context
 	ID              string
 	Cwd             string
@@ -48,6 +48,11 @@ type SessionOptions struct {
 	Env             []string
 	Provider        string
 	PiSessionID     string
+	// StderrPath is the provider-stderr capture file for a provider started
+	// by this acquire (shared provider). The state directory is resolved at
+	// the API layer — the chat package cannot import internal/store — and an
+	// empty value leaves provider stderr unwired.
+	StderrPath string
 	// SeedActivity pre-loads the replayable activity cache from the chat
 	// record's persisted snapshot. Used only at session creation: a session
 	// restored from disk replays the persisted pair to its first client until

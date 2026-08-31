@@ -203,10 +203,11 @@ func TestManagerDeliversEagerResumeIdentity(t *testing.T) {
 	t.Cleanup(manager.CloseAll)
 	delivered := make(chan delivery, 1)
 	opts := SessionOptions{
-		ID:     "chat-eager",
-		Binary: node,
-		Args:   []string{"-e", eagerIdentityScript, "--"},
-		Env:    os.Environ(),
+		ID:              "chat-eager",
+		Binary:          node,
+		Args:            []string{"-e", eagerIdentityScript, "--"},
+		Env:             os.Environ(),
+		ProviderContext: context.Background(),
 		OnResumeIdentity: func(src *Session, identity ResumeIdentity) error {
 			delivered <- delivery{current: manager.Get("chat-eager") == src, value: identity.Value}
 			return nil
