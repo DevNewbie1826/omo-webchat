@@ -11,7 +11,7 @@ export interface ToolCardProps {
   readonly isError: boolean;
   readonly details?: JsonValue | undefined;
   readonly args?: unknown;
-  readonly open?: boolean;
+  readonly open?: boolean | undefined;
   readonly onOpenChange?: (open: boolean) => void;
 }
 
@@ -67,9 +67,10 @@ function firstOutputLine(text: string): string {
  * and localized word, operation title, mono invocation summary with the first
  * output line) over an inset Command/Input + Output body. Status is never
  * colour alone: running shows a spinner ring, done a check mark, failed an
- * exclamation mark, each beside a visible localized word. A newly started
- * block begins expanded so current work is observable; once the user toggles
- * it, phase updates and completion never override that choice.
+ * exclamation mark, each beside a visible localized word. An untouched card
+ * follows its LIVE status: open while running, auto-collapsed on completion.
+ * The first user toggle freezes that card's disclosure choice permanently;
+ * later phase updates and completion never move it again.
  */
 function toolStatus(props: ToolCardProps): ToolStatus {
   const subagent = props.toolName === "task" ? subagentMetadata(props) : undefined;
@@ -77,20 +78,18 @@ function toolStatus(props: ToolCardProps): ToolStatus {
   return props.phase === "end" ? (props.isError ? "error" : "ok") : "running";
 }
 
-export function toolCardInitiallyOpen(props: ToolCardProps): boolean {
-  return toolStatus(props) === "running";
-}
-
 export function ToolCard(props: ToolCardProps) {
   const { toolCallId, toolName, text } = props;
   const { t } = useT();
   const subagent = toolName === "task" ? subagentMetadata(props) : undefined;
   const status = toolStatus(props);
-  // Completed blocks restored from history start collapsed; a live block
-  // starts expanded. The initial value is latched: later phase updates and
-  // completion never move the disclosure on the user's behalf.
-  const [localOpen, setLocalOpen] = useState(() => status === "running");
-  const open = props.open ?? localOpen;
+  // Uncontrolled fallback: an untouched card derives its disclosure from the
+  // CURRENT status on every render (open while running, collapsed once
+  // complete). userChoice stays null until this card's first toggle, which
+  // freezes the choice; a controlled `open` prop (user choice recorded by the
+  // transcript) takes precedence over both.
+  const [userChoice, setUserChoice] = useState<boolean | null>(null);
+  const open = props.open ?? (userChoice ?? status === "running");
 
   const record = argsRecord(props.args);
   const command = record ? nonEmptyString(record["command"]) : undefined;
@@ -110,7 +109,7 @@ export function ToolCard(props: ToolCardProps) {
         onClick={() => {
           const next = !open;
           if (props.onOpenChange) props.onOpenChange(next);
-          else setLocalOpen(next);
+          else setUserChoice(next);
         }}
       >
         <span className="th-tool-line">

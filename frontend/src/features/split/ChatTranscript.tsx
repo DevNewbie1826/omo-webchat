@@ -13,7 +13,7 @@ import type { UiMessage } from "./chatEntries";
 import type { ToolEntry } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
-import { ToolCard, toolCardInitiallyOpen, type ToolCardProps } from "./ToolCard";
+import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { useChatScroll } from "./useChatScroll";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
@@ -110,26 +110,24 @@ export function ChatTranscript({
 }: ChatTranscriptProps) {
   const { t } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
+  // USER CHOICES only: presence in the map means the user toggled that card
+  // (the value is their frozen choice). Absent ids are untouched and pass no
+  // `open`, so ToolCard derives the disclosure from the card's CURRENT live
+  // status on every render — virtualized history rows can unmount and remount
+  // freely without latching a stale initial phase.
   const toolDisclosureRef = useRef(new Map<string, boolean>());
   const [, setToolDisclosureVersion] = useState(0);
-  const rememberedToolCard = (props: ToolCardProps) => {
-    let open = toolDisclosureRef.current.get(props.toolCallId);
-    if (open === undefined) {
-      open = toolCardInitiallyOpen(props);
-      toolDisclosureRef.current.set(props.toolCallId, open);
-    }
-    return (
-      <ToolCard
-        key={props.toolCallId}
-        {...props}
-        open={open}
-        onOpenChange={(next) => {
-          toolDisclosureRef.current.set(props.toolCallId, next);
-          setToolDisclosureVersion((version) => version + 1);
-        }}
-      />
-    );
-  };
+  const rememberedToolCard = (props: ToolCardProps) => (
+    <ToolCard
+      key={props.toolCallId}
+      {...props}
+      open={toolDisclosureRef.current.get(props.toolCallId)}
+      onOpenChange={(next) => {
+        toolDisclosureRef.current.set(props.toolCallId, next);
+        setToolDisclosureVersion((version) => version + 1);
+      }}
+    />
+  );
   // Tool call ids already disclosed inside a history message. A live result
   // streaming for one of these ids must finalize that disclosure in place
   // (below) rather than render a second card in the live region.

@@ -216,6 +216,78 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(card?.querySelector(".th-tool-cmd")?.textContent).toBe("find . -maxdepth 1");
 	});
 
+	it("auto-collapses an untouched live tool card when it completes", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-auto",
+				toolName: "bash",
+				phase: "start",
+				args: { command: "ls" },
+			});
+		});
+		const head = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-auto'] .th-tool-head");
+		// Running: the untouched card is expanded so current work is observable.
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
+
+		act(() => {
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-auto",
+				toolName: "bash",
+				phase: "end",
+				result: { content: [{ text: "line1\nline2\n" }] },
+				isError: false,
+			});
+		});
+		// The user never toggled it: completion alone must collapse the card.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-auto'] .th-tool-body")).toBeNull();
+	});
+
+	it("keeps a reconnect-style running mount collapsed after it finalizes", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			// History restored on reconnect already carries the toolCall block.
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [{ type: "toolCall", id: "call-re", name: "bash", arguments: { command: "ls" } }],
+							timestamp: 1,
+						},
+					},
+				],
+			});
+			// The server re-streams the same call while it is still running, so
+			// the restored block mounts in its running phase.
+			deliver({ type: "tool", sessionId: "chat-1", toolCallId: "call-re", toolName: "bash", phase: "start" });
+		});
+		const head = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-re'] .th-tool-head");
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
+
+		act(() => {
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-re",
+				toolName: "bash",
+				phase: "end",
+				result: { content: [{ text: "file1\n" }] },
+				isError: false,
+			});
+		});
+		// Untouched across the running mount: finalizing collapses it.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
+	});
+
 	it("keeps the user's expanded choice across the live-to-history run.done transition", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {

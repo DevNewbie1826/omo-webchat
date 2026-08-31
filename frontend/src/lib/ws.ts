@@ -163,6 +163,26 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     scheduleReconnect();
   };
 
+  /**
+   * A heartbeat timeout is itself the close signal: WebSocket.close() only
+   * starts a close handshake, so a dead transport may never dispatch onclose.
+   */
+  const handleLivenessLoss = (ws: WebSocket): void => {
+    if (closed || reconnectVetoed || socket !== ws || closeSignaled) return;
+    clearTimers();
+    closeSignaled = true;
+    ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+    ws.close(CLOSE_PING_TIMEOUT, "ping timeout");
+    handlers.onClose?.(CLOSE_PING_TIMEOUT);
+    if (closed) return;
+    if (!(options.reconnect?.(CLOSE_PING_TIMEOUT) ?? true)) {
+      reconnectVetoed = true;
+      window.clearTimeout(retryTimer);
+      return;
+    }
+    scheduleReconnect();
+  };
+
   /** Periodic application-level ping; a missing pong means the socket died. */
   const startHeartbeat = (ws: WebSocket): void => {
     clearTimers();
@@ -170,13 +190,13 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       if (closed || ws.readyState !== WebSocket.OPEN) return;
       if (awaitingPong) {
         // Previous ping unanswered — the connection is dead. Force a reconnect.
-        ws.close(CLOSE_PING_TIMEOUT, "ping timeout");
+        handleLivenessLoss(ws);
         return;
       }
       awaitingPong = true;
       ws.send(JSON.stringify({ type: "ping" }));
       pongTimer = window.setTimeout(() => {
-        if (awaitingPong) ws.close(CLOSE_PING_TIMEOUT, "ping timeout");
+        if (awaitingPong) handleLivenessLoss(ws);
       }, PONG_TIMEOUT_MS);
       pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
     };

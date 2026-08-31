@@ -21,6 +21,11 @@ class FakeWebSocket {
 
   send(_data: string): void {}
 
+  serverOpen(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+
   close(): void {
     this.readyState = FakeWebSocket.CLOSED;
   }
@@ -42,6 +47,7 @@ describe("connectWs", () => {
   afterEach(() => {
     conn?.close();
     conn = null;
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -81,6 +87,28 @@ describe("connectWs", () => {
     document.dispatchEvent(new Event("visibilitychange"));
 
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("reconnects when a heartbeat timeout gets no close event from the dead socket", async () => {
+    vi.useFakeTimers();
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    const stale = FakeWebSocket.instances[0];
+    expect(stale).toBeDefined();
+    stale?.serverOpen();
+
+    // A dead transport can accept close() without completing a close handshake
+    // or dispatching close. Liveness loss must still enter reconnect itself.
+    await vi.advanceTimersByTimeAsync(31_000);
+
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // A late native close from the detached socket cannot double-signal or
+    // schedule a second replacement.
+    stale?.serverClose(1006);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
   it("signals onClose exactly once for the stale socket on a visibility reconnect", () => {
