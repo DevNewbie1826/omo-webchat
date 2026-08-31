@@ -13,6 +13,7 @@ type noticeEnvelope struct {
 	SessionID string          `json:"sessionId"`
 	Kind      string          `json:"kind"`
 	Payload   json.RawMessage `json:"payload"`
+	At        string          `json:"at"`
 }
 
 func collectNoticeFrames(t *testing.T, frames [][]byte) []noticeEnvelope {
@@ -141,13 +142,15 @@ func TestApprovalSelectUnchangedByNoticeForwarding(t *testing.T) {
 	}
 }
 
-// Notices are ephemeral: they forward live but must never enter the activity
-// snapshot cache, so a client attaching afterwards receives no notice replay.
-func TestNoticesNeverReplayedToLateSubscriber(t *testing.T) {
+// Transient notices are ephemeral: they forward live but must never enter
+// the activity snapshot cache, so a client attaching afterwards receives no
+// notice replay. Durable kinds have their own replay contract (see
+// notice_durable_test.go); high_reasoning_warning is durable by design.
+func TestTransientNoticesNeverReplayedToLateSubscriber(t *testing.T) {
 	writer := newCollectWriter()
 	s := newTestSession("chat-notice-ephemeral", writer)
 
-	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","modelId":"gpt-5.6-sol","provider":"openai-codex","thinkingLevel":"xhigh"}`)
+	dispatchEvent(s, "auto_retry_start", `{"type":"auto_retry_start","attempt":1}`)
 	if got := countFramesOfType(writer.snapshot(), "notice"); got != 1 {
 		t.Fatalf("live notice frames = %d, want 1; frames: %s", got, writer.typesString())
 	}
@@ -155,6 +158,6 @@ func TestNoticesNeverReplayedToLateSubscriber(t *testing.T) {
 	late := newCollectWriter()
 	s.Attach(late)
 	if got := countFramesOfType(late.snapshot(), "notice"); got != 0 {
-		t.Fatalf("replayed notice frames = %d, want 0 (notices must never be cached); frames: %s", got, late.typesString())
+		t.Fatalf("replayed notice frames = %d, want 0 (transient notices must never be cached); frames: %s", got, late.typesString())
 	}
 }

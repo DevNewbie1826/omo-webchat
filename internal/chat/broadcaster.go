@@ -348,6 +348,7 @@ func (s *Session) attachLocked(writer FrameWriter) (detach func(), replay func()
 	s.barrier.Lock()
 	id := s.frames.add(subscribe, closer, writer)
 	snapshots := s.activitySnapshots()
+	notices := s.durableNoticeFrames()
 	var once sync.Once
 	detach = func() {
 		once.Do(func() { s.frames.remove(id) })
@@ -355,6 +356,12 @@ func (s *Session) attachLocked(writer FrameWriter) (detach func(), replay func()
 	replay = func() {
 		defer s.barrier.Unlock()
 		for _, frame := range snapshots {
+			s.frames.writeTo(id, frame)
+		}
+		// Durable notices follow the activity snapshots, oldest -> newest.
+		// The log is session state, not a consumed replay: every later attach
+		// receives it again.
+		for _, frame := range notices {
 			s.frames.writeTo(id, frame)
 		}
 	}

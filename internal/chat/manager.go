@@ -193,11 +193,13 @@ retry:
 		onResumeIdentity:   opts.OnResumeIdentity,
 		onProviderName:     opts.OnProviderName,
 		onActivitySnapshot: opts.OnActivitySnapshot,
+		onNoticePersist:    opts.OnNoticePersist,
 		onExit:             exitGate.fire,
 		lastStop:           "stop",
 		owner:              m,
 	}
 	s.seedActivitySnapshots(opts.SeedActivity)
+	s.seedNotices(opts.SeedNotices)
 	s.lifecycleMu.Lock()
 	detach, replay := s.attachLocked(writer)
 	s.lifecycleMu.Unlock()

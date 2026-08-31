@@ -60,6 +60,21 @@ type SessionOptions struct {
 	// next settle carrying the same pair. Called with no session locks held;
 	// implementations must not block the session.
 	OnActivitySnapshot func(session *Session, pair ActivitySnapshotPair) bool
+	// SeedNotices pre-loads the durable notice log from the chat record's
+	// persisted notice list. Used only at session creation: a session
+	// restored from disk replays the persisted notices to its first client
+	// (after the activity snapshot frames) until new live notices append.
+	// nil seeds nothing.
+	SeedNotices []NoticeRecord
+	// OnNoticePersist receives the durable notice log whenever a durable
+	// notice arrives with a log changed since the last successful write (the
+	// persistence write boundary is the durable notice itself, not run
+	// settle: high_reasoning_warning fires with no run). It reports whether
+	// the store write succeeded: the deduplication marker advances only on
+	// success, so a transient failure is retried by the next durable notice.
+	// Called with no session locks held; implementations must not block the
+	// session, and a failed write never breaks forwarding.
+	OnNoticePersist  func(session *Session, notices []NoticeRecord) bool
 	OnResumeIdentity ResumeIdentityCallback
 	// OnResumeFailure optionally recovers branch-session candidates for a
 	// chat whose stored session path is dangling (the file is gone). It is
@@ -103,13 +118,13 @@ type Session struct {
 	// but never reach the persistence callback, so the fallback can never
 	// overwrite the stored binding to the original session file. Guarded by mu.
 	identityPersistSuppressed bool
-	onProviderName   func(session *Session, name string)
-	onExit           ExitCallback
-	lastStop         string
-	runDone          bool
-	finishedAt       time.Time
-	promptInFlight   bool
-	promptSequence   uint64
+	onProviderName            func(session *Session, name string)
+	onExit                    ExitCallback
+	lastStop                  string
+	runDone                   bool
+	finishedAt                time.Time
+	promptInFlight            bool
+	promptSequence            uint64
 	// lastActivitySnapshots caches the latest payload of the replayable
 	// activity events (activitySnapshotOrder) so a client attaching after a
 	// turn still sees the current task/DAG state. Guarded by mu. It is seeded
@@ -123,6 +138,20 @@ type Session struct {
 	onActivitySnapshot  func(session *Session, pair ActivitySnapshotPair) bool
 	activityPersisted   ActivitySnapshotPair
 	activityPersistence sync.WaitGroup
+	// durableNotices is the bounded replayable log of durable advisory
+	// notices (durableNoticeKinds), oldest first, dropped from the front at
+	// maxDurableNotices. It is seeded from the chat record's persisted
+	// notices at creation, appended by forwardNotice under the delivery
+	// barrier, and replayed to every later attach — a second attach receives
+	// it again, because the log is session state, not a consumed replay.
+	// Guarded by mu.
+	durableNotices []NoticeRecord
+	// noticesPersisted mirrors the log as last successfully persisted. A log
+	// equal to the marker is never written again; a failed write leaves the
+	// marker in place so the next durable notice retries. Guarded by mu.
+	noticesPersisted []NoticeRecord
+	// onNoticePersist persists the durable log at the notice write boundary.
+	onNoticePersist func(session *Session, notices []NoticeRecord) bool
 	// providerRunActive latches a provider-initiated run (omo wake/triggerTurn)
 	// that no client prompt armed: agent_start sets it (emitting run.started)
 	// and agent_settled clears it (emitting run.done). An explicit latch — not
@@ -189,11 +218,13 @@ func StartSession(ctx context.Context, opts SessionOptions) (*Session, error) {
 		onResumeIdentity:   opts.OnResumeIdentity,
 		onProviderName:     opts.OnProviderName,
 		onActivitySnapshot: opts.OnActivitySnapshot,
+		onNoticePersist:    opts.OnNoticePersist,
 		onExit:             opts.OnExit,
 		lastStop:           "stop",
 		pumpDone:           make(chan struct{}),
 	}
 	s.seedActivitySnapshots(opts.SeedActivity)
+	s.seedNotices(opts.SeedNotices)
 	go s.pump()
 	return s, nil
 }
