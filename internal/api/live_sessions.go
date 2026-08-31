@@ -1,12 +1,29 @@
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/chat"
+)
 
 type liveSessionResponse struct {
-	ID    string          `json:"id"`
-	Title string          `json:"title"`
-	Task  json.RawMessage `json:"task"`
-	Dag   json.RawMessage `json:"dag"`
+	ID            string          `json:"id"`
+	Title         string          `json:"title"`
+	Task          json.RawMessage `json:"task"`
+	Dag           json.RawMessage `json:"dag"`
+	TaskOversized bool            `json:"task_oversized"`
+	DagOversized  bool            `json:"dag_oversized"`
+}
+
+func liveSessionFromSummary(summary chat.LiveSummary, title string) liveSessionResponse {
+	return liveSessionResponse{
+		ID:            summary.ID,
+		Title:         title,
+		Task:          rawOrNull(summary.Pair.Task),
+		Dag:           rawOrNull(summary.Pair.Dag),
+		TaskOversized: summary.TaskOversized,
+		DagOversized:  summary.DagOversized,
+	}
 }
 
 type liveSessionsResponse struct {

@@ -131,6 +131,11 @@ type Session struct {
 	// from the chat record's persisted snapshot at creation and superseded
 	// name-by-name by live provider snapshots.
 	lastActivitySnapshots map[string]json.RawMessage
+	// taskOversized / dagOversized are in-memory only: a live replayable
+	// payload over the cache cap sets that side; a later in-cap payload
+	// clears it. Never persisted. Guarded by mu.
+	taskOversized bool
+	dagOversized  bool
 	// onActivitySnapshot persists the replayable pair at run completion.
 	// Guarded by mu alongside activityPersisted, the pair last written
 	// successfully: an unchanged pair is never re-persisted, and a failed

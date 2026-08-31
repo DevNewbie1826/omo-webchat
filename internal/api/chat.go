@@ -233,12 +233,7 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 		if title == "" {
 			title = titles[summary.ID]
 		}
-		sessions = append(sessions, liveSessionResponse{
-			ID:    summary.ID,
-			Title: title,
-			Task:  rawOrNull(summary.Pair.Task),
-			Dag:   rawOrNull(summary.Pair.Dag),
-		})
+		sessions = append(sessions, liveSessionFromSummary(summary, title))
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
 }

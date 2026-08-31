@@ -45,15 +45,27 @@ func isActivitySnapshot(name string) bool {
 }
 
 // rememberActivitySnapshot caches the latest payload of a replayable activity
-// event. The caller holds the delivery barrier, so the cache and the live
-// broadcast commit together: a concurrent attach can never replay a value
-// older than one it already delivered live.
+// event. Payloads over the cap still update that side's in-memory oversized
+// flag but leave the cached bytes unchanged, so GET /api/sessions/live can
+// signal staleness without pinning unbounded memory. The caller holds the
+// delivery barrier, so the cache and the live broadcast commit together: a
+// concurrent attach can never replay a value older than one it already
+// delivered live.
 func (s *Session) rememberActivitySnapshot(name string, data json.RawMessage) {
-	if !isActivitySnapshot(name) || len(data) > maxActivitySnapshotBytes {
+	if !isActivitySnapshot(name) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oversized := len(data) > maxActivitySnapshotBytes
+	if name == activitySnapshotOrder[0] {
+		s.taskOversized = oversized
+	} else {
+		s.dagOversized = oversized
+	}
+	if oversized {
+		return
+	}
 	if s.lastActivitySnapshots == nil {
 		s.lastActivitySnapshots = make(map[string]json.RawMessage)
 	}
@@ -139,12 +151,17 @@ func (s *Session) ReplayActivitySnapshot(writer FrameWriter) {
 // live-sessions listing. The copy runs under the session lock so both sides
 // are observed at one cache generation.
 func (s *Session) ActivitySnapshot() ActivitySnapshotPair {
+	pair, _, _ := s.activitySnapshotState()
+	return pair
+}
+
+func (s *Session) activitySnapshotState() (ActivitySnapshotPair, bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return ActivitySnapshotPair{
 		Task: append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[0]]...),
 		Dag:  append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[1]]...),
-	}
+	}, s.taskOversized, s.dagOversized
 }
 
 // activitySnapshots copies and marshals each cached activity snapshot in
