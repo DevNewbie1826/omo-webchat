@@ -1,9 +1,10 @@
 import type { Translate } from "../../i18n";
-import { agentFreshness } from "./activityState";
+import { agentFreshness, type AgentFreshnessContext } from "./activityState";
 import {
   agoText,
   agentTimeMs,
   compactTokRate,
+  lastActivityMs,
   statusKind,
   statusLabel,
   taskStatusCounts,
@@ -25,14 +26,15 @@ export function ActivityChip({ kind, label }: {
   return <span className={`th-activity-chip th-activity-chip--${kind}`}>{label}</span>;
 }
 
-function AgentRow({ task, nowMs, runInFlight, t }: {
+function AgentRow({ task, nowMs, freshnessCtx, t }: {
   readonly task: ActivityTask;
   readonly nowMs: number;
-  readonly runInFlight: boolean;
+  readonly freshnessCtx: AgentFreshnessContext;
   readonly t: Translate;
 }) {
-  const freshness = agentFreshness(task, nowMs, runInFlight);
+  const freshness = agentFreshness(task, nowMs, freshnessCtx);
   const time = agentTimeMs(task);
+  const lastMs = lastActivityMs(task);
   const progress = task.liveProgress;
   const tool = progress?.currentTool;
   const turns = progress?.turns;
@@ -43,7 +45,7 @@ function AgentRow({ task, nowMs, runInFlight, t }: {
   const title = task.taskSummary ?? task.name;
   return (
     <li
-      className={`th-activity-agent${freshness === "stale" ? " th-activity-stale" : ""}${freshness === "severed" ? " th-activity-severed" : ""}`}
+      className={`th-activity-agent${freshness === "severed" ? " th-activity-severed" : ""}`}
     >
       <span className="th-activity-agent-name">
         {route !== undefined ? `(${route}) - ${title}` : title}
@@ -77,7 +79,11 @@ function AgentRow({ task, nowMs, runInFlight, t }: {
           {t("activity.startedAgo", { n: agoText(nowMs - time) })}
         </span>
       )}
-      {freshness === "stale" && <span className="th-activity-stale-note">{t("activity.stale")}</span>}
+      {freshness === "quiet" && lastMs !== null && (
+        <span className="th-activity-agent-meta th-activity-quiet-note">
+          {t("activity.lastUpdateAgo", { n: agoText(nowMs - lastMs) })}
+        </span>
+      )}
       {freshness === "severed" && (
         <span className="th-activity-severed-note">{t("activity.severed")}</span>
       )}
@@ -85,10 +91,10 @@ function AgentRow({ task, nowMs, runInFlight, t }: {
   );
 }
 
-export function AgentSection({ tasks, nowMs, runInFlight, t }: {
+export function AgentSection({ tasks, nowMs, freshnessCtx, t }: {
   readonly tasks: readonly ActivityTask[];
   readonly nowMs: number;
-  readonly runInFlight: boolean;
+  readonly freshnessCtx: AgentFreshnessContext;
   readonly t: Translate;
 }) {
   const { running, done } = taskStatusCounts(tasks);
@@ -102,7 +108,7 @@ export function AgentSection({ tasks, nowMs, runInFlight, t }: {
       </div>
       <ul className="th-activity-agents">
         {tasks.map((task) => (
-          <AgentRow key={task.taskId} task={task} nowMs={nowMs} runInFlight={runInFlight} t={t} />
+          <AgentRow key={task.taskId} task={task} nowMs={nowMs} freshnessCtx={freshnessCtx} t={t} />
         ))}
       </ul>
     </section>

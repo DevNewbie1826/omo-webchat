@@ -240,6 +240,7 @@
   "activity.turns": "턴",
   "activity.ago": "{n} 전",
   "activity.startedAgo": "시작 {n} 전",
+  "activity.lastUpdateAgo": "마지막 업데이트 {n} 전",
   "activity.status.running": "실행 중",
   "activity.status.completed": "완료",
   "activity.status.failed": "실패",

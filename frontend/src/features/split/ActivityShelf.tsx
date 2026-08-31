@@ -5,6 +5,7 @@ import type {
 } from "react";
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
+import { lifeSeenThisRunOf } from "./activityState";
 import { DagSection } from "./activityShelfDag";
 import {
   agentTimeMs,
@@ -191,7 +192,15 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             style={height === null ? undefined : { height: `${height}px` }}
           >
             {tasks.length > 0 && (
-              <AgentSection tasks={tasks} nowMs={nowMs} runInFlight={activities.runInFlight === true} t={t} />
+              <AgentSection
+                tasks={tasks}
+                nowMs={nowMs}
+                freshnessCtx={{
+                  runInFlight: activities.runInFlight === true,
+                  lifeSeenThisRun: lifeSeenThisRunOf(activities),
+                }}
+                t={t}
+              />
             )}
             {dags.length > 0 && (
               <DagSection dags={dags} t={t} view={view} onViewChange={setView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} />

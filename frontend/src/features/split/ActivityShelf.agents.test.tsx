@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { I18nContext } from "../../i18n";
+import { I18nContext, translate } from "../../i18n";
+import type { LifeLatchedActivityState } from "./activityState";
 import {
   activityState,
   iso,
@@ -129,23 +130,26 @@ describe("ActivityShelf", () => {
     expect(doneRow?.textContent).not.toContain("activity.completedAgo");
   });
 
-  it("flags non-terminal agents stale past 30s of quiet only while a run is in flight", () => {
+  it("renders quiet agents without any alarm class, only a muted last-update note", () => {
     const tasks = (): readonly ActivityTask[] => [
       makeTask({ taskId: "fresh" }),
       makeTask({ taskId: "stale", updatedAt: iso(45_000) }),
     ];
     renderShelf(harness, activityState({ tasks: tasks() }));
     openShelf(harness.container);
-    // Idle pane: staleness is judged only while a run is in flight.
-    expect(harness.container.querySelectorAll(".th-activity-stale").length).toBe(0);
+    // Idle pane: no alarm classes and no age notes at all.
+    expect(harness.container.querySelectorAll(".th-activity-stale, .th-activity-severed").length).toBe(0);
+    expect(harness.container.querySelectorAll(".th-activity-quiet-note").length).toBe(0);
 
     renderShelf(harness, { ...activityState({ tasks: tasks() }), runInFlight: true });
-    const staleRows = harness.container.querySelectorAll(".th-activity-stale");
-    expect(staleRows.length).toBe(1);
-    expect(staleRows[0]?.textContent).toContain("activity.stale");
+    // The stale alarm is gone; quiet rows carry only a muted info note.
+    expect(harness.container.querySelectorAll(".th-activity-stale, .th-activity-severed").length).toBe(0);
+    const quietRows = harness.container.querySelectorAll(".th-activity-quiet-note");
+    expect(quietRows.length).toBe(2);
+    expect(quietRows[0]?.textContent).toContain("activity.lastUpdateAgo");
   });
 
-  it("marks agents silent past 90s of an in-flight run as severed, distinct from stale", () => {
+  it("shows a 120s-quiet agent without life this run as quiet, never severed", () => {
     renderShelf(
       harness,
       {
@@ -154,15 +158,60 @@ describe("ActivityShelf", () => {
       },
     );
     openShelf(harness.container);
+    expect(harness.container.querySelectorAll(".th-activity-severed").length).toBe(0);
+    expect(harness.container.querySelectorAll(".th-activity-stale").length).toBe(0);
+    const row = requireElement(harness.container.querySelector(".th-activity-agent"), "agent row");
+    expect(row.textContent).toContain("activity.lastUpdateAgo");
+    expect(row.textContent).not.toContain("activity.severed");
+  });
+
+  it("still severs an agent that showed life this run after 90s of quiet", () => {
+    const state: LifeLatchedActivityState = {
+      ...activityState({ tasks: [makeTask({ taskId: "gone-quiet", updatedAt: iso(120_000) })] }),
+      runInFlight: true,
+      lifeSeenThisRun: new Set(["gone-quiet"]),
+    };
+    renderShelf(harness, state);
+    openShelf(harness.container);
     const severedRows = harness.container.querySelectorAll(".th-activity-severed");
     expect(severedRows.length).toBe(1);
-    expect(severedRows[0]?.className).not.toContain("th-activity-stale");
     expect(severedRows[0]?.textContent).toContain("activity.severed");
-    expect(severedRows[0]?.textContent).not.toContain("activity.stale");
     expect(requireElement(
       harness.container.querySelector(".th-activity-severed-note"),
       "severed note",
     ).textContent).toContain("activity.severed");
+    // Severed rows show the alarm, not the quiet info note.
+    expect(severedRows[0]?.textContent).not.toContain("activity.lastUpdateAgo");
+  });
+
+  it("renders the quiet note localized for the active locale", () => {
+    const localized = (lang: "ko" | "en"): void => {
+      act(() => {
+        harness.root.render(
+          <I18nContext.Provider
+            value={{ ...i18n, lang, t: (key, vars) => translate(lang, key, vars) }}
+          >
+            <ActivityShelf
+              activities={{
+                ...activityState({ tasks: [makeTask({ taskId: "quiet", updatedAt: iso(45_000) })] }),
+                runInFlight: true,
+              }}
+            />
+          </I18nContext.Provider>,
+        );
+      });
+      // The component instance persists across re-renders: only the first
+      // locale render needs the shelf opened.
+      if (harness.container.querySelector(".th-activity-panel") === null) openShelf(harness.container);
+      const note = requireElement(
+        harness.container.querySelector(".th-activity-quiet-note"),
+        "quiet note",
+      );
+      expect(note.textContent).toBe(lang === "ko" ? "마지막 업데이트 45s 전" : "last update 45s ago");
+    };
+
+    localized("ko");
+    localized("en");
   });
 
   it("renders the last assistant line, a compact tok/s rate, and the tool call count", () => {

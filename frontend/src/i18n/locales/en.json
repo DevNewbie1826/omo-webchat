@@ -240,6 +240,7 @@
   "activity.turns": "Turns",
   "activity.ago": "{n} ago",
   "activity.startedAgo": "started {n} ago",
+  "activity.lastUpdateAgo": "last update {n} ago",
   "activity.status.running": "running",
   "activity.status.completed": "completed",
   "activity.status.failed": "failed",

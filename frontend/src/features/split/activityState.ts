@@ -20,41 +20,107 @@ import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from ".
    the shelf); this module imports it instead of keeping a second copy that
    could drift. */
 
-// Measured against real omo captures: active work emits event bursts with a
-// max quiet gap of ~6.7s, so 30s of quiet means something stalled and 90s
-// means the signal is gone.
+// Freshness is edge-triggered, not level-triggered: goal-continuation wakes
+// start runs whose tasks legitimately stay quiet for minutes, so elapsed
+// quiet alone proves nothing. Only a task that showed life during THIS run
+// (a frame actually changed it) can then be declared severed after 90s of
+// quiet; every other in-flight row is merely quiet. STALE_ACTIVITY_MS no
+// longer gates any alarm (kept only for external reference).
 export const STALE_ACTIVITY_MS = 30_000;
 export const SEVERED_ACTIVITY_MS = 90_000;
+
+/**
+ * ActivityState extended with the per-run life latches this module manages.
+ * Declared here (not in activityTypes.ts) so the whole lane lives in one
+ * file; reducers attach the field, UI reads it through lifeSeenThisRunOf.
+ */
+export interface LifeLatchedActivityState extends ActivityState {
+  /** Task ids that showed life (any frame change) during the current run. */
+  readonly lifeSeenThisRun?: ReadonlySet<string>;
+}
+
+/** The latch set of a state, never null: absent means nothing latched yet. */
+export function lifeSeenThisRunOf(state: ActivityState): ReadonlySet<string> {
+  return (state as LifeLatchedActivityState).lifeSeenThisRun ?? new Set<string>();
+}
 
 export function emptyActivityState(): ActivityState {
   return { tasks: new Map(), dags: new Map(), todo: null, heartbeats: new Map() };
 }
 
 /**
- * Flip the chat-run latch that gates shelf staleness. Wired to the
+ * Flip the chat-run latch that gates shelf freshness. Wired to the
  * run.started/run.done frames in useChatFrameHandler; a no-op (same
  * reference) when the flag already matches so the version bump stays honest.
+ * Starting a run (false->true) resets every task's life latch: the new run
+ * must earn evidence of life again before it may declare anything severed.
  */
 export function applyRunFlight(state: ActivityState, inFlight: boolean): ActivityState {
   if ((state.runInFlight ?? false) === inFlight) return state;
-  return { ...state, runInFlight: inFlight };
+  if (!inFlight) return { ...state, runInFlight: false };
+  const next: LifeLatchedActivityState = { ...state, runInFlight: true, lifeSeenThisRun: new Set<string>() };
+  return next;
 }
 
-export type AgentFreshness = "fresh" | "stale" | "severed";
+export type AgentFreshness = "fresh" | "quiet" | "severed";
+
+/** Everything agentFreshness judges a row against. */
+export interface AgentFreshnessContext {
+  readonly runInFlight: boolean;
+  /** Task ids that showed life at least once during the current run. */
+  readonly lifeSeenThisRun: ReadonlySet<string>;
+}
 
 /**
  * Freshness of an agent row, judged only while a run is in flight: an idle
- * pane never cries stale. >30s of quiet is stale; >90s means the run is in
- * flight but the agent has gone silent - a distinct severed state.
+ * pane is always fresh. A non-terminal row is "severed" only when it showed
+ * life this run and then went quiet past SEVERED_ACTIVITY_MS - the real
+ * mid-run death signal. Every other in-flight row is "quiet": muted, with
+ * an informational last-update age, never an alarm.
  */
-export function agentFreshness(task: ActivityTask, nowMs: number, runInFlight: boolean): AgentFreshness {
-  if (!runInFlight || TERMINAL_TASK_STATUSES.has(task.status)) return "fresh";
+export function agentFreshness(task: ActivityTask, nowMs: number, ctx: AgentFreshnessContext): AgentFreshness {
+  if (!ctx.runInFlight || TERMINAL_TASK_STATUSES.has(task.status)) return "fresh";
   const lastMs = lastActivityMs(task);
-  if (lastMs === null) return "fresh";
-  const quietMs = nowMs - lastMs;
-  if (quietMs > SEVERED_ACTIVITY_MS) return "severed";
-  if (quietMs > STALE_ACTIVITY_MS) return "stale";
-  return "fresh";
+  if (lastMs === null) return "quiet";
+  if (!ctx.lifeSeenThisRun.has(task.taskId)) return "quiet";
+  return nowMs - lastMs > SEVERED_ACTIVITY_MS ? "severed" : "quiet";
+}
+
+function liveProgressChanged(
+  previous: ActivityLiveProgress | undefined,
+  incoming: ActivityLiveProgress | undefined,
+): boolean {
+  // Absence of progress fields is absence of evidence, not life.
+  if (previous === undefined || incoming === undefined) return false;
+  return previous.activity !== incoming.activity
+    || previous.startedAt !== incoming.startedAt
+    || previous.currentTool !== incoming.currentTool
+    || previous.lastAssistantLine !== incoming.lastAssistantLine
+    || previous.turns !== incoming.turns
+    || previous.toolCalls !== incoming.toolCalls
+    || previous.totalTokens !== incoming.totalTokens
+    || previous.tokensPerSecond !== incoming.tokensPerSecond;
+}
+
+function taskShowedLife(previous: ActivityTask | undefined, incoming: ActivityTask): boolean {
+  if (previous === undefined) return true; // first sight of a task is life
+  return previous.updatedAt !== incoming.updatedAt
+    || previous.status !== incoming.status
+    || liveProgressChanged(previous.liveProgress, incoming.liveProgress);
+}
+
+/** Next latch set when any incoming task showed life; null when none did. */
+function latchedTaskLife(
+  state: ActivityState,
+  incoming: readonly ActivityTask[],
+): ReadonlySet<string> | null {
+  let latched: Set<string> | null = null;
+  for (const task of incoming) {
+    if (!taskShowedLife(state.tasks.get(task.taskId), task)) continue;
+    if (latched === null) latched = new Set(lifeSeenThisRunOf(state));
+    latched.add(task.taskId);
+  }
+  return latched;
 }
 
 function isTerminalTask(task: ActivityTask): boolean {
@@ -123,14 +189,16 @@ function mergeDagRun(previous: ActivityDagRun | undefined, incoming: ActivityDag
 function applyTaskSnapshot(state: ActivityState, data: unknown): ActivityState {
   const parsed = parseTaskUpdated(data);
   if (parsed === null) return state;
-  return {
-    ...state,
-    tasks: replaceKeepingTerminal(state.tasks, parsed.tasks, {
-      keyOf: (task) => task.taskId,
-      keepPrevious: isTerminalTask,
-      merge: (_prev, next) => next,
-    }),
-  };
+  const tasks = replaceKeepingTerminal(state.tasks, parsed.tasks, {
+    keyOf: (task) => task.taskId,
+    keepPrevious: isTerminalTask,
+    merge: (_prev, next) => next,
+  });
+  if (state.runInFlight !== true) return { ...state, tasks };
+  const lifeSeenThisRun = latchedTaskLife(state, parsed.tasks);
+  if (lifeSeenThisRun === null) return { ...state, tasks };
+  const next: LifeLatchedActivityState = { ...state, tasks, lifeSeenThisRun };
+  return next;
 }
 
 function applyDagSnapshot(state: ActivityState, data: unknown): ActivityState {
@@ -195,7 +263,16 @@ function applyNodeActivity(state: ActivityState, data: unknown): ActivityState {
     ...(parsed.at > (task.updatedAt ?? "") ? { updatedAt: parsed.at } : {}),
     liveProgress: liveProgressFromActivity(parsed, task.liveProgress),
   });
-  return { ...state, dags, tasks };
+  const next: ActivityState = { ...state, dags, tasks };
+  // Node activity mapped to a task is life by definition; keep the previous
+  // latch reference when that task already latched so the version bump stays
+  // honest.
+  if (state.runInFlight !== true || lifeSeenThisRunOf(state).has(parsed.taskId)) return next;
+  const latched: LifeLatchedActivityState = {
+    ...next,
+    lifeSeenThisRun: new Set([...lifeSeenThisRunOf(state), parsed.taskId]),
+  };
+  return latched;
 }
 
 function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {

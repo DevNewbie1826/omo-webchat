@@ -6,6 +6,8 @@ import {
   applyActivityEvent,
   applyRunFlight,
   emptyActivityState,
+  lifeSeenThisRunOf,
+  type AgentFreshnessContext,
 } from "./activityState";
 import { NOW_MS, taskSnapshot } from "./activityState.support";
 
@@ -23,30 +25,43 @@ function agentQuietFor(quietMs: number, status = "running") {
   return task;
 }
 
+const idle: AgentFreshnessContext = { runInFlight: false, lifeSeenThisRun: new Set() };
+const inFlight = (lifeSeen: readonly string[] = []): AgentFreshnessContext => ({
+  runInFlight: true,
+  lifeSeenThisRun: new Set(lifeSeen),
+});
+
 describe("agentFreshness run-in-flight gating", () => {
   it("judges agents fresh while no run is in flight, however old the last update", () => {
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, false)).toBe("fresh");
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, idle)).toBe("fresh");
   });
 
-  it("keeps an agent fresh at or under the 30s threshold while a run is in flight", () => {
-    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS - 1), NOW_MS, true)).toBe("fresh");
-    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS), NOW_MS, true)).toBe("fresh");
+  it("judges every in-flight non-terminal agent quiet while it is not severed", () => {
+    // The 30s stale alarm is gone: short quiet is just quiet, and so is the
+    // 30s boundary that used to brand rows.
+    expect(agentFreshness(agentQuietFor(1_000), NOW_MS, inFlight())).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS), NOW_MS, inFlight())).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS + 1), NOW_MS, inFlight())).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS - 1), NOW_MS, inFlight())).toBe("quiet");
   });
 
-  it("judges an agent stale past 30s of quiet only while a run is in flight", () => {
-    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS + 1), NOW_MS, true)).toBe("stale");
-    expect(agentFreshness(agentQuietFor(STALE_ACTIVITY_MS + 1), NOW_MS, false)).toBe("fresh");
+  it("does not sever an agent that showed no life this run, however old it is", () => {
+    // Goal-continuation wakes legitimately quiet a task for minutes: without
+    // life seen during THIS run there is no death to signal.
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight())).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight())).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(70 * 60_000), NOW_MS, inFlight())).toBe("quiet");
   });
 
-  it("judges an agent severed past 90s of quiet as a distinct state", () => {
-    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, true)).toBe("stale");
-    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, true)).toBe("severed");
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, true)).toBe("severed");
+  it("severs an agent that showed life this run and then went quiet past 90s", () => {
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, inFlight(["t1"]))).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"]))).toBe("severed");
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"]))).toBe("severed");
   });
 
-  it("never flags terminal agents stale or severed", () => {
-    expect(agentFreshness(agentQuietFor(10 * 60_000, "completed"), NOW_MS, true)).toBe("fresh");
-    expect(agentFreshness(agentQuietFor(10 * 60_000, "failed"), NOW_MS, true)).toBe("fresh");
+  it("never flags terminal agents quiet or severed, even with life seen", () => {
+    expect(agentFreshness(agentQuietFor(10 * 60_000, "completed"), NOW_MS, inFlight(["t1"]))).toBe("fresh");
+    expect(agentFreshness(agentQuietFor(10 * 60_000, "failed"), NOW_MS, inFlight(["t1"]))).toBe("fresh");
   });
 });
 
@@ -58,9 +73,34 @@ describe("applyRunFlight", () => {
   });
 
   it("keeps the state reference when the flag already matches", () => {
-    const idle = emptyActivityState();
-    expect(applyRunFlight(idle, false)).toBe(idle);
-    const started = applyRunFlight(idle, true);
+    const idleState = emptyActivityState();
+    expect(applyRunFlight(idleState, false)).toBe(idleState);
+    const started = applyRunFlight(idleState, true);
     expect(applyRunFlight(started, true)).toBe(started);
+  });
+
+  it("starts every run with an empty life-latch set", () => {
+    expect(lifeSeenThisRunOf(applyRunFlight(emptyActivityState(), true)).size).toBe(0);
+  });
+
+  it("resets all task life latches when a new run starts", () => {
+    const latched = applyActivityEvent(
+      applyRunFlight(emptyActivityState(), true),
+      "omo.task.updated",
+      taskSnapshot([{ task_id: "t1", name: "Spawn", status: "running", updated_at: new Date(NOW_MS - 1_000).toISOString() }]),
+    );
+    expect(lifeSeenThisRunOf(latched).has("t1")).toBe(true);
+
+    const stopped = applyRunFlight(latched, false);
+    const restarted = applyRunFlight(stopped, true);
+    expect(lifeSeenThisRunOf(restarted).size).toBe(0);
+
+    // Behaviorally: the previously latched task no longer counts as live.
+    const task = restarted.tasks.get("t1");
+    if (task === undefined) throw new Error("fixture task missing");
+    expect(agentFreshness(task, NOW_MS + 120_000, {
+      runInFlight: true,
+      lifeSeenThisRun: lifeSeenThisRunOf(restarted),
+    })).toBe("quiet");
   });
 });
