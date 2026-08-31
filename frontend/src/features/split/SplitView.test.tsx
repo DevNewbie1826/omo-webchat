@@ -39,6 +39,13 @@ function makeActions(overrides: Partial<SplitActions> = {}): SplitActions {
 	};
 }
 
+function sessionRefs(workspaces: readonly Workspace[]): ReadonlyMap<string, ChatSessionRef> {
+	return new Map(workspaces.flatMap((workspace) => workspace.chats.map((chat) => [
+		chat.id,
+		{ ...chat, wsId: workspace.id, cwd: workspace.path },
+	] as const)));
+}
+
 function useResizeObserverSize(width: number, height: number): void {
 	vi.stubGlobal(
 		"ResizeObserver",
@@ -159,6 +166,14 @@ describe("SplitView empty pane", () => {
 
 	it("truncates long session names to one line while keeping the full text available", () => {
 		const longName = "refactor-auth-provider-and-migrate-all-tests-terminal-session";
+		const pickerWorkspaces: readonly Workspace[] = [
+			{
+				id: "ws-1",
+				name: "cli-webchat",
+				path: "/repo/cli-webchat",
+				chats: [{ id: "chat-9", name: longName, provider: "omo" }],
+			},
+		];
 		const pickerLists = new Map<string, readonly WorkspaceSession[]>([
 			["ws-1", [{ id: "chat-9", name: longName, source: "stored", recencyMs: 1 }]],
 		]);
@@ -169,15 +184,8 @@ describe("SplitView empty pane", () => {
 			leaf(null),
 			makeActions(),
 			true,
-			new Map(),
-			[
-				{
-					id: "ws-1",
-					name: "cli-webchat",
-					path: "/repo/cli-webchat",
-					chats: [{ id: "chat-9", name: longName, provider: "omo" }],
-				},
-			],
+			sessionRefs(pickerWorkspaces),
+			pickerWorkspaces,
 			new Set(),
 			pickerLists,
 			pickerPages,
@@ -224,6 +232,7 @@ describe("SplitView empty pane", () => {
 				chats: [{ id: "chat-b1", name: "tune dag layout", provider: "omo" }],
 			},
 		];
+		const sessions = sessionRefs(workspaces);
 
 		const pickerLists = new Map<string, readonly WorkspaceSession[]>([
 			[
@@ -296,7 +305,7 @@ describe("SplitView empty pane", () => {
 				leaf(null),
 				makeActions(),
 				true,
-				new Map(),
+				sessionRefs(mruWorkspaces),
 				mruWorkspaces,
 				new Set(["s-1"]),
 				mruLists,
@@ -313,7 +322,7 @@ describe("SplitView empty pane", () => {
 				leaf(null),
 				makeActions(),
 				true,
-				new Map(),
+				sessions,
 				workspaces,
 				new Set(),
 				pickerLists,
@@ -328,7 +337,7 @@ describe("SplitView empty pane", () => {
 				leaf(null),
 				makeActions(),
 				true,
-				new Map(),
+				sessions,
 				workspaces,
 				new Set(),
 				pickerLists,
@@ -343,7 +352,7 @@ describe("SplitView empty pane", () => {
 				leaf(null),
 				makeActions(),
 				true,
-				new Map(),
+				sessions,
 				workspaces,
 				new Set(),
 				pickerLists,
@@ -355,7 +364,7 @@ describe("SplitView empty pane", () => {
 		});
 
 		it("sits directly under the title and lists only the selected workspace's chats", () => {
-			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
+			render(leaf(null), makeActions(), true, sessions, workspaces, new Set(), pickerLists, pickerPages);
 
 			const title = container.querySelector(".th-picker-pane-title");
 			const select = pickerSelect();
@@ -367,16 +376,21 @@ describe("SplitView empty pane", () => {
 		});
 
 		it("hides chats already placed in other panes", () => {
-			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(["chat-a1"]), pickerLists, pickerPages);
+			render(leaf(null), makeActions(), true, sessions, workspaces, new Set(["chat-a1"]), pickerLists, pickerPages);
 			expect(rowNames()).toEqual(["add picker tests"]);
+		});
+
+		it("hides stored session rows that are absent from the resolvable sessions map", () => {
+			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
+			expect(rowNames()).toEqual([]);
 		});
 
 		it("falls back to the first workspace when the selected one disappears", () => {
 			const onCreateTerminal = vi.fn();
 			const node = leaf(null);
-			render(node, makeActions({ onCreateTerminal }), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
+			render(node, makeActions({ onCreateTerminal }), true, sessions, workspaces, new Set(), pickerLists, pickerPages);
 			chooseWorkspace("ws-beta");
-			render(node, makeActions({ onCreateTerminal }), true, new Map(), [workspaces[0]!], new Set(), pickerLists, pickerPages);
+			render(node, makeActions({ onCreateTerminal }), true, sessionRefs([workspaces[0]!]), [workspaces[0]!], new Set(), pickerLists, pickerPages);
 			expect(pickerSelect().value).toBe("ws-alpha");
 			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
 			const createButton = container.querySelector<HTMLButtonElement>(".th-picker-pane-create button");
@@ -385,7 +399,7 @@ describe("SplitView empty pane", () => {
 		});
 
 		it("re-filters the list when the dropdown changes", () => {
-			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
+			render(leaf(null), makeActions(), true, sessions, workspaces, new Set(), pickerLists, pickerPages);
 
 			chooseWorkspace("ws-beta");
 			expect(rowNames()).toEqual(["tune dag layout"]);
@@ -394,7 +408,7 @@ describe("SplitView empty pane", () => {
 		});
 
 		it("keeps the combined label in title and aria-label of each row", () => {
-			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
+			render(leaf(null), makeActions(), true, sessions, workspaces, new Set(), pickerLists, pickerPages);
 
 			const row = container.querySelector<HTMLButtonElement>(
 				'button.th-picker-pane-item[aria-label="alpha / fix login flow"]',

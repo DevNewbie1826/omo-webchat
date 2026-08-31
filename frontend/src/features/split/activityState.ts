@@ -50,14 +50,19 @@ export function emptyActivityState(): ActivityState {
 
 /**
  * Flip the chat-run latch that gates shelf freshness. Wired to the
- * run.started/run.done frames in useChatFrameHandler; a no-op (same
- * reference) when the flag already matches so the version bump stays honest.
- * Starting a run (false->true) resets every task's life latch: the new run
- * must earn evidence of life again before it may declare anything severed.
+ * run.started/run.done frames in useChatFrameHandler. An idle no-op keeps the
+ * same reference. Every observation of an in-flight run resets task life
+ * latches, including true->true after reconnect, because run boundaries may
+ * have occurred while the socket was disconnected. Stopping drops the latch
+ * set entirely.
  */
 export function applyRunFlight(state: ActivityState, inFlight: boolean): ActivityState {
-  if ((state.runInFlight ?? false) === inFlight) return state;
-  if (!inFlight) return { ...state, runInFlight: false };
+  if (!inFlight) {
+    if ((state.runInFlight ?? false) === false) return state;
+    const next: ActivityState & { lifeSeenThisRun?: ReadonlySet<string> } = { ...state, runInFlight: false };
+    delete next.lifeSeenThisRun;
+    return next;
+  }
   const next: LifeLatchedActivityState = { ...state, runInFlight: true, lifeSeenThisRun: new Set<string>() };
   return next;
 }
@@ -90,8 +95,10 @@ function liveProgressChanged(
   previous: ActivityLiveProgress | undefined,
   incoming: ActivityLiveProgress | undefined,
 ): boolean {
-  // Absence of progress fields is absence of evidence, not life.
-  if (previous === undefined || incoming === undefined) return false;
+  // Absence of progress fields is absence of evidence, not life. First
+  // appearance is evidence even when updatedAt and status are unchanged.
+  if (incoming === undefined) return false;
+  if (previous === undefined) return true;
   return previous.activity !== incoming.activity
     || previous.startedAt !== incoming.startedAt
     || previous.currentTool !== incoming.currentTool

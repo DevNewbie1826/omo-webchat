@@ -104,6 +104,21 @@ describe("per-task life latches", () => {
     expect([...lifeSeenThisRunOf(next)].sort()).toEqual(["t-progress", "t-status", "t-time"]);
   });
 
+  it("latches life when a pre-existing task first gains live progress", () => {
+    const seeded = applyActivityEvent(
+      emptyActivityState(),
+      "omo.task.updated",
+      taskSnapshot([inFlightTask()]),
+    );
+    const next = applyActivityEvent(
+      applyRunFlight(seeded, true),
+      "omo.task.updated",
+      taskSnapshot([inFlightTask({ live_progress: { current_tool: "ripgrep" } })]),
+    );
+
+    expect(lifeSeenThisRunOf(next).has("t1")).toBe(true);
+  });
+
   it("does not latch snapshot changes while no run is in flight", () => {
     const next = applyActivityEvent(
       emptyActivityState(),

@@ -74,7 +74,7 @@ function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPag
   if (!session) {
     const activeWorkspace = workspaces.find((workspace) => workspace.id === workspaceID);
     const unplaced = (sessionLists.get(workspaceID) ?? []).filter(
-      (entry) => entry.source === "stored" && !placed.has(entry.id),
+      (entry) => entry.source === "stored" && !placed.has(entry.id) && sessions.has(entry.id),
     );
     return (
       <div className="th-pane-wrap">

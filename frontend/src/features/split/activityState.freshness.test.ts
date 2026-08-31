@@ -72,11 +72,14 @@ describe("applyRunFlight", () => {
     expect(applyRunFlight(started, false).runInFlight).toBe(false);
   });
 
-  it("keeps the state reference when the flag already matches", () => {
+  it("keeps the state reference only when an idle flag already matches", () => {
     const idleState = emptyActivityState();
     expect(applyRunFlight(idleState, false)).toBe(idleState);
+
     const started = applyRunFlight(idleState, true);
-    expect(applyRunFlight(started, true)).toBe(started);
+    const repeatedStart = applyRunFlight(started, true);
+    expect(repeatedStart).not.toBe(started);
+    expect(lifeSeenThisRunOf(repeatedStart).size).toBe(0);
   });
 
   it("starts every run with an empty life-latch set", () => {
@@ -101,6 +104,36 @@ describe("applyRunFlight", () => {
     expect(agentFreshness(task, NOW_MS + 120_000, {
       runInFlight: true,
       lifeSeenThisRun: lifeSeenThisRunOf(restarted),
+    })).toBe("quiet");
+  });
+
+  it("drops task life latches when a run stops", () => {
+    const latched = applyActivityEvent(
+      applyRunFlight(emptyActivityState(), true),
+      "omo.task.updated",
+      taskSnapshot([{ task_id: "t1", name: "Spawn", status: "running", updated_at: new Date(NOW_MS - 1_000).toISOString() }]),
+    );
+
+    const stopped = applyRunFlight(latched, false);
+    expect(lifeSeenThisRunOf(stopped).size).toBe(0);
+  });
+
+  it("clears stale latches when reconnect observes an in-flight run after a missed boundary", () => {
+    const runOne = applyActivityEvent(
+      applyRunFlight(emptyActivityState(), true),
+      "omo.task.updated",
+      taskSnapshot([{ task_id: "t1", name: "Spawn", status: "running", updated_at: new Date(NOW_MS - 100_000).toISOString() }]),
+    );
+    expect(lifeSeenThisRunOf(runOne).has("t1")).toBe(true);
+
+    // The socket missed run.done and run.started between runs. Reconnect only
+    // observes the new run's isStreaming=true state.
+    const runTwo = applyRunFlight(runOne, true);
+    const task = runTwo.tasks.get("t1");
+    if (task === undefined) throw new Error("fixture task missing");
+    expect(agentFreshness(task, NOW_MS, {
+      runInFlight: true,
+      lifeSeenThisRun: lifeSeenThisRunOf(runTwo),
     })).toBe("quiet");
   });
 });
