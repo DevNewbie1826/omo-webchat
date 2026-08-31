@@ -31,6 +31,39 @@ func TestReconcileActivityPairPreservesTerminalNodeOutcomes(t *testing.T) {
 	}
 }
 
+func TestReconcileActivityPairHonorsSkippedNodeOutcome(t *testing.T) {
+	pair := ActivitySnapshotPair{
+		Task: json.RawMessage(`{"tasks":[{"task_id":"task-1","status":"running"}]}`),
+		Dag:  json.RawMessage(`{"runs":[{"status":"completed","nodes":[{"task_id":"task-1","state":"skipped"}]}]}`),
+	}
+
+	got := reconcileActivityPair(pair)
+	var payload struct {
+		Tasks []struct {
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(got.Task, &payload); err != nil {
+		t.Fatalf("reconciled task payload is invalid: %v (%s)", err, got.Task)
+	}
+	if len(payload.Tasks) != 1 || payload.Tasks[0].Status != "skipped" {
+		t.Fatalf("reconciled status = %q, want %q; payload: %s", payload.Tasks[0].Status, "skipped", got.Task)
+	}
+}
+
+func TestReconcileActivityPairLeavesNullStatusUntouched(t *testing.T) {
+	task := json.RawMessage(`{"tasks":[{"task_id":"task-1","status":null,"marker":9007199254740993}]}`)
+	pair := ActivitySnapshotPair{
+		Task: task,
+		Dag:  json.RawMessage(`{"runs":[{"status":"completed","nodes":[{"task_id":"task-1","state":"completed"}]}]}`),
+	}
+
+	got := reconcileActivityPair(pair)
+	if !bytes.Equal(got.Task, task) {
+		t.Fatalf("null-status task row must stay byte-identical; got: %s", got.Task)
+	}
+}
+
 func TestReconcileActivityPairFallsBackToTerminalRunOutcome(t *testing.T) {
 	pair := ActivitySnapshotPair{
 		Task: json.RawMessage(`{"tasks":[{"task_id":"task-1","status":"running"}]}`),

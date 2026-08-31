@@ -66,12 +66,14 @@ func reconcileTaskPayload(task, dag json.RawMessage) (json.RawMessage, bool) {
 		if !hasID || !hasStatus {
 			continue
 		}
-		var id, status string
-		if json.Unmarshal(rawID, &id) != nil || id == "" || json.Unmarshal(rawStatus, &status) != nil {
+		var id string
+		var status *string
+		if json.Unmarshal(rawID, &id) != nil || id == "" ||
+			json.Unmarshal(rawStatus, &status) != nil || status == nil || *status == "" {
 			continue
 		}
 		outcome, vouched := outcomes[id]
-		if terminalTaskStatuses[status] || !vouched {
+		if terminalTaskStatuses[*status] || !vouched {
 			continue
 		}
 		row["status"], _ = json.Marshal(outcome.status)
@@ -122,7 +124,7 @@ func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
 				continue
 			}
 			outcome := dagTaskOutcome{status: run.Status}
-			if terminalDagStatuses[node.State] {
+			if terminalTaskStatuses[node.State] {
 				outcome = dagTaskOutcome{status: node.State, fromNode: true}
 			}
 			if previous, exists := outcomes[node.TaskID]; exists && previous.fromNode && !outcome.fromNode {
