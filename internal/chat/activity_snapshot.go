@@ -117,6 +117,31 @@ func (s *Session) persistActivitySnapshot() {
 	s.mu.Unlock()
 }
 
+// ActivitySnapshotFrames returns the session's cached activity snapshot
+// frames in replay order — the exact frames attach replay sends, task first,
+// dag second. The delivery barrier is held across the capture, so the
+// returned frames are the committed cache state at a single point in time: a
+// concurrent provider frame either precedes this snapshot entirely or queues
+// behind it, never interleaves a newer value into a stale replay.
+func (s *Session) ActivitySnapshotFrames() [][]byte {
+	s.barrier.Lock()
+	defer s.barrier.Unlock()
+	return s.activitySnapshots()
+}
+
+// ActivitySnapshot returns a clone of the cached task/dag payloads. A side
+// that has never been cached is nil, matching JSON-null semantics for the
+// live-sessions listing. The copy runs under the session lock so both sides
+// are observed at one cache generation.
+func (s *Session) ActivitySnapshot() ActivitySnapshotPair {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ActivitySnapshotPair{
+		Task: append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[0]]...),
+		Dag:  append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[1]]...),
+	}
+}
+
 // activitySnapshots copies and marshals each cached activity snapshot in
 // replay order. The caller holds the delivery barrier, so this snapshot is the
 // exact prefix a newly registered subscriber must receive before live frames.

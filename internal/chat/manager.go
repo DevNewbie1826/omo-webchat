@@ -330,6 +330,31 @@ func (m *Manager) LiveIDs() []string {
 	return ids
 }
 
+// LiveSummary is one process-alive session as listed by GET /api/sessions/live:
+// its id, display title, and cached activity pair (nil payloads when absent).
+type LiveSummary struct {
+	ID    string
+	Title string
+	Pair  ActivitySnapshotPair
+}
+
+// LiveSummaries returns process-alive sessions in ID order.
+func (m *Manager) LiveSummaries() []LiveSummary {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]LiveSummary, 0, len(m.sessions))
+	for id, session := range m.sessions {
+		if session.ProcessAlive() {
+			out = append(out, LiveSummary{
+				ID:   id,
+				Pair: session.ActivitySnapshot(),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	s := m.sessions[id]
