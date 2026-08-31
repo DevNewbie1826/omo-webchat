@@ -410,3 +410,41 @@ func TestListWorkspaceSessionsSkipsUnreadableFile(t *testing.T) {
 		t.Fatalf("items = %+v, want only the readable session", page.Items)
 	}
 }
+
+// TestListWorkspaceSessionsStoredRecencyPrefersLastUsedOverCreation pins the
+// stored-row recency key: a chat's last use outranks its creation time, so a
+// freshly used old chat sorts above a never-used newer chat. A row without a
+// last-used stamp keeps its creation-time recency.
+func TestListWorkspaceSessionsStoredRecencyPrefersLastUsedOverCreation(t *testing.T) {
+	srv, st, ws, _ := newSessionHistoryTestServer(t)
+	oldChat, err := st.NewChat(ws.ID, "old-but-used", ws.Path, "", "omo")
+	if err != nil {
+		t.Fatalf("create old chat: %v", err)
+	}
+	newChat, err := st.NewChat(ws.ID, "new-but-idle", ws.Path, "", "omo")
+	if err != nil {
+		t.Fatalf("create new chat: %v", err)
+	}
+	// The older chat was opened after the newer chat was created: use time,
+	// not creation time, must decide the order.
+	touched := newChat.CreatedAt + 5_000
+	if _, err := st.UpdateChat(ws.ID, oldChat.ID, func(c *store.Chat) {
+		c.LastUsedAt = touched
+	}); err != nil {
+		t.Fatalf("touch old chat: %v", err)
+	}
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 2 {
+		t.Fatalf("items = %+v, want the two stored chats", page.Items)
+	}
+	if page.Items[0].ID != oldChat.ID || page.Items[1].ID != newChat.ID {
+		t.Fatalf("order = [%s %s], want last-used old chat above newer-created chat", page.Items[0].ID, page.Items[1].ID)
+	}
+	if page.Items[0].RecencyMs != touched {
+		t.Fatalf("used chat recencyMs = %d, want lastUsedAt %d", page.Items[0].RecencyMs, touched)
+	}
+	if page.Items[1].RecencyMs != newChat.CreatedAt {
+		t.Fatalf("idle chat recencyMs = %d, want createdAt %d", page.Items[1].RecencyMs, newChat.CreatedAt)
+	}
+}

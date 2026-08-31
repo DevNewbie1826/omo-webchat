@@ -212,12 +212,12 @@ describe("ChatPane tool cards and approvals", () => {
 		});
 
 		// Before run.done: one disclosure with the result folded into it (its
-		// summary previews the first output line), zero toolResult rows.
+		// summary previews the latest output line), zero toolResult rows.
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-1']").length).toBe(1);
 		expect(container.querySelectorAll(".th-chat-msg--toolResult").length).toBe(0);
 		expect(
 			container.querySelector(".th-tool[data-tool-call-id='call-1'] .th-tool-preview")?.textContent,
-		).toBe("file1");
+		).toBe("file2");
 
 		act(() => {
 			// A later assistant message carries the final text.

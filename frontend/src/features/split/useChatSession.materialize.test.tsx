@@ -178,7 +178,6 @@ describe("ChatTranscript persisted disclosures", () => {
 				<I18nContext.Provider value={i18n}>
 					<ChatTranscript
 						items={mergeTranscriptItems(messages, [])}
-						onDismissNotice={() => undefined}
 						streaming=""
 						thinking=""
 						toolCalls={{}}

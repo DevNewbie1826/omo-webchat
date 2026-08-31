@@ -76,7 +76,7 @@ describe("ChatPane in-transcript notices", () => {
     expect(notice).toBeLessThan(late);
   });
 
-  it("dismiss hides only that row locally and never reaches the server", () => {
+  it("renders notices as permanent rows without a dismiss control and never reaches the server", () => {
     const { deliver, sent } = renderChatPane(root);
 
     act(() => {
@@ -89,21 +89,16 @@ describe("ChatPane in-transcript notices", () => {
     const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
       block.textContent?.includes("n1"),
     );
-    const dismiss = row?.querySelector<HTMLButtonElement>("button[aria-label='notice.dismiss']");
-    expect(dismiss).not.toBeNull();
-    act(() => {
-      dismiss?.click();
-    });
+    expect(row?.querySelectorAll("button").length).toBe(0);
 
-    expect(container.textContent).not.toContain("n1");
+    expect(container.textContent).toContain("n1");
     expect(container.textContent).toContain("n2");
-    expect(container.querySelectorAll(".th-chat-notice").length).toBe(1);
     expect(sent.length).toBe(sentBefore);
 
     act(() => {
       deliverWire(deliver, wireNoticeFrame(3));
     });
-    expect(container.textContent).not.toContain("n1");
+    expect(container.textContent).toContain("n1");
     expect(container.textContent).toContain("n2");
     expect(container.textContent).toContain("n3");
   });

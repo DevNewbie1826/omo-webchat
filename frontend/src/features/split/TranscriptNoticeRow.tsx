@@ -1,11 +1,8 @@
-import { IconX } from "../../components/icons";
 import { useT } from "../../i18n";
 import type { ChatNotice } from "./useChatFrameState";
 
 export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
-  /** View-local hide: the pane owns the dismissed set, the list is untouched. */
-  readonly onDismiss: (id: number) => void;
 }
 
 /** Kinds rendered with the warning tone; every other kind renders as info. */
@@ -123,10 +120,10 @@ function NoticeBody({ notice }: { readonly notice: ChatNotice }) {
  * One server advisory rendered as a distinct bordered system block in the
  * virtualized transcript flow — never inside the live region. All kinds
  * render here; durable ones reappear after a refresh via server replay,
- * transient ones simply do not survive a reload. Dismissal is view-local:
- * the row only reports the id upward and never mutates any notice list.
+ * transient ones simply do not survive a reload. Rows are permanent,
+ * non-interactive display blocks: no dismissal control is rendered.
  */
-export function TranscriptNoticeRow({ notice, onDismiss }: TranscriptNoticeRowProps) {
+export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const { t } = useT();
   return (
     <div
@@ -139,14 +136,6 @@ export function TranscriptNoticeRow({ notice, onDismiss }: TranscriptNoticeRowPr
           <NoticeBody notice={notice} />
         </span>
       </div>
-      <button
-        type="button"
-        className="th-btn-icon th-notice-dismiss"
-        aria-label={t("notice.dismiss")}
-        onClick={() => onDismiss(notice.id)}
-      >
-        <IconX size={14} />
-      </button>
     </div>
   );
 }

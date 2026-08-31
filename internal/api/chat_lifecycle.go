@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"os"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
@@ -173,6 +174,15 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 			h.sendError("no_chat", "chat not found")
 		}
 		return
+	}
+	// Exactly one last-used touch per successful open: the attachment is
+	// published and the store recheck passed, so this chat was genuinely
+	// opened. The stamp is the MRU recency key for stored sessions; a failed
+	// persist only logs and never breaks the open.
+	if _, err := s.store.UpdateChat(req.WsID, req.ChatID, func(record *store.Chat) {
+		record.LastUsedAt = time.Now().UnixMilli()
+	}); err != nil {
+		s.logger.Warn("last-used persist failed", "err", err, "chatId", req.ChatID)
 	}
 	ready, _ := json.Marshal(chat.ReadyFrame{Type: "ready", SessionID: req.ChatID, PiSessionID: sess.PiSessionID(), Resumed: opts.PiSessionID != ""})
 	_ = h.WriteJSON(ready)

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -49,16 +49,9 @@ export function ChatPane({
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const chat = useChatSession(chatSession, connect, onChatName);
-  // Notice dismissal is a view-local hide keyed by notice id: the state list
-  // stays append-only from the frame handler, nothing is persisted, and no
-  // dismissal frame ever reaches the server.
-  const [dismissedNotices, setDismissedNotices] = useState<ReadonlySet<number>>(() => new Set());
-  const dismissNotice = useCallback((id: number) => {
-    setDismissedNotices((current) => new Set(current).add(id));
-  }, []);
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.notices.filter((notice) => !dismissedNotices.has(notice.id))),
-    [chat.messages, chat.notices, dismissedNotices],
+    () => mergeTranscriptItems(chat.messages, chat.notices),
+    [chat.messages, chat.notices],
   );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
@@ -138,7 +131,6 @@ export function ChatPane({
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         <ChatTranscript
           items={transcriptItems}
-          onDismissNotice={dismissNotice}
           historyLoaded={chat.historyLoaded}
           streaming={chat.streaming}
           thinking={chat.thinking}

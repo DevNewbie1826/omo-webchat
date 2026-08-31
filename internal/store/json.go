@@ -11,7 +11,7 @@ var (
 	chatJSONKeys = map[string]bool{
 		"id": true, "name": true, "pisessionid": true, "wsid": true, "cwd": true,
 		"sessiondir": true, "provider": true, "model": true, "createdat": true,
-		"lastentryid": true, "activitysnapshot": true, "notices": true,
+		"lastusedat": true, "lastentryid": true, "activitysnapshot": true, "notices": true,
 	}
 	workspaceJSONKeys = map[string]bool{
 		"id": true, "name": true, "path": true, "chats": true, "terminals": true,

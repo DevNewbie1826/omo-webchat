@@ -42,22 +42,22 @@ describe("TranscriptNoticeRow", () => {
     vi.unstubAllGlobals();
   });
 
-  const renderRow = (notice: ChatNotice, onDismiss: (id: number) => void = () => undefined): void => {
+  const renderRow = (notice: ChatNotice): void => {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
-          <TranscriptNoticeRow notice={notice} onDismiss={onDismiss} />
+          <TranscriptNoticeRow notice={notice} />
         </I18nContext.Provider>,
       );
     });
   };
 
-  const renderRows = (notices: readonly ChatNotice[], onDismiss: (id: number) => void): void => {
+  const renderRows = (notices: readonly ChatNotice[]): void => {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
-          {notices.map((notice) => (
-            <TranscriptNoticeRow key={notice.id} notice={notice} onDismiss={onDismiss} />
+          {notices.map((entry) => (
+            <TranscriptNoticeRow key={entry.id} notice={entry} />
           ))}
         </I18nContext.Provider>,
       );
@@ -144,22 +144,11 @@ describe("TranscriptNoticeRow", () => {
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
   });
 
-  it("dismiss reports only the dismissed row's id to the pane", () => {
-    const dismissed: number[] = [];
-    renderRows(
-      [notice(1, "auto_retry_start", { message: "first" }), notice(2, "auto_retry_end")],
-      (id) => dismissed.push(id),
-    );
+  it("renders no dismiss button", () => {
+    renderRows([notice(1, "auto_retry_start", { message: "first" }), notice(2, "auto_retry_end")]);
     const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
       block.textContent?.includes("first"),
     );
-    const dismiss = row?.querySelector("button[aria-label='notice.dismiss']");
-    expect(dismiss).not.toBeNull();
-    act(() => {
-      (dismiss as HTMLButtonElement).click();
-    });
-    expect(dismissed).toEqual([1]);
-    // Hiding is the pane's decision: the row itself keeps rendering its notice.
-    expect(container.querySelectorAll(".th-chat-notice").length).toBe(2);
+    expect(row?.querySelectorAll("button").length).toBe(0);
   });
 });

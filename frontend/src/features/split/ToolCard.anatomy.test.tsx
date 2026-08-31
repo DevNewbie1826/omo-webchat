@@ -6,7 +6,7 @@ import { ToolCard, type ToolCardProps } from "./ToolCard";
 /**
  * DESIGN.md "Tool-execution block anatomy": the block is one disclosure with a
  * two-line header (chevron, status glyph, operation title, localized status
- * word; mono invocation summary with the first non-empty output line), an
+ * word; mono invocation summary with the latest non-empty output line), an
  * inset Command/Input + Output body, and status signalling that never relies
  * on colour alone.
  */
@@ -153,12 +153,15 @@ describe("ToolCard block anatomy", () => {
 		expect(card.querySelector(".th-tool-body")).toBeNull();
 	});
 
-	it("starts a running block expanded, auto-collapses it untouched, and freezes the user's toggle", () => {
+	it("starts a running block collapsed, keeps it collapsed untouched, and freezes the user's toggle", () => {
 		const card = renderCard(baseProps({ phase: "start", args: { command: "ls" } }));
 		const head = headOf(card);
-		expect(head.getAttribute("aria-expanded")).toBe("true");
+		// Untouched blocks stay collapsed in every phase — running included; the
+		// collapsed header preview still shows the latest output line.
+		expect(head.getAttribute("aria-expanded")).toBe("false");
+		expect(card.querySelector(".th-tool-body")).toBeNull();
 
-		// Untouched: completion alone auto-collapses the block.
+		// Untouched: completion never auto-opens the block either.
 		rerender(baseProps({ phase: "end", args: { command: "ls" }, text: "done-output" }));
 		expect(head.getAttribute("aria-expanded")).toBe("false");
 		expect(card.querySelector(".th-tool-body")).toBeNull();
@@ -197,18 +200,18 @@ describe("ToolCard block anatomy", () => {
 		expect(card.querySelector(".th-tool-body")).toBeNull();
 	});
 
-	it("carries the invocation and the first non-empty output line in the collapsed header", () => {
+	it("carries the invocation and the latest non-empty output line in the collapsed header", () => {
 		const card = renderCard(baseProps({ args: { command: "ls -la /tmp" }, text: "\nfile1\nfile2\n" }));
 		expect(card.querySelector(".th-tool-cmd")?.textContent).toBe("ls -la /tmp");
 		expect(card.querySelector(".th-tool-sep")?.textContent).toBe(" · ");
-		expect(card.querySelector(".th-tool-preview")?.textContent).toBe("file1");
+		expect(card.querySelector(".th-tool-preview")?.textContent).toBe("file2");
 	});
 
 	it("falls back to the output preview alone when no arguments are available", () => {
 		const card = renderCard(baseProps({ text: "\n\nfirst line\nsecond\n" }));
 		expect(card.querySelector(".th-tool-cmd")).toBeNull();
 		expect(card.querySelector(".th-tool-sep")).toBeNull();
-		expect(card.querySelector(".th-tool-preview")?.textContent).toBe("first line");
+		expect(card.querySelector(".th-tool-preview")?.textContent).toBe("second");
 	});
 
 	it("keeps the identical header in either disclosure state", () => {
@@ -238,14 +241,19 @@ describe("ToolCard block anatomy", () => {
 
 	it("keeps failure output available in an Output section instead of a generic error label", () => {
 		const card = renderCard(baseProps({ phase: "end", isError: true, text: "boom\nstack trace" }));
-		click(headOf(card));
+		// A failed call is the one phase that auto-opens an untouched card, so
+		// errors are impossible to miss.
+		expect(headOf(card).getAttribute("aria-expanded")).toBe("true");
 		expect(captions(card)).toEqual(["tool.output"]);
 		expect(card.querySelector(".th-tool-output")?.textContent).toBe("boom\nstack trace");
+		// The user may still collapse it; the choice then freezes.
+		click(headOf(card));
+		expect(headOf(card).getAttribute("aria-expanded")).toBe("false");
 	});
 
 	it("renders no empty body when there is nothing to show", () => {
 		const card = renderCard(baseProps({ phase: "start" }));
-		expect(headOf(card).getAttribute("aria-expanded")).toBe("true");
+		expect(headOf(card).getAttribute("aria-expanded")).toBe("false");
 		expect(card.querySelector(".th-tool-body")).toBeNull();
 	});
 });
