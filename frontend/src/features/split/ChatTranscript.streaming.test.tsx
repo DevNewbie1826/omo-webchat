@@ -23,7 +23,6 @@ const baseProps = {
 	restoreVersion: 0,
 	focused: true,
 	historyLoaded: true,
-	onDismissNotice: () => undefined,
 };
 
 describe("ChatTranscript streaming memoization", () => {

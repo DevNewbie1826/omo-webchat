@@ -385,10 +385,6 @@
   letter-spacing: var(--th-type-label-tracking);
 }
 
-.th-notice-dismiss {
-  flex: none;
-}
-
 @container chat-pane (max-width: 600px) {
   .th-chat-pane .th-termhead-path,
   .th-chat-pane .th-thinking-select {

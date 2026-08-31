@@ -20,7 +20,6 @@ const baseProps = {
 	restoreVersion: 0,
 	focused: true,
 	historyLoaded: true,
-	onDismissNotice: () => undefined,
 };
 
 const user: UiMessage = { role: "user", blocks: [{ kind: "text", text: "fix the flake" }], ts: 0 };

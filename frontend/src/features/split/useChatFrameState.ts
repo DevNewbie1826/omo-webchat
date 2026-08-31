@@ -130,7 +130,7 @@ export function useChatFrameState() {
 
   // Notices are retained newest-first and capped: a chatty server cannot
   // flood the pane, and the wide limit admits a durable server replay on
-  // attach. Dismissal never touches this list — it is a view-local hide.
+  // attach.
   const pushNotice = (kind: string, payload: JsonObject | null, at?: number, nid?: string): void => {
     setNotices((current) => {
       if (nid !== undefined && current.some((notice) => notice.nid === nid)) {

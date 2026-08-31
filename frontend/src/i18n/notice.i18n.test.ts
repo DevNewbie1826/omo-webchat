@@ -11,7 +11,6 @@ const KEYS = [
   "notice.fallbackReason",
   "notice.highReasoningWarning",
   "notice.highReasoningGuidance",
-  "notice.dismiss",
 ] as const;
 
 function localeTable(table: typeof en): Record<string, string> {

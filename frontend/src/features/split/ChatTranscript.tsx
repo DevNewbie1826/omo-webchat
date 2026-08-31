@@ -112,8 +112,6 @@ interface ChatTranscriptProps {
   readonly restoreVersion: number;
   readonly focused: boolean;
   readonly historyLoaded: boolean;
-  /** View-local notice hide; never mutates the notice list nor the server. */
-  readonly onDismissNotice: (id: number) => void;
 }
 
 export function ChatTranscript({
@@ -126,7 +124,6 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
-  onDismissNotice,
 }: ChatTranscriptProps) {
   const { t } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
@@ -206,7 +203,7 @@ export function ChatTranscript({
                     className="th-chat-row th-chat-row--notice"
                     style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                   >
-                    <TranscriptNoticeRow notice={item.notice} onDismiss={onDismissNotice} />
+                    <TranscriptNoticeRow notice={item.notice} />
                   </div>
                 );
               }
