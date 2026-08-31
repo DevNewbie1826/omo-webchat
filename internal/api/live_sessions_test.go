@@ -59,7 +59,7 @@ func TestHandlerListsLiveSessionsWhenAuthenticated(t *testing.T) {
 	recorder := getLiveSessions(t, handler, token)
 
 	// Then: enriched rows, ids sorted, title present, task/dag null before events.
-	if got, want := recorder.Body.String(), "{\"sessions\":[{\"id\":\"chat-live\",\"title\":\"\",\"task\":null,\"dag\":null},{\"id\":\"chat-live-2\",\"title\":\"\",\"task\":null,\"dag\":null}]}\n"; got != want {
+	if got, want := recorder.Body.String(), "{\"sessions\":[{\"id\":\"chat-live\",\"title\":\"\",\"task\":null,\"dag\":null,\"task_oversized\":false,\"dag_oversized\":false},{\"id\":\"chat-live-2\",\"title\":\"\",\"task\":null,\"dag\":null,\"task_oversized\":false,\"dag_oversized\":false}]}\n"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
 	assertLiveSessionShape(t, recorder.Body.Bytes(), []expectedLiveSession{
@@ -71,7 +71,7 @@ func TestHandlerListsLiveSessionsWhenAuthenticated(t *testing.T) {
 	// list while the sibling on the shared provider process stays live.
 	server.chats.Stop("chat-live")
 	recorder = getLiveSessions(t, handler, token)
-	if got, want := recorder.Body.String(), "{\"sessions\":[{\"id\":\"chat-live-2\",\"title\":\"\",\"task\":null,\"dag\":null}]}\n"; got != want {
+	if got, want := recorder.Body.String(), "{\"sessions\":[{\"id\":\"chat-live-2\",\"title\":\"\",\"task\":null,\"dag\":null,\"task_oversized\":false,\"dag_oversized\":false}]}\n"; got != want {
 		t.Fatalf("body after stop = %q, want %q", got, want)
 	}
 }
@@ -139,12 +139,93 @@ func TestHandlerListsLiveSessionsIncludesActivitySnapshots(t *testing.T) {
 	})
 }
 
+func TestLiveSessionFromSummaryJSONReportsOversizedFlags(t *testing.T) {
+	cachedTask := json.RawMessage(`{"task":{"id":"st_cached"}}`)
+	cachedDag := json.RawMessage(`{"dag":{"nodes":[{"id":"st_cached"}]}}`)
+	smallTask := json.RawMessage(`{"task":{"id":"st_small"}}`)
+	smallDag := json.RawMessage(`{"dag":{"nodes":[{"id":"st_small"}]}}`)
+	tests := []struct {
+		name         string
+		summary      chat.LiveSummary
+		wantTaskOver bool
+		wantDagOver  bool
+		wantTask     json.RawMessage
+		wantDag      json.RawMessage
+	}{
+		{
+			name: "oversized task leaves cached task and sets task_oversized",
+			summary: chat.LiveSummary{
+				ID:            "chat-over",
+				Pair:          chat.ActivitySnapshotPair{Task: cachedTask},
+				TaskOversized: true,
+			},
+			wantTaskOver: true,
+			wantTask:     cachedTask,
+		},
+		{
+			name: "in-cap task clears task_oversized",
+			summary: chat.LiveSummary{
+				ID:   "chat-over",
+				Pair: chat.ActivitySnapshotPair{Task: smallTask},
+			},
+			wantTask: smallTask,
+		},
+		{
+			name: "oversized dag leaves cached dag and sets dag_oversized",
+			summary: chat.LiveSummary{
+				ID:           "chat-over",
+				Pair:         chat.ActivitySnapshotPair{Dag: cachedDag},
+				DagOversized: true,
+			},
+			wantDagOver: true,
+			wantDag:     cachedDag,
+		},
+		{
+			name: "in-cap dag clears dag_oversized",
+			summary: chat.LiveSummary{
+				ID:   "chat-over",
+				Pair: chat.ActivitySnapshotPair{Dag: smallDag},
+			},
+			wantDag: smallDag,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Given / When: the live-sessions mapper serializes a summary.
+			row := liveSessionFromSummary(tt.summary, "Over")
+			raw, err := json.Marshal(row)
+			if err != nil {
+				t.Fatalf("marshal live session: %v", err)
+			}
+
+			// Then: JSON field names match the live-sessions response and flags copy through.
+			var parsed map[string]any
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatalf("decode live session: %v (%s)", err, raw)
+			}
+			if parsed["task_oversized"] != tt.wantTaskOver {
+				t.Fatalf("task_oversized = %#v, want %v (%s)", parsed["task_oversized"], tt.wantTaskOver, raw)
+			}
+			if parsed["dag_oversized"] != tt.wantDagOver {
+				t.Fatalf("dag_oversized = %#v, want %v (%s)", parsed["dag_oversized"], tt.wantDagOver, raw)
+			}
+			assertOptionalRaw(t, parsed, "task", tt.wantTask, 0)
+			assertOptionalRaw(t, parsed, "dag", tt.wantDag, 0)
+			if row.Title != "Over" {
+				t.Fatalf("title = %q, want Over", row.Title)
+			}
+		})
+	}
+}
+
 type expectedLiveSession struct {
-	id           string
-	title        string
-	titlePresent bool
-	task         json.RawMessage
-	dag          json.RawMessage
+	id            string
+	title         string
+	titlePresent  bool
+	task          json.RawMessage
+	dag           json.RawMessage
+	taskOversized bool
+	dagOversized  bool
 }
 
 func getLiveSessions(t *testing.T, handler http.Handler, token string) *httptest.ResponseRecorder {
@@ -186,6 +267,19 @@ func assertLiveSessionShape(t *testing.T, body []byte, want []expectedLiveSessio
 		}
 		assertOptionalRaw(t, row, "task", expect.task, i)
 		assertOptionalRaw(t, row, "dag", expect.dag, i)
+		assertBoolField(t, row, "task_oversized", expect.taskOversized, i)
+		assertBoolField(t, row, "dag_oversized", expect.dagOversized, i)
+	}
+}
+
+func assertBoolField(t *testing.T, row map[string]any, key string, want bool, index int) {
+	t.Helper()
+	got, ok := row[key]
+	if !ok {
+		t.Fatalf("sessions[%d].%s missing", index, key)
+	}
+	if got != want {
+		t.Fatalf("sessions[%d].%s = %#v, want %v", index, key, got, want)
 	}
 }
 

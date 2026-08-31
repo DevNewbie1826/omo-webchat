@@ -3,6 +3,7 @@ import type { ApprovalRequest } from "./ApprovalModal";
 import type { MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
 import type { ActivityState } from "./activityTypes";
+import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import type { UiMessage } from "./chatEntries";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { isPromptTerminalError } from "./chatErrorState";
@@ -92,6 +93,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "extensionEvent": {
+        ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
         const next = applyActivityEvent(bindings.activitiesRef.current, frame.name, frame.data);
         if (next !== bindings.activitiesRef.current) bindings.applyActivities(next);
         return;

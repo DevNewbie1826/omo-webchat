@@ -38,7 +38,11 @@ const summaries: readonly LiveSessionSummary[] = [
     doneCount: 1,
     dagDone: 2,
     dagTotal: 3,
+    dagRunning: 0,
     lastLine: "ls -la /work",
+    truncatedTasks: false,
+    taskOversized: false,
+    dagOversized: false,
   },
   {
     id: "disk-9",
@@ -48,6 +52,10 @@ const summaries: readonly LiveSessionSummary[] = [
     dagDone: 0,
     dagTotal: 0,
     lastLine: null,
+    dagRunning: 0,
+    truncatedTasks: false,
+    taskOversized: false,
+    dagOversized: false,
   },
 ];
 
@@ -110,6 +118,37 @@ describe("OverviewPanel", () => {
     expect(running?.textContent).toBe("2");
     expect(running?.getAttribute("aria-label")).toBe("overview.runningAria 2");
     expect(running?.querySelector(".th-overview-card-running-dot")).not.toBeNull();
+
+    const partialSummary: LiveSessionSummary = {
+      id: "tm-1",
+      title: "Refactor auth",
+      runningCount: 2,
+      doneCount: 1,
+      dagDone: 2,
+      dagTotal: 3,
+      lastLine: "ls -la /work",
+      dagRunning: 0,
+      truncatedTasks: true,
+      taskOversized: false,
+      dagOversized: false,
+    };
+    renderPanel({ summaries: [partialSummary] });
+    const partialRunning = card(0).querySelector(".th-overview-card-running");
+    expect(partialRunning?.textContent).toBe("2+");
+    expect(partialRunning?.getAttribute("aria-label")).toBe("overview.runningAriaPartial 2");
+    const oversizedSummary: LiveSessionSummary = {
+      ...partialSummary,
+      runningCount: 0,
+      truncatedTasks: false,
+      taskOversized: true,
+    };
+    renderPanel({ summaries: [oversizedSummary] });
+    const unknownRunning = card(0).querySelector(".th-overview-card-running");
+    expect(unknownRunning?.textContent).toBe("?");
+    expect(unknownRunning?.getAttribute("aria-label")).toBe("overview.runningAriaUnknown");
+    expect(unknownRunning?.getAttribute("title")).toBe("overview.runningAriaUnknown");
+
+    renderPanel();
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done 1");
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.dag 2/3");
     expect(first.querySelector(".th-overview-card-line")?.textContent).toBe("ls -la /work");

@@ -63,6 +63,8 @@ const DAG_PAYLOAD = {
   ],
 };
 
+const NOT_OVERSIZED = { taskOversized: false, dagOversized: false } as const;
+
 function okResponse(body: unknown): Response {
   return {
     ok: true,
@@ -80,37 +82,54 @@ describe("summarizeLiveSession", () => {
       title: "Refactor auth",
       task: TASK_PAYLOAD,
       dag: DAG_PAYLOAD,
+      ...NOT_OVERSIZED,
     });
 
     expect(summary).toEqual({
       id: "s1",
       title: "Refactor auth",
-      runningCount: 1,
+      task: TASK_PAYLOAD,
+      dag: DAG_PAYLOAD,
+      runningCount: 2,
       doneCount: 3,
       dagDone: 2,
       dagTotal: 3,
       lastLine: "ls",
+      dagRunning: 1,
+      truncatedTasks: false,
+      taskOversized: false,
+      dagOversized: false,
     });
   });
 
   it("tolerates null and malformed payloads", () => {
     expect(
-      summarizeLiveSession({ id: "s2", title: "Bare", task: null, dag: null }),
+      summarizeLiveSession({ id: "s2", title: "Bare", task: null, dag: null, ...NOT_OVERSIZED }),
     ).toEqual({
       id: "s2",
       title: "Bare",
+      task: null,
+      dag: null,
       runningCount: 0,
       doneCount: 0,
       dagDone: 0,
       dagTotal: 0,
       lastLine: null,
+      dagRunning: 0,
+      truncatedTasks: false,
+      taskOversized: false,
+      dagOversized: false,
     });
 
-    const garbage = summarizeLiveSession({ id: "s3", title: "", task: { tasks: "nope" }, dag: { runs: 1 } });
+    const garbage = summarizeLiveSession({ id: "s3", title: "", task: { tasks: "nope" }, dag: { runs: 1 }, ...NOT_OVERSIZED });
     expect(garbage.runningCount).toBe(0);
     expect(garbage.doneCount).toBe(0);
     expect(garbage.dagTotal).toBe(0);
     expect(garbage.lastLine).toBeNull();
+    expect(garbage.dagRunning).toBe(0);
+    expect(garbage.truncatedTasks).toBe(false);
+    expect(garbage.taskOversized).toBe(false);
+    expect(garbage.dagOversized).toBe(false);
   });
 
   it("drops stale quiet agents from the running count", () => {
@@ -123,6 +142,7 @@ describe("summarizeLiveSession", () => {
         tasks: [{ task_id: "t1", name: "Quiet", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
       },
       dag: null,
+      ...NOT_OVERSIZED,
     });
 
     expect(summary.runningCount).toBe(0);
@@ -142,6 +162,7 @@ describe("summarizeLiveSession", () => {
         ],
       },
       dag: null,
+      ...NOT_OVERSIZED,
     });
 
     expect(summary.runningCount).toBe(2);
@@ -170,9 +191,122 @@ describe("summarizeLiveSession", () => {
         ],
       },
       dag: null,
+      ...NOT_OVERSIZED,
     });
 
     expect(summary.lastLine).toBe("latest activity");
+  });
+
+  it("counts dag running children when there are no task rows", () => {
+    const summary = summarizeLiveSession({
+      id: "dag-only",
+      title: "Workflow",
+      task: null,
+      dag: {
+        runs: [
+          {
+            run_id: "r1",
+            run_key: "plan",
+            name: "Ship",
+            status: "running",
+            counts: {
+              total: 3,
+              pending: 0,
+              blocked: 0,
+              scheduled: 0,
+              running: 3,
+              completed: 0,
+              failed: 0,
+              cancelled: 0,
+              skipped: 0,
+            },
+            nodes: [],
+            edges: [],
+            waves: [],
+          },
+        ],
+      },
+      ...NOT_OVERSIZED,
+    });
+
+    expect(summary.runningCount).toBe(3);
+    expect(summary.dagRunning).toBe(3);
+  });
+
+  it("counts a taskId present in both a running task row and a running dag node once", () => {
+    const summary = summarizeLiveSession({
+      id: "dup",
+      title: "",
+      task: {
+        tasks: [{ task_id: "t1", name: "Greeter", status: "running", updated_at: FRESH_TASK_UPDATED_AT }],
+      },
+      dag: {
+        runs: [
+          {
+            run_id: "r1",
+            run_key: "plan",
+            name: "Ship",
+            status: "running",
+            counts: {
+              total: 1,
+              pending: 0,
+              blocked: 0,
+              scheduled: 0,
+              running: 1,
+              completed: 0,
+              failed: 0,
+              cancelled: 0,
+              skipped: 0,
+            },
+            nodes: [{ id: "n1", prompt: "do", depends_on: [], state: "running", task_id: "t1" }],
+            edges: [],
+            waves: [],
+          },
+        ],
+      },
+      ...NOT_OVERSIZED,
+    });
+
+    expect(summary.runningCount).toBe(1);
+    expect(summary.dagRunning).toBe(0);
+  });
+
+  it("surfaces truncated_tasks from the task payload", () => {
+    const summary = summarizeLiveSession({
+      id: "trunc",
+      title: "",
+      task: { truncated_tasks: true, tasks: [] },
+      dag: null,
+      ...NOT_OVERSIZED,
+    });
+
+    expect(summary.truncatedTasks).toBe(true);
+  });
+
+  it("does not count cached rows from oversized sides but still parses task lastLine", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const summary = summarizeLiveSession({
+      id: "over",
+      title: "",
+      task: {
+        tasks: [
+          { task_id: "t1", name: "Cached one", status: "running", updated_at: "2026-08-19T10:00:00.000Z", live_progress: { last_assistant_line: "cached detail" } },
+          { task_id: "t2", name: "Cached two", status: "running", updated_at: "2026-08-19T10:00:00.000Z" },
+        ],
+      },
+      dag: DAG_PAYLOAD,
+      taskOversized: true,
+      dagOversized: true,
+    });
+
+    expect(summary).toMatchObject({
+      runningCount: 0,
+      dagRunning: 0,
+      lastLine: "cached detail",
+      taskOversized: true,
+      dagOversized: true,
+    });
   });
 });
 
@@ -225,16 +359,39 @@ describe("live polling hooks", () => {
     expect(captured.summaries[0]).toMatchObject({
       id: "s1",
       title: "Refactor auth",
-      runningCount: 1,
+      runningCount: 2,
       doneCount: 3,
       dagDone: 2,
       dagTotal: 3,
       lastLine: "ls",
+      dagRunning: 1,
+      truncatedTasks: false,
+      taskOversized: false,
+      dagOversized: false,
     });
     expect(captured.summaries[1]).toMatchObject({ id: "s2", runningCount: 0, lastLine: null });
     expect(captured.summaries[2]).toMatchObject({ id: "legacy", title: "" });
     expect(captured.ids).toBeInstanceOf(Set);
     expect(Array.from(captured.ids)).toEqual(["s1", "s2", "legacy"]);
+  });
+
+  it("surfaces task_oversized and dag_oversized from the live payload", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({
+        sessions: [{ id: "s1", title: "Huge", task: null, dag: null, task_oversized: true, dag_oversized: true }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => {
+      root.render(<Host enabled={true} />);
+    });
+
+    expect(captured.summaries[0]).toMatchObject({
+      id: "s1",
+      taskOversized: true,
+      dagOversized: true,
+    });
   });
 
   it("expires a quiet running task while identical polls retain session identity", async () => {

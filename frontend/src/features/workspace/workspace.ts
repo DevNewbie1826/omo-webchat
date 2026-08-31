@@ -44,6 +44,8 @@ export interface LiveSessionInfo {
   readonly title: string;
   readonly task: unknown;
   readonly dag: unknown;
+  readonly taskOversized?: boolean;
+  readonly dagOversized?: boolean;
 }
 
 interface LiveSessionsResponse {
@@ -66,6 +68,8 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
     title: typeof title === "string" ? title : "",
     task: record["task"] ?? null,
     dag: record["dag"] ?? null,
+    ...(record["task_oversized"] === true ? { taskOversized: true } : {}),
+    ...(record["dag_oversized"] === true ? { dagOversized: true } : {}),
   };
 }
 

@@ -403,11 +403,14 @@ func (m *Manager) LiveIDs() []string {
 }
 
 // LiveSummary is one process-alive session as listed by GET /api/sessions/live:
-// its id, display title, and cached activity pair (nil payloads when absent).
+// its id, display title, cached activity pair (nil payloads when absent), and
+// in-memory per-side oversized flags for the latest replayable payloads.
 type LiveSummary struct {
-	ID    string
-	Title string
-	Pair  ActivitySnapshotPair
+	ID            string
+	Title         string
+	Pair          ActivitySnapshotPair
+	TaskOversized bool
+	DagOversized  bool
 }
 
 // LiveSummaries returns process-alive sessions in ID order.
@@ -417,9 +420,12 @@ func (m *Manager) LiveSummaries() []LiveSummary {
 	out := make([]LiveSummary, 0, len(m.sessions))
 	for id, session := range m.sessions {
 		if session.ProcessAlive() {
+			pair, taskOversized, dagOversized := session.activitySnapshotState()
 			out = append(out, LiveSummary{
-				ID:   id,
-				Pair: session.ActivitySnapshot(),
+				ID:            id,
+				Pair:          pair,
+				TaskOversized: taskOversized,
+				DagOversized:  dagOversized,
 			})
 		}
 	}

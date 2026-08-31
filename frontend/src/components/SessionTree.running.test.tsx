@@ -33,7 +33,13 @@ const sessions = [
   { id: "tm-idle", name: "Idle chat", source: "stored" as const, recencyMs: 1 },
 ];
 
-function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, number>, touchActions = false): void {
+interface RunningCount {
+  readonly count: number;
+  readonly partial: boolean;
+  readonly unknown?: boolean;
+}
+
+function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, RunningCount>, touchActions = false): void {
   const root = (container as HTMLDivElement & { __root?: Root }).__root!;
   act(() => {
     root.render(
@@ -92,8 +98,8 @@ describe("SessionTree running-agent badge", () => {
 
   it("renders a chip with the count and an aria-label only while agents run", () => {
     tree(container, new Map([
-      ["tm-live", 2],
-      ["tm-idle", 0],
+      ["tm-live", { count: 2, partial: false }],
+      ["tm-idle", { count: 0, partial: false }],
     ]));
 
     const live = row("Live chat");
@@ -111,7 +117,7 @@ describe("SessionTree running-agent badge", () => {
   });
 
   it("keeps the badge exposed in touch mode and while row actions are focused", () => {
-    tree(container, new Map([["tm-live", 2]]), true);
+    tree(container, new Map([["tm-live", { count: 2, partial: false }]]), true);
 
     expect(container.querySelector(".th-tree")?.classList.contains("th-tree--touch")).toBe(true);
     const live = row("Live chat");
@@ -123,6 +129,23 @@ describe("SessionTree running-agent badge", () => {
 
     const css = readFileSync("src/styles/session-tree.css", "utf8");
     expect(css).not.toMatch(/(?:focus-within|th-tree--touch)[^{]*\.th-tree-running\s*\{[^}]*display:\s*none/);
+  });
+
+  it("renders a plus suffix and partial aria-label for lower-bound counts", () => {
+    tree(container, new Map([["tm-live", { count: 2, partial: true }]]));
+
+    const chip = row("Live chat").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("2+");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsPartial 2");
+  });
+
+  it("renders an unknown-count chip for oversized activity even when count is zero", () => {
+    tree(container, new Map([["tm-live", { count: 0, partial: true, unknown: true }]]));
+
+    const chip = row("Live chat").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("?");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsUnknown");
+    expect(chip?.getAttribute("title")).toBe("sidebar.tm.runningAgentsUnknown");
   });
 
   it("renders no chip at all without running counts", () => {
