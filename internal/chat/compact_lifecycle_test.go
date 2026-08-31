@@ -588,7 +588,7 @@ func TestCompactDoesNotHoldLifecycleLockAcrossProviderWrite(t *testing.T) {
 		t.Fatal("session not finished before compact")
 	}
 
-	wedge := parkWriterOnBlockedStdin(s.proc)
+	wedge := parkWriterOnBlockedStdin(t, s.proc)
 	defer wedge.release()
 	results := make(chan error, 2)
 	go func() { results <- s.Compact() }()

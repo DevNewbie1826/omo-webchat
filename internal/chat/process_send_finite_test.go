@@ -47,12 +47,19 @@ func (*ctxReleasingWedgePipe) Close() error { return nil }
 
 // parkWriterOnBlockedStdin swaps the process's stdin for a wedge pipe and
 // parks the writer goroutine inside one in-flight write. It returns the
-// wedge; call release to un-wedge with the stream intact.
-func parkWriterOnBlockedStdin(proc *Process) *ctxReleasingWedgePipe {
+// wedge; call release to un-wedge with the stream intact. The wait for the
+// writer to enter the pipe is bounded so a regression that never reaches the
+// write fails the test instead of hanging it.
+func parkWriterOnBlockedStdin(t *testing.T, proc *Process) *ctxReleasingWedgePipe {
+	t.Helper()
 	wedge := &ctxReleasingWedgePipe{proc: proc, doRelease: make(chan struct{}), entered: make(chan struct{})}
 	proc.stdin = wedge
 	go func() { _ = proc.Send(map[string]any{"type": "wedge"}) }()
-	<-wedge.entered
+	select {
+	case <-wedge.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("writer never entered the wedged stdin write")
+	}
 	return wedge
 }
 

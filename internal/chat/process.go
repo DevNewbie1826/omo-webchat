@@ -105,7 +105,6 @@ type Process struct {
 	// Test synchronization hooks. They are set only before the first Send and
 	// let concurrency tests observe queue/dequeue boundaries without polling.
 	afterEnqueue func(*writeRequest)
-	beforeWrite  func(*writeRequest)
 	// A real write error is terminal for the pipe: it is latched here and
 	// drains every queued waiter; later Sends fail fast with it.
 	stickyMu  sync.Mutex
@@ -307,9 +306,6 @@ func (p *Process) writeLoop() {
 // until the provider lifecycle (process death) closes the pipe and returns
 // EPIPE, which latches the sticky error and drains the queue.
 func (p *Process) writeOne(req *writeRequest) {
-	if p.beforeWrite != nil {
-		p.beforeWrite(req)
-	}
 	select {
 	case <-p.writerClose:
 		req.complete(errors.New("chat: provider write cancelled by close"))

@@ -13,10 +13,16 @@ type releaseRecordingPipe struct {
 	entered chan struct{}
 	release chan struct{}
 	writes  chan []byte
+	// enters counts every write that reached the pipe, including ones still
+	// parked on release. A fallback open must enter here before its acquire
+	// can return, so the count is a witness for "exactly one command was
+	// issued" that does not depend on write completion timing.
+	enters  chan struct{}
 	once    sync.Once
 }
 
 func (p *releaseRecordingPipe) Write(b []byte) (int, error) {
+	p.enters <- struct{}{}
 	p.once.Do(func() { close(p.entered) })
 	<-p.release
 	p.writes <- append([]byte(nil), b...)
@@ -30,9 +36,12 @@ func TestResumedOpenCancellationDoesNotIssueFallbackOpen(t *testing.T) {
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 		writes:  make(chan []byte, 4),
+		enters:  make(chan struct{}, 8),
 	}
+	proc := &Process{stdin: pipe, sendTimeout: 5 * time.Second}
+	t.Cleanup(proc.stopWriter)
 	provider := &sharedProvider{
-		proc:     &Process{stdin: pipe, sendTimeout: 5 * time.Second},
+		proc:     proc,
 		state:    sharedProviderStarted,
 		sessions: make(map[string]*sessionRoute),
 		pending:  make(map[string]pendingProviderRequest),
@@ -89,6 +98,16 @@ func TestResumedOpenCancellationDoesNotIssueFallbackOpen(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("blocked resume was not released to the provider")
 	}
+	// Exactly one command may ever have entered the pipe. A reverted manager
+	// fallback issues its second open_session before AcquireAttach returns, so
+	// its enqueue is already witnessed here and this drains as a failure
+	// instead of racing the second write's completion.
+	<-pipe.enters
+	select {
+	case <-pipe.enters:
+		t.Fatal("delivery-unknown resume issued a second open command")
+	default:
+	}
 	select {
 	case raw := <-pipe.writes:
 		t.Fatalf("delivery-unknown resume issued a second open command: %s", raw)
@@ -118,8 +137,10 @@ func (p *blockingUntilClosedPipe) Close() error {
 
 func TestOpenProviderDeathWriteWaitHonorsCallerCancellation(t *testing.T) {
 	pipe := &blockingUntilClosedPipe{entered: make(chan struct{}), release: make(chan struct{})}
+	deathProc := &Process{stdin: pipe, sendTimeout: 10 * time.Second}
+	t.Cleanup(deathProc.stopWriter)
 	provider := &sharedProvider{
-		proc:     &Process{stdin: pipe, sendTimeout: 10 * time.Second},
+		proc:     deathProc,
 		state:    sharedProviderStarted,
 		sessions: make(map[string]*sessionRoute),
 		pending:  make(map[string]pendingProviderRequest),

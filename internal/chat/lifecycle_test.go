@@ -54,7 +54,7 @@ func TestManagerAcquireDoesNotCloseLiveSession(t *testing.T) {
 	// Simulate a provider that stopped draining stdin: the writer goroutine
 	// parks inside an in-flight write to a wedged stdin and is released only
 	// by process death or an explicit un-wedge.
-	wedge := parkWriterOnBlockedStdin(oldSession.shared.proc)
+	wedge := parkWriterOnBlockedStdin(t, oldSession.shared.proc)
 	t.Cleanup(func() { wedge.release() })
 
 	replaced := make(chan struct{})
@@ -78,7 +78,7 @@ func TestManagerAcquireDoesNotCloseLiveSession(t *testing.T) {
 // abort-before-cancel Close deadlocks and the process is never killed.
 func TestSessionCloseCancelsWithoutAbortWrite(t *testing.T) {
 	s := startSleepSession(t, "chat-close")
-	wedge := parkWriterOnBlockedStdin(s.proc)
+	wedge := parkWriterOnBlockedStdin(t, s.proc)
 	t.Cleanup(func() { wedge.release() })
 
 	done := make(chan error, 1)
