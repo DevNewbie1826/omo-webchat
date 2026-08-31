@@ -75,18 +75,21 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   // for descriptive fields such as lastLine, but never treat stale rows as a
   // trustworthy running-count lower bound.
   const runningDagTaskIds = new Set<string>();
-  for (const run of runs) {
-    if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
-    for (const node of run.nodes) {
-      if (node.state !== "running" || node.taskId === undefined) continue;
-      runningDagTaskIds.add(node.taskId);
+  if (info.dagOversized !== true) {
+    for (const run of runs) {
+      if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
+      for (const node of run.nodes) {
+        if (node.state !== "running" || node.taskId === undefined) continue;
+        runningDagTaskIds.add(node.taskId);
+      }
     }
   }
   const taskIds = new Set(info.taskOversized === true ? [] : tasks.map((task) => task.taskId));
   const taskRunning = info.taskOversized === true ? 0 : tasks.filter((task) => {
     if (task.status !== "running") return false;
     const lastMs = lastActivityMs(task);
-    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS || runningDagTaskIds.has(task.taskId);
+    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
+      || (info.dagOversized !== true && runningDagTaskIds.has(task.taskId));
   }).length;
   const dagRunning = info.dagOversized === true ? 0 : dagRunningOf(runs, taskIds);
   let dagDone = 0;

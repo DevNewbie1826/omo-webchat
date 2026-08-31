@@ -359,6 +359,22 @@ describe("summarizeLiveSession", () => {
       expect(summary.dagRunning).toBe(0);
     });
 
+    it("does not trust cached dag authority when the dag side is oversized", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: dagPayload("running", "running"),
+        taskOversized: false,
+        dagOversized: true,
+      });
+
+      expect(summary.runningCount).toBe(0);
+      expect(summary.dagRunning).toBe(0);
+    });
+
     it("drops a stale running row when its dag node is completed", () => {
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
