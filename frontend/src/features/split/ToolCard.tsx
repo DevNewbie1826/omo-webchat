@@ -52,9 +52,9 @@ function argsRecord(args: unknown): Readonly<Record<string, unknown>> | undefine
   return Object.keys(args).length > 0 ? args : undefined;
 }
 
-/** First non-empty line of an output stream, trimmed for the one-line preview. */
-function firstOutputLine(text: string): string {
-  for (const line of text.split("\n")) {
+/** Latest non-empty line of an output stream, trimmed for the one-line preview. */
+function latestOutputLine(text: string): string {
+  for (const line of text.split("\n").reverse()) {
     const trimmed = line.trim();
     if (trimmed.length > 0) return trimmed;
   }
@@ -68,9 +68,11 @@ function firstOutputLine(text: string): string {
  * output line) over an inset Command/Input + Output body. Status is never
  * colour alone: running shows a spinner ring, done a check mark, failed an
  * exclamation mark, each beside a visible localized word. An untouched card
- * follows its LIVE status: open while running, auto-collapsed on completion.
- * The first user toggle freezes that card's disclosure choice permanently;
- * later phase updates and completion never move it again.
+ * stays collapsed in every phase — running included; only a failed call
+ * auto-opens, so errors are impossible to miss. The collapsed header preview
+ * always shows the latest non-empty output line, so a closed card still reads
+ * live progress. The first user toggle freezes that card's disclosure choice
+ * permanently; later phase updates and completion never move it again.
  */
 function toolStatus(props: ToolCardProps): ToolStatus {
   const subagent = props.toolName === "task" ? subagentMetadata(props) : undefined;
@@ -83,19 +85,21 @@ export function ToolCard(props: ToolCardProps) {
   const { t } = useT();
   const subagent = toolName === "task" ? subagentMetadata(props) : undefined;
   const status = toolStatus(props);
-  // Uncontrolled fallback: an untouched card derives its disclosure from the
-  // CURRENT status on every render (open while running, collapsed once
-  // complete). userChoice stays null until this card's first toggle, which
-  // freezes the choice; a controlled `open` prop (user choice recorded by the
-  // transcript) takes precedence over both.
+  // Uncontrolled fallback: an untouched card stays collapsed in every phase
+  // (running included) — only a failed call auto-opens so errors are
+  // impossible to miss, while the collapsed header preview keeps showing the
+  // latest output line so a closed card still reads live progress. userChoice
+  // stays null until this card's first toggle, which freezes the choice; a
+  // controlled `open` prop (user choice recorded by the transcript) takes
+  // precedence over both.
   const [userChoice, setUserChoice] = useState<boolean | null>(null);
-  const open = props.open ?? (userChoice ?? status === "running");
+  const open = props.open ?? (userChoice ?? status === "error");
 
   const record = argsRecord(props.args);
   const command = record ? nonEmptyString(record["command"]) : undefined;
   const invocation = command ?? (record ? JSON.stringify(record) : undefined);
   const inputJson = record && command === undefined ? JSON.stringify(record, null, 2) : undefined;
-  const preview = firstOutputLine(text);
+  const preview = latestOutputLine(text);
   const hasBody = command !== undefined || inputJson !== undefined || text.length > 0;
 
   const name = subagent?.title ?? toolName;

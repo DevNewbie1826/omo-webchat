@@ -117,8 +117,9 @@ describe("ChatPane tool cards and approvals", () => {
 		const cards = container.querySelectorAll(".th-tool[data-tool-call-id='call-1']");
 		expect(cards).toHaveLength(1);
 		// The finalized block rests collapsed behind its invocation summary; the
-		// full output stays inside the one frame, revealed on disclosure.
-		expect(cards[0]?.querySelector(".th-tool-preview")?.textContent).toBe("file1");
+		// preview shows the latest output line and the full output stays inside
+		// the one frame, revealed on disclosure.
+		expect(cards[0]?.querySelector(".th-tool-preview")?.textContent).toBe("file2");
 		const head = cards[0]?.querySelector<HTMLButtonElement>(".th-tool-head");
 		expect(head?.getAttribute("aria-expanded")).toBe("false");
 		act(() => {
@@ -200,8 +201,18 @@ describe("ChatPane tool cards and approvals", () => {
 			});
 		});
 
-		let card = container.querySelector<HTMLElement>(".th-tool[data-tool-call-id='call-args']");
-		expect(card?.querySelector(".th-tool-cmd")?.textContent).toBe("find . -maxdepth 1");
+		// The untouched card stays collapsed in every phase; the head still shows
+		// the invocation and the latest output line, and the body appears only
+		// once the user opens it.
+		const liveHead = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-args'] .th-tool-head");
+		expect(liveHead?.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-args'] .th-tool-cmd")?.textContent).toBe("find . -maxdepth 1");
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-args'] .th-tool-preview")?.textContent).toBe("./frontend");
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-args'] .th-tool-body")).toBeNull();
+		act(() => {
+			liveHead?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-args'] .th-tool-body")?.textContent).toContain("./frontend");
 
 		act(() => {
 			deliver({
@@ -212,11 +223,14 @@ describe("ChatPane tool cards and approvals", () => {
 			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
 		});
 
-		card = container.querySelector<HTMLElement>(".th-tool[data-tool-call-id='call-args']");
+		const card = container.querySelector<HTMLElement>(".th-tool[data-tool-call-id='call-args']");
+		// run.done moves the card to history: the invocation stays visible and the
+		// recorded user choice keeps it expanded.
 		expect(card?.querySelector(".th-tool-cmd")?.textContent).toBe("find . -maxdepth 1");
+		expect(card?.querySelector(".th-tool-head")?.getAttribute("aria-expanded")).toBe("true");
 	});
 
-	it("auto-collapses an untouched live tool card when it completes", () => {
+	it("renders a running card collapsed from the start and keeps it collapsed on completion", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -229,8 +243,9 @@ describe("ChatPane tool cards and approvals", () => {
 			});
 		});
 		const head = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-auto'] .th-tool-head");
-		// Running: the untouched card is expanded so current work is observable.
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		// Running: the untouched card is collapsed from the start; the head
+		// preview carries the live progress instead.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
 
 		act(() => {
 			deliver({
@@ -243,12 +258,12 @@ describe("ChatPane tool cards and approvals", () => {
 				isError: false,
 			});
 		});
-		// The user never toggled it: completion alone must collapse the card.
+		// The user never toggled it: completion must not open the card either.
 		expect(head?.getAttribute("aria-expanded")).toBe("false");
 		expect(container.querySelector(".th-tool[data-tool-call-id='call-auto'] .th-tool-body")).toBeNull();
 	});
 
-	it("keeps a reconnect-style running mount collapsed after it finalizes", () => {
+	it("keeps a reconnect-style running mount collapsed throughout and after it finalizes", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			// History restored on reconnect already carries the toolCall block.
@@ -271,7 +286,8 @@ describe("ChatPane tool cards and approvals", () => {
 			deliver({ type: "tool", sessionId: "chat-1", toolCallId: "call-re", toolName: "bash", phase: "start" });
 		});
 		const head = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-re'] .th-tool-head");
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		// Untouched across the running mount: collapsed from the start.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
 
 		act(() => {
 			deliver({
@@ -284,8 +300,9 @@ describe("ChatPane tool cards and approvals", () => {
 				isError: false,
 			});
 		});
-		// Untouched across the running mount: finalizing collapses it.
+		// ...and still collapsed once the re-streamed call finalizes.
 		expect(head?.getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector(".th-tool[data-tool-call-id='call-re'] .th-tool-body")).toBeNull();
 	});
 
 	it("keeps the user's expanded choice across the live-to-history run.done transition", () => {

@@ -82,22 +82,48 @@ describe("ToolCard disclosures", () => {
 		expect(card.querySelector(".th-tool-preview")?.textContent).toBe(subagentOutput);
 	});
 
-	it("collapses a generic tool card with its first output line as the preview", () => {
-		const text = "x".repeat(90);
+	it("collapses a generic tool card with its latest output line as the preview", () => {
 		const card = renderCard({
 			toolCallId: "call-1",
 			toolName: "bash",
 			phase: "end",
-			text,
+			text: "first line\n\nlast status line",
 			isError: false,
 		});
 
 		const head = card.querySelector<HTMLButtonElement>(".th-tool-head");
 		expect(head?.getAttribute("aria-expanded")).toBe("false");
 		// Single-line truncation is visual (CSS ellipsis); the preview exposes the
-		// first non-empty output line in full to the accessibility tree.
-		expect(card.querySelector(".th-tool-preview")?.textContent).toBe(text);
+		// latest non-empty output line in full to the accessibility tree, so a
+		// closed card still reads live progress.
+		expect(card.querySelector(".th-tool-preview")?.textContent).toBe("last status line");
 		expect(card.querySelector(".th-tool-body")).toBeNull();
+	});
+
+	it("keeps an untouched running card collapsed in every phase", () => {
+		const card = renderCard({
+			toolCallId: "call-live",
+			toolName: "bash",
+			phase: "update",
+			text: "working…",
+			isError: false,
+		});
+
+		expect(card.querySelector(".th-tool-head")?.getAttribute("aria-expanded")).toBe("false");
+		expect(card.querySelector(".th-tool-body")).toBeNull();
+	});
+
+	it("auto-opens an untouched failed card so errors are impossible to miss", () => {
+		const card = renderCard({
+			toolCallId: "call-failed",
+			toolName: "bash",
+			phase: "end",
+			text: "boom",
+			isError: true,
+		});
+
+		expect(card.querySelector(".th-tool-head")?.getAttribute("aria-expanded")).toBe("true");
+		expect(card.querySelector(".th-tool-body")?.textContent).toContain("boom");
 	});
 
 	it("toggles a generic tool body open and closed", () => {

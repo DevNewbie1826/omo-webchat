@@ -85,7 +85,7 @@ describe("ChatPane tool cards and approvals", () => {
 		return { deliver: (f) => deliver?.(f), sent };
 	}
 
-	it("renders a live tool block expanded while running and auto-collapses it when untouched", () => {
+	it("renders a live tool block collapsed while running and keeps it collapsed when untouched", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -100,8 +100,10 @@ describe("ChatPane tool cards and approvals", () => {
 		const card = container.querySelector(".th-tool[data-tool-call-id='call-1']");
 		const head = card?.querySelector<HTMLButtonElement>(".th-tool-head");
 		expect(head?.tagName).toBe("BUTTON");
-		// Running: the untouched card is expanded so current work is observable.
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		// Running: the untouched card stays collapsed; the head preview carries
+		// the live progress instead.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
+		expect(card?.querySelector(".th-tool-body")).toBeNull();
 
 		act(() => {
 			deliver({
@@ -114,7 +116,7 @@ describe("ChatPane tool cards and approvals", () => {
 				isError: false,
 			});
 		});
-		// Untouched: completion alone auto-collapses the card; the output stays
+		// Untouched: completion must not open the card either; the output stays
 		// reachable behind the invocation summary.
 		expect(container.textContent).toContain("tool.done");
 		expect(head?.getAttribute("aria-expanded")).toBe("false");
@@ -126,8 +128,8 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(head?.getAttribute("aria-expanded")).toBe("true");
 		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("line1\nline2\n");
 
-		// A collapse while a later call is still running stays frozen through
-		// that call's completion.
+		// A later call starts collapsed too; the user opens it and the open
+		// choice stays frozen through that call's completion.
 		act(() => {
 			deliver({
 				type: "tool",
@@ -139,11 +141,11 @@ describe("ChatPane tool cards and approvals", () => {
 			});
 		});
 		const head2 = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-2'] .th-tool-head");
-		expect(head2?.getAttribute("aria-expanded")).toBe("true");
+		expect(head2?.getAttribute("aria-expanded")).toBe("false");
 		act(() => {
 			head2?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
-		expect(head2?.getAttribute("aria-expanded")).toBe("false");
+		expect(head2?.getAttribute("aria-expanded")).toBe("true");
 		act(() => {
 			deliver({
 				type: "tool",
@@ -155,7 +157,7 @@ describe("ChatPane tool cards and approvals", () => {
 				isError: false,
 			});
 		});
-		expect(head2?.getAttribute("aria-expanded")).toBe("false");
+		expect(head2?.getAttribute("aria-expanded")).toBe("true");
 	});
 
 	it("renders an omo task as a live sub-agent card and follows its reported status", () => {
@@ -180,11 +182,18 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(card?.querySelector(".th-tool-status--running")?.textContent).toBe("tool.running");
 		expect(card?.querySelector(".th-tool-glyph--running")).not.toBeNull();
 		const head = card?.querySelector<HTMLButtonElement>(".th-tool-head");
-		// A running sub-agent starts expanded so its live output is observable.
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		// A running sub-agent stays collapsed untouched; the head preview still
+		// carries its live output.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
 		expect(card?.querySelector(".th-tool-preview")?.textContent).toBe("↳ last: inspecting files");
+		expect(card?.querySelector(".th-tool-body")).toBeNull();
+		// The user opens it, then collapses it again; completion must not
+		// override that choice.
+		act(() => {
+			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
 		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("↳ last: inspecting files");
-		// The user collapses it; completion must not override that choice.
 		act(() => {
 			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
@@ -237,13 +246,15 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(card?.querySelector(".th-tool-name")?.textContent).toBe("Greeter");
 		expect(card?.querySelector(".th-tool-status--running")?.textContent).toBe("tool.running");
 		const head = card?.querySelector<HTMLButtonElement>(".th-tool-head");
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
 		expect(card?.querySelector(".th-tool-preview")?.textContent).toBe("Running agent Greeter…");
-		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("Running agent Greeter…");
+		expect(card?.querySelector(".th-tool-body")).toBeNull();
+		// The user opens it; later phase updates must not move that choice.
 		act(() => {
 			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
-		expect(head?.getAttribute("aria-expanded")).toBe("false");
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("Running agent Greeter…");
 
 		act(() => {
 			deliver({
@@ -260,12 +271,9 @@ describe("ChatPane tool cards and approvals", () => {
 			});
 		});
 
-		// The phase update must not reopen the block the user collapsed.
+		// The phase update must not move the choice the user made.
 		expect(card?.classList.contains("th-tool--ok")).toBe(true);
-		expect(head?.getAttribute("aria-expanded")).toBe("false");
-		act(() => {
-			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-		});
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
 		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("Agent Greeter complete");
 	});
 
@@ -291,11 +299,10 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(card?.classList.contains("th-tool--error")).toBe(true);
 		expect(card?.querySelector(".th-tool-status--error")?.textContent).toBe("tool.error");
 		expect(card?.querySelector(".th-tool-glyph--error")?.textContent).toBe("!");
-		// Failure output stays available inside the block.
+		// A failed call is the one phase that auto-opens an untouched card, so
+		// the failure output is impossible to miss.
 		const head = card?.querySelector<HTMLButtonElement>(".th-tool-head");
-		act(() => {
-			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-		});
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
 		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("Agent failed");
 	});
 
