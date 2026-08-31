@@ -20,7 +20,7 @@ export interface SessionTreeProps {
   readonly placedSessions: ReadonlySet<string>;
   readonly liveSessions: ReadonlySet<string>;
   /** Live session id -> running agent count; rows show a badge while > 0. */
-  readonly runningCounts?: ReadonlyMap<string, number> | undefined;
+  readonly runningCounts?: ReadonlyMap<string, { readonly count: number; readonly partial: boolean }> | undefined;
   readonly expanded: ReadonlySet<string>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
@@ -183,7 +183,8 @@ export function SessionTree({
                 const renamingTm = tm !== undefined && rename?.kind === "terminal" && rename.tmId === item.id
                   ? rename
                   : null;
-                const running = runningCounts?.get(item.id) ?? 0;
+                const runningInfo = runningCounts?.get(item.id);
+                const running = runningInfo?.count ?? 0;
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: item.name })
                   : undefined;
@@ -229,10 +230,10 @@ export function SessionTree({
                       <span
                         className="th-tree-running"
                         role="img"
-                        aria-label={t("sidebar.tm.runningAgents", { n: running })}
+                        aria-label={t(runningInfo?.partial ? "sidebar.tm.runningAgentsPartial" : "sidebar.tm.runningAgents", { n: running })}
                       >
                         <span className="th-tree-running-dot" aria-hidden="true" />
-                        {running}
+                        {running}{runningInfo?.partial ? "+" : ""}
                       </span>
                     )}
                     {item.source === "discovered" ? (

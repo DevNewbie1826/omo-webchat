@@ -75,10 +75,10 @@ export function OverviewPanel({
                       <span
                         className="th-overview-card-running"
                         role="img"
-                        aria-label={t("overview.runningAria", { n: summary.runningCount })}
+                        aria-label={t(summary.truncatedTasks || summary.taskOversized || summary.dagOversized ? "overview.runningAriaPartial" : "overview.runningAria", { n: summary.runningCount })}
                       >
                         <span className="th-overview-card-running-dot" aria-hidden="true" />
-                        {summary.runningCount}
+                        {summary.runningCount}{summary.truncatedTasks || summary.taskOversized || summary.dagOversized ? "+" : ""}
                       </span>
                     )}
                   </span>

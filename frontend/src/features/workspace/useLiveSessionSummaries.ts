@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
 import { lastActivityMs, taskStatusCounts } from "../split/activityShelfModel";
-import type { ActivityTask } from "../split/activityTypes";
+import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
@@ -22,6 +22,11 @@ export interface LiveSessionSummary {
   /** Most recent live_progress last_assistant_line or activity across tasks;
    * null when no task reports one. */
   readonly lastLine: string | null;
+  /** DAG-side running children not already present in the task list. */
+  readonly dagRunning: number;
+  readonly truncatedTasks: boolean;
+  readonly taskOversized: boolean;
+  readonly dagOversized: boolean;
 }
 
 function lastLineOf(tasks: readonly ActivityTask[]): string | null {
@@ -40,16 +45,37 @@ function lastLineOf(tasks: readonly ActivityTask[]): string | null {
   return bestLine;
 }
 
+/** Running DAG children not already represented by a task row (any status).
+ * Prefer node-level rows when a run has them; otherwise use counts.running. */
+function dagRunningOf(runs: readonly ActivityDagRun[], taskIds: ReadonlySet<string>): number {
+  let running = 0;
+  for (const run of runs) {
+    if (run.nodes.length === 0) {
+      running += run.counts.running;
+      continue;
+    }
+    for (const node of run.nodes) {
+      if (node.state !== "running") continue;
+      if (node.taskId !== undefined && taskIds.has(node.taskId)) continue;
+      running += 1;
+    }
+  }
+  return running;
+}
+
 export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()): LiveSessionSummary {
-  const tasks = (info.task == null ? null : parseTaskUpdated(info.task))?.tasks ?? [];
+  const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
+  const tasks = parsedTask?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
   const counts = taskStatusCounts(tasks);
+  const taskIds = new Set(tasks.map((task) => task.taskId));
   // Unknown or malformed timestamps count conservatively as running.
-  const runningCount = tasks.filter((task) => {
+  const taskRunning = tasks.filter((task) => {
     if (task.status !== "running") return false;
     const lastMs = lastActivityMs(task);
     return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
   }).length;
+  const dagRunning = dagRunningOf(runs, taskIds);
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -59,11 +85,15 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   return {
     id: info.id,
     title: info.title,
-    runningCount,
+    runningCount: taskRunning + dagRunning,
     doneCount: counts.done,
     dagDone,
     dagTotal,
     lastLine: lastLineOf(tasks),
+    dagRunning,
+    truncatedTasks: parsedTask?.truncatedTasks === true,
+    taskOversized: info.taskOversized === true,
+    dagOversized: info.dagOversized === true,
   };
 }
 

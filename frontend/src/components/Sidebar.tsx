@@ -5,6 +5,7 @@ import type { ToastKind } from "./SessionTree";
 import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons";
 import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
+import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
@@ -68,9 +69,19 @@ export function Sidebar({
   const [overviewOpen, setOverviewOpen] = useState(false);
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the overview panel.
-  const summaries = useLiveSessionSummaries(true);
+  // WS frames from the attached chat pane override the poll snapshot when they
+  // are fresher (see liveBadgeStore); background sessions stay poll-fed.
+  const pollSummaries = useLiveSessionSummaries(true);
+  const summaries = useMergedLiveSummaries(pollSummaries);
   const runningCounts = useMemo(
-    () => new Map(summaries.filter((s) => s.runningCount > 0).map((s) => [s.id, s.runningCount])),
+    () => new Map(
+      summaries
+        .filter((s) => s.runningCount > 0)
+        .map((s) => [s.id, {
+          count: s.runningCount,
+          partial: s.truncatedTasks || s.taskOversized || s.dagOversized,
+        }]),
+    ),
     [summaries],
   );
   const hiddenMobileDrawer = isMobile && collapsed;
