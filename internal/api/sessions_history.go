@@ -280,6 +280,16 @@ func sessionMatchesChat(sess diskSession, chat store.Chat) bool {
 	return false
 }
 
+// chatRecencyMs is the recency key for a stored chat in MRU orderings: the
+// last-used stamp when the record carries one, else creation time for legacy
+// rows that never recorded a use.
+func chatRecencyMs(ch store.Chat) int64 {
+	if ch.LastUsedAt > 0 {
+		return ch.LastUsedAt
+	}
+	return ch.CreatedAt
+}
+
 func mergeSessionHistory(chats []store.Chat, disk []diskSession) []sessionHistoryItem {
 	matched := make([]bool, len(disk))
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
@@ -295,7 +305,7 @@ func mergeSessionHistory(chats []store.Chat, disk []diskSession) []sessionHistor
 			ID:        ch.ID,
 			Name:      ch.Name,
 			Source:    sessionHistorySourceStored,
-			RecencyMs: ch.CreatedAt,
+			RecencyMs: chatRecencyMs(ch),
 			// A cheap Stat per stored row: flags identities whose session file
 			// vanished. Never a branch scan — that is recovery-time work.
 			Dangling: chat.StoredIdentityDangling(ch.PiSessionID),

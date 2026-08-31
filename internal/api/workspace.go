@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -18,7 +19,22 @@ type renameRequest struct {
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, _ *http.Request) {
 	// Read-only: the store projects legacy launchable chats as omo and hides
 	// unsupported ones in the returned copies without writing anything back.
-	writeJSON(w, http.StatusOK, s.store.ListWorkspaces())
+	workspaces := s.store.ListWorkspaces()
+	// ListWorkspaces returns per-workspace copies with cloned chats
+	// (store.copyWorkspace), so this sort reorders only the response; the
+	// store keeps insertion order. MRU first: most recent use wins, legacy
+	// rows without a stamp fall back to creation time, ties break by ID.
+	for i := range workspaces {
+		chats := workspaces[i].Chats
+		sort.SliceStable(chats, func(a, b int) bool {
+			ra, rb := chatRecencyMs(chats[a]), chatRecencyMs(chats[b])
+			if ra != rb {
+				return ra > rb
+			}
+			return chats[a].ID < chats[b].ID
+		})
+	}
+	writeJSON(w, http.StatusOK, workspaces)
 }
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {

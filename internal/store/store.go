@@ -30,7 +30,11 @@ type Chat struct {
 	Provider    string          `json:"provider,omitempty"`
 	Model       json.RawMessage `json:"model,omitempty"`
 	CreatedAt   int64           `json:"createdAt"`
-	LastEntryID string          `json:"lastEntryId,omitempty"`
+	// LastUsedAt is the MRU recency stamp: Unix millis of the chat's most
+	// recent successful open. Zero means never used; recency consumers fall
+	// back to CreatedAt for those legacy rows.
+	LastUsedAt  int64  `json:"lastUsedAt,omitempty"`
+	LastEntryID string `json:"lastEntryId,omitempty"`
 	// ActivitySnapshot is the persisted replay seed for restored sessions: the
 	// latest replayable activity payloads at the last settled run. A session
 	// opened from this record replays the pair to its first client until live
