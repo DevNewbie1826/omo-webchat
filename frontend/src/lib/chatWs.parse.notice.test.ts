@@ -54,4 +54,28 @@ describe("parseChatServerFrame notice", () => {
   it("rejects a session-scoped notice without a sessionId", () => {
     expect(parseChatServerFrame({ type: "notice", kind: "auto_retry_start" })).toBeNull();
   });
+
+  it("parses the server at stamp (RFC3339Nano string) to epoch milliseconds", () => {
+    const frame = parseChatServerFrame({
+      type: "notice",
+      sessionId: "chat-1",
+      kind: "auto_retry_start",
+      at: "2026-01-02T03:04:05.123456789Z",
+    });
+    expect(frame?.type === "notice" && frame.at).toBe(Date.parse("2026-01-02T03:04:05.123456789Z"));
+    const seconds = parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k", at: "2026-01-02T03:04:05Z" });
+    expect(seconds?.type === "notice" && seconds.at).toBe(Date.parse("2026-01-02T03:04:05Z"));
+  });
+
+  it("omits at when absent or invalid so the client stamps its own time", () => {
+    expect(parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k" })).toEqual({
+      type: "notice",
+      sessionId: "chat-1",
+      kind: "k",
+    });
+    for (const at of ["garbage", "", 5, null, {}]) {
+      const frame = parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k", at });
+      expect(frame?.type === "notice" && "at" in frame && frame.at !== undefined).toBe(false);
+    }
+  });
 });

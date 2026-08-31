@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext, type I18nValue } from "../../i18n";
 import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import { ChatTranscript } from "./ChatTranscript";
+import { mergeTranscriptItems } from "./useChatFrameState";
 import type { UiMessage } from "./chatEntries";
 import { useChatSession } from "./useChatSession";
 
@@ -176,7 +177,8 @@ describe("ChatTranscript persisted disclosures", () => {
 			root.render(
 				<I18nContext.Provider value={i18n}>
 					<ChatTranscript
-						messages={messages}
+						items={mergeTranscriptItems(messages, [])}
+						onDismissNotice={() => undefined}
 						streaming=""
 						thinking=""
 						toolCalls={{}}

@@ -59,6 +59,30 @@
   justify-content: flex-start;
 }
 
+/* Server advisories render as distinct bordered system blocks inside the
+   virtualized flow. The .th-alert family supplies fill, border, radius, and
+   tone; the block spans the full message lane so it never reads as one side
+   of the conversation, and the tag names its authorship ("System"). */
+.th-chat-notice {
+  width: 100%;
+  max-width: 100%;
+}
+
+.th-chat-notice-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
+}
+
+.th-chat-notice-tag {
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  font-weight: var(--th-weight-emphasize);
+}
+
 .th-chat-live {
   display: flex;
   flex-direction: column;

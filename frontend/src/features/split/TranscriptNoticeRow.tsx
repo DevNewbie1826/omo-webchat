@@ -1,10 +1,11 @@
-import { useState } from "react";
 import { IconX } from "../../components/icons";
 import { useT } from "../../i18n";
 import type { ChatNotice } from "./useChatFrameState";
 
-export interface NoticeBannerProps {
-  readonly notices: readonly ChatNotice[];
+export interface TranscriptNoticeRowProps {
+  readonly notice: ChatNotice;
+  /** View-local hide: the pane owns the dismissed set, the list is untouched. */
+  readonly onDismiss: (id: number) => void;
 }
 
 /** Kinds rendered with the warning tone; every other kind renders as info. */
@@ -99,36 +100,33 @@ function NoticeBody({ notice }: { readonly notice: ChatNotice }) {
 }
 
 /**
- * Ephemeral server advisories, stacked above the transcript, newest first.
- * Dismissal is view-local: the state list stays append-only from the frame
- * handler, and nothing is persisted or replayed across reconnects.
+ * One server advisory rendered as a distinct bordered system block in the
+ * virtualized transcript flow — never inside the live region. All kinds
+ * render here; durable ones reappear after a refresh via server replay,
+ * transient ones simply do not survive a reload. Dismissal is view-local:
+ * the row only reports the id upward and never mutates any notice list.
  */
-export function NoticeBanner({ notices }: NoticeBannerProps) {
+export function TranscriptNoticeRow({ notice, onDismiss }: TranscriptNoticeRowProps) {
   const { t } = useT();
-  const [dismissed, setDismissed] = useState<ReadonlySet<number>>(() => new Set());
-  const visible = notices.filter((notice) => !dismissed.has(notice.id));
-  if (visible.length === 0) return null;
   return (
-    <div className="th-notice-stack">
-      {visible.map((notice) => (
-        <div
-          key={notice.id}
-          className={`th-alert ${WARNING_KINDS.has(notice.kind) ? "th-alert--warning" : "th-alert--info"}`}
-          role="status"
-        >
-          <span className="th-notice-body">
-            <NoticeBody notice={notice} />
-          </span>
-          <button
-            type="button"
-            className="th-btn-icon th-notice-dismiss"
-            aria-label={t("notice.dismiss")}
-            onClick={() => setDismissed((current) => new Set(current).add(notice.id))}
-          >
-            <IconX size={14} />
-          </button>
-        </div>
-      ))}
+    <div
+      className={`th-chat-notice th-alert ${WARNING_KINDS.has(notice.kind) ? "th-alert--warning" : "th-alert--info"}`}
+      role="status"
+    >
+      <div className="th-chat-notice-content">
+        <span className="th-chat-notice-tag">{t("notice.system")}</span>
+        <span className="th-notice-body">
+          <NoticeBody notice={notice} />
+        </span>
+      </div>
+      <button
+        type="button"
+        className="th-btn-icon th-notice-dismiss"
+        aria-label={t("notice.dismiss")}
+        onClick={() => onDismiss(notice.id)}
+      >
+        <IconX size={14} />
+      </button>
     </div>
   );
 }

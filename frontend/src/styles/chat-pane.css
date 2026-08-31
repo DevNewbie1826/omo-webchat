@@ -357,20 +357,10 @@
   color: var(--th-text);
 }
 
-/* Server notice stack: the advisory lane above the transcript, matching the
-   .th-chat-status lane width. The info tone extends the .th-alert family with
-   the theme-independent reference blue; the warning tone reuses the shared
-   .th-alert--warning modifier unchanged. */
-.th-notice-stack {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: var(--th-space-2);
-  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
-  min-width: 0;
-  margin: var(--th-space-2) auto 0;
-}
-
+/* Server notices render as in-flow system blocks inside the transcript (see
+   chat-transcript.css); only the tone extension lives here. The info tone
+   extends the .th-alert family with the theme-independent reference blue; the
+   warning tone reuses the shared .th-alert--warning modifier unchanged. */
 .th-alert--info {
   background: color-mix(in srgb, var(--th-send) 12%, transparent);
   border-color: var(--th-send);

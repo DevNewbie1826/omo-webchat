@@ -21,7 +21,11 @@ export interface MissingOriginal {
   readonly candidates: readonly ResumeCandidate[];
 }
 
-/** One server advisory shown as a dismissible banner above the transcript. */
+/**
+ * One server advisory rendered as a distinct system block inside the
+ * transcript flow. `at` carries the server stamp (epoch ms) when the frame
+ * had one, otherwise the client's receipt time.
+ */
 export interface ChatNotice {
   readonly id: number;
   readonly kind: string;
@@ -29,8 +33,48 @@ export interface ChatNotice {
   readonly at: number;
 }
 
-/** Newest-first cap on the visible advisory stack. */
-const NOTICE_LIMIT = 5;
+/** Cap on retained advisories: wide enough for a durable server replay. */
+const NOTICE_LIMIT = 50;
+
+/**
+ * One row of the unified transcript render list: a conversation entry or an
+ * in-flow system notice block.
+ */
+export type TranscriptItem =
+  | { readonly kind: "message"; readonly message: UiMessage }
+  | { readonly kind: "notice"; readonly notice: ChatNotice };
+
+function transcriptTimeKey(item: TranscriptItem): number {
+  // Messages without a server timestamp (ts = 0) all share the zero key, so
+  // the stable sort below keeps their relative array order intact.
+  return item.kind === "notice" ? item.notice.at : (item.message.ts ?? 0);
+}
+
+/**
+ * Merge conversation entries and advisories into one chronologically ordered
+ * render list. Entries sort by ts, notices by their server `at` stamp; a tie
+ * places the notice AFTER the entries sharing its timestamp, and equal-key
+ * items of the same kind keep their input order (stable).
+ */
+export function mergeTranscriptItems(
+  messages: readonly UiMessage[],
+  notices: readonly ChatNotice[],
+): readonly TranscriptItem[] {
+  const items: readonly TranscriptItem[] = [
+    ...messages.map((message): TranscriptItem => ({ kind: "message", message })),
+    ...notices.map((notice): TranscriptItem => ({ kind: "notice", notice })),
+  ];
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const keyA = transcriptTimeKey(a.item);
+      const keyB = transcriptTimeKey(b.item);
+      if (keyA !== keyB) return keyA - keyB;
+      if (a.item.kind !== b.item.kind) return a.item.kind === "notice" ? 1 : -1;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
 
 export function useChatFrameState() {
   const controls = useConfirmedControls();
@@ -87,11 +131,12 @@ export function useChatFrameState() {
     setActivitiesVersion((version) => version + 1);
   };
 
-  // Notices are newest-first and capped: a chatty server cannot flood the
-  // pane, and no dismissed-by-age advisory is persisted anywhere.
-  const pushNotice = (kind: string, payload: JsonObject | null): void => {
+  // Notices are retained newest-first and capped: a chatty server cannot
+  // flood the pane, and the wide limit admits a durable server replay on
+  // attach. Dismissal never touches this list — it is a view-local hide.
+  const pushNotice = (kind: string, payload: JsonObject | null, at?: number): void => {
     setNotices((current) =>
-      [{ id: ++noticeIdRef.current, kind, payload, at: Date.now() }, ...current].slice(0, NOTICE_LIMIT),
+      [{ id: ++noticeIdRef.current, kind, payload, at: at ?? Date.now() }, ...current].slice(0, NOTICE_LIMIT),
     );
   };
 

@@ -52,7 +52,7 @@ interface ChatFrameHandlerBindings {
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setRetryDraft: StateSetter<(ChatDraft & { readonly version: number }) | null>;
-  readonly pushNotice: (kind: string, payload: JsonObject | null) => void;
+  readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number) => void;
 }
 
 function cacheHitRateOf(tokens: unknown): number | null {
@@ -175,7 +175,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "notice":
-        bindings.pushNotice(frame.kind, frame.payload ?? null);
+        bindings.pushNotice(frame.kind, frame.payload ?? null, frame.at);
         return;
       case "approval":
         bindings.setPendingApproval(chatState.approvalRequestOf(frame));

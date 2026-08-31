@@ -14,7 +14,9 @@ import type { ToolEntry } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
+import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { useChatScroll } from "./useChatScroll";
+import type { TranscriptItem } from "./useChatFrameState";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
   return block.id ?? `${block.kind}:${block.name ?? ""}:${block.text ?? block.thinking ?? ""}:${JSON.stringify(block.arguments ?? null)}`;
@@ -86,7 +88,8 @@ const Markdown = memo(({ text }: { readonly text: string }) => (
 ));
 
 interface ChatTranscriptProps {
-  readonly messages: readonly UiMessage[];
+  /** Unified render list: conversation entries merged with notice blocks. */
+  readonly items: readonly TranscriptItem[];
   readonly streaming: string;
   readonly thinking: string;
   readonly toolCalls: Readonly<Record<string, ToolEntry>>;
@@ -95,10 +98,12 @@ interface ChatTranscriptProps {
   readonly restoreVersion: number;
   readonly focused: boolean;
   readonly historyLoaded: boolean;
+  /** View-local notice hide; never mutates the notice list nor the server. */
+  readonly onDismissNotice: (id: number) => void;
 }
 
 export function ChatTranscript({
-  messages,
+  items,
   streaming,
   thinking,
   toolCalls,
@@ -107,6 +112,7 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
+  onDismissNotice,
 }: ChatTranscriptProps) {
   const { t } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
@@ -133,15 +139,16 @@ export function ChatTranscript({
   // (below) rather than render a second card in the live region.
   const historyToolIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const message of messages) {
-      for (const block of message.blocks ?? []) {
+    for (const item of items) {
+      if (item.kind !== "message") continue;
+      for (const block of item.message.blocks ?? []) {
         if (block.id && (block.kind === "tool" || block.kind === "toolCall" || block.kind === "toolResult")) {
           ids.add(block.id);
         }
       }
     }
     return ids;
-  }, [messages]);
+  }, [items]);
 
   useEffect(() => {
     const retainedIds = new Set([...historyToolIds, ...Object.keys(toolCalls)]);
@@ -151,36 +158,50 @@ export function ChatTranscript({
   }, [historyToolIds, toolCalls]);
 
   const virtualizer = useVirtualizer({
-    count: messages.length,
+    count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 4,
   });
 
   useEffect(() => {
-    if (focused && messages.length > 0) {
-      virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
+    if (focused && items.length > 0) {
+      virtualizer.scrollToIndex(items.length - 1, { align: "end" });
     }
-  }, [focused, restoreVersion, messages.length, virtualizer]);
+  }, [focused, restoreVersion, items.length, virtualizer]);
 
   return (
     <div className="th-chat-scrollport">
       <div className="th-chat-body" ref={scrollRef} onScroll={onScroll}>
         <div className="th-chat-content" ref={contentRef}>
-          {!historyLoaded && messages.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
+          {!historyLoaded && items.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
           )}
           <div className="th-chat-history" style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-            {virtualizer.getVirtualItems().map((item) => {
-              const message = messages[item.index];
-              if (!message) return null;
+            {virtualizer.getVirtualItems().map((virtualItem) => {
+              const item = items[virtualItem.index];
+              if (!item) return null;
+              if (item.kind === "notice") {
+                return (
+                  <div
+                    key={virtualItem.key}
+                    data-index={virtualItem.index}
+                    ref={virtualizer.measureElement}
+                    className="th-chat-row th-chat-row--notice"
+                    style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
+                  >
+                    <TranscriptNoticeRow notice={item.notice} onDismiss={onDismissNotice} />
+                  </div>
+                );
+              }
+              const message = item.message;
               return (
                 <div
-                  key={item.key}
-                  data-index={item.index}
+                  key={virtualItem.key}
+                  data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
                   className={`th-chat-row th-chat-row--${message.role}`}
-                  style={{ position: "absolute", top: 0, transform: `translateY(${item.start}px)` }}
+                  style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <div
                     className={`th-chat-msg th-chat-msg--${message.role}`}
