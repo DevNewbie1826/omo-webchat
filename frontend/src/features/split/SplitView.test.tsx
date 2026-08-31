@@ -95,6 +95,7 @@ describe("SplitView empty pane", () => {
 		splitEnabled = true,
 		sessions: ReadonlyMap<string, ChatSessionRef> = new Map(),
 		workspaces: readonly Workspace[] = [],
+		placed: ReadonlySet<string> = new Set(),
 	): void {
 		act(() => {
 			root.render(
@@ -102,7 +103,7 @@ describe("SplitView empty pane", () => {
 					<SplitView
 						node={node}
 						workspaces={workspaces}
-						placed={new Set()}
+						placed={placed}
 						sessions={sessions}
 						focusedPaneId={node.id}
 						splitEnabled={splitEnabled}
@@ -112,6 +113,14 @@ describe("SplitView empty pane", () => {
 			);
 		});
 	}
+
+	it("uses the generic empty state when there are zero workspaces", () => {
+		render(leaf(null), makeActions(), true, new Map(), []);
+
+		expect(container.querySelector(".th-picker-pane-empty")?.textContent).toBe("split.pickEmpty");
+		expect(container.querySelector<HTMLSelectElement>("select")?.disabled).toBe(true);
+		expect(container.querySelector<HTMLButtonElement>(".th-picker-pane-create button")?.disabled).toBe(true);
+	});
 
 	it("renders a close button for a pane with no session", () => {
 		render(leaf(null), makeActions());
@@ -232,7 +241,24 @@ describe("SplitView empty pane", () => {
 
 			// Rows show the session name only - beta's chats never leak in.
 			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
-			expect(rowNames().some((name) => name?.includes("tune dag"))).toBe(false);
+		});
+
+		it("hides chats already placed in other panes", () => {
+			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(["chat-a1"]));
+			expect(rowNames()).toEqual(["add picker tests"]);
+		});
+
+		it("falls back to the first workspace when the selected one disappears", () => {
+			const onCreateTerminal = vi.fn();
+			const node = leaf(null);
+			render(node, makeActions({ onCreateTerminal }), true, new Map(), workspaces);
+			chooseWorkspace("ws-beta");
+			render(node, makeActions({ onCreateTerminal }), true, new Map(), [workspaces[0]!]);
+			expect(pickerSelect().value).toBe("ws-alpha");
+			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
+			const createButton = container.querySelector<HTMLButtonElement>(".th-picker-pane-create button");
+			act(() => createButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+			expect(onCreateTerminal).toHaveBeenCalledWith(node.id, "ws-alpha");
 		});
 
 		it("re-filters the list when the dropdown changes", () => {

@@ -7,6 +7,18 @@ import (
 	"testing"
 )
 
+func TestDaemonFilenamesArePinned(t *testing.T) {
+	if pidFileName != "omo-webchat.pid" {
+		t.Errorf("pidFileName = %q, want %q", pidFileName, "omo-webchat.pid")
+	}
+	if logFileName != "omo-webchat.log" {
+		t.Errorf("logFileName = %q, want %q", logFileName, "omo-webchat.log")
+	}
+	if lockFileName != "omo-webchat.lock" {
+		t.Errorf("lockFileName = %q, want %q", lockFileName, "omo-webchat.lock")
+	}
+}
+
 func TestPIDFileRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), pidFileName)
 	const pid = 4242

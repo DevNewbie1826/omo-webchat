@@ -101,7 +101,7 @@ function LeafView({ node, workspaces, placed, sessions, focusedPaneId, splitEnab
               })}
             </div>
           ) : (
-            <div className="th-picker-pane-empty">{t("split.pickEmptyFiltered")}</div>
+            <div className="th-picker-pane-empty">{t(workspaces.length === 0 ? "split.pickEmpty" : "split.pickEmptyFiltered")}</div>
           )}
           <div className="th-picker-pane-create">
             <button

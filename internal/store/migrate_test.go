@@ -257,6 +257,61 @@ func TestLoadCliWebchatMigrationNewWins(t *testing.T) {
 	}
 }
 
+// TestLoadPrefersCliWebchatOverTerminalHub pins source precedence when both
+// fallback locations exist and keeps both source files byte-identical.
+func TestLoadPrefersCliWebchatOverTerminalHub(t *testing.T) {
+	// Given
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	legacyPath := seedLegacyState(t, home)
+	cliPath := seedCliWebchatState(t, home)
+	if err := os.WriteFile(cliPath, []byte(overwrittenFixture), 0o600); err != nil {
+		t.Fatalf("overwrite cli-webchat state: %v", err)
+	}
+	legacyBefore, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("read seeded legacy state: %v", err)
+	}
+	cliBefore, err := os.ReadFile(cliPath)
+	if err != nil {
+		t.Fatalf("read written cli-webchat state: %v", err)
+	}
+	migratedPath := filepath.Join(home, ".local", "state", "omo-webchat", "state.json")
+
+	// When
+	st, err := Load(context.Background(), discardLogger())
+
+	// Then
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	if st == nil {
+		t.Fatal("store is nil")
+	}
+	migrated, err := os.ReadFile(migratedPath)
+	if err != nil {
+		t.Fatalf("migrated state missing: %v", err)
+	}
+	if string(migrated) != string(cliBefore) {
+		t.Fatalf("migrated state = %q, want cli-webchat bytes %q", migrated, cliBefore)
+	}
+	legacyAfter, err := os.ReadFile(legacyPath)
+	if err != nil {
+		t.Fatalf("legacy state gone: %v", err)
+	}
+	if string(legacyAfter) != string(legacyBefore) {
+		t.Fatalf("legacy state mutated: got %q, want %q", legacyAfter, legacyBefore)
+	}
+	cliAfter, err := os.ReadFile(cliPath)
+	if err != nil {
+		t.Fatalf("cli-webchat state gone: %v", err)
+	}
+	if string(cliAfter) != string(cliBefore) {
+		t.Fatalf("cli-webchat state mutated: got %q, want %q", cliAfter, cliBefore)
+	}
+}
+
 // TestLoadMigratesTerminalHubWhenCliWebchatAbsent pins that a fresh home
 // containing only ~/.terminal-hub/state.json still lands in omo-webchat.
 func TestLoadMigratesTerminalHubWhenCliWebchatAbsent(t *testing.T) {

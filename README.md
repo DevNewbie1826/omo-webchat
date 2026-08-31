@@ -154,7 +154,7 @@ TH_PASSWORD=<secret> TH_PORT=8080 TH_HOST=127.0.0.1 TH_ROOT=~/projects TH_STATE_
 | 변수 | 역할 |
 |---|---|
 | `XDG_STATE_HOME` | **절대 경로일 때만** 기본 상태 디렉터리는 `$XDG_STATE_HOME/omo-webchat`. 상대 값은 무시합니다. `--state-dir` / `TH_STATE_DIR`이 있으면 보지 않습니다. |
-| 홈 디렉터리 | 기본 `--root`, 기본 상태 `$HOME/.local/state/omo-webchat`, 레거시 `$HOME/.terminal-hub/state.json` |
+| 홈 디렉터리 | 기본 `--root`, 기본 상태 `$HOME/.local/state/omo-webchat`, 이전 상태 `$XDG_STATE_HOME/cli-webchat` 또는 `$HOME/.local/state/cli-webchat`, 레거시 `$HOME/.terminal-hub/state.json` |
 
 ### 보안
 
@@ -201,7 +201,7 @@ omo-webchat --stop
 
 디렉터리는 `0700`입니다.
 
-기본 경로로 기동할 때 `state.json`이 아직 없고 `$HOME/.terminal-hub/state.json`이 있으면 바이트 그대로 한 번 복사합니다. 레거시 파일은 수정·삭제하지 않습니다. 새 파일이 이미 있으면 이주는 하지 않습니다. `--state-dir` / `TH_STATE_DIR`에서는 이주가 없습니다.
+기본 경로로 기동할 때 새 `state.json`이 아직 없으면, 두 이전 위치를 순서대로 보고 첫 번째로 존재하는 소스를 바이트 그대로 한 번 복사합니다: (1) `XDG_STATE_HOME`이 절대 경로일 때 `$XDG_STATE_HOME/cli-webchat/state.json`, 아니면 `$HOME/.local/state/cli-webchat/state.json`; (2) `$HOME/.terminal-hub/state.json`. 모든 원본은 무변경입니다. 수정·이름 변경·삭제하지 않습니다. 새 파일이 이미 있으면 이주는 하지 않습니다. `--state-dir` / `TH_STATE_DIR`에서는 이주가 없습니다.
 
 서버를 끄면 omo 프로세스 그룹도 같이 종료됩니다. 다시 붙으면 새 공유 omo 프로세스를 띄우고, `state.json`의 `piSessionId`를 `sessionPath`로 담아 `open_session`을 본냅니다. 그 재개가 실패하면 저장된 경로를 버리고 채팅의 `cwd`로 새 논리 세션을 엽니다. 예전 OS 프로세스가 살아 있는 재개가 아닙니다. 모든 채팅이 프로세스 하나를 공유하므로, omo 프로세스가 죽으면 그 위의 활성 논리 세션 전부가 함께 끊깁니다.
 
@@ -393,7 +393,7 @@ Non-flag env:
 | Env | Role |
 |---|---|
 | `XDG_STATE_HOME` | If **absolute**, default state dir is `$XDG_STATE_HOME/omo-webchat`. Relative values are ignored. Unused when `--state-dir` / `TH_STATE_DIR` is set. |
-| Home directory | Default `--root`; default state `$HOME/.local/state/omo-webchat`; legacy `$HOME/.terminal-hub/state.json` |
+| Home directory | Default `--root`; default state `$HOME/.local/state/omo-webchat`; previous state `$XDG_STATE_HOME/cli-webchat` or `$HOME/.local/state/cli-webchat`; legacy `$HOME/.terminal-hub/state.json` |
 
 ### Security
 
@@ -440,7 +440,7 @@ else:
 
 The directory is `0700`.
 
-On the default path only: if `state.json` is missing and `$HOME/.terminal-hub/state.json` exists, it is copied byte-for-byte once. The legacy file is never rewritten, renamed, or deleted. An existing new file wins. `--state-dir` / `TH_STATE_DIR` skips migration.
+On the default path only: if the new `state.json` is missing, two previous locations are tried in order and the first existing source is copied byte-for-byte once: (1) `$XDG_STATE_HOME/cli-webchat/state.json` when `XDG_STATE_HOME` is absolute, otherwise `$HOME/.local/state/cli-webchat/state.json`; (2) `$HOME/.terminal-hub/state.json`. Every original stays untouched; nothing is rewritten, renamed, or deleted. An existing new file wins, so no migration happens then. `--state-dir` / `TH_STATE_DIR` skips migration.
 
 omo does not outlive the server (process group kill). After restart, attach starts a new shared omo process and sends `open_session` with the persisted `piSessionId` as `sessionPath`. If that resume fails, the stored path is dropped and a fresh logical session opens with the chat's `cwd`. That is conversation-identity resume, not a surviving OS process. Because every chat shares that one process, a provider failure takes down all active logical sessions at once, not just one chat.
 
