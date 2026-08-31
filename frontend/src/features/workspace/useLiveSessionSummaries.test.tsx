@@ -88,6 +88,8 @@ describe("summarizeLiveSession", () => {
     expect(summary).toEqual({
       id: "s1",
       title: "Refactor auth",
+      task: TASK_PAYLOAD,
+      dag: DAG_PAYLOAD,
       runningCount: 2,
       doneCount: 3,
       dagDone: 2,
@@ -106,6 +108,8 @@ describe("summarizeLiveSession", () => {
     ).toEqual({
       id: "s2",
       title: "Bare",
+      task: null,
+      dag: null,
       runningCount: 0,
       doneCount: 0,
       dagDone: 0,
@@ -279,18 +283,30 @@ describe("summarizeLiveSession", () => {
     expect(summary.truncatedTasks).toBe(true);
   });
 
-  it("surfaces oversized flags from the live session", () => {
+  it("does not count cached rows from oversized sides but still parses task lastLine", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     const summary = summarizeLiveSession({
       id: "over",
       title: "",
-      task: null,
-      dag: null,
+      task: {
+        tasks: [
+          { task_id: "t1", name: "Cached one", status: "running", updated_at: "2026-08-19T10:00:00.000Z", live_progress: { last_assistant_line: "cached detail" } },
+          { task_id: "t2", name: "Cached two", status: "running", updated_at: "2026-08-19T10:00:00.000Z" },
+        ],
+      },
+      dag: DAG_PAYLOAD,
       taskOversized: true,
       dagOversized: true,
     });
 
-    expect(summary.taskOversized).toBe(true);
-    expect(summary.dagOversized).toBe(true);
+    expect(summary).toMatchObject({
+      runningCount: 0,
+      dagRunning: 0,
+      lastLine: "cached detail",
+      taskOversized: true,
+      dagOversized: true,
+    });
   });
 });
 

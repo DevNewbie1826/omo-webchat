@@ -4,10 +4,38 @@ import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "../../components/Sidebar";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { ingestExtensionEvent, useLiveBadgeOverrides, useMergedLiveSummaries } from "./liveBadgeStore";
+import {
+  __resetLiveBadgeStoreForTests,
+  ingestExtensionEvent,
+  useLiveBadgeOverrides,
+  useMergedLiveSummaries,
+} from "./liveBadgeStore";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 
 vi.mock("../../lib/useMediaQuery", () => ({ useMediaQuery: vi.fn() }));
+
+const TASK_RUNNING_1 = {
+  parent_session_id: "s1",
+  truncated_tasks: false,
+  tasks: [{ task_id: "t1", name: "Live", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
+};
+
+const DAG_RUNNING_2 = {
+  parent_session_id: "s1",
+  truncated_runs: false,
+  runs: [
+    {
+      run_id: "r2",
+      run_key: "poll",
+      name: "Poll DAG",
+      status: "running",
+      counts: { total: 2, pending: 0, blocked: 0, scheduled: 0, running: 2, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+      nodes: [],
+      edges: [],
+      waves: [],
+    },
+  ],
+};
 
 /** Payload shape reused from features/split/activityParse fixtures: one running run, counts.running=3, no node rows. */
 const DAG_RUNNING_3 = {
@@ -38,6 +66,8 @@ function okResponse(body: unknown): Response {
 const IDLE_POLL_SUMMARY: LiveSessionSummary = {
   id: "s1",
   title: "Attached",
+  task: null,
+  dag: null,
   runningCount: 0,
   doneCount: 0,
   dagDone: 0,
@@ -60,6 +90,7 @@ describe("liveBadgeStore", () => {
   let captured: Captured;
 
   beforeEach(() => {
+    __resetLiveBadgeStoreForTests();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -99,6 +130,7 @@ describe("liveBadgeStore", () => {
 
   it("ignores an unknown frame name and keeps the map unchanged", () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
       root.render(<Host pollSummaries={[]} />);
     });
@@ -142,6 +174,69 @@ describe("liveBadgeStore", () => {
     expect(captured.merged[0]?.title).toBe("Second snapshot");
   });
 
+  it("merges task and dag independently so a task frame preserves the poll dag side", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const poll = {
+      ...IDLE_POLL_SUMMARY,
+      dag: DAG_RUNNING_2,
+      runningCount: 2,
+      dagRunning: 2,
+      dagTotal: 2,
+    };
+    act(() => {
+      root.render(<Host pollSummaries={[poll]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1);
+    });
+
+    expect(captured.merged[0]).toMatchObject({ runningCount: 3, dagRunning: 2 });
+  });
+
+  it("lets a later poll content change win after same-millisecond WS receipts advance the sequencer", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1);
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1);
+    });
+    expect(captured.merged[0]?.runningCount).toBe(1);
+
+    act(() => {
+      root.render(<Host pollSummaries={[{ ...IDLE_POLL_SUMMARY, title: "New poll content" }]} />);
+    });
+
+    expect(captured.merged[0]?.runningCount).toBe(0);
+  });
+
+  it("clears a recognized side on null data and falls back to that poll side", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const poll = { ...IDLE_POLL_SUMMARY, task: TASK_RUNNING_1, runningCount: 1 };
+    act(() => {
+      root.render(<Host pollSummaries={[poll]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", {
+        tasks: [
+          ...TASK_RUNNING_1.tasks,
+          { task_id: "t2", name: "Second", status: "running", updated_at: "2026-08-19T10:00:00.000Z" },
+        ],
+      });
+    });
+    expect(captured.merged[0]?.runningCount).toBe(2);
+
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", null);
+    });
+
+    expect(captured.merged[0]?.runningCount).toBe(1);
+  });
+
   it("expires an override once it is older than the 90s window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
@@ -166,6 +261,9 @@ describe("Sidebar badge over WS overrides", () => {
   let root: Root;
 
   beforeEach(() => {
+    __resetLiveBadgeStoreForTests();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(useMediaQuery).mockReturnValue(false);
     container = document.createElement("div");
@@ -219,7 +317,6 @@ describe("Sidebar badge over WS overrides", () => {
   }
 
   it("shows the running badge from an ingested frame without advancing the poller", async () => {
-    vi.useFakeTimers();
     // One idle poll snapshot lands; the next poll is scheduled 4s out and the
     // test never advances that far.
     const fetchMock = vi.fn(async () =>

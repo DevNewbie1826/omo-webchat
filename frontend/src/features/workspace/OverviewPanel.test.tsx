@@ -136,6 +136,18 @@ describe("OverviewPanel", () => {
     const partialRunning = card(0).querySelector(".th-overview-card-running");
     expect(partialRunning?.textContent).toBe("2+");
     expect(partialRunning?.getAttribute("aria-label")).toBe("overview.runningAriaPartial 2");
+    const oversizedSummary: LiveSessionSummary = {
+      ...partialSummary,
+      runningCount: 0,
+      truncatedTasks: false,
+      taskOversized: true,
+    };
+    renderPanel({ summaries: [oversizedSummary] });
+    const unknownRunning = card(0).querySelector(".th-overview-card-running");
+    expect(unknownRunning?.textContent).toBe("?");
+    expect(unknownRunning?.getAttribute("aria-label")).toBe("overview.runningAriaUnknown");
+    expect(unknownRunning?.getAttribute("title")).toBe("overview.runningAriaUnknown");
+
     renderPanel();
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done 1");
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.dag 2/3");

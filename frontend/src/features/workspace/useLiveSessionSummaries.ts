@@ -15,6 +15,9 @@ const FRESHNESS_TICK_MS = 15_000;
 export interface LiveSessionSummary {
   readonly id: string;
   readonly title: string;
+  /** Raw sides retained so WS updates can be merged independently with polls. */
+  readonly task?: unknown;
+  readonly dag?: unknown;
   readonly runningCount: number;
   readonly doneCount: number;
   readonly dagDone: number;
@@ -68,14 +71,16 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   const tasks = parsedTask?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
   const counts = taskStatusCounts(tasks);
-  const taskIds = new Set(tasks.map((task) => task.taskId));
-  // Unknown or malformed timestamps count conservatively as running.
-  const taskRunning = tasks.filter((task) => {
+  // An oversized side retains the server's previous cached payload. Parse it
+  // for descriptive fields such as lastLine, but never treat stale rows as a
+  // trustworthy running-count lower bound.
+  const taskIds = new Set(info.taskOversized === true ? [] : tasks.map((task) => task.taskId));
+  const taskRunning = info.taskOversized === true ? 0 : tasks.filter((task) => {
     if (task.status !== "running") return false;
     const lastMs = lastActivityMs(task);
     return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
   }).length;
-  const dagRunning = dagRunningOf(runs, taskIds);
+  const dagRunning = info.dagOversized === true ? 0 : dagRunningOf(runs, taskIds);
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -85,6 +90,8 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   return {
     id: info.id,
     title: info.title,
+    task: info.task,
+    dag: info.dag,
     runningCount: taskRunning + dagRunning,
     doneCount: counts.done,
     dagDone,

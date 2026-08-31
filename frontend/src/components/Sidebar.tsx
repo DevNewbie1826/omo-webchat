@@ -76,10 +76,11 @@ export function Sidebar({
   const runningCounts = useMemo(
     () => new Map(
       summaries
-        .filter((s) => s.runningCount > 0)
+        .filter((s) => s.runningCount > 0 || s.taskOversized || s.dagOversized)
         .map((s) => [s.id, {
           count: s.runningCount,
-          partial: s.truncatedTasks || s.taskOversized || s.dagOversized,
+          partial: s.truncatedTasks && !s.taskOversized && !s.dagOversized,
+          unknown: s.taskOversized || s.dagOversized,
         }]),
     ),
     [summaries],

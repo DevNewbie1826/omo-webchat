@@ -36,6 +36,7 @@ const sessions = [
 interface RunningCount {
   readonly count: number;
   readonly partial: boolean;
+  readonly unknown?: boolean;
 }
 
 function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, RunningCount>, touchActions = false): void {
@@ -136,6 +137,15 @@ describe("SessionTree running-agent badge", () => {
     const chip = row("Live chat").querySelector(".th-tree-running");
     expect(chip?.textContent).toBe("2+");
     expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsPartial 2");
+  });
+
+  it("renders an unknown-count chip for oversized activity even when count is zero", () => {
+    tree(container, new Map([["tm-live", { count: 0, partial: true, unknown: true }]]));
+
+    const chip = row("Live chat").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("?");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsUnknown");
+    expect(chip?.getAttribute("title")).toBe("sidebar.tm.runningAgentsUnknown");
   });
 
   it("renders no chip at all without running counts", () => {
