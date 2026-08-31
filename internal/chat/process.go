@@ -64,6 +64,9 @@ type ProcessOptions struct {
 	// SendQueueDepth is the writer queue bound. Zero means
 	// DefaultSendQueueDepth.
 	SendQueueDepth int
+	// beforeStart is a package-test synchronization hook used to inspect a
+	// process at the exec start boundary. Production callers leave it nil.
+	beforeStart func(*Process)
 }
 
 // writeRequest is one marshaled JSONL frame travelling to the writer
@@ -99,12 +102,20 @@ type Process struct {
 	closeWriterOnce sync.Once
 	sendTimeout     time.Duration
 	sendQueueDepth  int
+	// Test synchronization hooks. They are set only before the first Send and
+	// let concurrency tests observe queue/dequeue boundaries without polling.
+	afterEnqueue func(*writeRequest)
+	beforeWrite  func(*writeRequest)
 	// A real write error is terminal for the pipe: it is latched here and
 	// drains every queued waiter; later Sends fail fast with it.
 	stickyMu  sync.Mutex
 	stickyErr error
 
-	stderrPath string
+	// stderrDone closes when a configured capture pipe reaches EOF and its sink
+	// is closed. Reaping never waits on it because detached descendants may
+	// legitimately retain the stderr descriptor.
+	stderrDone chan struct{}
+
 	// waitReturned closes once cmd.Wait has stored the raw result, so the
 	// reaper and CloseAfterEOF can observe the leader's exit without
 	// consuming the channel.
@@ -167,12 +178,10 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 		cancel:          cancel,
 		sendTimeout:     opts.SendTimeout,
 		sendQueueDepth:  opts.SendQueueDepth,
-		stderrPath:      opts.StderrPath,
 		waitReturned:    make(chan struct{}),
 		parentWatchDone: make(chan struct{}),
 		exited:          make(chan struct{}),
 	}
-	p.writerOnce.Do(p.spawnWriter)
 	// Own the stdout pipe rather than using cmd.StdoutPipe so cmd.Wait reaps
 	// the leader without waiting for, or closing, the read end. A descendant
 	// that inherits stdout would otherwise keep Wait—and every shutdown path
@@ -190,6 +199,7 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 	var stderrR, stderrW *os.File
 	var sink *stderrSink
 	if opts.StderrPath != "" {
+		p.stderrDone = make(chan struct{})
 		// Opening the capture sink is part of starting the provider.
 		sink, err = openStderrSink(opts.StderrPath)
 		if err != nil {
@@ -210,8 +220,12 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 		}
 		cmd.Stderr = stderrW
 	}
+	if opts.beforeStart != nil {
+		opts.beforeStart(p)
+	}
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_ = stdin.Close()
 		_ = pr.Close()
 		_ = pw.Close()
 		if stderrR != nil {
@@ -224,12 +238,16 @@ func Start(parent context.Context, opts ProcessOptions) (*Process, error) {
 	p.cmd = cmd
 	p.stdin = stdin
 	p.stdout = pr
+	// No writer goroutine exists until every startup operation has succeeded.
+	// This keeps failed starts from leaking a goroutine waiting on an orphaned
+	// queue.
+	p.writerOnce.Do(p.spawnWriter)
 	// The child group owns the write ends now; the parent must release them
 	// or stdout/stderr never reach EOF when the group dies.
 	_ = pw.Close()
 	if stderrW != nil {
 		_ = stderrW.Close()
-		go drainStderr(stderrR, sink)
+		go drainStderr(stderrR, sink, p.stderrDone)
 	}
 	go p.watchParent(parent)
 	go p.reap()
@@ -263,9 +281,10 @@ func (p *Process) writeLoop() {
 		case req := <-p.writeQueue:
 			p.writeOne(req)
 		case <-p.writerClose:
-			// Released by Close: drain whatever is still queued without
-			// writing (the provider is being torn down) and exit. Late
-			// enqueuers simply time out against their own deadlines.
+			// Released by every terminal path: drain whatever is still queued
+			// without writing and exit. Send observes writerClose directly, so
+			// callers racing shutdown fail immediately rather than waiting for
+			// their command deadline.
 			for {
 				select {
 				case req := <-p.writeQueue:
@@ -288,6 +307,15 @@ func (p *Process) writeLoop() {
 // until the provider lifecycle (process death) closes the pipe and returns
 // EPIPE, which latches the sticky error and drains the queue.
 func (p *Process) writeOne(req *writeRequest) {
+	if p.beforeWrite != nil {
+		p.beforeWrite(req)
+	}
+	select {
+	case <-p.writerClose:
+		req.complete(errors.New("chat: provider write cancelled by close"))
+		return
+	default:
+	}
 	if err := p.stickyWriteError(); err != nil {
 		req.complete(err)
 		return
@@ -344,15 +372,24 @@ func (p *Process) Send(cmd map[string]any) error {
 	frame = append(frame, '\n')
 	deadline := time.Now().Add(p.sendTimeout)
 	req := &writeRequest{frame: frame, deadline: deadline, done: make(chan error, 1)}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
 	select {
+	case <-p.writerClose:
+		return errors.New("chat: provider is closing")
 	case p.writeQueue <- req:
-	case <-time.After(time.Until(deadline)):
+		if p.afterEnqueue != nil {
+			p.afterEnqueue(req)
+		}
+	case <-timer.C:
 		return p.writeTimeoutError("queue is full")
 	}
 	select {
+	case <-p.writerClose:
+		return errors.New("chat: provider is closing")
 	case err := <-req.done:
 		return err
-	case <-time.After(time.Until(deadline)):
+	case <-timer.C:
 		return p.writeTimeoutError("write did not complete")
 	}
 }
@@ -372,20 +409,108 @@ type stderrSink struct {
 	logged  bool
 }
 
-// openStderrSink opens the capture sink. A pre-existing active file that
-// already exceeds the budget is rotated before start, so a fresh provider
-// never appends into an oversized log.
+func enforceStderrPathPerm(path string) error {
+	if err := os.Chmod(path, stderrFilePerm); err != nil {
+		return err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != stderrFilePerm {
+		return fmt.Errorf("mode is %04o, want %04o", info.Mode().Perm(), stderrFilePerm)
+	}
+	return nil
+}
+
+func enforceStderrFilePerm(file *os.File) error {
+	if err := file.Chmod(stderrFilePerm); err != nil {
+		return err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Mode().Perm() != stderrFilePerm {
+		return fmt.Errorf("mode is %04o, want %04o", info.Mode().Perm(), stderrFilePerm)
+	}
+	return nil
+}
+
+// normalizeStderrFile enforces the per-file size and permission contract on
+// a pre-existing sink file. Oversized files retain their latest bytes.
+func normalizeStderrFile(path string) error {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() <= stderrRotateBytes {
+		return enforceStderrPathPerm(path)
+	}
+
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if _, err := src.Seek(info.Size()-stderrRotateBytes, io.SeekStart); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".stderr-tail-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := enforceStderrFilePerm(tmp); err != nil {
+		cleanup()
+		return err
+	}
+	if _, err := io.CopyN(tmp, src, stderrRotateBytes); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return enforceStderrPathPerm(path)
+}
+
+// openStderrSink opens the capture sink. Both members of a pre-existing pair
+// are normalized before use. An oversized active file becomes the bounded
+// backup and a fresh active file is created.
 func openStderrSink(path string) (*stderrSink, error) {
 	if err := os.MkdirAll(filepath.Dir(path), stderrDirPerm); err != nil {
 		return nil, fmt.Errorf("create stderr log directory: %w", err)
 	}
 	backup := path + ".1"
+	if err := normalizeStderrFile(backup); err != nil {
+		return nil, fmt.Errorf("normalize stderr backup: %w", err)
+	}
 	if info, err := os.Stat(path); err == nil {
 		if info.Size() > stderrRotateBytes {
-			// Replaces any previous backup: exactly one is kept.
+			if err := normalizeStderrFile(path); err != nil {
+				return nil, fmt.Errorf("normalize oversized stderr log: %w", err)
+			}
 			if err := os.Rename(path, backup); err != nil {
 				return nil, fmt.Errorf("rotate oversized stderr log: %w", err)
 			}
+			if err := enforceStderrPathPerm(backup); err != nil {
+				return nil, fmt.Errorf("chmod stderr backup: %w", err)
+			}
+		} else if err := enforceStderrPathPerm(path); err != nil {
+			return nil, fmt.Errorf("chmod stderr log: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("stat stderr log: %w", err)
@@ -394,7 +519,10 @@ func openStderrSink(path string) (*stderrSink, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open stderr log: %w", err)
 	}
-	_ = f.Chmod(stderrFilePerm)
+	if err := enforceStderrFilePerm(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("chmod stderr log: %w", err)
+	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
@@ -426,6 +554,9 @@ func (s *stderrSink) Write(p []byte) (int, error) {
 		}
 		written, err := s.file.Write(p[:n])
 		s.written += int64(written)
+		if err == nil && written != n {
+			err = io.ErrShortWrite
+		}
 		if err != nil {
 			s.fail(err)
 			return total, nil
@@ -442,7 +573,10 @@ func (s *stderrSink) Write(p []byte) (int, error) {
 // one. It returns false (and latches the failure) when capture cannot
 // continue.
 func (s *stderrSink) rotate() bool {
-	_ = s.file.Close()
+	if err := s.file.Close(); err != nil {
+		s.fail(err)
+		return false
+	}
 	s.file = nil
 	if err := os.Rename(s.path, s.backup); err != nil && !os.IsNotExist(err) {
 		s.fail(err)
@@ -453,7 +587,11 @@ func (s *stderrSink) rotate() bool {
 		s.fail(err)
 		return false
 	}
-	_ = f.Chmod(stderrFilePerm)
+	if err := enforceStderrFilePerm(f); err != nil {
+		_ = f.Close()
+		s.fail(err)
+		return false
+	}
 	s.file = f
 	s.written = 0
 	return true
@@ -462,6 +600,10 @@ func (s *stderrSink) rotate() bool {
 // fail logs the first sink error once (structured) and discards everything
 // after it.
 func (s *stderrSink) fail(err error) {
+	if s.file != nil {
+		_ = s.file.Close()
+		s.file = nil
+	}
 	if s.logged {
 		return
 	}
@@ -484,7 +626,8 @@ func (s *stderrSink) Close() error {
 // It is fully detached from the reaper: cmd.Wait never observes this pipe,
 // so nothing here can delay an exit; a sink failure degrades to discard
 // mode inside Write.
-func drainStderr(src *os.File, sink *stderrSink) {
+func drainStderr(src *os.File, sink *stderrSink, done chan<- struct{}) {
+	defer close(done)
 	_, _ = io.Copy(sink, src)
 	_ = src.Close()
 	_ = sink.Close()
@@ -576,6 +719,9 @@ func (p *Process) reap() {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == -1 {
 		err = nil
 	}
+	// Process exit is terminal even when no caller invokes Close. Closing stdin
+	// releases any in-flight write; writerClose rejects and drains all others.
+	p.stopWriter()
 	p.closeErr = err
 	close(p.exited)
 }
@@ -662,12 +808,20 @@ func (p *Process) ExitSummary() string {
 // end, so any in-flight OS write returns EPIPE and the queue drains. A
 // wedged writer therefore never outlives Close (the syscall release belongs
 // to the provider lifecycle, not to any caller deadline).
-func (p *Process) Close() error {
+func (p *Process) stopWriter() {
 	p.writerOnce.Do(p.spawnWriter)
 	p.closeWriterOnce.Do(func() { close(p.writerClose) })
-	p.cancelWith("session_close")
-	<-p.exited
+	if p.stdin != nil {
+		_ = p.stdin.Close()
+	}
 	<-p.writerDone
+}
+
+func (p *Process) Close() error {
+	// Attribute shutdown before closing stdin can make the child exit.
+	p.cancelWith("session_close")
+	p.stopWriter()
+	<-p.exited
 	return p.closeErr
 }
 
@@ -682,6 +836,7 @@ func (p *Process) Close() error {
 func (p *Process) CloseAfterEOF() error {
 	select {
 	case <-p.exited:
+		p.stopWriter()
 		return p.closeErr
 	default:
 	}
@@ -691,6 +846,7 @@ func (p *Process) CloseAfterEOF() error {
 	if !ready {
 		p.cancelWith("pump_eof")
 	}
+	p.stopWriter()
 	<-p.exited
 	return p.closeErr
 }

@@ -1,13 +1,15 @@
 package chat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -37,22 +39,25 @@ func startStderrFixture(t *testing.T, dir, script string) *Process {
 	return proc
 }
 
-// waitForFileSubstring waits until path exists and contains substr. The
-// bounded wait is a failure watchdog; the provider's stderr drain is the
-// producer and cannot be notified on.
-func waitForFileSubstring(t *testing.T, path, substr string, timeout time.Duration) []byte {
+func awaitStderrDrain(t *testing.T, proc *Process) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		b, err := os.ReadFile(path)
-		if err == nil && bytes.Contains(b, []byte(substr)) {
-			return b
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("file %s never contained %q (err=%v)", path, substr, err)
-		}
-		time.Sleep(25 * time.Millisecond)
+	if proc.stderrDone == nil {
+		t.Fatal("process has no configured stderr drain")
 	}
+	select {
+	case <-proc.stderrDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("provider stderr drain did not reach EOF")
+	}
+}
+
+func assertFileContains(t *testing.T, path, substr string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(b, []byte(substr)) {
+		t.Fatalf("file %s does not contain %q (err=%v)", path, substr, err)
+	}
+	return b
 }
 
 func mustReadByteAt(t *testing.T, path string, offset int64) byte {
@@ -99,8 +104,9 @@ func TestProcessCapturesBoundedRotatingStderr(t *testing.T) {
 		script := `head -c 6291456 /dev/zero | tr '\000' A >&2; ` +
 			`head -c 6291456 /dev/zero | tr '\000' B >&2; ` +
 			`echo ` + stderrDoneMarker + ` >&2; exit 0`
-		startStderrFixture(t, dir, script)
-		waitForFileSubstring(t, path, stderrDoneMarker, 10*time.Second)
+		proc := startStderrFixture(t, dir, script)
+		awaitStderrDrain(t, proc)
+		assertFileContains(t, path, stderrDoneMarker)
 
 		backup := path + ".1"
 		backupInfo, err := os.Stat(backup)
@@ -192,22 +198,55 @@ func TestProcessCapturesBoundedRotatingStderr(t *testing.T) {
 		if err := os.WriteFile(path, bytes.Repeat([]byte("Z"), 11<<20), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		startStderrFixture(t, dir, `echo PRESTART-MARKER >&2; exit 0`)
-		waitForFileSubstring(t, path, "PRESTART-MARKER", 10*time.Second)
+		proc := startStderrFixture(t, dir, `echo PRESTART-MARKER >&2; exit 0`)
+		awaitStderrDrain(t, proc)
+		assertFileContains(t, path, "PRESTART-MARKER")
 		backup := path + ".1"
 		info, err := os.Stat(backup)
 		if err != nil {
 			t.Fatalf("oversized log was not rotated before start: %v", err)
 		}
-		if info.Size() != 11<<20 {
-			t.Fatalf("backup size = %d, want the pre-existing 11MiB", info.Size())
+		if info.Size() != 10<<20 {
+			t.Fatalf("backup size = %d, want the latest 10MiB", info.Size())
 		}
+		assertFilePerm(t, backup)
 		active, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if want := int64(len("PRESTART-MARKER\n")); active.Size() != want {
 			t.Fatalf("active size = %d, want a fresh log with just the marker (%d)", active.Size(), want)
+		}
+	})
+
+	t.Run("normalizes a pre-existing backup", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "omo-provider.stderr.log")
+		backup := path + ".1"
+		payload := append(bytes.Repeat([]byte("old"), 1<<20), bytes.Repeat([]byte("Q"), 11<<20)...)
+		if err := os.WriteFile(backup, payload, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(backup, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		sink, err := openStderrSink(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sink.Close(); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(backup)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 10<<20 {
+			t.Fatalf("normalized backup size = %d, want 10MiB", info.Size())
+		}
+		assertFilePerm(t, backup)
+		if got := mustReadByteAt(t, backup, 0); got != 'Q' {
+			t.Fatalf("normalized backup starts with %q, want latest tail Q", got)
 		}
 	})
 
@@ -236,13 +275,21 @@ func TestProcessCapturesBoundedRotatingStderr(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Break the sink mid-stream: the drain must keep consuming without
-		// error so the provider can never block on its stderr.
-		_ = sink.file.Close()
-		sink.file = nil
+		// Close the live descriptor behind the sink. The next real file write
+		// fails with os.ErrInvalid; that first runtime failure must latch
+		// discard mode while still consuming the provider stream.
+		if err := sink.file.Close(); err != nil {
+			t.Fatal(err)
+		}
 		big := bytes.Repeat([]byte("E"), 3<<20)
 		if n, err := sink.Write(big); err != nil || n != len(big) {
-			t.Fatalf("discard-mode write = %d, %v; want silent full consumption", n, err)
+			t.Fatalf("failed-sink write = %d, %v; want silent full consumption", n, err)
+		}
+		if sink.file != nil || !sink.logged {
+			t.Fatalf("runtime sink failure did not latch discard mode: file=%v logged=%v", sink.file, sink.logged)
+		}
+		if n, err := sink.Write(big); err != nil || n != len(big) {
+			t.Fatalf("discard-mode follow-up = %d, %v", n, err)
 		}
 	})
 }
@@ -258,56 +305,52 @@ func TestProcessInheritedStderrDoesNotBlockReap(t *testing.T) {
 		t.Skipf("perl not in PATH: %v", err)
 	}
 	dir := t.TempDir()
-	fifo := filepath.Join(dir, "hold.fifo")
-	sentinel := filepath.Join(dir, "detached.sentinel")
+	readyFIFO := filepath.Join(dir, "ready.fifo")
 	path := filepath.Join(dir, "omo-provider.stderr.log")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
 	const marker = "inherited-stderr-marker"
-	script := `mkfifo ` + fifo + ` && perl -e '
-setpgrp(0,0);
-open(my $s, ">", $ARGV[1]) or exit 4; print $s "detached\n"; close $s;
-open(my $fh, "<", $ARGV[0]) or exit 4; <$fh>;
+	script := `mkfifo ` + readyFIFO + `; perl -MIO::Socket::INET -e '
+$SIG{HUP}="IGNORE"; setpgrp(0,0);
+my $sock=IO::Socket::INET->new(PeerAddr=>"127.0.0.1",PeerPort=>$ENV{STDERR_CONTROL_PORT},Proto=>"tcp") or exit 4;
+open(my $s, ">", $ARGV[0]) or exit 4; print $s "detached\n"; close $s;
+print $sock "detached\n"; <$sock>;
 print STDERR "` + marker + `\n";
-exit 0' ` + fifo + ` ` + sentinel + ` & ` +
-		`until [ -f ` + sentinel + ` ]; do sleep 0.05; done; exit 0`
+exit 0' ` + readyFIFO + ` & ` +
+		`read _ < ` + readyFIFO + `; exit 0`
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	proc, err := Start(ctx, ProcessOptions{
 		Binary:     sh,
 		Args:       []string{"-c", script},
-		Env:        os.Environ(),
+		Env:        append(os.Environ(), "STDERR_CONTROL_PORT="+strconv.Itoa(port)),
 		StderrPath: path,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Best-effort release of the fixture if a later step fails: a nonblocking
-	// writer open pairs instantly once the descendant opens its read end, or
-	// fails harmlessly when it is already gone.
-	t.Cleanup(func() {
-		if f, ferr := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); ferr == nil {
-			_, _ = f.WriteString("cleanup\n")
-			_ = f.Close()
-		}
-	})
 
-	// The leader exits only after the descendant detached (sentinel), so the
-	// reap's group kill cannot reach it: stderr stays held open across the
-	// reap. Wait for the self-exit, then prove Close returns promptly —
-	// cmd.Wait never waits for the stderr drain.
-	waitSentinel := make(chan struct{})
-	go func() {
-		for {
-			if _, err := os.Stat(sentinel); err == nil {
-				close(waitSentinel)
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-	select {
-	case <-waitSentinel:
-	case <-time.After(10 * time.Second):
-		t.Fatal("fixture descendant never detached from the provider process group")
+	// The control connection is established only after the descendant changed
+	// process group. Its exact line witnesses that the ready-FIFO handshake also
+	// released the leader, which can now exit without taking the descendant.
+	if tcp, ok := listener.(*net.TCPListener); ok {
+		_ = tcp.SetDeadline(time.Now().Add(10 * time.Second))
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("accept detached descendant: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || strings.TrimSpace(line) != "detached" {
+		t.Fatalf("fixture detach handshake = %q, %v", line, err)
 	}
 	select {
 	case <-proc.exited:
@@ -325,24 +368,16 @@ exit 0' ` + fifo + ` ` + sentinel + ` & ` +
 		t.Fatal("reap blocked while an inherited stderr stayed open: cmd.Wait waited for stderr EOF")
 	}
 
-	// The escaped descendant still holds stderr: let it write and prove the
-	// capture picked up post-reap output.
-	fifoOpen := make(chan struct{})
-	go func() {
-		f, ferr := os.OpenFile(fifo, os.O_WRONLY, 0)
-		if ferr != nil {
-			return
-		}
-		_, _ = f.WriteString("go\n")
-		_ = f.Close()
-		close(fifoOpen)
-	}()
-	select {
-	case <-fifoOpen:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the detached descendant did not survive the group kill")
+	// The escaped descendant still holds stderr: release its exact control
+	// read, then await capture EOF rather than polling the filesystem.
+	if err := conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
 	}
-	waitForFileSubstring(t, path, marker, 10*time.Second)
+	if _, err := conn.Write([]byte("go\n")); err != nil {
+		t.Fatalf("the detached descendant did not survive the group kill: %v", err)
+	}
+	awaitStderrDrain(t, proc)
+	assertFileContains(t, path, marker)
 }
 
 // TestSharedProviderWiresStderrCapture pins the SessionOptions→
@@ -358,7 +393,7 @@ func TestSharedProviderWiresStderrCapture(t *testing.T) {
 	const marker = "shared-provider-stderr-wired"
 	sp, err := startSharedProvider(context.Background(), SessionOptions{
 		Binary:     sh,
-		Args:       []string{"-c", `echo ` + marker + ` >&2; read _`},
+		Args:       []string{"-c", `echo ` + marker + ` >&2; exit 0`},
 		Env:        os.Environ(),
 		StderrPath: path,
 	}, nil)
@@ -366,15 +401,6 @@ func TestSharedProviderWiresStderrCapture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sp.proc.Close() })
-	waitForFileSubstring(t, path, marker, 10*time.Second)
-	sp.mu.Lock()
-	state := sp.state
-	stderrPath := sp.proc.stderrPath
-	sp.mu.Unlock()
-	if state != sharedProviderStarted {
-		t.Fatalf("shared provider state = %d, want started", state)
-	}
-	if stderrPath != path {
-		t.Fatalf("process stderr path = %q, want %q", stderrPath, path)
-	}
+	awaitStderrDrain(t, sp.proc)
+	assertFileContains(t, path, marker)
 }

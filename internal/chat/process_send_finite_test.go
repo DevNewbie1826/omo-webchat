@@ -114,15 +114,27 @@ func TestProcessSendFiniteDeadlineBoundedQueueAndWriterReap(t *testing.T) {
 	}()
 	collectSendResult(t, firstResult, "first in-flight write", 10*time.Second)
 
-	// Senders 2..65 occupy the entire queue behind the in-flight write.
+	// Senders 2..65 occupy the entire queue behind the in-flight write. The
+	// hook is registered before triggering them and acknowledges each exact
+	// enqueue boundary; no queue-length polling is needed.
 	const queueSends = DefaultSendQueueDepth
+	enqueued := make(chan struct{}, queueSends)
+	proc.afterEnqueue = func(*writeRequest) { enqueued <- struct{}{} }
 	results := make(chan error, queueSends)
 	for i := 0; i < queueSends; i++ {
 		go func() {
 			results <- proc.Send(map[string]any{"type": "queued"})
 		}()
 	}
-	awaitQueueLength(t, proc, queueSends, 5*time.Second)
+	watchdog := time.NewTimer(5 * time.Second)
+	defer watchdog.Stop()
+	for i := 0; i < queueSends; i++ {
+		select {
+		case <-enqueued:
+		case <-watchdog.C:
+			t.Fatalf("writer queue accepted only %d of %d frames", i, queueSends)
+		}
+	}
 	if got := len(proc.writeQueue); got != queueSends {
 		t.Fatalf("observed queue length = %d, want the bound %d", got, queueSends)
 	}
@@ -198,16 +210,105 @@ func collectSendResult(t *testing.T, result <-chan error, what string, timeout t
 	}
 }
 
-// awaitQueueLength waits until the writer queue holds at least want frames.
-// The bounded wait is a failure watchdog, not pacing: the senders above
-// enqueue within microseconds.
-func awaitQueueLength(t *testing.T, proc *Process, want int, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for len(proc.writeQueue) < want {
-		if time.Now().After(deadline) {
-			t.Fatalf("writer queue never reached %d (now %d)", want, len(proc.writeQueue))
+type twoStagePipe struct {
+	firstEntered  chan struct{}
+	firstRelease  chan struct{}
+	secondEntered chan struct{}
+	secondRelease chan struct{}
+	mu            sync.Mutex
+	writes        int
+}
+
+func (p *twoStagePipe) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	p.writes++
+	n := p.writes
+	p.mu.Unlock()
+	if n == 1 {
+		close(p.firstEntered)
+		<-p.firstRelease
+	} else {
+		close(p.secondEntered)
+		<-p.secondRelease
+	}
+	return len(b), nil
+}
+func (p *twoStagePipe) Close() error {
+	select {
+	case <-p.firstRelease:
+	default:
+		close(p.firstRelease)
+	}
+	select {
+	case <-p.secondRelease:
+	default:
+		close(p.secondRelease)
+	}
+	return nil
+}
+
+func TestProcessSendDeadlineIncludesSubstantialQueueWait(t *testing.T) {
+	const sendDeadline = 240 * time.Millisecond
+	pipe := &twoStagePipe{
+		firstEntered: make(chan struct{}), firstRelease: make(chan struct{}),
+		secondEntered: make(chan struct{}), secondRelease: make(chan struct{}),
+	}
+	proc := &Process{stdin: pipe, sendTimeout: sendDeadline, sendQueueDepth: 2}
+	enqueued := make(chan struct{}, 2)
+	proc.afterEnqueue = func(*writeRequest) { enqueued <- struct{}{} }
+	proc.writerOnce.Do(proc.spawnWriter)
+	defer proc.stopWriter()
+
+	first := make(chan error, 1)
+	go func() { first <- proc.Send(map[string]any{"type": "first"}) }()
+	select {
+	case <-pipe.firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first write never entered")
+	}
+
+	// Consume the first Send's enqueue witness before triggering the second.
+	select {
+	case <-enqueued:
+	case <-time.After(time.Second):
+		t.Fatal("first frame enqueue was not observed")
+	}
+	second := make(chan error, 1)
+	started := time.Now()
+	go func() { second <- proc.Send(map[string]any{"type": "second"}) }()
+	select {
+	case <-enqueued:
+	case <-time.After(time.Second):
+		t.Fatal("second frame was not enqueued")
+	}
+
+	// Queue residence consumes most of the one absolute budget. Time is the
+	// behavior under test; this timer controls dequeue rather than guessing
+	// when it happened, and secondEntered witnesses the exact dequeue/write.
+	time.AfterFunc(170*time.Millisecond, func() { close(pipe.firstRelease) })
+	select {
+	case <-pipe.secondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("second frame was not dequeued after the first write released")
+	}
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrSendTimeout) {
+			t.Fatalf("second Send error = %v, want timeout", err)
 		}
-		time.Sleep(time.Millisecond)
+		if elapsed := time.Since(started); elapsed >= 330*time.Millisecond {
+			t.Fatalf("deadline reset after dequeue: Send took %v", elapsed)
+		}
+	case <-time.After(330 * time.Millisecond):
+		t.Fatal("second Send outlived its absolute enqueue-time deadline")
+	}
+	close(pipe.secondRelease)
+	select {
+	case err := <-first:
+		if err != nil {
+			t.Fatalf("first Send: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first Send did not complete")
 	}
 }

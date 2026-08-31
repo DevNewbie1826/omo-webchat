@@ -65,9 +65,11 @@ const handle=x=>{
     if(n===2){process.stdin.pause();sock.write('paused\n');}
     send({type:'response',command:'open_session',success:true,id:x.id,sessionId:'route-'+n,data:{sessionId:'route-'+n}});
   } else if(x.type==='close_session'){send({type:'response',command:'close_session',success:true,id:x.id,sessionId:x.sessionId});}
+  else if(x.id){send({type:'session_info_changed',sessionId:x.sessionId,name:x.id});}
 };
 let b='';
 process.stdin.on('data',c=>{b+=c;for(let i;(i=b.indexOf('\n'))>=0;){const l=b.slice(0,i);b=b.slice(i+1);if(!l)continue;try{handle(JSON.parse(l))}catch(e){process.exit(3)}}});
+sock.on('data',()=>{process.stdin.resume();sock.write('resumed\n');});
 sock.on('error',()=>process.exit(2));`
 
 // pinSlowOpenScript answers the first open_session normally. The second open is
@@ -157,21 +159,6 @@ func awaitControlLine(t *testing.T, conn net.Conn, reader *bufio.Reader, want st
 	}
 }
 
-// pinWitnessProviderDeath fails the test when the shared provider dies within
-// the window. Intentional provider termination (closing / cancelled by parent)
-// delivers no terminal frame to session writers, so the provider's done
-// channel is the authoritative death witness: the pump closes it only after
-// the process has been killed and reaped. The bounded wait is a failure
-// watchdog; on the green path it simply elapses.
-func pinWitnessProviderDeath(t *testing.T, provider *sharedProvider, why string) {
-	t.Helper()
-	select {
-	case <-provider.done:
-		t.Fatal(why)
-	case <-time.After(3 * time.Second):
-	}
-}
-
 // pinProbeSibling proves the sibling session is still usable with one
 // synchronous request/response round-trip through the shared provider.
 func pinProbeSibling(t *testing.T, manager *Manager, sibling *Session, writer *collectWriter, marker string) {
@@ -201,14 +188,10 @@ func pinProbeSibling(t *testing.T, manager *Manager, sibling *Session, writer *c
 // calls p.close). The closing session's deadline is fired manually once the
 // wedge is proven; the sibling session and the provider must survive it.
 //
-// RED today: p.close() kills the provider and mass-evicts the sibling.
-// GREEN after impl-B removes the kill. A sibling round-trip "recovery" step is
-// deliberately omitted: impl-A's writer never abandons an already in-flight
-// write, so the wedged frame keeps the single writer blocked until the fixture
-// resumes reading or the process dies. Sibling survival with no recovery step
-// is the required pin; a provider left in this state is reclaimed only by the
-// manager lifecycle (peer EOF when the fixture dies, idle release, CloseAll),
-// never by the failing session.
+// After the local close timeout, the control socket resumes the fixture and
+// the sibling completes a round trip on the original provider PID. This proves
+// both survival and actual same-process recovery without a successful-path
+// sleep.
 func TestSharedProviderWedgedCloseIsLocal(t *testing.T) {
 	node := pinNode(t)
 	listener, port := pinControlListener(t)
@@ -222,6 +205,7 @@ func TestSharedProviderWedgedCloseIsLocal(t *testing.T) {
 	manager := NewManager()
 	t.Cleanup(manager.CloseAll)
 
+	siblingWriter := newCollectWriter()
 	sibling, _, _, err := manager.AcquireAttach(context.Background(), SessionOptions{
 		ID:     "pin-wedge-sibling",
 		Binary: node,
@@ -229,7 +213,7 @@ func TestSharedProviderWedgedCloseIsLocal(t *testing.T) {
 		Env:    append(os.Environ(), pinControlPortEnv+"="+strconv.Itoa(port)),
 		// The provider lifetime must never hang on a per-acquire context.
 		ProviderContext: context.Background(),
-	}, newCollectWriter())
+	}, siblingWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +239,9 @@ func TestSharedProviderWedgedCloseIsLocal(t *testing.T) {
 		t.Fatal("fixture never connected its control socket")
 	}
 	defer func() { _ = conn.Close() }()
-	awaitControlLine(t, conn, bufio.NewReader(conn), "paused")
+	control := bufio.NewReader(conn)
+	awaitControlLine(t, conn, control, "paused")
+	providerPID := provider.proc.cmd.Process.Pid
 
 	// One valid JSON frame with >=256KiB padding, sent through a wrapper that
 	// signals when the write has entered the OS write. The frame cannot
@@ -291,10 +277,24 @@ func TestSharedProviderWedgedCloseIsLocal(t *testing.T) {
 		t.Fatal("close_session did not return after its deadline fired")
 	}
 
-	// THE PIN: the sibling session and the provider must survive the closing
-	// session's write timeout.
-	pinWitnessProviderDeath(t, provider,
-		"close_session write timeout killed the whole shared provider: one session's stuck write mass-evicted every sibling (RED: close write-timeout arm calls p.close)")
+	// Resume the exact wedged fixture, await its control acknowledgement, then
+	// prove the sibling performs a round trip on the same provider process.
+	if _, err := conn.Write([]byte("resume\n")); err != nil {
+		t.Fatalf("resume fixture: %v", err)
+	}
+	awaitControlLine(t, conn, control, "resumed")
+	select {
+	case err := <-wedgeResult:
+		if err != nil {
+			t.Fatalf("wedged frame did not recover after fixture resume: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("wedged frame did not drain after fixture resume")
+	}
+	pinProbeSibling(t, manager, sibling, siblingWriter, "pin-probe-after-wedged-close")
+	if got := provider.proc.cmd.Process.Pid; got != providerPID {
+		t.Fatalf("provider pid changed during local close recovery: got %d, want %d", got, providerPID)
+	}
 	select {
 	case <-provider.proc.exited:
 		t.Fatal("provider process was killed by a session-scoped close timeout")
@@ -467,8 +467,6 @@ func TestSharedProviderSlowOpenIsLocal(t *testing.T) {
 	}
 
 	// THE PIN: provider and sibling survive one session's open timeout.
-	pinWitnessProviderDeath(t, provider,
-		"a slow open_session response killed the whole shared provider: one session's open deadline mass-evicted every sibling (RED: open cancel arm calls p.close)")
 	select {
 	case <-provider.proc.exited:
 		t.Fatal("provider process was killed by a session-scoped open deadline")
@@ -512,8 +510,6 @@ func TestOpenSessionCancellationIsLocal(t *testing.T) {
 	}
 
 	// THE PIN: provider and sibling survive one session's cancelled open.
-	pinWitnessProviderDeath(t, provider,
-		"an open_session cancellation killed the whole shared provider: one session's cancelled open mass-evicted every sibling (RED: open cancel arm calls p.close)")
 	select {
 	case <-provider.proc.exited:
 		t.Fatal("provider process was killed by a session-scoped open cancellation")
@@ -548,8 +544,6 @@ func TestManagerAcquireContextDoesNotOwnProvider(t *testing.T) {
 	cancel()
 
 	// THE PIN: cancelling the acquire context must not terminate the provider.
-	pinWitnessProviderDeath(t, provider,
-		"cancelling the acquire context killed the shared provider: a per-acquire context owned the provider lifetime (RED: manager acquire-ctx fallback)")
 	select {
 	case <-provider.proc.exited:
 		t.Fatal("provider process was killed by acquire-context cancellation")

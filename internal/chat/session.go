@@ -39,7 +39,7 @@ type ExitCallback func(*Session)
 type SessionOptions struct {
 	// ProviderContext owns the shared process lifetime when this acquire starts
 	// it. The AcquireAttach context bounds only this logical session's open.
-	// When nil, AcquireAttach uses its context for backward compatibility.
+	// It is required when a new shared provider must be started.
 	ProviderContext context.Context
 	ID              string
 	Cwd             string

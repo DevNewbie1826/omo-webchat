@@ -61,16 +61,30 @@ func (p *sharedProvider) openSession(ctx context.Context, s *Session, opts Sessi
 		// writer goroutine publishes its result one channel hop later than the
 		// exit path publishes p.done, so a plain select would report a frame the
 		// provider already received as a write failure at random. Let the writer
-		// resolve first — on a dead process it returns promptly, either with the
-		// completed write or with the pipe error — and only treat the open as a
-		// write failure when it never resolves.
+		// resolve first, but never outlive the caller's remaining open budget.
+		wait := closeSessionTimeout
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				p.removePending(id)
+				return context.DeadlineExceeded
+			}
+			if remaining < wait {
+				wait = remaining
+			}
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
 		select {
 		case err := <-sendResult:
 			if err != nil {
 				p.removePending(id)
 				return err
 			}
-		case <-time.After(closeSessionTimeout):
+		case <-ctx.Done():
+			p.removePending(id)
+			return ctx.Err()
+		case <-timer.C:
 			p.removePending(id)
 			return errors.New("chat: provider process ended while writing open_session")
 		}

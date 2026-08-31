@@ -45,7 +45,7 @@ func TestChatProviderStderrHelperProcess(t *testing.T) {
 	}
 	// The stderr marker is the assertion payload: it must land in the state
 	// directory's rotating capture file.
-	if _, err := os.Stderr.WriteString(providerStderrMarker + "\n"); err != nil {
+	if _, err := os.Stderr.WriteString(providerStderrMarker + "\n" + strings.Repeat("x", 1<<20)); err != nil {
 		os.Exit(3)
 	}
 	reader := bufio.NewReader(os.Stdin)
@@ -94,6 +94,37 @@ func TestChatProviderStderrHelperProcess(t *testing.T) {
 // Process, and the real provider process's stderr lands in the rotating
 // capture file on disk. No skip: the provider is this test binary re-executed
 // as a helper process.
+func TestProviderStderrPathUsesEffectiveStateDir(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("default", func(t *testing.T) {
+		stateHome := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", stateHome)
+		s := &Server{cfg: &config.Config{}, logger: logger}
+		got, err := s.providerStderrPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(stateHome, "omo-webchat", "omo-provider.stderr.log")
+		if got != want {
+			t.Fatalf("default stderr path = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("explicit", func(t *testing.T) {
+		dir := t.TempDir()
+		s := &Server{cfg: &config.Config{StateDir: dir}, logger: logger}
+		got, err := s.providerStderrPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Join(dir, "omo-provider.stderr.log")
+		if got != want {
+			t.Fatalf("explicit stderr path = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestChatProviderStderrUsesStateDir(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -135,37 +166,14 @@ func TestChatProviderStderrUsesStateDir(t *testing.T) {
 	go client.ReadLoop()
 
 	writeFrame(t, client, map[string]any{"type": "chat.create", "wsId": ws.ID, "chatId": record.ID})
-	// Bounded wait for the ready frame; on timeout, dump every frame received
-	// so the failure is diagnosable.
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		for _, b := range frames.snapshot() {
-			var env struct {
-				Type string `json:"type"`
-			}
-			if json.Unmarshal(b, &env) == nil && env.Type == "ready" {
-				goto ready
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("chat.create never became ready; frames received: %s", frames.snapshotRaw())
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-ready:
+	frames.waitFor(t, "ready", 15*time.Second)
 
-	// The provider's stderr must have been captured into the state
-	// directory's rotating file pair — read from the real file on disk.
+	// The helper writes more than a pipe buffer before reading stdin, so the
+	// ready response is an exact witness that the earlier marker has already
+	// drained into the sink. No filesystem polling is needed.
 	stderrLog := filepath.Join(stateHome, "omo-webchat", "omo-provider.stderr.log")
-	fileDeadline := time.Now().Add(10 * time.Second)
-	for {
-		b, rerr := os.ReadFile(stderrLog)
-		if rerr == nil && strings.Contains(string(b), providerStderrMarker) {
-			break
-		}
-		if time.Now().After(fileDeadline) {
-			t.Fatalf("provider stderr %s never contained the marker (read err=%v)", stderrLog, rerr)
-		}
-		time.Sleep(25 * time.Millisecond)
+	b, rerr := os.ReadFile(stderrLog)
+	if rerr != nil || !strings.Contains(string(b), providerStderrMarker) {
+		t.Fatalf("provider stderr %s missing marker (read err=%v)", stderrLog, rerr)
 	}
 }

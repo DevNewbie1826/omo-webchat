@@ -11,18 +11,18 @@ import (
 )
 
 // providerStderrPath resolves the shared provider's stderr capture file from
-// the state directory, using the same resolution internal/store provides.
-// The path is computed here because the chat package must not import
-// internal/store. Capture is best-effort at this boundary: if the state
-// directory cannot be resolved the provider starts without capture instead
-// of failing the chat.
-func (s *Server) providerStderrPath() string {
+// the same effective state directory as the store. Explicit configuration is
+// authoritative; otherwise the default store resolver is used. Resolution
+// failures are startup failures rather than silently disabling diagnostics.
+func (s *Server) providerStderrPath() (string, error) {
+	if s.cfg != nil && s.cfg.StateDir != "" {
+		return filepath.Join(s.cfg.StateDir, "omo-provider.stderr.log"), nil
+	}
 	dir, err := store.StateDir()
 	if err != nil {
-		s.logger.Warn("provider stderr capture disabled: state directory unavailable", "err", err)
-		return ""
+		return "", err
 	}
-	return filepath.Join(dir, "omo-provider.stderr.log")
+	return filepath.Join(dir, "omo-provider.stderr.log"), nil
 }
 
 func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
@@ -72,6 +72,11 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 	if previousDetach != nil {
 		previousDetach()
 	}
+	stderrPath, err := s.providerStderrPath()
+	if err != nil {
+		h.sendError("start_failed", "resolve provider stderr path: "+err.Error())
+		return
+	}
 	var sess *chat.Session
 	// A dangling stored identity may still have recoverable branch sessions
 	// recorded inside sibling session files. The recovery scan joins on the
@@ -91,7 +96,7 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 		// The provider's stderr persists to the state directory so the next
 		// provider death is diagnosable; the chat package only consumes the
 		// resolved path.
-		StderrPath: s.providerStderrPath(),
+		StderrPath: stderrPath,
 		// A chat record's persisted activity pair seeds the replay cache of the
 		// session restored from disk; live snapshots supersede it once omo
 		// sends real state.
