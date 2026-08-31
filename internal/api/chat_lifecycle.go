@@ -3,11 +3,27 @@ package api
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
 )
+
+// providerStderrPath resolves the shared provider's stderr capture file from
+// the state directory, using the same resolution internal/store provides.
+// The path is computed here because the chat package must not import
+// internal/store. Capture is best-effort at this boundary: if the state
+// directory cannot be resolved the provider starts without capture instead
+// of failing the chat.
+func (s *Server) providerStderrPath() string {
+	dir, err := store.StateDir()
+	if err != nil {
+		s.logger.Warn("provider stderr capture disabled: state directory unavailable", "err", err)
+		return ""
+	}
+	return filepath.Join(dir, "omo-provider.stderr.log")
+}
 
 func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 	var req struct {
@@ -72,6 +88,10 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 		Env:             os.Environ(),
 		Provider:        providerID,
 		PiSessionID:     existing.PiSessionID,
+		// The provider's stderr persists to the state directory so the next
+		// provider death is diagnosable; the chat package only consumes the
+		// resolved path.
+		StderrPath: s.providerStderrPath(),
 		// A chat record's persisted activity pair seeds the replay cache of the
 		// session restored from disk; live snapshots supersede it once omo
 		// sends real state.

@@ -48,6 +48,11 @@ type SessionOptions struct {
 	Env             []string
 	Provider        string
 	PiSessionID     string
+	// StderrPath is the provider-stderr capture file for a provider started
+	// by this acquire (shared provider). The state directory is resolved at
+	// the API layer — the chat package cannot import internal/store — and an
+	// empty value leaves provider stderr unwired.
+	StderrPath string
 	// SeedActivity pre-loads the replayable activity cache from the chat
 	// record's persisted snapshot. Used only at session creation: a session
 	// restored from disk replays the persisted pair to its first client until
