@@ -93,6 +93,7 @@ export function Sidebar({
           <div className="th-sidebar-nav">
             <span className="th-sidebar-logo">
               <span className="th-sidebar-logo-dot" />
+              <img className="th-sidebar-logo-icon" src="./favicon-32x32.png" alt="" />
               {t("sidebar.nav.brand")}
             </span>
             <div className="th-sidebar-nav-actions">

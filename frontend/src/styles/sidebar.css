@@ -55,6 +55,12 @@
   background: var(--th-success);
 }
 
+.th-sidebar-logo-icon {
+  width: var(--th-space-4);
+  height: var(--th-space-4);
+  flex: none;
+}
+
 .th-sidebar-nav-actions {
   margin-left: auto;
   display: flex;
