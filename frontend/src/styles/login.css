@@ -36,14 +36,6 @@
   color: var(--th-muted);
 }
 
-.th-login-brand-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--th-success);
-  box-shadow: 0 0 10px var(--th-success);
-}
-
 .th-login-title {
   display: flex;
   align-items: center;
@@ -56,8 +48,8 @@
 }
 
 .th-login-title-icon {
-  width: 1.125em;
-  height: 1.125em;
+  width: 1.75em;
+  height: 1.75em;
   flex: none;
 }
 

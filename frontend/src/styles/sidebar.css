@@ -48,16 +48,9 @@
   white-space: nowrap;
 }
 
-.th-sidebar-logo-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--th-success);
-}
-
 .th-sidebar-logo-icon {
-  width: var(--th-space-4);
-  height: var(--th-space-4);
+  width: var(--th-space-5);
+  height: var(--th-space-5);
   flex: none;
 }
 
