@@ -3,6 +3,7 @@ package chat
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -27,8 +28,8 @@ func collectNoticeFrames(t *testing.T, frames [][]byte) []noticeEnvelope {
 }
 
 // Every omo advisory event family must forward as exactly one "notice" frame
-// whose kind is the omo event type verbatim and whose payload is the raw
-// event object passed through untouched.
+// whose kind is the omo event type verbatim and whose payload is the bare
+// advisory object without the provider's type or routing handle.
 func TestAdvisoryEventsForwardedAsNotice(t *testing.T) {
 	cases := []struct {
 		eventType string
@@ -47,12 +48,12 @@ func TestAdvisoryEventsForwardedAsNotice(t *testing.T) {
 		{"summarization_retry_finished", `{"succeeded":true}`},
 		{"settings_source_selected", `{"source":"project"}`},
 	}
-	for _, tc := range cases {
+	for i, tc := range cases {
 		t.Run(tc.eventType, func(t *testing.T) {
 			writer := newCollectWriter()
 			s := newTestSession("chat-notice-"+tc.eventType, writer)
 
-			dispatchEvent(s, tc.eventType, `{"type":"`+tc.eventType+`",`+tc.payload[1:])
+			dispatchEvent(s, tc.eventType, `{"type":"`+tc.eventType+`","sessionId":"rpc-`+strconv.Itoa(i+1)+`",`+tc.payload[1:])
 			frames := collectNoticeFrames(t, writer.snapshot())
 			if len(frames) != 1 {
 				t.Fatalf("notice frames = %d, want exactly 1; frames: %s", len(frames), writer.typesString())
@@ -72,7 +73,7 @@ func TestAdvisoryEventsForwardedAsNotice(t *testing.T) {
 				t.Fatalf("fixture payload is not valid JSON: %v", err)
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("payload = %s, want %s (verbatim passthrough)", env.Payload, tc.payload)
+				t.Fatalf("payload = %s, want bare advisory object %s", env.Payload, tc.payload)
 			}
 		})
 	}

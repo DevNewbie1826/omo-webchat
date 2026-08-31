@@ -42,13 +42,15 @@ type providerTermination struct {
 type sharedProvider struct {
 	proc *Process
 
-	mu          sync.Mutex
-	sessions    map[string]*sessionRoute
-	pending     map[string]pendingProviderRequest
-	requests    map[string]*sessionRoute
-	state       sharedProviderState
-	exitSummary string
-	done        chan struct{}
+	mu                sync.Mutex
+	sessions          map[string]*sessionRoute
+	pending           map[string]pendingProviderRequest
+	requests          map[string]*sessionRoute
+	preOpenEvents     map[string][]Event
+	preOpenEventCount int
+	state             sharedProviderState
+	exitSummary       string
+	done              chan struct{}
 
 	nextID         atomic.Uint64
 	closeDeadline  func() <-chan time.Time
@@ -132,6 +134,8 @@ func (p *sharedProvider) pump() {
 		routes = append(routes, route)
 	}
 	p.requests = make(map[string]*sessionRoute)
+	p.preOpenEvents = nil
+	p.preOpenEventCount = 0
 	p.mu.Unlock()
 	for _, request := range pending {
 		close(request.response)
@@ -182,6 +186,11 @@ func (p *sharedProvider) route(ev Event) bool {
 		delete(p.pending, envelope.ID)
 		if request.open {
 			p.installOpenRouteLocked(request.session, ev)
+			p.flushPreOpenEventsLocked(request.session, ev)
+		}
+		if !p.hasPendingOpenLocked() {
+			p.preOpenEvents = nil
+			p.preOpenEventCount = 0
 		}
 		p.mu.Unlock()
 		request.response <- ev
@@ -195,6 +204,11 @@ func (p *sharedProvider) route(ev Event) bool {
 		delete(p.requests, envelope.ID)
 	}
 	if route == nil {
+		if envelope.SessionID != "" && p.hasPendingOpenLocked() {
+			p.bufferPreOpenEventLocked(envelope.SessionID, ev)
+			p.mu.Unlock()
+			return true
+		}
 		p.mu.Unlock()
 		return false
 	}
@@ -207,6 +221,55 @@ func (p *sharedProvider) route(ev Event) bool {
 		p.mu.Unlock()
 		p.teardownRoute(route, providerTermination{kind: providerTerminationQueueOverflow, summary: "session delivery queue overflow"})
 		return true
+	}
+}
+
+func (p *sharedProvider) hasPendingOpenLocked() bool {
+	for _, request := range p.pending {
+		if request.open {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *sharedProvider) bufferPreOpenEventLocked(handle string, ev Event) {
+	// Match the per-session delivery queue bound. Once full, drop newest
+	// pre-open events so an untrusted provider cannot grow memory without bound.
+	if p.preOpenEventCount >= sessionQueueSize {
+		return
+	}
+	if p.preOpenEvents == nil {
+		p.preOpenEvents = make(map[string][]Event)
+	}
+	p.preOpenEvents[handle] = append(p.preOpenEvents[handle], ev)
+	p.preOpenEventCount++
+}
+
+func (p *sharedProvider) flushPreOpenEventsLocked(session *Session, response Event) {
+	var envelope struct {
+		SessionID string `json:"sessionId"`
+		Data      struct {
+			SessionID string `json:"sessionId"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(response.Raw, &envelope) != nil {
+		return
+	}
+	handle := envelope.Data.SessionID
+	if handle == "" {
+		handle = envelope.SessionID
+	}
+	route := p.sessions[handle]
+	if route == nil || route.session != session {
+		return
+	}
+	events := p.preOpenEvents[handle]
+	delete(p.preOpenEvents, handle)
+	p.preOpenEventCount -= len(events)
+	for i := range events {
+		event := events[i]
+		route.queue <- sessionDelivery{event: &event}
 	}
 }
 

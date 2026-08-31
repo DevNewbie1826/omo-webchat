@@ -10,15 +10,16 @@ func (s *Session) forwardNotice(kind string, payload json.RawMessage) {
 	s.send(&NoticeFrame{Type: "notice", SessionID: s.id, Kind: kind, Payload: payload})
 }
 
-// advisoryNoticePayload returns the raw event object without its "type"
-// envelope key: the kind already names the event type, so the payload is the
-// bare advisory object.
+// advisoryNoticePayload returns the raw event object without its routing
+// envelope keys: the notice kind and client session ID replace the provider's
+// event type and internal multi-session handle.
 func advisoryNoticePayload(raw json.RawMessage) json.RawMessage {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
 		return raw
 	}
 	delete(fields, "type")
+	delete(fields, "sessionId")
 	out, err := json.Marshal(fields)
 	if err != nil {
 		return raw
