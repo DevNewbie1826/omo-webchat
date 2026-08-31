@@ -64,8 +64,8 @@ function latestOutputLine(text: string): string {
 /**
  * One addressable transcript block per tool invocation (DESIGN.md
  * "Tool-execution block anatomy"): a two-line disclosure header (status glyph
- * and localized word, operation title, mono invocation summary with the first
- * output line) over an inset Command/Input + Output body. Status is never
+ * and localized word, operation title, mono invocation summary with the latest
+ * non-empty output line) over an inset Command/Input + Output body. Status is never
  * colour alone: running shows a spinner ring, done a check mark, failed an
  * exclamation mark, each beside a visible localized word. An untouched card
  * stays collapsed in every phase — running included; only a failed call
