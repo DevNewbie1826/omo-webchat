@@ -1,9 +1,9 @@
 import type { Translate } from "../../i18n";
-import { STALE_ACTIVITY_MS } from "./activityState";
+import { agentFreshness } from "./activityState";
 import {
   agoText,
   agentTimeMs,
-  lastActivityMs,
+  compactTokRate,
   statusKind,
   statusLabel,
   TERMINAL_TASK_STATUSES,
@@ -25,27 +25,34 @@ export function ActivityChip({ kind, label }: {
   return <span className={`th-activity-chip th-activity-chip--${kind}`}>{label}</span>;
 }
 
-function AgentRow({ task, nowMs, t }: {
+function AgentRow({ task, nowMs, runInFlight, t }: {
   readonly task: ActivityTask;
   readonly nowMs: number;
+  readonly runInFlight: boolean;
   readonly t: Translate;
 }) {
-  const lastMs = lastActivityMs(task);
+  const freshness = agentFreshness(task, nowMs, runInFlight);
   const time = agentTimeMs(task);
-  const stale = !TERMINAL_TASK_STATUSES.has(task.status)
-    && lastMs !== null
-    && nowMs - lastMs > STALE_ACTIVITY_MS;
-  const tool = task.liveProgress?.currentTool;
-  const turns = task.liveProgress?.turns;
+  const progress = task.liveProgress;
+  const tool = progress?.currentTool;
+  const turns = progress?.turns;
+  const lastLine = progress?.lastAssistantLine;
+  const tokensPerSecond = progress?.tokensPerSecond;
+  const toolCalls = progress?.toolCalls;
   const route = task.agentType ?? task.category;
   const title = task.taskSummary ?? task.name;
   return (
-    <li className={`th-activity-agent${stale ? " th-activity-stale" : ""}`}>
+    <li
+      className={`th-activity-agent${freshness === "stale" ? " th-activity-stale" : ""}${freshness === "severed" ? " th-activity-severed" : ""}`}
+    >
       <span className="th-activity-agent-name">
         {route !== undefined ? `(${route}) - ${title}` : title}
       </span>
       <ActivityChip kind={statusKind(task.status)} label={statusLabel(t, task.status)} />
       {tool !== undefined && <span className="th-activity-agent-tool">{tool}</span>}
+      {lastLine !== undefined && (
+        <span className="th-activity-agent-lastline">{lastLine}</span>
+      )}
       {turns !== undefined && (
         <span className="th-activity-agent-meta th-activity-agent-turns">
           {t("activity.turns")}
@@ -53,27 +60,49 @@ function AgentRow({ task, nowMs, t }: {
           {turns}
         </span>
       )}
+      {toolCalls !== undefined && (
+        <span className="th-activity-agent-meta th-activity-agent-toolcalls">
+          {t("activity.toolCalls")}
+          {" "}
+          {toolCalls}
+        </span>
+      )}
+      {tokensPerSecond !== undefined && (
+        <span className="th-activity-agent-meta th-activity-agent-rate">
+          {t("activity.tokensPerSecond", { n: compactTokRate(tokensPerSecond) })}
+        </span>
+      )}
       {time !== null && (
         <span className="th-activity-agent-meta">
           {t("activity.startedAgo", { n: agoText(nowMs - time) })}
         </span>
       )}
-      {stale && <span className="th-activity-stale-note">{t("activity.stale")}</span>}
+      {freshness === "stale" && <span className="th-activity-stale-note">{t("activity.stale")}</span>}
+      {freshness === "severed" && (
+        <span className="th-activity-severed-note">{t("activity.severed")}</span>
+      )}
     </li>
   );
 }
 
-export function AgentSection({ tasks, nowMs, t }: {
+export function AgentSection({ tasks, nowMs, runInFlight, t }: {
   readonly tasks: readonly ActivityTask[];
   readonly nowMs: number;
+  readonly runInFlight: boolean;
   readonly t: Translate;
 }) {
+  const running = tasks.filter((task) => !TERMINAL_TASK_STATUSES.has(task.status)).length;
   return (
     <section className="th-activity-section">
-      <span className="th-activity-section-title">{t("activity.agents")}</span>
+      <div className="th-activity-section-head">
+        <span className="th-activity-section-title">{t("activity.agents")}</span>
+        <span className="th-activity-section-counts">
+          {t("activity.agentCounts", { running, done: tasks.length - running })}
+        </span>
+      </div>
       <ul className="th-activity-agents">
         {tasks.map((task) => (
-          <AgentRow key={task.taskId} task={task} nowMs={nowMs} t={t} />
+          <AgentRow key={task.taskId} task={task} nowMs={nowMs} runInFlight={runInFlight} t={t} />
         ))}
       </ul>
     </section>

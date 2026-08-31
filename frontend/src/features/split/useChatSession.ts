@@ -36,9 +36,16 @@ export function useChatSession(
     };
     const client = connect({
       onOpen: () => {
+        const reconnected = opened;
         opened = true;
         markOpenRef.current();
-        if (clientRef.current) sendInitialFrames(clientRef.current);
+        if (clientRef.current) {
+          sendInitialFrames(clientRef.current);
+          // Reconnects replay the activity cache: the server answers with the
+          // extensionEvent frames missed while the socket was down. The initial
+          // open skips it - the attach flow delivers the snapshots itself.
+          if (reconnected) clientRef.current.send({ type: "activity.refresh", sessionId: session.id });
+        }
       },
       onFrame: (frame) => {
         if (frame.sessionId !== undefined && frame.sessionId !== session.id) return;
@@ -67,6 +74,18 @@ export function useChatSession(
     if (frameState.doneReason === null) return;
     clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
   }, [frameState.doneReason, session.id]);
+
+  // Backgrounded tabs miss activity events (mobile may suspend the socket);
+  // on return to visible, ask the server to replay its cached activity frames
+  // so the shelf catches up immediately. No-op without an attached session.
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState !== "visible") return;
+      clientRef.current?.send({ type: "activity.refresh", sessionId: session.id });
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [session.id]);
 
   const sendControl = (frame: ChatClientFrame, failureMessage: string): boolean => {
     const client = clientRef.current;

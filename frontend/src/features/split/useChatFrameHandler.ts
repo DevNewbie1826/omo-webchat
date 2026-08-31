@@ -1,7 +1,7 @@
 import type { ChatServerFrame, CommandEntry, ContextUsage, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { MissingOriginal } from "./useChatFrameState";
-import { applyActivityEvent, applyTodoToolDetails } from "./activityState";
+import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import type { UiMessage } from "./chatEntries";
 import type { useConfirmedControls } from "./chatConfirmedControls";
@@ -118,11 +118,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.setError("");
         bindings.setDoneReason(null);
         bindings.replaceToolCalls({});
+        // The shelf judges staleness only while a run is in flight.
+        bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, true));
         return;
       case "run.done": {
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
         bindings.clearLiveSurfaces();
+        bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {
           bindings.messageVersionRef.current += 1;

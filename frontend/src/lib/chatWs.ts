@@ -124,6 +124,7 @@ export type ChatClientFrame =
   | { readonly type: "chat.compact"; readonly sessionId: string }
   | { readonly type: "chat.models"; readonly sessionId: string }
   | { readonly type: "chat.stats"; readonly sessionId: string }
+  | { readonly type: "activity.refresh"; readonly sessionId: string }
   | { readonly type: "chat.resume"; readonly sessionId: string; readonly since?: string };
 
 export interface ChatClient {

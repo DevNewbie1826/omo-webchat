@@ -18,6 +18,7 @@ vi.mock("../features/auth/auth", () => ({
 
 vi.mock("../features/workspace/useLiveSessions", () => ({
   useLiveSessions: () => new Set<string>(),
+  useLiveSessionInfos: () => [],
 }));
 
 vi.mock("../features/workspace/useProviderDiscovery", () => ({

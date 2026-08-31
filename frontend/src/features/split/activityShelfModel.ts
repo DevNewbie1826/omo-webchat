@@ -87,6 +87,14 @@ export function agoText(deltaMs: number): string {
   return `${Math.floor(seconds / 3600)}h`;
 }
 
+/** Compact token-rate formatting for the shelf: 6589 -> "6.6k", 6589123 -> "6.6M". */
+export function compactTokRate(tokensPerSecond: number): string {
+  const rate = Math.max(0, tokensPerSecond);
+  if (rate >= 1_000_000) return `${Math.round(rate / 100_000) / 10}M`;
+  if (rate >= 1000) return `${Math.round(rate / 100) / 10}k`;
+  return String(Math.round(rate));
+}
+
 export function todoCounts(
   phases: readonly TodoPhase[],
 ): { readonly done: number; readonly total: number } {

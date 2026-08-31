@@ -124,6 +124,26 @@
   min-width: 0;
 }
 
+.th-activity-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-activity-section-counts {
+  flex: none;
+  margin-left: auto;
+  color: var(--th-muted);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .th-activity-section-title {
   color: var(--th-muted);
   font-size: var(--th-type-micro-size);
@@ -195,6 +215,20 @@
   white-space: nowrap;
 }
 
+/* Last assistant line: the live voice of the agent, single line with
+   ellipsis, taking whatever lane the fixed-width metadata leaves it. */
+.th-activity-agent-lastline {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .th-activity-agent-meta {
   flex: none;
   color: var(--th-muted);
@@ -215,6 +249,39 @@
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
   white-space: nowrap;
+}
+
+/* A run in flight whose agent has been silent past 90s: visually and
+   textually distinct from the amber stale note - error tint on the row and
+   a pulsing dot on the note. Reduced motion disables the pulse globally. */
+.th-activity-severed {
+  background: var(--th-error-bg);
+}
+
+.th-activity-severed-note {
+  flex: none;
+  color: var(--th-error);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  white-space: nowrap;
+}
+
+.th-activity-severed-note::before {
+  content: "";
+  display: inline-block;
+  width: var(--th-space-1);
+  height: var(--th-space-1);
+  margin-right: var(--th-space-1);
+  border-radius: 999px;
+  background: var(--th-error);
+  animation: th-activity-severed-pulse calc(var(--th-dur-slow) * 4) var(--th-ease) infinite alternate;
+}
+
+@keyframes th-activity-severed-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.25; }
 }
 
 .th-activity-dag-toolbar {
@@ -453,7 +520,8 @@
 }
 
 @container chat-pane (max-width: 494px) {
-  .th-activity-agent-turns {
+  .th-activity-agent-turns,
+  .th-activity-agent-toolcalls {
     display: none;
   }
 
