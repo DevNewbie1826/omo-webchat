@@ -237,6 +237,42 @@ describe("live polling hooks", () => {
     expect(Array.from(captured.ids)).toEqual(["s1", "s2", "legacy"]);
   });
 
+  it("expires a quiet running task while identical polls retain session identity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const response = okResponse({
+      sessions: [
+        {
+          id: "quiet",
+          title: "Quiet agent",
+          task: {
+            tasks: [
+              {
+                task_id: "t1",
+                name: "Quiet",
+                status: "running",
+                updated_at: "2026-08-19T09:59:59.000Z",
+              },
+            ],
+          },
+          dag: null,
+        },
+      ],
+    });
+    const fetchMock = vi.fn(async () => response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => root.render(<Host enabled={true} />));
+    expect(captured.summaries[0]?.runningCount).toBe(1);
+    const initialSummary = captured.summaries[0];
+
+    await act(async () => vi.advanceTimersByTimeAsync(105_000));
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    expect(captured.summaries[0]).not.toBe(initialSummary);
+    expect(captured.summaries[0]?.runningCount).toBe(0);
+  });
+
   it("does not let a stopped request apply or start a duplicate chain after resubscribe", async () => {
     vi.useFakeTimers();
     const requests: Array<(response: Response) => void> = [];

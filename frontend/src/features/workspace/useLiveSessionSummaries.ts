@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
 import { lastActivityMs, taskStatusCounts } from "../split/activityShelfModel";
 import type { ActivityTask } from "../split/activityTypes";
@@ -10,6 +10,7 @@ import type { LiveSessionInfo } from "./workspace";
  * "no activity", never as an error. */
 /** Mirrors SEVERED_ACTIVITY_MS: quiet running tasks no longer count as active. */
 export const STALE_RUNNING_WINDOW_MS = 90_000;
+const FRESHNESS_TICK_MS = 15_000;
 
 export interface LiveSessionSummary {
   readonly id: string;
@@ -39,11 +40,10 @@ function lastLineOf(tasks: readonly ActivityTask[]): string | null {
   return bestLine;
 }
 
-export function summarizeLiveSession(info: LiveSessionInfo): LiveSessionSummary {
+export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()): LiveSessionSummary {
   const tasks = (info.task == null ? null : parseTaskUpdated(info.task))?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
   const counts = taskStatusCounts(tasks);
-  const nowMs = Date.now();
   // Unknown or malformed timestamps count conservatively as running.
   const runningCount = tasks.filter((task) => {
     if (task.status !== "running") return false;
@@ -70,5 +70,14 @@ export function summarizeLiveSession(info: LiveSessionInfo): LiveSessionSummary 
 /** Per-session activity rollups for live sessions, from the shared poller. */
 export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionSummary[] {
   const infos = useLiveSessionInfos(enabled);
-  return useMemo(() => infos.map(summarizeLiveSession), [infos]);
+  const [clockMs, setClockMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!enabled) return;
+    setClockMs(Date.now());
+    const timer = window.setInterval(() => setClockMs(Date.now()), FRESHNESS_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, [enabled]);
+
+  return useMemo(() => infos.map((info) => summarizeLiveSession(info, clockMs)), [infos, clockMs]);
 }
