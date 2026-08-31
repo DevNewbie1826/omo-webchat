@@ -40,6 +40,10 @@ export interface UseWorkspacesResult {
   readonly load: () => Promise<void>;
   readonly addCreatedSession: (wsId: string, tm: Terminal, replacedSessionId?: string) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
+  /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
+  readonly ensureSessionsLoaded: (wsId: string) => void;
+  /** Hoists an opened session to the head of its workspace's session list (local state only). */
+  readonly markSessionUsed: (wsId: string, id: string) => void;
   readonly toggleExpanded: (wsId: string) => void;
   readonly handleDeleteWorkspace: (ws: Workspace) => Promise<void>;
   readonly handleDeleteTerminal: (ws: Workspace, tm: Terminal) => Promise<void>;
@@ -201,6 +205,34 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     await fetchSessionPage(wsId, paging.nextCursor, true);
   };
 
+  // The empty-pane picker renders from the same paged source as the sidebar.
+  // Mirrors the expand-effect guard so repeated calls (re-renders, workspace
+  // switches) can never loop: ready or in-flight pages are left alone.
+  const ensureSessionsLoaded = useCallback(
+    (wsId: string): void => {
+      const paging = sessionPagesRef.current.get(wsId);
+      if (paging?.ready || paging?.loading) return;
+      void fetchSessionPage(wsId, "", false);
+    },
+    [fetchSessionPage],
+  );
+
+  // Opening a session is a recency event: hoist it to the head of its
+  // workspace's session list with the same dedupe semantics as creations.
+  // Purely local state — the server already keeps both lists MRU-sorted.
+  const markSessionUsed = useCallback(
+    (wsId: string, id: string): void => {
+      const listed = sessionListsRef.current.get(wsId);
+      if (!listed) return;
+      const entry = listed.find((item) => item.id === id);
+      if (!entry) return;
+      const next = new Map(sessionListsRef.current);
+      next.set(wsId, [entry, ...listed.filter((item) => item.id !== id)]);
+      replaceSessionLists(next);
+    },
+    [replaceSessionLists],
+  );
+
   const sessions = useMemo(() => {
     const map = new Map<string, ChatSessionRef>();
     for (const ws of workspaces) {
@@ -333,6 +365,8 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     load,
     addCreatedSession,
     loadMoreSessions,
+    ensureSessionsLoaded,
+    markSessionUsed,
     toggleExpanded,
     handleDeleteWorkspace,
     handleDeleteTerminal,
