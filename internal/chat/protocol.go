@@ -174,6 +174,18 @@ type ExtensionEventFrame struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 }
 
+// NoticeFrame forwards a transient advisory to WebSocket clients. Kind is
+// the omo event type verbatim (advisory family) or "extension_notify" (an
+// extension_ui_request with method notify); payload is the raw event object
+// passed through, null when absent. Notices are ephemeral: they are never
+// cached and never replayed to late-attaching clients.
+type NoticeFrame struct {
+	Type      string          `json:"type"` // "notice"
+	SessionID string          `json:"sessionId"`
+	Kind      string          `json:"kind"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
 // CompactionStartedFrame reports a provider compaction_start (manual or
 // automatic reason threshold|overflow; manual compaction uses reason manual) to
 // the client's compaction surface.

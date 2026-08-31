@@ -9,6 +9,21 @@ func (s *Session) dispatch(ev Event) {
 	switch ev.Type {
 	case "extension_ui_request":
 		s.forwardApproval(ev.Raw)
+	case "high_reasoning_warning",
+		"retry_fallback_applied",
+		"retry_fallback_reverted",
+		"retry_fallback_succeeded",
+		"retry_fallback_exhausted",
+		"server_fallback_aborted",
+		"auto_retry_start",
+		"auto_retry_end",
+		"summarization_retry_attempt_start",
+		"summarization_retry_scheduled",
+		"summarization_retry_finished",
+		"settings_source_selected":
+		// Advisory events are transient: forward the raw payload as a notice,
+		// kinded by the omo event type verbatim, never cached for replay.
+		s.forwardNotice(ev.Type, advisoryNoticePayload(ev.Raw))
 	case "message_update":
 		s.forwardMessageDelta(ev.Raw)
 	case "message_end":
