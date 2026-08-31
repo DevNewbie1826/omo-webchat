@@ -267,7 +267,7 @@ func TestSharedProviderBlockedWriterDoesNotTearDownSession(t *testing.T) {
 func TestSharedProviderFailedStartAndConcurrentLastReleaseAreSafe(t *testing.T) {
 	failedManager := NewManager()
 	t.Cleanup(failedManager.CloseAll)
-	if _, _, err := failedManager.Acquire(context.Background(), SessionOptions{ID: "failed-start", Binary: t.TempDir() + "/missing-omo"}); err == nil {
+	if _, _, err := failedManager.Acquire(context.Background(), SessionOptions{ID: "failed-start", Binary: t.TempDir() + "/missing-omo", ProviderContext: context.Background()}); err == nil {
 		t.Fatal("provider start unexpectedly succeeded")
 	}
 	failedManager.mu.Lock()

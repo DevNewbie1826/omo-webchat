@@ -291,7 +291,7 @@ func TestOldSocketCloseDoesNotStopNewSession(t *testing.T) {
 	manager := chat.NewManager()
 	t.Cleanup(manager.CloseAll)
 	server := &Server{chats: manager}
-	opts := chat.SessionOptions{ID: "chat-1", Binary: node, Args: []string{mockPiPath(t)}, Env: os.Environ()}
+	opts := chat.SessionOptions{ID: "chat-1", Binary: node, Args: []string{mockPiPath(t)}, Env: os.Environ(), ProviderContext: context.Background()}
 	oldSession, started, err := manager.Acquire(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("start old session: %v", err)

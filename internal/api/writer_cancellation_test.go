@@ -203,11 +203,12 @@ func TestActivitySnapshotReplayCancellationReleasesManagerAndLifecycle(t *testin
 	exited := make(chan struct{})
 	var exitOnce sync.Once
 	opts := chat.SessionOptions{
-		ID:     "chat-blocked-replay",
-		Binary: node,
-		Args:   []string{script},
-		Env:    append(os.Environ(), "MOCK_PI_EXT_EVENT=1"),
-		OnExit: func(*chat.Session) { exitOnce.Do(func() { close(exited) }) },
+		ID:              "chat-blocked-replay",
+		Binary:          node,
+		Args:            []string{script},
+		Env:             append(os.Environ(), "MOCK_PI_EXT_EVENT=1"),
+		OnExit:          func(*chat.Session) { exitOnce.Do(func() { close(exited) }) },
+		ProviderContext: context.Background(),
 	}
 	collector := &replayFrameCollector{frames: make(chan string, 64)}
 	session, started, detach, err := manager.AcquireAttach(context.Background(), opts, collector)

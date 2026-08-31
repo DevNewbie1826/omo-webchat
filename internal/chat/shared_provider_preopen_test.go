@@ -25,7 +25,7 @@ else if(x.type==='close_session')send({type:'response',command:'close_session',s
 	t.Cleanup(manager.CloseAll)
 	writerA := newCollectWriter()
 	writerB := newCollectWriter()
-	opts := SessionOptions{Binary: node, Args: []string{"-e", script, "--"}, Cwd: t.TempDir()}
+	opts := SessionOptions{Binary: node, Args: []string{"-e", script, "--"}, Cwd: t.TempDir(), ProviderContext: context.Background()}
 	opts.ID = "preopen-a"
 	if _, started, _, err := manager.AcquireAttach(context.Background(), opts, writerA); err != nil || !started {
 		t.Fatalf("attach session A = started %v, err %v", started, err)

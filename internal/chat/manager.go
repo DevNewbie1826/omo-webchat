@@ -171,12 +171,13 @@ retry:
 	m.pending[opts.ID] = true
 	provider := m.provider
 	if provider == nil {
-		var err error
-		providerCtx := opts.ProviderContext
-		if providerCtx == nil {
-			providerCtx = ctx
+		if opts.ProviderContext == nil {
+			delete(m.pending, opts.ID)
+			m.mu.Unlock()
+			return nil, false, nil, fmt.Errorf("chat: ProviderContext is required to start a provider")
 		}
-		provider, err = startSharedProvider(providerCtx, opts, m.providerExited)
+		var err error
+		provider, err = startSharedProvider(opts.ProviderContext, opts, m.providerExited)
 		if err != nil {
 			delete(m.pending, opts.ID)
 			m.mu.Unlock()

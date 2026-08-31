@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"testing"
@@ -13,10 +14,11 @@ func managedMockOptions(t *testing.T, id string, env ...string) SessionOptions {
 		t.Skipf("node not in PATH: %v", err)
 	}
 	return SessionOptions{
-		ID:     id,
-		Binary: node,
-		Args:   []string{mockPiScript(t)},
-		Env:    append(os.Environ(), env...),
+		ID:              id,
+		Binary:          node,
+		Args:            []string{mockPiScript(t)},
+		Env:             append(os.Environ(), env...),
+		ProviderContext: context.Background(),
 	}
 }
 

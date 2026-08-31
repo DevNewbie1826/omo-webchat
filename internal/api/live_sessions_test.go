@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -40,12 +41,12 @@ func TestHandlerListsLiveSessionsWhenAuthenticated(t *testing.T) {
 	// The multi-session mock tolerates the --multi-session launch flag the
 	// shared provider appends and answers open_session, so both sessions run
 	// live on one shared provider process.
-	if _, started, err := server.chats.Acquire(t.Context(), chat.SessionOptions{ID: "chat-live", Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ()}); err != nil {
+	if _, started, err := server.chats.Acquire(t.Context(), chat.SessionOptions{ID: "chat-live", Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ(), ProviderContext: context.Background()}); err != nil {
 		t.Fatalf("acquire live session: %v", err)
 	} else if !started {
 		t.Fatal("first acquire did not start a live session")
 	}
-	if _, started, err := server.chats.Acquire(t.Context(), chat.SessionOptions{ID: "chat-live-2", Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ()}); err != nil {
+	if _, started, err := server.chats.Acquire(t.Context(), chat.SessionOptions{ID: "chat-live-2", Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ(), ProviderContext: context.Background()}); err != nil {
 		t.Fatalf("acquire second live session: %v", err)
 	} else if !started {
 		t.Fatal("second acquire did not start a live session")
@@ -106,6 +107,7 @@ func TestHandlerListsLiveSessionsIncludesActivitySnapshots(t *testing.T) {
 	frames := newLiveFrameCollector()
 	sess, started, detach, err := server.chats.AcquireAttach(ctx, chat.SessionOptions{
 		ID: record.ID, Binary: "node", Args: []string{mockPiPath(t)}, Env: os.Environ(),
+		ProviderContext: context.Background(),
 	}, frames)
 	if err != nil {
 		t.Fatalf("acquire live session: %v", err)

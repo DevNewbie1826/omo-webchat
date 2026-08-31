@@ -51,10 +51,11 @@ func TestManagerAcquireDoesNotCloseLiveSession(t *testing.T) {
 		t.Fatalf("start other session: %v", err)
 	}
 
-	// Simulate a provider that stopped draining stdin: an in-flight write
-	// parks on writeMu and never finishes.
-	oldSession.shared.proc.writeMu.Lock()
-	defer oldSession.shared.proc.writeMu.Unlock()
+	// Simulate a provider that stopped draining stdin: the writer goroutine
+	// parks inside an in-flight write to a wedged stdin and is released only
+	// by process death or an explicit un-wedge.
+	wedge := parkWriterOnBlockedStdin(oldSession.shared.proc)
+	t.Cleanup(func() { wedge.release() })
 
 	replaced := make(chan struct{})
 	go func() {
@@ -73,12 +74,12 @@ func TestManagerAcquireDoesNotCloseLiveSession(t *testing.T) {
 }
 
 // Session.Close must cancel the process context and reap, never writing an
-// abort to stdin first: with a stuck in-flight write (writeMu held), an
+// abort to stdin first: with a wedged in-flight stdin write, an
 // abort-before-cancel Close deadlocks and the process is never killed.
 func TestSessionCloseCancelsWithoutAbortWrite(t *testing.T) {
 	s := startSleepSession(t, "chat-close")
-	s.proc.writeMu.Lock()
-	defer s.proc.writeMu.Unlock()
+	wedge := parkWriterOnBlockedStdin(s.proc)
+	t.Cleanup(func() { wedge.release() })
 
 	done := make(chan error, 1)
 	go func() { done <- s.Close() }()

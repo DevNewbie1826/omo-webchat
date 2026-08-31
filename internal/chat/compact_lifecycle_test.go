@@ -588,7 +588,8 @@ func TestCompactDoesNotHoldLifecycleLockAcrossProviderWrite(t *testing.T) {
 		t.Fatal("session not finished before compact")
 	}
 
-	s.proc.writeMu.Lock()
+	wedge := parkWriterOnBlockedStdin(s.proc)
+	defer wedge.release()
 	results := make(chan error, 2)
 	go func() { results <- s.Compact() }()
 	go func() { results <- s.Compact() }()
@@ -617,7 +618,7 @@ func TestCompactDoesNotHoldLifecycleLockAcrossProviderWrite(t *testing.T) {
 		t.Fatal("lifecycleMu remained held across the provider write")
 	}
 
-	s.proc.writeMu.Unlock()
+	wedge.release()
 	if err := <-results; err != nil {
 		t.Fatalf("accepted compact failed: %v", err)
 	}
