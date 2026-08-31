@@ -45,11 +45,20 @@
 }
 
 .th-login-title {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-3);
   font-size: var(--th-type-display-size);
   font-weight: var(--th-weight-announce);
   line-height: var(--th-type-display-line);
   letter-spacing: var(--th-type-display-tracking);
   color: var(--th-text);
+}
+
+.th-login-title-icon {
+  width: 1.125em;
+  height: 1.125em;
+  flex: none;
 }
 
 .th-login-sub {

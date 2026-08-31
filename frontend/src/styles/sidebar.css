@@ -55,6 +55,12 @@
   background: var(--th-success);
 }
 
+.th-sidebar-logo-icon {
+  width: 1.25em;
+  height: 1.25em;
+  flex: none;
+}
+
 .th-sidebar-nav-actions {
   margin-left: auto;
   display: flex;
