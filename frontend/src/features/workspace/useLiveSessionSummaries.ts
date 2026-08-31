@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
-import { lastActivityMs, taskStatusCounts } from "../split/activityShelfModel";
+import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
@@ -74,11 +74,19 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   // An oversized side retains the server's previous cached payload. Parse it
   // for descriptive fields such as lastLine, but never treat stale rows as a
   // trustworthy running-count lower bound.
+  const runningDagTaskIds = new Set<string>();
+  for (const run of runs) {
+    if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
+    for (const node of run.nodes) {
+      if (node.state !== "running" || node.taskId === undefined) continue;
+      runningDagTaskIds.add(node.taskId);
+    }
+  }
   const taskIds = new Set(info.taskOversized === true ? [] : tasks.map((task) => task.taskId));
   const taskRunning = info.taskOversized === true ? 0 : tasks.filter((task) => {
     if (task.status !== "running") return false;
     const lastMs = lastActivityMs(task);
-    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
+    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS || runningDagTaskIds.has(task.taskId);
   }).length;
   const dagRunning = info.dagOversized === true ? 0 : dagRunningOf(runs, taskIds);
   let dagDone = 0;

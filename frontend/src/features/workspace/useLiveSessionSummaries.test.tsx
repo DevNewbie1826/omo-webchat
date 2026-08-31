@@ -308,6 +308,114 @@ describe("summarizeLiveSession", () => {
       dagOversized: true,
     });
   });
+
+  describe("running-dag-node authority over the staleness gate", () => {
+    const NOW = new Date("2026-08-19T10:14:26.000Z");
+    const STALE_AT = "2026-08-19T10:00:00.000Z";
+    const FRESH_AT = "2026-08-19T10:14:00.000Z";
+    const TASK_ID = "st_01a058e3";
+
+    function pinTask(updatedAt: string) {
+      return { task_id: TASK_ID, name: "pin", status: "running", updated_at: updatedAt };
+    }
+
+    function dagPayload(runStatus: string, nodeState: string) {
+      return {
+        runs: [{
+          run_id: "r1",
+          run_key: "plan",
+          name: "Ship",
+          status: runStatus,
+          counts: {
+            total: 1,
+            pending: 0,
+            blocked: 0,
+            scheduled: 0,
+            running: nodeState === "running" ? 1 : 0,
+            completed: nodeState === "completed" ? 1 : 0,
+            failed: 0,
+            cancelled: 0,
+            skipped: 0,
+          },
+          nodes: [{ id: "n1", prompt: "do", depends_on: [], state: nodeState, task_id: TASK_ID }],
+          edges: [],
+          waves: [],
+        }],
+      };
+    }
+
+    it("counts a stale running row when a non-terminal dag run has a running node with the same task id", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: dagPayload("running", "running"),
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.dagRunning).toBe(0);
+    });
+
+    it("drops a stale running row when its dag node is completed", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: dagPayload("running", "completed"),
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("drops a stale running row when its dag run is completed", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: dagPayload("completed", "running"),
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("drops a stale running row when there is no dag payload", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: null,
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("counts a fresh running row and its running dag node once", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(FRESH_AT)] },
+        dag: dagPayload("running", "running"),
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.dagRunning).toBe(0);
+    });
+  });
 });
 
 describe("live polling hooks", () => {
