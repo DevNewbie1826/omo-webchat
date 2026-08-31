@@ -153,21 +153,42 @@ describe("ToolCard block anatomy", () => {
 		expect(card.querySelector(".th-tool-body")).toBeNull();
 	});
 
-	it("starts a newly running block expanded and never overrides the user's toggle on completion", () => {
+	it("starts a running block expanded, auto-collapses it untouched, and freezes the user's toggle", () => {
 		const card = renderCard(baseProps({ phase: "start", args: { command: "ls" } }));
 		const head = headOf(card);
 		expect(head.getAttribute("aria-expanded")).toBe("true");
 
-		// Completion alone does not collapse the block the user is watching.
+		// Untouched: completion alone auto-collapses the block.
 		rerender(baseProps({ phase: "end", args: { command: "ls" }, text: "done-output" }));
+		expect(head.getAttribute("aria-expanded")).toBe("false");
+		expect(card.querySelector(".th-tool-body")).toBeNull();
+
+		// The user's toggle freezes the choice: reopening survives later phase
+		// updates.
+		click(head);
 		expect(head.getAttribute("aria-expanded")).toBe("true");
 		expect(card.querySelector(".th-tool-body")?.textContent).toContain("done-output");
+		rerender(baseProps({ phase: "update", args: { command: "ls" }, text: "more" }));
+		expect(head.getAttribute("aria-expanded")).toBe("true");
 
-		// Once the user collapses it, later phase updates must not reopen it.
+		// ...and a frozen collapse survives even a return to the running phase.
 		click(head);
 		expect(head.getAttribute("aria-expanded")).toBe("false");
-		rerender(baseProps({ phase: "update", args: { command: "ls" }, text: "more" }));
+		rerender(baseProps({ phase: "start", args: { command: "ls" } }));
 		expect(head.getAttribute("aria-expanded")).toBe("false");
+	});
+
+	it("persists a manually opened completed card across rerenders", () => {
+		const card = renderCard(baseProps({ phase: "end", args: { command: "ls" }, text: "out" }));
+		const head = headOf(card);
+		expect(head.getAttribute("aria-expanded")).toBe("false");
+
+		click(head);
+		expect(head.getAttribute("aria-expanded")).toBe("true");
+		// The user's open choice survives subsequent renders of the same card.
+		rerender(baseProps({ phase: "end", args: { command: "ls" }, text: "out" }));
+		expect(head.getAttribute("aria-expanded")).toBe("true");
+		expect(card.querySelector(".th-tool-body")?.textContent).toContain("out");
 	});
 
 	it("starts a restored completed block collapsed", () => {

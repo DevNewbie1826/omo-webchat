@@ -85,7 +85,7 @@ describe("ChatPane tool cards and approvals", () => {
 		return { deliver: (f) => deliver?.(f), sent };
 	}
 
-	it("renders a live tool block expanded so current work is observable", () => {
+	it("renders a live tool block expanded while running and auto-collapses it when untouched", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
 			deliver({
@@ -100,18 +100,10 @@ describe("ChatPane tool cards and approvals", () => {
 		const card = container.querySelector(".th-tool[data-tool-call-id='call-1']");
 		const head = card?.querySelector<HTMLButtonElement>(".th-tool-head");
 		expect(head?.tagName).toBe("BUTTON");
-		// A newly started block starts expanded; nothing auto-collapses it later.
+		// Running: the untouched card is expanded so current work is observable.
 		expect(head?.getAttribute("aria-expanded")).toBe("true");
 
 		act(() => {
-			deliver({
-				type: "tool",
-				sessionId: "chat-1",
-				toolCallId: "call-1",
-				toolName: "bash",
-				phase: "update",
-				partial: { content: [{ text: "line1\n" }] },
-			});
 			deliver({
 				type: "tool",
 				sessionId: "chat-1",
@@ -122,17 +114,48 @@ describe("ChatPane tool cards and approvals", () => {
 				isError: false,
 			});
 		});
-		expect(container.textContent).toContain("bash");
+		// Untouched: completion alone auto-collapses the card; the output stays
+		// reachable behind the invocation summary.
 		expect(container.textContent).toContain("tool.done");
-		expect(head?.getAttribute("aria-expanded")).toBe("true");
-		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("line1\nline2\n");
-
-		// The user's collapse is honoured from then on.
+		expect(head?.getAttribute("aria-expanded")).toBe("false");
+		expect(card?.querySelector(".th-tool-body")).toBeNull();
+		// The user's toggle freezes the choice from then on.
 		act(() => {
 			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
-		expect(head?.getAttribute("aria-expanded")).toBe("false");
-		expect(card?.querySelector(".th-tool-body")).toBeNull();
+		expect(head?.getAttribute("aria-expanded")).toBe("true");
+		expect(card?.querySelector(".th-tool-body")?.textContent).toContain("line1\nline2\n");
+
+		// A collapse while a later call is still running stays frozen through
+		// that call's completion.
+		act(() => {
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-2",
+				toolName: "bash",
+				phase: "start",
+				args: { command: "pwd" },
+			});
+		});
+		const head2 = container.querySelector<HTMLButtonElement>(".th-tool[data-tool-call-id='call-2'] .th-tool-head");
+		expect(head2?.getAttribute("aria-expanded")).toBe("true");
+		act(() => {
+			head2?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(head2?.getAttribute("aria-expanded")).toBe("false");
+		act(() => {
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-2",
+				toolName: "bash",
+				phase: "end",
+				result: { content: [{ text: "/work\n" }] },
+				isError: false,
+			});
+		});
+		expect(head2?.getAttribute("aria-expanded")).toBe("false");
 	});
 
 	it("renders an omo task as a live sub-agent card and follows its reported status", () => {
