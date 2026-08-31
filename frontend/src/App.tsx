@@ -72,7 +72,8 @@ export function App() {
   const { confirm, dialog: confirmDialog } = useConfirm(t);
   const {
     workspaces, setWorkspaces, expanded, setExpanded, sessions,
-    sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions, toggleExpanded, handleDeleteWorkspace,
+    sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
+    ensureSessionsLoaded, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
   } = useWorkspaces({ notify, t, layout, confirm });
@@ -125,6 +126,8 @@ export function App() {
 
   const selectTerminal = (ws: Workspace, tm: Terminal): void => {
     setExpanded((prev) => new Set(prev).add(ws.id));
+    // Opening a session is a recency event for both the sidebar and the picker.
+    markSessionUsed(ws.id, tm.id);
     if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
     if (!layout.focusSession(tm.id)) {
       layout.assignSession(layout.focusedPaneId, tm.id);
@@ -209,7 +212,10 @@ export function App() {
 
   const splitActions: SplitActions = {
     onFocusPane: layout.focusPane,
-    onAssign: layout.assignSession,
+    onAssign: (paneId, tmId, wsId) => {
+      layout.assignSession(paneId, tmId);
+      if (wsId) markSessionUsed(wsId, tmId);
+    },
     onCreateTerminal: createTerminalInPane,
     onSplit: layout.split,
     onClosePane: layout.closePane,
@@ -260,6 +266,9 @@ export function App() {
                 workspaces={workspaces}
                 placed={layout.placed}
                 sessions={sessions}
+                sessionLists={sessionLists}
+                sessionPages={sessionPages}
+                onEnsureSessions={ensureSessionsLoaded}
                 focusedPaneId={layout.focusedPaneId}
                 splitEnabled={splitEnabled}
                 actions={splitActions}

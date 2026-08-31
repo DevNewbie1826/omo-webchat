@@ -509,6 +509,103 @@ describe("useWorkspaces paginated session history", () => {
       chats.map((chat) => chat.id),
     );
   });
+
+  it("moves an opened session to the head of its workspace list without refetching", async () => {
+    let latest: ReturnType<typeof useWorkspaces> | undefined;
+
+    function Probe() {
+      latest = useWorkspaces({
+        notify: () => undefined,
+        t: (key) => key,
+        layout,
+        confirm: async () => true,
+      });
+      return null;
+    }
+
+    act(() => root.render(<Probe />));
+    await act(async () => latest?.load());
+    act(() => latest?.setExpanded(new Set(["ws-1"])));
+    await act(async () => undefined);
+
+    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-1", "chat-2", "chat-3", "chat-4", "chat-5",
+    ]);
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+
+    act(() => latest?.markSessionUsed("ws-1", "chat-3"));
+
+    // Hoisted to head, deduplicated, purely local state: no page refetch and
+    // the paging cursor survives untouched.
+    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
+    ]);
+    expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-3"))
+      .toHaveLength(1);
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+    expect(latest?.sessionPages.get("ws-1")).toMatchObject({
+      ready: true,
+      loading: false,
+      hasMore: true,
+      nextCursor: "next-page",
+    });
+
+    // Unknown or foreign ids leave the list untouched.
+    act(() => latest?.markSessionUsed("ws-1", "chat-unknown"));
+    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
+    ]);
+  });
+
+  it("loads the picker's first page on demand without refetching while loading or ready", async () => {
+    let latest: ReturnType<typeof useWorkspaces> | undefined;
+    let resolveFirstPage!: (page: Awaited<ReturnType<typeof listWorkspaceSessions>>) => void;
+    const firstPage = new Promise<Awaited<ReturnType<typeof listWorkspaceSessions>>>((resolve) => {
+      resolveFirstPage = resolve;
+    });
+    vi.mocked(listWorkspaceSessions).mockReturnValueOnce(firstPage);
+
+    function Probe() {
+      latest = useWorkspaces({
+        notify: () => undefined,
+        t: (key) => key,
+        layout,
+        confirm: async () => true,
+      });
+      return null;
+    }
+
+    act(() => root.render(<Probe />));
+    await act(async () => latest?.load());
+    expect(listWorkspaceSessions).not.toHaveBeenCalled();
+
+    act(() => latest?.ensureSessionsLoaded("ws-1"));
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+    expect(listWorkspaceSessions).toHaveBeenCalledWith("ws-1", "");
+    expect(latest?.sessionPages.get("ws-1")).toMatchObject({ ready: false, loading: true });
+
+    // Still in flight: a repeated trigger must not start a second fetch.
+    act(() => latest?.ensureSessionsLoaded("ws-1"));
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolveFirstPage({
+      items: chats.slice(0, 5).map((chat, index) => ({
+        id: chat.id,
+        name: chat.name,
+        source: "stored" as const,
+        recencyMs: 10 - index,
+      })),
+      nextCursor: "next-page",
+    }));
+    expect(latest?.sessionPages.get("ws-1")).toMatchObject({ ready: true, loading: false });
+
+    // Ready: the trigger is a no-op, no render-driven refetch loop.
+    act(() => latest?.ensureSessionsLoaded("ws-1"));
+    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-1", "chat-2", "chat-3", "chat-4", "chat-5",
+    ]);
+  });
 });
 
 describe("applyChatNameToWorkspaces", () => {

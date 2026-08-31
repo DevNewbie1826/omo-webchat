@@ -109,6 +109,7 @@
   "split.pickTitle": "세션 선택",
   "split.pickEmpty": "배치되지 않은 세션이 없습니다",
   "split.pickEmptyFiltered": "이 워크스페이스에 배치되지 않은 세션이 없습니다",
+  "split.pickLoading": "세션 불러오는 중…",
   "split.pickWorkspace": "워크스페이스",
   "split.pickNew": "새 챗 세션",
   "settings.title": "설정",
