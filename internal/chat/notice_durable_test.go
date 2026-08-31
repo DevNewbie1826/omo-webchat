@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -320,6 +321,72 @@ func TestSlowNoticePersistenceWritesEveryAppendSnapshotInOrder(t *testing.T) {
 	}
 }
 
+func TestStalledNoticePersistenceDoesNotBlockDispatchAndFlushesFinalLog(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirst) }) }
+
+	var persistedMu sync.Mutex
+	var persisted []NoticeRecord
+	s := newTestSession("chat-notice-nonblocking", nil)
+	s.mu.Lock()
+	s.onNoticePersist = func(_ *Session, notices []NoticeRecord) bool {
+		select {
+		case <-firstStarted:
+		default:
+			close(firstStarted)
+			<-releaseFirst
+		}
+		persistedMu.Lock()
+		persisted = cloneNoticeRecords(notices)
+		persistedMu.Unlock()
+		return true
+	}
+	s.mu.Unlock()
+	s.startNoticePersistence()
+	t.Cleanup(func() {
+		release()
+		s.stopNoticePersistence()
+	})
+
+	dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":1}`)
+	<-firstStarted
+	dispatched := make(chan struct{})
+	go func() {
+		for i := 2; i <= 60; i++ {
+			dispatchEvent(s, "high_reasoning_warning", `{"type":"high_reasoning_warning","n":`+strconv.Itoa(i)+`}`)
+		}
+		close(dispatched)
+	}()
+	select {
+	case <-dispatched:
+	case <-time.After(time.Second):
+		t.Error("durable notice dispatch blocked behind the stalled persistence worker")
+	}
+
+	release()
+	s.drainNoticePersistence()
+	want := durableLog(s)
+	persistedMu.Lock()
+	got := cloneNoticeRecords(persisted)
+	persistedMu.Unlock()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final persisted log does not match the bounded in-memory log\ngot:  %+v\nwant: %+v", got, want)
+	}
+	if len(got) != maxDurableNotices {
+		t.Fatalf("final persisted log length = %d, want %d", len(got), maxDurableNotices)
+	}
+	for i, rec := range got {
+		var payload struct {
+			N int `json:"n"`
+		}
+		if err := json.Unmarshal(rec.Payload, &payload); err != nil || payload.N != i+11 {
+			t.Fatalf("final persisted record %d = %s, want n=%d (err=%v)", i, rec.Payload, i+11, err)
+		}
+	}
+}
+
 func TestIdenticalDurableNoticesHaveDistinctPersistedReplayIDs(t *testing.T) {
 	persisted := make(chan []NoticeRecord, 2)
 	s := newTestSession("chat-notice-distinct", nil)
@@ -375,6 +442,65 @@ func TestCloseDrainsNoticePersistenceWorker(t *testing.T) {
 		}
 	default:
 		t.Fatal("Close returned before the notice worker persisted its dirty log")
+	}
+}
+
+func TestPersistenceGenerationLeaseDoesNotBlockManagerAndRetirementWaits(t *testing.T) {
+	manager := NewManager()
+	t.Cleanup(manager.CloseAll)
+	source := newTestSession("chat-slow-store", nil)
+	other := newTestSession("chat-other", nil)
+	manager.mu.Lock()
+	manager.sessions[source.ID()] = source
+	manager.sessions[other.ID()] = other
+	manager.generations[source.ID()] = source
+	manager.generationDone[source.ID()] = make(chan struct{})
+	manager.mu.Unlock()
+
+	persistStarted := make(chan struct{})
+	releasePersist := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePersist) }) }
+	persisted := make(chan bool, 1)
+	go func() {
+		persisted <- manager.PersistIfGeneration(source, func() bool {
+			close(persistStarted)
+			<-releasePersist
+			return true
+		})
+	}()
+	<-persistStarted
+
+	gotOther := make(chan *Session, 1)
+	go func() { gotOther <- manager.Get(other.ID()) }()
+	select {
+	case got := <-gotOther:
+		if got != other {
+			t.Errorf("Get(other) = %p, want %p", got, other)
+		}
+	case <-time.After(time.Second):
+		t.Error("slow persistence held Manager.mu and blocked an unrelated Get")
+	}
+
+	retired := make(chan struct{})
+	go func() {
+		manager.sessionClosed(source)
+		close(retired)
+	}()
+	select {
+	case <-retired:
+		t.Error("generation retirement completed before its persistence lease drained")
+	default:
+	}
+
+	release()
+	if ok := <-persisted; !ok {
+		t.Error("authoritative leased persistence was rejected")
+	}
+	select {
+	case <-retired:
+	case <-time.After(time.Second):
+		t.Fatal("generation retirement did not complete after its persistence lease drained")
 	}
 }
 

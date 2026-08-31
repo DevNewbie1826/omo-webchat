@@ -153,10 +153,11 @@ type Session struct {
 	// marker in place so the next durable notice retries. Guarded by mu.
 	noticesPersisted []NoticeRecord
 	// onNoticePersist persists the durable log on the session-owned worker.
-	onNoticePersist     func(session *Session, notices []NoticeRecord) bool
-	noticePersistenceMu sync.Mutex
-	noticePersistWork   chan noticePersistenceRequest
-	noticePersistDone   chan struct{}
+	onNoticePersist      func(session *Session, notices []NoticeRecord) bool
+	noticePersistenceMu  sync.Mutex
+	noticePersistWork    chan struct{}
+	noticePersistPending []noticePersistenceRequest
+	noticePersistDone    chan struct{}
 	// providerRunActive latches a provider-initiated run (omo wake/triggerTurn)
 	// that no client prompt armed: agent_start sets it (emitting run.started)
 	// and agent_settled clears it (emitting run.done). An explicit latch — not

@@ -249,25 +249,48 @@ func (s *Session) startNoticePersistence() {
 		s.mu.Unlock()
 		return
 	}
-	work := make(chan noticePersistenceRequest, maxDurableNotices)
+	// work is only a wakeup edge. Requests live in the mutex-guarded FIFO, so
+	// producers never wait for worker capacity while persistence is stalled.
+	work := make(chan struct{}, 1)
 	done := make(chan struct{})
 	s.noticePersistWork = work
 	s.noticePersistDone = done
 	s.mu.Unlock()
 	go func() {
 		defer close(done)
-		for request := range work {
-			if request.snapshot != nil {
-				s.persistDurableNotices(request.snapshot)
-			}
-			if request.ack != nil {
-				close(request.ack)
-			}
-			if request.stop {
-				return
+		for range work {
+			for {
+				s.noticePersistenceMu.Lock()
+				if len(s.noticePersistPending) == 0 {
+					s.noticePersistenceMu.Unlock()
+					break
+				}
+				request := s.noticePersistPending[0]
+				s.noticePersistPending[0] = noticePersistenceRequest{}
+				s.noticePersistPending = s.noticePersistPending[1:]
+				s.noticePersistenceMu.Unlock()
+
+				if request.snapshot != nil {
+					s.persistDurableNotices(request.snapshot)
+				}
+				if request.ack != nil {
+					close(request.ack)
+				}
+				if request.stop {
+					return
+				}
 			}
 		}
 	}()
+}
+
+// wakeNoticePersistenceLocked signals the worker without waiting for it. The
+// caller holds noticePersistenceMu.
+func (s *Session) wakeNoticePersistenceLocked(work chan struct{}) {
+	select {
+	case work <- struct{}{}:
+	default:
+	}
 }
 
 func (s *Session) queueNoticePersistence() {
@@ -277,9 +300,28 @@ func (s *Session) queueNoticePersistence() {
 	work := s.noticePersistWork
 	snapshot := cloneNoticeRecords(s.durableNotices)
 	s.mu.Unlock()
-	if work != nil {
-		work <- noticePersistenceRequest{snapshot: snapshot}
+	if work == nil {
+		return
 	}
+
+	// Keep at most one pending snapshot per representable log record. Once the
+	// cap is reached, the newest request subsumes later appends: its full-log
+	// snapshot is the next flush covering all records still present in the log.
+	snapshotCount := 0
+	lastSnapshot := -1
+	for i, request := range s.noticePersistPending {
+		if request.snapshot != nil {
+			snapshotCount++
+			lastSnapshot = i
+		}
+	}
+	request := noticePersistenceRequest{snapshot: snapshot}
+	if snapshotCount >= maxDurableNotices && lastSnapshot == len(s.noticePersistPending)-1 {
+		s.noticePersistPending[lastSnapshot] = request
+	} else {
+		s.noticePersistPending = append(s.noticePersistPending, request)
+	}
+	s.wakeNoticePersistenceLocked(work)
 }
 
 func (s *Session) drainNoticePersistence() {
@@ -292,7 +334,8 @@ func (s *Session) drainNoticePersistence() {
 		return
 	}
 	ack := make(chan struct{})
-	work <- noticePersistenceRequest{ack: ack}
+	s.noticePersistPending = append(s.noticePersistPending, noticePersistenceRequest{ack: ack})
+	s.wakeNoticePersistenceLocked(work)
 	s.noticePersistenceMu.Unlock()
 	<-ack
 }
@@ -308,7 +351,8 @@ func (s *Session) stopNoticePersistence() {
 		s.noticePersistenceMu.Unlock()
 		return
 	}
-	work <- noticePersistenceRequest{stop: true}
+	s.noticePersistPending = append(s.noticePersistPending, noticePersistenceRequest{stop: true})
+	s.wakeNoticePersistenceLocked(work)
 	s.noticePersistenceMu.Unlock()
 	<-done
 }
