@@ -6,6 +6,8 @@ import type { I18nValue } from "../../i18n";
 import { I18nContext } from "../../i18n";
 import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import { ChatPane } from "./ChatPane";
+import { transcriptItemKeys } from "./ChatTranscript";
+import type { TranscriptItem } from "./useChatFrameState";
 
 const i18n: I18nValue = {
 	lang: "en",
@@ -26,6 +28,14 @@ const chatSession = {
 } as const;
 
 describe("ChatPane virtualization", () => {
+	it("keeps logical row keys stable when a notice is inserted or dismissed", () => {
+		const first: TranscriptItem = { kind: "message", message: { id: "entry-1", role: "user", blocks: [] } };
+		const second: TranscriptItem = { kind: "message", message: { optimisticId: 7, role: "user", blocks: [] } };
+		const notice: TranscriptItem = { kind: "notice", notice: { id: 9, kind: "retry_fallback_succeeded", payload: null, at: 2 } };
+		expect(transcriptItemKeys([first, second])).toEqual(["message:entry-1", "optimistic:7"]);
+		expect(transcriptItemKeys([first, notice, second])).toEqual(["message:entry-1", "notice:9", "optimistic:7"]);
+	});
+
 	let container: HTMLDivElement;
 	let root: Root;
 

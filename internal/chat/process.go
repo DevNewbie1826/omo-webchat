@@ -9,16 +9,18 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 type Event struct {
-	Type      string            `json:"-"`
-	Raw       json.RawMessage   `json:"-"`
-	Page      []json.RawMessage `json:"-"`
-	LeafID    string            `json:"-"`
-	Final     bool              `json:"-"`
-	SessionID string            `json:"-"`
-	RequestID string            `json:"-"`
+	Type       string            `json:"-"`
+	Raw        json.RawMessage   `json:"-"`
+	ReceivedAt time.Time         `json:"-"`
+	Page       []json.RawMessage `json:"-"`
+	LeafID     string            `json:"-"`
+	Final      bool              `json:"-"`
+	SessionID  string            `json:"-"`
+	RequestID  string            `json:"-"`
 }
 
 type ProcessOptions struct {

@@ -75,6 +75,9 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 		// session restored from disk; live snapshots supersede it once omo
 		// sends real state.
 		SeedActivity: existing.ActivitySnapshot,
+		// A chat record's persisted durable notices seed the restored
+		// session's replay log; malformed records are dropped by the seed.
+		SeedNotices: existing.Notices,
 		// A settled run is the persistence write boundary: at most one store
 		// write per turn, and only when the replayable pair changed, so idle
 		// chats and transient activity traffic never touch the state file.
@@ -90,6 +93,20 @@ func (s *Server) handleChatCreate(h *connHandler, raw []byte) {
 				return false
 			}
 			return true
+		},
+		// A durable advisory notice is its own persistence write boundary (it
+		// can fire with no run): append the changed durable log to the chat
+		// record. A failed write only logs; forwarding is never broken.
+		OnNoticePersist: func(source *chat.Session, notices []chat.NoticeRecord) bool {
+			return s.chats.PersistIfGeneration(source, func() bool {
+				if _, err := s.store.UpdateChat(req.WsID, req.ChatID, func(record *store.Chat) {
+					record.Notices = notices
+				}); err != nil {
+					s.logger.Warn("durable notice persist failed", "err", err, "chatId", req.ChatID)
+					return false
+				}
+				return true
+			})
 		},
 		OnResumeIdentity: func(source *chat.Session, identity chat.ResumeIdentity) error {
 			if s.chats.Get(req.ChatID) != source {

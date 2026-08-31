@@ -11,6 +11,7 @@ vi.mock("react-markdown", () => ({
 }));
 
 import { ChatTranscript } from "./ChatTranscript";
+import { mergeTranscriptItems } from "./useChatFrameState";
 import type { UiMessage } from "./chatEntries";
 import type { ToolEntry } from "./chatSessionTypes";
 
@@ -22,6 +23,7 @@ const baseProps = {
 	restoreVersion: 0,
 	focused: true,
 	historyLoaded: true,
+	onDismissNotice: () => undefined,
 };
 
 describe("ChatTranscript streaming memoization", () => {
@@ -47,12 +49,12 @@ describe("ChatTranscript streaming memoization", () => {
 	it("does not re-parse settled assistant markdown when only the streaming text changes", () => {
 		const settled: UiMessage = { role: "assistant", blocks: [{ kind: "text", text: "# settled heading" }] };
 		act(() =>
-			root.render(<ChatTranscript {...baseProps} messages={[settled]} streaming="" />),
+			root.render(<ChatTranscript {...baseProps} items={mergeTranscriptItems([settled], [])} streaming="" />),
 		);
 		expect(renderedTexts.filter((t) => t === "# settled heading")).toHaveLength(1);
 
 		act(() =>
-			root.render(<ChatTranscript {...baseProps} messages={[settled]} streaming="incoming chunk" />),
+			root.render(<ChatTranscript {...baseProps} items={mergeTranscriptItems([settled], [])} streaming="incoming chunk" />),
 		);
 		expect(renderedTexts.filter((t) => t === "# settled heading")).toHaveLength(1);
 		expect(renderedTexts).toContain("incoming chunk");

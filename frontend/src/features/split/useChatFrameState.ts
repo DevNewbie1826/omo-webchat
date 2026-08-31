@@ -21,16 +21,57 @@ export interface MissingOriginal {
   readonly candidates: readonly ResumeCandidate[];
 }
 
-/** One server advisory shown as a dismissible banner above the transcript. */
+/**
+ * One server advisory rendered as a distinct system block inside the
+ * transcript flow. `at` carries the server stamp (epoch ms) when the frame
+ * had one, otherwise the client's receipt time.
+ */
 export interface ChatNotice {
   readonly id: number;
   readonly kind: string;
   readonly payload: JsonObject | null;
   readonly at: number;
+  readonly nid?: string;
 }
 
-/** Newest-first cap on the visible advisory stack. */
-const NOTICE_LIMIT = 5;
+/** Cap on retained advisories: wide enough for a durable server replay. */
+const NOTICE_LIMIT = 50;
+
+/**
+ * One row of the unified transcript render list: a conversation entry or an
+ * in-flow system notice block.
+ */
+export type TranscriptItem =
+  | { readonly kind: "message"; readonly message: UiMessage }
+  | { readonly kind: "notice"; readonly notice: ChatNotice };
+
+/**
+ * Preserve the authoritative message order exactly and merge notices around
+ * timestamped message boundaries. Timestamp-less optimistic/steer messages
+ * therefore stay where they were sent. Notice ties use receipt id (oldest
+ * first), and a notice follows every message sharing its millisecond.
+ */
+export function mergeTranscriptItems(
+  messages: readonly UiMessage[],
+  notices: readonly ChatNotice[],
+): readonly TranscriptItem[] {
+  const orderedNotices = [...notices].sort((a, b) => a.at - b.at || a.id - b.id);
+  const items: TranscriptItem[] = [];
+  let noticeIndex = 0;
+  for (const message of messages) {
+    const ts = message.ts ?? 0;
+    if (ts > 0) {
+      while (noticeIndex < orderedNotices.length && orderedNotices[noticeIndex]!.at < ts) {
+        items.push({ kind: "notice", notice: orderedNotices[noticeIndex++]! });
+      }
+    }
+    items.push({ kind: "message", message });
+  }
+  while (noticeIndex < orderedNotices.length) {
+    items.push({ kind: "notice", notice: orderedNotices[noticeIndex++]! });
+  }
+  return items;
+}
 
 export function useChatFrameState() {
   const controls = useConfirmedControls();
@@ -87,12 +128,22 @@ export function useChatFrameState() {
     setActivitiesVersion((version) => version + 1);
   };
 
-  // Notices are newest-first and capped: a chatty server cannot flood the
-  // pane, and no dismissed-by-age advisory is persisted anywhere.
-  const pushNotice = (kind: string, payload: JsonObject | null): void => {
-    setNotices((current) =>
-      [{ id: ++noticeIdRef.current, kind, payload, at: Date.now() }, ...current].slice(0, NOTICE_LIMIT),
-    );
+  // Notices are retained newest-first and capped: a chatty server cannot
+  // flood the pane, and the wide limit admits a durable server replay on
+  // attach. Dismissal never touches this list — it is a view-local hide.
+  const pushNotice = (kind: string, payload: JsonObject | null, at?: number, nid?: string): void => {
+    setNotices((current) => {
+      if (nid !== undefined && current.some((notice) => notice.nid === nid)) {
+        return current;
+      }
+      return [{
+        id: ++noticeIdRef.current,
+        kind,
+        payload,
+        at: at ?? Date.now(),
+        ...(nid !== undefined ? { nid } : {}),
+      }, ...current].slice(0, NOTICE_LIMIT);
+    });
   };
 
   // Clear every transient live surface; shared by run completion, terminal

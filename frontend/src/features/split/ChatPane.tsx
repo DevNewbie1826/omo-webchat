@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -10,10 +10,10 @@ import { ApprovalModal } from "./ApprovalModal";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
-import { NoticeBanner } from "./NoticeBanner";
 import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
+import { mergeTranscriptItems } from "./useChatFrameState";
 import { useChatSession } from "./useChatSession";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
@@ -49,6 +49,17 @@ export function ChatPane({
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const chat = useChatSession(chatSession, connect, onChatName);
+  // Notice dismissal is a view-local hide keyed by notice id: the state list
+  // stays append-only from the frame handler, nothing is persisted, and no
+  // dismissal frame ever reaches the server.
+  const [dismissedNotices, setDismissedNotices] = useState<ReadonlySet<number>>(() => new Set());
+  const dismissNotice = useCallback((id: number) => {
+    setDismissedNotices((current) => new Set(current).add(id));
+  }, []);
+  const transcriptItems = useMemo(
+    () => mergeTranscriptItems(chat.messages, chat.notices.filter((notice) => !dismissedNotices.has(notice.id))),
+    [chat.messages, chat.notices, dismissedNotices],
+  );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)
@@ -125,9 +136,9 @@ export function ChatPane({
       </header>
       <div className="th-chat-main">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
-        <NoticeBanner notices={chat.notices} />
         <ChatTranscript
-          messages={chat.messages}
+          items={transcriptItems}
+          onDismissNotice={dismissNotice}
           historyLoaded={chat.historyLoaded}
           streaming={chat.streaming}
           thinking={chat.thinking}

@@ -3,13 +3,15 @@ package store
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 )
 
 var (
 	chatJSONKeys = map[string]bool{
 		"id": true, "name": true, "pisessionid": true, "wsid": true, "cwd": true,
 		"sessiondir": true, "provider": true, "model": true, "createdat": true,
-		"lastentryid": true, "activitysnapshot": true,
+		"lastentryid": true, "activitysnapshot": true, "notices": true,
 	}
 	workspaceJSONKeys = map[string]bool{
 		"id": true, "name": true, "path": true, "chats": true, "terminals": true,
@@ -78,8 +80,19 @@ func cloneChat(c Chat) Chat {
 		seed := c.ActivitySnapshot.Clone()
 		c.ActivitySnapshot = &seed
 	}
+	if c.Notices != nil {
+		c.Notices = cloneNotices(c.Notices)
+	}
 	c.extra = cloneUnknownJSONFields(c.extra)
 	return c
+}
+
+func cloneNotices(records []chat.NoticeRecord) []chat.NoticeRecord {
+	out := make([]chat.NoticeRecord, len(records))
+	for i, rec := range records {
+		out[i] = rec.Clone()
+	}
+	return out
 }
 
 func (c Chat) MarshalJSON() ([]byte, error) {
@@ -102,8 +115,26 @@ func (c *Chat) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	*c = Chat(fields)
+	if len(c.Notices) > 0 {
+		valid := c.Notices[:0]
+		for _, notice := range c.Notices {
+			if notice.Kind == "" || notice.At.IsZero() || !validStoredNoticePayload(notice.Payload) {
+				continue
+			}
+			valid = append(valid, notice)
+		}
+		c.Notices = valid
+	}
 	c.extra = extra
 	return nil
+}
+
+func validStoredNoticePayload(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var payload map[string]json.RawMessage
+	return json.Unmarshal(raw, &payload) == nil && payload != nil
 }
 
 func (ws Workspace) MarshalJSON() ([]byte, error) {

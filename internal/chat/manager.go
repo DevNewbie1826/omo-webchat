@@ -32,6 +32,10 @@ const (
 type Manager struct {
 	mu                  sync.Mutex
 	sessions            map[string]*Session
+	generations         map[string]*Session
+	generationDone      map[string]chan struct{}
+	generationLeases    map[string]int
+	generationRetiring  map[string]bool
 	pending             map[string]bool
 	provider            *sharedProvider
 	logger              *slog.Logger
@@ -46,7 +50,7 @@ type Manager struct {
 }
 
 func NewManager() *Manager {
-	m := &Manager{sessions: make(map[string]*Session), pending: make(map[string]bool), idleFor: 30 * time.Minute, now: time.Now, stopSweep: make(chan struct{}), sweepDone: make(chan struct{})}
+	m := &Manager{sessions: make(map[string]*Session), generations: make(map[string]*Session), generationDone: make(map[string]chan struct{}), generationLeases: make(map[string]int), generationRetiring: make(map[string]bool), pending: make(map[string]bool), idleFor: 30 * time.Minute, now: time.Now, stopSweep: make(chan struct{}), sweepDone: make(chan struct{})}
 	go m.sweep()
 	return m
 }
@@ -147,6 +151,19 @@ retry:
 		replay()
 		return existing, false, detach, nil
 	}
+	if m.generations[opts.ID] != nil {
+		done := m.generationDone[opts.ID]
+		m.mu.Unlock()
+		if done == nil {
+			return nil, false, nil, fmt.Errorf("chat: session %s is retiring", opts.ID)
+		}
+		select {
+		case <-done:
+			goto retry
+		case <-ctx.Done():
+			return nil, false, nil, ctx.Err()
+		}
+	}
 	if m.pending[opts.ID] {
 		m.mu.Unlock()
 		return nil, false, nil, fmt.Errorf("chat: session %s is already starting", opts.ID)
@@ -193,11 +210,14 @@ retry:
 		onResumeIdentity:   opts.OnResumeIdentity,
 		onProviderName:     opts.OnProviderName,
 		onActivitySnapshot: opts.OnActivitySnapshot,
+		onNoticePersist:    opts.OnNoticePersist,
 		onExit:             exitGate.fire,
 		lastStop:           "stop",
 		owner:              m,
 	}
 	s.seedActivitySnapshots(opts.SeedActivity)
+	s.seedNotices(opts.SeedNotices)
+	s.startNoticePersistence()
 	s.lifecycleMu.Lock()
 	detach, replay := s.attachLocked(writer)
 	s.lifecycleMu.Unlock()
@@ -237,6 +257,9 @@ retry:
 	}
 	if openErr != nil {
 		detach()
+		// The logical session never became manager-owned, so no later Close path
+		// can drain its per-session persistence goroutine.
+		s.stopNoticePersistence()
 		m.mu.Lock()
 		delete(m.pending, opts.ID)
 		m.mu.Unlock()
@@ -291,8 +314,14 @@ retry:
 		return existing, false, detach, nil
 	}
 	m.sessions[opts.ID] = s
+	m.generations[opts.ID] = s
+	m.generationDone[opts.ID] = make(chan struct{})
 	provider.mu.Unlock()
 	m.mu.Unlock()
+	// Provider events can arrive before registration. Their asynchronous
+	// persistence attempt deliberately remains dirty; registration immediately
+	// wakes the worker so the durable log cannot be lost on restart.
+	s.queueNoticePersistence()
 	exitGate.open()
 	if identityGate != nil {
 		if err := identityGate.open(); err != nil {
@@ -315,6 +344,49 @@ func (m *Manager) Get(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.sessions[id]
+}
+
+// PersistIfGeneration leases the authoritative generation before running
+// persist without Manager.mu held. Retirement revokes new leases and waits for
+// existing ones before allowing a replacement generation to register, so disk
+// I/O cannot block unrelated manager operations or overwrite a replacement.
+func (m *Manager) PersistIfGeneration(source *Session, persist func() bool) bool {
+	if source == nil {
+		return false
+	}
+	id := source.ID()
+	m.mu.Lock()
+	if m.generations[id] != source || m.generationRetiring[id] {
+		m.mu.Unlock()
+		return false
+	}
+	m.generationLeases[id]++
+	m.mu.Unlock()
+
+	defer func() {
+		m.mu.Lock()
+		m.generationLeases[id]--
+		if m.generationLeases[id] == 0 && m.generationRetiring[id] && m.generations[id] == source {
+			m.finishGenerationLocked(id, source)
+		}
+		m.mu.Unlock()
+	}()
+	return persist()
+}
+
+// finishGenerationLocked publishes the replacement boundary after every
+// persistence lease for source has drained. The caller holds Manager.mu.
+func (m *Manager) finishGenerationLocked(id string, source *Session) {
+	if m.generations[id] != source {
+		return
+	}
+	delete(m.generations, id)
+	delete(m.generationLeases, id)
+	delete(m.generationRetiring, id)
+	if done := m.generationDone[id]; done != nil {
+		close(done)
+	}
+	delete(m.generationDone, id)
 }
 
 func (m *Manager) LiveIDs() []string {
@@ -380,7 +452,27 @@ func (m *Manager) StopIfCurrent(id string, session *Session) bool {
 }
 
 func (m *Manager) sessionClosed(session *Session) {
-	m.evictSession(session)
+	id := session.ID()
+	var generationDone chan struct{}
+	m.mu.Lock()
+	if m.sessions[id] == session {
+		delete(m.sessions, id)
+	}
+	if m.generations[id] == session {
+		generationDone = m.generationDone[id]
+		if generationDone == nil {
+			generationDone = make(chan struct{})
+			m.generationDone[id] = generationDone
+		}
+		m.generationRetiring[id] = true
+		if m.generationLeases[id] == 0 {
+			m.finishGenerationLocked(id, session)
+		}
+	}
+	m.mu.Unlock()
+	if generationDone != nil {
+		<-generationDone
+	}
 	m.releaseProviderIfIdle()
 }
 

@@ -1,13 +1,37 @@
 package chat
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
-// forwardNotice delivers one ephemeral notice frame through the plain send
-// path (marshal + broadcast under the delivery barrier). Unlike
-// forwardExtensionEvent there is deliberately no activity-snapshot caching:
-// notices are transient advisories and must never enter the replay cache.
-func (s *Session) forwardNotice(kind string, payload json.RawMessage) {
-	s.send(&NoticeFrame{Type: "notice", SessionID: s.id, Kind: kind, Payload: payload})
+// forwardNotice delivers one notice frame through the plain send path (marshal
+// + broadcast under the delivery barrier), stamped with the server receipt
+// time. Durable kinds additionally append to the bounded session log and
+// write through to the persistence callback: the log commits under the same
+// delivery barrier as the live broadcast, so a concurrent attach can never
+// see the live notice without the replay log containing it (and vice versa).
+// Transient kinds stay purely ephemeral — never logged, never persisted.
+func (s *Session) forwardNotice(kind string, payload json.RawMessage, at time.Time) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	frame := &NoticeFrame{Type: "notice", SessionID: s.id, Kind: kind, Payload: payload, At: at.Format(time.RFC3339Nano)}
+	if !durableNoticeKinds[kind] {
+		s.send(frame)
+		return
+	}
+	s.barrier.Lock()
+	frame.NID = s.rememberDurableNotice(kind, payload, at)
+	b, err := json.Marshal(frame)
+	if err == nil {
+		s.writeFrame(b)
+	}
+	s.barrier.Unlock()
+	if err != nil {
+		return
+	}
+	s.queueNoticePersistence()
 }
 
 // advisoryNoticePayload returns the raw event object without its routing

@@ -20,6 +20,18 @@ type LifecycleFrameType =
   | "error"
   | "notice";
 
+/**
+ * The server stamps every notice with an RFC3339Nano string. Convert it to
+ * epoch milliseconds for the transcript merge; an absent or invalid stamp
+ * stays unset so the client can stamp its own receipt time instead.
+ */
+function optAtMs(record: Record<string, unknown>): number | undefined {
+  const raw = record["at"];
+  if (typeof raw !== "string" || raw.length === 0) return undefined;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 export function parseLifecycleFrame(
   type: LifecycleFrameType,
   msg: Record<string, unknown>,
@@ -86,11 +98,17 @@ export function parseLifecycleFrame(
       // reach state or the DOM.
       const rawPayload = msg["payload"];
       if (rawPayload !== undefined && !isRecord(rawPayload)) return null;
+      const at = optAtMs(msg);
+      const nid = optString(msg, "nid");
+      if (nid === null) return null;
+      const payload = rawPayload !== undefined ? sanitizeJson(rawPayload) as JsonObject : undefined;
       return {
         type: "notice",
         sessionId,
         kind,
-        ...(rawPayload !== undefined ? { payload: sanitizeJson(rawPayload) as JsonObject } : {}),
+        ...(payload !== undefined ? { payload } : {}),
+        ...(at !== undefined ? { at } : {}),
+        ...(nid !== undefined && nid.length > 0 ? { nid } : {}),
       };
     }
     case "error": {

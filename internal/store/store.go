@@ -36,6 +36,10 @@ type Chat struct {
 	// opened from this record replays the pair to its first client until live
 	// provider snapshots supersede it.
 	ActivitySnapshot *chat.ActivitySnapshotPair `json:"activitySnapshot,omitempty"`
+	// Notices is the persisted durable advisory notice log: the bounded
+	// replay seed for a session restored from disk. Only durable kinds are
+	// here; transient notices are never logged or persisted.
+	Notices []chat.NoticeRecord `json:"notices,omitempty"`
 
 	extra map[string]json.RawMessage
 }

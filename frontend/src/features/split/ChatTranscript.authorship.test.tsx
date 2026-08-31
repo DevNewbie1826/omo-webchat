@@ -8,6 +8,7 @@ vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 import en from "../../i18n/locales/en.json";
 import ko from "../../i18n/locales/ko.json";
 import { ChatTranscript } from "./ChatTranscript";
+import { mergeTranscriptItems } from "./useChatFrameState";
 import type { UiMessage } from "./chatEntries";
 import type { ToolEntry } from "./chatSessionTypes";
 
@@ -19,6 +20,7 @@ const baseProps = {
 	restoreVersion: 0,
 	focused: true,
 	historyLoaded: true,
+	onDismissNotice: () => undefined,
 };
 
 const user: UiMessage = { role: "user", blocks: [{ kind: "text", text: "fix the flake" }], ts: 0 };
@@ -52,7 +54,7 @@ describe("ChatTranscript authorship distinction", () => {
 	});
 
 	it("renders user messages on the th-chat-msg--user hook the stylesheet keys on", () => {
-		act(() => root.render(<ChatTranscript {...baseProps} messages={[user, assistant]} streaming="" />));
+		act(() => root.render(<ChatTranscript {...baseProps} items={mergeTranscriptItems([user, assistant], [])} streaming="" />));
 		const userMsg = container.querySelector(".th-chat-msg--user");
 		expect(userMsg).not.toBeNull();
 		expect(userMsg?.className).toBe("th-chat-msg th-chat-msg--user");
@@ -60,7 +62,7 @@ describe("ChatTranscript authorship distinction", () => {
 	});
 
 	it("announces authorship to assistive tech on user messages only", () => {
-		act(() => root.render(<ChatTranscript {...baseProps} messages={[user, assistant]} streaming="" />));
+		act(() => root.render(<ChatTranscript {...baseProps} items={mergeTranscriptItems([user, assistant], [])} streaming="" />));
 		const userMsg = container.querySelector(".th-chat-msg--user");
 		expect(userMsg?.getAttribute("role")).toBe("group");
 		expect(userMsg?.getAttribute("aria-label")).toBe("chat.fromUser");
@@ -84,7 +86,7 @@ describe("ChatTranscript authorship distinction", () => {
 	});
 
 	it("keeps the copyable user text free of the authorship label", () => {
-		act(() => root.render(<ChatTranscript {...baseProps} messages={[user]} streaming="" />));
+		act(() => root.render(<ChatTranscript {...baseProps} items={mergeTranscriptItems([user], [])} streaming="" />));
 		expect(container.querySelector(".th-chat-msg--user")?.textContent).toBe("fix the flake");
 	});
 
