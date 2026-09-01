@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"encoding/json"
+	"time"
 )
 
 // maxActivityDigestEntries bounds compact activity digests so a runaway
@@ -18,8 +19,9 @@ type TaskDigestEntry struct {
 
 // ActivityTaskDigest is the in-memory task-count summary of one session.
 type ActivityTaskDigest struct {
-	Tasks     []TaskDigestEntry `json:"tasks"`
-	Truncated bool              `json:"truncated"`
+	Tasks      []TaskDigestEntry `json:"tasks"`
+	Truncated  bool              `json:"truncated"`
+	ReceivedAt string            `json:"received_at,omitempty"`
 }
 
 func (d ActivityTaskDigest) MarshalJSON() ([]byte, error) {
@@ -28,9 +30,10 @@ func (d ActivityTaskDigest) MarshalJSON() ([]byte, error) {
 		tasks = make([]TaskDigestEntry, 0)
 	}
 	return json.Marshal(struct {
-		Tasks     []TaskDigestEntry `json:"tasks"`
-		Truncated bool              `json:"truncated"`
-	}{Tasks: tasks, Truncated: d.Truncated})
+		Tasks      []TaskDigestEntry `json:"tasks"`
+		Truncated  bool              `json:"truncated"`
+		ReceivedAt string            `json:"received_at,omitempty"`
+	}{Tasks: tasks, Truncated: d.Truncated, ReceivedAt: d.ReceivedAt})
 }
 
 // RunDigestEntry is one compact non-terminal dag run extracted for counts.
@@ -54,8 +57,9 @@ func (r RunDigestEntry) MarshalJSON() ([]byte, error) {
 
 // ActivityDagDigest is the in-memory dag-count summary of one session.
 type ActivityDagDigest struct {
-	Runs      []RunDigestEntry `json:"runs"`
-	Truncated bool             `json:"truncated"`
+	Runs       []RunDigestEntry `json:"runs"`
+	Truncated  bool             `json:"truncated"`
+	ReceivedAt string           `json:"received_at,omitempty"`
 }
 
 func (d ActivityDagDigest) MarshalJSON() ([]byte, error) {
@@ -64,9 +68,10 @@ func (d ActivityDagDigest) MarshalJSON() ([]byte, error) {
 		runs = make([]RunDigestEntry, 0)
 	}
 	return json.Marshal(struct {
-		Runs      []RunDigestEntry `json:"runs"`
-		Truncated bool             `json:"truncated"`
-	}{Runs: runs, Truncated: d.Truncated})
+		Runs       []RunDigestEntry `json:"runs"`
+		Truncated  bool             `json:"truncated"`
+		ReceivedAt string           `json:"received_at,omitempty"`
+	}{Runs: runs, Truncated: d.Truncated, ReceivedAt: d.ReceivedAt})
 }
 
 // rememberActivityDigestLocked extracts a compact count digest from a
@@ -164,7 +169,11 @@ func parseActivityTaskDigest(data json.RawMessage) (*ActivityTaskDigest, bool) {
 		}
 		tasks = append(tasks, TaskDigestEntry{TaskID: taskID, Status: status, UpdatedAt: updatedAt})
 	}
-	return &ActivityTaskDigest{Tasks: tasks, Truncated: truncated}, true
+	return &ActivityTaskDigest{
+		Tasks:      tasks,
+		Truncated:  truncated,
+		ReceivedAt: time.Now().UTC().Format(time.RFC3339),
+	}, true
 }
 
 func parseActivityDagDigest(data json.RawMessage) (*ActivityDagDigest, bool) {
@@ -234,7 +243,11 @@ func parseActivityDagDigest(data json.RawMessage) (*ActivityDagDigest, bool) {
 		}
 		runs = append(runs, RunDigestEntry{RunID: runID, Status: status, RunningTaskIDs: runningIDs})
 	}
-	return &ActivityDagDigest{Runs: runs, Truncated: truncated}, true
+	return &ActivityDagDigest{
+		Runs:       runs,
+		Truncated:  truncated,
+		ReceivedAt: time.Now().UTC().Format(time.RFC3339),
+	}, true
 }
 
 func cloneActivityTaskDigest(src *ActivityTaskDigest) *ActivityTaskDigest {
@@ -243,7 +256,7 @@ func cloneActivityTaskDigest(src *ActivityTaskDigest) *ActivityTaskDigest {
 	}
 	tasks := make([]TaskDigestEntry, len(src.Tasks))
 	copy(tasks, src.Tasks)
-	return &ActivityTaskDigest{Tasks: tasks, Truncated: src.Truncated}
+	return &ActivityTaskDigest{Tasks: tasks, Truncated: src.Truncated, ReceivedAt: src.ReceivedAt}
 }
 
 func cloneActivityDagDigest(src *ActivityDagDigest) *ActivityDagDigest {
@@ -256,5 +269,5 @@ func cloneActivityDagDigest(src *ActivityDagDigest) *ActivityDagDigest {
 		copy(ids, run.RunningTaskIDs)
 		runs[i] = RunDigestEntry{RunID: run.RunID, Status: run.Status, RunningTaskIDs: ids}
 	}
-	return &ActivityDagDigest{Runs: runs, Truncated: src.Truncated}
+	return &ActivityDagDigest{Runs: runs, Truncated: src.Truncated, ReceivedAt: src.ReceivedAt}
 }

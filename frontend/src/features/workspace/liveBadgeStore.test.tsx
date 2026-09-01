@@ -219,6 +219,30 @@ describe("liveBadgeStore", () => {
     expect(captured.merged[0]?.runningCount).toBe(1);
   });
 
+  it("keeps a quiet poll digest runningCount through a one-sided dag merge when receivedAt is fresh", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:14:26.000Z"));
+    const poll = {
+      ...IDLE_POLL_SUMMARY,
+      taskSideOversized: true,
+      dagSideOversized: false,
+      taskDigest: {
+        tasks: [{ taskId: "t-quiet", status: "running", updatedAt: "2026-08-19T10:09:26.000Z" }],
+        truncated: false,
+        receivedAt: "2026-08-19T10:14:26.000Z",
+      },
+      runningCount: 1,
+    } as LiveSessionSummary;
+    act(() => {
+      root.render(<Host pollSummaries={[poll]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.updated", { runs: [] });
+    });
+
+    expect(captured.merged[0]?.runningCount).toBe(1);
+  });
+
   it("preserves a poll dag digest when a fresh task-only frame replaces the other side", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));

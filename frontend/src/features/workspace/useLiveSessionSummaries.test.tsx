@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseDagDigest, parseTaskDigest } from "./activityDigest";
 import { summarizeLiveSession, useLiveSessionSummaries } from "./useLiveSessionSummaries";
 import { useLiveSessions } from "./useLiveSessions";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
@@ -557,6 +558,187 @@ describe("summarizeLiveSession", () => {
       expect(summary.runningCount).toBe(0);
       expect(summary.taskOversized).toBe(true);
     });
+  });
+
+  describe("digest receivedAt vouches for quiet running rows", () => {
+    const NOW = new Date("2026-08-19T10:14:26.000Z");
+    const ROW_300S_AT = "2026-08-19T10:09:26.000Z";
+    const ROW_FRESH_AT = "2026-08-19T10:14:00.000Z";
+    const RECEIVED_NOW = "2026-08-19T10:14:26.000Z";
+    const RECEIVED_100S = "2026-08-19T10:12:46.000Z";
+    const TASK_ID = "st_quiet_child";
+
+    it("counts a quiet running digest row when receivedAt is now and updatedAt is 300s old", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const taskDigest = {
+        tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_300S_AT }],
+        truncated: false,
+        receivedAt: RECEIVED_NOW,
+      };
+      const summary = summarizeLiveSession({
+        id: "quiet-child",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest,
+      });
+
+      expect(summary.runningCount).toBe(1);
+    });
+
+    it("drops a quiet running digest row when receivedAt is 100s old and updatedAt is 300s old", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const taskDigest = {
+        tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_300S_AT }],
+        truncated: false,
+        receivedAt: RECEIVED_100S,
+      };
+      const summary = summarizeLiveSession({
+        id: "stale-digest",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest,
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("drops a quiet running digest row when receivedAt is absent and updatedAt is 300s old", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "legacy-stale",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_300S_AT }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("counts a digest row when receivedAt is absent and updatedAt is fresh", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "legacy-fresh",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_FRESH_AT }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
+    });
+
+    it("counts a stale digest row when a dag digest run lists that task id", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const taskDigest = {
+        tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_300S_AT }],
+        truncated: false,
+        receivedAt: RECEIVED_100S,
+      };
+      const dagDigest = {
+        runs: [{ runId: "r1", status: "running", runningTaskIds: [TASK_ID] }],
+        truncated: false,
+        receivedAt: RECEIVED_100S,
+      };
+      const summary = summarizeLiveSession({
+        id: "dag-authority",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        dagOversized: true,
+        taskDigest,
+        dagDigest,
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.dagRunning).toBe(0);
+    });
+  });
+});
+
+describe("activityDigest received_at", () => {
+  const RECEIVED_AT = "2026-08-19T10:14:26.000Z";
+
+  it("parses received_at onto a task digest", () => {
+    expect(parseTaskDigest({
+      tasks: [{ task_id: "t1", status: "running" }],
+      truncated: false,
+      received_at: RECEIVED_AT,
+    })).toEqual({
+      tasks: [{ taskId: "t1", status: "running" }],
+      truncated: false,
+      receivedAt: RECEIVED_AT,
+    });
+  });
+
+  it("parses received_at onto a dag digest", () => {
+    expect(parseDagDigest({
+      runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1"] }],
+      truncated: false,
+      received_at: RECEIVED_AT,
+    })).toEqual({
+      runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1"] }],
+      truncated: false,
+      receivedAt: RECEIVED_AT,
+    });
+  });
+
+  it("omits receivedAt when received_at is absent", () => {
+    expect(parseTaskDigest({
+      tasks: [{ task_id: "t1", status: "running" }],
+      truncated: false,
+    })).toEqual({
+      tasks: [{ taskId: "t1", status: "running" }],
+      truncated: false,
+    });
+  });
+
+  it("keeps a task digest valid when received_at is a non-string", () => {
+    expect(parseTaskDigest({
+      tasks: [{ task_id: "t1", status: "running" }],
+      truncated: false,
+      received_at: 1,
+    })).toEqual({
+      tasks: [{ taskId: "t1", status: "running" }],
+      truncated: false,
+    });
+  });
+
+  it("keeps a dag digest valid when received_at is a non-string", () => {
+    expect(parseDagDigest({
+      runs: [{ run_id: "r1", status: "running", running_task_ids: [] }],
+      truncated: false,
+      received_at: null,
+    })).toEqual({
+      runs: [{ runId: "r1", status: "running", runningTaskIds: [] }],
+      truncated: false,
+    });
+  });
+
+  it("still rejects a malformed tasks array when received_at is present", () => {
+    expect(parseTaskDigest({
+      tasks: "nope",
+      truncated: false,
+      received_at: RECEIVED_AT,
+    })).toBeNull();
   });
 });
 
