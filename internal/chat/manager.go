@@ -170,6 +170,10 @@ retry:
 		return nil, false, nil, fmt.Errorf("chat: session %s is already starting", opts.ID)
 	}
 	m.pending[opts.ID] = true
+	// Reuse publishes whatever provider the manager currently owns. A provider
+	// that already died is rejected by openSession's own state guard and the
+	// pump clears this slot as part of the same death sequence, so a dead
+	// provider costs one failed acquire, never a wedged manager.
 	provider := m.provider
 	if provider == nil {
 		if opts.ProviderContext == nil {
@@ -270,7 +274,6 @@ retry:
 		m.mu.Lock()
 		delete(m.pending, opts.ID)
 		m.mu.Unlock()
-		m.releaseProviderIfIdle()
 		return nil, false, nil, openErr
 	}
 
@@ -454,7 +457,6 @@ func (m *Manager) Stop(id string) {
 	if s != nil {
 		_ = s.Close()
 	}
-	m.releaseProviderIfIdle()
 }
 
 func (m *Manager) StopIfCurrent(id string, session *Session) bool {
@@ -466,7 +468,6 @@ func (m *Manager) StopIfCurrent(id string, session *Session) bool {
 	delete(m.sessions, id)
 	m.mu.Unlock()
 	_ = session.Close()
-	m.releaseProviderIfIdle()
 	return true
 }
 
@@ -492,7 +493,6 @@ func (m *Manager) sessionClosed(session *Session) {
 	if generationDone != nil {
 		<-generationDone
 	}
-	m.releaseProviderIfIdle()
 }
 
 func (m *Manager) evictSession(session *Session) {
@@ -524,22 +524,6 @@ func (m *Manager) evictRoutedSession(provider *sharedProvider, handle string, se
 	}
 	return route
 }
-
-func (m *Manager) releaseProviderIfIdle() {
-	m.mu.Lock()
-	if len(m.sessions) != 0 || len(m.pending) != 0 || m.provider == nil {
-		m.mu.Unlock()
-		return
-	}
-	provider := m.provider
-	remainingSessions := len(m.sessions)
-	pending := len(m.pending)
-	m.provider = nil
-	m.mu.Unlock()
-	m.logWarn("closing idle shared provider", "remaining_sessions", remainingSessions, "pending", pending)
-	_ = provider.close()
-}
-
 func (m *Manager) providerExited(provider *sharedProvider, termination providerTermination) {
 	m.mu.Lock()
 	if m.provider != provider {
@@ -602,7 +586,6 @@ func (m *Manager) ReapFinished(id string, finished *Session) bool {
 	m.mu.Unlock()
 	finished.lifecycleMu.Unlock()
 	_ = finished.Close()
-	m.releaseProviderIfIdle()
 	return true
 }
 

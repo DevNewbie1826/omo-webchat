@@ -136,9 +136,6 @@ func (p *sharedProvider) teardownRoute(route *sessionRoute, termination provider
 		route.abort(termination)
 		go func() {
 			_ = p.closeSessionHandle(route.handle, route.session)
-			if route.session.owner != nil {
-				route.session.owner.releaseProviderIfIdle()
-			}
 		}()
 	})
 }

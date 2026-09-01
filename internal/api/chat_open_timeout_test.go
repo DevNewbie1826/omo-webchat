@@ -137,25 +137,36 @@ process.stdin.on('data', chunk => {
 		providerExited <- readErr
 	}()
 	// OnClose is the initiating connection's lifetime signal. It must cancel
-	// the pending open and terminate the silent shared provider.
+	// the pending open and leave no session behind, but provider lifetime is
+	// decoupled from session lifetime: the shared provider every other chat
+	// depends on must survive a cancelled open.
 	srv.OnClose(socket, nil)
 	select {
 	case <-createDone:
 	case <-time.After(time.Second):
 		t.Fatal("chat open did not cancel with its WebSocket connection")
 	}
+	if session := srv.chats.Get(opening.ID); session != nil {
+		t.Fatalf("cancelled open leaked session %p", session)
+	}
+	if ids := srv.chats.LiveIDs(); len(ids) != 0 {
+		t.Fatalf("cancelled open left live sessions: %v", ids)
+	}
+	select {
+	case readErr := <-providerExited:
+		t.Fatalf("cancelled open terminated the shared provider: lifetime connection ended with %v", readErr)
+	default:
+	}
+
+	// Server shutdown stays the one provider lifetime boundary, so the same
+	// lifetime connection must end once the manager closes.
+	srv.chats.CloseAll()
 	select {
 	case readErr := <-providerExited:
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			t.Fatalf("provider lifetime connection ended with %v", readErr)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("cancelled open did not terminate the shared provider")
-	}
-	if session := srv.chats.Get(opening.ID); session != nil {
-		t.Fatalf("cancelled open leaked session %p", session)
-	}
-	if ids := srv.chats.LiveIDs(); len(ids) != 0 {
-		t.Fatalf("cancelled open left live sessions: %v", ids)
+		t.Fatal("CloseAll did not terminate the shared provider")
 	}
 }

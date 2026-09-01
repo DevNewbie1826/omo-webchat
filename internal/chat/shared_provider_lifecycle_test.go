@@ -264,7 +264,7 @@ func TestSharedProviderBlockedWriterDoesNotTearDownSession(t *testing.T) {
 	}
 }
 
-func TestSharedProviderFailedStartAndConcurrentLastReleaseAreSafe(t *testing.T) {
+func TestSharedProviderFailedStartAndConcurrentSessionTeardownAreSafe(t *testing.T) {
 	failedManager := NewManager()
 	t.Cleanup(failedManager.CloseAll)
 	if _, _, err := failedManager.Acquire(context.Background(), SessionOptions{ID: "failed-start", Binary: t.TempDir() + "/missing-omo", ProviderContext: context.Background()}); err == nil {
@@ -313,18 +313,36 @@ func TestSharedProviderFailedStartAndConcurrentLastReleaseAreSafe(t *testing.T) 
 		}()
 	}
 	close(start)
-	<-closeEntered
+	<-released
+	<-released
+	select {
+	case <-closeEntered:
+		t.Fatal("concurrent session teardown started shared provider shutdown")
+	default:
+	}
+	manager.mu.Lock()
+	published = manager.provider
+	manager.mu.Unlock()
+	if published != provider {
+		t.Fatalf("concurrent session teardown unpublished provider: got %p, want %p", published, provider)
+	}
 
-	// A second teardown arrives while the last-session release owns shutdown.
-	// It must join that shutdown rather than invoke Process.Close again.
+	// Server shutdown remains the provider lifetime boundary. A concurrent
+	// direct close must join that shutdown rather than invoke Process.Close
+	// again.
+	managerClosed := make(chan struct{})
+	go func() {
+		manager.CloseAll()
+		close(managerClosed)
+	}()
+	<-closeEntered
 	joined := make(chan struct{})
 	go func() {
 		_ = provider.close()
 		close(joined)
 	}()
 	close(allowClose)
-	<-released
-	<-released
+	<-managerClosed
 	<-joined
 	if got := closeCalls.Load(); got != 1 {
 		t.Fatalf("process close calls = %d, want 1", got)
