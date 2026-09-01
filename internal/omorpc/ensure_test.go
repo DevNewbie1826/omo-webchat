@@ -393,41 +393,48 @@ func TestEnsureDaemonFlockMutualExclusion(t *testing.T) {
 	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
 }
 
-func TestEnsureDaemonDanglingLockSymlinkCompletes(t *testing.T) {
+func TestEnsureDaemonDanglingLockSymlinkFailsClean(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "rpc", "rpc.sock")
-	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "die")
-	cfg.LockTimeout = 40 * time.Millisecond
+	marker := filepath.Join(dir, "spawned")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo spawned > %q\nexit 99", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+	cfg.LockTimeout = testAwaitTimeout
 	cfg.LockRetry = time.Millisecond
 	lockPath := ensureLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(dir, "missing-lock-target"), lockPath); err != nil {
+	target := filepath.Join(dir, "missing-lock-target")
+	if err := os.Symlink(target, lockPath); err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 	started := time.Now()
-	ensured, err := EnsureDaemon(ctx, cfg)
+	ensured, err := EnsureDaemon(context.Background(), cfg)
 	if ensured != nil {
 		_ = ensured.Close()
-		t.Fatal("dying supervisor returned a daemon")
+		t.Fatal("invalid lock path returned a daemon")
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("EnsureDaemon spun on dangling lock symlink for %v", elapsed)
+	if elapsed := time.Since(started); elapsed >= cfg.LockTimeout/2 {
+		t.Fatalf("EnsureDaemon did not reject dangling lock symlink promptly: %v", elapsed)
 	}
-	var lockTimeout *ErrEnsureLockTimeout
-	if errors.As(err, &lockTimeout) {
-		t.Fatalf("dangling symlink exhausted lock timeout: %v", err)
+	var invalidPath *ErrEnsureLockPathInvalid
+	if !errors.As(err, &invalidPath) {
+		t.Fatalf("EnsureDaemon error = %T (%v), want *ErrEnsureLockPathInvalid", err, err)
 	}
-	info, statErr := os.Lstat(lockPath)
-	if statErr != nil {
-		t.Fatalf("lock path after recovery: %v", statErr)
+	if invalidPath.Path != lockPath {
+		t.Fatalf("invalid lock path = %q, want %q", invalidPath.Path, lockPath)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Fatal("dangling ensure lock symlink was not replaced")
+	gotTarget, readlinkErr := os.Readlink(lockPath)
+	if readlinkErr != nil {
+		t.Fatalf("read preserved lock symlink: %v", readlinkErr)
+	}
+	if gotTarget != target {
+		t.Fatalf("lock symlink target = %q, want %q", gotTarget, target)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("supervisor spawned with invalid lock path: %v", statErr)
 	}
 }
 

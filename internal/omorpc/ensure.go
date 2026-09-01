@@ -283,6 +283,16 @@ func (e *ErrEnsureLockTimeout) Error() string {
 
 func (e *ErrEnsureLockTimeout) Unwrap() error { return e.Cause }
 
+// ErrEnsureLockPathInvalid reports that the persistent ensure lock pathname is
+// occupied by a symlink. The anomaly must be corrected manually.
+type ErrEnsureLockPathInvalid struct {
+	Path string
+}
+
+func (e *ErrEnsureLockPathInvalid) Error() string {
+	return fmt.Sprintf("omorpc: acquire ensure lock: lock path %q is occupied by a symlink and must be corrected manually", e.Path)
+}
+
 var (
 	errEnsureLockHeld    = errors.New("ensure lock held")
 	errEnsureLockSymlink = errors.New("ensure lock is a symlink")
@@ -295,7 +305,6 @@ func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) 
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, cfg.LockTimeout)
 	defer cancel()
-	symlinkRemoved := false
 	for {
 		if err := lockCtx.Err(); err != nil {
 			return nil, &ErrEnsureLockTimeout{Cause: err}
@@ -316,22 +325,7 @@ func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) 
 		switch {
 		case errors.Is(err, errEnsureLockHeld):
 		case errors.Is(err, errEnsureLockSymlink):
-			if symlinkRemoved {
-				return nil, fmt.Errorf("omorpc: acquire ensure lock: symlink reappeared at %q", path)
-			}
-			info, statErr := os.Lstat(path)
-			switch {
-			case errors.Is(statErr, os.ErrNotExist):
-			case statErr != nil:
-				return nil, fmt.Errorf("omorpc: inspect ensure lock symlink: %w", statErr)
-			case info.Mode()&os.ModeSymlink == 0:
-				// The pathname changed after open; retry without touching it.
-			default:
-				if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-					return nil, fmt.Errorf("omorpc: remove ensure lock symlink: %w", removeErr)
-				}
-				symlinkRemoved = true
-			}
+			return nil, &ErrEnsureLockPathInvalid{Path: path}
 		default:
 			return nil, fmt.Errorf("omorpc: acquire ensure lock: %w", err)
 		}
