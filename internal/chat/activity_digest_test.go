@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func oversizedTaskPayload(t *testing.T, tasks []TaskDigestEntry) string {
@@ -337,4 +338,255 @@ func TestActivityDigestMalformedJSONKeepsPreviousDigest(t *testing.T) {
 	if !reflect.DeepEqual(summary.TaskDigest.Tasks, want) {
 		t.Fatalf("TaskDigest.Tasks = %#v, want previous %#v", summary.TaskDigest.Tasks, want)
 	}
+}
+
+func requireRecentRFC3339UTC(t *testing.T, got string) {
+	t.Helper()
+	if got == "" {
+		t.Fatal("ReceivedAt is empty, want RFC3339 UTC stamp")
+	}
+	parsed, err := time.Parse(time.RFC3339, got)
+	if err != nil {
+		t.Fatalf("ReceivedAt = %q, want RFC3339: %v", got, err)
+	}
+	if parsed.Location() != time.UTC {
+		t.Fatalf("ReceivedAt location = %s, want UTC", parsed.Location())
+	}
+	now := time.Now().UTC()
+	delta := now.Sub(parsed)
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 5*time.Second {
+		t.Fatalf("ReceivedAt = %s, now = %s, delta = %s, want within 5s", got, now.Format(time.RFC3339), delta)
+	}
+}
+
+func TestActivityTaskDigestStampsReceivedAtWhenUnderCap(t *testing.T) {
+	// Given: a live session with no cached activity.
+	s := newTestSession("chat-digest-received-at-undercap", nil)
+	manager := liveManagerWith(t, s)
+	const data = `{"tasks":[{"task_id":"t-small","status":"running","updated_at":"2026-01-02T00:00:00Z"}]}`
+
+	// When: an under-cap omo.task.updated arrives.
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":`+data+`}`)
+
+	// Then: the digest is stamped with a recent RFC3339 UTC arrival time.
+	summary := requireLiveSummary(t, manager)
+	if summary.TaskDigest == nil {
+		t.Fatal("TaskDigest is nil, want under-cap rows")
+	}
+	requireRecentRFC3339UTC(t, summary.TaskDigest.ReceivedAt)
+}
+
+func TestActivityTaskDigestStampsReceivedAtWhenOverCap(t *testing.T) {
+	// Given: a live session and a task payload larger than the 64KB cache cap.
+	s := newTestSession("chat-digest-received-at-overcap", nil)
+	manager := liveManagerWith(t, s)
+	tasks := []TaskDigestEntry{
+		{TaskID: "t-live-1", Status: "running", UpdatedAt: "2026-01-01T00:00:01Z"},
+	}
+
+	// When: an over-cap omo.task.updated arrives.
+	dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":`+oversizedTaskPayload(t, tasks)+`}`)
+
+	// Then: extraction still stamps ReceivedAt even though the cache is skipped.
+	summary := requireLiveSummary(t, manager)
+	if summary.TaskDigest == nil {
+		t.Fatal("TaskDigest is nil, want over-cap rows")
+	}
+	requireRecentRFC3339UTC(t, summary.TaskDigest.ReceivedAt)
+}
+
+func TestActivityDigestMarshalJSONRoundTripsReceivedAt(t *testing.T) {
+	const stamp = "2026-04-01T12:00:00Z"
+	t.Run("task", func(t *testing.T) {
+		// Given: a task digest already stamped at the boundary.
+		digest := ActivityTaskDigest{
+			Tasks:      []TaskDigestEntry{{TaskID: "t1", Status: "running"}},
+			Truncated:  true,
+			ReceivedAt: stamp,
+		}
+
+		// When: the digest is marshaled, unmarshaled, and marshaled again.
+		raw, err := json.Marshal(digest)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		// Then: JSON carries received_at and the stamp survives a round-trip.
+		var parsed map[string]any
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("decode: %v (%s)", err, raw)
+		}
+		if parsed["received_at"] != stamp {
+			t.Fatalf("received_at = %#v, want %q (%s)", parsed["received_at"], stamp, raw)
+		}
+		var round ActivityTaskDigest
+		if err := json.Unmarshal(raw, &round); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if round.ReceivedAt != stamp {
+			t.Fatalf("round-trip ReceivedAt = %q, want %q", round.ReceivedAt, stamp)
+		}
+		rewritten, err := json.Marshal(round)
+		if err != nil {
+			t.Fatalf("remarshal: %v", err)
+		}
+		var parsedAgain map[string]any
+		if err := json.Unmarshal(rewritten, &parsedAgain); err != nil {
+			t.Fatalf("decode remarshal: %v (%s)", err, rewritten)
+		}
+		if parsedAgain["received_at"] != stamp {
+			t.Fatalf("remarshaled received_at = %#v, want %q", parsedAgain["received_at"], stamp)
+		}
+	})
+	t.Run("dag", func(t *testing.T) {
+		// Given: a dag digest already stamped at the boundary.
+		digest := ActivityDagDigest{
+			Runs:       []RunDigestEntry{{RunID: "r1", Status: "running", RunningTaskIDs: []string{"t1"}}},
+			Truncated:  true,
+			ReceivedAt: stamp,
+		}
+
+		// When: the digest is marshaled, unmarshaled, and marshaled again.
+		raw, err := json.Marshal(digest)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+
+		// Then: JSON carries received_at and the stamp survives a round-trip.
+		var parsed map[string]any
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("decode: %v (%s)", err, raw)
+		}
+		if parsed["received_at"] != stamp {
+			t.Fatalf("received_at = %#v, want %q (%s)", parsed["received_at"], stamp, raw)
+		}
+		var round ActivityDagDigest
+		if err := json.Unmarshal(raw, &round); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if round.ReceivedAt != stamp {
+			t.Fatalf("round-trip ReceivedAt = %q, want %q", round.ReceivedAt, stamp)
+		}
+		rewritten, err := json.Marshal(round)
+		if err != nil {
+			t.Fatalf("remarshal: %v", err)
+		}
+		var parsedAgain map[string]any
+		if err := json.Unmarshal(rewritten, &parsedAgain); err != nil {
+			t.Fatalf("decode remarshal: %v (%s)", err, rewritten)
+		}
+		if parsedAgain["received_at"] != stamp {
+			t.Fatalf("remarshaled received_at = %#v, want %q", parsedAgain["received_at"], stamp)
+		}
+	})
+}
+
+func TestCloneActivityDigestCarriesReceivedAt(t *testing.T) {
+	const stamp = "2026-04-01T12:00:00Z"
+	t.Run("task", func(t *testing.T) {
+		// Given: a stamped task digest.
+		src := &ActivityTaskDigest{
+			Tasks:      []TaskDigestEntry{{TaskID: "t1", Status: "running"}},
+			Truncated:  true,
+			ReceivedAt: stamp,
+		}
+
+		// When: the digest is cloned.
+		got := cloneActivityTaskDigest(src)
+
+		// Then: ReceivedAt is copied onto a distinct value.
+		if got == nil {
+			t.Fatal("clone is nil")
+		}
+		if got.ReceivedAt != stamp {
+			t.Fatalf("clone ReceivedAt = %q, want %q", got.ReceivedAt, stamp)
+		}
+		if got == src {
+			t.Fatal("clone returned the source pointer")
+		}
+		got.ReceivedAt = "mutated"
+		if src.ReceivedAt != stamp {
+			t.Fatalf("source ReceivedAt mutated to %q", src.ReceivedAt)
+		}
+	})
+	t.Run("dag", func(t *testing.T) {
+		// Given: a stamped dag digest.
+		src := &ActivityDagDigest{
+			Runs:       []RunDigestEntry{{RunID: "r1", Status: "running", RunningTaskIDs: []string{"t1"}}},
+			Truncated:  true,
+			ReceivedAt: stamp,
+		}
+
+		// When: the digest is cloned.
+		got := cloneActivityDagDigest(src)
+
+		// Then: ReceivedAt is copied onto a distinct value.
+		if got == nil {
+			t.Fatal("clone is nil")
+		}
+		if got.ReceivedAt != stamp {
+			t.Fatalf("clone ReceivedAt = %q, want %q", got.ReceivedAt, stamp)
+		}
+		if got == src {
+			t.Fatal("clone returned the source pointer")
+		}
+		got.ReceivedAt = "mutated"
+		if src.ReceivedAt != stamp {
+			t.Fatalf("source ReceivedAt mutated to %q", src.ReceivedAt)
+		}
+	})
+}
+
+func TestActivityDigestMalformedPayloadKeepsOriginalReceivedAt(t *testing.T) {
+	t.Run("task", func(t *testing.T) {
+		// Given: a live session whose task digest already carries a stamp.
+		s := newTestSession("chat-digest-keep-task-received-at", nil)
+		manager := liveManagerWith(t, s)
+		dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"tasks":[{"task_id":"t-keep","status":"running"}]}}`)
+		before := requireLiveSummary(t, manager)
+		if before.TaskDigest == nil {
+			t.Fatal("setup: TaskDigest is nil")
+		}
+		original := before.TaskDigest.ReceivedAt
+		requireRecentRFC3339UTC(t, original)
+
+		// When: a later omo.task.updated arrives with malformed task JSON.
+		dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"tasks":"nope"}}`)
+
+		// Then: the previous digest keeps its original ReceivedAt.
+		summary := requireLiveSummary(t, manager)
+		if summary.TaskDigest == nil {
+			t.Fatal("TaskDigest is nil after malformed payload, want previous digest")
+		}
+		if summary.TaskDigest.ReceivedAt != original {
+			t.Fatalf("ReceivedAt = %q, want original %q", summary.TaskDigest.ReceivedAt, original)
+		}
+	})
+	t.Run("dag", func(t *testing.T) {
+		// Given: a live session whose dag digest already carries a stamp.
+		s := newTestSession("chat-digest-keep-dag-received-at", nil)
+		manager := liveManagerWith(t, s)
+		dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":{"runs":[{"run_id":"r-keep","status":"running","nodes":[]}]}}`)
+		before := requireLiveSummary(t, manager)
+		if before.DagDigest == nil {
+			t.Fatal("setup: DagDigest is nil")
+		}
+		original := before.DagDigest.ReceivedAt
+		requireRecentRFC3339UTC(t, original)
+
+		// When: a later omo.dag.updated arrives with malformed run JSON.
+		dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":{"runs":"nope"}}`)
+
+		// Then: the previous digest keeps its original ReceivedAt.
+		summary := requireLiveSummary(t, manager)
+		if summary.DagDigest == nil {
+			t.Fatal("DagDigest is nil after malformed payload, want previous digest")
+		}
+		if summary.DagDigest.ReceivedAt != original {
+			t.Fatalf("ReceivedAt = %q, want original %q", summary.DagDigest.ReceivedAt, original)
+		}
+	})
 }

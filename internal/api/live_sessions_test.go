@@ -268,11 +268,13 @@ func TestLiveSessionFromSummaryJSONReportsActivityDigests(t *testing.T) {
 						{TaskID: "t1", Status: "running", UpdatedAt: "2026-01-01T00:00:00Z"},
 						{TaskID: "t2", Status: "completed"},
 					},
+					ReceivedAt: "2026-04-01T12:00:00Z",
 				},
 				DagDigest: &chat.ActivityDagDigest{
 					Runs: []chat.RunDigestEntry{
 						{RunID: "r1", Status: "running", RunningTaskIDs: []string{"t1"}},
 					},
+					ReceivedAt: "2026-04-01T12:00:01Z",
 				},
 			},
 			wantTaskDigest: true,
@@ -314,6 +316,9 @@ func TestLiveSessionFromSummaryJSONReportsActivityDigests(t *testing.T) {
 			if _, ok := taskObj["truncated"]; !ok {
 				t.Fatalf("task_digest missing truncated (%s)", raw)
 			}
+			if taskObj["received_at"] != "2026-04-01T12:00:00Z" {
+				t.Fatalf("task_digest.received_at = %#v, want 2026-04-01T12:00:00Z (%s)", taskObj["received_at"], raw)
+			}
 			tasks, ok := taskObj["tasks"].([]any)
 			if !ok || len(tasks) != 2 {
 				t.Fatalf("task_digest.tasks = %#v, want 2 entries", taskObj["tasks"])
@@ -353,6 +358,9 @@ func TestLiveSessionFromSummaryJSONReportsActivityDigests(t *testing.T) {
 			}
 			if _, ok := dagObj["truncated"]; !ok {
 				t.Fatalf("dag_digest missing truncated (%s)", raw)
+			}
+			if dagObj["received_at"] != "2026-04-01T12:00:01Z" {
+				t.Fatalf("dag_digest.received_at = %#v, want 2026-04-01T12:00:01Z (%s)", dagObj["received_at"], raw)
 			}
 		})
 	}
