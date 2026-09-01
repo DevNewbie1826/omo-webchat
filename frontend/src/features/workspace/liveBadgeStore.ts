@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
+import type { LiveSessionInfo } from "./workspace";
 
 /** How long a WS-pushed side stays authoritative, mirroring
  * STALE_RUNNING_WINDOW_MS in useLiveSessionSummaries. */
@@ -119,11 +120,15 @@ export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> 
   }, [snapshot]);
 }
 
-function newerPayload(side: SideOverride | undefined, pollPayload: unknown, nowMs: number): unknown {
-  if (side === undefined || side.payload === null) return pollPayload;
-  if (side.arrival <= pollArrivalMs) return pollPayload;
-  if (nowMs - side.arrival > OVERRIDE_TTL_MS) return pollPayload;
-  return side.payload;
+function newerPayload(
+  side: SideOverride | undefined,
+  pollPayload: unknown,
+  nowMs: number,
+): { readonly payload: unknown; readonly replaced: boolean } {
+  if (side === undefined || side.payload === null) return { payload: pollPayload, replaced: false };
+  if (side.arrival <= pollArrivalMs) return { payload: pollPayload, replaced: false };
+  if (nowMs - side.arrival > OVERRIDE_TTL_MS) return { payload: pollPayload, replaced: false };
+  return { payload: side.payload, replaced: true };
 }
 
 /** Poll summaries and WS frames merged last-writer-wins independently for the
@@ -154,14 +159,17 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
       if (entry === undefined) return poll;
       const task = newerPayload(entry.task, poll.task ?? null, clockMs);
       const dag = newerPayload(entry.dag, poll.dag ?? null, clockMs);
-      return summarizeLiveSession({
+      const mergedInfo = {
         id: poll.id,
         title: poll.title,
-        task,
-        dag,
-        taskOversized: poll.taskOversized,
-        dagOversized: poll.dagOversized,
-      }, clockMs);
+        task: task.payload,
+        dag: dag.payload,
+        taskOversized: task.replaced ? false : poll.taskSideOversized,
+        dagOversized: dag.replaced ? false : poll.dagSideOversized,
+        ...(!task.replaced && poll.taskDigest !== undefined ? { taskDigest: poll.taskDigest } : {}),
+        ...(!dag.replaced && poll.dagDigest !== undefined ? { dagDigest: poll.dagDigest } : {}),
+      } as LiveSessionInfo;
+      return summarizeLiveSession(mergedInfo, clockMs);
     }),
     [pollSummaries, snapshot, clockMs],
   );

@@ -90,6 +90,8 @@ describe("summarizeLiveSession", () => {
       title: "Refactor auth",
       task: TASK_PAYLOAD,
       dag: DAG_PAYLOAD,
+      taskSideOversized: false,
+      dagSideOversized: false,
       runningCount: 2,
       doneCount: 3,
       dagDone: 2,
@@ -110,6 +112,8 @@ describe("summarizeLiveSession", () => {
       title: "Bare",
       task: null,
       dag: null,
+      taskSideOversized: false,
+      dagSideOversized: false,
       runningCount: 0,
       doneCount: 0,
       dagDone: 0,
@@ -375,6 +379,26 @@ describe("summarizeLiveSession", () => {
       expect(summary.dagRunning).toBe(0);
     });
 
+    it("counts a stale task row once when an oversized dag digest vouches for the same task id", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: null,
+        taskOversized: false,
+        dagOversized: true,
+        dagDigest: {
+          runs: [{ runId: "r1", status: "running", runningTaskIds: [TASK_ID] }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.dagRunning).toBe(0);
+    });
+
     it("drops a stale running row when its dag node is completed", () => {
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
@@ -430,6 +454,108 @@ describe("summarizeLiveSession", () => {
 
       expect(summary.runningCount).toBe(1);
       expect(summary.dagRunning).toBe(0);
+    });
+  });
+
+  describe("oversized sides count from activity digests", () => {
+    const NOW = new Date("2026-08-19T10:14:26.000Z");
+    const STALE_AT = "2026-08-19T10:00:00.000Z";
+    const FRESH_AT = "2026-08-19T10:14:00.000Z";
+    const TASK_ID = "st_digest_1";
+
+    it("counts a fresh running digest entry when the task payload is null and oversized", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "digest-fresh",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: FRESH_AT }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.taskOversized).toBe(false);
+    });
+
+    it("drops a digest running entry whose updated_at is 866s old when there is no dag digest", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "digest-stale",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: STALE_AT }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("keeps a stale digest running entry when a non-terminal dag digest run lists that task id", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "digest-authority",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        dagOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: STALE_AT }],
+          truncated: false,
+        },
+        dagDigest: {
+          runs: [{ runId: "r1", status: "running", runningTaskIds: [TASK_ID] }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.dagRunning).toBe(0);
+    });
+
+    it("marks a truncated digest partial for the N+ path instead of unknown", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "digest-trunc",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: FRESH_AT }],
+          truncated: true,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
+      expect(summary.truncatedTasks).toBe(true);
+      expect(summary.taskOversized).toBe(false);
+      expect(summary.dagOversized).toBe(false);
+    });
+
+    it("keeps the unknown oversized path when no digest is present", () => {
+      const summary = summarizeLiveSession({
+        id: "over-no-digest",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+      });
+
+      expect(summary.runningCount).toBe(0);
+      expect(summary.taskOversized).toBe(true);
     });
   });
 });
