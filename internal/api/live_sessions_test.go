@@ -220,6 +220,116 @@ func TestLiveSessionFromSummaryJSONReportsOversizedFlags(t *testing.T) {
 	}
 }
 
+func TestLiveSessionFromSummaryJSONReportsActivityDigests(t *testing.T) {
+	tests := []struct {
+		name           string
+		summary        chat.LiveSummary
+		wantTaskDigest bool
+		wantDagDigest  bool
+	}{
+		{
+			name:    "nil digests are omitted",
+			summary: chat.LiveSummary{ID: "chat-digest-empty"},
+		},
+		{
+			name: "populated digests use wire field names",
+			summary: chat.LiveSummary{
+				ID: "chat-digest",
+				TaskDigest: &chat.ActivityTaskDigest{
+					Tasks: []chat.TaskDigestEntry{
+						{TaskID: "t1", Status: "running", UpdatedAt: "2026-01-01T00:00:00Z"},
+						{TaskID: "t2", Status: "completed"},
+					},
+				},
+				DagDigest: &chat.ActivityDagDigest{
+					Runs: []chat.RunDigestEntry{
+						{RunID: "r1", Status: "running", RunningTaskIDs: []string{"t1"}},
+					},
+				},
+			},
+			wantTaskDigest: true,
+			wantDagDigest:  true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Given / When: the live-sessions mapper serializes a summary.
+			row := liveSessionFromSummary(tt.summary, "Digest")
+			raw, err := json.Marshal(row)
+			if err != nil {
+				t.Fatalf("marshal live session: %v", err)
+			}
+
+			// Then: task_digest/dag_digest use the wire names and are absent when nil.
+			var parsed map[string]any
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatalf("decode live session: %v (%s)", err, raw)
+			}
+			taskDigest, hasTaskDigest := parsed["task_digest"]
+			dagDigest, hasDagDigest := parsed["dag_digest"]
+			if hasTaskDigest != tt.wantTaskDigest {
+				t.Fatalf("task_digest present = %v, want %v (%s)", hasTaskDigest, tt.wantTaskDigest, raw)
+			}
+			if hasDagDigest != tt.wantDagDigest {
+				t.Fatalf("dag_digest present = %v, want %v (%s)", hasDagDigest, tt.wantDagDigest, raw)
+			}
+			if !tt.wantTaskDigest && !tt.wantDagDigest {
+				return
+			}
+			taskObj, ok := taskDigest.(map[string]any)
+			if !ok {
+				t.Fatalf("task_digest = %#v, want object", taskDigest)
+			}
+			if _, ok := taskObj["tasks"]; !ok {
+				t.Fatalf("task_digest missing tasks (%s)", raw)
+			}
+			if _, ok := taskObj["truncated"]; !ok {
+				t.Fatalf("task_digest missing truncated (%s)", raw)
+			}
+			tasks, ok := taskObj["tasks"].([]any)
+			if !ok || len(tasks) != 2 {
+				t.Fatalf("task_digest.tasks = %#v, want 2 entries", taskObj["tasks"])
+			}
+			first, ok := tasks[0].(map[string]any)
+			if !ok {
+				t.Fatalf("task_digest.tasks[0] = %#v, want object", tasks[0])
+			}
+			if first["task_id"] != "t1" || first["status"] != "running" || first["updated_at"] != "2026-01-01T00:00:00Z" {
+				t.Fatalf("task_digest.tasks[0] = %#v, want task_id/status/updated_at", first)
+			}
+			second, ok := tasks[1].(map[string]any)
+			if !ok {
+				t.Fatalf("task_digest.tasks[1] = %#v, want object", tasks[1])
+			}
+			if _, hasUpdatedAt := second["updated_at"]; hasUpdatedAt {
+				t.Fatalf("task_digest.tasks[1] has updated_at, want omitted (%s)", raw)
+			}
+			dagObj, ok := dagDigest.(map[string]any)
+			if !ok {
+				t.Fatalf("dag_digest = %#v, want object", dagDigest)
+			}
+			runs, ok := dagObj["runs"].([]any)
+			if !ok || len(runs) != 1 {
+				t.Fatalf("dag_digest.runs = %#v, want 1 entry", dagObj["runs"])
+			}
+			run, ok := runs[0].(map[string]any)
+			if !ok {
+				t.Fatalf("dag_digest.runs[0] = %#v, want object", runs[0])
+			}
+			if run["run_id"] != "r1" || run["status"] != "running" {
+				t.Fatalf("dag_digest.runs[0] = %#v, want run_id/status", run)
+			}
+			ids, ok := run["running_task_ids"].([]any)
+			if !ok || len(ids) != 1 || ids[0] != "t1" {
+				t.Fatalf("running_task_ids = %#v, want [t1]", run["running_task_ids"])
+			}
+			if _, ok := dagObj["truncated"]; !ok {
+				t.Fatalf("dag_digest missing truncated (%s)", raw)
+			}
+		})
+	}
+}
+
 type expectedLiveSession struct {
 	id            string
 	title         string
