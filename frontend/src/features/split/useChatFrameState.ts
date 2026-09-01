@@ -39,8 +39,8 @@ const NOTICE_LIMIT = 50;
 
 export type HistoryStatus = "loading" | "loaded" | "failed";
 
-// Long enough that a legitimately slow multi-megabyte history load is never
-// interrupted, short enough that a silent provider cannot hide advisories forever.
+// Inactivity window since the last sign of history progress: active multi-page
+// loads may run indefinitely, while a silent provider cannot hide advisories forever.
 const HISTORY_STALL_MS = 30_000;
 
 /**
@@ -174,6 +174,16 @@ export function useChatFrameState() {
     setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
   };
 
+  const armHistoryStall = (refresh: boolean): void => {
+    if (historyStatus !== "loading") return;
+    if (historyStallTimerRef.current !== null && !refresh) return;
+    if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
+    historyStallTimerRef.current = window.setTimeout(() => {
+      historyStallTimerRef.current = null;
+      setHistoryStatus((current) => current === "loading" ? "failed" : current);
+    }, HISTORY_STALL_MS);
+  };
+
   const handleFrame = createChatFrameHandler({
     controls,
     streaming,
@@ -196,6 +206,7 @@ export function useChatFrameState() {
     applyActivities,
     clearLiveSurfaces,
     recoverLostRun,
+    armHistoryStall,
     setThinking,
     setRunning,
     setDoneReason,
@@ -259,13 +270,6 @@ export function useChatFrameState() {
     awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null;
     setConnected(true);
     pageBuffer.reset();
-    if (historyStatus === "loading") {
-      if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
-      historyStallTimerRef.current = window.setTimeout(() => {
-        historyStallTimerRef.current = null;
-        setHistoryStatus((current) => current === "loading" ? "failed" : current);
-      }, HISTORY_STALL_MS);
-    }
   };
   const markClose = (): void => {
     ledger.failAll();

@@ -99,6 +99,7 @@ describe("ChatPane notices while history is loading", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: null, resumed: false });
       deliverWire(deliver, wireNoticeFrame(1));
     });
     expect(noticeRows(container).length).toBe(0);
@@ -176,7 +177,7 @@ describe("ChatPane notices while history is loading", () => {
       deliver({
         type: "error",
         sessionId: "chat-1",
-        code: "initialize_failed",
+        code: "set_model_failed",
         requestId: "control-1",
         message: "",
       });
@@ -185,4 +186,101 @@ describe("ChatPane notices while history is loading", () => {
     expect(noticeRows(container).length).toBe(0);
     expect(container.querySelector(".th-chat-loading")).not.toBeNull();
   });
+
+  it("does not let reconnect ready frames postpone the history deadline", () => {
+    vi.useFakeTimers();
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: null, resumed: false });
+      vi.advanceTimersByTime(10_000);
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: null, resumed: false });
+      vi.advanceTimersByTime(10_000);
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: null, resumed: false });
+      vi.advanceTimersByTime(10_001);
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("extends the history deadline when a non-final entries page arrives", () => {
+    vi.useFakeTimers();
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: null, resumed: false });
+      deliverWire(deliver, wireNoticeFrame(1));
+      vi.advanceTimersByTime(20_000);
+      deliver({
+        type: "entries",
+        sessionId: "chat-1",
+        entries: [],
+        final: false,
+      });
+      vi.advanceTimersByTime(20_000);
+    });
+
+    expect(noticeRows(container).length).toBe(0);
+    expect(container.querySelector(".th-chat-loading")).not.toBeNull();
+
+    act(() => {
+      vi.advanceTimersByTime(10_001);
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("renders the notice row for a real failed get_entries response", () => {
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "provider_error",
+        command: "get_entries",
+        requestId: "webchat-entries-1",
+        message: "get_entries failed",
+      });
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+
+    act(() => {
+      deliver({
+        type: "messageDelta",
+        sessionId: "chat-1",
+        delta: { kind: "text_delta", delta: "live" },
+      });
+      deliver({
+        type: "tool",
+        sessionId: "chat-1",
+        toolCallId: "call-1",
+        toolName: "bash",
+        phase: "start",
+      });
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  for (const code of ["pi_eof", "provider_timeout", "provider_overflow"] as const) {
+    it(`renders the notice row when the provider terminates with ${code}`, () => {
+      const { deliver } = renderChatPane(root);
+
+      act(() => {
+        deliverWire(deliver, wireNoticeFrame(1));
+        deliver({
+          type: "error",
+          sessionId: "chat-1",
+          code,
+          message: code,
+        });
+      });
+
+      expect(noticeRows(container).length).toBe(1);
+    });
+  }
 });
