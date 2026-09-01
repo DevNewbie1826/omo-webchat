@@ -54,4 +54,73 @@ describe("listLiveSessions", () => {
 
     expect(sessions).toEqual([{ id: "ok", title: "", task: null, dag: null }]);
   });
+
+  it("attaches well-formed task_digest and dag_digest on live sessions", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({
+        sessions: [{
+          id: "s1",
+          title: "Digest",
+          task: null,
+          dag: null,
+          task_oversized: true,
+          dag_oversized: true,
+          task_digest: {
+            tasks: [{ task_id: "t1", status: "running", updated_at: "2026-08-19T10:14:00.000Z" }],
+            truncated: false,
+          },
+          dag_digest: {
+            runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1"] }],
+            truncated: false,
+          },
+        }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sessions = await listLiveSessions();
+
+    expect(sessions).toEqual([{
+      id: "s1",
+      title: "Digest",
+      task: null,
+      dag: null,
+      taskOversized: true,
+      dagOversized: true,
+      taskDigest: {
+        tasks: [{ taskId: "t1", status: "running", updatedAt: "2026-08-19T10:14:00.000Z" }],
+        truncated: false,
+      },
+      dagDigest: {
+        runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1"] }],
+        truncated: false,
+      },
+    }]);
+  });
+
+  it("omits malformed task_digest without throwing and still parses the session", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({
+        sessions: [{
+          id: "s2",
+          title: "Malformed digest",
+          task: null,
+          dag: null,
+          task_oversized: true,
+          task_digest: { tasks: "nope" },
+        }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sessions = await listLiveSessions();
+
+    expect(sessions).toEqual([{
+      id: "s2",
+      title: "Malformed digest",
+      task: null,
+      dag: null,
+      taskOversized: true,
+    }]);
+  });
 });

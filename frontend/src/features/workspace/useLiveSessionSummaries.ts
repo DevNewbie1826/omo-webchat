@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
 import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
+import type { DagDigestRun, TaskDigestEntry } from "./activityDigest";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
@@ -66,6 +67,40 @@ function dagRunningOf(runs: readonly ActivityDagRun[], taskIds: ReadonlySet<stri
   return running;
 }
 
+function digestUpdatedMs(updatedAt: string | undefined): number | null {
+  if (updatedAt === undefined) return null;
+  const ms = Date.parse(updatedAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function countDigestTaskRunning(
+  entries: readonly TaskDigestEntry[],
+  nowMs: number,
+  runningDagTaskIds: ReadonlySet<string>,
+): number {
+  let running = 0;
+  for (const entry of entries) {
+    if (entry.status !== "running") continue;
+    const lastMs = digestUpdatedMs(entry.updatedAt);
+    if (lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS || runningDagTaskIds.has(entry.taskId)) {
+      running += 1;
+    }
+  }
+  return running;
+}
+
+function countDigestDagRunning(runs: readonly DagDigestRun[], taskIds: ReadonlySet<string>): number {
+  let running = 0;
+  for (const run of runs) {
+    if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
+    for (const taskId of run.runningTaskIds) {
+      if (taskIds.has(taskId)) continue;
+      running += 1;
+    }
+  }
+  return running;
+}
+
 export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()): LiveSessionSummary {
   const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
   const tasks = parsedTask?.tasks ?? [];
@@ -73,7 +108,10 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
   const counts = taskStatusCounts(tasks);
   // An oversized side retains the server's previous cached payload. Parse it
   // for descriptive fields such as lastLine, but never treat stale rows as a
-  // trustworthy running-count lower bound.
+  // trustworthy running-count lower bound. Compact digests, when present, are
+  // the running-count source instead of those cached rows.
+  const taskDigest = info.taskOversized === true ? info.taskDigest : undefined;
+  const dagDigest = info.dagOversized === true ? info.dagDigest : undefined;
   const runningDagTaskIds = new Set<string>();
   if (info.dagOversized !== true) {
     for (const run of runs) {
@@ -83,15 +121,34 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
         runningDagTaskIds.add(node.taskId);
       }
     }
+  } else if (dagDigest !== undefined) {
+    for (const run of dagDigest.runs) {
+      if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
+      for (const taskId of run.runningTaskIds) runningDagTaskIds.add(taskId);
+    }
   }
-  const taskIds = new Set(info.taskOversized === true ? [] : tasks.map((task) => task.taskId));
-  const taskRunning = info.taskOversized === true ? 0 : tasks.filter((task) => {
-    if (task.status !== "running") return false;
-    const lastMs = lastActivityMs(task);
-    return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
-      || (info.dagOversized !== true && runningDagTaskIds.has(task.taskId));
-  }).length;
-  const dagRunning = info.dagOversized === true ? 0 : dagRunningOf(runs, taskIds);
+  const taskIds = new Set(
+    info.taskOversized !== true
+      ? tasks.map((task) => task.taskId)
+      : taskDigest === undefined
+        ? []
+        : taskDigest.tasks.map((entry) => entry.taskId),
+  );
+  const taskRunning = info.taskOversized !== true
+    ? tasks.filter((task) => {
+      if (task.status !== "running") return false;
+      const lastMs = lastActivityMs(task);
+      return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
+        || (info.dagOversized !== true && runningDagTaskIds.has(task.taskId));
+    }).length
+    : taskDigest === undefined
+      ? 0
+      : countDigestTaskRunning(taskDigest.tasks, nowMs, runningDagTaskIds);
+  const dagRunning = info.dagOversized !== true
+    ? dagRunningOf(runs, taskIds)
+    : dagDigest === undefined
+      ? 0
+      : countDigestDagRunning(dagDigest.runs, taskIds);
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -109,9 +166,11 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
     dagTotal,
     lastLine: lastLineOf(tasks),
     dagRunning,
-    truncatedTasks: parsedTask?.truncatedTasks === true,
-    taskOversized: info.taskOversized === true,
-    dagOversized: info.dagOversized === true,
+    truncatedTasks: parsedTask?.truncatedTasks === true
+      || taskDigest?.truncated === true
+      || dagDigest?.truncated === true,
+    taskOversized: info.taskOversized === true && taskDigest === undefined,
+    dagOversized: info.dagOversized === true && dagDigest === undefined,
   };
 }
 

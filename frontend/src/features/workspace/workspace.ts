@@ -1,4 +1,5 @@
 import { apiJson, apiVoid, qs } from "../../lib/api";
+import { parseDagDigest, parseTaskDigest, type DagDigest, type TaskDigest } from "./activityDigest";
 
 export type ChatProvider = "omo";
 
@@ -46,6 +47,8 @@ export interface LiveSessionInfo {
   readonly dag: unknown;
   readonly taskOversized?: boolean;
   readonly dagOversized?: boolean;
+  readonly taskDigest?: TaskDigest;
+  readonly dagDigest?: DagDigest;
 }
 
 interface LiveSessionsResponse {
@@ -63,6 +66,8 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
   const id = record["id"];
   if (typeof id !== "string" || id.length === 0) return null;
   const title = record["title"];
+  const taskDigest = parseTaskDigest(record["task_digest"]);
+  const dagDigest = parseDagDigest(record["dag_digest"]);
   return {
     id,
     title: typeof title === "string" ? title : "",
@@ -70,6 +75,8 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
     dag: record["dag"] ?? null,
     ...(record["task_oversized"] === true ? { taskOversized: true } : {}),
     ...(record["dag_oversized"] === true ? { dagOversized: true } : {}),
+    ...(taskDigest !== null ? { taskDigest } : {}),
+    ...(dagDigest !== null ? { dagDigest } : {}),
   };
 }
 
