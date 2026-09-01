@@ -37,4 +37,11 @@ describe("error frame command boundary", () => {
     expect(isPromptTerminalError(errorFrame("get_state", "pi_eof"))).toBe(true);
     expect(isPromptTerminalError(errorFrame("set_model", "no_session"))).toBe(true);
   });
+
+  // The engine's idle eviction arrives as command close_session with the
+  // resumable session_unloaded code; it must never count as terminal or the
+  // pane would lose its resume affordance.
+  it("treats session_unloaded as resumable, never terminal", () => {
+    expect(isPromptTerminalError(errorFrame("close_session", "session_unloaded"))).toBe(false);
+  });
 });

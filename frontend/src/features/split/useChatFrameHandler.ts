@@ -45,6 +45,7 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
+  readonly setSessionUnloaded: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -177,6 +178,20 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
         return;
       case "error": {
+        // The engine unloaded this idle session and deleted it from its
+        // registry; the engine process itself is still alive and the
+        // conversation is durable on disk. Not terminal: surface the calm
+        // resumable banner instead of the raw error, and stop any in-flight
+        // run indicator so the pane does not look busy. Only the provider-backed
+        // state frame of the next open sequence clears the state.
+        if (frame.code === "session_unloaded") {
+          bindings.submitLatchRef.current = false;
+          bindings.setDoneReason(null);
+          clearLiveSurfaces();
+          bindings.setSessionUnloaded(true);
+          bindings.setError("");
+          return;
+        }
         if (isHistoryTerminalError(frame)) {
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
         }
@@ -224,6 +239,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.error) bindings.setError(frame.error);
         return;
       case "state":
+        // ready precedes provider initialization; state proves get_state
+        // completed and the reopened provider route is live.
+        bindings.setSessionUnloaded(false);
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);

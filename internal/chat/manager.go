@@ -30,23 +30,24 @@ const (
 // sharedProvider.mu before entering Manager. No lock in this order may be held
 // across provider I/O or a channel receive.
 type Manager struct {
-	mu                  sync.Mutex
-	sessions            map[string]*Session
-	generations         map[string]*Session
-	generationDone      map[string]chan struct{}
-	generationLeases    map[string]int
-	generationRetiring  map[string]bool
-	pending             map[string]bool
-	provider            *sharedProvider
-	logger              *slog.Logger
-	idleFor             time.Duration
-	now                 func() time.Time
-	stopSweep           chan struct{}
-	sweepDone           chan struct{}
-	closeOnce           sync.Once
-	beforeOpenRegister  func()
-	beforeReapLifecycle func()
-	afterSweepStopped   func()
+	mu                      sync.Mutex
+	sessions                map[string]*Session
+	generations             map[string]*Session
+	generationDone          map[string]chan struct{}
+	generationLeases        map[string]int
+	generationRetiring      map[string]bool
+	pending                 map[string]bool
+	provider                *sharedProvider
+	logger                  *slog.Logger
+	idleFor                 time.Duration
+	now                     func() time.Time
+	stopSweep               chan struct{}
+	sweepDone               chan struct{}
+	closeOnce               sync.Once
+	beforeOpenRegister      func()
+	beforeReapLifecycle     func()
+	afterSweepStopped       func()
+	afterEvictRouteDetached func()
 }
 
 func NewManager() *Manager {
@@ -500,6 +501,28 @@ func (m *Manager) evictSession(session *Session) {
 		delete(m.sessions, session.ID())
 	}
 	m.mu.Unlock()
+}
+
+// evictRoutedSession removes the session's provider route and manager
+// registration as one critical section, so an acquire can never observe a
+// session whose route is already gone. Locks follow the package lock order.
+// It returns the detached route, or nil when session no longer owns handle.
+func (m *Manager) evictRoutedSession(provider *sharedProvider, handle string, session *Session) *sessionRoute {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	provider.mu.Lock()
+	route := provider.detachSessionLocked(handle, session)
+	provider.mu.Unlock()
+	if m.afterEvictRouteDetached != nil {
+		m.afterEvictRouteDetached()
+	}
+	if route == nil {
+		return nil
+	}
+	if m.sessions[session.ID()] == session {
+		delete(m.sessions, session.ID())
+	}
+	return route
 }
 
 func (m *Manager) releaseProviderIfIdle() {

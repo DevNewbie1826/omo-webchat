@@ -7,11 +7,12 @@ import (
 
 func (s *Session) forwardResponse(raw json.RawMessage) {
 	var resp struct {
-		Command string          `json:"command"`
-		Success bool            `json:"success"`
-		Data    json.RawMessage `json:"data"`
-		Error   string          `json:"error"`
-		ID      string          `json:"id"`
+		Command   string          `json:"command"`
+		Success   bool            `json:"success"`
+		Data      json.RawMessage `json:"data"`
+		Error     string          `json:"error"`
+		ID        string          `json:"id"`
+		SessionID string          `json:"sessionId"`
 	}
 	if json.Unmarshal(raw, &resp) != nil {
 		return
@@ -43,6 +44,33 @@ func (s *Session) forwardResponse(raw json.RawMessage) {
 		return
 	}
 	switch resp.Command {
+	case "close_session":
+		// Responses to webchat-requested closes carry an id and are consumed by
+		// sharedProvider.route's pending-request path before session dispatch.
+		// A dispatched close is therefore the engine's unsolicited idle-eviction
+		// notice. Detach it locally: the engine has already deleted the session.
+		s.mu.Lock()
+		provider := s.shared
+		handle := s.routingHandle
+		s.mu.Unlock()
+		if provider == nil || handle == "" || resp.SessionID != handle {
+			return
+		}
+		var route *sessionRoute
+		if s.owner != nil {
+			route = s.owner.evictRoutedSession(provider, handle, s)
+		} else {
+			provider.mu.Lock()
+			route = provider.detachSessionLocked(handle, s)
+			provider.mu.Unlock()
+		}
+		if route == nil {
+			return
+		}
+		route.activate()
+		close(route.queue)
+		provider.clearRoutingHandle(s, handle)
+		s.providerExited(providerTermination{kind: providerTerminationIdleEviction, summary: "provider unloaded idle session"})
 	case "prompt":
 		s.completeLocalCommand()
 	case "compact":
