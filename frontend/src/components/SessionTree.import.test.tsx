@@ -248,4 +248,51 @@ describe("discovered-session import wiring", () => {
 
     expect(createCalls()).toHaveLength(2);
   });
+
+  it("posts the raw empty name when an unnamed discovered session is imported", async () => {
+    const unnamed: WorkspaceSession = {
+      id: "disk-empty-session",
+      name: "",
+      source: "discovered",
+      recencyMs: 1,
+      resumeIdentity: "/sessions/disk-empty.jsonl",
+    };
+    const createResponse = deferred<Response>();
+    createResponses.push(createResponse.promise);
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {
+      workspaceResponse.resolve(jsonResponse([workspace]));
+      await workspaceResponse.promise;
+    });
+
+    const workspaceExpand = container.querySelector<HTMLButtonElement>(
+      ".th-tree-workspace > .th-tree-node > .th-tree-chevron[aria-expanded]",
+    );
+    expect(workspaceExpand).not.toBeNull();
+    act(() => workspaceExpand?.click());
+    await act(async () => {
+      sessionsResponse.resolve(jsonResponse({ items: [unnamed], nextCursor: "" }));
+      await sessionsResponse.promise;
+    });
+
+    const activation = container.querySelector<HTMLButtonElement>(
+      ".th-tree-children > .th-tree-node .th-tree-activation",
+    );
+    expect(activation).not.toBeNull();
+    act(() => activation?.click());
+
+    expect(createCalls()).toHaveLength(1);
+    const [path, init] = createCalls()[0]!;
+    expect(path).toBe("/api/workspaces/ws-1/chats");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      name: "",
+      provider: "omo",
+      resumeIdentity: unnamed.resumeIdentity,
+    });
+
+    createResponse.resolve(jsonResponse(imported, 201));
+  });
 });

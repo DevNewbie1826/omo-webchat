@@ -186,12 +186,13 @@ export function SessionTree({
                 const runningInfo = runningCounts?.get(item.id);
                 const running = runningInfo?.count ?? 0;
                 const runningUnknown = runningInfo?.unknown === true;
+                const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
                 const discoveredLabel = discovered
-                  ? t("sidebar.tm.discoveredHint", { name: item.name })
+                  ? t("sidebar.tm.discoveredHint", { name: displayName })
                   : undefined;
                 const dangling = !discovered && item.dangling === true;
                 const danglingHint = dangling
-                  ? t("sidebar.tm.missingOriginalHint", { name: item.name })
+                  ? t("sidebar.tm.missingOriginalHint", { name: displayName })
                   : undefined;
                 const title = danglingHint ?? discoveredLabel ?? (live ? t("sidebar.tm.liveProcess") : undefined);
                 const activate = (): void => {
@@ -216,15 +217,19 @@ export function SessionTree({
                     ) : (
                       <button
                         type="button"
-                        className="th-tree-label th-tree-activation"
-                        style={{ textAlign: "start" }}
+                        className="th-tree-activation"
                         title={title}
                         aria-label={discoveredLabel}
                         aria-current={active ? "true" : undefined}
                         disabled={!interactive}
                         onClick={activate}
                       >
-                        {item.name}
+                        <span className="th-tree-label">{displayName}</span>
+                        {item.source === "discovered" ? (
+                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.discovered")}</span>
+                        ) : dangling ? (
+                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.missingOriginal")}</span>
+                        ) : null}
                       </button>
                     )}
                     {(running > 0 || runningUnknown) && (
@@ -240,11 +245,6 @@ export function SessionTree({
                         {runningUnknown ? "?" : `${running}${runningInfo?.partial ? "+" : ""}`}
                       </span>
                     )}
-                    {item.source === "discovered" ? (
-                      <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.discovered")}</span>
-                    ) : dangling ? (
-                      <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.missingOriginal")}</span>
-                    ) : null}
                     {tm ? (
                       <span className="th-tree-actions">
                         <button
