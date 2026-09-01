@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,7 +119,7 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 }
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
-// reachable, it serializes startup with an O_EXCL lock, launches the
+// reachable, it serializes startup with an advisory lock, launches the
 // supervisor, and waits for a negotiated socket within a bounded deadline.
 func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error) {
 	cfg, err := normalizeEnsureConfig(cfg)
@@ -139,7 +137,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if err != nil {
 		return nil, err
 	}
-	defer releaseEnsureLock(lock, ensureLockPath(cfg))
+	defer releaseEnsureLock(lock)
 
 	// Another process may have completed startup while this caller waited.
 	if client, dialErr := probeDaemon(ctx, cfg); dialErr == nil {
@@ -273,6 +271,23 @@ func ensureLockPath(cfg EnsureConfig) string {
 	return filepath.Join(filepath.Dir(socketPath), filepath.Base(socketPath)+".ensure.lock")
 }
 
+// ErrEnsureLockTimeout reports that daemon startup could not enter its
+// endpoint-scoped critical section before the caller or lock deadline expired.
+type ErrEnsureLockTimeout struct {
+	Cause error
+}
+
+func (e *ErrEnsureLockTimeout) Error() string {
+	return fmt.Sprintf("omorpc: acquire ensure lock: %v", e.Cause)
+}
+
+func (e *ErrEnsureLockTimeout) Unwrap() error { return e.Cause }
+
+var (
+	errEnsureLockHeld    = errors.New("ensure lock held")
+	errEnsureLockSymlink = errors.New("ensure lock is a symlink")
+)
+
 func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) {
 	path := ensureLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -280,115 +295,85 @@ func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) 
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, cfg.LockTimeout)
 	defer cancel()
+	symlinkRemoved := false
 	for {
-		file, err := createEnsureLock(path)
+		if err := lockCtx.Err(); err != nil {
+			return nil, &ErrEnsureLockTimeout{Cause: err}
+		}
+
+		file, err := openAndFlockEnsureLock(path)
 		if err == nil {
+			if ctxErr := lockCtx.Err(); ctxErr != nil {
+				_ = file.Close()
+				return nil, &ErrEnsureLockTimeout{Cause: ctxErr}
+			}
+			if err := initializeEnsureLock(file); err != nil {
+				_ = file.Close()
+				return nil, fmt.Errorf("omorpc: initialize ensure lock: %w", err)
+			}
 			return file, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		switch {
+		case errors.Is(err, errEnsureLockHeld):
+		case errors.Is(err, errEnsureLockSymlink):
+			if symlinkRemoved {
+				return nil, fmt.Errorf("omorpc: acquire ensure lock: symlink reappeared at %q", path)
+			}
+			info, statErr := os.Lstat(path)
+			switch {
+			case errors.Is(statErr, os.ErrNotExist):
+			case statErr != nil:
+				return nil, fmt.Errorf("omorpc: inspect ensure lock symlink: %w", statErr)
+			case info.Mode()&os.ModeSymlink == 0:
+				// The pathname changed after open; retry without touching it.
+			default:
+				if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+					return nil, fmt.Errorf("omorpc: remove ensure lock symlink: %w", removeErr)
+				}
+				symlinkRemoved = true
+			}
+		default:
 			return nil, fmt.Errorf("omorpc: acquire ensure lock: %w", err)
 		}
-		stale, staleErr := openStaleEnsureLock(path)
-		if errors.Is(staleErr, os.ErrNotExist) {
-			continue
-		}
-		if staleErr != nil {
-			return nil, fmt.Errorf("omorpc: inspect ensure lock: %w", staleErr)
-		}
-		if stale != nil {
-			if err := removeEnsureLockIfSame(stale, path); err != nil {
-				return nil, fmt.Errorf("omorpc: reclaim ensure lock: %w", err)
-			}
-			continue
-		}
-		select {
-		case <-lockCtx.Done():
-			return nil, fmt.Errorf("omorpc: acquire ensure lock: %w", lockCtx.Err())
-		case <-time.After(cfg.LockRetry):
+
+		if err := waitEnsureLockRetry(lockCtx, cfg.LockRetry); err != nil {
+			return nil, &ErrEnsureLockTimeout{Cause: err}
 		}
 	}
 }
 
-func createEnsureLock(path string) (*os.File, error) {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".ensure-pid-*")
-	if err != nil {
-		return nil, err
+func initializeEnsureLock(file *os.File) error {
+	if err := file.Chmod(0o600); err != nil {
+		return err
 	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return nil, err
+	if err := file.Truncate(0); err != nil {
+		return err
 	}
-	if _, err := fmt.Fprintf(temp, "%d\n", os.Getpid()); err != nil {
-		_ = temp.Close()
-		return nil, err
+	if _, err := file.Seek(0, 0); err != nil {
+		return err
 	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return nil, err
-	}
-	if err := temp.Close(); err != nil {
-		return nil, err
-	}
-	if err := os.Link(tempPath, path); err != nil {
-		return nil, err
-	}
-	return os.Open(path)
+	_, err := fmt.Fprintf(file, "%d\n", os.Getpid())
+	return err
 }
 
-func releaseEnsureLock(file *os.File, path string) {
+func waitEnsureLockRetry(ctx context.Context, retry time.Duration) error {
+	timer := time.NewTimer(retry)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func releaseEnsureLock(file *os.File) {
 	if file == nil {
 		return
 	}
-	_ = removeEnsureLockIfSame(file, path)
-}
-
-func openStaleEnsureLock(path string) (*os.File, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil || pid <= 0 {
-		return file, nil
-	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return file, nil
-	}
-	if err := process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
-		return file, nil
-	}
+	// Do not unlink the persistent lock file: closing drops the kernel flock,
+	// while unlinking would reintroduce pathname races with other contenders.
 	_ = file.Close()
-	return nil, nil
-}
-
-func removeEnsureLockIfSame(file *os.File, path string) error {
-	owned, statErr := file.Stat()
-	current, currentErr := os.Stat(path)
-	_ = file.Close()
-	if statErr != nil {
-		return statErr
-	}
-	if errors.Is(currentErr, os.ErrNotExist) {
-		return nil
-	}
-	if currentErr != nil {
-		return currentErr
-	}
-	if !os.SameFile(owned, current) {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
 }
 
 func ensureExtensionEventsCapability(env []string) []string {

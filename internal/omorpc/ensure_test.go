@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -31,6 +32,18 @@ func TestEnsureHelperProcess(t *testing.T) {
 	}
 	if mode == "die" {
 		os.Exit(7)
+	}
+	if mode == "flock-exit" {
+		path := os.Getenv("OMORPC_ENSURE_HELPER_LOCK_PATH")
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatalf("helper open lock: %v", err)
+		}
+		if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatalf("helper flock: %v", err)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, "lock held")
+		os.Exit(0) // The kernel, not stale-content recovery, releases the flock.
 	}
 	if mode != "serve" && mode != "serve-ignore-term" {
 		t.Fatalf("unknown helper mode %q", mode)
@@ -214,7 +227,7 @@ func TestEnsureDaemonMergesExtensionCapabilityIntoSpawnEnv(t *testing.T) {
 	}
 }
 
-func TestEnsureLockStaleReclaimAndEndpointScope(t *testing.T) {
+func TestEnsureLockEndpointScopeAndPersistentFile(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	cfgA := EnsureConfig{AgentDir: dir, SocketPath: filepath.Join(dir, "a.sock"), LockTimeout: testAwaitTimeout, LockRetry: time.Millisecond}
 	cfgB := cfgA
@@ -222,19 +235,21 @@ func TestEnsureLockStaleReclaimAndEndpointScope(t *testing.T) {
 	if ensureLockPath(cfgA) == ensureLockPath(cfgB) {
 		t.Fatal("ensure lock must be keyed by SocketPath")
 	}
-	for _, stale := range []string{"not-a-pid\n", "99999999\n"} {
-		path := ensureLockPath(cfgA)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		lock, err := acquireEnsureLock(context.Background(), cfgA)
-		if err != nil {
-			t.Fatalf("reclaim stale lock %q: %v", strings.TrimSpace(stale), err)
-		}
-		releaseEnsureLock(lock, path)
+	path := ensureLockPath(cfgA)
+	if err := os.WriteFile(path, []byte("contents are not ownership\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireEnsureLock(context.Background(), cfgA)
+	if err != nil {
+		t.Fatalf("acquire persistent lock: %v", err)
+	}
+	releaseEnsureLock(lock)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("persistent lock removed on release: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("persistent lock mode = %o, want 600", info.Mode().Perm())
 	}
 }
 
@@ -333,97 +348,116 @@ func TestEnsureLockSameSocketDifferentAgentDirsSingleSpawn(t *testing.T) {
 	stopEnsuredDaemons(t, daemons)
 }
 
-func TestEnsureDaemonStaleLockRaceSingleSpawn(t *testing.T) {
+func TestEnsureDaemonFlockMutualExclusion(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "rpc", "rpc.sock")
 	marker := filepath.Join(dir, "spawns")
-	startedFIFO := filepath.Join(dir, "started.fifo")
-	releaseFIFO := filepath.Join(dir, "release.fifo")
-	for _, path := range []string{startedFIFO, releaseFIFO} {
-		if err := syscall.Mkfifo(path, 0o600); err != nil {
-			t.Fatalf("mkfifo %s: %v", path, err)
-		}
-	}
-	script := writeFakeSupervisor(t, fmt.Sprintf(
-		"echo spawn >> %q\nprintf started > %q\nIFS= read -r _ < %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'",
-		marker, startedFIFO, releaseFIFO,
-	))
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo spawn >> %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'", marker))
 	cfg := helperEnsureConfig(dir, socket, script, "serve")
+	cfg.LockTimeout = 40 * time.Millisecond
+	cfg.LockRetry = 5 * time.Millisecond
+
 	lockPath := ensureLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(lockPath, []byte("99999999\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	started := make(chan error, 1)
-	go func() {
-		data, err := os.ReadFile(startedFIFO)
-		if err == nil && string(data) != "started" {
-			err = fmt.Errorf("startup signal = %q, want started", data)
-		}
-		started <- err
-	}()
-
-	const callers = 16
-	start := make(chan struct{})
-	results := make(chan struct {
-		d   *EnsuredDaemon
-		err error
-	}, callers)
-	for i := 0; i < callers; i++ {
-		go func() {
-			<-start
-			d, err := EnsureDaemon(context.Background(), cfg)
-			results <- struct {
-				d   *EnsuredDaemon
-				err error
-			}{d, err}
-		}()
-	}
-	close(start)
-	if err := <-started; err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatalf("read spawn marker: %v", err)
-	}
-	if got := strings.Count(string(data), "spawn\n"); got != 1 {
-		t.Fatalf("supervisor spawn count before readiness = %d, want exactly 1", got)
-	}
-	locks, err := filepath.Glob(filepath.Join(filepath.Dir(socket), "*.ensure.lock"))
+	owner, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(locks) != 1 || locks[0] != lockPath {
-		t.Fatalf("live ensure locks = %v, want exactly %q", locks, lockPath)
-	}
-	if err := os.WriteFile(releaseFIFO, []byte("ready\n"), 0o600); err != nil {
-		t.Fatalf("release supervisor: %v", err)
+	if err := syscall.Flock(int(owner.Fd()), syscall.LOCK_EX); err != nil {
+		_ = owner.Close()
+		t.Fatalf("hold ensure flock: %v", err)
 	}
 
-	daemons := make([]*EnsuredDaemon, 0, callers)
-	for i := 0; i < callers; i++ {
-		result := <-results
-		if result.err != nil {
-			t.Fatalf("concurrent EnsureDaemon: %v", result.err)
-		}
-		daemons = append(daemons, result.d)
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if ensured != nil {
+		_ = ensured.Close()
+		t.Fatal("contended ensure returned a daemon")
 	}
-	data, err = os.ReadFile(marker)
+	var lockTimeout *ErrEnsureLockTimeout
+	if !errors.As(err, &lockTimeout) {
+		t.Fatalf("contended EnsureDaemon error = %T (%v), want *ErrEnsureLockTimeout", err, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("supervisor spawned while flock held: %v", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("release manual flock: %v", err)
+	}
+
+	ensured, err = EnsureDaemon(context.Background(), cfg)
 	if err != nil {
-		t.Fatalf("read final spawn marker: %v", err)
+		t.Fatalf("EnsureDaemon after flock release: %v", err)
 	}
-	if got := strings.Count(string(data), "spawn\n"); got != 1 {
-		t.Fatalf("supervisor spawn count = %d, want exactly 1", got)
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+}
+
+func TestEnsureDaemonDanglingLockSymlinkCompletes(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "die")
+	cfg.LockTimeout = 40 * time.Millisecond
+	cfg.LockRetry = time.Millisecond
+	lockPath := ensureLockPath(cfg)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if locks, err = filepath.Glob(filepath.Join(filepath.Dir(socket), "*.ensure.lock")); err != nil || len(locks) != 0 {
-		t.Fatalf("orphan ensure locks = %v, err=%v", locks, err)
+	if err := os.Symlink(filepath.Join(dir, "missing-lock-target"), lockPath); err != nil {
+		t.Fatal(err)
 	}
-	stopEnsuredDaemons(t, daemons)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	ensured, err := EnsureDaemon(ctx, cfg)
+	if ensured != nil {
+		_ = ensured.Close()
+		t.Fatal("dying supervisor returned a daemon")
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("EnsureDaemon spun on dangling lock symlink for %v", elapsed)
+	}
+	var lockTimeout *ErrEnsureLockTimeout
+	if errors.As(err, &lockTimeout) {
+		t.Fatalf("dangling symlink exhausted lock timeout: %v", err)
+	}
+	info, statErr := os.Lstat(lockPath)
+	if statErr != nil {
+		t.Fatalf("lock path after recovery: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("dangling ensure lock symlink was not replaced")
+	}
+}
+
+func TestEnsureDaemonDeadFlockHolderAutoReleases(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	lockPath := ensureLockPath(cfg)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnsureHelperProcess$")
+	cmd.Env = append(os.Environ(),
+		ensureHelperModeEnv+"=flock-exit",
+		"OMORPC_ENSURE_HELPER_LOCK_PATH="+lockPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("dead flock holder: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "lock held") {
+		t.Fatalf("dead holder output = %q, want lock acquisition evidence", output)
+	}
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon after holder death: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
 }
 
 func stopEnsuredDaemons(t *testing.T, daemons []*EnsuredDaemon) {
