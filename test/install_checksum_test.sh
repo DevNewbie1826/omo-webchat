@@ -139,7 +139,9 @@ run_installer() {
   mock_bin="$run_dir/bin"
   install_dir="$run_dir/install"
   mkdir "$run_dir" "$run_dir/tmp"
-  if [ -n "$precreate_mode" ]; then
+  if [ "$precreate_mode" = missing-parent ]; then
+    install_dir="$run_dir/home/.local/bin"
+  elif [ -n "$precreate_mode" ]; then
     mkdir "$install_dir"
     chmod "$precreate_mode" "$install_dir"
   fi
@@ -244,7 +246,10 @@ run_installer Linux omo-missing-warning latest shasum "$valid_archive" "$valid_d
 expect_success
 expect_omo_warning
 
+run_installer Linux missing-install-parents explicit shasum "$valid_archive" "$valid_digest" "$valid_digest" missing-parent
+expect_success
+
 run_installer Linux unwritable-install-dir explicit shasum "$valid_archive" "$valid_digest" "$valid_digest" 0555
 expect_unwritable_failure
 
-printf 'PASS: Darwin and Linux explicit and latest verified installs succeed; mismatched, unverifiable, and empty checksums fail closed; missing runtime dependency warns without tmux; unwritable install dirs fail closed with guidance; temporary files are cleaned up.\n'
+printf 'PASS: Darwin and Linux explicit and latest verified installs succeed; nested user install dirs are created without sudo; mismatched, unverifiable, and empty checksums fail closed; missing runtime dependency warns without tmux; unwritable install dirs fail closed with guidance; temporary files are cleaned up.\n'
