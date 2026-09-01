@@ -56,6 +56,8 @@ func New(ctx context.Context, cfg *config.Config, st *store.Store, sessions *aut
 	}
 	s.upgrader = gws.NewUpgrader(s, &gws.ServerOption{
 		Recovery: gws.Recovery,
+		// Chat history replay is multi-megabyte JSON and dominates chat-open latency; defaults keep the low-memory no-context-takeover profile.
+		PermessageDeflate: gws.PermessageDeflate{Enabled: true},
 		Authorize: func(r *http.Request, _ gws.SessionStorage) bool {
 			return wsOriginAllowed(r)
 		},
