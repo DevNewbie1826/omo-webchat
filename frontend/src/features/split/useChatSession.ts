@@ -141,8 +141,8 @@ export function useChatSession(
 
   // Reopen an evicted/unloaded session: re-sending the same chat.create
   // frame the open/reconnect path uses makes the server resume the durable
-  // chat from disk. The pane's unloaded banner clears on the ready frame of
-  // that sequence - no new frame type is involved.
+  // chat from disk. The pane's unloaded banner clears on the state frame,
+  // which proves get_state completed against a live provider route.
   const resume = (): boolean => {
     const client = clientRef.current;
     return client !== null

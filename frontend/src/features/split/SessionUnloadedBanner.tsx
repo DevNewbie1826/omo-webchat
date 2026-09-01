@@ -9,7 +9,7 @@ export interface SessionUnloadedBannerProps {
  * engine process is still alive and the conversation is durable on disk, so
  * this is a calm, resumable state - not a terminal error. Resuming re-sends
  * the same chat.create frame the open path uses; the banner clears on the
- * ready frame of that sequence (see useChatFrameState).
+ * state frame proving get_state completed against a live provider route.
  */
 export function SessionUnloadedBanner({ onResume }: SessionUnloadedBannerProps) {
   const { t } = useT();

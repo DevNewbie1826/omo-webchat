@@ -92,8 +92,8 @@ export function useChatFrameState() {
   const [error, setError] = useState("");
   const [missingOriginal, setMissingOriginal] = useState<MissingOriginal | null>(null);
   // Calm resumable marker for the engine's idle eviction (session_unloaded):
-  // cleared by the ready frame of the resume open sequence, never by live
-  // transcript traffic alone.
+  // cleared by the state frame proving get_state completed against a live
+  // provider route, never by transcript traffic alone.
   const [sessionUnloaded, setSessionUnloaded] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);

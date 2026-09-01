@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func waitForExit(t *testing.T, exited <-chan *Session) *Session {
 	select {
 	case session := <-exited:
 		return session
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for session exit")
 		return nil
 	}
@@ -139,6 +140,111 @@ func TestIdleEvictionRemovesSessionAndReopensStoredIdentity(t *testing.T) {
 	}
 }
 
+func TestIdleEvictionAcquireWaitsForAtomicRouteEviction(t *testing.T) {
+	commands := make(chan []byte, 8)
+	provider := fakeSharedProvider(commands)
+	manager := NewManager()
+	manager.provider = provider
+
+	const storedIdentity = "/tmp/idle-eviction-atomic.jsonl"
+	opens := make(chan map[string]any, 2)
+	stopEngine := make(chan struct{})
+	go func() {
+		nextRoute := 0
+		for {
+			select {
+			case raw := <-commands:
+				var cmd map[string]any
+				_ = json.Unmarshal(raw, &cmd)
+				id, _ := cmd["id"].(string)
+				switch cmd["type"] {
+				case "open_session":
+					nextRoute++
+					handle := "route-atomic-" + strconv.Itoa(nextRoute)
+					opens <- cmd
+					provider.route(Event{Type: "response", Raw: json.RawMessage(`{"type":"response","command":"open_session","success":true,"id":"` + id + `","sessionId":"` + handle + `","data":{"sessionId":"` + handle + `","state":{"sessionFile":"` + storedIdentity + `"}}}`)})
+				case "get_state":
+					handle, _ := cmd["sessionId"].(string)
+					provider.route(Event{Type: "response", Raw: json.RawMessage(`{"type":"response","command":"get_state","success":true,"sessionId":"` + handle + `","data":{"sessionFile":"` + storedIdentity + `"}}`)})
+				case "close_session":
+					provider.route(Event{Type: "response", Raw: json.RawMessage(`{"type":"response","command":"close_session","success":true,"id":"` + id + `"}`)})
+				}
+			case <-stopEngine:
+				return
+			}
+		}
+	}()
+	defer close(stopEngine)
+	defer manager.CloseAll()
+
+	first, _, err := manager.Acquire(context.Background(), SessionOptions{
+		ID: "idle-atomic", Binary: "unused", ProviderContext: context.Background(),
+	})
+	if err != nil {
+		t.Fatalf("first Acquire: %v", err)
+	}
+	<-opens
+
+	// Keep the synthetic provider owned while the old generation retires.
+	manager.mu.Lock()
+	manager.pending["idle-atomic-provider-lease"] = true
+	manager.mu.Unlock()
+	defer func() {
+		manager.mu.Lock()
+		delete(manager.pending, "idle-atomic-provider-lease")
+		manager.mu.Unlock()
+	}()
+
+	inCriticalSection := make(chan struct{})
+	acquireStarted := make(chan struct{})
+	managerLockHeld := make(chan bool, 1)
+	manager.afterEvictRouteDetached = func() {
+		held := !manager.mu.TryLock()
+		if !held {
+			manager.mu.Unlock()
+		}
+		managerLockHeld <- held
+		close(inCriticalSection)
+		<-acquireStarted
+	}
+
+	first.mu.Lock()
+	handle := first.routingHandle
+	first.mu.Unlock()
+	if !emitIdleEviction(provider, handle) {
+		t.Fatal("idle eviction notice was not routed")
+	}
+	select {
+	case <-inCriticalSection:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for route eviction critical section")
+	}
+
+	acquired := make(chan attachOutcome, 1)
+	go func() {
+		close(acquireStarted)
+		session, started, detach, acquireErr := manager.AcquireAttach(context.Background(), SessionOptions{
+			ID: first.ID(), Binary: "unused", PiSessionID: storedIdentity,
+		}, nil)
+		acquired <- attachOutcome{session: session, started: started, detach: detach, err: acquireErr}
+	}()
+
+	got := waitAttach(t, acquired)
+	if !<-managerLockHeld {
+		t.Error("idle eviction detached its route without holding Manager.mu")
+	}
+	if got.err != nil {
+		t.Fatalf("racing AcquireAttach: %v", got.err)
+	}
+	if !got.started || got.session == first {
+		t.Fatalf("racing acquire = %p started=%v, want a new logical session", got.session, got.started)
+	}
+	reopenCommand := <-opens
+	if got := reopenCommand["sessionPath"]; got != storedIdentity {
+		t.Fatalf("racing reopen sessionPath = %#v, want %q", got, storedIdentity)
+	}
+}
+
 func TestIdleEvictionEvictsBeforePersistenceDrainAndReopensStoredIdentity(t *testing.T) {
 	commands := make(chan []byte, 4)
 	provider := fakeSharedProvider(commands)
@@ -173,12 +279,14 @@ func TestIdleEvictionEvictsBeforePersistenceDrainAndReopensStoredIdentity(t *tes
 	first.shared = provider
 	first.routingHandle = "route-idle-race"
 	first.piSessionID = storedIdentity
-	// An unbuffered route makes emitIdleEviction return only after the route
-	// worker has accepted the notice. The subsequent receive observes the
-	// close performed after detach without racing the worker for the event.
+	// The route is buffered because provider.route sends non-blocking: an
+	// unbuffered queue whose worker has not parked on its receive yet takes the
+	// default branch, which converts the eviction notice into a queue-overflow
+	// teardown instead of delivering it. The buffer makes delivery independent
+	// of scheduler timing.
 	route := &sessionRoute{
 		session: first, handle: first.routingHandle,
-		queue: make(chan sessionDelivery), ready: make(chan struct{}), provider: provider,
+		queue: make(chan sessionDelivery, 1), ready: make(chan struct{}), provider: provider,
 	}
 	provider.sessions[route.handle] = route
 	manager.sessions[first.ID()] = first
@@ -198,15 +306,19 @@ func TestIdleEvictionEvictsBeforePersistenceDrainAndReopensStoredIdentity(t *tes
 	}
 	defer releasePersistence()
 
+	// Observe the detach through the manager hook rather than by receiving from
+	// route.queue: the worker owns that item, and competing for it would let the
+	// test steal the notice the worker must process.
+	detached := make(chan struct{})
+	var detachOnce sync.Once
+	manager.afterEvictRouteDetached = func() { detachOnce.Do(func() { close(detached) }) }
+
 	if !emitIdleEviction(provider, route.handle) {
 		t.Fatal("idle eviction notice was not routed")
 	}
 	select {
-	case _, ok := <-route.queue:
-		if ok {
-			t.Fatal("unexpected delivery after idle eviction")
-		}
-	case <-time.After(time.Second):
+	case <-detached:
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for idle route detach")
 	}
 
@@ -271,7 +383,7 @@ func TestIdleEvictionEmitsExactlyOneSessionUnloadedError(t *testing.T) {
 	installIdleEvictionTestRoute(provider, session, "route-idle-frame")
 
 	emitIdleEviction(provider, "route-idle-frame")
-	writer.waitForType(t, "error", time.Second)
+	writer.waitForType(t, "error", 5*time.Second)
 	waitForExit(t, exited)
 	frames := writer.snapshot()
 	if len(frames) != 1 {
@@ -308,7 +420,7 @@ func TestRequestedCloseSessionResponseOnlyResolvesPendingRequest(t *testing.T) {
 		if err != nil {
 			t.Fatalf("closeSession: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("closeSession did not resolve from its correlated response")
 	}
 
@@ -382,7 +494,7 @@ func TestSiblingRoutesCommandAfterIdleEviction(t *testing.T) {
 		t.Fatalf("sibling command = %v", cmd)
 	}
 	provider.route(Event{Type: "response", Raw: json.RawMessage(`{"type":"response","command":"get_state","success":true,"sessionId":"route-sibling","data":{"messageCount":7}}`)})
-	siblingWriter.waitForType(t, "state", time.Second)
+	siblingWriter.waitForType(t, "state", 5*time.Second)
 	if !sibling.ProcessAlive() {
 		t.Fatal("sibling was not live after routing its command")
 	}

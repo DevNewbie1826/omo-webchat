@@ -56,14 +56,16 @@ func (s *Session) forwardResponse(raw json.RawMessage) {
 		if provider == nil || handle == "" || resp.SessionID != handle {
 			return
 		}
-		provider.mu.Lock()
-		route := provider.detachSessionLocked(handle, s)
-		provider.mu.Unlock()
+		var route *sessionRoute
+		if s.owner != nil {
+			route = s.owner.evictRoutedSession(provider, handle, s)
+		} else {
+			provider.mu.Lock()
+			route = provider.detachSessionLocked(handle, s)
+			provider.mu.Unlock()
+		}
 		if route == nil {
 			return
-		}
-		if s.owner != nil {
-			s.owner.evictSession(s)
 		}
 		route.activate()
 		close(route.queue)
