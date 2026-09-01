@@ -122,7 +122,7 @@ func TestClientDialHandshake(t *testing.T) {
 // unless correlation is id-based.
 func TestClientRequestCorrelation(t *testing.T) {
 	d := newMockDaemon(t)
-	d.SetHandlerDelay(CmdListSessions, 40*time.Millisecond)
+	releaseList := d.BlockHandler(CmdListSessions)
 	c := dialForTest(t, d, Config{})
 
 	type result struct {
@@ -142,9 +142,9 @@ func TestClientRequestCorrelation(t *testing.T) {
 		r, err := c.Call(context.Background(), OpenSession{CWD: t.TempDir()})
 		resB <- result{r, err}
 	}()
-
-	rA := <-resA
 	rB := <-resB
+	releaseList()
+	rA := <-resA
 	if rA.err != nil {
 		t.Fatalf("Call %s: %v", CmdListSessions, rA.err)
 	}
@@ -189,7 +189,7 @@ func TestClientEventSubscription(t *testing.T) {
 	}
 
 	const exotic = "hologram_uplink"
-	d.Emit(map[string]any{"type": exotic, "sessionId": opened.SessionID, "payload": map[string]any{"k": "v"}})
+	d.Emit(map[string]any{"type": exotic, "sessionId": opened.SessionID, "payload": map[string]any{"k": "v"}, "meta": map[string]any{"revision": 7}})
 	ev = awaitEvent(t, evCh, testAwaitTimeout)
 	unk := AsUnknownEvent(ev)
 	if unk.Type != UnknownEventType {
@@ -198,11 +198,36 @@ func TestClientEventSubscription(t *testing.T) {
 	if unk.EventType != exotic {
 		t.Errorf("unknown envelope preserved eventType = %q, want %q", unk.EventType, exotic)
 	}
-	var payload struct {
-		K string `json:"k"`
+	var record struct {
+		Type      string `json:"type"`
+		SessionID string `json:"sessionId"`
+		Payload   struct {
+			K string `json:"k"`
+		} `json:"payload"`
+		Meta struct {
+			Revision int `json:"revision"`
+		} `json:"meta"`
 	}
-	if err := json.Unmarshal(unk.Payload, &payload); err != nil || payload.K != "v" {
-		t.Errorf("unknown envelope payload not preserved verbatim: %s (%v)", unk.Payload, err)
+	if err := json.Unmarshal(unk.Payload, &record); err != nil || record.Type != exotic ||
+		record.SessionID != opened.SessionID || record.Payload.K != "v" || record.Meta.Revision != 7 {
+		t.Errorf("unknown event record not preserved completely: %s (%v)", unk.Payload, err)
+	}
+}
+
+func TestClientNotifyExtensionUIResponseOneWay(t *testing.T) {
+	d := newMockDaemon(t)
+	c := dialForTest(t, d, Config{})
+	confirmed := false
+	if err := c.Notify(context.Background(), ExtensionUIResponse{ID: "native-dialog-7", Confirmed: &confirmed}); err != nil {
+		t.Fatalf("Notify: %v", err)
+	}
+	d.awaitRequest(t, CmdExtensionUIResponse, testAwaitTimeout)
+	request := d.lastRequest(CmdExtensionUIResponse)
+	if request["id"] != "native-dialog-7" || request["confirmed"] != false {
+		t.Fatalf("notification fields = %#v", request)
+	}
+	if _, exists := request["sessionId"]; exists {
+		t.Fatalf("extension_ui_response unexpectedly carried sessionId: %#v", request)
 	}
 }
 
@@ -286,7 +311,8 @@ func TestClientDisconnectFailsPending(t *testing.T) {
 	opened := mustOpenSession(t, c, t.TempDir())
 	evCh := c.Events()
 
-	d.SetHandlerDelay(CmdGetEntries, 50*time.Millisecond)
+	releaseEntries := d.BlockHandler(CmdGetEntries)
+	defer releaseEntries()
 	errCh := make(chan error, 1)
 	go func() {
 		_, err := c.Call(context.Background(), GetEntries{SessionID: opened.SessionID})
@@ -323,9 +349,6 @@ func TestClientDisconnectFailsPending(t *testing.T) {
 // connection attempts while the daemon is unreachable — no busy loop).
 func TestClientReconnectBoundedSingleFlight(t *testing.T) {
 	d := newMockDaemon(t)
-	// Widen the handshake window so non-single-flight callers pile up
-	// observable extra handshakes.
-	d.SetHandshakeDelay(20 * time.Millisecond)
 	cfg := Config{
 		EventBuffer:          16,
 		ReconnectInitial:     50 * time.Millisecond,
@@ -335,7 +358,9 @@ func TestClientReconnectBoundedSingleFlight(t *testing.T) {
 	c := dialForTest(t, d, cfg)
 	d.SetServerVersion("2.0.0-restart") // proves a re-handshake, not just a re-dial
 
+	oldEvents := c.Events()
 	d.SetRefuseMode(true) // daemon "down": drops the live conn, refuses new ones
+	awaitChannelClosed(t, oldEvents, testAwaitTimeout)
 
 	type callResult struct {
 		resp *Response
@@ -378,14 +403,15 @@ func TestClientReconnectBoundedSingleFlight(t *testing.T) {
 	// Recovery: the next request transparently reconnects and exactly one
 	// re-handshake serves all concurrent callers.
 	d.SetRefuseMode(false)
+	releaseHandshake := d.BlockHandler(CmdGetProtocolInfo)
 	baseHandshakes := d.Handshakes()
+	baseProtocolRequests := len(requestIDs(d, CmdGetProtocolInfo))
 	launch()
-	if !d.awaitHandshake(t, baseHandshakes, testAwaitTimeout) {
-		t.Fatal("no re-handshake observed after daemon recovery")
-	}
+	d.awaitRequestCount(t, CmdGetProtocolInfo, baseProtocolRequests+1, testAwaitTimeout)
 	for i := 0; i < 4; i++ {
 		launch()
 	}
+	releaseHandshake()
 	var mu sync.Mutex
 	var ids []string
 	for i := 0; i < 5; i++ {
@@ -434,6 +460,64 @@ func hasDuplicate(sorted []string) bool {
 		}
 	}
 	return false
+}
+
+func TestClientWriteGateAcquisitionHonorsContext(t *testing.T) {
+	d := newMockDaemon(t)
+	c := dialForTest(t, d, Config{})
+	<-c.writeGate // deterministically model a sibling write holding the gate
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := c.Call(ctx, ListSessions{})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call waiting for write gate = %v, want context deadline", err)
+	}
+	c.writeGate <- struct{}{}
+	if response, err := c.Call(context.Background(), ListSessions{}); err != nil || !response.Success {
+		t.Fatalf("sibling call after canceled gate wait: response=%+v err=%v", response, err)
+	}
+}
+
+func TestClientBlockedWriteHonorsContextAndReconnects(t *testing.T) {
+	d := newMockDaemon(t)
+	clientConn, stalledPeer := net.Pipe()
+	defer stalledPeer.Close() // the daemon side deliberately never reads
+	lifecycle, cancelLifecycle := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		WriteTimeout: 2 * time.Second, ReconnectInitial: time.Millisecond,
+		ReconnectMax: time.Millisecond, ReconnectMaxAttempts: 2,
+	})
+	c := &Client{
+		socketPath: d.SocketPath(), cfg: cfg, lifecycle: lifecycle, cancel: cancelLifecycle,
+		pending: make(map[string]pendingRequest), writeGate: make(chan struct{}, 1), epoch: 1,
+	}
+	c.writeGate <- struct{}{}
+	ep := &connectionEpoch{number: 1, conn: clientConn, events: newEventStream(cfg.EventBuffer, &c.dropped)}
+	c.current = ep
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.readLoop(ep)
+	}()
+	defer c.Close()
+
+	payload := make(json.RawMessage, (1<<20)+2)
+	payload[0], payload[len(payload)-1] = '"', '"'
+	for i := 1; i < len(payload)-1; i++ {
+		payload[i] = 'x'
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err := c.Call(ctx, ExtensionRequest{SessionID: "rpc-1", Name: "large", Data: payload})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked write error = %v, want context deadline", err)
+	}
+	siblingCtx, siblingCancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	defer siblingCancel()
+	response, err := c.Call(siblingCtx, ListSessions{})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("sibling call after blocked write: response=%+v err=%v", response, err)
+	}
 }
 
 // TestMockDaemonWireSmoke is a fixture sanity check (not a client test):

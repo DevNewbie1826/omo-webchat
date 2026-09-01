@@ -13,7 +13,7 @@
 1. **트랜스크립트 소유자는 엔진 하나**: 웹챗은 open_session(sessionPath=우리 stateDir 하위)으로 경로를 지정, 병렬 기록 없음. 저장소는 커서({chatId → sessionFile, durable sessionId, cwd}) + 워크스페이스 메타데이터만.
 2. **전송은 Unix 소켓 데몬**: `~/.omo/agent/rpc/rpc.sock`에 접속. 데몬 부재 시 ensure(supervisor spawn). 서버 재시작과 에이전트 수명이 분리 — **채팅 중 서버를 죽여도 세션이 살아있고 재접속하면 이어진다** (헤드라인 수용 데모).
 3. **히스토리는 단방향 읽기**: 라이브=get_entries, 콜드=세션 JSONL 그래프 리드(leafId→parentId). 우리→엔진 쓰기는 커맨드뿐.
-4. **계약은 타이핑된 단일 소스**: 명령/이벤트/안정 에러코드 7종(unknown_session, session_closing, session_path_in_use, missing_session_id, multi_session_disabled, invalid_path, open_failed:*)이 스키마에서 생성되어 Go+TS가 공유. unknown 이벤트는 포워드 보존.
+4. **계약은 타이핑된 단일 소스**: 명령/이벤트/안정 에러코드 8종(unknown_session, session_closing, session_path_in_use, missing_session_id, multi_session_disabled, invalid_path, too_many_sessions, open_failed:*)이 스키마에서 생성되어 Go+TS가 공유. unknown 이벤트는 포워드 보존.
 5. **epoch/durable 세션 id 이원화**: 라우팅은 epoch-local("rpc-N"), 영속은 durable UUID. 소켓 상실 = epoch 무효화 = 전 세션 "재개 가능" 상태(정식 프로토콜 상태, 패치 아님).
 6. **v1 런타임과 무관한 신규 패키지로 시작**: internal/omorpc은 v1 internal/chat에 한 줄도 손대지 않고 들어온다. 교체는 후속 PR에서 라우트 단위로.
 

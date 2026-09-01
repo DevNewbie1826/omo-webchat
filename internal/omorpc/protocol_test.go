@@ -57,12 +57,14 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 		{"get_entries", GetEntries{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_entries"}`},
 		{"get_messages", GetMessages{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_messages"}`},
 		{"get_commands", GetCommands{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_commands"}`},
+		{"get_session_stats", GetSessionStats{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_session_stats"}`},
+		{"set_session_name", SetSessionName{SessionID: "rpc-1", Name: "work"}, `{"id":"r1","name":"work","sessionId":"rpc-1","type":"set_session_name"}`},
 		{"set_model", SetModel{SessionID: "rpc-1", Provider: "anthropic", ModelID: "claude-x"}, `{"id":"r1","modelId":"claude-x","provider":"anthropic","sessionId":"rpc-1","type":"set_model"}`},
 		{"set_thinking_level", SetThinkingLevel{SessionID: "rpc-1", Level: "high"}, `{"id":"r1","level":"high","sessionId":"rpc-1","type":"set_thinking_level"}`},
 		{"compact", Compact{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"compact"}`},
 		{"set_auto_compaction_off", SetAutoCompaction{SessionID: "rpc-1", Enabled: false}, `{"enabled":false,"id":"r1","sessionId":"rpc-1","type":"set_auto_compaction"}`},
 		{"set_auto_compaction_on", SetAutoCompaction{SessionID: "rpc-1", Enabled: true}, `{"enabled":true,"id":"r1","sessionId":"rpc-1","type":"set_auto_compaction"}`},
-		{"extension_request", ExtensionRequest{SessionID: "rpc-1", Name: "pick", Arguments: json.RawMessage(`{"a":1}`)}, `{"arguments":{"a":1},"id":"r1","name":"pick","sessionId":"rpc-1","type":"extension_request"}`},
+		{"extension_request", ExtensionRequest{SessionID: "rpc-1", Name: "pick", Data: json.RawMessage(`{"a":1}`)}, `{"data":{"a":1},"id":"r1","name":"pick","sessionId":"rpc-1","type":"extension_request"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,12 +82,12 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 // TestProtocolExtensionUIResponseOneWay pins the one-way extension_ui_response:
 // no fresh correlation id is assigned; the native dialog id travels unchanged.
 func TestProtocolExtensionUIResponseOneWay(t *testing.T) {
-	cmd := ExtensionUIResponse{SessionID: "rpc-1", ID: "dlg-42", Payload: json.RawMessage(`{"choice":"ok"}`)}
+	cmd := ExtensionUIResponse{ID: "dlg-42", Value: json.RawMessage(`{"choice":"ok"}`)}
 	got, err := EncodeNotification(cmd)
 	if err != nil {
 		t.Fatalf("EncodeNotification: %v", err)
 	}
-	want := `{"id":"dlg-42","payload":{"choice":"ok"},"sessionId":"rpc-1","type":"extension_ui_response"}` + "\n"
+	want := `{"id":"dlg-42","type":"extension_ui_response","value":{"choice":"ok"}}` + "\n"
 	if string(got) != want {
 		t.Fatalf("wire mismatch\n got: %s\nwant: %s", got, want)
 	}
@@ -351,6 +353,7 @@ func TestProtocolStableErrors(t *testing.T) {
 		{wire: "missing_session_id", code: ErrCodeMissingSessionID, stable: true},
 		{wire: "multi_session_disabled", code: ErrCodeMultiSessionDisabled, stable: true},
 		{wire: "invalid_path", code: ErrCodeInvalidPath, stable: true},
+		{wire: "too_many_sessions", code: ErrCodeTooManySessions, stable: true},
 		{wire: "open_failed: no such directory", code: ErrCodeOpenFailed, detail: "no such directory", stable: true},
 		{wire: "provider exploded", stable: false},
 		{wire: "unknown_session_extra", stable: false},

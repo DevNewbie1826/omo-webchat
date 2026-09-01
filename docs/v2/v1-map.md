@@ -16,7 +16,7 @@
 | 브로드캐스터 | broadcaster.go | 다중 구독 팬아웃, 취소 가능 쓰기(5s), 부착 시 스냅샷 재생 | **개념 이관** — 프로바이더 전송과 직교 |
 | identity/exit 게이트 | identity_gate.go, exit_gate.go | 등록 전 도착 이벤트 버퍼링 | **삭제** — 소켓 epoch에 이 문제 없음 |
 | 락 질서 | manager.go 주석 | Session.lifecycleMu → Manager.mu → sharedProvider.mu → Session.mu; I/O/채널 수신 중 홀드 금지 | **개념 이관(수정)** — sharedProvider.mu 소멸, 3개 남은 순서 문서화 |
-| 프로바이더 레지스트리 | provider.go, provider_capabilities.go | omo 1종, SENPI_RPC_CLIENT_CAPABILITIES 주입 | **개념 이관** — 소켓 다이얼 설정으로 |
+| 프로바이더 레지스트리 | provider.go, provider_capabilities.go | omo 1종, SENPI_RPC_CLIENT_CAPABILITIES 주입 | **개념 이관** — 생성된 데몬의 환경 변수로 주입 |
 
 ## 2. 공개 심 (internal/api가 소비 — v2 클라이언트가 결국 제공할 표면)
 

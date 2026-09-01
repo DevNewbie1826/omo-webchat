@@ -2,6 +2,8 @@ package omorpc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -73,9 +76,11 @@ type EnsuredDaemon struct {
 	VersionWarning string
 	ProtocolInfo   *ProtocolInfo
 
-	process  *os.Process
-	waitCh   <-chan error
+	process *os.Process
+	waitCh  <-chan error
+
 	stopOnce sync.Once
+	stopDone chan struct{}
 	stopErr  error
 }
 
@@ -95,16 +100,25 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 		return nil
 	}
 	d.stopOnce.Do(func() {
-		if d.Client != nil {
-			d.stopErr = d.Client.Close()
-		}
-		if d.Owned && d.process != nil {
-			if err := stopOwnedProcess(ctx, d.process, d.waitCh); err != nil && d.stopErr == nil {
-				d.stopErr = err
+		d.stopDone = make(chan struct{})
+		go func() {
+			defer close(d.stopDone)
+			if d.Client != nil {
+				d.stopErr = d.Client.Close()
 			}
-		}
+			if d.Owned && d.process != nil {
+				if err := stopOwnedProcess(context.Background(), d.process, d.waitCh); err != nil && d.stopErr == nil {
+					d.stopErr = err
+				}
+			}
+		}()
 	})
-	return d.stopErr
+	select {
+	case <-d.stopDone:
+		return d.stopErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
@@ -118,31 +132,33 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 
 	if client, dialErr := probeDaemon(ctx, cfg); dialErr == nil {
 		return checkedDaemon(client, cfg, false, nil, nil)
+	} else if !isSpawnableProbeError(dialErr) {
+		return nil, fmt.Errorf("omorpc: probe existing daemon: %w", dialErr)
 	}
 
 	lock, err := acquireEnsureLock(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	defer releaseEnsureLock(lock, ensureLockPath(cfg.AgentDir))
+	defer releaseEnsureLock(lock, ensureLockPath(cfg))
 
 	// Another process may have completed startup while this caller waited.
 	if client, dialErr := probeDaemon(ctx, cfg); dialErr == nil {
 		return checkedDaemon(client, cfg, false, nil, nil)
+	} else if !isSpawnableProbeError(dialErr) {
+		return nil, fmt.Errorf("omorpc: probe daemon after startup lock: %w", dialErr)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0o700); err != nil {
 		return nil, fmt.Errorf("omorpc: create socket directory: %w", err)
 	}
-	_ = os.Remove(cfg.SocketPath) // stale socket after a failed probe
-
 	command, args, err := supervisorCommand(cfg)
 	if err != nil {
 		return nil, err
 	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = cfg.Env
+	cmd.Env = ensureExtensionEventsCapability(cfg.Env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -167,14 +183,12 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 
 		select {
 		case waitErr := <-waitCh:
-			_ = os.Remove(cfg.SocketPath)
 			if waitErr == nil {
 				waitErr = errors.New("supervisor exited successfully before opening the socket")
 			}
 			return nil, fmt.Errorf("omorpc: daemon supervisor exited before readiness: %w", waitErr)
 		case <-readyCtx.Done():
 			_ = stopOwnedProcess(context.Background(), cmd.Process, waitCh)
-			_ = os.Remove(cfg.SocketPath)
 			return nil, fmt.Errorf("omorpc: daemon readiness: %w", readyCtx.Err())
 		case <-time.After(cfg.LockRetry):
 		}
@@ -255,25 +269,31 @@ func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, process *os.Pro
 	}, nil
 }
 
-func ensureLockPath(agentDir string) string {
-	return filepath.Join(agentDir, "rpc-host-daemon", "ensure.lock")
+func ensureLockPath(cfg EnsureConfig) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(cfg.SocketPath)))
+	key := hex.EncodeToString(sum[:8])
+	return filepath.Join(cfg.AgentDir, "rpc-host-daemon", "ensure-"+key+".lock")
 }
 
 func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) {
-	path := ensureLockPath(cfg.AgentDir)
+	path := ensureLockPath(cfg)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("omorpc: create ensure lock directory: %w", err)
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, cfg.LockTimeout)
 	defer cancel()
 	for {
-		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		file, err := createEnsureLock(path)
 		if err == nil {
-			_, _ = fmt.Fprintf(file, "%d\n", os.Getpid())
 			return file, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("omorpc: acquire ensure lock: %w", err)
+		}
+		if staleEnsureLock(path) {
+			if err := os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 		}
 		select {
 		case <-lockCtx.Done():
@@ -283,11 +303,102 @@ func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) 
 	}
 }
 
-func releaseEnsureLock(file *os.File, path string) {
-	if file != nil {
-		_ = file.Close()
+func createEnsureLock(path string) (*os.File, error) {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".ensure-pid-*")
+	if err != nil {
+		return nil, err
 	}
-	_ = os.Remove(path)
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if _, err := fmt.Fprintf(temp, "%d\n", os.Getpid()); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return nil, err
+	}
+	if err := temp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(tempPath, path); err != nil {
+		return nil, err
+	}
+	return os.Open(path)
+}
+
+func releaseEnsureLock(file *os.File, path string) {
+	if file == nil {
+		return
+	}
+	owned, _ := file.Stat()
+	current, err := os.Stat(path)
+	_ = file.Close()
+	if err == nil && owned != nil && os.SameFile(owned, current) {
+		_ = os.Remove(path)
+	}
+}
+
+func staleEnsureLock(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return errors.Is(err, os.ErrNotExist)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return true
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return true
+	}
+	err = process.Signal(syscall.Signal(0))
+	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+}
+
+func ensureExtensionEventsCapability(env []string) []string {
+	const key = "SENPI_RPC_CLIENT_CAPABILITIES"
+	out := make([]string, 0, len(env)+1)
+	merged := false
+	for _, entry := range env {
+		name, value, found := strings.Cut(entry, "=")
+		if !found || name != key {
+			out = append(out, entry)
+			continue
+		}
+		if merged {
+			continue
+		}
+		merged = true
+		has := false
+		for _, capability := range strings.Split(value, ",") {
+			if strings.TrimSpace(capability) == capExtensionEvents {
+				has = true
+				break
+			}
+		}
+		switch {
+		case has:
+			out = append(out, entry)
+		case strings.TrimSpace(value) == "":
+			out = append(out, key+"="+capExtensionEvents)
+		default:
+			out = append(out, key+"="+value+","+capExtensionEvents)
+		}
+	}
+	if !merged {
+		out = append(out, key+"="+capExtensionEvents)
+	}
+	return out
+}
+
+func isSpawnableProbeError(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) ||
+		errors.Is(err, syscall.ECONNREFUSED)
 }
 
 func supervisorCommand(cfg EnsureConfig) (string, []string, error) {

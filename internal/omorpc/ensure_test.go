@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -29,8 +32,11 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if mode == "die" {
 		os.Exit(7)
 	}
-	if mode != "serve" {
+	if mode != "serve" && mode != "serve-ignore-term" {
 		t.Fatalf("unknown helper mode %q", mode)
+	}
+	if mode == "serve-ignore-term" {
+		signal.Ignore(syscall.SIGTERM)
 	}
 
 	socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
@@ -64,10 +70,17 @@ func serveEnsureHelper(conn net.Conn) {
 		}
 		switch command {
 		case CmdGetProtocolInfo:
+			capabilities := []string{capMultiSession}
+			for _, capability := range strings.Split(os.Getenv("SENPI_RPC_CLIENT_CAPABILITIES"), ",") {
+				if strings.TrimSpace(capability) == capExtensionEvents {
+					capabilities = append(capabilities, capExtensionEvents)
+					break
+				}
+			}
 			response["data"] = map[string]any{
 				"protocolVersion": 1,
 				"serverVersion":   "fake-supervisor-1",
-				"capabilities":    []string{capMultiSession, capExtensionEvents},
+				"capabilities":    capabilities,
 				"mode":            "multi",
 			}
 		case CmdListSessions:
@@ -178,6 +191,176 @@ func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= cfg.ReadyTimeout {
 		t.Fatalf("supervisor death was not observed promptly: %v", elapsed)
+	}
+}
+
+func TestEnsureDaemonMergesExtensionCapabilityIntoSpawnEnv(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	cfg.Env = append(cfg.Env, "SENPI_RPC_CLIENT_CAPABILITIES=custom_events")
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+		defer cancel()
+		_ = ensured.Stop(ctx)
+	}()
+	if !slices.Contains(ensured.ProtocolInfo.Capabilities, capExtensionEvents) {
+		t.Fatalf("spawned capabilities = %v, want extension_events", ensured.ProtocolInfo.Capabilities)
+	}
+}
+
+func TestEnsureLockStaleReclaimAndEndpointScope(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	cfgA := EnsureConfig{AgentDir: dir, SocketPath: filepath.Join(dir, "a.sock"), LockTimeout: testAwaitTimeout, LockRetry: time.Millisecond}
+	cfgB := cfgA
+	cfgB.SocketPath = filepath.Join(dir, "b.sock")
+	if ensureLockPath(cfgA) == ensureLockPath(cfgB) {
+		t.Fatal("ensure lock must be keyed by SocketPath")
+	}
+	for _, stale := range []string{"not-a-pid\n", "99999999\n"} {
+		path := ensureLockPath(cfgA)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := acquireEnsureLock(context.Background(), cfgA)
+		if err != nil {
+			t.Fatalf("reclaim stale lock %q: %v", strings.TrimSpace(stale), err)
+		}
+		releaseEnsureLock(lock, path)
+	}
+}
+
+func TestEnsureDaemonConcurrentSingleSpawn(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	marker := filepath.Join(dir, "spawns")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo spawn >> %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+
+	start := make(chan struct{})
+	results := make(chan struct {
+		d   *EnsuredDaemon
+		err error
+	}, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			d, err := EnsureDaemon(context.Background(), cfg)
+			results <- struct {
+				d   *EnsuredDaemon
+				err error
+			}{d, err}
+		}()
+	}
+	close(start)
+	var daemons []*EnsuredDaemon
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent EnsureDaemon: %v", result.err)
+		}
+		daemons = append(daemons, result.d)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read spawn marker: %v", err)
+	}
+	if got := strings.Count(string(data), "spawn\n"); got != 1 {
+		t.Fatalf("supervisor spawn count = %d, want exactly 1", got)
+	}
+	for _, daemon := range daemons {
+		if daemon.Owned {
+			ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+			if err := daemon.Stop(ctx); err != nil {
+				t.Errorf("stop owner: %v", err)
+			}
+			cancel()
+		} else {
+			_ = daemon.Close()
+		}
+	}
+}
+
+func TestEnsureDaemonLiveHandshakeTimeoutDoesNotSpawnOrUnlink(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "live.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	marker := filepath.Join(dir, "spawned")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo spawned > %q", marker))
+	_, err = EnsureDaemon(context.Background(), EnsureConfig{
+		AgentDir: dir, SocketPath: socket, BinaryPath: script,
+		ProbeTimeout: 50 * time.Millisecond, LockTimeout: testAwaitTimeout,
+	})
+	if err == nil {
+		t.Fatal("handshake timeout against live endpoint must fail")
+	}
+	select {
+	case conn := <-accepted:
+		_ = conn.Close()
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("probe never connected to live endpoint")
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("supervisor spawned after live handshake timeout: %v", err)
+	}
+	if _, err := os.Stat(socket); err != nil {
+		t.Fatalf("live endpoint was unlinked: %v", err)
+	}
+}
+
+func TestEnsureDaemonDoesNotUnlinkReplacementEndpoint(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	if err := os.WriteFile(socket, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "die")
+	_, _ = EnsureDaemon(context.Background(), cfg)
+	data, err := os.ReadFile(socket)
+	if err != nil || string(data) != "replacement" {
+		t.Fatalf("replacement endpoint changed: data=%q err=%v", data, err)
+	}
+}
+
+func TestEnsuredDaemonStopEscalatesAfterCanceledWait(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve-ignore-term")
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ensured.Stop(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first Stop = %v, want context.Canceled", err)
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer waitCancel()
+	if err := ensured.Stop(waitCtx); err != nil {
+		t.Fatalf("Stop did not complete SIGKILL escalation: %v", err)
+	}
+	if err := ensured.process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("SIGTERM-ignoring supervisor remains alive after Stop: %v", err)
 	}
 }
 

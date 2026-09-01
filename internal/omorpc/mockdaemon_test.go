@@ -44,7 +44,7 @@ type mockDaemon struct {
 	protocolVersion int
 	capabilities    []string
 	mode            string
-	handlerDelay    map[string]time.Duration
+	handlerGate     map[string]<-chan struct{}
 	failNext        map[string]string
 	refuse          bool
 	connections     int
@@ -80,7 +80,7 @@ func newMockDaemon(t *testing.T) *mockDaemon {
 		protocolVersion: 1,
 		capabilities:    []string{"multi_session", "extension_events", "custom_unsupported"},
 		mode:            "multi",
-		handlerDelay:    map[string]time.Duration{},
+		handlerGate:     map[string]<-chan struct{}{},
 		failNext:        map[string]string{},
 		conns:           map[net.Conn]struct{}{},
 		requestFeed:     make(chan map[string]any, 64),
@@ -190,15 +190,15 @@ func (d *mockDaemon) handle(conn net.Conn, req map[string]any) {
 	sid, _ := req["sessionId"].(string)
 
 	d.mu.Lock()
-	delay := d.handlerDelay[cmd]
+	gate := d.handlerGate[cmd]
 	code, failing := d.failNext[cmd]
 	if failing {
 		delete(d.failNext, cmd)
 	}
 	d.mu.Unlock()
 
-	if delay > 0 {
-		time.Sleep(delay)
+	if gate != nil {
+		<-gate
 	}
 	if failing {
 		d.write(conn, map[string]any{
@@ -282,8 +282,8 @@ func (d *mockDaemon) handle(conn net.Conn, req map[string]any) {
 func isSessionScoped(cmd string) bool {
 	switch cmd {
 	case CmdSteer, CmdFollowUp, CmdAbort, CmdGetState, CmdGetAvailableModels,
-		CmdGetEntries, CmdGetMessages, CmdGetCommands, CmdSetModel,
-		CmdSetThinkingLevel, CmdCompact, CmdSetAutoCompaction, CmdExtensionRequest:
+		CmdGetEntries, CmdGetMessages, CmdGetCommands, CmdGetSessionStats,
+		CmdSetSessionName, CmdSetModel, CmdSetThinkingLevel, CmdCompact, CmdSetAutoCompaction, CmdExtensionRequest:
 		return true
 	}
 	return false
@@ -315,19 +315,27 @@ func (d *mockDaemon) Emit(event map[string]any) {
 
 // ---- scripting knobs ----
 
-func (d *mockDaemon) SetServerVersion(v string)           { d.mu.Lock(); d.serverVersion = v; d.mu.Unlock() }
-func (d *mockDaemon) SetProtocolVersion(v int)            { d.mu.Lock(); d.protocolVersion = v; d.mu.Unlock() }
-func (d *mockDaemon) SetCapabilities(c []string)          { d.mu.Lock(); d.capabilities = c; d.mu.Unlock() }
-func (d *mockDaemon) SetMode(m string)                    { d.mu.Lock(); d.mode = m; d.mu.Unlock() }
-func (d *mockDaemon) SetHandshakeDelay(dur time.Duration) { d.SetHandlerDelay(CmdGetProtocolInfo, dur) }
+func (d *mockDaemon) SetServerVersion(v string)  { d.mu.Lock(); d.serverVersion = v; d.mu.Unlock() }
+func (d *mockDaemon) SetProtocolVersion(v int)   { d.mu.Lock(); d.protocolVersion = v; d.mu.Unlock() }
+func (d *mockDaemon) SetCapabilities(c []string) { d.mu.Lock(); d.capabilities = c; d.mu.Unlock() }
+func (d *mockDaemon) SetMode(m string)           { d.mu.Lock(); d.mode = m; d.mu.Unlock() }
 
-// SetHandlerDelay makes every future request of cmd sleep before
-// replying, so tests can hold a request in flight or force replies to
-// overtake each other.
-func (d *mockDaemon) SetHandlerDelay(cmd string, dur time.Duration) {
+// BlockHandler holds future requests of cmd at an explicit gate. The
+// returned release function is idempotent and removes the gate.
+func (d *mockDaemon) BlockHandler(cmd string) func() {
+	gate := make(chan struct{})
+	var once sync.Once
 	d.mu.Lock()
-	d.handlerDelay[cmd] = dur
+	d.handlerGate[cmd] = gate
 	d.mu.Unlock()
+	return func() {
+		once.Do(func() {
+			d.mu.Lock()
+			delete(d.handlerGate, cmd)
+			d.mu.Unlock()
+			close(gate)
+		})
+	}
 }
 
 // FailNext makes the NEXT request of cmd get a success:false envelope

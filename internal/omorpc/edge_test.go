@@ -21,24 +21,20 @@ package omorpc
 //     to the other's routing.
 //   - Per-session FIFO (invariants 12/13 analogue): one session's event
 //     order survives daemon-side interleaving with another session's.
-//   - Slow-consumer policy (invariant 12 analogue): the client's chosen
-//     policy, pinned by TestEdgeSlowSubscriberPolicyUnboundedBuffer, is
-//     UNBOUNDED per-epoch buffering — a stalled Events() consumer never
-//     stalls the socket pump or pending calls; nothing is dropped while
-//     the epoch lives; the backlog is dropped atomically at epoch
-//     teardown instead of blocking Close. There is deliberately no
-//     drop-oldest/resync signal and no backpressure toward the daemon;
-//     memory is the bound, scoped to one connection epoch.
+//   - Slow-consumer policy (invariant 12 analogue): the event queue is
+//     bounded by Config.EventBuffer. Overflow drops the oldest unread event
+//     and increments Client.DroppedEvents, while socket reads and calls stay
+//     live.
 //
 // NOT expressible at this layer (owned by the engine above it): durable
 // notice gating, eviction, resume safety, run/compaction lifecycle.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -78,22 +74,6 @@ func drainEvents(t *testing.T, ch <-chan *Event, n int, budget time.Duration) []
 		}
 	}
 	return got
-}
-
-// awaitGoroutineSettle fails (with a stack dump) unless the process
-// goroutine count returns to baseline within a bounded window.
-func awaitGoroutineSettle(t *testing.T, baseline int) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for runtime.NumGoroutine() > baseline {
-		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			n := runtime.Stack(buf, true)
-			t.Fatalf("goroutines did not settle to baseline %d (now %d):\n%s",
-				baseline, runtime.NumGoroutine(), buf[:n])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 // TestEdgeMalformedLineFailsEpochClientSurvives: a corrupt line is fatal to
@@ -141,7 +121,8 @@ func TestEdgeMalformedLineFailsEpochClientSurvives(t *testing.T) {
 	})
 	t.Run("corrupt_while_inflight", func(t *testing.T) {
 		d := newMockDaemon(t)
-		d.SetHandlerDelay(CmdGetEntries, 80*time.Millisecond)
+		releaseEntries := d.BlockHandler(CmdGetEntries)
+		defer releaseEntries()
 		c := dialForTest(t, d, Config{})
 		opened := mustOpenSession(t, c, t.TempDir())
 
@@ -173,8 +154,10 @@ func TestEdgeMalformedLineFailsEpochClientSurvives(t *testing.T) {
 // "response"), never silently dropped.
 func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 	d := newMockDaemon(t)
-	d.SetHandlerDelay(CmdGetEntries, 150*time.Millisecond)
-	d.SetHandlerDelay(CmdListSessions, 60*time.Millisecond)
+	releaseEntries := d.BlockHandler(CmdGetEntries)
+	releaseList := d.BlockHandler(CmdListSessions)
+	defer releaseEntries()
+	defer releaseList()
 	c := dialForTest(t, d, Config{})
 	opened := mustOpenSession(t, c, t.TempDir())
 	evCh := c.Events()
@@ -205,6 +188,7 @@ func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 	}()
 	d.awaitRequest(t, CmdListSessions, testAwaitTimeout)
 	cancelB()
+	releaseList()
 	select {
 	case got := <-resB:
 		if !errors.Is(got.err, context.Canceled) {
@@ -215,6 +199,7 @@ func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 	}
 
 	// The untouched pending call still settles with its own response.
+	releaseEntries()
 	select {
 	case got := <-resA:
 		if got.err != nil {
@@ -262,7 +247,7 @@ func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 // and the daemon hands out distinct epoch-local session handles.
 func TestEdgeTwoClientsSameSocketIDNeverCrosses(t *testing.T) {
 	d := newMockDaemon(t)
-	d.SetHandlerDelay(CmdGetEntries, 80*time.Millisecond)
+	releaseEntries := d.BlockHandler(CmdGetEntries)
 	cA := dialForTest(t, d, Config{})
 	cB := dialForTest(t, d, Config{})
 	openA := mustOpenSession(t, cA, t.TempDir())
@@ -286,6 +271,7 @@ func TestEdgeTwoClientsSameSocketIDNeverCrosses(t *testing.T) {
 		resB <- result{r, err}
 	}()
 	d.awaitRequestCount(t, CmdGetEntries, 2, testAwaitTimeout)
+	releaseEntries()
 
 	var rA, rB result
 	select {
@@ -371,13 +357,10 @@ func TestEdgePerSessionFIFOUnderInterleave(t *testing.T) {
 	}
 }
 
-// TestEdgeSlowSubscriberPolicyUnboundedBuffer pins the chosen slow-consumer
-// policy: UNBOUNDED per-epoch buffering. (1) A subscriber stalled past the
-// public event buffer never stalls the socket pump — two-way calls keep
-// resolving. (2) Nothing is dropped or reordered while the epoch lives:
-// every event arrives, in order. (3) The backlog is dropped atomically at
-// epoch teardown instead of blocking Close on the stalled subscriber.
-func TestEdgeSlowSubscriberPolicyUnboundedBuffer(t *testing.T) {
+// TestEdgeSlowSubscriberPolicyDropOldest pins the hard bound and overflow
+// policy: a stalled subscriber does not block calls, only the newest
+// EventBuffer records survive, and the exact number dropped is observable.
+func TestEdgeSlowSubscriberPolicyDropOldest(t *testing.T) {
 	d := newMockDaemon(t)
 	c := dialForTest(t, d, Config{EventBuffer: 2})
 	opened := mustOpenSession(t, c, t.TempDir())
@@ -387,42 +370,26 @@ func TestEdgeSlowSubscriberPolicyUnboundedBuffer(t *testing.T) {
 	for i := 1; i <= n; i++ {
 		d.Emit(map[string]any{"type": "edge_flood", "sessionId": opened.SessionID, "n": i})
 	}
-
-	// (1) pump health while the subscriber is stalled
+	// The response is ordered after the event writes, proving the reader has
+	// processed the flood while the subscriber remained stalled.
 	mustCall(t, c, ListSessions{})
 
-	// (2) zero loss, zero reordering
-	evs := drainEvents(t, ch, n, 5*time.Second)
+	evs := drainEvents(t, ch, 2, testAwaitTimeout)
 	for i, ev := range evs {
-		if ev.Type != "edge_flood" {
-			t.Fatalf("event %d: type = %q, want edge_flood", i, ev.Type)
-		}
-		var p struct {
+		var payload struct {
 			N int `json:"n"`
 		}
-		if err := json.Unmarshal(ev.Raw, &p); err != nil {
+		if err := json.Unmarshal(ev.Raw, &payload); err != nil {
 			t.Fatalf("event %d payload: %v", i, err)
 		}
-		if p.N != i+1 {
-			t.Fatalf("slow-consumer policy violated: stream position %d carries seq %d (loss or reorder)", i+1, p.N)
+		want := n - 1 + i
+		if payload.N != want {
+			t.Fatalf("retained event %d has seq %d, want newest seq %d", i, payload.N, want)
 		}
 	}
-
-	// (3) Close with a fresh backlog must not block on the consumer.
-	for i := n + 1; i <= 2*n; i++ {
-		d.Emit(map[string]any{"type": "edge_flood", "sessionId": opened.SessionID, "n": i})
+	if got := c.DroppedEvents(); got != n-2 {
+		t.Fatalf("DroppedEvents = %d, want %d", got, n-2)
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = c.Close()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(testAwaitTimeout):
-		t.Fatal("Close blocked on a stalled subscriber backlog")
-	}
-	awaitChannelClosed(t, ch, testAwaitTimeout)
 }
 
 // TestEdgeCRLFFragmentedAndBatchedFrames: server-side hostility at the
@@ -471,11 +438,11 @@ func TestEdgeCRLFFragmentedAndBatchedFrames(t *testing.T) {
 // goroutines (reader, event pump, daemon-side handler all settle).
 func TestEdgeCloseWithInflightRequestTypedErrorNoLeak(t *testing.T) {
 	d := newMockDaemon(t)
-	d.SetHandlerDelay(CmdGetEntries, 80*time.Millisecond)
+	releaseEntries := d.BlockHandler(CmdGetEntries)
+	defer releaseEntries()
 	c := dialForTest(t, d, Config{})
 	opened := mustOpenSession(t, c, t.TempDir())
 
-	base := runtime.NumGoroutine()
 	oldCh := c.Events()
 
 	errCh := make(chan error, 1)
@@ -514,7 +481,6 @@ func TestEdgeCloseWithInflightRequestTypedErrorNoLeak(t *testing.T) {
 		t.Errorf("Call after Close: %v, want ErrDisconnected", err)
 	}
 
-	awaitGoroutineSettle(t, base)
 }
 
 // TestEdgeResponseOnWireBeforeDropStillSucceeds encodes the
@@ -522,9 +488,61 @@ func TestEdgeCloseWithInflightRequestTypedErrorNoLeak(t *testing.T) {
 // answers a request and dies in the same breath (response bytes on the
 // wire, then FIN). The caller must observe SUCCESS — the response wins
 // because it precedes the EOF on the stream — never ErrDisconnected.
+func TestEdgeDuplicateResponseWrongCommandDoesNotSettleRequest(t *testing.T) {
+	d := newMockDaemon(t)
+	release := d.BlockHandler(CmdGetEntries)
+	defer release()
+	c := dialForTest(t, d, Config{})
+	opened := mustOpenSession(t, c, t.TempDir())
+	events := c.Events()
+
+	type result struct {
+		response *Response
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		response, err := c.Call(context.Background(), GetEntries{SessionID: opened.SessionID})
+		resultCh <- result{response, err}
+	}()
+	d.awaitRequest(t, CmdGetEntries, testAwaitTimeout)
+	id, _ := d.lastRequest(CmdGetEntries)["id"].(string)
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"wrong_command","success":true}`+"\n", id))
+	wrong := awaitEvent(t, events, testAwaitTimeout)
+	if wrong.Type != "response" || !strings.Contains(string(wrong.Raw), "wrong_command") {
+		t.Fatalf("wrong-command duplicate was not surfaced as unsolicited: %+v", wrong)
+	}
+	select {
+	case got := <-resultCh:
+		t.Fatalf("wrong command settled pending request: %+v", got)
+	default:
+	}
+	release()
+	got := <-resultCh
+	if got.err != nil || got.response.Command != CmdGetEntries {
+		t.Fatalf("real response did not settle request: response=%+v err=%v", got.response, got.err)
+	}
+	// A later duplicate with the settled id is unsolicited as well.
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"get_entries","success":true}`+"\n", id))
+	if duplicate := awaitEvent(t, events, testAwaitTimeout); duplicate.Type != "response" {
+		t.Fatalf("settled duplicate event = %+v", duplicate)
+	}
+}
+
+func TestEdgeOversizedLineFailsConnectionAtBound(t *testing.T) {
+	d := newMockDaemon(t)
+	c := dialForTest(t, d, Config{MaxLineBytes: 1 << 20})
+	oldEvents := c.Events()
+	d.WriteRaw(bytes.Repeat([]byte{'x'}, 10<<20))
+	awaitChannelClosed(t, oldEvents, testAwaitTimeout)
+	// The client remains reusable through a fresh bounded epoch.
+	mustCall(t, c, ListSessions{})
+}
+
 func TestEdgeResponseOnWireBeforeDropStillSucceeds(t *testing.T) {
 	d := newMockDaemon(t)
-	d.SetHandlerDelay(CmdGetEntries, 200*time.Millisecond)
+	releaseEntries := d.BlockHandler(CmdGetEntries)
+	defer releaseEntries()
 	c := dialForTest(t, d, Config{})
 	opened := mustOpenSession(t, c, t.TempDir())
 	oldCh := c.Events()

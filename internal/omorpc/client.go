@@ -23,6 +23,8 @@ var ErrDisconnected = errors.New("omorpc: transport disconnected")
 // the DefaultConfig values, so partial configs keep sane defaults.
 type Config struct {
 	EventBuffer          int
+	MaxLineBytes         int
+	WriteTimeout         time.Duration
 	ReconnectInitial     time.Duration
 	ReconnectMax         time.Duration
 	ReconnectMaxAttempts int
@@ -32,6 +34,8 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		EventBuffer:          64,
+		MaxLineBytes:         defaultMaxLineBytes,
+		WriteTimeout:         5 * time.Second,
 		ReconnectInitial:     250 * time.Millisecond,
 		ReconnectMax:         5 * time.Second,
 		ReconnectMaxAttempts: 8,
@@ -39,7 +43,8 @@ func DefaultConfig() Config {
 }
 
 type pendingRequest struct {
-	result chan callResult
+	command string
+	result  chan callResult
 }
 
 type callResult struct {
@@ -59,77 +64,48 @@ type connectFlight struct {
 	err   error
 }
 
-// eventStream keeps socket reads independent of subscriber speed. Its queue
-// is unbounded for the lifetime of one connection epoch; stopping the epoch
-// atomically drops undelivered events and closes the public stream.
+// eventStream is a hard-bounded queue. When full, enqueue drops the oldest
+// unread event and increments the client-visible overflow counter. Socket
+// reads and correlated responses therefore remain live under a stalled
+// subscriber.
 type eventStream struct {
-	out  chan *Event
-	stop chan struct{}
+	out     chan *Event
+	dropped *atomic.Uint64
 
 	mu     sync.Mutex
-	wake   chan struct{}
-	queue  []*Event
 	closed bool
 }
 
-func newEventStream(buffer int) *eventStream {
-	s := &eventStream{
-		out:  make(chan *Event, buffer),
-		stop: make(chan struct{}),
-		wake: make(chan struct{}, 1),
-	}
-	go s.run()
-	return s
+func newEventStream(buffer int, dropped *atomic.Uint64) *eventStream {
+	return &eventStream{out: make(chan *Event, buffer), dropped: dropped}
 }
 
 func (s *eventStream) enqueue(ev *Event) {
 	s.mu.Lock()
-	if !s.closed {
-		s.queue = append(s.queue, ev)
-		select {
-		case s.wake <- struct{}{}:
-		default:
-		}
+	defer s.mu.Unlock()
+	if s.closed {
+		return
 	}
-	s.mu.Unlock()
+	select {
+	case s.out <- ev:
+		return
+	default:
+	}
+	select {
+	case <-s.out:
+		s.dropped.Add(1)
+	default:
+	}
+	s.out <- ev
 }
 
 func (s *eventStream) close() {
 	s.mu.Lock()
 	if !s.closed {
 		s.closed = true
-		close(s.stop)
+		close(s.out)
 	}
 	s.mu.Unlock()
-}
-
-func (s *eventStream) run() {
-	defer close(s.out)
-	for {
-		s.mu.Lock()
-		if len(s.queue) > 0 {
-			ev := s.queue[0]
-			s.queue[0] = nil
-			s.queue = s.queue[1:]
-			s.mu.Unlock()
-			select {
-			case s.out <- ev:
-			case <-s.stop:
-				return
-			}
-			continue
-		}
-		closed := s.closed
-		s.mu.Unlock()
-		if closed {
-			return
-		}
-		select {
-		case <-s.wake:
-		case <-s.stop:
-			return
-		}
-	}
 }
 
 // Client is one multiplexed connection to the omo agent's Unix-socket RPC
@@ -139,7 +115,7 @@ type Client struct {
 	cfg        Config
 
 	mu         sync.Mutex
-	writeMu    sync.Mutex
+	writeGate  chan struct{}
 	closed     bool
 	lifecycle  context.Context
 	cancel     context.CancelFunc
@@ -149,7 +125,9 @@ type Client struct {
 	pending    map[string]pendingRequest
 	info       *ProtocolInfo
 
-	nextID atomic.Uint64
+	nextID  atomic.Uint64
+	dropped atomic.Uint64
+	wg      sync.WaitGroup
 }
 
 // Dial connects and completes get_protocol_info before returning.
@@ -167,7 +145,9 @@ func DialWithConfig(ctx context.Context, socketPath string, cfg Config) (*Client
 		pending:    make(map[string]pendingRequest),
 		lifecycle:  lifecycle,
 		cancel:     cancel,
+		writeGate:  make(chan struct{}, 1),
 	}
+	c.writeGate <- struct{}{}
 	ep, err := c.establish(ctx)
 	if err != nil {
 		_ = c.Close()
@@ -186,6 +166,12 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.EventBuffer == 0 {
 		cfg.EventBuffer = defaults.EventBuffer
 	}
+	if cfg.MaxLineBytes == 0 {
+		cfg.MaxLineBytes = defaults.MaxLineBytes
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = defaults.WriteTimeout
+	}
 	if cfg.ReconnectInitial == 0 {
 		cfg.ReconnectInitial = defaults.ReconnectInitial
 	}
@@ -195,8 +181,14 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.ReconnectMaxAttempts == 0 {
 		cfg.ReconnectMaxAttempts = defaults.ReconnectMaxAttempts
 	}
-	if cfg.EventBuffer < 0 {
-		cfg.EventBuffer = 0
+	if cfg.EventBuffer < 1 {
+		cfg.EventBuffer = defaults.EventBuffer
+	}
+	if cfg.MaxLineBytes < 1 {
+		cfg.MaxLineBytes = defaults.MaxLineBytes
+	}
+	if cfg.WriteTimeout < 0 {
+		cfg.WriteTimeout = defaults.WriteTimeout
 	}
 	if cfg.ReconnectInitial < 0 {
 		cfg.ReconnectInitial = defaults.ReconnectInitial
@@ -214,7 +206,7 @@ func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: dial %s: %v", ErrDisconnected, c.socketPath, err)
+		return nil, fmt.Errorf("%w: dial %s: %w", ErrDisconnected, c.socketPath, err)
 	}
 
 	c.mu.Lock()
@@ -224,18 +216,22 @@ func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
 		return nil, ErrDisconnected
 	}
 	c.epoch++
-	ep := &connectionEpoch{number: c.epoch, conn: conn, events: newEventStream(c.cfg.EventBuffer)}
+	ep := &connectionEpoch{number: c.epoch, conn: conn, events: newEventStream(c.cfg.EventBuffer, &c.dropped)}
 	c.current = ep
+	c.wg.Add(1)
 	c.mu.Unlock()
 
-	go c.readLoop(ep)
+	go func() {
+		defer c.wg.Done()
+		c.readLoop(ep)
+	}()
 	return ep, nil
 }
 
 func (c *Client) negotiate(ctx context.Context, ep *connectionEpoch) error {
 	resp, err := c.callOnEpoch(ctx, ep, GetProtocolInfo{})
 	if err != nil {
-		return fmt.Errorf("%w: protocol handshake: %v", ErrDisconnected, err)
+		return fmt.Errorf("%w: protocol handshake: %w", ErrDisconnected, err)
 	}
 	if !resp.Success {
 		return fmt.Errorf("omorpc: protocol handshake: %w", resp.Err())
@@ -256,7 +252,7 @@ func (c *Client) negotiate(ctx context.Context, ep *connectionEpoch) error {
 }
 
 func (c *Client) readLoop(ep *connectionEpoch) {
-	decoder := NewDecoder(ep.conn)
+	decoder := NewDecoderWithLimit(ep.conn, c.cfg.MaxLineBytes)
 	for {
 		in, err := decoder.Decode()
 		if err != nil {
@@ -272,15 +268,6 @@ func (c *Client) readLoop(ep *connectionEpoch) {
 			continue
 		}
 		if in.Event != nil {
-			// Native extension events commonly wrap their useful payload in a
-			// payload field. Preserve that payload for AsUnknownEvent while the
-			// decoded routing fields remain on Event itself.
-			var envelope struct {
-				Payload json.RawMessage `json:"payload"`
-			}
-			if json.Unmarshal(in.Event.Raw, &envelope) == nil && len(envelope.Payload) > 0 {
-				in.Event.Raw = append(json.RawMessage(nil), envelope.Payload...)
-			}
 			ep.events.enqueue(in.Event)
 		}
 	}
@@ -293,8 +280,10 @@ func (c *Client) settleResponse(ep *connectionEpoch, resp *Response) {
 		return
 	}
 	pending, ok := c.pending[resp.ID]
-	if ok {
+	if ok && pending.command == resp.Command {
 		delete(c.pending, resp.ID)
+	} else {
+		ok = false
 	}
 	c.mu.Unlock()
 	if ok {
@@ -350,9 +339,13 @@ func (c *Client) connection(ctx context.Context) (*connectionEpoch, error) {
 	}
 	flight := &connectFlight{done: make(chan struct{})}
 	c.connecting = flight
+	c.wg.Add(1)
 	c.mu.Unlock()
 
-	go c.finishReconnect(flight)
+	go func() {
+		defer c.wg.Done()
+		c.finishReconnect(flight)
+	}()
 	select {
 	case <-flight.done:
 		return flight.epoch, flight.err
@@ -431,28 +424,99 @@ func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Comma
 		c.mu.Unlock()
 		return nil, ErrDisconnected
 	}
-	c.pending[id] = pendingRequest{result: result}
+	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
 
-	c.writeMu.Lock()
-	_, writeErr := ep.conn.Write(frame)
-	c.writeMu.Unlock()
-	if writeErr != nil {
-		c.invalidate(ep, writeErr)
+	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+		c.removePending(id, result)
+		if attempted {
+			// A failed write may be partial, so reconnect before the next call.
+			c.invalidate(ep, err)
+		}
+		return nil, err
 	}
 
 	select {
 	case got := <-result:
 		return got.response, got.err
 	case <-ctx.Done():
-		c.mu.Lock()
-		if pending, ok := c.pending[id]; ok && pending.result == result {
-			delete(c.pending, id)
-		}
-		c.mu.Unlock()
+		c.removePending(id, result)
 		return nil, ctx.Err()
 	}
 }
+
+func (c *Client) removePending(id string, result chan callResult) {
+	c.mu.Lock()
+	if pending, ok := c.pending[id]; ok && pending.result == result {
+		delete(c.pending, id)
+	}
+	c.mu.Unlock()
+}
+
+func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []byte) (bool, error) {
+	select {
+	case <-c.writeGate:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	defer func() { c.writeGate <- struct{}{} }()
+
+	deadline := time.Now().Add(c.cfg.WriteTimeout)
+	contextDeadline := false
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+		contextDeadline = true
+	}
+	if err := ep.conn.SetWriteDeadline(deadline); err != nil {
+		return true, err
+	}
+	cancellationDone := make(chan struct{})
+	stopCancellation := context.AfterFunc(ctx, func() {
+		_ = ep.conn.SetWriteDeadline(time.Now())
+		close(cancellationDone)
+	})
+	written, err := ep.conn.Write(frame)
+	if !stopCancellation() {
+		<-cancellationDone
+	}
+	_ = ep.conn.SetWriteDeadline(time.Time{})
+	if err == nil && written != len(frame) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return true, ctxErr
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && contextDeadline {
+			return true, context.DeadlineExceeded
+		}
+	}
+	return true, err
+}
+
+// Notify writes a one-way notification without injecting a correlation id
+// and without waiting for a response.
+func (c *Client) Notify(ctx context.Context, notification Notification) error {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		return err
+	}
+	frame, err := EncodeNotification(notification)
+	if err != nil {
+		return err
+	}
+	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+		if attempted {
+			c.invalidate(ep, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// DroppedEvents returns the number of events discarded by the drop-oldest
+// overflow policy across all connection epochs.
+func (c *Client) DroppedEvents() uint64 { return c.dropped.Load() }
 
 // Events returns the stream for the current connection epoch.
 func (c *Client) Events() <-chan *Event {
@@ -504,5 +568,6 @@ func (c *Client) Close() error {
 	if ep != nil {
 		c.invalidate(ep, errors.New("client closed"))
 	}
+	c.wg.Wait()
 	return nil
 }

@@ -16,6 +16,7 @@ const (
 	ErrCodeMissingSessionID     = "missing_session_id"
 	ErrCodeMultiSessionDisabled = "multi_session_disabled"
 	ErrCodeInvalidPath          = "invalid_path"
+	ErrCodeTooManySessions      = "too_many_sessions"
 	// ErrCodeOpenFailed is a prefix code: the wire form is
 	// "open_failed: <detail>", so it never travels as a bare token.
 	ErrCodeOpenFailed = "open_failed"
@@ -26,7 +27,7 @@ const openFailedPrefix = ErrCodeOpenFailed + ":"
 
 // StableError is a parsed stable error code from a failed response. Detail
 // carries the free-form suffix of "open_failed: <detail>" and is empty for
-// the six exact codes. Error() reproduces the original wire string.
+// the seven exact codes. Error() reproduces the original wire string.
 type StableError struct {
 	Code   string
 	Detail string
@@ -40,7 +41,7 @@ func (e *StableError) Error() string {
 }
 
 // ParseStableError classifies a response "error" string. It reports the
-// matched StableError for the six exact codes and for the open_failed prefix
+// matched StableError for the seven exact codes and for the open_failed prefix
 // form (with or without the space before the detail); ok is false for any
 // other string.
 func ParseStableError(wire string) (*StableError, bool) {
@@ -50,7 +51,8 @@ func ParseStableError(wire string) (*StableError, bool) {
 		ErrCodeSessionPathInUse,
 		ErrCodeMissingSessionID,
 		ErrCodeMultiSessionDisabled,
-		ErrCodeInvalidPath:
+		ErrCodeInvalidPath,
+		ErrCodeTooManySessions:
 		return &StableError{Code: wire}, true
 	}
 	if strings.HasPrefix(wire, openFailedPrefix) {

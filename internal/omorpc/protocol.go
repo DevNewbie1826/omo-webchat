@@ -12,9 +12,9 @@
 //     carrying that id settles exactly that request. extension_ui_response
 //     is one-way and its id is the native dialog id, passed through
 //     unchanged.
-//   - Control commands (get_protocol_info, open_session, close_session,
-//     list_sessions) carry no sessionId. Every other command requires one;
-//     responses, events, and extension_ui_request echo it at top level.
+//   - get_protocol_info, open_session, and list_sessions carry no sessionId.
+//     close_session and every other session command are session-scoped;
+//     responses, events, and extension_ui_request echo sessionId at top level.
 //   - success:false responses carry an "error" string; stable codes are in
 //     errors.go. There is no separate error frame.
 package omorpc
@@ -29,6 +29,12 @@ import (
 	"fmt"
 	"io"
 )
+
+const defaultMaxLineBytes = 4 << 20
+
+// ErrFrameTooLarge reports a wire record larger than the configured decoder
+// limit. The connection cannot be resynchronized safely after this error.
+var ErrFrameTooLarge = errors.New("omorpc: frame exceeds maximum line length")
 
 // Wire command names, verbatim on the socket.
 const (
@@ -46,6 +52,8 @@ const (
 	CmdGetEntries         = "get_entries"
 	CmdGetMessages        = "get_messages"
 	CmdGetCommands        = "get_commands"
+	CmdGetSessionStats    = "get_session_stats"
+	CmdSetSessionName     = "set_session_name"
 	CmdSetModel           = "set_model"
 	CmdSetThinkingLevel   = "set_thinking_level"
 	CmdCompact            = "compact"
@@ -122,6 +130,12 @@ type Inbound struct {
 // correlation id and command type into one wire object.
 type Command interface {
 	commandName() string
+}
+
+// Notification is the closed union of one-way outbound records.
+type Notification interface {
+	Command
+	notification()
 }
 
 // ---- Control commands (no sessionId) ----
@@ -228,6 +242,21 @@ type GetCommands struct {
 
 func (GetCommands) commandName() string { return CmdGetCommands }
 
+// GetSessionStats returns token and context statistics for the session.
+type GetSessionStats struct {
+	SessionID string `json:"sessionId"`
+}
+
+func (GetSessionStats) commandName() string { return CmdGetSessionStats }
+
+// SetSessionName updates the durable display name of the session.
+type SetSessionName struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+}
+
+func (SetSessionName) commandName() string { return CmdSetSessionName }
+
 // SetModel switches the session's model.
 type SetModel struct {
 	SessionID string `json:"sessionId"`
@@ -266,7 +295,7 @@ func (SetAutoCompaction) commandName() string { return CmdSetAutoCompaction }
 type ExtensionRequest struct {
 	SessionID string          `json:"sessionId"`
 	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Data      json.RawMessage `json:"data,omitempty"`
 }
 
 func (ExtensionRequest) commandName() string { return CmdExtensionRequest }
@@ -276,12 +305,14 @@ func (ExtensionRequest) commandName() string { return CmdExtensionRequest }
 // sent unchanged — never replaced with a client correlation id. Send it
 // with EncodeNotification.
 type ExtensionUIResponse struct {
-	SessionID string          `json:"sessionId"`
 	ID        string          `json:"id"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	Value     json.RawMessage `json:"value,omitempty"`
+	Confirmed *bool           `json:"confirmed,omitempty"`
+	Cancelled bool            `json:"cancelled,omitempty"`
 }
 
 func (ExtensionUIResponse) commandName() string { return CmdExtensionUIResponse }
+func (ExtensionUIResponse) notification()       {}
 
 // ---- Typed data payloads ----
 
@@ -414,26 +445,45 @@ func DecodeLine(data []byte) (*Inbound, error) {
 // the record was not); a truncated record is reported as a
 // "truncated trailing record" error rather than silently dropped.
 type Decoder struct {
-	br *bufio.Reader
+	br           *bufio.Reader
+	maxLineBytes int
 }
 
-// NewDecoder wraps r.
+// NewDecoder wraps r with the default 4 MiB line limit.
 func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{br: bufio.NewReader(r)}
+	return NewDecoderWithLimit(r, defaultMaxLineBytes)
+}
+
+// NewDecoderWithLimit wraps r and rejects records larger than maxLineBytes.
+func NewDecoderWithLimit(r io.Reader, maxLineBytes int) *Decoder {
+	if maxLineBytes <= 0 {
+		maxLineBytes = defaultMaxLineBytes
+	}
+	return &Decoder{br: bufio.NewReader(r), maxLineBytes: maxLineBytes}
 }
 
 // Decode returns the next record or io.EOF at a clean end of stream.
 func (d *Decoder) Decode() (*Inbound, error) {
-	line, err := d.br.ReadBytes('\n')
-	if err == nil {
-		return DecodeLine(line)
-	}
-	if errors.Is(err, io.EOF) && len(line) > 0 {
-		in, derr := DecodeLine(line)
-		if derr != nil {
-			return nil, errUnexpectedTail(derr)
+	line := make([]byte, 0, min(d.maxLineBytes, 64<<10))
+	for {
+		fragment, err := d.br.ReadSlice('\n')
+		if len(line)+len(fragment) > d.maxLineBytes {
+			return nil, ErrFrameTooLarge
 		}
-		return in, nil
+		line = append(line, fragment...)
+		switch {
+		case err == nil:
+			return DecodeLine(line)
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF) && len(line) > 0:
+			in, derr := DecodeLine(line)
+			if derr != nil {
+				return nil, errUnexpectedTail(derr)
+			}
+			return in, nil
+		default:
+			return nil, err
+		}
 	}
-	return nil, err
 }
