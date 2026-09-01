@@ -27,6 +27,7 @@ const (
 	providerTerminationIntentional
 	providerTerminationQueueOverflow
 	providerTerminationDeliveryTimeout
+	providerTerminationIdleEviction
 )
 
 type providerTermination struct {

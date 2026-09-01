@@ -23,6 +23,8 @@ func (k providerTerminationKind) String() string {
 		return "queue_overflow"
 	case providerTerminationDeliveryTimeout:
 		return "delivery_timeout"
+	case providerTerminationIdleEviction:
+		return "idle_eviction"
 	default:
 		return "unknown"
 	}

@@ -492,6 +492,8 @@ func (s *Session) providerExited(termination providerTermination) {
 		s.send(&ErrorFrame{Type: "error", SessionID: s.id, Code: "provider_overflow", Message: termination.summary})
 	case providerTerminationDeliveryTimeout:
 		s.send(&ErrorFrame{Type: "error", SessionID: s.id, Code: "provider_timeout", Message: termination.summary})
+	case providerTerminationIdleEviction:
+		s.send(&ErrorFrame{Type: "error", SessionID: s.id, Code: "session_unloaded", Message: "Idle session was unloaded by Omo"})
 	case providerTerminationUnexpected:
 		s.send(&ErrorFrame{Type: "error", SessionID: s.id, Code: "pi_eof", Message: "Omo process ended (" + termination.summary + ")"})
 	}
