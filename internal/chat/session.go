@@ -451,6 +451,7 @@ func (s *Session) prepareProviderExit() bool {
 	s.done = true
 	s.providerExitPending = true
 	s.routingHandle = ""
+	s.shared = nil
 	s.promptInFlight = false
 	s.providerRunActive = false
 	s.compactionActive = false

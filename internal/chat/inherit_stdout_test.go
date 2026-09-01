@@ -122,6 +122,15 @@ func TestManagerEvictsOnceWhenLeaderExitMaskedByDescendant(t *testing.T) {
 		t.Fatalf("start session: %v", err)
 	}
 	defer detach()
+	session.mu.Lock()
+	var providerDone <-chan struct{}
+	if session.shared != nil {
+		providerDone = session.shared.done
+	}
+	session.mu.Unlock()
+	if providerDone == nil {
+		t.Fatal("session has no shared provider after acquire")
+	}
 
 	select {
 	case got := <-exited:
@@ -136,8 +145,9 @@ func TestManagerEvictsOnceWhenLeaderExitMaskedByDescendant(t *testing.T) {
 	}
 
 	// Once the pump has fully settled, a duplicate eviction is impossible to
-	// miss.
-	<-session.shared.done
+	// miss. Snapshot the done channel before death: providerExited clears
+	// session.shared so the pointer is gone by the time OnExit returns.
+	<-providerDone
 	select {
 	case dup := <-exited:
 		t.Fatalf("exit hook fired twice: %p", dup)

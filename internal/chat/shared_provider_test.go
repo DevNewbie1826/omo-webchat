@@ -144,11 +144,12 @@ func TestSharedProviderDeathFinishesEveryAttachedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sessionA.shared != sessionB.shared {
+	provider := sessionShared(sessionA)
+	if provider == nil || sessionShared(sessionB) != provider {
 		t.Fatal("sessions do not share the provider selected for the death test")
 	}
 
-	if err := sessionA.shared.proc.cmd.Process.Kill(); err != nil {
+	if err := provider.proc.cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill shared provider: %v", err)
 	}
 	got := waitForSessionExits(t, exited, 2)
@@ -201,7 +202,11 @@ func TestManagerRestartsProviderAndReopensDurableSessionPath(t *testing.T) {
 	if got := providerSpawnCount(t, spawnLog); got != 1 {
 		t.Fatalf("provider spawn count before death = %d, want 1", got)
 	}
-	if err := first.shared.proc.cmd.Process.Kill(); err != nil {
+	provider := sessionShared(first)
+	if provider == nil {
+		t.Fatal("first session has no shared provider")
+	}
+	if err := provider.proc.cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first provider: %v", err)
 	}
 	if got := waitForSessionExits(t, exited, 1); !got[first] {

@@ -298,26 +298,3 @@ func (s *Session) applySessionInfoChanged(raw json.RawMessage) {
 		callback(s, ev.Name)
 	}
 }
-
-// forwardExtensionEvent maps a provider extension_event to the client's
-// extensionEvent frame. A nameless event cannot be routed by consumers and
-// is dropped; name and data are otherwise passed through verbatim. The
-// frame is delivered through the delivery barrier with the snapshot cache
-// commit (rememberActivitySnapshot), so cache and broadcast are atomic.
-func (s *Session) forwardExtensionEvent(raw json.RawMessage) {
-	var ev struct {
-		Name string          `json:"name"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(raw, &ev) != nil || ev.Name == "" {
-		return
-	}
-	b, err := json.Marshal(&ExtensionEventFrame{Type: "extensionEvent", SessionID: s.id, Name: ev.Name, Data: ev.Data})
-	if err != nil {
-		return
-	}
-	s.barrier.Lock()
-	defer s.barrier.Unlock()
-	s.rememberActivitySnapshot(ev.Name, ev.Data)
-	s.writeFrame(b)
-}
