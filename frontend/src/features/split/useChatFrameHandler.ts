@@ -1,6 +1,6 @@
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
-import type { MissingOriginal } from "./useChatFrameState";
+import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
@@ -47,7 +47,7 @@ interface ChatFrameHandlerBindings {
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
-  readonly setHistoryLoaded: StateSetter<boolean>;
+  readonly setHistoryStatus: StateSetter<HistoryStatus>;
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
@@ -150,6 +150,16 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
         return;
       case "error": {
+        if (
+          !frame.requestId
+          && (frame.code === "resume_failed"
+            || frame.code === "initialize_failed"
+            || frame.code === "start_failed"
+            || frame.code === "decode_failed"
+            || frame.code === "no_chat")
+        ) {
+          bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
+        }
         // A dangling stored identity surfaces its branch candidates instead
         // of the raw failure. The state is never cleared by live frames.
         if (frame.code === "resume_failed" && frame.dangling === true) {
@@ -217,7 +227,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         bindings.historyLoadedRef.current = true;
-        bindings.setHistoryLoaded(true);
+        bindings.setHistoryStatus("loaded");
         const entries = bindings.pageBuffer.consume(frame.entries);
         const reconciliation = reconcileFrameHistory({
           entries,

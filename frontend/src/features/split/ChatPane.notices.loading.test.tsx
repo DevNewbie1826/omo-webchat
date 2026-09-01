@@ -39,6 +39,7 @@ describe("ChatPane notices while history is loading", () => {
       root.unmount();
     });
     container.remove();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -91,5 +92,97 @@ describe("ChatPane notices while history is loading", () => {
     });
 
     expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("renders the notice row when history loading stalls", () => {
+    vi.useFakeTimers();
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+    });
+    expect(noticeRows(container).length).toBe(0);
+
+    act(() => {
+      vi.advanceTimersByTime(30_001);
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("renders the notice row for a dangling resume failure without entries", () => {
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "resume_failed",
+        dangling: true,
+        candidates: [],
+        message: "resume failed",
+      });
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("keeps the notice row mounted when live frames clear a terminal history error", () => {
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "initialize_failed",
+        message: "initialize failed",
+      });
+    });
+    expect(noticeRows(container).length).toBe(1);
+
+    act(() => {
+      deliver({
+        type: "messageDelta",
+        sessionId: "chat-1",
+        delta: { kind: "text_delta", delta: "live" },
+      });
+    });
+    expect(noticeRows(container).length).toBe(1);
+
+    act(() => {
+      deliver({
+        type: "tool",
+        sessionId: "chat-1",
+        toolCallId: "call-1",
+        toolName: "bash",
+        phase: "start",
+      });
+    });
+    expect(noticeRows(container).length).toBe(1);
+
+    act(() => {
+      deliver({ type: "compaction.started", sessionId: "chat-1" });
+    });
+    expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("keeps notices gated for a request-scoped control error", () => {
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "initialize_failed",
+        requestId: "control-1",
+        message: "",
+      });
+    });
+
+    expect(noticeRows(container).length).toBe(0);
+    expect(container.querySelector(".th-chat-loading")).not.toBeNull();
   });
 });

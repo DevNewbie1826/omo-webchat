@@ -217,6 +217,7 @@ export function useChatSession(
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,
     historyLoaded: frameState.historyLoaded,
+    historyStatus: frameState.historyStatus,
     connected: frameState.connected,
     commands: frameState.commands,
     thinkingLevel: frameState.thinkingLevel,
