@@ -12,10 +12,11 @@ import (
 // commit (rememberActivitySnapshot), so cache and broadcast are atomic.
 //
 // An event that names a parent_session_id is dropped when the receiving
-// session already has a different piSessionID, so a misrouted provider
-// record cannot contaminate another session's activity cache or WS frames.
-// Events with no parent_session_id, and sessions with no identity yet,
-// pass through unchanged.
+// session already has a different provider runtime session ID, so a misrouted
+// provider record cannot contaminate another session's activity cache or WS
+// frames. The durable piSessionID may be a file path and is intentionally not
+// used for this comparison. Events with no parent_session_id, and sessions
+// with no runtime identity yet, pass through unchanged.
 func (s *Session) forwardExtensionEvent(raw json.RawMessage) {
 	var ev struct {
 		Name string          `json:"name"`
@@ -28,12 +29,14 @@ func (s *Session) forwardExtensionEvent(raw json.RawMessage) {
 		ParentSessionID string `json:"parent_session_id"`
 	}
 	if json.Unmarshal(ev.Data, &payload) == nil && payload.ParentSessionID != "" {
-		identity := s.PiSessionID()
-		if identity != "" && identity != payload.ParentSessionID {
+		s.mu.Lock()
+		providerSessionID := s.providerSessionID
+		s.mu.Unlock()
+		if providerSessionID != "" && providerSessionID != payload.ParentSessionID {
 			slog.Debug("dropped mismatched extension event",
 				"session", s.id,
 				"name", ev.Name,
-				"pi_session_id", identity,
+				"provider_session_id", providerSessionID,
 				"parent_session_id", payload.ParentSessionID,
 			)
 			return

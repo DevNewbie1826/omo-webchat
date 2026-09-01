@@ -118,6 +118,9 @@ type Session struct {
 	provider         string
 	piSessionID      string
 	onResumeIdentity ResumeIdentityCallback
+	// providerSessionID is the provider runtime UUID for the currently open
+	// session. Unlike piSessionID, it is never persisted or used to resume.
+	providerSessionID string
 	// identityPersistSuppressed latches a fallback session opened after a
 	// failed resume: identity captures keep updating the in-memory identity
 	// but never reach the persistence callback, so the fallback can never

@@ -2,7 +2,9 @@ package chat
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
+	"time"
 )
 
 func taskExtensionEventJSON(parentSessionID, taskName string) string {
@@ -48,6 +50,22 @@ func containsName(names []string, want string) bool {
 	return false
 }
 
+type routingGateWriter struct {
+	entered   chan struct{}
+	release   chan struct{}
+	delivered chan struct{}
+	once      sync.Once
+}
+
+func (w *routingGateWriter) WriteJSON([]byte) error {
+	w.once.Do(func() {
+		close(w.entered)
+		<-w.release
+	})
+	w.delivered <- struct{}{}
+	return nil
+}
+
 func TestProviderDeathClearsSharedAndHandle(t *testing.T) {
 	// Given: two sessions routed on one shared provider.
 	provider := fakeSharedProvider(make(chan []byte, 1))
@@ -88,6 +106,7 @@ func TestForwardExtensionEventDropsMismatchedParent(t *testing.T) {
 	writer := newCollectWriter()
 	s := newTestSession("chat-drop", writer)
 	s.piSessionID = "my-session"
+	s.providerSessionID = "my-session"
 	before := s.ActivitySnapshot()
 
 	// When: an extension_event arrives tagged with a different parent session.
@@ -108,6 +127,7 @@ func TestForwardExtensionEventAllowsMatchingParent(t *testing.T) {
 	writer := newCollectWriter()
 	s := newTestSession("chat-match", writer)
 	s.piSessionID = "my-session"
+	s.providerSessionID = "my-session"
 
 	// When: an extension_event arrives tagged with this session's identity.
 	dispatchEvent(s, "extension_event", taskExtensionEventJSON("my-session", "own-task"))
@@ -118,6 +138,44 @@ func TestForwardExtensionEventAllowsMatchingParent(t *testing.T) {
 	}
 	if names := cachedTaskNames(t, s); !containsName(names, "own-task") {
 		t.Fatalf("cached task names = %v, want own-task", names)
+	}
+}
+
+func TestForwardExtensionEventMatchesRuntimeIDWhenResumeIdentityIsFile(t *testing.T) {
+	// Given: open_session returned both its durable file identity and provider
+	// runtime UUID. The file remains the identity used for future resume.
+	writer := newCollectWriter()
+	s := newTestSession("chat-runtime-match", writer)
+	s.capturePiSessionID(json.RawMessage(`{"sessionFile":"/tmp/runtime-match.jsonl","sessionId":"01a057c8-560c-7039-aff9-24d448001938"}`))
+	if got := s.PiSessionID(); got != "/tmp/runtime-match.jsonl" {
+		t.Fatalf("resume identity = %q, want session file", got)
+	}
+
+	// When: an extension event carries the matching provider runtime UUID.
+	dispatchEvent(s, "extension_event", taskExtensionEventJSON("01a057c8-560c-7039-aff9-24d448001938", "runtime-task"))
+
+	// Then: the UUID match permits both forwarding and snapshot caching.
+	if got := countFramesOfType(writer.snapshot(), "extensionEvent"); got != 1 {
+		t.Fatalf("runtime-matching extension_event forwarded = %d, want 1; frames: %s", got, writer.typesString())
+	}
+	if names := cachedTaskNames(t, s); !containsName(names, "runtime-task") {
+		t.Fatalf("cached task names = %v, want runtime-task", names)
+	}
+}
+
+func TestForwardExtensionEventAllowsTaggedParentBeforeRuntimeIDCapture(t *testing.T) {
+	// Given: only a durable file identity is known; the open-session runtime
+	// UUID has not been captured yet.
+	writer := newCollectWriter()
+	s := newTestSession("chat-runtime-unknown", writer)
+	s.capturePiSessionID(json.RawMessage(`{"sessionFile":"/tmp/runtime-unknown.jsonl"}`))
+
+	// When: a parent-tagged event arrives during that initialization window.
+	dispatchEvent(s, "extension_event", taskExtensionEventJSON("runtime-not-yet-known", "early-task"))
+
+	// Then: preserve the existing pass-through behavior until a runtime UUID is known.
+	if got := countFramesOfType(writer.snapshot(), "extensionEvent"); got != 1 {
+		t.Fatalf("pre-runtime extension_event forwarded = %d, want 1; frames: %s", got, writer.typesString())
 	}
 }
 
@@ -148,10 +206,12 @@ func TestTwoSessionIsolationAfterProviderRestart(t *testing.T) {
 
 	a := newTestSession("chat-a", newCollectWriter())
 	a.piSessionID = "session-a"
+	a.providerSessionID = "session-a"
 	a.shared = provider
 	a.routingHandle = "route-a"
 	b := newTestSession("chat-b", newCollectWriter())
 	b.piSessionID = "session-b"
+	b.providerSessionID = "session-b"
 	b.shared = provider
 	b.routingHandle = "route-b"
 	manager.sessions[a.ID()] = a
@@ -183,5 +243,130 @@ func TestTwoSessionIsolationAfterProviderRestart(t *testing.T) {
 	}
 	if !containsName(names, "alpha-task") {
 		t.Fatalf("session A lost its own task after restart: %v", names)
+	}
+}
+
+func TestTwoSessionIsolationDuringConcurrentProviderRestart(t *testing.T) {
+	// Given: A and B have live route workers on a shared provider. Hold A's
+	// first delivery in its writer so provider exit overlaps route delivery.
+	provider := fakeSharedProvider(make(chan []byte, 1))
+	manager := NewManager()
+	manager.provider = provider
+
+	writerA := &routingGateWriter{
+		entered: make(chan struct{}), release: make(chan struct{}), delivered: make(chan struct{}, 2),
+	}
+	a := newTestSession("chat-concurrent-a", nil)
+	a.Attach(writerA)
+	a.piSessionID = "session-a"
+	a.providerSessionID = "session-a"
+	writerB := newCollectWriter()
+	b := newTestSession("chat-concurrent-b", writerB)
+	b.piSessionID = "session-b"
+	b.providerSessionID = "session-b"
+
+	install := func(p *sharedProvider, session *Session, handle string) *sessionRoute {
+		route := &sessionRoute{
+			session: session, handle: handle,
+			queue: make(chan sessionDelivery, sessionQueueSize), ready: make(chan struct{}), provider: p,
+		}
+		session.mu.Lock()
+		session.shared = p
+		session.routingHandle = handle
+		session.mu.Unlock()
+		p.mu.Lock()
+		p.sessions[handle] = route
+		p.mu.Unlock()
+		go route.run()
+		route.activate()
+		return route
+	}
+	oldRouteA := install(provider, a, "route-a")
+	oldRouteB := install(provider, b, "route-b")
+	manager.sessions[a.ID()] = a
+	manager.sessions[b.ID()] = b
+	var provider2 *sharedProvider
+	var newRouteB *sessionRoute
+	t.Cleanup(func() {
+		oldRouteA.cancel()
+		oldRouteB.cancel()
+		if newRouteB != nil {
+			newRouteB.cancel()
+		}
+		manager.mu.Lock()
+		manager.sessions = make(map[string]*Session)
+		manager.provider = nil
+		manager.mu.Unlock()
+		manager.CloseAll()
+		_ = provider.close()
+		if provider2 != nil {
+			_ = provider2.close()
+		}
+	})
+
+	if !provider.route(Event{Type: "extension_event", Raw: json.RawMessage(taskExtensionEventJSON("session-a", "alpha-task")), SessionID: "route-a"}) {
+		t.Fatal("alpha event was not routed")
+	}
+	<-writerA.entered
+
+	// When: stale delivery is queued behind A's blocked frame while provider
+	// exit and B's reattachment execute on separate coordinated goroutines.
+	bravo := json.RawMessage(taskExtensionEventJSON("session-b", "bravo-task"))
+	if !provider.route(Event{Type: "extension_event", Raw: bravo, SessionID: "route-a"}) {
+		t.Fatal("stale bravo event was not queued on A")
+	}
+	if !provider.route(Event{Type: "extension_event", Raw: json.RawMessage(taskExtensionEventJSON("session-a", "alpha-after-restart")), SessionID: "route-a"}) {
+		t.Fatal("post-restart alpha event was not queued on A")
+	}
+
+	provider2 = fakeSharedProvider(make(chan []byte, 1))
+	exited := make(chan struct{})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		manager.providerExited(provider, providerTermination{
+			kind: providerTerminationUnexpected, summary: "test death", sessions: []*Session{a, b},
+		})
+		close(exited)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		<-exited
+		newRouteB = install(provider2, b, "route-b2")
+		manager.mu.Lock()
+		manager.provider = provider2
+		manager.sessions[b.ID()] = b
+		manager.mu.Unlock()
+		provider2.route(Event{Type: "extension_event", Raw: bravo, SessionID: "route-b2"})
+	}()
+	close(start)
+	close(writerA.release)
+	wg.Wait()
+	if newRouteB == nil {
+		t.Fatal("B was not reattached")
+	}
+
+	// Then: wait for B's accepted route delivery and both accepted A frames.
+	// FIFO makes the second A signal exact proof that the stale frame between
+	// them was processed, not merely left queued when assertions ran.
+	writerB.waitForType(t, "extensionEvent", sessionDeliveryTimeout)
+	for delivered := 0; delivered < 2; delivered++ {
+		select {
+		case <-writerA.delivered:
+		case <-time.After(sessionDeliveryTimeout):
+			t.Fatal("timed out waiting for A's queued route deliveries")
+		}
+	}
+	namesB := cachedTaskNames(t, b)
+	if !containsName(namesB, "bravo-task") {
+		t.Fatalf("session B did not cache its reattached task: %v", namesB)
+	}
+	namesA := cachedTaskNames(t, a)
+	if containsName(namesA, "bravo-task") || !containsName(namesA, "alpha-after-restart") {
+		t.Fatalf("session A cache after concurrent restart = %v, want alpha only", namesA)
 	}
 }
