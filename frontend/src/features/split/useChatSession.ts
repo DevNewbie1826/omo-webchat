@@ -223,7 +223,7 @@ export function useChatSession(
     doneReason: frameState.doneReason,
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
-    sessionUnloaded: frameState.sessionUnloaded,
+    resumableCause: frameState.resumableCause,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,

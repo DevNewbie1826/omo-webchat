@@ -22,6 +22,16 @@ export interface MissingOriginal {
 }
 
 /**
+ * Why the pane is showing its calm resumable state: the engine unloaded the
+ * idle session ("unloaded"), or the shared provider process ended under the
+ * chat ("providerEnded"). Both leave the conversation durable on disk, so the
+ * surface stays usable and the next interaction rebinds through a fresh
+ * chat.create. Cleared only by the state frame proving get_state completed
+ * against a live provider route, never by transcript traffic alone.
+ */
+export type ResumableCause = "unloaded" | "providerEnded";
+
+/**
  * One server advisory rendered as a distinct system block inside the
  * transcript flow. `at` carries the server stamp (epoch ms) when the frame
  * had one, otherwise the client's receipt time.
@@ -91,10 +101,7 @@ export function useChatFrameState() {
   const [doneReason, setDoneReason] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [missingOriginal, setMissingOriginal] = useState<MissingOriginal | null>(null);
-  // Calm resumable marker for the engine's idle eviction (session_unloaded):
-  // cleared by the state frame proving get_state completed against a live
-  // provider route, never by transcript traffic alone.
-  const [sessionUnloaded, setSessionUnloaded] = useState(false);
+  const [resumableCause, setResumableCause] = useState<ResumableCause | null>(null);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -216,7 +223,7 @@ export function useChatFrameState() {
     setDoneReason,
     setError,
     setMissingOriginal,
-    setSessionUnloaded,
+    setResumableCause,
     setContextUsage,
     setCacheHitRate,
     setIsCompacting,
@@ -305,7 +312,7 @@ export function useChatFrameState() {
     doneReason,
     error,
     missingOriginal,
-    sessionUnloaded,
+    resumableCause,
     contextUsage,
     cacheHitRate,
     isCompacting,

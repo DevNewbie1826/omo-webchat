@@ -170,6 +170,8 @@
   "chat.sessionUnloadedTitle": "This chat was unloaded while idle",
   "chat.sessionUnloadedDetail": "The conversation is safe on disk. Resume it to pick up right where you left off.",
   "chat.sessionUnloadedResume": "Resume chat",
+  "chat.providerEndedTitle": "The assistant process ended",
+  "chat.providerEndedDetail": "The conversation is safe on disk. Resume it to continue with a fresh process.",
   "chat.placeholder": "Message {provider}…",
   "chat.send": "Send",
   "chat.steer": "Steer",

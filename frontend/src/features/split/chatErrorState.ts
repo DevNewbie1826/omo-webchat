@@ -18,7 +18,11 @@ const TERMINAL_ERROR_CODES = new Set([
   "decode_failed",
   "provider_overflow",
   "provider_timeout",
-  "pi_eof",
+  // "pi_eof" is deliberately not terminal: the shared provider process ended,
+  // but the chat survives on disk. useChatFrameHandler recovers it through the
+  // resumable rebind transition (resumable banner plus a fresh chat.create)
+  // instead of tearing the surface down; only a pi_eof tagged command
+  // "prompt" stays terminal, via the command check below.
 ]);
 
 export function isPromptTerminalError(frame: ErrorFrame): boolean {

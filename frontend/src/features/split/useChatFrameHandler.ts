@@ -1,6 +1,6 @@
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
-import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
+import type { HistoryStatus, MissingOriginal, ResumableCause } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
@@ -45,7 +45,7 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
-  readonly setSessionUnloaded: StateSetter<boolean>;
+  readonly setResumableCause: StateSetter<ResumableCause | null>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -62,7 +62,10 @@ interface ChatFrameHandlerBindings {
  * Error codes that prove the conversation history will never arrive. Three
  * groups: the open/create/resume sequence failing, the provider-termination
  * switch in internal/chat/session.go whose kinds all tear the session down,
- * and a failed get_entries response. Control rejections - set_model_failed,
+ * and a failed get_entries response. pi_eof belongs here only for the history
+ * gate - an unfinished load must be marked failed so advisories stay visible -
+ * while the frame itself takes the resumable provider-ended recovery further
+ * down. Control rejections - set_model_failed,
  * set_thinking_failed, approval_failed, persist_failed - are absent by
  * design: treating those as history failure would re-expose the notice-only
  * transcript this gate exists to prevent.
@@ -188,7 +191,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
-          bindings.setSessionUnloaded(true);
+          bindings.setResumableCause("unloaded");
           bindings.setError("");
           return;
         }
@@ -209,6 +212,23 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         bindings.setError(frame.message);
+        // The shared provider process ended under the chat (pi_eof; the server
+        // emits it unsolicited, with no command and no request id). The engine
+        // may still be alive and the conversation is durable on disk, so this
+        // takes the same resumable transition as session_unloaded: release the
+        // dead run's latches, clear the live surfaces so the composer stops
+        // showing Stop, and route the next interaction through the banner's
+        // fresh chat.create rebind. A pi_eof tagged command "prompt" stays
+        // terminal below: the provider rejected the user's own run, which
+        // keeps its raw error and retry draft.
+        if (frame.code === "pi_eof" && frame.command !== "prompt") {
+          bindings.submitLatchRef.current = false;
+          bindings.setDoneReason(null);
+          clearLiveSurfaces();
+          bindings.setResumableCause("providerEnded");
+          bindings.setError("");
+          return;
+        }
         if (!isPromptTerminalError(frame)) return;
         const active = bindings.activeRunRef.current;
         bindings.submitLatchRef.current = false;
@@ -241,7 +261,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "state":
         // ready precedes provider initialization; state proves get_state
         // completed and the reopened provider route is live.
-        bindings.setSessionUnloaded(false);
+        bindings.setResumableCause(null);
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);

@@ -34,8 +34,16 @@ describe("error frame command boundary", () => {
   });
 
   it("still honors terminal codes regardless of command", () => {
-    expect(isPromptTerminalError(errorFrame("get_state", "pi_eof"))).toBe(true);
     expect(isPromptTerminalError(errorFrame("set_model", "no_session"))).toBe(true);
+  });
+
+  // The shared provider process ending is a resumable transition, not a
+  // terminal one: useChatFrameHandler rebinds the chat with a fresh
+  // chat.create instead of tearing the surface down. Only the provider
+  // rejecting the prompt command itself stays terminal, whatever its code.
+  it("classifies pi_eof as resumable, terminal only via the prompt command", () => {
+    expect(isPromptTerminalError(errorFrame("get_state", "pi_eof"))).toBe(false);
+    expect(isPromptTerminalError(errorFrame("prompt", "pi_eof"))).toBe(true);
   });
 
   // The engine's idle eviction arrives as command close_session with the

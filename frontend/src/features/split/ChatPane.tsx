@@ -132,7 +132,7 @@ export function ChatPane({
       </header>
       <div className="th-chat-main">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
-        {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
+        {chat.resumableCause && <SessionUnloadedBanner onResume={chat.resume} cause={chat.resumableCause} />}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}
