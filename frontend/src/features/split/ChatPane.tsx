@@ -49,9 +49,11 @@ export function ChatPane({
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const chat = useChatSession(chatSession, connect, onChatName);
+  // Notices replay before history, so keep them gated until the monotonic
+  // history lifecycle either completes or proves that history is unavailable.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.notices),
-    [chat.messages, chat.notices],
+    () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
+    [chat.messages, chat.notices, chat.historyStatus],
   );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;

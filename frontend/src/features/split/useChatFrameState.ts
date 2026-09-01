@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
@@ -36,6 +36,12 @@ export interface ChatNotice {
 
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
+
+export type HistoryStatus = "loading" | "loaded" | "failed";
+
+// Inactivity window since the last sign of history progress: active multi-page
+// loads may run indefinitely, while a silent provider cannot hide advisories forever.
+const HISTORY_STALL_MS = 30_000;
 
 /**
  * One row of the unified transcript render list: a conversation entry or an
@@ -88,7 +94,8 @@ export function useChatFrameState() {
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
-  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
+  const historyLoaded = historyStatus === "loaded";
   const [connected, setConnected] = useState(false);
   const [commands, setCommands] = useState<readonly CommandEntry[]>([]);
   const [models, setModels] = useState<readonly { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] }[]>([]);
@@ -111,6 +118,7 @@ export function useChatFrameState() {
   const snapshotVersionRef = useRef(0);
   const toolCallsRef = useRef<Readonly<Record<string, ToolEntry>>>({});
   const historyLoadedRef = useRef(false);
+  const historyStallTimerRef = useRef<number | null>(null);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
   const noticeIdRef = useRef(0);
 
@@ -166,6 +174,16 @@ export function useChatFrameState() {
     setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
   };
 
+  const armHistoryStall = (refresh: boolean): void => {
+    if (historyStatus !== "loading") return;
+    if (historyStallTimerRef.current !== null && !refresh) return;
+    if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
+    historyStallTimerRef.current = window.setTimeout(() => {
+      historyStallTimerRef.current = null;
+      setHistoryStatus((current) => current === "loading" ? "failed" : current);
+    }, HISTORY_STALL_MS);
+  };
+
   const handleFrame = createChatFrameHandler({
     controls,
     streaming,
@@ -188,6 +206,7 @@ export function useChatFrameState() {
     applyActivities,
     clearLiveSurfaces,
     recoverLostRun,
+    armHistoryStall,
     setThinking,
     setRunning,
     setDoneReason,
@@ -196,7 +215,7 @@ export function useChatFrameState() {
     setContextUsage,
     setCacheHitRate,
     setIsCompacting,
-    setHistoryLoaded,
+    setHistoryStatus,
     setCommands,
     setModels,
     setPendingApproval,
@@ -258,6 +277,20 @@ export function useChatFrameState() {
     awaitingReconnectHistoryRef.current = false;
     setConnected(false);
   };
+
+  useEffect(() => {
+    if (historyStatus !== "loading" && historyStallTimerRef.current !== null) {
+      window.clearTimeout(historyStallTimerRef.current);
+      historyStallTimerRef.current = null;
+    }
+    return () => {
+      if (historyStallTimerRef.current !== null) {
+        window.clearTimeout(historyStallTimerRef.current);
+        historyStallTimerRef.current = null;
+      }
+    };
+  }, [historyStatus]);
+
   return {
     messages,
     streaming: streaming.streaming,
@@ -271,6 +304,7 @@ export function useChatFrameState() {
     cacheHitRate,
     isCompacting,
     historyLoaded,
+    historyStatus,
     connected,
     commands,
     thinkingLevel: controls.thinkingLevel,

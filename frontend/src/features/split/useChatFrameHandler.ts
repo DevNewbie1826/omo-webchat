@@ -1,6 +1,6 @@
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
-import type { MissingOriginal } from "./useChatFrameState";
+import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
@@ -39,6 +39,7 @@ interface ChatFrameHandlerBindings {
   readonly applyActivities: (next: ActivityState) => void;
   readonly clearLiveSurfaces: () => void;
   readonly recoverLostRun: (run: chatState.PendingOptimistic) => void;
+  readonly armHistoryStall: (refresh: boolean) => void;
   readonly setThinking: StateSetter<string>;
   readonly setRunning: StateSetter<boolean>;
   readonly setDoneReason: StateSetter<string | null>;
@@ -47,13 +48,36 @@ interface ChatFrameHandlerBindings {
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
-  readonly setHistoryLoaded: StateSetter<boolean>;
+  readonly setHistoryStatus: StateSetter<HistoryStatus>;
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setRetryDraft: StateSetter<(ChatDraft & { readonly version: number }) | null>;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
+}
+
+/**
+ * Error codes that prove the conversation history will never arrive. Three
+ * groups: the open/create/resume sequence failing, the provider-termination
+ * switch in internal/chat/session.go whose kinds all tear the session down,
+ * and a failed get_entries response. Control rejections - set_model_failed,
+ * set_thinking_failed, approval_failed, persist_failed - are absent by
+ * design: treating those as history failure would re-expose the notice-only
+ * transcript this gate exists to prevent.
+ */
+const HISTORY_TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
+  "resume_failed", "initialize_failed", "start_failed", "no_chat",
+  "bad_create", "no_workspace", "bad_provider",
+  "decode_failed", "provider_overflow", "provider_timeout", "pi_eof",
+]);
+
+function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
+  // A failed history command is terminal whatever request id the provider
+  // tagged it with: the shared provider always stamps get_entries with a
+  // "webchat-entries-N" id.
+  if (frame.code === "provider_error") return frame.command === "get_entries";
+  return frame.code !== undefined && HISTORY_TERMINAL_ERROR_CODES.has(frame.code);
 }
 
 function cacheHitRateOf(tokens: unknown): number | null {
@@ -72,6 +96,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
   };
   return (frame): void => {
     switch (frame.type) {
+      case "ready":
+        bindings.armHistoryStall(false);
+        return;
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
           bindings.setError("");
@@ -150,6 +177,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
         return;
       case "error": {
+        if (isHistoryTerminalError(frame)) {
+          bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
+        }
         // A dangling stored identity surfaces its branch candidates instead
         // of the raw failure. The state is never cleared by live frames.
         if (frame.code === "resume_failed" && frame.dangling === true) {
@@ -214,10 +244,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "entries": {
         if (frame.final === false) {
           bindings.pageBuffer.push(frame.entries);
+          bindings.armHistoryStall(true);
           return;
         }
         bindings.historyLoadedRef.current = true;
-        bindings.setHistoryLoaded(true);
+        bindings.setHistoryStatus("loaded");
         const entries = bindings.pageBuffer.consume(frame.entries);
         const reconciliation = reconcileFrameHistory({
           entries,
