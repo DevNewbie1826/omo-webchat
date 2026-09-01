@@ -540,46 +540,6 @@ func (m *Manager) releaseProviderIfIdle() {
 	_ = provider.close()
 }
 
-func (m *Manager) providerExited(provider *sharedProvider, termination providerTermination) {
-	m.mu.Lock()
-	if m.provider != provider {
-		m.mu.Unlock()
-		return
-	}
-	// Publish the provider replacement point and evict every route atomically.
-	// AcquireAttach can therefore see either the old provider with all of its
-	// sessions, or a nil provider with none of them, never a dead route paired
-	// with a freshly available provider slot.
-	m.provider = nil
-	routed := make(map[*Session]struct{}, len(termination.sessions))
-	for _, session := range termination.sessions {
-		routed[session] = struct{}{}
-	}
-	var unrouted []*Session
-	for id, session := range m.sessions {
-		session.mu.Lock()
-		owned := session.shared == provider
-		session.mu.Unlock()
-		if owned {
-			delete(m.sessions, id)
-			if _, ok := routed[session]; !ok {
-				unrouted = append(unrouted, session)
-			}
-		}
-	}
-	m.mu.Unlock()
-	// Route workers own both the lifecycle transition and ordered terminal
-	// delivery. In particular, do not acquire lifecycleMu on the shared pump:
-	// a client writer may currently hold it while blocked in frame delivery.
-	// A defensive fallback for an already-registered session whose provider
-	// has no route (possible in tests and during partial setup): no route worker
-	// exists to carry its final delivery.
-	for _, session := range unrouted {
-		session.prepareProviderExit()
-		go session.providerExited(termination)
-	}
-}
-
 // ReapFinished closes a session only while it is still registered and still
 // finished. It is intended for explicit bounded cleanup points, not timers.
 func (m *Manager) ReapFinished(id string, finished *Session) bool {

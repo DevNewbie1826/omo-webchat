@@ -29,3 +29,9 @@ func newTestSession(id string, writer *collectWriter) *Session {
 	}
 	return session
 }
+
+func sessionShared(s *Session) *sharedProvider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shared
+}

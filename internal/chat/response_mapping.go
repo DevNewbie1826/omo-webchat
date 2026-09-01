@@ -284,6 +284,9 @@ func (s *Session) capturePiSessionID(data json.RawMessage) {
 		return
 	}
 	s.mu.Lock()
+	if d.SessionID != "" {
+		s.providerSessionID = d.SessionID
+	}
 	changed := identity != s.piSessionID
 	s.piSessionID = identity
 	callback := s.onResumeIdentity
