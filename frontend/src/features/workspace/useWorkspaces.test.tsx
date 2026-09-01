@@ -147,6 +147,7 @@ describe("useWorkspaces paginated session history", () => {
   };
 
   beforeEach(() => {
+    window.localStorage.removeItem("th-ws-expanded");
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -169,6 +170,41 @@ describe("useWorkspaces paginated session history", () => {
     container.remove();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("reloads a restored expansion when its early session page resolves before workspaces", async () => {
+    const workspaceList = deferred<Awaited<ReturnType<typeof listWorkspaces>>>();
+    const firstPage = deferred<Awaited<ReturnType<typeof listWorkspaceSessions>>>();
+    vi.mocked(listWorkspaces).mockReturnValueOnce(workspaceList.promise);
+    vi.mocked(listWorkspaceSessions).mockReturnValueOnce(firstPage.promise);
+    window.localStorage.setItem("th-ws-expanded", '["ws-1"]');
+
+    act(() => root.render(<PendingSessionsProbe />));
+    act(() => {
+      void pendingLatest?.load();
+    });
+    await act(async () => undefined);
+
+    firstPage.resolve({
+      items: [{ id: "chat-1", name: "Chat 1", source: "stored", recencyMs: 10 }],
+      nextCursor: "",
+    });
+    await act(async () => undefined);
+    workspaceList.resolve([workspace]);
+    await act(async () => undefined);
+
+    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual(["chat-1"]);
+    expect(pendingLatest?.sessionPages.get("ws-1")).toMatchObject({ ready: true, loading: false });
+  });
+
+  it("prunes restored expansion ids missing from the canonical workspace list", async () => {
+    window.localStorage.setItem("th-ws-expanded", '["ws-1","ws-missing"]');
+
+    act(() => root.render(<PendingSessionsProbe />));
+    await act(async () => pendingLatest?.load());
+
+    expect([...pendingLatest!.expanded]).toEqual(["ws-1"]);
+    expect(window.localStorage.getItem("th-ws-expanded")).toBe('["ws-1"]');
   });
 
   it("keeps chats outside the first sidebar page in the canonical sessions map", async () => {
@@ -504,6 +540,18 @@ describe("useWorkspaces paginated session history", () => {
     expect(displayedName).toBe("Renamed chat");
     expect(displayedName).not.toBe("New chat");
     expect(pendingLatest?.sessionPages.get("ws-1")?.nextCursor).toBe("next-page");
+  });
+
+  it("removes a successfully deleted workspace from persisted expansion", async () => {
+    vi.mocked(deleteWorkspace).mockResolvedValueOnce();
+    window.localStorage.setItem("th-ws-expanded", '["ws-1"]');
+
+    act(() => root.render(<PendingSessionsProbe />));
+    await act(async () => pendingLatest?.load());
+    await act(async () => pendingLatest?.handleDeleteWorkspace(workspace));
+
+    expect(pendingLatest?.expanded.has("ws-1")).toBe(false);
+    expect(window.localStorage.getItem("th-ws-expanded")).toBe("[]");
   });
 
   it("unplaces every canonical chat when deleting a partially paged workspace", async () => {

@@ -189,23 +189,27 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
 
   const load = useCallback(async (): Promise<void> => {
     try {
-      setWorkspaces(await listWorkspaces());
+      const loadedWorkspaces = await listWorkspaces();
+      setWorkspaces(loadedWorkspaces);
+      const loadedIds = new Set(loadedWorkspaces.map((workspace) => workspace.id));
+      setExpanded((previous) => new Set([...previous].filter((id) => loadedIds.has(id))));
       // A fresh canonical list invalidates the independently paged sidebar view.
       replaceSessionLists(new Map());
       replaceSessionPages(new Map());
     } catch {
       /* transient failure — tree stays empty until next mutation */
     }
-  }, [replaceSessionLists, replaceSessionPages]);
+  }, [replaceSessionLists, replaceSessionPages, setExpanded]);
 
-  // The first page loads whenever a workspace becomes expanded, whichever
-  // action (chevron toggle, session select, chat creation) expanded it.
+  // The first page loads whenever a loaded workspace becomes expanded,
+  // whichever action (chevron toggle, session select, chat creation) expanded it.
   useEffect(() => {
-    for (const wsId of expanded) {
-      const paging = sessionPagesRef.current.get(wsId);
-      if (!paging?.ready && !paging?.loading) void fetchSessionPage(wsId, "", false);
+    for (const workspace of workspaces) {
+      if (!expanded.has(workspace.id)) continue;
+      const paging = sessionPagesRef.current.get(workspace.id);
+      if (!paging?.ready && !paging?.loading) void fetchSessionPage(workspace.id, "", false);
     }
-  }, [expanded, fetchSessionPage]);
+  }, [expanded, fetchSessionPage, workspaces]);
 
   const addCreatedSession = useCallback((wsId: string, tm: Terminal, replacedSessionId?: string): void => {
     const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: Date.now() };
@@ -296,6 +300,11 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       await deleteWorkspace(ws.id);
       for (const tm of ws.chats) layout.unplaceSession(tm.id);
       setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
+      setExpanded((previous) => {
+        const next = new Set(previous);
+        next.delete(ws.id);
+        return next;
+      });
       if (sessionListsRef.current.has(ws.id)) {
         const next = new Map(sessionListsRef.current);
         next.delete(ws.id);
