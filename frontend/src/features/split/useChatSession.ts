@@ -139,6 +139,16 @@ export function useChatSession(
 
   const disconnect = (): boolean => sendControl({ type: "chat.disconnect", sessionId: session.id }, "Failed to disconnect the session.");
 
+  // Reopen an evicted/unloaded session: re-sending the same chat.create
+  // frame the open/reconnect path uses makes the server resume the durable
+  // chat from disk. The pane's unloaded banner clears on the ready frame of
+  // that sequence - no new frame type is involved.
+  const resume = (): boolean => {
+    const client = clientRef.current;
+    return client !== null
+      && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id });
+  };
+
   const changeThinkingLevel = (level: string): boolean => {
     const restore = frameState.confirmedThinkingLevel();
     const requestId = nextRequestId();
@@ -213,6 +223,7 @@ export function useChatSession(
     doneReason: frameState.doneReason,
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
+    sessionUnloaded: frameState.sessionUnloaded,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,
@@ -234,6 +245,7 @@ export function useChatSession(
     steer,
     stop,
     disconnect,
+    resume,
     changeThinkingLevel,
     changeModel,
     respondApproval,

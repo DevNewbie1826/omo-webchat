@@ -10,6 +10,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
+import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
 import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
@@ -131,6 +132,7 @@ export function ChatPane({
       </header>
       <div className="th-chat-main">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
+        {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}

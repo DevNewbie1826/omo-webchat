@@ -45,6 +45,7 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
+  readonly setSessionUnloaded: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -98,6 +99,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     switch (frame.type) {
       case "ready":
         bindings.armHistoryStall(false);
+        // The provider session is live again: the resume open sequence (a
+        // re-sent chat.create, whether from the unloaded banner or a socket
+        // reconnect) succeeded, so the resumable unloaded banner goes away.
+        bindings.setSessionUnloaded(false);
         return;
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
@@ -177,6 +182,20 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
         return;
       case "error": {
+        // The engine unloaded this idle session and deleted it from its
+        // registry; the engine process itself is still alive and the
+        // conversation is durable on disk. Not terminal: surface the calm
+        // resumable banner instead of the raw error, and stop any in-flight
+        // run indicator so the pane does not look busy. Only the ready frame
+        // of the next open sequence clears the state.
+        if (frame.code === "session_unloaded") {
+          bindings.submitLatchRef.current = false;
+          bindings.setDoneReason(null);
+          clearLiveSurfaces();
+          bindings.setSessionUnloaded(true);
+          bindings.setError("");
+          return;
+        }
         if (isHistoryTerminalError(frame)) {
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
         }
