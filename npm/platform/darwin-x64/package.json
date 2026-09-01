@@ -1,0 +1,22 @@
+{
+  "name": "omo-webchat-darwin-x64",
+  "version": "0.1.0",
+  "description": "Prebuilt omo-webchat server binary for darwin/x64 (Go darwin/amd64).",
+  "repository": "https://github.com/DevNewbie1826/omo-webchat",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "exe",
+    "index.js"
+  ],
+  "private": false
+}
