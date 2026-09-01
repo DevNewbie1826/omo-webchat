@@ -43,7 +43,10 @@ func reconcileActivityPair(pair ActivitySnapshotPair) ActivitySnapshotPair {
 // use RawMessage fields so unrelated values never pass through float64 or
 // another lossy generic representation.
 func reconcileTaskPayload(task, dag json.RawMessage) (json.RawMessage, bool) {
-	outcomes := terminalDagRunTaskOutcomes(dag)
+	return reconcileTaskPayloadWithOutcomes(task, terminalDagRunTaskOutcomes(dag))
+}
+
+func reconcileTaskPayloadWithOutcomes(task json.RawMessage, outcomes map[string]dagTaskOutcome) (json.RawMessage, bool) {
 	if len(outcomes) == 0 || len(task) == 0 {
 		return nil, false
 	}
@@ -139,35 +142,26 @@ func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
 	return outcomes
 }
 
-// dagHasTerminalRun reports whether the dag payload carries at least one
-// terminal run. Malformed payloads report false.
-func dagHasTerminalRun(dag json.RawMessage) bool {
-	if len(dag) == 0 {
-		return false
-	}
-	var doc struct {
-		Runs []struct {
-			Status string `json:"status"`
-		} `json:"runs"`
-	}
-	if json.Unmarshal(dag, &doc) != nil {
-		return false
-	}
-	for _, run := range doc.Runs {
-		if terminalDagStatuses[run.Status] {
-			return true
-		}
-	}
-	return false
-}
-
 // reconcileActivityCacheLocked applies the sweep to the cached pair. The
 // caller holds s.mu; only the task payload can change, and only when the dag
 // payload vouches for a demotion.
 func (s *Session) reconcileActivityCacheLocked(dag json.RawMessage) {
-	task, changed := reconcileTaskPayload(s.lastActivitySnapshots[activitySnapshotOrder[0]], dag)
-	if !changed {
+	outcomes := terminalDagRunTaskOutcomes(dag)
+	if len(outcomes) == 0 {
 		return
 	}
-	s.lastActivitySnapshots[activitySnapshotOrder[0]] = task
+	if task, changed := reconcileTaskPayloadWithOutcomes(s.lastActivitySnapshots[activitySnapshotOrder[0]], outcomes); changed {
+		s.lastActivitySnapshots[activitySnapshotOrder[0]] = task
+	}
+	if s.taskDigest == nil {
+		return
+	}
+	for i := range s.taskDigest.Tasks {
+		row := &s.taskDigest.Tasks[i]
+		outcome, vouched := outcomes[row.TaskID]
+		if !vouched || terminalTaskStatuses[row.Status] {
+			continue
+		}
+		row.Status = outcome.status
+	}
 }

@@ -1,5 +1,4 @@
 import { isRecord, optString, reqBoolean, reqString } from "../../lib/chatWsParseFields";
-import { mapDrop } from "../split/activityParseShared";
 
 /** Compact in-memory task summary from GET /api/sessions/live `task_digest`. */
 export type TaskDigestEntry = {
@@ -42,7 +41,7 @@ function parseRunningTaskIds(value: unknown): readonly string[] | null {
   if (!Array.isArray(value)) return null;
   const ids: string[] = [];
   for (const item of value) {
-    if (typeof item !== "string") return null;
+    if (typeof item !== "string" || item.length === 0) return null;
     ids.push(item);
   }
   return ids;
@@ -57,12 +56,24 @@ function parseDagDigestRun(record: Record<string, unknown>): DagDigestRun | null
   return { runId, status, runningTaskIds };
 }
 
+function mapStrict<T>(value: unknown, mapItem: (item: Record<string, unknown>) => T | null): readonly T[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: T[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    const mapped = mapItem(item);
+    if (mapped === null) return null;
+    out.push(mapped);
+  }
+  return out;
+}
+
 /** Parse `task_digest`; malformed shape yields null and never throws. */
 export function parseTaskDigest(value: unknown): TaskDigest | null {
   if (!isRecord(value)) return null;
   const truncated = reqBoolean(value, "truncated");
   if (truncated === null) return null;
-  const tasks = mapDrop(value["tasks"], parseTaskDigestEntry);
+  const tasks = mapStrict(value["tasks"], parseTaskDigestEntry);
   if (tasks === null) return null;
   return { tasks, truncated };
 }
@@ -72,7 +83,7 @@ export function parseDagDigest(value: unknown): DagDigest | null {
   if (!isRecord(value)) return null;
   const truncated = reqBoolean(value, "truncated");
   if (truncated === null) return null;
-  const runs = mapDrop(value["runs"], parseDagDigestRun);
+  const runs = mapStrict(value["runs"], parseDagDigestRun);
   if (runs === null) return null;
   return { runs, truncated };
 }

@@ -19,6 +19,12 @@ export interface LiveSessionSummary {
   /** Raw sides retained so WS updates can be merged independently with polls. */
   readonly task?: unknown;
   readonly dag?: unknown;
+  /** Parsed poll digests retained when a WS frame replaces only the other side. */
+  readonly taskDigest?: unknown;
+  readonly dagDigest?: unknown;
+  /** Raw wire flags, distinct from the flattened unknown-state UI flags below. */
+  readonly taskSideOversized: boolean;
+  readonly dagSideOversized: boolean;
   readonly runningCount: number;
   readonly doneCount: number;
   readonly dagDone: number;
@@ -139,7 +145,7 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
       if (task.status !== "running") return false;
       const lastMs = lastActivityMs(task);
       return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
-        || (info.dagOversized !== true && runningDagTaskIds.has(task.taskId));
+        || runningDagTaskIds.has(task.taskId);
     }).length
     : taskDigest === undefined
       ? 0
@@ -160,6 +166,10 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
     title: info.title,
     task: info.task,
     dag: info.dag,
+    ...(info.taskDigest === undefined ? {} : { taskDigest: info.taskDigest }),
+    ...(info.dagDigest === undefined ? {} : { dagDigest: info.dagDigest }),
+    taskSideOversized: info.taskOversized === true,
+    dagSideOversized: info.dagOversized === true,
     runningCount: taskRunning + dagRunning,
     doneCount: counts.done,
     dagDone,

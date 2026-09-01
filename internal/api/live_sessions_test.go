@@ -220,6 +220,34 @@ func TestLiveSessionFromSummaryJSONReportsOversizedFlags(t *testing.T) {
 	}
 }
 
+func TestLiveSessionFromSummaryJSONSerializesEmptyDigestArrays(t *testing.T) {
+	row := liveSessionFromSummary(chat.LiveSummary{
+		ID:         "chat-empty-digest",
+		TaskDigest: &chat.ActivityTaskDigest{},
+		DagDigest: &chat.ActivityDagDigest{Runs: []chat.RunDigestEntry{{
+			RunID: "r1", Status: "running",
+		}}},
+	}, "Empty digest")
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal live session: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("decode live session: %v (%s)", err, raw)
+	}
+	taskDigest := parsed["task_digest"].(map[string]any)
+	if tasks, ok := taskDigest["tasks"].([]any); !ok || len(tasks) != 0 {
+		t.Fatalf("task_digest.tasks = %#v, want [] (%s)", taskDigest["tasks"], raw)
+	}
+	dagDigest := parsed["dag_digest"].(map[string]any)
+	runs := dagDigest["runs"].([]any)
+	run := runs[0].(map[string]any)
+	if ids, ok := run["running_task_ids"].([]any); !ok || len(ids) != 0 {
+		t.Fatalf("running_task_ids = %#v, want [] (%s)", run["running_task_ids"], raw)
+	}
+}
+
 func TestLiveSessionFromSummaryJSONReportsActivityDigests(t *testing.T) {
 	tests := []struct {
 		name           string

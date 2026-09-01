@@ -200,6 +200,117 @@ func TestActivityDagDigestKeepsRunningNodesFromOverCapPayload(t *testing.T) {
 	}
 }
 
+func TestTerminalDagArrivalDemotesTaskDigestIncludingOverCapPayload(t *testing.T) {
+	for _, oversized := range []bool{false, true} {
+		t.Run(fmt.Sprintf("oversized=%v", oversized), func(t *testing.T) {
+			s := newTestSession("chat-digest-demote", nil)
+			manager := liveManagerWith(t, s)
+			dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.task.updated","data":{"tasks":[{"task_id":"t-terminal","status":"running"},{"task_id":"t-live","status":"running"}]}}`)
+			runs := []map[string]any{{
+				"run_id": "r-terminal",
+				"status": "completed",
+				"nodes":  []map[string]string{{"task_id": "t-terminal", "state": "failed"}},
+			}}
+			var dag string
+			if oversized {
+				dag = oversizedDagPayload(t, runs)
+			} else {
+				raw, err := json.Marshal(map[string]any{"runs": runs})
+				if err != nil {
+					t.Fatalf("marshal dag: %v", err)
+				}
+				dag = string(raw)
+			}
+
+			dispatchEvent(s, "extension_event", `{"type":"extension_event","name":"omo.dag.updated","data":`+dag+`}`)
+
+			summary := requireLiveSummary(t, manager)
+			if summary.TaskDigest == nil || len(summary.TaskDigest.Tasks) != 2 {
+				t.Fatalf("TaskDigest = %#v, want two rows", summary.TaskDigest)
+			}
+			if got := summary.TaskDigest.Tasks[0].Status; got != "failed" {
+				t.Fatalf("terminal task digest status = %q, want failed", got)
+			}
+			if got := summary.TaskDigest.Tasks[1].Status; got != "running" {
+				t.Fatalf("unrelated task digest status = %q, want running", got)
+			}
+			if summary.DagDigest == nil || len(summary.DagDigest.Runs) != 0 {
+				t.Fatalf("DagDigest = %#v, want terminal run excluded", summary.DagDigest)
+			}
+		})
+	}
+}
+
+func TestActivityDagDigestPropagatesTruncatedRuns(t *testing.T) {
+	digest, ok := parseActivityDagDigest(json.RawMessage(`{"truncated_runs":true,"runs":[{"run_id":"r1","status":"running","nodes":[]}]}`))
+	if !ok {
+		t.Fatal("parseActivityDagDigest rejected valid payload")
+	}
+	if !digest.Truncated {
+		t.Fatal("ActivityDagDigest.Truncated = false, want truncated_runs propagated")
+	}
+}
+
+func TestActivityDagDigestCapsTotalRunningTaskIDs(t *testing.T) {
+	nodes := make([]map[string]string, maxActivityDigestEntries+1)
+	for i := range nodes {
+		nodes[i] = map[string]string{"task_id": fmt.Sprintf("t-%03d", i), "state": "running"}
+	}
+	raw, err := json.Marshal(map[string]any{
+		"runs": []map[string]any{{"run_id": "r1", "status": "running", "nodes": nodes}},
+	})
+	if err != nil {
+		t.Fatalf("marshal dag: %v", err)
+	}
+
+	digest, ok := parseActivityDagDigest(raw)
+	if !ok {
+		t.Fatal("parseActivityDagDigest rejected valid payload")
+	}
+	if !digest.Truncated {
+		t.Fatal("ActivityDagDigest.Truncated = false, want total id budget truncation")
+	}
+	if got := len(digest.Runs[0].RunningTaskIDs); got != maxActivityDigestEntries {
+		t.Fatalf("running_task_ids len = %d, want %d", got, maxActivityDigestEntries)
+	}
+}
+
+func TestActivityDigestMalformedShapesKeepPreviousDigest(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventName string
+		previous  string
+		malformed string
+	}{
+		{name: "task null", eventName: "omo.task.updated", previous: `{"tasks":[{"task_id":"t-keep","status":"running"}]}`, malformed: `null`},
+		{name: "task empty object", eventName: "omo.task.updated", previous: `{"tasks":[{"task_id":"t-keep","status":"running"}]}`, malformed: `{}`},
+		{name: "task null array", eventName: "omo.task.updated", previous: `{"tasks":[{"task_id":"t-keep","status":"running"}]}`, malformed: `{"tasks":null}`},
+		{name: "task malformed entry", eventName: "omo.task.updated", previous: `{"tasks":[{"task_id":"t-keep","status":"running"}]}`, malformed: `{"tasks":[{"task_id":"t-bad"}]}`},
+		{name: "dag null", eventName: "omo.dag.updated", previous: `{"runs":[{"run_id":"r-keep","status":"running","nodes":[]}]}`, malformed: `null`},
+		{name: "dag empty object", eventName: "omo.dag.updated", previous: `{"runs":[{"run_id":"r-keep","status":"running","nodes":[]}]}`, malformed: `{}`},
+		{name: "dag null array", eventName: "omo.dag.updated", previous: `{"runs":[{"run_id":"r-keep","status":"running","nodes":[]}]}`, malformed: `{"runs":null}`},
+		{name: "dag malformed entry", eventName: "omo.dag.updated", previous: `{"runs":[{"run_id":"r-keep","status":"running","nodes":[]}]}`, malformed: `{"runs":[{"run_id":"r-bad","nodes":[]}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSession("chat-digest-shape", nil)
+			s.rememberActivitySnapshot(tt.eventName, json.RawMessage(tt.previous))
+			before := s.activitySnapshotState()
+
+			s.rememberActivitySnapshot(tt.eventName, json.RawMessage(tt.malformed))
+
+			after := s.activitySnapshotState()
+			if tt.eventName == "omo.task.updated" {
+				if !reflect.DeepEqual(after.taskDigest, before.taskDigest) {
+					t.Fatalf("task digest changed: got %#v, want %#v", after.taskDigest, before.taskDigest)
+				}
+			} else if !reflect.DeepEqual(after.dagDigest, before.dagDigest) {
+				t.Fatalf("dag digest changed: got %#v, want %#v", after.dagDigest, before.dagDigest)
+			}
+		})
+	}
+}
+
 func TestActivityDigestMalformedJSONKeepsPreviousDigest(t *testing.T) {
 	// Given: a live session whose task digest already carries rows.
 	s := newTestSession("chat-digest-malformed", nil)

@@ -90,6 +90,8 @@ describe("summarizeLiveSession", () => {
       title: "Refactor auth",
       task: TASK_PAYLOAD,
       dag: DAG_PAYLOAD,
+      taskSideOversized: false,
+      dagSideOversized: false,
       runningCount: 2,
       doneCount: 3,
       dagDone: 2,
@@ -110,6 +112,8 @@ describe("summarizeLiveSession", () => {
       title: "Bare",
       task: null,
       dag: null,
+      taskSideOversized: false,
+      dagSideOversized: false,
       runningCount: 0,
       doneCount: 0,
       dagDone: 0,
@@ -372,6 +376,26 @@ describe("summarizeLiveSession", () => {
       });
 
       expect(summary.runningCount).toBe(0);
+      expect(summary.dagRunning).toBe(0);
+    });
+
+    it("counts a stale task row once when an oversized dag digest vouches for the same task id", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "chat-3fd32e00",
+        title: "pin",
+        task: { tasks: [pinTask(STALE_AT)] },
+        dag: null,
+        taskOversized: false,
+        dagOversized: true,
+        dagDigest: {
+          runs: [{ runId: "r1", status: "running", runningTaskIds: [TASK_ID] }],
+          truncated: false,
+        },
+      });
+
+      expect(summary.runningCount).toBe(1);
       expect(summary.dagRunning).toBe(0);
     });
 

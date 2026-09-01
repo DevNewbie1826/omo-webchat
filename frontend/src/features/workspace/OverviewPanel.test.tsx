@@ -43,6 +43,8 @@ const summaries: readonly LiveSessionSummary[] = [
     truncatedTasks: false,
     taskOversized: false,
     dagOversized: false,
+    taskSideOversized: false,
+    dagSideOversized: false,
   },
   {
     id: "disk-9",
@@ -56,6 +58,8 @@ const summaries: readonly LiveSessionSummary[] = [
     truncatedTasks: false,
     taskOversized: false,
     dagOversized: false,
+    taskSideOversized: false,
+    dagSideOversized: false,
   },
 ];
 
@@ -131,6 +135,8 @@ describe("OverviewPanel", () => {
       truncatedTasks: true,
       taskOversized: false,
       dagOversized: false,
+      taskSideOversized: false,
+      dagSideOversized: false,
     };
     renderPanel({ summaries: [partialSummary] });
     const partialRunning = card(0).querySelector(".th-overview-card-running");

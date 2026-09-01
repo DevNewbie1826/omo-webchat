@@ -98,6 +98,47 @@ describe("listLiveSessions", () => {
     }]);
   });
 
+  it("rejects an entire digest when any task or dag row is malformed", async () => {
+    const fetchMock = vi.fn(async () =>
+      okResponse({
+        sessions: [{
+          id: "s-malformed-rows",
+          title: "Malformed rows",
+          task: null,
+          dag: null,
+          task_oversized: true,
+          dag_oversized: true,
+          task_digest: {
+            tasks: [
+              { task_id: "good", status: "running" },
+              { task_id: "", status: "running" },
+            ],
+            truncated: false,
+          },
+          dag_digest: {
+            runs: [
+              { run_id: "good", status: "running", running_task_ids: [] },
+              { run_id: "bad", status: "running", running_task_ids: [7] },
+            ],
+            truncated: false,
+          },
+        }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const sessions = await listLiveSessions();
+
+    expect(sessions).toEqual([{
+      id: "s-malformed-rows",
+      title: "Malformed rows",
+      task: null,
+      dag: null,
+      taskOversized: true,
+      dagOversized: true,
+    }]);
+  });
+
   it("omits malformed task_digest without throwing and still parses the session", async () => {
     const fetchMock = vi.fn(async () =>
       okResponse({
