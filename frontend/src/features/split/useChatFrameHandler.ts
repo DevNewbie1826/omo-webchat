@@ -99,10 +99,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     switch (frame.type) {
       case "ready":
         bindings.armHistoryStall(false);
-        // The provider session is live again: the resume open sequence (a
-        // re-sent chat.create, whether from the unloaded banner or a socket
-        // reconnect) succeeded, so the resumable unloaded banner goes away.
-        bindings.setSessionUnloaded(false);
         return;
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
@@ -186,8 +182,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // registry; the engine process itself is still alive and the
         // conversation is durable on disk. Not terminal: surface the calm
         // resumable banner instead of the raw error, and stop any in-flight
-        // run indicator so the pane does not look busy. Only the ready frame
-        // of the next open sequence clears the state.
+        // run indicator so the pane does not look busy. Only the provider-backed
+        // state frame of the next open sequence clears the state.
         if (frame.code === "session_unloaded") {
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
@@ -243,6 +239,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.error) bindings.setError(frame.error);
         return;
       case "state":
+        // ready precedes provider initialization; state proves get_state
+        // completed and the reopened provider route is live.
+        bindings.setSessionUnloaded(false);
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);

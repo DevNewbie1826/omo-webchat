@@ -139,6 +139,129 @@ func TestIdleEvictionRemovesSessionAndReopensStoredIdentity(t *testing.T) {
 	}
 }
 
+func TestIdleEvictionEvictsBeforePersistenceDrainAndReopensStoredIdentity(t *testing.T) {
+	commands := make(chan []byte, 4)
+	provider := fakeSharedProvider(commands)
+	manager := NewManager()
+	manager.provider = provider
+	t.Cleanup(func() {
+		manager.mu.Lock()
+		manager.sessions = make(map[string]*Session)
+		manager.generations = make(map[string]*Session)
+		manager.generationDone = make(map[string]chan struct{})
+		manager.pending = make(map[string]bool)
+		manager.provider = nil
+		manager.mu.Unlock()
+		manager.CloseAll()
+		provider.mu.Lock()
+		routes := make([]*sessionRoute, 0, len(provider.sessions))
+		for handle, installed := range provider.sessions {
+			delete(provider.sessions, handle)
+			routes = append(routes, installed)
+		}
+		provider.mu.Unlock()
+		for _, installed := range routes {
+			installed.activate()
+			close(installed.queue)
+		}
+		_ = provider.close()
+	})
+
+	const storedIdentity = "/tmp/idle-eviction-race.jsonl"
+	first := newTestSession("idle-race", nil)
+	first.owner = manager
+	first.shared = provider
+	first.routingHandle = "route-idle-race"
+	first.piSessionID = storedIdentity
+	// An unbuffered route makes emitIdleEviction return only after the route
+	// worker has accepted the notice. The subsequent receive observes the
+	// close performed after detach without racing the worker for the event.
+	route := &sessionRoute{
+		session: first, handle: first.routingHandle,
+		queue: make(chan sessionDelivery), ready: make(chan struct{}), provider: provider,
+	}
+	provider.sessions[route.handle] = route
+	manager.sessions[first.ID()] = first
+	manager.generations[first.ID()] = first
+	manager.generationDone[first.ID()] = make(chan struct{})
+	go route.run()
+	route.activate()
+
+	// Hold providerExited in the exact pre-sessionClosed window under test.
+	first.activityPersistence.Add(1)
+	persistenceReleased := false
+	releasePersistence := func() {
+		if !persistenceReleased {
+			persistenceReleased = true
+			first.activityPersistence.Done()
+		}
+	}
+	defer releasePersistence()
+
+	if !emitIdleEviction(provider, route.handle) {
+		t.Fatal("idle eviction notice was not routed")
+	}
+	select {
+	case _, ok := <-route.queue:
+		if ok {
+			t.Fatal("unexpected delivery after idle eviction")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for idle route detach")
+	}
+
+	opts := SessionOptions{ID: first.ID(), Binary: "unused", PiSessionID: storedIdentity}
+	if manager.Get(first.ID()) == first {
+		// Before the fix, the stale entry is still attachable for the whole
+		// persistence window. Exercise that path synchronously so the regression
+		// fails without relying on scheduler timing.
+		stale, started, detach, err := manager.AcquireAttach(context.Background(), opts, nil)
+		if detach != nil {
+			detach()
+		}
+		releasePersistence()
+		if err != nil {
+			t.Fatalf("racing stale AcquireAttach: %v", err)
+		}
+		if stale == first || !started {
+			t.Fatalf("racing acquire returned stale session %p started=%v before persistence drained", stale, started)
+		}
+	}
+
+	// Keep the synthetic shared provider owned while the old generation drains;
+	// a real manager has sibling activity during this race.
+	manager.mu.Lock()
+	manager.pending["idle-race-provider-lease"] = true
+	manager.mu.Unlock()
+	acquired := make(chan attachOutcome, 1)
+	go func() {
+		session, started, detach, err := manager.AcquireAttach(context.Background(), opts, nil)
+		acquired <- attachOutcome{session: session, started: started, detach: detach, err: err}
+	}()
+	// The acquire starts while providerExited is unable to retire the old
+	// generation. Once released, it must open from disk rather than attach to
+	// the now-handleless session.
+	releasePersistence()
+
+	openCommand := decodeCommand(t, <-commands)
+	manager.mu.Lock()
+	delete(manager.pending, "idle-race-provider-lease")
+	manager.mu.Unlock()
+	if got := openCommand["sessionPath"]; got != storedIdentity {
+		t.Fatalf("racing reopen sessionPath = %#v, want %q", got, storedIdentity)
+	}
+	id, _ := openCommand["id"].(string)
+	provider.route(Event{Type: "response", Raw: json.RawMessage(`{"type":"response","command":"open_session","success":true,"id":"` + id + `","sessionId":"route-reopened","data":{"sessionId":"route-reopened","state":{"sessionFile":"` + storedIdentity + `"}}}`)})
+
+	got := waitAttach(t, acquired)
+	if got.err != nil {
+		t.Fatalf("racing AcquireAttach: %v", got.err)
+	}
+	if !got.started || got.session == first {
+		t.Fatalf("racing acquire = %p started=%v, want a new logical session", got.session, got.started)
+	}
+}
+
 func TestIdleEvictionEmitsExactlyOneSessionUnloadedError(t *testing.T) {
 	provider := fakeSharedProvider(make(chan []byte, 1))
 	writer := newCollectWriter()

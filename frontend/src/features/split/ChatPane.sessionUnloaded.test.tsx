@@ -97,7 +97,26 @@ describe("ChatPane session_unloaded resumable state", () => {
     expect(sent.at(-1)).toEqual({ type: "chat.create", wsId: "workspace-1", chatId: "chat-1" });
   });
 
-  it("clears the unloaded state once the resumed chat is live again", () => {
+  it("keeps the unloaded state when ready is followed by initialize_failed", () => {
+    const { deliver } = renderChatPane(root);
+
+    act(() => {
+      deliver(sessionUnloadedFrame());
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "initialize_failed",
+        message: "get_state failed",
+      });
+    });
+
+    expect(container.querySelector(".th-unloaded-banner")).not.toBeNull();
+    expect(container.textContent).toContain("chat.sessionUnloadedTitle");
+    expect(container.textContent).toContain("chat.sessionUnloadedResume");
+  });
+
+  it("clears the unloaded state once the resumed provider answers with state", () => {
     const { deliver, sent } = renderChatPane(root);
 
     act(() => {
@@ -112,7 +131,7 @@ describe("ChatPane session_unloaded resumable state", () => {
     });
     act(() => {
       deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
-      deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+      deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false });
     });
 
     expect(container.querySelector(".th-unloaded-banner")).toBeNull();

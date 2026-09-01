@@ -62,6 +62,9 @@ func (s *Session) forwardResponse(raw json.RawMessage) {
 		if route == nil {
 			return
 		}
+		if s.owner != nil {
+			s.owner.evictSession(s)
+		}
 		route.activate()
 		close(route.queue)
 		provider.clearRoutingHandle(s, handle)
