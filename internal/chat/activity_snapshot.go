@@ -47,16 +47,26 @@ func isActivitySnapshot(name string) bool {
 // rememberActivitySnapshot caches the latest payload of a replayable activity
 // event. Payloads over the cap still update that side's in-memory oversized
 // flag but leave the cached bytes unchanged, so GET /api/sessions/live can
-// signal staleness without pinning unbounded memory. The caller holds the
-// delivery barrier, so the cache and the live broadcast commit together: a
-// concurrent attach can never replay a value older than one it already
-// delivered live.
+// signal staleness without pinning unbounded memory. A compact count digest
+// is extracted from every recognized arrival, over-cap or not. The caller
+// holds the delivery barrier, so the cache and the live broadcast commit
+// together: a concurrent attach can never replay a value older than one it
+// already delivered live.
 func (s *Session) rememberActivitySnapshot(name string, data json.RawMessage) {
 	if !isActivitySnapshot(name) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.rememberActivityDigestLocked(name, data)
+	// A dag update that reports terminal outcomes is authoritative even when
+	// its payload exceeds the replay-cache cap. Reconcile both the cached task
+	// bytes and the compact task digest from the arriving bytes before an
+	// oversized payload can be dropped. No persistence here — persisting stays
+	// settle-driven.
+	if name == activitySnapshotOrder[1] {
+		s.reconcileActivityCacheLocked(data)
+	}
 	oversized := len(data) > maxActivitySnapshotBytes
 	if name == activitySnapshotOrder[0] {
 		s.taskOversized = oversized
@@ -70,14 +80,6 @@ func (s *Session) rememberActivitySnapshot(name string, data json.RawMessage) {
 		s.lastActivitySnapshots = make(map[string]json.RawMessage)
 	}
 	s.lastActivitySnapshots[name] = append(json.RawMessage(nil), data...)
-	// A dag update that reports a terminal run is authoritative evidence that
-	// its task rows can no longer make progress: demote the ghost running rows
-	// the cached task payload still carries, under the same lock section so a
-	// concurrent attach can never replay a pair the dag already contradicts.
-	// No persistence here — persisting stays settle-driven.
-	if name == activitySnapshotOrder[1] && dagHasTerminalRun(data) {
-		s.reconcileActivityCacheLocked(data)
-	}
 }
 
 // seedActivitySnapshots pre-loads the replayable cache from a persisted chat
@@ -151,17 +153,30 @@ func (s *Session) ReplayActivitySnapshot(writer FrameWriter) {
 // live-sessions listing. The copy runs under the session lock so both sides
 // are observed at one cache generation.
 func (s *Session) ActivitySnapshot() ActivitySnapshotPair {
-	pair, _, _ := s.activitySnapshotState()
-	return pair
+	return s.activitySnapshotState().pair
 }
 
-func (s *Session) activitySnapshotState() (ActivitySnapshotPair, bool, bool) {
+type activityLiveView struct {
+	pair          ActivitySnapshotPair
+	taskOversized bool
+	dagOversized  bool
+	taskDigest    *ActivityTaskDigest
+	dagDigest     *ActivityDagDigest
+}
+
+func (s *Session) activitySnapshotState() activityLiveView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return ActivitySnapshotPair{
-		Task: append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[0]]...),
-		Dag:  append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[1]]...),
-	}, s.taskOversized, s.dagOversized
+	return activityLiveView{
+		pair: ActivitySnapshotPair{
+			Task: append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[0]]...),
+			Dag:  append(json.RawMessage(nil), s.lastActivitySnapshots[activitySnapshotOrder[1]]...),
+		},
+		taskOversized: s.taskOversized,
+		dagOversized:  s.dagOversized,
+		taskDigest:    cloneActivityTaskDigest(s.taskDigest),
+		dagDigest:     cloneActivityDagDigest(s.dagDigest),
+	}
 }
 
 // activitySnapshots copies and marshals each cached activity snapshot in

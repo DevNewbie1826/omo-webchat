@@ -7,12 +7,14 @@ import (
 )
 
 type liveSessionResponse struct {
-	ID            string          `json:"id"`
-	Title         string          `json:"title"`
-	Task          json.RawMessage `json:"task"`
-	Dag           json.RawMessage `json:"dag"`
-	TaskOversized bool            `json:"task_oversized"`
-	DagOversized  bool            `json:"dag_oversized"`
+	ID            string                   `json:"id"`
+	Title         string                   `json:"title"`
+	Task          json.RawMessage          `json:"task"`
+	Dag           json.RawMessage          `json:"dag"`
+	TaskOversized bool                     `json:"task_oversized"`
+	DagOversized  bool                     `json:"dag_oversized"`
+	TaskDigest    *chat.ActivityTaskDigest `json:"task_digest,omitempty"`
+	DagDigest     *chat.ActivityDagDigest  `json:"dag_digest,omitempty"`
 }
 
 func liveSessionFromSummary(summary chat.LiveSummary, title string) liveSessionResponse {
@@ -23,6 +25,8 @@ func liveSessionFromSummary(summary chat.LiveSummary, title string) liveSessionR
 		Dag:           rawOrNull(summary.Pair.Dag),
 		TaskOversized: summary.TaskOversized,
 		DagOversized:  summary.DagOversized,
+		TaskDigest:    summary.TaskDigest,
+		DagDigest:     summary.DagDigest,
 	}
 }
 

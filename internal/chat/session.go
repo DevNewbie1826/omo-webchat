@@ -141,6 +141,11 @@ type Session struct {
 	// clears it. Never persisted. Guarded by mu.
 	taskOversized bool
 	dagOversized  bool
+	// taskDigest / dagDigest are compact in-memory count summaries extracted
+	// from every recognized activity event, including over-cap payloads the
+	// replay cache drops. Never persisted. Guarded by mu.
+	taskDigest *ActivityTaskDigest
+	dagDigest  *ActivityDagDigest
 	// onActivitySnapshot persists the replayable pair at run completion.
 	// Guarded by mu alongside activityPersisted, the pair last written
 	// successfully: an unchanged pair is never re-persisted, and a failed

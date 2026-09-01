@@ -68,6 +68,8 @@ const IDLE_POLL_SUMMARY: LiveSessionSummary = {
   title: "Attached",
   task: null,
   dag: null,
+  taskSideOversized: false,
+  dagSideOversized: false,
   runningCount: 0,
   doneCount: 0,
   dagDone: 0,
@@ -192,6 +194,53 @@ describe("liveBadgeStore", () => {
     });
 
     expect(captured.merged[0]).toMatchObject({ runningCount: 3, dagRunning: 2 });
+  });
+
+  it("preserves a poll task digest when a fresh dag-only frame replaces the other side", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const poll = {
+      ...IDLE_POLL_SUMMARY,
+      taskSideOversized: true,
+      dagSideOversized: false,
+      taskDigest: {
+        tasks: [{ taskId: "t-digest", status: "running", updatedAt: "2026-08-19T10:00:00.000Z" }],
+        truncated: false,
+      },
+      runningCount: 1,
+    } as LiveSessionSummary;
+    act(() => {
+      root.render(<Host pollSummaries={[poll]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.updated", { runs: [] });
+    });
+
+    expect(captured.merged[0]?.runningCount).toBe(1);
+  });
+
+  it("preserves a poll dag digest when a fresh task-only frame replaces the other side", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const poll = {
+      ...IDLE_POLL_SUMMARY,
+      taskSideOversized: false,
+      dagSideOversized: true,
+      dagDigest: {
+        runs: [{ runId: "r-digest", status: "running", runningTaskIds: ["t-dag"] }],
+        truncated: false,
+      },
+      runningCount: 1,
+      dagRunning: 1,
+    } as LiveSessionSummary;
+    act(() => {
+      root.render(<Host pollSummaries={[poll]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", { tasks: [] });
+    });
+
+    expect(captured.merged[0]).toMatchObject({ runningCount: 1, dagRunning: 1 });
   });
 
   it("lets a later poll content change win after same-millisecond WS receipts advance the sequencer", () => {
