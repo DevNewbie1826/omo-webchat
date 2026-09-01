@@ -1,3 +1,13 @@
+import { beforeEach } from "vitest";
+
+// Workspace expansion (th-ws-expanded) and theme/lang/font choices persist in
+// localStorage, so a mount in one test would otherwise inherit the previous
+// test's state. Start every test from an empty store; suites that need a seeded
+// value set it in their own hook, which registers after this one.
+beforeEach(() => {
+  window.localStorage.clear();
+});
+
 class ResizeObserverPolyfill {
   cb: ResizeObserverCallback;
   constructor(cb: ResizeObserverCallback) {

@@ -65,9 +65,35 @@ export function applyChatNameToWorkspaces(
   );
 }
 
+const WORKSPACE_EXPANDED_STORAGE_KEY = "th-ws-expanded";
+
+function readExpandedWorkspaces(): ReadonlySet<string> {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(WORKSPACE_EXPANDED_STORAGE_KEY) ?? "null");
+    return new Set(Array.isArray(stored) ? stored.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function persistExpandedWorkspaces(expanded: ReadonlySet<string>): void {
+  try {
+    window.localStorage.setItem(WORKSPACE_EXPANDED_STORAGE_KEY, JSON.stringify([...expanded]));
+  } catch {
+    // Private modes may throw; the choice simply will not persist.
+  }
+}
+
 export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptions): UseWorkspacesResult {
   const [workspaces, setWorkspaces] = useState<readonly Workspace[]>([]);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [expanded, setExpandedState] = useState<ReadonlySet<string>>(readExpandedWorkspaces);
+  const setExpanded: Dispatch<SetStateAction<ReadonlySet<string>>> = useCallback((update) => {
+    setExpandedState((previous) => {
+      const next = typeof update === "function" ? update(previous) : update;
+      persistExpandedWorkspaces(next);
+      return next;
+    });
+  }, []);
   const sessionListsRef = useRef<ReadonlyMap<string, readonly WorkspaceSession[]>>(new Map());
   const [sessionLists, setSessionLists] = useState<ReadonlyMap<string, readonly WorkspaceSession[]>>(
     sessionListsRef.current,

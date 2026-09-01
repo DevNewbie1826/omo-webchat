@@ -143,6 +143,24 @@ export function SessionTree({
                 </button>
               )}
               <span className="th-tree-count">{ws.chats.length}</span>
+              {(() => {
+                const workspaceRunning = ws.chats.reduce((total, chat) => total + (runningCounts?.get(chat.id)?.count ?? 0), 0);
+                const workspacePartial = ws.chats.some((chat) => runningCounts?.get(chat.id)?.partial === true);
+                const workspaceUnknown = ws.chats.some((chat) => runningCounts?.get(chat.id)?.unknown === true);
+                return workspaceRunning > 0 || workspaceUnknown ? (
+                  <span
+                    className="th-tree-running th-tree-running--workspace"
+                    role="img"
+                    aria-label={workspaceUnknown
+                      ? t("sidebar.ws.runningAgentsUnknown")
+                      : t(workspacePartial ? "sidebar.ws.runningAgentsPartial" : "sidebar.ws.runningAgents", { n: workspaceRunning })}
+                    title={workspaceUnknown ? t("sidebar.ws.runningAgentsUnknown") : undefined}
+                  >
+                    <span className="th-tree-running-dot" aria-hidden="true" />
+                    {workspaceUnknown ? "?" : `${workspaceRunning}${workspacePartial ? "+" : ""}`}
+                  </span>
+                ) : null;
+              })()}
               <span className="th-tree-actions">
                 <button
                   type="button"

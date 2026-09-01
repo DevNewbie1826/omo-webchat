@@ -39,7 +39,12 @@ interface RunningCount {
   readonly unknown?: boolean;
 }
 
-function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, RunningCount>, touchActions = false): void {
+function tree(
+  container: HTMLDivElement,
+  runningCounts?: ReadonlyMap<string, RunningCount>,
+  touchActions = false,
+  expanded = new Set(["ws-1"]),
+): void {
   const root = (container as HTMLDivElement & { __root?: Root }).__root!;
   act(() => {
     root.render(
@@ -51,7 +56,7 @@ function tree(container: HTMLDivElement, runningCounts?: ReadonlyMap<string, Run
           runningCounts={runningCounts}
           activeTerminalId={null}
           placedSessions={new Set()}
-          expanded={new Set(["ws-1"])}
+          expanded={expanded}
           sessionLists={new Map([["ws-1", sessions]])}
           sessionPages={new Map()}
           onToggle={() => undefined}
@@ -146,6 +151,67 @@ describe("SessionTree running-agent badge", () => {
     expect(chip?.textContent).toBe("?");
     expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsUnknown");
     expect(chip?.getAttribute("title")).toBe("sidebar.tm.runningAgentsUnknown");
+  });
+
+  it("renders a workspace aggregate while collapsed", () => {
+    tree(container, new Map([["tm-live", { count: 2, partial: false }]]), false, new Set());
+
+    const workspaceRow = row("Workspace");
+    const chip = workspaceRow.querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("2");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 2");
+  });
+
+  it("renders the workspace aggregate and per-session badges when expanded", () => {
+    tree(container, new Map([
+      ["tm-live", { count: 2, partial: false }],
+      ["tm-idle", { count: 1, partial: false }],
+    ]));
+
+    const workspaceRow = row("Workspace");
+    expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("3");
+    expect(container.querySelectorAll(".th-tree-running")).toHaveLength(3);
+  });
+
+  it("renders an unknown workspace aggregate when any chat count is unknown", () => {
+    tree(container, new Map([
+      ["tm-live", { count: 2, partial: false }],
+      ["tm-idle", { count: 0, partial: true, unknown: true }],
+    ]));
+
+    const chip = row("Workspace").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("?");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgentsUnknown");
+  });
+
+  it("renders a partial workspace aggregate without unknown counts", () => {
+    tree(container, new Map([["tm-live", { count: 2, partial: true }]]));
+
+    const chip = row("Workspace").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("2+");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgentsPartial 2");
+  });
+
+  it("renders no workspace chip without running or unknown counts", () => {
+    tree(container, new Map([["tm-live", { count: 0, partial: false }]]));
+
+    expect(row("Workspace").querySelector(".th-tree-running")).toBeNull();
+  });
+
+  it("keeps the workspace chat-count pill beside the running aggregate", () => {
+    tree(container, new Map([["tm-live", { count: 1, partial: false }]]));
+
+    const workspaceRow = row("Workspace");
+    expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("2");
+    expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("1");
+  });
+
+  it("keeps the workspace chat-count pill when no agents run", () => {
+    tree(container);
+
+    const workspaceRow = row("Workspace");
+    expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("2");
+    expect(workspaceRow.querySelector(".th-tree-running")).toBeNull();
   });
 
   it("renders no chip at all without running counts", () => {

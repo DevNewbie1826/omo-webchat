@@ -50,6 +50,7 @@ describe("useWorkspaces provider sessions", () => {
   let load: (() => Promise<void>) | undefined;
 
   beforeEach(() => {
+    window.localStorage.removeItem("th-ws-expanded");
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -61,6 +62,27 @@ describe("useWorkspaces provider sessions", () => {
     container.remove();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("restores expanded workspaces and tolerates corrupt storage", () => {
+    let latest: ReturnType<typeof useWorkspaces> | undefined;
+    function Probe() {
+      latest = useWorkspaces({ notify: () => undefined, t: (key) => key, layout, confirm: async () => true });
+      return <span data-testid="expanded">{latest.expanded.has("ws-1") ? "yes" : "no"}</span>;
+    }
+
+    act(() => root.render(<Probe />));
+    act(() => latest?.setExpanded(new Set(["ws-1"])));
+    expect(window.localStorage.getItem("th-ws-expanded")).toBe('["ws-1"]');
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(<Probe />));
+    expect(container.querySelector('[data-testid="expanded"]')?.textContent).toBe("yes");
+    act(() => root.unmount());
+    root = createRoot(container);
+    window.localStorage.setItem("th-ws-expanded", "{broken");
+    act(() => root.render(<Probe />));
+    expect(container.querySelector('[data-testid="expanded"]')?.textContent).toBe("no");
   });
 
   it("preserves the omo provider returned by the workspace list", async () => {
