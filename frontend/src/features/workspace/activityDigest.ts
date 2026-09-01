@@ -10,6 +10,7 @@ export type TaskDigestEntry = {
 export type TaskDigest = {
   readonly tasks: readonly TaskDigestEntry[];
   readonly truncated: boolean;
+  readonly receivedAt?: string;
 };
 
 /** Compact in-memory DAG summary from GET /api/sessions/live `dag_digest`. */
@@ -22,6 +23,7 @@ export type DagDigestRun = {
 export type DagDigest = {
   readonly runs: readonly DagDigestRun[];
   readonly truncated: boolean;
+  readonly receivedAt?: string;
 };
 
 function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry | null {
@@ -75,7 +77,12 @@ export function parseTaskDigest(value: unknown): TaskDigest | null {
   if (truncated === null) return null;
   const tasks = mapStrict(value["tasks"], parseTaskDigestEntry);
   if (tasks === null) return null;
-  return { tasks, truncated };
+  const receivedAt = optString(value, "received_at");
+  return {
+    tasks,
+    truncated,
+    ...(typeof receivedAt === "string" ? { receivedAt } : {}),
+  };
 }
 
 /** Parse `dag_digest`; malformed shape yields null and never throws. */
@@ -85,5 +92,10 @@ export function parseDagDigest(value: unknown): DagDigest | null {
   if (truncated === null) return null;
   const runs = mapStrict(value["runs"], parseDagDigestRun);
   if (runs === null) return null;
-  return { runs, truncated };
+  const receivedAt = optString(value, "received_at");
+  return {
+    runs,
+    truncated,
+    ...(typeof receivedAt === "string" ? { receivedAt } : {}),
+  };
 }

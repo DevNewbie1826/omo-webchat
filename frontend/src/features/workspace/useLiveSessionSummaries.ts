@@ -79,16 +79,24 @@ function digestUpdatedMs(updatedAt: string | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+function digestReceivedMs(receivedAt: string | undefined): number | null {
+  return digestUpdatedMs(receivedAt);
+}
+
 function countDigestTaskRunning(
   entries: readonly TaskDigestEntry[],
   nowMs: number,
   runningDagTaskIds: ReadonlySet<string>,
+  receivedAtMs: number | null,
 ): number {
+  const digestFresh = receivedAtMs !== null && nowMs - receivedAtMs <= STALE_RUNNING_WINDOW_MS;
   let running = 0;
   for (const entry of entries) {
     if (entry.status !== "running") continue;
     const lastMs = digestUpdatedMs(entry.updatedAt);
-    if (lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS || runningDagTaskIds.has(entry.taskId)) {
+    const rowFresh = lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
+    const dagAuthority = runningDagTaskIds.has(entry.taskId);
+    if (digestFresh || dagAuthority || rowFresh) {
       running += 1;
     }
   }
@@ -149,7 +157,12 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
     }).length
     : taskDigest === undefined
       ? 0
-      : countDigestTaskRunning(taskDigest.tasks, nowMs, runningDagTaskIds);
+      : countDigestTaskRunning(
+        taskDigest.tasks,
+        nowMs,
+        runningDagTaskIds,
+        digestReceivedMs(taskDigest.receivedAt),
+      );
   const dagRunning = info.dagOversized !== true
     ? dagRunningOf(runs, taskIds)
     : dagDigest === undefined
