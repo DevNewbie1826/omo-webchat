@@ -49,9 +49,11 @@ export function ChatPane({
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const chat = useChatSession(chatSession, connect, onChatName);
+  // Notices replay from server-local state at attach, before the omo get_entries
+  // round trip returns, so an ungated render shows a notice-only transcript.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.notices),
-    [chat.messages, chat.notices],
+    () => mergeTranscriptItems(chat.messages, chat.historyLoaded || chat.error !== "" ? chat.notices : []),
+    [chat.messages, chat.notices, chat.historyLoaded, chat.error],
   );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;

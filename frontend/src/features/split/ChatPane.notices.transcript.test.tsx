@@ -29,6 +29,10 @@ function deliverWire(deliver: (frame: ChatServerFrame) => void, wire: Record<str
   if (parsed) deliver(parsed);
 }
 
+function loadHistory(deliver: (frame: ChatServerFrame) => void): void {
+  deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+}
+
 function rowTexts(container: HTMLDivElement): string[] {
   return [...container.querySelectorAll(".th-chat-history .th-chat-row")].map((row) => row.textContent ?? "");
 }
@@ -56,6 +60,7 @@ describe("ChatPane in-transcript notices", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       deliver(messageFrame(1_000, "early"));
       deliverWire(deliver, wireNoticeFrame(1, NANO_AT(2_000)));
       deliver(messageFrame(3_000, "late"));
@@ -80,6 +85,7 @@ describe("ChatPane in-transcript notices", () => {
     const { deliver, sent } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       deliverWire(deliver, wireNoticeFrame(1));
       deliverWire(deliver, wireNoticeFrame(2));
     });
@@ -107,6 +113,7 @@ describe("ChatPane in-transcript notices", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       deliverWire(deliver, wireNoticeFrame(1));
     });
 

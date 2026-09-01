@@ -19,6 +19,10 @@ function deliverWire(deliver: (frame: ChatServerFrame) => void, wire: Record<str
   if (parsed) deliver(parsed);
 }
 
+function loadHistory(deliver: (frame: ChatServerFrame) => void): void {
+  deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+}
+
 describe("ChatPane notice frames", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -42,6 +46,7 @@ describe("ChatPane notice frames", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       for (let seq = 1; seq <= 3; seq += 1) deliverWire(deliver, wireNoticeFrame(seq));
     });
 
@@ -57,6 +62,7 @@ describe("ChatPane notice frames", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       deliverWire(deliver, wireNoticeFrame(1, "chat-2"));
     });
     expect(container.querySelector(".th-chat-notice")).toBeNull();
@@ -72,6 +78,7 @@ describe("ChatPane notice frames", () => {
     const { deliver } = renderChatPane(root);
 
     act(() => {
+      loadHistory(deliver);
       deliverWire(deliver, wireNoticeFrame(1));
       deliver({ type: "run.started", sessionId: "chat-1" });
       deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
