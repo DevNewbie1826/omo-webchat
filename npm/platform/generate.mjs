@@ -28,8 +28,9 @@
  * Build strategy per target:
  *   1. dist/omo-webchat_<goos>_<goarch>.tar.gz (goreleaser snapshot output,
  *      or produced here via `goreleaser release --snapshot`) is extracted; or
- *   2. fallback: a direct `GOOS=<goos> GOARCH=<goarch> go build` of ./cmd/server
- *      (pure Go, CGO_ENABLED=0 — equivalent flags to .goreleaser.yaml).
+ *   2. fallback: build the frontend once, then run a direct
+ *      `GOOS=<goos> GOARCH=<goarch> go build` of ./cmd/server (pure Go,
+ *      CGO_ENABLED=0 — equivalent flags to .goreleaser.yaml).
  */
 
 import { spawnSync } from 'node:child_process'
@@ -109,6 +110,16 @@ function hasCmd(cmd) {
   return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0
 }
 
+let frontendReady = false
+
+function buildFrontend() {
+  if (frontendReady) return
+  console.log('[generate] building frontend required by frontend/embed.go')
+  sh('npm', ['ci'], { cwd: path.join(REPO_ROOT, 'frontend') })
+  sh('npm', ['run', 'build'], { cwd: path.join(REPO_ROOT, 'frontend') })
+  frontendReady = true
+}
+
 function archiveFor(target) {
   // goreleaser archive name template: omo-webchat_<os>_<arch> (Go tokens).
   return path.join(DIST_DIR, `omo-webchat_${target.goos}_${target.goarch}.tar.gz`)
@@ -151,6 +162,7 @@ function findFile(dir, name) {
  * clean up the generator-created directory (never a shared parent like /tmp).
  */
 function goBuild(target) {
+  buildFrontend()
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-'))
   const dest = path.join(tmpDir, `omo-webchat_${target.goos}_${target.goarch}`)
   try {
@@ -192,6 +204,9 @@ function writePackage(target, version, rawBinary) {
       './package.json': './package.json',
     },
     files: ['exe', 'index.js'],
+    scripts: {
+      prepack: `node -e "const fs=require('node:fs');const p='exe/${binName}';try{if(!fs.statSync(p).isFile())throw 0;fs.accessSync(p,fs.constants.X_OK)}catch{console.error('prepack: expected executable '+p+' is missing or not executable');process.exit(1)}"`,
+    },
     private: false,
   }
   fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n')
@@ -214,14 +229,27 @@ function writePackage(target, version, rawBinary) {
 // main
 // ---------------------------------------------------------------------------
 
+function updateCliVersion(version) {
+  const cliManifestPath = path.join(REPO_ROOT, 'npm', 'cli', 'package.json')
+  const cliManifest = JSON.parse(fs.readFileSync(cliManifestPath, 'utf8'))
+  cliManifest.version = version
+  for (const target of TARGETS) {
+    const dependency = `omo-webchat-${target.osNode}-${target.cpuNode}`
+    cliManifest.optionalDependencies[dependency] = version
+  }
+  fs.writeFileSync(cliManifestPath, JSON.stringify(cliManifest, null, 2) + '\n')
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
+  updateCliVersion(args.version)
 
   if (args.skipBuild) {
     console.log('[generate] --skip-build: consuming whatever is in dist/, go build fallback for anything missing.')
   } else if (hasCmd('goreleaser')) {
-    console.log('[generate] running: goreleaser release --snapshot --clean --skip=before')
-    sh('goreleaser', ['release', '--snapshot', '--clean', '--skip=before'])
+    console.log('[generate] running: goreleaser release --snapshot --clean')
+    sh('goreleaser', ['release', '--snapshot', '--clean'])
+    frontendReady = true
   } else {
     console.log('[generate] goreleaser not found on PATH; falling back to direct go build per target.')
   }

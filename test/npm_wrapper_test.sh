@@ -17,21 +17,48 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/omo-webchat-npx-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 mkdir -p "$work/packages" "$work/tarballs" "$work/project"
 
+node - "$repo_dir" <<'NODE'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = process.argv[2];
+const cli = JSON.parse(fs.readFileSync(path.join(root, 'npm/cli/package.json')));
+const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'];
+for (const platform of platforms) {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'npm/platform', platform, 'package.json')));
+  assert.equal(manifest.version, cli.version, `${manifest.name} version is not in lockstep`);
+  assert.equal(cli.optionalDependencies[manifest.name], cli.version, `${manifest.name} dependency is not exact`);
+}
+NODE
+
 cp -R "$repo_dir/npm/cli" "$work/packages/cli"
 cp -R "$platform_dir" "$work/packages/platform"
-mkdir -p "$work/packages/platform/exe"
+rm -rf "$work/packages/platform/exe"
 
+if (cd "$work/packages/platform" && npm pack --silent --pack-destination "$work/tarballs" > "$work/missing-pack.log" 2>&1); then
+  printf 'FAIL: platform package packed without its executable\n' >&2
+  exit 1
+fi
+grep -F 'expected executable exe/omo-webchat-bin is missing or not executable' "$work/missing-pack.log" >/dev/null
+
+mkdir -p "$work/packages/platform/exe"
 fake_binary="$work/packages/platform/exe/omo-webchat-bin"
 printf '%s\n' \
   '#!/bin/sh' \
   "printf '%s\\n' \"\$@\" > \"\$OMO_WRAPPER_ARGV_LOG\"" \
   "exit \"\${OMO_WRAPPER_EXIT:-0}\"" > "$fake_binary"
+if (cd "$work/packages/platform" && npm pack --silent --pack-destination "$work/tarballs" > "$work/nonexecutable-pack.log" 2>&1); then
+  printf 'FAIL: platform package packed a non-executable binary\n' >&2
+  exit 1
+fi
+grep -F 'expected executable exe/omo-webchat-bin is missing or not executable' "$work/nonexecutable-pack.log" >/dev/null
 chmod +x "$fake_binary"
 
 platform_tarball=$(
   cd "$work/packages/platform"
   npm pack --silent --pack-destination "$work/tarballs"
 )
+tar -tzf "$work/tarballs/$platform_tarball" | grep -Fx 'package/exe/omo-webchat-bin' >/dev/null
 cli_tarball=$(
   cd "$work/packages/cli"
   npm pack --silent --pack-destination "$work/tarballs"
@@ -69,4 +96,4 @@ set -e
   exit 1
 }
 
-printf 'PASS: packed npx wrapper forwards argv verbatim and propagates child exit status.\n'
+printf 'PASS: platform versions are locked; prepack rejects missing/non-executable binaries; packed content includes the executable; npx forwards argv and propagates child status.\n'

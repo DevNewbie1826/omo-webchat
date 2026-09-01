@@ -37,13 +37,24 @@ test('resolveAgent honors override, PATH, bundled fallback, then error', (t) => 
   assert.match(missing.reason, /CHAT_PI_BINARY/);
 });
 
-test('resolveBinaryPath consumes platform package entrypoint', () => {
-  const packageRoot = path.resolve(__dirname, '..', 'platform', 'darwin-arm64');
+test('resolveBinaryPath consumes platform package entrypoint', (t) => {
+  const packageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-package-'));
+  t.after(() => fs.rmSync(packageRoot, { recursive: true, force: true }));
   const packageJson = path.join(packageRoot, 'package.json');
+  const entrypoint = path.join(packageRoot, 'index.js');
   const expected = path.join(packageRoot, 'exe', 'omo-webchat-bin');
+  fs.mkdirSync(path.dirname(expected));
+  fs.writeFileSync(packageJson, JSON.stringify({ name: 'omo-webchat-darwin-arm64', main: 'index.js' }));
+  fs.writeFileSync(entrypoint, `module.exports = ${JSON.stringify(expected)};\n`);
+  fs.writeFileSync(expected, '#!/bin/sh\n');
+  fs.chmodSync(expected, 0o755);
+
   const result = resolveBinaryPath('darwin', 'arm64', {
     resolvePackage: () => packageJson,
-    loadPackage: () => expected,
+    loadPackage: () => {
+      delete require.cache[entrypoint];
+      return require(entrypoint);
+    },
   });
   assert.deepEqual(result, {
     ok: true,
