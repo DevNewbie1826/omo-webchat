@@ -4,7 +4,9 @@
 node_modules/
 frontend/node_modules/
 frontend/dist/
+dist/
 bin/
+npm/platform/*/exe/
 *.log
 *.test
 omo-webchat

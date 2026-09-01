@@ -126,6 +126,7 @@ run_installer() {
   archive=$5
   expected_digest=$6
   hash_value=$7
+  precreate_mode=${8:-}
 
   case "$platform" in
     Linux) asset="${binary}_linux_amd64.tar.gz" ;;
@@ -138,6 +139,12 @@ run_installer() {
   mock_bin="$run_dir/bin"
   install_dir="$run_dir/install"
   mkdir "$run_dir" "$run_dir/tmp"
+  if [ "$precreate_mode" = missing-parent ]; then
+    install_dir="$run_dir/home/.local/bin"
+  elif [ -n "$precreate_mode" ]; then
+    mkdir "$install_dir"
+    chmod "$precreate_mode" "$install_dir"
+  fi
   make_release "$run_dir/release" "$asset" "$archive" "$expected_digest"
   make_mock_bin "$mock_bin"
   if [ -n "$hash_tool" ]; then
@@ -198,6 +205,19 @@ expect_no_hash_rejection() {
   grep -F 'shasum or sha256sum is required for checksum verification' "$run_dir/stderr" >/dev/null || fail "$case_label: missing checksum-tool error"
 }
 
+expect_omo_warning() {
+  grep -F "'omo' is required at runtime" "$run_dir/stderr" >/dev/null || fail "$case_label: missing omo runtime-dependency warning"
+  if grep -F 'tmux' "$run_dir/stderr" >/dev/null; then
+    fail "$case_label: stderr must not mention tmux"
+  fi
+}
+
+expect_unwritable_failure() {
+  [ "$run_status" -ne 0 ] || fail "$case_label: installer succeeded despite an unwritable install dir"
+  [ ! -e "$install_dir/$binary" ] || fail "$case_label: binary was installed despite an unwritable install dir"
+  grep -F 'cannot write to' "$run_dir/stderr" >/dev/null || fail "$case_label: missing 'cannot write to' error"
+}
+
 valid_archive="$work/valid.tar.gz"
 tampered_archive="$work/tampered.tar.gz"
 make_archive "$valid_contents" "$valid_archive"
@@ -222,4 +242,14 @@ for platform in Linux Darwin; do
   expect_rejection 'checksum mismatch'
 done
 
-printf 'PASS: Darwin and Linux explicit and latest verified installs succeed; mismatched, unverifiable, and empty checksums fail closed; temporary files are cleaned up.\n'
+run_installer Linux omo-missing-warning latest shasum "$valid_archive" "$valid_digest" "$valid_digest"
+expect_success
+expect_omo_warning
+
+run_installer Linux missing-install-parents explicit shasum "$valid_archive" "$valid_digest" "$valid_digest" missing-parent
+expect_success
+
+run_installer Linux unwritable-install-dir explicit shasum "$valid_archive" "$valid_digest" "$valid_digest" 0555
+expect_unwritable_failure
+
+printf 'PASS: Darwin and Linux explicit and latest verified installs succeed; nested user install dirs are created without sudo; mismatched, unverifiable, and empty checksums fail closed; missing runtime dependency warns without tmux; unwritable install dirs fail closed with guidance; temporary files are cleaned up.\n'

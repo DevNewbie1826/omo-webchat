@@ -38,6 +38,18 @@ curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/inst
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
 ```
 
+### npx / bunx
+
+npx 경로의 전제 조건은 Node뿐입니다. 채팅을 만들려면 런타임에 `PATH`의 `omo`가 여전히 필요합니다 (`CHAT_PI_BINARY`로 재정의).
+
+```sh
+npx omo-webchat@latest --password <secret> --port <port> --root <root>
+```
+
+```sh
+bunx omo-webchat@latest --password <secret> --port <port> --root <root>
+```
+
 ### 빠른 시작
 
 ```sh
@@ -114,6 +126,18 @@ Pin a version or install path:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
+```
+
+### npx / bunx
+
+Node is the only prerequisite for the npx path. `omo` on `PATH` is still needed at runtime to create chats (set `CHAT_PI_BINARY` to override).
+
+```sh
+npx omo-webchat@latest --password <secret> --port <port> --root <root>
+```
+
+```sh
+bunx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```
 
 ### Quick start

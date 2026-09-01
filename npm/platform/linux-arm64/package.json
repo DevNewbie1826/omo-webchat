@@ -1,0 +1,25 @@
+{
+  "name": "omo-webchat-linux-arm64",
+  "version": "0.1.0",
+  "description": "Prebuilt omo-webchat server binary for linux/arm64 (Go linux/arm64).",
+  "repository": "https://github.com/DevNewbie1826/omo-webchat",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "exe",
+    "index.js"
+  ],
+  "scripts": {
+    "prepack": "node -e \"const fs=require('node:fs');const p='exe/omo-webchat-bin';try{if(!fs.statSync(p).isFile())throw 0;fs.accessSync(p,fs.constants.X_OK)}catch{console.error('prepack: expected executable '+p+' is missing or not executable');process.exit(1)}\""
+  },
+  "private": false
+}

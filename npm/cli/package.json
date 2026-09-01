@@ -1,0 +1,25 @@
+{
+  "name": "omo-webchat",
+  "version": "0.1.0",
+  "description": "npx wrapper that launches the omo-webchat server binary for your platform and wires up the omo agent.",
+  "type": "commonjs",
+  "bin": {
+    "omo-webchat": "cli.js"
+  },
+  "files": [
+    "cli.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test cli.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "omo-webchat-darwin-arm64": "0.1.0",
+    "omo-webchat-darwin-x64": "0.1.0",
+    "omo-webchat-linux-arm64": "0.1.0",
+    "omo-webchat-linux-x64": "0.1.0"
+  }
+}

@@ -70,12 +70,20 @@ fi
 tar -xzf "${tmp}/${asset}" -C "$tmp"
 [ -f "${tmp}/${BINARY}" ] || fail "archive did not contain ${BINARY}"
 
-if [ ! -w "$INSTALL_DIR" ] && [ ! -w "$(dirname "$INSTALL_DIR")" ]; then
+use_sudo=false
+if [ -d "$INSTALL_DIR" ]; then
+  [ -w "$INSTALL_DIR" ] || use_sudo=true
+elif mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+  [ -w "$INSTALL_DIR" ] || use_sudo=true
+else
+  use_sudo=true
+fi
+
+if [ "$use_sudo" = true ]; then
   command -v sudo >/dev/null 2>&1 || fail "cannot write to ${INSTALL_DIR}; set INSTALL_DIR (e.g. INSTALL_DIR=~/.local/bin) or run as root."
   sudo mkdir -p "$INSTALL_DIR"
   sudo install -m 0755 "${tmp}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 else
-  mkdir -p "$INSTALL_DIR"
   install -m 0755 "${tmp}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 fi
 info "installed ${INSTALL_DIR}/${BINARY}"
@@ -85,12 +93,9 @@ case ":$PATH:" in
   *) warn "${INSTALL_DIR} is not on your PATH." ;;
 esac
 
-if ! command -v tmux >/dev/null 2>&1; then
-  warn "tmux is required at runtime but is not installed."
-  case "$os" in
-    darwin) warn "install it with:  brew install tmux" ;;
-    linux)  warn "install it with:  sudo apt install tmux  (Debian/Ubuntu)  or  sudo dnf install tmux  (Fedora)" ;;
-  esac
+if ! command -v omo >/dev/null 2>&1; then
+  warn "'omo' is required at runtime to create chats but was not found on your PATH."
+  warn "install it with:  npm install -g omo-ai@beta"
 fi
 
 printf '\nDone. Run it with:\n\n  %s --password <secret>\n\nthen open http://localhost:8080 in your browser.\n' "$BINARY"
