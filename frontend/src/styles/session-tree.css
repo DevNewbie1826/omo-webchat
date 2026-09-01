@@ -143,6 +143,16 @@
   border-color: var(--th-success);
 }
 
+.th-tree-activation {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+  text-align: start;
+}
+
 .th-tree-label {
   flex: 1;
   min-width: 0;

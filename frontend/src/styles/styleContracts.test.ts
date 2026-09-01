@@ -481,6 +481,12 @@ describe("sidebar density and top-bar hierarchy contracts", () => {
     expect(active).not.toMatch(/font-size|color/);
   });
 
+  it("stretches the session activation target across the full row height", () => {
+    const activation = sessionTree.match(/\.th-tree-activation\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(activation).toMatch(/align-self:\s*stretch/);
+    expect(activation).toMatch(/flex:\s*1/);
+  });
+
   it("anchors the top bar with a Secondary/emphasize title and Label metadata", () => {
     const name = termhead.match(/\.th-termhead-name\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(name).toMatch(/font-size:\s*var\(--th-type-secondary-size\)/);

@@ -415,6 +415,137 @@ func TestListWorkspaceSessionsSkipsUnreadableFile(t *testing.T) {
 // stored-row recency key: a chat's last use outranks its creation time, so a
 // freshly used old chat sorts above a never-used newer chat. A row without a
 // last-used stamp keeps its creation-time recency.
+func TestListWorkspaceSessionsDerivesDiscoveredNameFromFirstUserMessage(t *testing.T) {
+	srv, _, ws, agent := newSessionHistoryTestServer(t)
+	mtime := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	path := writeDiskSession(t, agent, ws.Path, "ghost-unnamed", "", mtime)
+	const prompt = "이 프로젝트가 뭐였지?"
+	appendDiskSessionLines(t, path,
+		`{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"ignore me"}]}}`,
+		fmt.Sprintf(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":%q}]}}`, prompt),
+		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"second prompt must not win"}]}}`,
+	)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want one discovered session", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "ghost-unnamed" {
+		t.Fatalf("id = %q, want ghost-unnamed", got.ID)
+	}
+	if got.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("source = %q, want %q", got.Source, sessionHistorySourceDiscovered)
+	}
+	if got.Name != prompt {
+		t.Fatalf("name = %q, want derived first-user title %q", got.Name, prompt)
+	}
+	if got.Dangling {
+		t.Fatalf("discovered row set dangling, want omitted/false; item: %+v", got)
+	}
+}
+
+func TestListWorkspaceSessionsPrefersSessionInfoNameOverUserMessage(t *testing.T) {
+	srv, _, ws, agent := newSessionHistoryTestServer(t)
+	mtime := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	path := writeDiskSession(t, agent, ws.Path, "named-session", "Pinned session name", mtime)
+	appendDiskSessionLines(t, path,
+		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"이 프로젝트가 뭐였지?"}]}}`,
+	)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want one discovered session", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "named-session" {
+		t.Fatalf("id = %q, want named-session", got.ID)
+	}
+	if got.Name != "Pinned session name" {
+		t.Fatalf("name = %q, want session_info name to win over later user text", got.Name)
+	}
+}
+
+func TestListWorkspaceSessionsSlashCommandFirstPromptLeavesDiscoveredNameEmpty(t *testing.T) {
+	srv, _, ws, agent := newSessionHistoryTestServer(t)
+	mtime := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	path := writeDiskSession(t, agent, ws.Path, "slash-prompt", "", mtime)
+	appendDiskSessionLines(t, path,
+		`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"/model gpt"}]}}`,
+	)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want one discovered session", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "slash-prompt" {
+		t.Fatalf("id = %q, want slash-prompt", got.ID)
+	}
+	if got.Name != "" {
+		t.Fatalf("name = %q, want empty when the first user prompt is a slash command", got.Name)
+	}
+}
+
+func TestListWorkspaceSessionsFindsUserTextAfterNonTextContentPart(t *testing.T) {
+	srv, _, ws, agent := newSessionHistoryTestServer(t)
+	mtime := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	path := writeDiskSession(t, agent, ws.Path, "mixed-content", "", mtime)
+	const prompt = "Reply with exactly: QA-OK"
+	appendDiskSessionLines(t, path,
+		fmt.Sprintf(`{"type":"message","message":{"role":"user","content":[{"type":"image","text":"do not use this"},{"type":"text","text":%q}]}}`, prompt),
+	)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want one discovered session", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "mixed-content" {
+		t.Fatalf("id = %q, want mixed-content", got.ID)
+	}
+	if got.Name != prompt {
+		t.Fatalf("name = %q, want text part %q after a leading non-text part", got.Name, prompt)
+	}
+}
+
+func TestListWorkspaceSessionsSkipsOversizedLineThenDerivesFromUserMessage(t *testing.T) {
+	srv, _, ws, agent := newSessionHistoryTestServer(t)
+	mtime := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	path := writeDiskSession(t, agent, ws.Path, "large-then-user", "", mtime)
+	const prompt = "오 넌 누구니"
+	oversized := `{"type":"message","payload":"` + strings.Repeat("x", sessionHistoryMaxJSONLLine) + `"}`
+	appendDiskSessionLines(t, path,
+		oversized,
+		fmt.Sprintf(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":%q}]}}`, prompt),
+	)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 1 {
+		t.Fatalf("items = %+v, want one discovered session", page.Items)
+	}
+	got := page.Items[0]
+	if got.ID != "large-then-user" || got.Name != prompt {
+		t.Fatalf("item = %+v, want oversized record skipped and following user text retained", got)
+	}
+}
+
+func appendDiskSessionLines(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open session: %v", err)
+	}
+	body := strings.Join(lines, "\n") + "\n"
+	if _, err := f.WriteString(body); err != nil {
+		f.Close()
+		t.Fatalf("append session records: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+}
+
 func TestListWorkspaceSessionsStoredRecencyPrefersLastUsedOverCreation(t *testing.T) {
 	srv, st, ws, _ := newSessionHistoryTestServer(t)
 	oldChat, err := st.NewChat(ws.ID, "old-but-used", ws.Path, "", "omo")

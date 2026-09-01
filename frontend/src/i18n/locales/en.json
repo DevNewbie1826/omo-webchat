@@ -34,6 +34,7 @@
   "sidebar.tm.discoveredHint": "Import and open discovered Omo session “{name}”",
   "sidebar.tm.missingOriginal": "Missing original",
   "sidebar.tm.missingOriginalHint": "The original session file for “{name}” is missing",
+  "sidebar.tm.untitled": "Untitled session {id}",
   "sidebar.tm.delete": "Delete chat session",
   "sidebar.tm.rename": "Rename chat session",
   "sidebar.ws.rename": "Rename workspace",

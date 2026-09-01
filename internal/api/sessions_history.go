@@ -154,21 +154,65 @@ func readSessionName(path string) string {
 
 	reader := bufio.NewReader(f)
 	name := ""
+	firstUserText := ""
 	for {
 		line, tooLong, lineErr := readJSONLLine(reader)
 		if !tooLong && len(line) > 0 {
 			var rec struct {
-				Type string `json:"type"`
-				Name string `json:"name"`
+				Type    string          `json:"type"`
+				Name    string          `json:"name"`
+				Message json.RawMessage `json:"message"`
 			}
-			if json.Unmarshal(line, &rec) == nil && rec.Type == "session_info" && rec.Name != "" {
-				name = rec.Name
+			if json.Unmarshal(line, &rec) == nil {
+				if rec.Type == "session_info" && rec.Name != "" {
+					name = rec.Name
+				} else if firstUserText == "" && rec.Type == "message" {
+					if text := sessionUserMessageText(rec.Message); text != "" {
+						firstUserText = text
+					}
+				}
 			}
 		}
 		if lineErr != nil {
-			return name
+			if name != "" {
+				return name
+			}
+			return chat.DeriveSessionTitle(firstUserText)
 		}
 	}
+}
+
+// sessionUserMessageText extracts non-empty user text from a JSONL message
+// object. content is either a JSON string or an array of parts; the first
+// part with type=="text" and non-empty text wins.
+func sessionUserMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var msg struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Role != "user" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(msg.Content, &text) == nil {
+		return text
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(msg.Content, &parts) != nil {
+		return ""
+	}
+	for _, part := range parts {
+		if part.Type == "text" && part.Text != "" {
+			return part.Text
+		}
+	}
+	return ""
 }
 
 // readJSONLLine caps retained data while still draining the complete record, so
