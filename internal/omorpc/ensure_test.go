@@ -289,6 +289,159 @@ func TestEnsureDaemonConcurrentSingleSpawn(t *testing.T) {
 	}
 }
 
+func TestEnsureLockSameSocketDifferentAgentDirsSingleSpawn(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	marker := filepath.Join(dir, "spawns")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo spawn >> %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'", marker))
+	cfgA := helperEnsureConfig(filepath.Join(dir, "agent-a"), socket, script, "serve")
+	cfgB := helperEnsureConfig(filepath.Join(dir, "agent-b"), socket, script, "serve")
+
+	start := make(chan struct{})
+	results := make(chan struct {
+		d   *EnsuredDaemon
+		err error
+	}, 2)
+	for _, cfg := range []EnsureConfig{cfgA, cfgB} {
+		cfg := cfg
+		go func() {
+			<-start
+			d, err := EnsureDaemon(context.Background(), cfg)
+			results <- struct {
+				d   *EnsuredDaemon
+				err error
+			}{d, err}
+		}()
+	}
+	close(start)
+
+	var daemons []*EnsuredDaemon
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent EnsureDaemon: %v", result.err)
+		}
+		daemons = append(daemons, result.d)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read spawn marker: %v", err)
+	}
+	if got := strings.Count(string(data), "spawn\n"); got != 1 {
+		t.Fatalf("supervisor spawn count = %d, want exactly 1", got)
+	}
+	stopEnsuredDaemons(t, daemons)
+}
+
+func TestEnsureDaemonStaleLockRaceSingleSpawn(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	marker := filepath.Join(dir, "spawns")
+	startedFIFO := filepath.Join(dir, "started.fifo")
+	releaseFIFO := filepath.Join(dir, "release.fifo")
+	for _, path := range []string{startedFIFO, releaseFIFO} {
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			t.Fatalf("mkfifo %s: %v", path, err)
+		}
+	}
+	script := writeFakeSupervisor(t, fmt.Sprintf(
+		"echo spawn >> %q\nprintf started > %q\nIFS= read -r _ < %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'",
+		marker, startedFIFO, releaseFIFO,
+	))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+	lockPath := ensureLockPath(cfg)
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, []byte("99999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan error, 1)
+	go func() {
+		data, err := os.ReadFile(startedFIFO)
+		if err == nil && string(data) != "started" {
+			err = fmt.Errorf("startup signal = %q, want started", data)
+		}
+		started <- err
+	}()
+
+	const callers = 16
+	start := make(chan struct{})
+	results := make(chan struct {
+		d   *EnsuredDaemon
+		err error
+	}, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			d, err := EnsureDaemon(context.Background(), cfg)
+			results <- struct {
+				d   *EnsuredDaemon
+				err error
+			}{d, err}
+		}()
+	}
+	close(start)
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read spawn marker: %v", err)
+	}
+	if got := strings.Count(string(data), "spawn\n"); got != 1 {
+		t.Fatalf("supervisor spawn count before readiness = %d, want exactly 1", got)
+	}
+	locks, err := filepath.Glob(filepath.Join(filepath.Dir(socket), "*.ensure.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(locks) != 1 || locks[0] != lockPath {
+		t.Fatalf("live ensure locks = %v, want exactly %q", locks, lockPath)
+	}
+	if err := os.WriteFile(releaseFIFO, []byte("ready\n"), 0o600); err != nil {
+		t.Fatalf("release supervisor: %v", err)
+	}
+
+	daemons := make([]*EnsuredDaemon, 0, callers)
+	for i := 0; i < callers; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("concurrent EnsureDaemon: %v", result.err)
+		}
+		daemons = append(daemons, result.d)
+	}
+	data, err = os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read final spawn marker: %v", err)
+	}
+	if got := strings.Count(string(data), "spawn\n"); got != 1 {
+		t.Fatalf("supervisor spawn count = %d, want exactly 1", got)
+	}
+	if locks, err = filepath.Glob(filepath.Join(filepath.Dir(socket), "*.ensure.lock")); err != nil || len(locks) != 0 {
+		t.Fatalf("orphan ensure locks = %v, err=%v", locks, err)
+	}
+	stopEnsuredDaemons(t, daemons)
+}
+
+func stopEnsuredDaemons(t *testing.T, daemons []*EnsuredDaemon) {
+	t.Helper()
+	for _, daemon := range daemons {
+		if daemon.Owned {
+			ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+			err := daemon.Stop(ctx)
+			cancel()
+			if err != nil {
+				t.Errorf("stop owner: %v", err)
+			}
+		} else {
+			_ = daemon.Close()
+		}
+	}
+}
+
 func TestEnsureDaemonLiveHandshakeTimeoutDoesNotSpawnOrUnlink(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "live.sock")

@@ -82,12 +82,12 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 // TestProtocolExtensionUIResponseOneWay pins the one-way extension_ui_response:
 // no fresh correlation id is assigned; the native dialog id travels unchanged.
 func TestProtocolExtensionUIResponseOneWay(t *testing.T) {
-	cmd := ExtensionUIResponse{ID: "dlg-42", Value: json.RawMessage(`{"choice":"ok"}`)}
+	cmd := ExtensionUIResponse{SessionID: "rpc-7", ID: "dlg-42", Value: json.RawMessage(`{"choice":"ok"}`)}
 	got, err := EncodeNotification(cmd)
 	if err != nil {
 		t.Fatalf("EncodeNotification: %v", err)
 	}
-	want := `{"id":"dlg-42","type":"extension_ui_response","value":{"choice":"ok"}}` + "\n"
+	want := `{"id":"dlg-42","sessionId":"rpc-7","type":"extension_ui_response","value":{"choice":"ok"}}` + "\n"
 	if string(got) != want {
 		t.Fatalf("wire mismatch\n got: %s\nwant: %s", got, want)
 	}

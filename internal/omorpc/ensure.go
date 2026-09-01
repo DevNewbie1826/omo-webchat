@@ -2,11 +2,10 @@ package omorpc
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -270,9 +269,8 @@ func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, process *os.Pro
 }
 
 func ensureLockPath(cfg EnsureConfig) string {
-	sum := sha256.Sum256([]byte(filepath.Clean(cfg.SocketPath)))
-	key := hex.EncodeToString(sum[:8])
-	return filepath.Join(cfg.AgentDir, "rpc-host-daemon", "ensure-"+key+".lock")
+	socketPath := filepath.Clean(cfg.SocketPath)
+	return filepath.Join(filepath.Dir(socketPath), filepath.Base(socketPath)+".ensure.lock")
 }
 
 func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) {
@@ -290,10 +288,18 @@ func acquireEnsureLock(ctx context.Context, cfg EnsureConfig) (*os.File, error) 
 		if !errors.Is(err, os.ErrExist) {
 			return nil, fmt.Errorf("omorpc: acquire ensure lock: %w", err)
 		}
-		if staleEnsureLock(path) {
-			if err := os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
-				continue
+		stale, staleErr := openStaleEnsureLock(path)
+		if errors.Is(staleErr, os.ErrNotExist) {
+			continue
+		}
+		if staleErr != nil {
+			return nil, fmt.Errorf("omorpc: inspect ensure lock: %w", staleErr)
+		}
+		if stale != nil {
+			if err := removeEnsureLockIfSame(stale, path); err != nil {
+				return nil, fmt.Errorf("omorpc: reclaim ensure lock: %w", err)
 			}
+			continue
 		}
 		select {
 		case <-lockCtx.Done():
@@ -335,29 +341,54 @@ func releaseEnsureLock(file *os.File, path string) {
 	if file == nil {
 		return
 	}
-	owned, _ := file.Stat()
-	current, err := os.Stat(path)
-	_ = file.Close()
-	if err == nil && owned != nil && os.SameFile(owned, current) {
-		_ = os.Remove(path)
-	}
+	_ = removeEnsureLockIfSame(file, path)
 }
 
-func staleEnsureLock(path string) bool {
-	data, err := os.ReadFile(path)
+func openStaleEnsureLock(path string) (*os.File, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return errors.Is(err, os.ErrNotExist)
+		return nil, err
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
-		return true
+		return file, nil
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
-		return true
+		return file, nil
 	}
-	err = process.Signal(syscall.Signal(0))
-	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+	if err := process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) {
+		return file, nil
+	}
+	_ = file.Close()
+	return nil, nil
+}
+
+func removeEnsureLockIfSame(file *os.File, path string) error {
+	owned, statErr := file.Stat()
+	current, currentErr := os.Stat(path)
+	_ = file.Close()
+	if statErr != nil {
+		return statErr
+	}
+	if errors.Is(currentErr, os.ErrNotExist) {
+		return nil
+	}
+	if currentErr != nil {
+		return currentErr
+	}
+	if !os.SameFile(owned, current) {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func ensureExtensionEventsCapability(env []string) []string {

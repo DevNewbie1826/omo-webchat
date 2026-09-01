@@ -207,6 +207,15 @@ func (d *mockDaemon) handle(conn net.Conn, req map[string]any) {
 		})
 		return
 	}
+	if cmd == CmdExtensionUIResponse {
+		if sid == "" {
+			d.write(conn, map[string]any{
+				"id": id, "type": "response", "command": cmd,
+				"success": false, "error": ErrCodeMissingSessionID,
+			})
+		}
+		return
+	}
 
 	var data map[string]any
 	switch cmd {

@@ -305,6 +305,7 @@ func (ExtensionRequest) commandName() string { return CmdExtensionRequest }
 // sent unchanged — never replaced with a client correlation id. Send it
 // with EncodeNotification.
 type ExtensionUIResponse struct {
+	SessionID string          `json:"sessionId"`
 	ID        string          `json:"id"`
 	Value     json.RawMessage `json:"value,omitempty"`
 	Confirmed *bool           `json:"confirmed,omitempty"`

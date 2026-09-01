@@ -218,7 +218,11 @@ func TestClientNotifyExtensionUIResponseOneWay(t *testing.T) {
 	d := newMockDaemon(t)
 	c := dialForTest(t, d, Config{})
 	confirmed := false
-	if err := c.Notify(context.Background(), ExtensionUIResponse{ID: "native-dialog-7", Confirmed: &confirmed}); err != nil {
+	if err := c.Notify(context.Background(), ExtensionUIResponse{
+		SessionID: "rpc-routing-7",
+		ID:        "native-dialog-7",
+		Confirmed: &confirmed,
+	}); err != nil {
 		t.Fatalf("Notify: %v", err)
 	}
 	d.awaitRequest(t, CmdExtensionUIResponse, testAwaitTimeout)
@@ -226,8 +230,8 @@ func TestClientNotifyExtensionUIResponseOneWay(t *testing.T) {
 	if request["id"] != "native-dialog-7" || request["confirmed"] != false {
 		t.Fatalf("notification fields = %#v", request)
 	}
-	if _, exists := request["sessionId"]; exists {
-		t.Fatalf("extension_ui_response unexpectedly carried sessionId: %#v", request)
+	if request["sessionId"] != "rpc-routing-7" {
+		t.Fatalf("extension_ui_response sessionId = %#v, want routing handle %q", request["sessionId"], "rpc-routing-7")
 	}
 }
 
