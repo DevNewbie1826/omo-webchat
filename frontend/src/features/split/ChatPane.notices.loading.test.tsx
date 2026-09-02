@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseChatServerFrame, type ChatServerFrame } from "../../lib/chatWs";
-import { renderChatPane } from "./chatPaneTestHarness";
+import { pressKey, renderChatPane, requireElement, setTextareaValue } from "./chatPaneTestHarness";
 
 function wireNoticeFrame(seq: number): Record<string, unknown> {
   return {
@@ -264,6 +264,49 @@ describe("ChatPane notices while history is loading", () => {
     });
 
     expect(noticeRows(container).length).toBe(1);
+  });
+
+  it("ends incomplete history, discards partial pages, and keeps the session usable", () => {
+    const { deliver, sent } = renderChatPane(root);
+
+    act(() => {
+      deliverWire(deliver, wireNoticeFrame(1));
+      deliver({
+        type: "entries",
+        sessionId: "chat-1",
+        entries: [{ type: "message", message: { role: "assistant", content: "discarded partial" } }],
+        final: false,
+      });
+      deliver({
+        type: "error",
+        sessionId: "chat-1",
+        code: "incomplete_history",
+        message: "History is incomplete",
+      });
+    });
+
+    expect(noticeRows(container).length).toBe(1);
+    expect(container.querySelector(".th-chat-loading")).toBeNull();
+    expect(container.querySelector(".th-chat-error")?.textContent).toBe("History is incomplete");
+
+    act(() => {
+      deliver({
+        type: "entries",
+        sessionId: "chat-1",
+        entries: [{ type: "message", message: { role: "assistant", content: "fresh history" } }],
+        final: true,
+      });
+    });
+
+    expect(container.textContent).toContain("fresh history");
+    expect(container.textContent).not.toContain("discarded partial");
+
+    const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "missing composer");
+    act(() => {
+      setTextareaValue(input, "still usable");
+      pressKey(input, "Enter");
+    });
+    expect(sent.some((frame) => frame.type === "chat.send" && frame.run.message === "still usable")).toBe(true);
   });
 
   for (const code of ["pi_eof", "provider_timeout", "provider_overflow"] as const) {

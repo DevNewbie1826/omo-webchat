@@ -494,6 +494,53 @@ func writeDelayedHistory(t *testing.T, dir string) (string, string) {
 	return path, leaf
 }
 
+func writeHeaderOnlyHistory(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "header-only-history.jsonl")
+	sum := sha256.Sum256([]byte(path))
+	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+	contents := `{"type":"session","version":3,"id":"` + durableID + `","cwd":"` + dir + `"}` + "\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestHistoryHybridIncompleteHistoryCodeThroughWebSocket(t *testing.T) {
+	h := newHistoryBridgeHarness(t, historyE2ETestBudget/3)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "header-only", path: writeHeaderOnlyHistory(t, h.workspace.Path)},
+		{name: "unknown-cursor", path: func() string {
+			path, _ := writeDelayedHistory(t, h.workspace.Path)
+			return path
+		}()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h.saveChat(t, tt.name, tt.path)
+			conn, frames := h.connect(t, 0)
+			deadline := time.Now().Add(historyE2ETestBudget)
+			writeClient(t, conn, map[string]any{
+				"type": "chat.create", "wsId": h.workspace.ID, "chatId": tt.name,
+			})
+			errorFrame := frames.nextWithin(t, "error", time.Until(deadline))
+			if errorFrame["code"] != "incomplete_history" || !strings.Contains(fmt.Sprint(errorFrame["message"]), "history load failed") {
+				t.Fatalf("visible incomplete history = %v", errorFrame)
+			}
+			writeClient(t, conn, map[string]any{"type": "ping"})
+			frames.nextWithin(t, "pong", time.Until(deadline))
+			sess, ok := h.manager.Get(tt.name)
+			if !ok || sess.Resumable() {
+				t.Fatalf("session is not usable after incomplete history: found=%v resumable=%v", ok, ok && sess.Resumable())
+			}
+		})
+	}
+}
+
 func TestHistoryHybridTimeoutThroughWebSocketStaysLocal(t *testing.T) {
 	historyTimeout := historyE2ETestBudget / 6
 	h := newHistoryBridgeHarness(t, historyTimeout)

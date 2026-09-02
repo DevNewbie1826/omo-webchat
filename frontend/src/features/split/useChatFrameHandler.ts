@@ -70,7 +70,7 @@ interface ChatFrameHandlerBindings {
 const HISTORY_TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
   "resume_failed", "initialize_failed", "start_failed", "no_chat",
   "bad_create", "no_workspace", "bad_provider",
-  "decode_failed", "provider_overflow", "provider_timeout", "pi_eof",
+  "decode_failed", "incomplete_history", "provider_overflow", "provider_timeout", "pi_eof",
 ]);
 
 function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
@@ -203,7 +203,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.setError("");
           return;
         }
-        if (frame.code === "decode_failed") bindings.pageBuffer.reset();
+        if (frame.code === "decode_failed" || frame.code === "incomplete_history") bindings.pageBuffer.reset();
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) {
           bindings.setError(frame.message);
           return;
