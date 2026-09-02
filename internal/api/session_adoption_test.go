@@ -88,6 +88,108 @@ func (c *adoptionWSCollector) next(t *testing.T, typ string) map[string]any {
 	}
 }
 
+func TestLegacyChatCreateRequiresAdoptionBeforeProviderOpen(t *testing.T) {
+	dir := t.TempDir()
+	daemonDir, err := os.MkdirTemp("", "adopt-guard-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	daemon := omorpctest.New(daemonDir)
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := cursorstore.Open(filepath.Join(dir, "state-v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := cursorstore.Workspace{ID: "ws-adoption-guard", Name: "work", Path: dir}
+	if err := store.SaveWorkspace(ws); err != nil {
+		t.Fatal(err)
+	}
+
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-invalid", "Invalid legacy")
+	file, err := os.OpenFile(source, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{not-json}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const chatID = "legacy-adoption-guard"
+	if err := store.SaveChat(cursorstore.Chat{
+		ID: chatID, WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source,
+		DurableSessionID: "durable-invalid", Name: "Invalid legacy", NameSource: cursorstore.NameSourceAuto,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := session.NewManager(session.Config{Client: client, Store: (*wsbridge.CursorStore)(store)})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sessionStore := auth.NewSessionStore(t.Context(), "pw", logger)
+	var server *Server
+	bridge := wsbridge.New(wsbridge.Config{
+		Context: t.Context(), Manager: manager, Store: store, ServerVersion: client.ServerVersion(), Logger: logger,
+		PrepareChatVersion: func(ctx context.Context, wsID, chatID string) (uint64, error) {
+			return server.prepareChatVersion(ctx, wsID, chatID)
+		},
+		ChatVersion: func(chatID string) uint64 { return server.chatLifecycleVersion(chatID) },
+	})
+	server = New(t.Context(), &config.Config{Root: dir}, store, sessionStore, manager, bridge, logger)
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(func() {
+		testServer.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = manager.CloseAll(ctx)
+		_ = client.Close()
+		daemon.Stop()
+	})
+
+	token, err := sessionStore.Create(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector := &adoptionWSCollector{frames: make(chan map[string]any, 8)}
+	conn, _, err := gws.NewClient(collector, &gws.ClientOption{
+		Addr:          "ws" + strings.TrimPrefix(testServer.URL, "http") + "/api/v2/ws",
+		RequestHeader: http.Header{"Cookie": []string{auth.CookieName + "=" + token}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.WriteClose(1000, nil)
+	go conn.ReadLoop()
+	collector.next(t, "hello")
+	write := func(frame any) {
+		raw, marshalErr := json.Marshal(frame)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if writeErr := conn.WriteMessage(gws.OpcodeText, raw); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	write(map[string]any{"type": "hello", "version": 2})
+	write(map[string]any{"type": "chat.create", "wsId": ws.ID, "chatId": chatID})
+	if frame := collector.next(t, "error"); frame["code"] != "adoption_required" {
+		t.Fatalf("chat.create error code = %v, want adoption_required", frame["code"])
+	}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("open_session count = %d, want 0", got)
+	}
+}
+
 func TestAdoptionHTTPToBridgePreservesOriginalThroughCompletedTurn(t *testing.T) {
 	dir := t.TempDir()
 	daemonDir, err := os.MkdirTemp("", "adopt-e2e-*")
