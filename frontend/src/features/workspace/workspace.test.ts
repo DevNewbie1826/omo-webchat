@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { listWorkspaceSessions } from "./workspace";
+import { listWorkspaceSessions, resolveWorkspaceSessionMembership } from "./workspace";
+import type { Workspace } from "./workspace";
 
 function okResponse(body: unknown): Response {
   return {
@@ -44,5 +45,36 @@ describe("listWorkspaceSessions", () => {
     );
     expect(page.items).toEqual([{ id: "s6", name: "Older", source: "discovered", recencyMs: 1000 }]);
     expect(page.nextCursor).toBe("");
+  });
+
+  it("resolves running membership beyond page one without populating the visible list", async () => {
+    const workspace: Workspace = { id: "ws-1", name: "Workspace", path: "/work", chats: [] };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      return path.includes("cursor=page-2")
+        ? okResponse({
+            items: [{ id: "cursor-only", name: "Cursor only", source: "stored", recencyMs: 1 }],
+            nextCursor: "page-3",
+          })
+        : okResponse({
+            items: Array.from({ length: 5 }, (_, index) => ({
+              id: `recent-${index}`,
+              name: `Recent ${index}`,
+              source: "stored",
+              recencyMs: 10 - index,
+            })),
+            nextCursor: "page-2",
+          });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const membership = await resolveWorkspaceSessionMembership(
+      [workspace],
+      new Set(["cursor-only"]),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(membership.memberships.get("ws-1")).toEqual(new Set(["cursor-only"]));
+    expect(membership.hadFailures).toBe(false);
   });
 });

@@ -344,11 +344,18 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		if !errors.As(err, &stable) || stable.Code != omorpctest.CodeUnknownSession {
 			t.Fatalf("prompt failure must surface the stable code, got %v", err)
 		}
-		// Rollback happened: the gate is free again, nothing wedged.
+		if summary, ok := sess.summary(); !ok || summary.Title != "" {
+			t.Fatalf("failed first prompt persisted title: %+v", summary)
+		}
+		// Rollback happened: the gate is free again, nothing wedged, and the
+		// first successful prompt still owns title derivation.
 		runScript(t, d, sess, "after failure")
 		prior, done := sub.await(t, FrameRunDone)
 		if c := counts(append(prior, done)); c[FrameRunStarted] != 1 || c[FrameRunDone] != 1 {
 			t.Fatalf("run after failed prompt polluted: %+v", c)
+		}
+		if summary, ok := sess.summary(); !ok || summary.Title != "after failure" {
+			t.Fatalf("successful retry title = %+v", summary)
 		}
 	})
 

@@ -21,6 +21,7 @@ export interface SessionTreeProps {
   readonly liveSessions: ReadonlySet<string>;
   /** Live session id -> running agent count; rows show a badge while > 0. */
   readonly runningCounts?: ReadonlyMap<string, { readonly count: number; readonly partial: boolean; readonly unknown?: boolean }> | undefined;
+  readonly aggregateSessionIds?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly expanded: ReadonlySet<string>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
@@ -49,6 +50,7 @@ export function SessionTree({
   placedSessions,
   liveSessions,
   runningCounts,
+  aggregateSessionIds,
   expanded,
   sessionLists,
   sessionPages,
@@ -96,7 +98,12 @@ export function SessionTree({
       if (name === ws.name) return;
       onRenameWorkspace(ws, name).catch(() => notify(t("toast.error"), "error"));
     } else {
-      const tm = ws.chats.find((x) => x.id === target.tmId);
+      const item = (sessionLists.get(ws.id) ?? []).find(
+        (session) => session.id === target.tmId && session.source === "stored" && session.dangling !== true,
+      );
+      const tm = ws.chats.find((x) => x.id === target.tmId) ?? (item
+        ? { id: item.id, name: item.name, provider: "omo" as const }
+        : undefined);
       if (!tm || name === tm.name) return;
       onRenameTerminal(ws, tm, name).catch(() => notify(t("toast.error"), "error"));
     }
@@ -111,6 +118,9 @@ export function SessionTree({
       {workspaces.map((ws) => {
         const isOpen = expanded.has(ws.id);
         const paging = sessionPages.get(ws.id);
+        const mergedSessionIds = new Set(ws.chats.map((chat) => chat.id));
+        for (const session of sessionLists.get(ws.id) ?? []) mergedSessionIds.add(session.id);
+        for (const id of aggregateSessionIds?.get(ws.id) ?? []) mergedSessionIds.add(id);
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         return (
@@ -142,11 +152,11 @@ export function SessionTree({
                   {ws.name}
                 </button>
               )}
-              <span className="th-tree-count">{ws.chats.length}</span>
+              <span className="th-tree-count">{mergedSessionIds.size}</span>
               {(() => {
-                const workspaceRunning = ws.chats.reduce((total, chat) => total + (runningCounts?.get(chat.id)?.count ?? 0), 0);
-                const workspacePartial = ws.chats.some((chat) => runningCounts?.get(chat.id)?.partial === true);
-                const workspaceUnknown = ws.chats.some((chat) => runningCounts?.get(chat.id)?.unknown === true);
+                const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id)?.count ?? 0), 0);
+                const workspacePartial = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.partial === true);
+                const workspaceUnknown = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.unknown === true);
                 return workspaceRunning > 0 || workspaceUnknown ? (
                   <span
                     className="th-tree-running th-tree-running--workspace"
@@ -191,9 +201,15 @@ export function SessionTree({
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
               {(sessionLists.get(ws.id) ?? []).map((item) => {
-                const tm = item.source === "stored"
-                  ? ws.chats.find((chat) => chat.id === item.id)
-                  : undefined;
+                const stored = item.source === "stored";
+                const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
+                // v2 union: the sessions REST also lists cursorstore-only chats
+                // the legacy workspace chat list does not carry. They are real
+                // chats — activate them through the same select flow instead of
+                // rendering a dead row. Dangling identities stay inert.
+                const tm = listed ?? (stored && item.dangling !== true
+                  ? { id: item.id, name: item.name, provider: "omo" as const }
+                  : undefined);
                 const discovered = item.source === "discovered";
                 const interactive = tm !== undefined || discovered;
                 const active = tm !== undefined && item.id === activeTerminalId;

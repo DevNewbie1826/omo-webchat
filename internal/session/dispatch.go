@@ -103,6 +103,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.publishLocked(Frame{Kind: FrameState, SessionID: s.durableID, Data: payload})
 	case "session_info_changed":
 		if name, _ := raw["name"].(string); name != "" {
+			s.title = name
 			s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
 		}
 	case "commands_changed":
@@ -121,6 +122,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 }
 
 func (s *Session) completeProviderRunLocked(reason string) {
+	s.reconcileActivityCacheLocked(s.activitySnapshots[activitySnapshotOrder[1]])
 	s.providerRunActive = false
 	s.promptInFlight = false
 	s.localCommandActive = false
@@ -225,6 +227,19 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 		s.activityOversized[name] = oversized
 		if !oversized {
 			s.activitySnapshots[name] = append(json.RawMessage(nil), dataBytes...)
+		}
+		// Digests retain at most maxActivityDigestEntries rows, including when
+		// the raw payload is too large for the 64 KiB replay cache.
+		switch name {
+		case activitySnapshotOrder[0]:
+			if digest, ok := parseTaskDigest(dataBytes); ok {
+				s.taskDigest = digest
+			}
+		case activitySnapshotOrder[1]:
+			if digest, ok := parseDagDigest(dataBytes); ok {
+				s.dagDigest = digest
+			}
+			s.reconcileActivityCacheLocked(dataBytes)
 		}
 	}
 	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})

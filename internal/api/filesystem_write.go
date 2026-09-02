@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
 const (
@@ -98,9 +100,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	if _, err := s.store.GetChat(ws.ID, r.PathValue("chatId")); err != nil {
-		s.writeStoreError(w, err)
-		return
+	chatID := r.PathValue("chatId")
+	if _, err := s.store.GetChat(ws.ID, chatID); err != nil {
+		_, cursors := s.v2Stack()
+		cursor, cursorErr := cursorstore.Chat{}, cursorstore.ErrNotFound
+		if cursors != nil {
+			cursor, cursorErr = cursors.GetChat(chatID)
+		}
+		if cursorErr != nil || cursor.WorkspaceID != ws.ID {
+			s.writeStoreError(w, err)
+			return
+		}
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {

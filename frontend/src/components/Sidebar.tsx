@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
@@ -6,7 +6,12 @@ import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons"
 import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
+
+/** Bounded retry cadence for union-membership crawls whose workspaces failed. */
+export const MEMBERSHIP_MAX_RETRIES = 5;
+export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
+import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { useMediaQuery } from "../lib/useMediaQuery";
@@ -85,6 +90,111 @@ export function Sidebar({
     ),
     [summaries],
   );
+  const [resolvedRunningMembership, setResolvedRunningMembership] =
+    useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const [membershipGeneration, setMembershipGeneration] = useState(0);
+  const membershipGenerationRef = useRef(0);
+  const [membershipRetry, setMembershipRetry] = useState(0);
+  const membershipRetryTimer = useRef<number | undefined>(undefined);
+  const previousSessionLists = useRef(sessionLists);
+  const activeMembershipCrawl = useRef<{
+    readonly fingerprint: string;
+    readonly controller: AbortController;
+  }>();
+
+  // Session-list replacement is the canonical mutation/refresh signal. Scope
+  // positive crawl results to that generation so deleted cursor-only chats
+  // cannot remain attributed from an older snapshot.
+  useEffect(() => {
+    if (previousSessionLists.current === sessionLists) return;
+    previousSessionLists.current = sessionLists;
+    setResolvedRunningMembership(new Map());
+    setMembershipGeneration((generation) => {
+      const next = generation + 1;
+      membershipGenerationRef.current = next;
+      return next;
+    });
+    setMembershipRetry(0);
+    if (membershipRetryTimer.current !== undefined) {
+      window.clearTimeout(membershipRetryTimer.current);
+      membershipRetryTimer.current = undefined;
+    }
+  }, [sessionLists]);
+
+  const unresolvedRunningIds = useMemo(() => {
+    const ids = new Set(runningCounts.keys());
+    for (const workspace of workspaces) {
+      for (const chat of workspace.chats) ids.delete(chat.id);
+      for (const session of sessionLists.get(workspace.id) ?? []) ids.delete(session.id);
+      for (const id of resolvedRunningMembership.get(workspace.id) ?? []) ids.delete(id);
+    }
+    return ids;
+  }, [resolvedRunningMembership, runningCounts, sessionLists, workspaces]);
+  const membershipFingerprint = JSON.stringify([
+    membershipGeneration,
+    membershipRetry,
+    [...workspaces].map((workspace) => workspace.id).sort(),
+    [...unresolvedRunningIds].sort(),
+  ]);  const aggregateSessionIds = useMemo(
+    () => new Map([...resolvedRunningMembership].map(([wsId, ids]) => [
+      wsId,
+      new Set([...ids].filter((id) => runningCounts.has(id))),
+    ])),
+    [resolvedRunningMembership, runningCounts],
+  );
+
+  useEffect(() => {
+    if (unresolvedRunningIds.size === 0) {
+      activeMembershipCrawl.current?.controller.abort();
+      activeMembershipCrawl.current = undefined;
+      return;
+    }
+    if (activeMembershipCrawl.current?.fingerprint === membershipFingerprint) return;
+    activeMembershipCrawl.current?.controller.abort();
+    const controller = new AbortController();
+    const crawl = { fingerprint: membershipFingerprint, controller };
+    activeMembershipCrawl.current = crawl;
+    void resolveWorkspaceSessionMembership(workspaces, unresolvedRunningIds, controller.signal)
+      .then(({ memberships: resolved, hadFailures }) => {
+        if (activeMembershipCrawl.current !== crawl || controller.signal.aborted) return;
+        setResolvedRunningMembership((previous) => {
+          const next = new Map(previous);
+          for (const [wsId, ids] of resolved) {
+            next.set(wsId, new Set([...(next.get(wsId) ?? []), ...ids]));
+          }
+          return next;
+        });
+        // A failed workspace leaves its IDs unresolved without changing the
+        // fingerprint, so nothing would retrigger the crawl. Schedule a
+        // bounded retry tick; the tick participates in the fingerprint via
+        // the retry state below.
+        if (hadFailures && membershipRetry < MEMBERSHIP_MAX_RETRIES) {
+          // Exactly one pending retry timer: a newer crawl supersedes the
+          // older timer, and the callback is inert once its generation is
+          // no longer current.
+          if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
+          const scheduledGeneration = membershipGenerationRef.current;
+          membershipRetryTimer.current = window.setTimeout(() => {
+            membershipRetryTimer.current = undefined;
+            if (membershipGenerationRef.current !== scheduledGeneration) return;
+            setMembershipRetry((retry) => retry + 1);
+          }, MEMBERSHIP_RETRY_DELAY_MS);
+        }
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+      })
+      .finally(() => {
+        if (activeMembershipCrawl.current === crawl) activeMembershipCrawl.current = undefined;
+      });
+  }, [membershipFingerprint]);
+
+  useEffect(() => () => {
+    activeMembershipCrawl.current?.controller.abort();
+    activeMembershipCrawl.current = undefined;
+    if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
+  }, []);
+
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
     <>
@@ -157,6 +267,7 @@ export function Sidebar({
                 placedSessions={placedSessions}
                 liveSessions={liveSessions}
                 runningCounts={runningCounts}
+                aggregateSessionIds={aggregateSessionIds}
                 expanded={expanded}
                 sessionLists={sessionLists}
                 sessionPages={sessionPages}

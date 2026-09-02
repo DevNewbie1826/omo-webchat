@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { SessionTree } from "./SessionTree";
 import type { Workspace } from "../features/workspace/workspace";
+import { renameTerminal } from "../features/terminal/terminal";
 
 describe("SessionTree live-process indicator", () => {
   let container: HTMLDivElement;
@@ -85,6 +86,72 @@ describe("SessionTree live-process indicator", () => {
     expect(idleNode.querySelector(".th-tree-activation")?.getAttribute("title")).toBeNull();
     expect(liveNode.querySelector(".th-tree-placed")?.classList.contains("th-tree-placed--on")).toBe(false);
     expect(idleNode.querySelector(".th-tree-placed")?.classList.contains("th-tree-placed--on")).toBe(true);
+  });
+
+  it("renames a cursor-only stored row through its synthetic terminal", async () => {
+    const workspace: Workspace = {
+      id: "ws-1",
+      name: "Workspace",
+      path: "/work",
+      chats: [],
+    };
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: "cursor-only", name: "Renamed", provider: "omo" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+    const onRenameTerminal = vi.fn(async (ws: Workspace, tm: Workspace["chats"][number], name: string) => {
+      await renameTerminal(ws.id, tm.id, name);
+    });
+
+    act(() => {
+      root.render(
+        <SessionTree
+          workspaces={[workspace]}
+          liveSessions={new Set()}
+          activeTerminalId={null}
+          placedSessions={new Set()}
+          expanded={new Set(["ws-1"])}
+          sessionLists={new Map([["ws-1", [
+            { id: "cursor-only", name: "Cursor row", source: "stored", recencyMs: 1 },
+          ]]])}
+          sessionPages={new Map()}
+          onToggle={() => undefined}
+          onLoadMoreSessions={() => undefined}
+          onSelect={() => undefined}
+          onImport={async () => undefined}
+          onAddTerminal={() => undefined}
+          onDeleteWorkspace={() => undefined}
+          onDeleteTerminal={() => undefined}
+          onRenameWorkspace={async () => undefined}
+          onRenameTerminal={onRenameTerminal}
+          notify={() => undefined}
+        />,
+      );
+    });
+
+    const renameButton = container.querySelector<HTMLButtonElement>('button[title="sidebar.tm.rename"]');
+    act(() => renameButton?.click());
+    const input = container.querySelector<HTMLInputElement>(".th-tree-rename");
+    expect(input?.value).toBe("Cursor row");
+    act(() => {
+      if (input) {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "Renamed");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    await act(async () => input?.blur());
+
+    expect(onRenameTerminal).toHaveBeenCalledWith(
+      workspace,
+      { id: "cursor-only", name: "Cursor row", provider: "omo" },
+      "Renamed",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/workspaces/ws-1/chats/cursor-only",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Renamed" }) }),
+    );
   });
 
   it("renders discovered sessions as importable rows with no store actions", () => {

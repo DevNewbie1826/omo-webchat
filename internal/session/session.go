@@ -46,6 +46,9 @@ type Session struct {
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
+	title                                                                   string
+	taskDigest                                                              *TaskDigest
+	dagDigest                                                               *DagDigest
 
 	broadcast broadcaster
 }
@@ -122,6 +125,9 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 			s.promptResponse = false
 			s.scheduleIdleLocked()
 		} else if err == nil {
+			if s.title == "" {
+				s.title = DeriveSessionTitle(msg)
+			}
 			s.promptResponse = true
 			if s.localCommandActive && s.localCommandSeq == seq {
 				s.completeLocalCommandLocked(seq)
@@ -412,6 +418,9 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 func (s *Session) SetSessionName(ctx context.Context, name string) error {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
+	if err == nil {
+		s.title = name
+	}
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err
@@ -597,7 +606,18 @@ func (s *Session) summary() (Summary, bool) {
 	if s.closed || s.closing || s.resumable {
 		return Summary{}, false
 	}
-	return Summary{ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile, CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count()}, true
+	return Summary{
+		ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile,
+		CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count(), Title: s.title,
+		ActivityPair: ActivityPair{
+			Task: append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[0]]...),
+			Dag:  append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[1]]...),
+		},
+		TaskOversized: s.activityOversized[activitySnapshotOrder[0]],
+		DagOversized:  s.activityOversized[activitySnapshotOrder[1]],
+		TaskDigest:    cloneTaskDigest(s.taskDigest),
+		DagDigest:     cloneDagDigest(s.dagDigest),
+	}, true
 }
 func (s *Session) publishLocked(f Frame) {
 	if f.Kind == FrameReady {

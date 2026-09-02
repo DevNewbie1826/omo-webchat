@@ -15,6 +15,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
 func newWriteTestServer(t *testing.T) (*Server, string) {
@@ -121,6 +122,62 @@ func TestHandleWriteFileRejectsOversizedBody(t *testing.T) {
 	}
 	if string(written) != original {
 		t.Fatalf("target was modified after oversized request: %q", written)
+	}
+}
+
+func multipartUploadRequest(t *testing.T, path, filename, content string) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	file, err := form.CreateFormFile("files", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte(content)); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, &body)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	return req
+}
+
+func TestUploadAcceptsCursorStoreOnlyChatAndRejectsMissingChat(t *testing.T) {
+	s, _, ws := newChatCreateTestServer(t)
+	cursors, err := cursorstore.Open(filepath.Join(t.TempDir(), "v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.SaveChat(cursorstore.Chat{ID: "v2-only", WorkspaceID: ws.ID, CWD: ws.Path, Name: "v2"}); err != nil {
+		t.Fatal(err)
+	}
+	s.installV2(nil, cursors, nil)
+
+	for _, test := range []struct {
+		chatID string
+		want   int
+	}{
+		{chatID: "v2-only", want: http.StatusOK},
+		{chatID: "missing", want: http.StatusNotFound},
+	} {
+		path := "/api/workspaces/" + ws.ID + "/chats/" + test.chatID + "/upload"
+		req := multipartUploadRequest(t, path, "v2-proof.txt", "cursor upload")
+		req.SetPathValue("wsId", ws.ID)
+		req.SetPathValue("chatId", test.chatID)
+		rec := httptest.NewRecorder()
+		s.handleUpload(rec, req)
+		if rec.Code != test.want {
+			t.Fatalf("chat %q status = %d, want %d: %s", test.chatID, rec.Code, test.want, rec.Body.String())
+		}
+	}
+	got, err := os.ReadFile(filepath.Join(ws.Path, "v2-proof.txt"))
+	if err != nil || string(got) != "cursor upload" {
+		t.Fatalf("uploaded file = %q, %v", got, err)
 	}
 }
 

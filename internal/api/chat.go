@@ -86,13 +86,22 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		s.beforeChatDelete()
 	}
 
+	manager, cursors := s.v2Stack()
 	// Publish a deletion generation before provider I/O. Prepare captures the
 	// prior generation under this lock; bridge publication validates it without
 	// taking the lock from inside the manager flight.
 	s.chatLifecycleMu.Lock()
-	if _, err := s.store.GetChat(wsID, chatID); err != nil {
+	_, legacyErr := s.store.GetChat(wsID, chatID)
+	legacyExists := legacyErr == nil
+	cursorExists := false
+	if cursors != nil {
+		if record, err := cursors.GetChat(chatID); err == nil && record.WorkspaceID == wsID {
+			cursorExists = true
+		}
+	}
+	if !legacyExists && !cursorExists {
 		s.chatLifecycleMu.Unlock()
-		s.writeStoreError(w, err)
+		s.writeStoreError(w, legacyErr)
 		return
 	}
 	if s.chatDeleting[chatID] {
@@ -106,7 +115,6 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 
 	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
 	// not turn a still-live provider session into successfully deleted metadata.
-	manager, cursors := s.v2Stack()
 	if manager != nil {
 		stopCtx, cancelStop := newChatStopContext(context.Background(), chatStopTimeout)
 		err := manager.StopContext(stopCtx, chatID)
@@ -127,11 +135,13 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	// Deletion exclusion remains active through both metadata stores, but no
 	// API lifecycle lock is held across the provider RPC above.
 	s.chatLifecycleMu.Lock()
-	if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
-		delete(s.chatDeleting, chatID)
-		s.chatLifecycleMu.Unlock()
-		s.writeStoreError(w, err)
-		return
+	if legacyExists {
+		if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
+			delete(s.chatDeleting, chatID)
+			s.chatLifecycleMu.Unlock()
+			s.writeStoreError(w, err)
+			return
+		}
 	}
 	if cursors != nil {
 		if err := cursors.DeleteChat(chatID); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
@@ -162,29 +172,55 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	c, err := s.store.UpdateChat(r.PathValue("wsId"), r.PathValue("chatId"), func(c *store.Chat) {
-		c.Name = name
-		c.NameSource = "user"
-	})
-	if err != nil {
-		s.writeStoreError(w, err)
+	wsID := r.PathValue("wsId")
+	chatID := r.PathValue("chatId")
+	manager, cursors := s.v2Stack()
+	s.chatLifecycleMu.Lock()
+	_, legacyErr := s.store.GetChat(wsID, chatID)
+	cursor, cursorErr := cursorstore.Chat{}, cursorstore.ErrNotFound
+	if cursors != nil {
+		cursor, cursorErr = cursors.GetChat(chatID)
+		if cursorErr == nil && cursor.WorkspaceID != wsID {
+			cursorErr = cursorstore.ErrNotFound
+		}
+	}
+	if legacyErr != nil && cursorErr != nil {
+		s.chatLifecycleMu.Unlock()
+		s.writeStoreError(w, legacyErr)
 		return
 	}
+	var c store.Chat
+	if legacyErr == nil {
+		c, legacyErr = s.store.UpdateChat(wsID, chatID, func(c *store.Chat) {
+			c.Name = name
+			c.NameSource = "user"
+		})
+		if legacyErr != nil {
+			s.chatLifecycleMu.Unlock()
+			s.writeStoreError(w, legacyErr)
+			return
+		}
+	} else {
+		c = store.Chat{ID: cursor.ID, Name: name, NameSource: "user", WsID: wsID, Cwd: cursor.CWD, Provider: "omo", CreatedAt: cursor.CreatedAt}
+	}
+	if cursorErr == nil {
+		cursor.Name, cursor.NameSource = name, cursorstore.NameSourceUser
+		if err := cursors.SaveChat(cursor); err != nil {
+			s.chatLifecycleMu.Unlock()
+			s.logger.Error("renaming v2 chat cursor", "err", err, "chatId", chatID)
+			writeError(w, http.StatusInternalServerError, "failed to rename chat cursor")
+			return
+		}
+	}
+	s.chatLifecycleMu.Unlock()
 	// The user owns the title from here on: push it to the live provider
 	// session best-effort so its own name reporting cannot drift the UI.
-	chatID := r.PathValue("chatId")
 	if sess := s.chats.Get(chatID); sess != nil {
 		_ = sess.SetSessionName(name)
 	}
-	if manager, cursors := s.v2Stack(); manager != nil {
+	if manager != nil {
 		if sess, active := manager.Get(chatID); active {
 			_ = sess.SetSessionName(r.Context(), name)
-			if cursors != nil {
-				if record, getErr := cursors.GetChat(chatID); getErr == nil {
-					record.Name, record.NameSource = name, "user"
-					_ = cursors.SaveChat(record)
-				}
-			}
 		}
 	}
 	writeJSON(w, http.StatusOK, c)
@@ -301,9 +337,9 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 	sessions := make([]liveSessionResponse, 0, len(summaries))
 	seen := make(map[string]bool, len(summaries))
 	for _, summary := range summaries {
-		title := summary.Title
+		title := titles[summary.ID]
 		if title == "" {
-			title = titles[summary.ID]
+			title = summary.Title
 		}
 		sessions = append(sessions, liveSessionFromSummary(summary, title))
 		seen[summary.ID] = true
@@ -313,7 +349,22 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 			if seen[summary.ChatID] {
 				continue
 			}
-			sessions = append(sessions, liveSessionResponse{ID: summary.ChatID, Title: titles[summary.ChatID]})
+			title := titles[summary.ChatID]
+			if title == "" {
+				title = summary.Title
+			}
+			row := liveSessionResponse{
+				ID: summary.ChatID, Title: title,
+				Task: rawOrNull(summary.ActivityPair.Task), Dag: rawOrNull(summary.ActivityPair.Dag),
+				TaskOversized: summary.TaskOversized, DagOversized: summary.DagOversized,
+			}
+			if summary.TaskDigest != nil {
+				row.TaskDigest = summary.TaskDigest
+			}
+			if summary.DagDigest != nil {
+				row.DagDigest = summary.DagDigest
+			}
+			sessions = append(sessions, row)
 		}
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
