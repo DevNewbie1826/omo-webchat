@@ -126,7 +126,7 @@ export async function resolveWorkspaceSessionMembership(
   sessionIds: ReadonlySet<string>,
   signal?: AbortSignal,
 ): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
-  const entries = await Promise.all(workspaces.map(async (workspace) => {
+  const results = await Promise.allSettled(workspaces.map(async (workspace) => {
     const matches = new Set<string>();
     const seenCursors = new Set<string>();
     let cursor = "";
@@ -141,7 +141,8 @@ export async function resolveWorkspaceSessionMembership(
     } while (matches.size < sessionIds.size);
     return [workspace.id, matches] as const;
   }));
-  return new Map(entries);
+  if (signal?.aborted) throw new DOMException("Membership resolution aborted", "AbortError");
+  return new Map(results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
 }
 
 export async function listWorkspaces(): Promise<readonly Workspace[]> {

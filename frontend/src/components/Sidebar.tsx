@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
@@ -88,6 +88,23 @@ export function Sidebar({
   );
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const [membershipGeneration, setMembershipGeneration] = useState(0);
+  const previousSessionLists = useRef(sessionLists);
+  const activeMembershipCrawl = useRef<{
+    readonly fingerprint: string;
+    readonly controller: AbortController;
+  }>();
+
+  // Session-list replacement is the canonical mutation/refresh signal. Scope
+  // positive crawl results to that generation so deleted cursor-only chats
+  // cannot remain attributed from an older snapshot.
+  useEffect(() => {
+    if (previousSessionLists.current === sessionLists) return;
+    previousSessionLists.current = sessionLists;
+    setResolvedRunningMembership(new Map());
+    setMembershipGeneration((generation) => generation + 1);
+  }, [sessionLists]);
+
   const unresolvedRunningIds = useMemo(() => {
     const ids = new Set(runningCounts.keys());
     for (const workspace of workspaces) {
@@ -97,7 +114,11 @@ export function Sidebar({
     }
     return ids;
   }, [resolvedRunningMembership, runningCounts, sessionLists, workspaces]);
-  const unresolvedFingerprint = [...unresolvedRunningIds].sort().join("\0");
+  const membershipFingerprint = JSON.stringify([
+    membershipGeneration,
+    [...workspaces].map((workspace) => workspace.id).sort(),
+    [...unresolvedRunningIds].sort(),
+  ]);
   const aggregateSessionIds = useMemo(
     () => new Map([...resolvedRunningMembership].map(([wsId, ids]) => [
       wsId,
@@ -107,18 +128,39 @@ export function Sidebar({
   );
 
   useEffect(() => {
-    if (unresolvedRunningIds.size === 0) return;
+    if (unresolvedRunningIds.size === 0) {
+      activeMembershipCrawl.current?.controller.abort();
+      activeMembershipCrawl.current = undefined;
+      return;
+    }
+    if (activeMembershipCrawl.current?.fingerprint === membershipFingerprint) return;
+    activeMembershipCrawl.current?.controller.abort();
     const controller = new AbortController();
+    const crawl = { fingerprint: membershipFingerprint, controller };
+    activeMembershipCrawl.current = crawl;
     void resolveWorkspaceSessionMembership(workspaces, unresolvedRunningIds, controller.signal)
-      .then((resolved) => setResolvedRunningMembership((previous) => {
-        const next = new Map(previous);
-        for (const [wsId, ids] of resolved) {
-          next.set(wsId, new Set([...(next.get(wsId) ?? []), ...ids]));
-        }
-        return next;
-      }), () => undefined);
-    return () => controller.abort();
-  }, [runningCounts, unresolvedFingerprint, workspaces]);
+      .then((resolved) => {
+        if (activeMembershipCrawl.current !== crawl || controller.signal.aborted) return;
+        setResolvedRunningMembership((previous) => {
+          const next = new Map(previous);
+          for (const [wsId, ids] of resolved) {
+            next.set(wsId, new Set([...(next.get(wsId) ?? []), ...ids]));
+          }
+          return next;
+        });
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
+      })
+      .finally(() => {
+        if (activeMembershipCrawl.current === crawl) activeMembershipCrawl.current = undefined;
+      });
+  }, [membershipFingerprint]);
+
+  useEffect(() => () => {
+    activeMembershipCrawl.current?.controller.abort();
+    activeMembershipCrawl.current = undefined;
+  }, []);
 
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
