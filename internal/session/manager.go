@@ -192,22 +192,20 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 	}
 }
 
-// ReplayBackpressureSubscriber opts a transport into blocking enqueue only
-// while durable history is being replayed. The stop channel must close when
-// delivery can no longer make progress, allowing the broadcaster to detach the
-// subscriber without retaining the session lifecycle lock.
+// ReplayBackpressureSubscriber lets a transport apply replay-specific write
+// deadlines. EndReplay is called only after the terminal frame is delivered,
+// or when the subscription stops.
 type ReplayBackpressureSubscriber interface {
 	BeginReplay()
 	EndReplay()
-	ReplayBackpressure() (<-chan struct{}, bool)
 }
 
-func hydrateForSubscriber(ctx context.Context, s *Session, path string, sub Subscriber) {
-	if replay, ok := sub.(ReplayBackpressureSubscriber); ok {
-		replay.BeginReplay()
-		defer replay.EndReplay()
+func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription) {
+	if target == nil {
+		return
 	}
-	s.hydrateEntries(ctx, path)
+	target.beginReplay()
+	s.hydrateEntries(ctx, path, target)
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
@@ -278,13 +276,13 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	existing := m.byChat[chatID]
 	m.mu.Unlock()
 	if existing != nil && !existing.Resumable() {
-		detach, err := existing.attachChecked(sub)
+		detach, target, err := existing.attachCheckedTarget(sub)
 		if err == nil {
 			if initialize != nil {
 				initialize(existing, false, detach)
 			}
 			if existing.sessionFile != "" {
-				hydrateForSubscriber(ctx, existing, existing.sessionFile, sub)
+				hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
 			}
 			if validate != nil {
 				if err := validate(); err != nil {
@@ -379,7 +377,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, ErrSessionResumable
 		}
-		detach, err := s.attachChecked(sub)
+		detach, target, err := s.attachCheckedTarget(sub)
 		if err != nil {
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
@@ -394,7 +392,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			initialize(s, true, detach)
 		}
 		if resumed {
-			hydrateForSubscriber(ctx, s, cur.SessionFile, sub)
+			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 		}
 		if err := validate(); err != nil {
 			detach()
@@ -453,7 +451,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return s, true, nil, ErrSessionResumable
 	}
 
-	detach, err := s.attachChecked(sub)
+	detach, target, err := s.attachCheckedTarget(sub)
 	if err != nil {
 		m.mu.Lock()
 		if m.byChat[chatID] == s {
@@ -478,7 +476,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		initialize(s, true, detach)
 	}
 	if resumed {
-		hydrateForSubscriber(ctx, s, cur.SessionFile, sub)
+		hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 	}
 	return s, true, detach, nil
 }

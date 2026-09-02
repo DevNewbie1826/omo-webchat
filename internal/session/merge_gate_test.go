@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -887,7 +888,7 @@ func TestMergeGateStaleEpochEventCannotReachSuccessor(t *testing.T) {
 	newToken, _ := client.CurrentEpoch()
 	s := &Session{durableID: "successor", routingID: "reused", epoch: newToken, queueSize: 8, activitySnapshots: map[string]json.RawMessage{}, activityOversized: map[string]bool{}}
 	sub := newRecorder(1)
-	_, detach := s.broadcast.attach(sub, 8, nil)
+	_, _, detach := s.broadcast.attach(sub, 8, nil)
 	defer detach()
 	raw := json.RawMessage(`{"type":"state_changed","sessionId":"reused","value":"stale"}`)
 	s.dispatchEpoch(oldToken, &omorpc.Event{Type: "state_changed", SessionID: "reused", Raw: raw})
@@ -991,7 +992,7 @@ func TestMergeGateLoadEntriesSendsSinceCursor(t *testing.T) {
 	}
 }
 
-func TestMergeGateMalformedIncrementalHistoryStillPublishesTerminalFrame(t *testing.T) {
+func TestMergeGateMalformedIncrementalHistoryPublishesIncompleteError(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
@@ -1030,10 +1031,14 @@ func TestMergeGateMalformedIncrementalHistoryStillPublishesTerminalFrame(t *test
 		t.Fatal("Acquire blocked on malformed incremental history")
 	}
 	release()
-	_, frame := sub.await(t, FrameEntries)
-	entries := frame.Data.(EntriesFrame)
-	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != leafID {
-		t.Fatalf("terminal malformed incremental history frame: %+v", entries)
+	prior, frame := sub.awaitError(t, "decode_failed")
+	if !strings.Contains(frame.Data.(ErrorInfo).Message, "invalid get_entries response") {
+		t.Fatalf("history error = %+v", frame.Data)
+	}
+	for _, got := range prior {
+		if got.Kind == FrameEntries && got.Data.(EntriesFrame).Final {
+			t.Fatalf("malformed tail terminalized successfully: %+v", got)
+		}
 	}
 }
 

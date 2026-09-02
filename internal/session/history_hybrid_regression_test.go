@@ -3,6 +3,8 @@ package session
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +21,14 @@ import (
 func writeHistorySession(t *testing.T, entries, padding int) (path, leafID string) {
 	t.Helper()
 	path = filepath.Join(t.TempDir(), "large-session.jsonl")
+	sum := sha256.Sum256([]byte(path))
+	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+	return writeHistorySessionAt(t, path, durableID, entries, padding)
+}
+
+func writeHistorySessionAt(t *testing.T, path, durableID string, entries, padding int) (string, string) {
+	t.Helper()
+	var leafID string
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -26,7 +36,7 @@ func writeHistorySession(t *testing.T, entries, padding int) (path, leafID strin
 	writer := bufio.NewWriterSize(file, 256<<10)
 	encoder := json.NewEncoder(writer)
 	if err := encoder.Encode(map[string]any{
-		"type": "session", "version": 3, "id": "history-session",
+		"type": "session", "version": 3, "id": durableID,
 		"timestamp": "2026-09-02T00:00:00.000Z", "cwd": filepath.Dir(path),
 	}); err != nil {
 		t.Fatal(err)
@@ -114,11 +124,37 @@ func TestHistoryHybridEmptyTailKeepsDiskTranscriptWithOneTerminal(t *testing.T) 
 		t.Fatal(err)
 	}
 	mgr := testManager(t, client, store, 64)
+	release := d.BlockHandlerForPath(omorpc.CmdGetEntries, path)
+	defer release()
 	sub := newRecorder(16)
-	sess, _, detach := acquire(t, mgr, testChat{id: "empty-tail", cwd: filepath.Dir(path)}, sub)
-	defer detach()
+	result := make(chan struct {
+		sess   *Session
+		detach func()
+		err    error
+	}, 1)
+	go func() {
+		sess, _, detach, err := mgr.Acquire(context.Background(), testChat{id: "empty-tail", cwd: filepath.Dir(path)}, sub)
+		result <- struct {
+			sess   *Session
+			detach func()
+			err    error
+		}{sess, detach, err}
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("incremental tail request absent")
+	}
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[],"leafId":%q}}`+"\n", id, sid, leafID))
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.detach()
+	release()
 
-	pages := collectHydrationPages(t, sess, sub)
+	pages := collectHydrationPages(t, got.sess, sub)
 	assertSingleTerminalHistory(t, pages, 3)
 	terminal := pages[len(pages)-1]
 	if len(terminal.Entries) != 0 {
@@ -187,6 +223,144 @@ func TestHistoryHybridNonEmptyTailAppendsWithOneTerminal(t *testing.T) {
 	}
 }
 
+func TestHistoryHybridUnknownCursorEmptyTailIsIncomplete(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 16)
+	sub := newRecorder(16)
+	sess, _, detach := acquire(t, mgr, testChat{id: "unknown-cursor", cwd: t.TempDir()}, sub)
+	defer detach()
+	sub.next(t) // ready
+
+	sess.LoadEntries(context.Background(), "not-a-real-leaf")
+	prior, _ := sub.awaitError(t, "incomplete_history")
+	for _, frame := range prior {
+		if frame.Kind == FrameEntries && frame.Data.(EntriesFrame).Final {
+			t.Fatalf("unknown cursor terminalized successfully: %+v", frame)
+		}
+	}
+}
+
+func TestHistoryHybridHeaderOnlyConsultsDaemonThenReportsIncomplete(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	path, _ := writeHistorySession(t, 0, 0)
+	if err := store.SaveCursor(context.Background(), "header-only", Cursor{SessionFile: path}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := testManager(t, client, store, 16)
+	sub := newRecorder(16)
+	_, _, detach := acquire(t, mgr, testChat{id: "header-only", cwd: filepath.Dir(path)}, sub)
+	defer detach()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("header-only hydration did not consult daemon")
+	}
+	prior, _ := sub.awaitError(t, "incomplete_history")
+	for _, frame := range prior {
+		if frame.Kind == FrameEntries && frame.Data.(EntriesFrame).Final {
+			t.Fatalf("header-only history terminalized successfully: %+v", frame)
+		}
+	}
+}
+
+func TestHistoryHybridBrokenTailChainReportsIncomplete(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	path, _ := writeHistorySession(t, 2, 0)
+	if err := store.SaveCursor(context.Background(), "broken-tail", Cursor{SessionFile: path}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := testManager(t, client, store, 16)
+	release := d.BlockHandlerForPath(omorpc.CmdGetEntries, path)
+	defer release()
+	sub := newRecorder(16)
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "broken-tail", cwd: filepath.Dir(path)}, sub)
+		done <- err
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("tail request absent")
+	}
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[{"type":"message","id":"tail-1","parentId":"wrong-parent"}],"leafId":"tail-1"}}`+"\n", id, sid))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	release()
+	prior, _ := sub.awaitError(t, "incomplete_history")
+	for _, frame := range prior {
+		if frame.Kind == FrameEntries && frame.Data.(EntriesFrame).Final {
+			t.Fatalf("broken chain terminalized successfully: %+v", frame)
+		}
+	}
+}
+
+func TestHistoryHybridReattachHistoryIsTargetedAndLiveFramesResume(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 2)
+	chat := testChat{id: "targeted-history", cwd: t.TempDir()}
+	a := newRecorder(32)
+	sess, _, detachA := acquire(t, mgr, chat, a)
+	defer detachA()
+	a.next(t) // ready
+
+	path := filepath.Join(t.TempDir(), "targeted.jsonl")
+	path, leaf := writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
+	sess.lifecycleMu.Lock()
+	sess.sessionFile = path
+	sess.lifecycleMu.Unlock()
+	release := d.BlockHandler(omorpc.CmdGetEntries)
+	defer release()
+	b := newRecorder(512)
+	result := make(chan struct {
+		detach func()
+		err    error
+	}, 1)
+	go func() {
+		_, _, detach, err := mgr.Acquire(context.Background(), chat, b)
+		result <- struct {
+			detach func()
+			err    error
+		}{detach, err}
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("reattach tail request absent")
+	}
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[],"leafId":%q}}`+"\n", id, sid, leaf))
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.detach()
+	release()
+
+	for _, frame := range a.drain() {
+		if frame.Kind == FrameEntries || frame.Kind == FrameError {
+			t.Fatalf("socket A received socket B history: %+v", frame)
+		}
+	}
+	pages := collectHydrationPages(t, sess, b)
+	assertSingleTerminalHistory(t, pages, entriesPageMaxCount*2+1)
+
+	sess.lifecycleMu.Lock()
+	sess.publishLocked(Frame{Kind: FrameState, SessionID: sess.ID()})
+	sess.lifecycleMu.Unlock()
+	a.await(t, FrameState)
+	b.await(t, FrameState)
+	if got := sess.broadcast.count(); got != 2 {
+		t.Fatalf("subscriber count after replay = %d, want 2", got)
+	}
+}
+
 type stuckHistorySubscriber struct {
 	ready       chan struct{}
 	entered     chan struct{}
@@ -204,51 +378,59 @@ func (s *stuckHistorySubscriber) Deliver(frame Frame) {
 	s.once.Do(func() { close(s.entered) })
 	<-s.release
 }
-func (*stuckHistorySubscriber) Cancel() error { return nil }
+func (s *stuckHistorySubscriber) Cancel() error {
+	s.unblock()
+	return nil
+}
 func (s *stuckHistorySubscriber) unblock() {
 	s.releaseOnce.Do(func() { close(s.release) })
 }
 
-func TestHistoryHybridOverflowRetirementDoesNotBlockLifecycle(t *testing.T) {
+func TestHistoryHybridReplayAdmissionObservesDeadlineWithoutLifecycleLock(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	mgr := testManager(t, client, newMemStore(), 1)
-	sess, _, _ := acquire(t, mgr, testChat{id: "overflow-history", cwd: t.TempDir()}, nil)
+	sess, _, _ := acquire(t, mgr, testChat{id: "deadline-history", cwd: t.TempDir()}, nil)
 	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
-	detach := sess.Attach(stuck)
+	detach, target, err := sess.attachCheckedTarget(stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer detach()
 	defer stuck.unblock()
-	select {
-	case <-stuck.ready:
-	case <-time.After(testTimeout):
-		t.Fatal("subscriber did not drain its ready replay")
-	}
+	target.beginReplay()
 
-	// Park the delivery pump before hydration fills and overflows its queue.
-	sess.lifecycleMu.Lock()
-	sess.publishLocked(Frame{Kind: FrameState, SessionID: sess.ID()})
-	sess.lifecycleMu.Unlock()
-	select {
-	case <-stuck.entered:
-	case <-time.After(testTimeout):
-		t.Fatal("subscriber did not enter its stuck delivery")
-	}
-
-	path, _ := writeHistorySession(t, entriesPageMaxCount*2+1, 0)
+	path := filepath.Join(t.TempDir(), "large-session.jsonl")
+	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(context.Background(), path)
+		sess.hydrateEntries(ctx, path, target)
 		close(done)
 	}()
 	select {
+	case <-stuck.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("subscriber did not enter its gated delivery")
+	}
+
+	published := make(chan struct{})
+	go func() {
+		sess.lifecycleMu.Lock()
+		sess.publishLocked(Frame{Kind: FrameState, SessionID: sess.ID()})
+		sess.lifecycleMu.Unlock()
+		close(published)
+	}()
+	select {
+	case <-published:
+	case <-time.After(testTimeout):
+		t.Fatal("replay admission held lifecycle lock")
+	}
+	select {
 	case <-done:
 	case <-time.After(testTimeout):
-		stuck.unblock()
-		<-done
-		t.Fatal("overflow retirement blocked hydration while lifecycleMu was held")
-	}
-	if got := sess.broadcast.count(); got != 0 {
-		t.Fatalf("overflowed subscriber remains attached: %d", got)
+		t.Fatal("replay admission ignored history deadline")
 	}
 }
 

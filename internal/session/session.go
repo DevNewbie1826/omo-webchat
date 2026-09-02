@@ -608,14 +608,19 @@ func (s *Session) ActivitySnapshot() []Frame {
 }
 
 func (s *Session) attachChecked(sub Subscriber) (func(), error) {
+	detach, _, err := s.attachCheckedTarget(sub)
+	return detach, err
+}
+
+func (s *Session) attachCheckedTarget(sub Subscriber) (func(), *subscription, error) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
-		return nil, ErrSessionClosed
+		return nil, nil, ErrSessionClosed
 	}
 	if s.resumable {
 		s.lifecycleMu.Unlock()
-		return nil, ErrSessionResumable
+		return nil, nil, ErrSessionResumable
 	}
 	s.cancelIdleLocked()
 	initial := make([]Frame, 0, 3)
@@ -627,7 +632,7 @@ func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
 		}
 	}
-	id, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
+	id, target, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
 	s.lifecycleMu.Unlock()
 	var once sync.Once
 	return func() {
@@ -639,7 +644,7 @@ func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 				s.lifecycleMu.Unlock()
 			}
 		})
-	}, nil
+	}, target, nil
 }
 
 func (s *Session) Close() error { return s.closeContext(context.Background()) }
@@ -852,74 +857,162 @@ func (s *Session) LoadEntries(ctx context.Context, since string) {
 	}
 }
 
-// hydrateEntries serves the active branch from the durable JSONL file, then
-// asks the live route only for entries newer than the disk leaf. The caller's
-// history context bounds both phases. Disk pages remain non-terminal so the
-// live tail produces exactly one authoritative terminal page.
-func (s *Session) hydrateEntries(ctx context.Context, sessionPath string) {
-	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
-		PageEntries: entriesPageMaxCount,
-	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
-		if err := ctx.Err(); err != nil {
-			return err
+var errIncompleteHistory = errors.New("incomplete history")
+
+// hydrateEntries serves disk pages and the validated live tail only to target.
+// A nil target is retained for direct callers and publishes through the normal
+// broadcaster, but manager-driven attachment always supplies its subscription.
+func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, targets ...*subscription) {
+	var target *subscription
+	if len(targets) != 0 {
+		target = targets[0]
+	}
+	emit := func(frame Frame, terminal bool) error {
+		if target != nil {
+			return target.enqueueReplay(ctx, frame, terminal)
 		}
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
 		if s.closed || s.resumable {
 			return ErrSessionResumable
 		}
-		// A header-only file has no cursor for an incremental query, so its
-		// empty disk page is the hydration terminal. Every non-empty branch is
-		// finalized only by the live tail below.
-		final := page.Final && metadata.LeafID == ""
-		s.publishEntriesPageLocked(page.Entries, "", final)
+		s.publishLocked(frame)
+		return nil
+	}
+	publishErr := func(err error) {
+		if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+			return
+		}
+		info := historyErrorInfo(err)
+		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: info}
+		if target != nil && ctx.Err() != nil {
+			if !target.enqueueReplayTerminalNow(frame) {
+				target.retire(ctx.Err())
+			}
+			return
+		}
+		if emitErr := emit(frame, true); emitErr != nil && target != nil {
+			target.retire(emitErr)
+		}
+	}
+
+	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
+		PageEntries: entriesPageMaxCount,
+	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		if metadata.Header.ID != s.durableID {
+			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
+		}
+		if metadata.LeafID == "" {
+			return nil
+		}
+		for _, entries := range chunkEntries(page.Entries) {
+			if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries}}, false); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err == nil {
 		err = ctx.Err()
 	}
 	if err != nil {
-		s.publishHistoryError(err)
+		publishErr(err)
 		return
 	}
-	if metadata.LeafID != "" {
-		s.loadEntriesAfter(ctx, metadata.LeafID, metadata.LeafID)
+
+	// A header is a durable identity but not an entry cursor. Probe the live
+	// route so ignored/rejected cursor behavior is observed, then report the
+	// history as incomplete rather than falling back to an unbounded dump.
+	cursor := metadata.LeafID
+	if cursor == "" {
+		cursor = metadata.Header.ID
+		if _, probeErr := s.fetchEntriesAfter(ctx, cursor); probeErr != nil && !errors.Is(probeErr, errIncompleteHistory) {
+			publishErr(probeErr)
+		} else {
+			publishErr(fmt.Errorf("%w: durable session has no entry cursor", errIncompleteHistory))
+		}
+		return
+	}
+	wire, err := s.fetchEntriesAfter(ctx, cursor)
+	if err != nil {
+		publishErr(err)
+		return
+	}
+	pages := chunkEntries(wire.Entries)
+	if len(pages) == 0 {
+		pages = [][]json.RawMessage{{}}
+	}
+	for i, entries := range pages {
+		terminal := i == len(pages)-1
+		leaf := ""
+		if terminal {
+			leaf = wire.LeafID
+		}
+		if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries, LeafID: leaf, Final: terminal}}, terminal); err != nil {
+			if target != nil {
+				target.retire(err)
+			}
+			return
+		}
 	}
 }
 
-func (s *Session) loadEntries(ctx context.Context, since string) {
-	s.loadEntriesAfter(ctx, since, "")
+type entriesTail struct {
+	Entries []json.RawMessage `json:"entries"`
+	LeafID  string            `json:"leafId"`
 }
 
-func (s *Session) loadEntriesAfter(ctx context.Context, since, fallbackLeaf string) {
-	if since == "" {
-		return
-	}
+func (s *Session) fetchEntriesAfter(ctx context.Context, since string) (entriesTail, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
 	if err != nil {
-		return
+		return entriesTail{}, err
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route, Since: since})
 	if err != nil {
 		s.noteTransportError(err)
+		return entriesTail{}, err
+	}
+	var wire entriesTail
+	if !json.Valid(resp.Data) || json.Unmarshal(resp.Data, &wire) != nil {
+		return entriesTail{}, errors.New("invalid get_entries response")
+	}
+	if len(wire.Entries) == 0 {
+		if wire.LeafID != since {
+			return entriesTail{}, fmt.Errorf("%w: cursor %q was not retained (returned leaf %q)", errIncompleteHistory, since, wire.LeafID)
+		}
+		return wire, nil
+	}
+	parent := since
+	for i, raw := range wire.Entries {
+		var entry struct {
+			ID       string          `json:"id"`
+			ParentID json.RawMessage `json:"parentId"`
+		}
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" || len(entry.ParentID) == 0 {
+			return entriesTail{}, fmt.Errorf("%w: invalid tail entry %d", errIncompleteHistory, i)
+		}
+		var parentID string
+		if json.Unmarshal(entry.ParentID, &parentID) != nil || parentID != parent {
+			return entriesTail{}, fmt.Errorf("%w: tail entry %q does not chain from %q", errIncompleteHistory, entry.ID, parent)
+		}
+		parent = entry.ID
+	}
+	if wire.LeafID != parent {
+		return entriesTail{}, fmt.Errorf("%w: declared leaf %q does not match tail leaf %q", errIncompleteHistory, wire.LeafID, parent)
+	}
+	return wire, nil
+}
+
+func (s *Session) loadEntries(ctx context.Context, since string) {
+	if since == "" {
+		return
+	}
+	wire, err := s.fetchEntriesAfter(ctx, since)
+	if err != nil {
 		s.publishHistoryError(err)
 		return
-	}
-	var wire struct {
-		Entries []json.RawMessage `json:"entries"`
-		LeafID  string            `json:"leafId"`
-	}
-	if !json.Valid(resp.Data) {
-		s.publishHistoryError(errors.New("invalid get_entries response"))
-		return
-	}
-	// A valid response with malformed fields still terminates history loading;
-	// json.Unmarshal preserves any entries decoded before the bad field.
-	_ = json.Unmarshal(resp.Data, &wire)
-	if wire.LeafID == "" {
-		wire.LeafID = fallbackLeaf
 	}
 	s.lifecycleMu.Lock()
 	if !s.closed && !s.resumable {
@@ -928,17 +1021,23 @@ func (s *Session) loadEntriesAfter(ctx context.Context, since, fallbackLeaf stri
 	s.lifecycleMu.Unlock()
 }
 
-func (s *Session) publishHistoryError(err error) {
-	if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
-		return
-	}
+func historyErrorInfo(err error) ErrorInfo {
 	code := "decode_failed"
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, errIncompleteHistory) {
+		code = "incomplete_history"
+	} else if errors.Is(err, context.DeadlineExceeded) {
 		code = "provider_timeout"
 	} else if errors.Is(err, omorpc.ErrDisconnected) {
 		code = "provider_error"
 	}
-	s.publishError(ErrorInfo{Code: code, Message: "history load failed: " + err.Error()})
+	return ErrorInfo{Code: code, Message: "history load failed: " + err.Error()}
+}
+
+func (s *Session) publishHistoryError(err error) {
+	if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+		return
+	}
+	s.publishError(historyErrorInfo(err))
 }
 
 func extensionFrameData(name string, data json.RawMessage, oversized bool) map[string]any {

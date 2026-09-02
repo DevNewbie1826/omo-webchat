@@ -1,15 +1,20 @@
 package session
 
 import (
-	"errors"
+	"context"
 	"sync"
 )
 
 type errorDeliverer interface{ DeliverFrame(Frame) error }
 
+type queuedFrame struct {
+	frame     Frame
+	delivered chan struct{}
+}
+
 type subscription struct {
 	sub              Subscriber
-	q                chan Frame
+	q                chan queuedFrame
 	stopCh           chan struct{}
 	exited           chan struct{}
 	initialDone      chan struct{}
@@ -17,6 +22,10 @@ type subscription struct {
 	initialOnce      sync.Once
 	stopOnce         sync.Once
 	retire           func(error)
+
+	replayMu    sync.Mutex
+	replaying   bool
+	pendingLive []Frame
 }
 
 func (x *subscription) start() { go x.run() }
@@ -24,6 +33,7 @@ func (x *subscription) start() { go x.run() }
 func (x *subscription) run() {
 	var retireReason error
 	defer func() {
+		x.endReplay()
 		x.initialOnce.Do(func() { close(x.initialDone) })
 		close(x.exited)
 		if retireReason != nil {
@@ -39,20 +49,10 @@ func (x *subscription) run() {
 		select {
 		case <-x.stopCh:
 			return
-		case f := <-x.q:
-			// Detach wins over a queued frame even when both cases became ready.
-			select {
-			case <-x.stopCh:
+		case item := <-x.q:
+			if !x.deliver(item.frame) {
+				retireReason = ErrSubscriberDelivery
 				return
-			default:
-			}
-			if d, ok := x.sub.(errorDeliverer); ok {
-				if err := d.DeliverFrame(f); err != nil {
-					retireReason = errors.Join(ErrSubscriberDelivery, err)
-					return
-				}
-			} else {
-				x.sub.Deliver(f)
 			}
 			if x.initialRemaining > 0 {
 				x.initialRemaining--
@@ -60,40 +60,140 @@ func (x *subscription) run() {
 					x.initialOnce.Do(func() { close(x.initialDone) })
 				}
 			}
+			if item.delivered != nil {
+				pending := x.finishReplay()
+				close(item.delivered)
+				for _, frame := range pending {
+					if !x.deliver(frame) {
+						retireReason = ErrSubscriberDelivery
+						return
+					}
+				}
+			}
 		}
 	}
 }
 
+func (x *subscription) deliver(f Frame) bool {
+	// Detach wins over a queued frame even when both cases became ready.
+	select {
+	case <-x.stopCh:
+		return false
+	default:
+	}
+	if d, ok := x.sub.(errorDeliverer); ok {
+		if err := d.DeliverFrame(f); err != nil {
+			return false
+		}
+	} else {
+		x.sub.Deliver(f)
+	}
+	return true
+}
+
+func (x *subscription) beginReplay() {
+	x.replayMu.Lock()
+	if !x.replaying {
+		x.replaying = true
+		if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+			replay.BeginReplay()
+		}
+	}
+	x.replayMu.Unlock()
+}
+
+func (x *subscription) finishReplay() []Frame {
+	x.replayMu.Lock()
+	if !x.replaying {
+		x.replayMu.Unlock()
+		return nil
+	}
+	x.replaying = false
+	pending := x.pendingLive
+	x.pendingLive = nil
+	if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+		replay.EndReplay()
+	}
+	x.replayMu.Unlock()
+	return pending
+}
+
+func (x *subscription) endReplay() { _ = x.finishReplay() }
+
 func (x *subscription) stop(cancel bool) {
 	x.stopOnce.Do(func() {
 		close(x.stopCh)
+		x.endReplay()
 		if cancel {
 			_ = x.sub.Cancel()
 		}
 	})
 }
 
+// enqueue is non-blocking. While a targeted replay is active, live frames are
+// retained in a separate bounded FIFO so publishers never wait under session
+// or broadcaster locks and cannot overtake the replay terminal.
 func (x *subscription) enqueue(f Frame) bool {
 	select {
 	case <-x.stopCh:
 		return false
 	default:
 	}
-	if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
-		if deliveryStopped, active := replay.ReplayBackpressure(); active {
-			select {
-			case x.q <- f:
-				return true
-			case <-x.stopCh:
-				return false
-			case <-deliveryStopped:
-				return false
-			}
+	x.replayMu.Lock()
+	if x.replaying {
+		if len(x.pendingLive) >= cap(x.q) {
+			x.replayMu.Unlock()
+			return false
 		}
+		x.pendingLive = append(x.pendingLive, f)
+		x.replayMu.Unlock()
+		return true
+	}
+	x.replayMu.Unlock()
+	select {
+	case x.q <- queuedFrame{frame: f}:
+		return true
+	default:
+		return false
+	}
+}
+
+// enqueueReplay admits one history frame to this subscriber only. Admission
+// and terminal delivery acknowledgment are both bounded by the history context.
+func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool) error {
+	item := queuedFrame{frame: f}
+	if terminal {
+		item.delivered = make(chan struct{})
 	}
 	select {
-	case x.q <- f:
+	case x.q <- item:
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if item.delivered == nil {
+		return nil
+	}
+	select {
+	case <-item.delivered:
+		return nil
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueueReplayTerminalNow is used after the history context has expired. It
+// never waits, but the pump still ends replay only after delivering the error.
+func (x *subscription) enqueueReplayTerminalNow(f Frame) bool {
+	item := queuedFrame{frame: f, delivered: make(chan struct{})}
+	select {
+	case x.q <- item:
 		return true
+	case <-x.stopCh:
+		return false
 	default:
 		return false
 	}
@@ -106,9 +206,9 @@ type broadcaster struct {
 	onDetach func(Subscriber, error)
 }
 
-func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64, func()) {
+func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64, *subscription, func()) {
 	if sub == nil {
-		return 0, func() {}
+		return 0, nil, func() {}
 	}
 	b.mu.Lock()
 	if b.subs == nil {
@@ -116,7 +216,7 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 	}
 	b.next++
 	id := b.next
-	x := &subscription{sub: sub, q: make(chan Frame, size), stopCh: make(chan struct{}), exited: make(chan struct{}), initialDone: make(chan struct{}), initialRemaining: len(initial)}
+	x := &subscription{sub: sub, q: make(chan queuedFrame, size), stopCh: make(chan struct{}), exited: make(chan struct{}), initialDone: make(chan struct{}), initialRemaining: len(initial)}
 	x.retire = func(reason error) { b.retire(id, reason, true) }
 	b.subs[id] = x
 	accepted := true
@@ -139,7 +239,7 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 		b.finish(x, ErrSubscriberOverflow, true, true)
 	}
 	var once sync.Once
-	return id, func() { once.Do(func() { b.retire(id, ErrSubscriberDetached, false) }) }
+	return id, x, func() { once.Do(func() { b.retire(id, ErrSubscriberDetached, false) }) }
 }
 
 func (b *broadcaster) retire(id uint64, reason error, cancel bool) {
@@ -188,8 +288,6 @@ func (b *broadcaster) publish(f Frame) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		// publish is called while Session.lifecycleMu is held. Cancellation is
-		// immediate, but pump completion must not receive under that lock.
 		b.finishAsync(x, ErrSubscriberOverflow, true)
 	}
 }

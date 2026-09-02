@@ -2,7 +2,9 @@ package wsbridge
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -320,7 +322,9 @@ func writeDelayedHistory(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	path := filepath.Join(dir, "delayed-history.jsonl")
 	leaf := "disk-leaf"
-	contents := `{"type":"session","version":3,"id":"delayed","cwd":"` + dir + `"}` + "\n" +
+	sum := sha256.Sum256([]byte(path))
+	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+	contents := `{"type":"session","version":3,"id":"` + durableID + `","cwd":"` + dir + `"}` + "\n" +
 		`{"type":"message","id":"` + leaf + `","parentId":null,"message":{"role":"user","content":"hello"}}` + "\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
