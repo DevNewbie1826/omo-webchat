@@ -114,6 +114,7 @@ export type ChatServerFrame =
   | ct.StateFrame
   | ct.StatsFrame
   | ct.ExtensionEventFrame
+  | ct.SessionsActivityFrame
   | ct.ApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame
@@ -141,6 +142,7 @@ export type ChatClientFrame =
   | ct.ChatModelsFrame
   | ct.ChatStatsFrame
   | ct.ActivityRefreshFrame
+  | ct.SessionsSubscribeFrame
   | ct.ChatResumeFrame
   | ct.ClientHelloFrame;
 

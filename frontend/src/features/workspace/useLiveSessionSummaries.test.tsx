@@ -2,10 +2,17 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { connectChat } from "../../lib/chatWs";
+import type { ChatClient, ChatHandlers, ChatServerFrame } from "../../lib/chatWs";
 import { parseDagDigest, parseTaskDigest } from "./activityDigest";
 import { summarizeLiveSession, useLiveSessionSummaries } from "./useLiveSessionSummaries";
 import { useLiveSessions } from "./useLiveSessions";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
+
+vi.mock("../../lib/chatWs", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../lib/chatWs")>(),
+  connectChat: vi.fn(),
+}));
 
 /** Payload shapes reused from features/split/activityParse.test.ts fixtures. */
 const FRESH_TASK_UPDATED_AT = new Date(Date.now() - 1000).toISOString();
@@ -745,6 +752,8 @@ describe("activityDigest received_at", () => {
 describe("live polling hooks", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let handlers: ChatHandlers | undefined;
+  let client: ChatClient;
   let captured: {
     summaries: readonly LiveSessionSummary[];
     ids: ReadonlySet<string>;
@@ -752,6 +761,11 @@ describe("live polling hooks", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    client = { send: vi.fn(() => true), close: vi.fn() };
+    vi.mocked(connectChat).mockImplementation((nextHandlers) => {
+      handlers = nextHandlers;
+      return client;
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -770,6 +784,82 @@ describe("live polling hooks", () => {
     captured.ids = useLiveSessions(enabled);
     return null;
   }
+
+  function openPush(): void {
+    act(() => handlers?.onOpen?.());
+  }
+
+  function push(frame: ChatServerFrame): void {
+    act(() => handlers?.onFrame(frame));
+  }
+
+  it("updates overview rows from pushed child-session snapshots", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse({ sessions: [] })));
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    push({
+      type: "sessions.activity",
+      sessionId: "child-1",
+      snapshots: [
+        { name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD },
+        { name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD },
+      ],
+      overflow: false,
+    });
+
+    expect(captured.summaries[0]).toMatchObject({
+      id: "child-1",
+      runningCount: 2,
+      doneCount: 3,
+      dagDone: 2,
+      dagTotal: 3,
+      lastLine: "ls",
+    });
+    expect(Array.from(captured.ids)).toEqual(["child-1"]);
+    expect(client.send).toHaveBeenCalledWith({ type: "sessions.subscribe", mode: "all_live" });
+  });
+
+  it("falls back to the existing REST poll when no push arrives", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => okResponse({ sessions: [{ id: "rest-1", title: "REST", task: null, dag: null }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<Host enabled={true} />));
+
+    expect(captured.summaries.map((summary) => summary.id)).toEqual(["rest-1"]);
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("unsubscribes and closes the overview socket on unmount", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse({ sessions: [] })));
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    act(() => root.unmount());
+
+    expect(client.send).toHaveBeenLastCalledWith({ type: "sessions.subscribe", mode: "none" });
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the latest snapshot usable and refreshes REST after overflow", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => okResponse({ sessions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    push({
+      type: "sessions.activity",
+      sessionId: "overflow-child",
+      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      overflow: true,
+    });
+    expect(captured.summaries[0]).toMatchObject({ id: "overflow-child", runningCount: 1 });
+
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
   it("exposes per-session summaries and keeps the ReadonlySet id contract", async () => {
     const fetchMock = vi.fn(async () =>

@@ -66,6 +66,28 @@ describe("parseChatServerFrame", () => {
     expect(parseChatServerFrame({ type: "messageDelta", delta: { kind: "text_delta" } })).toBeNull();
   });
 
+  it("parses subscribed activity snapshots and overflow", () => {
+    expect(parseChatServerFrame({
+      type: "sessions.activity",
+      sessionId: "child-1",
+      snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
+      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false },
+      overflow: true,
+    })).toEqual({
+      type: "sessions.activity",
+      sessionId: "child-1",
+      snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
+      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false },
+      overflow: true,
+    });
+    expect(parseChatServerFrame({
+      type: "sessions.activity",
+      sessionId: "child-1",
+      snapshots: [{ name: "omo.other", oversized: false }],
+      overflow: false,
+    })).toBeNull();
+  });
+
   it("accepts a well-formed run.started and rejects it without a session scope", () => {
     expect(parseChatServerFrame({ type: "run.started", sessionId: "c1" })).toEqual({
       type: "run.started",
