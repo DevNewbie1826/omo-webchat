@@ -221,9 +221,12 @@ type GetAvailableModels struct {
 
 func (GetAvailableModels) commandName() string { return CmdGetAvailableModels }
 
-// GetEntries returns the session's transcript entries.
+// GetEntries returns the session's transcript entries. Since requests only
+// entries after that cursor; the optional parameter is supported according to
+// live protocol probing.
 type GetEntries struct {
 	SessionID string `json:"sessionId"`
+	Since     string `json:"since,omitempty"`
 }
 
 func (GetEntries) commandName() string { return CmdGetEntries }

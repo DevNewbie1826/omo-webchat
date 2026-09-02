@@ -969,6 +969,22 @@ func TestMergeGateDelayedCompactionIDDoesNotBindSuccessor(t *testing.T) {
 	}
 }
 
+func TestMergeGateLoadEntriesSendsSinceCursor(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 16)
+	sub := newRecorder(16)
+	sess, _, detach := acquire(t, mgr, testChat{id: "incremental-history", cwd: t.TempDir()}, sub)
+	defer detach()
+	sub.next(t) // ready
+
+	sess.LoadEntries(context.Background(), "entry-7")
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	if got, _ := request["since"].(string); got != "entry-7" {
+		t.Fatalf("get_entries since = %q, want entry-7; request=%v", got, request)
+	}
+}
+
 func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)

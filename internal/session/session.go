@@ -801,18 +801,18 @@ func (s *Session) publishEntriesLocked(entries []json.RawMessage, leaf string) {
 	}
 }
 
-// LoadEntries streams the provider's paged history through the regular
-// bounded subscriber path. It is used when attaching to an existing session.
-func (s *Session) LoadEntries(ctx context.Context) { s.loadEntries(ctx) }
+// LoadEntries streams entries after since through the regular bounded
+// subscriber path. Since is omitted on the wire when empty.
+func (s *Session) LoadEntries(ctx context.Context, since string) { s.loadEntries(ctx, since) }
 
-func (s *Session) loadEntries(ctx context.Context) {
+func (s *Session) loadEntries(ctx context.Context, since string) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return
 	}
-	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route})
+	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route, Since: since})
 	if err != nil {
 		return
 	}

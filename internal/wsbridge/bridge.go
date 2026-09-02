@@ -501,7 +501,7 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		c.queryCommands(ctx, acquired)
 		c.queryStats(ctx, acquired)
 		if !started {
-			acquired.LoadEntries(ctx)
+			acquired.LoadEntries(ctx, "")
 		}
 	}
 	var sess *session.Session

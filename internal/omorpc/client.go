@@ -318,7 +318,7 @@ func (c *Client) invalidate(ep *connectionEpoch, cause error) {
 
 	_ = ep.conn.Close()
 	ep.events.close()
-	err := fmt.Errorf("%w: epoch %d: %v", ErrDisconnected, ep.number, cause)
+	err := disconnectedError(ep, cause)
 	for _, request := range pending {
 		request.result <- callResult{err: err}
 	}
@@ -449,10 +449,11 @@ func (c *Client) CallDetached(ctx context.Context, cmd Command, complete func(*R
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
 
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
 		c.removePending(id, result)
-		if attempted {
+		if transportFailure {
 			c.invalidate(ep, err)
+			return disconnectedError(ep, err)
 		}
 		return err
 	}
@@ -484,11 +485,13 @@ func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cm
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
 
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
 		c.removePending(id, result)
-		if attempted {
-			// A failed write may be partial, so reconnect before the next call.
+		if transportFailure {
+			// A transport-budget timeout or failed write may be partial, so
+			// reconnect before the next call.
 			c.invalidate(ep, err)
+			return nil, EpochToken{}, disconnectedError(ep, err)
 		}
 		return nil, EpochToken{}, err
 	}
@@ -510,6 +513,9 @@ func (c *Client) removePending(id string, result chan callResult) {
 	c.mu.Unlock()
 }
 
+// writeFrame reports whether an error belongs to the transport. Caller
+// cancellation can interrupt a write, but it is not evidence that the peer or
+// socket died; the transport's independent WriteTimeout is epoch-fatal.
 func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []byte) (bool, error) {
 	select {
 	case <-c.writeGate:
@@ -518,11 +524,12 @@ func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []by
 	}
 	defer func() { c.writeGate <- struct{}{} }()
 
-	deadline := time.Now().Add(c.cfg.WriteTimeout)
-	contextDeadline := false
+	transportDeadline := time.Now().Add(c.cfg.WriteTimeout)
+	deadline := transportDeadline
+	callerDeadline := false
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
-		contextDeadline = true
+		callerDeadline = true
 	}
 	if err := ep.conn.SetWriteDeadline(deadline); err != nil {
 		return true, err
@@ -540,15 +547,20 @@ func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []by
 	if err == nil && written != len(frame) {
 		err = io.ErrShortWrite
 	}
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return true, ctxErr
-		}
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && contextDeadline {
-			return true, context.DeadlineExceeded
-		}
+	if err == nil {
+		return false, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() && callerDeadline {
+		return false, context.DeadlineExceeded
 	}
 	return true, err
+}
+
+func disconnectedError(ep *connectionEpoch, cause error) error {
+	return fmt.Errorf("%w: epoch %d: %v", ErrDisconnected, ep.number, cause)
 }
 
 // Notify writes a one-way notification without injecting a correlation id
@@ -562,9 +574,10 @@ func (c *Client) Notify(ctx context.Context, notification Notification) error {
 	if err != nil {
 		return err
 	}
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
-		if attempted {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
+		if transportFailure {
 			c.invalidate(ep, err)
+			return disconnectedError(ep, err)
 		}
 		return err
 	}

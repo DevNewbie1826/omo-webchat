@@ -337,7 +337,7 @@ func TestClientDisconnectFailsPending(t *testing.T) {
 	d := newMockDaemon(t)
 	c := dialForTest(t, d, Config{})
 	opened := mustOpenSession(t, c, t.TempDir())
-	evCh := c.Events()
+	token, evCh := c.CurrentEpoch()
 
 	releaseEntries := d.BlockHandler(CmdGetEntries)
 	defer releaseEntries()
@@ -360,6 +360,9 @@ func TestClientDisconnectFailsPending(t *testing.T) {
 		t.Fatal("pending request was not settled after disconnect")
 	}
 	awaitChannelClosed(t, evCh, testAwaitTimeout)
+	if c.EpochCurrent(token) {
+		t.Fatal("peer close left the dead epoch current")
+	}
 
 	// Next Dial: the daemon hands out the next epoch-local handle.
 	c2 := dialForTest(t, d, Config{})
@@ -506,13 +509,48 @@ func TestClientWriteGateAcquisitionHonorsContext(t *testing.T) {
 	}
 }
 
-func TestClientBlockedWriteHonorsContextAndReconnects(t *testing.T) {
+func TestClientCallerDeadlineKeepsEpochUsable(t *testing.T) {
+	d := newMockDaemon(t)
+	release := d.BlockHandler(CmdGetEntries)
+	defer release()
+	c := dialForTest(t, d, Config{})
+	opened := mustOpenSession(t, c, t.TempDir())
+	token, events := c.CurrentEpoch()
+	handshakes := d.Handshakes()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := c.Call(ctx, GetEntries{SessionID: opened.SessionID})
+		result <- err
+	}()
+	d.awaitRequest(t, CmdGetEntries, testAwaitTimeout)
+	if err := <-result; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call waiting for response = %v, want context deadline", err)
+	}
+	if !c.EpochCurrent(token) {
+		t.Fatal("caller deadline invalidated the connection epoch")
+	}
+	response, err := c.Call(context.Background(), ListSessions{})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("next call on surviving socket: response=%+v err=%v", response, err)
+	}
+	if !c.EpochCurrent(token) || c.EventsInEpoch(token) != events {
+		t.Fatal("next call used a different connection epoch")
+	}
+	if got := d.Handshakes(); got != handshakes {
+		t.Fatalf("caller deadline caused reconnect: handshakes=%d, want %d", got, handshakes)
+	}
+}
+
+func TestClientTransportWriteDeadlineInvalidatesEpoch(t *testing.T) {
 	d := newMockDaemon(t)
 	clientConn, stalledPeer := net.Pipe()
-	defer stalledPeer.Close() // the daemon side deliberately never reads
+	defer stalledPeer.Close() // the peer deliberately never reads
 	lifecycle, cancelLifecycle := context.WithCancel(context.Background())
 	cfg := normalizeConfig(Config{
-		WriteTimeout: 2 * time.Second, ReconnectInitial: time.Millisecond,
+		WriteTimeout: 20 * time.Millisecond, ReconnectInitial: time.Millisecond,
 		ReconnectMax: time.Millisecond, ReconnectMaxAttempts: 2,
 	})
 	c := &Client{
@@ -528,23 +566,25 @@ func TestClientBlockedWriteHonorsContextAndReconnects(t *testing.T) {
 		c.readLoop(ep)
 	}()
 	defer c.Close()
+	token := EpochToken{epoch: ep}
 
 	payload := make(json.RawMessage, (1<<20)+2)
 	payload[0], payload[len(payload)-1] = '"', '"'
 	for i := 1; i < len(payload)-1; i++ {
 		payload[i] = 'x'
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	_, err := c.Call(ctx, ExtensionRequest{SessionID: "rpc-1", Name: "large", Data: payload})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("blocked write error = %v, want context deadline", err)
+	_, err := c.Call(context.Background(), ExtensionRequest{SessionID: "rpc-1", Name: "large", Data: payload})
+	if !errors.Is(err, ErrDisconnected) {
+		t.Fatalf("transport write timeout = %v, want ErrDisconnected", err)
 	}
-	siblingCtx, siblingCancel := context.WithTimeout(context.Background(), testAwaitTimeout)
-	defer siblingCancel()
-	response, err := c.Call(siblingCtx, ListSessions{})
+	if c.EpochCurrent(token) {
+		t.Fatal("transport write timeout left the epoch current")
+	}
+	awaitChannelClosed(t, ep.events.out, testAwaitTimeout)
+
+	response, err := c.Call(context.Background(), ListSessions{})
 	if err != nil || response == nil || !response.Success {
-		t.Fatalf("sibling call after blocked write: response=%+v err=%v", response, err)
+		t.Fatalf("call after transport reconnect: response=%+v err=%v", response, err)
 	}
 }
 

@@ -370,7 +370,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
 		s.lifecycleMu.Unlock()
 		if resumed {
-			s.loadEntries(ctx)
+			s.loadEntries(ctx, "")
 		}
 		if initialize != nil {
 			initialize(s, true, detach)
@@ -454,7 +454,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		existing.retireReplaced()
 	}
 	if resumed {
-		s.loadEntries(ctx)
+		s.loadEntries(ctx, "")
 	}
 	if initialize != nil {
 		initialize(s, true, detach)
