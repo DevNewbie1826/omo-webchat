@@ -28,7 +28,7 @@ type Session struct {
 	resumed                           bool
 	queueSize                         int
 	idleAfter                         time.Duration
-	epochEvents                       <-chan *omorpc.Event
+	epoch                             omorpc.EpochToken
 
 	lifecycleMu                                                             sync.Mutex
 	closed, closing, resumable, invalidated                                 bool
@@ -48,10 +48,10 @@ type Session struct {
 	broadcast broadcaster
 }
 
-func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, resumed bool, epoch <-chan *omorpc.Event) *Session {
+func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, resumed bool, epoch omorpc.EpochToken) *Session {
 	s := &Session{manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
-		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epochEvents: epoch,
+		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
 	s.broadcast.onDetach = m.cfg.OnDetach
 	return s
@@ -490,7 +490,7 @@ func (s *Session) publishError(info ErrorInfo) {
 
 func (s *Session) noteTransportError(err error) {
 	if errors.Is(err, omorpc.ErrDisconnected) {
-		s.manager.invalidateEpoch(s.epochEvents)
+		s.manager.invalidateEpoch(s.epoch)
 	}
 }
 

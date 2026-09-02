@@ -118,13 +118,13 @@ func (m *Manager) eventLoop() {
 	defer m.eventWG.Done()
 	backoff := time.Millisecond
 	for {
-		ch := m.cfg.Client.Events()
+		token, ch := m.cfg.Client.CurrentEpoch()
 		select {
 		case <-m.done:
 			return
 		case ev, ok := <-ch:
 			if !ok {
-				m.invalidateEpoch(ch)
+				m.invalidateEpoch(token)
 				// omorpc currently has no epoch-change notification. Exponential
 				// closed-channel backoff avoids polling hot while still discovering
 				// an epoch established by the next RPC within 250ms.
@@ -147,23 +147,23 @@ func (m *Manager) eventLoop() {
 			}
 			m.mu.Lock()
 			s := m.byRoute[ev.SessionID]
-			bound := s != nil && s.epochEvents == ch
+			bound := s != nil && s.epoch == token
 			m.mu.Unlock()
 			if bound {
-				s.dispatchEpoch(ch, ev)
+				s.dispatchEpoch(token, ev)
 			}
 		}
 	}
 }
 
-// invalidateEpoch only retires sessions opened on the channel that died. A
+// invalidateEpoch only retires sessions opened on the token that died. A
 // delayed failure from an older request therefore cannot invalidate sessions
 // registered after reconnect.
-func (m *Manager) invalidateEpoch(ch <-chan *omorpc.Event) {
+func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
-		if s.epochEvents == ch {
+		if s.epoch == token {
 			all = append(all, s)
 			delete(m.byRoute, s.routingID)
 		}
@@ -232,7 +232,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	}
 
 	resumed := cur.SessionFile != ""
-	data, epochEvents, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
+	data, epoch, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
 	}
@@ -253,7 +253,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 			}
 			return nil, false, nil, openErr
 		}
-		data, epochEvents, err = m.open(ctx, chat.CWD(), "")
+		data, epoch, err = m.open(ctx, chat.CWD(), "")
 		if err == nil {
 			err = validateOpen(data, Cursor{}, false)
 		}
@@ -272,7 +272,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 		return nil, false, nil, openErr
 	}
 
-	s := newSession(m, chatID, chat.CWD(), data, resumed, epochEvents)
+	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch)
 	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
 	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
 		if err := m.cfg.Store.SaveCursor(ctx, chatID, newCur); err != nil {
@@ -283,7 +283,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 
 	m.mu.Lock()
 	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
-	epochLive := epochEvents == m.cfg.Client.Events()
+	epochLive := m.cfg.Client.EpochCurrent(epoch)
 	if valid {
 		if existing != nil {
 			delete(m.byRoute, existing.routingID)
@@ -370,23 +370,51 @@ func (m *Manager) discardRouting(route string) {
 	}
 }
 
-func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, <-chan *omorpc.Event, error) {
+type openResult struct {
+	data  omorpc.OpenSessionData
+	epoch omorpc.EpochToken
+	err   error
+}
+
+// open keeps transport ownership after its caller stops waiting. The bounded
+// completion closes any routing handle that arrives after ownership was lost.
+func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+	opCtx, cancel := context.WithCancel(context.Background())
+	result := make(chan openResult, 1)
+	go func() {
+		data, epoch, err := m.openCall(opCtx, cwd, path)
+		result <- openResult{data: data, epoch: epoch, err: err}
+	}()
+
+	select {
+	case got := <-result:
+		cancel()
+		return got.data, got.epoch, got.err
+	case <-ctx.Done():
+		timer := time.AfterFunc(m.cfg.CloseTimeout, cancel)
+		go func() {
+			got := <-result
+			timer.Stop()
+			cancel()
+			if got.data.SessionID != "" {
+				m.discardRouting(got.data.SessionID)
+			}
+		}()
+		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ctx.Err()
+	}
+}
+
+func (m *Manager) openCall(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
 	cmd := omorpc.OpenSession{CWD: cwd}
 	if path != "" {
 		cmd = omorpc.OpenSession{SessionPath: path}
 	}
 	var last error
-	var epoch <-chan *omorpc.Event
+	var epoch omorpc.EpochToken
 	for attempt := 0; attempt < m.cfg.RetryAttempts; attempt++ {
-		reconnecting := m.cfg.Client.ProtocolInfo() == nil
-		epoch = m.cfg.Client.Events()
-		resp, err := m.cfg.Client.Call(ctx, cmd)
+		resp, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, cmd)
+		epoch = responseEpoch
 		if err == nil {
-			// When no epoch existed before Call, Call itself established one;
-			// that newly established channel is the pre-response epoch.
-			if reconnecting {
-				epoch = m.cfg.Client.Events()
-			}
 			var out omorpc.OpenSessionData
 			if err := json.Unmarshal(resp.Data, &out); err != nil {
 				return out, epoch, fmt.Errorf("session: decode open_session: %w", err)

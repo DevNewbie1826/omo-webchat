@@ -6,8 +6,8 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
-func (s *Session) dispatchEpoch(ch <-chan *omorpc.Event, ev *omorpc.Event) {
-	if ch != s.epochEvents {
+func (s *Session) dispatchEpoch(epoch omorpc.EpochToken, ev *omorpc.Event) {
+	if epoch != s.epoch {
 		return
 	}
 	s.dispatch(ev)
@@ -105,22 +105,21 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 
 func (s *Session) beginCompactionLocked(raw map[string]any) {
 	id, _ := raw["requestId"].(string)
+	phase, _ := raw["reason"].(string)
+	if phase == "" {
+		phase = "manual"
+	}
 	if id != "" {
 		if _, done := s.completedCompactions[id]; done {
 			return
 		}
-		// A manual RPC can complete before its provider id event arrives. The
-		// oldest bounded unpaired tombstone claims the next start, even if a
-		// successor is armed, so that delayed lifecycle can never bind to it.
-		if len(s.completedUnpaired) > 0 {
+		// Only a manual-eligible start can pair with the oldest unpaired manual
+		// tombstone; threshold and overflow always latch their own transaction.
+		if phase == "manual" && len(s.completedUnpaired) > 0 {
 			s.completedUnpaired = s.completedUnpaired[1:]
 			s.rememberCompletedCompactionLocked(id)
 			return
 		}
-	}
-	phase, _ := raw["reason"].(string)
-	if phase == "" {
-		phase = "manual"
 	}
 	if s.compactionActive {
 		if s.compactProviderID == "" {

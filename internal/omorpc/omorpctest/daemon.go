@@ -326,6 +326,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	}
 
 	switch cmd {
+	case omorpc.CmdCloseSession:
+		d.mu.Lock()
+		rec.live = false
+		d.mu.Unlock()
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
+		return
+
 	case omorpc.CmdPrompt:
 		d.mu.Lock()
 		script = takeScript(d.promptScripts, recPath)

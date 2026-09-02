@@ -94,7 +94,8 @@ func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 		t.Fatal("CloseAll did not cancel and drain blocked open")
 	}
 	// The provider gate is intentionally released only after CloseAll proves
-	// it no longer depends on the blocked RPC.
+	// it no longer depends on the blocked RPC. The detached completion must
+	// observe that successful open and close its provider-side orphan.
 	release()
 	select {
 	case err := <-result:
@@ -103,6 +104,12 @@ func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("pending acquire did not abort")
+	}
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("late successful open was not closed")
+	}
+	if live := d.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider retained canceled open: %v", live)
 	}
 	if _, ok := mgr.Get("a"); ok {
 		t.Fatal("pending open registered after CloseAll")
@@ -113,25 +120,31 @@ func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 	if flights != 0 {
 		t.Fatalf("keyed flights after CloseAll = %d", flights)
 	}
-	if got := d.RequestCount(omorpc.CmdCloseSession); got != 0 {
-		t.Fatalf("canceled open registered provider session; closes = %d", got)
-	}
 }
 
-func TestMergeGateEpochInvalidationIsChannelScoped(t *testing.T) {
+func TestMergeGateEpochInvalidationIsTokenScoped(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	mgr := testManager(t, client, newMemStore(), 64)
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
-	oldCh := make(chan *omorpc.Event)
-	newCh := make(chan *omorpc.Event)
-	old := newSession(mgr, "old", "/tmp", omorpc.OpenSessionData{SessionID: "rpc-old", State: omorpc.SessionState{SessionID: "dur-old", SessionFile: "/tmp/old"}}, false, oldCh)
-	replacement := newSession(mgr, "new", "/tmp", omorpc.OpenSessionData{SessionID: "rpc-new", State: omorpc.SessionState{SessionID: "dur-new", SessionFile: "/tmp/new"}}, false, newCh)
+	oldToken, oldCh := client.CurrentEpoch()
+	d.DropConnections()
+	select {
+	case <-oldCh:
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	newToken, _ := client.CurrentEpoch()
+	old := newSession(mgr, "old", "/tmp", omorpc.OpenSessionData{SessionID: "rpc-old", State: omorpc.SessionState{SessionID: "dur-old", SessionFile: "/tmp/old"}}, false, oldToken)
+	replacement := newSession(mgr, "new", "/tmp", omorpc.OpenSessionData{SessionID: "rpc-new", State: omorpc.SessionState{SessionID: "dur-new", SessionFile: "/tmp/new"}}, false, newToken)
 	mgr.mu.Lock()
 	mgr.byChat["old"], mgr.byRoute[old.routingID] = old, old
 	mgr.byChat["new"], mgr.byRoute[replacement.routingID] = replacement, replacement
 	mgr.mu.Unlock()
-	mgr.invalidateEpoch(oldCh)
+	mgr.invalidateEpoch(oldToken)
 	if !old.Resumable() {
 		t.Fatal("dead correlated-only epoch did not invalidate its session")
 	}
@@ -235,6 +248,45 @@ func TestMergeGateCompactionResponseThenDelayedStartExactlyOnce(t *testing.T) {
 	info := done.Data.(CompactionInfo)
 	if info.Error != "too large" {
 		t.Fatalf("compaction error = %q", info.Error)
+	}
+}
+
+func TestMergeGateManualTombstoneCannotSwallowAutomaticCompaction(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sub := newRecorder(16)
+	s, _, _ := acquire(t, mgr, testChat{id: "compact-pairing", cwd: t.TempDir()}, sub)
+	sub.next(t)
+
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sub.await(t, FrameCompactionStart)
+	sub.await(t, FrameCompactionDone)
+
+	injectEvent(t, s, map[string]any{"type": "compaction_start", "reason": "threshold", "requestId": "automatic-b"})
+	injectEvent(t, s, map[string]any{"type": "compaction_end", "requestId": "automatic-b"})
+	_, started := sub.await(t, FrameCompactionStart)
+	_, done := sub.await(t, FrameCompactionDone)
+	if started.RequestID != "automatic-b" || done.RequestID != "automatic-b" {
+		t.Fatalf("automatic transaction correlation = start %q, done %q", started.RequestID, done.RequestID)
+	}
+	if started.Data.(CompactionInfo).Phase != "threshold" || done.Data.(CompactionInfo).Phase != "threshold" {
+		t.Fatalf("automatic transaction phase = start %+v, done %+v", started.Data, done.Data)
+	}
+
+	injectEvent(t, s, map[string]any{"type": "compaction_start", "reason": "manual", "requestId": "delayed-manual-a"})
+	injectEvent(t, s, map[string]any{"type": "compaction_end", "requestId": "delayed-manual-a"})
+	s.broadcast.publish(Frame{Kind: FrameReady})
+	if frame := sub.next(t); frame.Kind != FrameReady {
+		t.Fatalf("delayed manual lifecycle emitted an extra frame: %+v", frame)
+	}
+	s.lifecycleMu.Lock()
+	active := s.compactionActive
+	s.lifecycleMu.Unlock()
+	if active {
+		t.Fatal("automatic transaction did not end cleanly")
 	}
 }
 
@@ -580,6 +632,9 @@ func TestMergeGateEpochLostAfterOpenIsResumable(t *testing.T) {
 	case <-time.After(testTimeout):
 		t.Fatal("Acquire did not settle")
 	}
+	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
+		t.Fatalf("reconnect after response epoch death: %v", err)
+	}
 	release()
 	s, ok := mgr.Get("epoch-lost")
 	if !ok || !s.Resumable() {
@@ -594,13 +649,33 @@ func TestMergeGateEpochLostAfterOpenIsResumable(t *testing.T) {
 }
 
 func TestMergeGateStaleEpochEventCannotReachSuccessor(t *testing.T) {
-	oldEpoch := make(chan *omorpc.Event, 1)
-	newEpoch := make(chan *omorpc.Event, 1)
-	s := &Session{durableID: "successor", routingID: "reused", epochEvents: newEpoch, activitySnapshots: map[string]json.RawMessage{}, activityOversized: map[string]bool{}}
+	d := newDaemon(t)
+	client := dial(t, d)
+	oldToken, oldEvents := client.CurrentEpoch()
+	d.DropConnections()
+	select {
+	case <-oldEvents:
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	newToken, _ := client.CurrentEpoch()
+	s := &Session{durableID: "successor", routingID: "reused", epoch: newToken, queueSize: 8, activitySnapshots: map[string]json.RawMessage{}, activityOversized: map[string]bool{}}
+	sub := newRecorder(1)
+	_, detach := s.broadcast.attach(sub, 8, nil)
+	defer detach()
 	raw := json.RawMessage(`{"type":"state_changed","sessionId":"reused","value":"stale"}`)
-	s.dispatchEpoch(oldEpoch, &omorpc.Event{Type: "state_changed", SessionID: "reused", Raw: raw})
-	if s.broadcast.next != 0 {
-		t.Fatal("stale epoch event reached successor")
+	s.dispatchEpoch(oldToken, &omorpc.Event{Type: "state_changed", SessionID: "reused", Raw: raw})
+	// A sentinel through the same FIFO proves the counting subscriber has
+	// observed every frame the stale dispatch could have queued.
+	s.broadcast.publish(Frame{Kind: FrameReady})
+	if frame := sub.next(t); frame.Kind != FrameReady {
+		t.Fatalf("stale epoch event reached counting subscriber: %+v", frame)
+	}
+	if extra := sub.drain(); len(extra) != 0 {
+		t.Fatalf("counting subscriber received extra stale frames: %+v", extra)
 	}
 }
 
