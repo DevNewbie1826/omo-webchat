@@ -1,0 +1,1 @@
+{ "type": "error", "sessionId": "sess-1", "code": "set_thinking_failed", "message": "provider rejected thinking level change", "command": "set_thinking_level", "requestId": "req-thinking-1" }

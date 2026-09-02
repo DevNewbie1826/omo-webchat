@@ -1,0 +1,1 @@
+{ "type": "error", "sessionId": "sess-1", "code": "set_model_failed", "message": "provider rejected model change", "command": "set_model", "requestId": "req-model-1" }

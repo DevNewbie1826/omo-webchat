@@ -21,6 +21,41 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
+type v2ChatPreparerStore interface {
+	SaveWorkspace(cursorstore.Workspace) error
+	GetChat(string) (cursorstore.Chat, error)
+	SaveChat(cursorstore.Chat) error
+}
+
+// prepareV2Chat mirrors launch metadata while holding the same lifecycle lock
+// as deletion, so a deleted v1 chat cannot be republished into the v2 store.
+func (s *Server) prepareV2Chat(cursors v2ChatPreparerStore, wsID, chatID string) error {
+	s.chatLifecycleMu.Lock()
+	defer s.chatLifecycleMu.Unlock()
+
+	ws, err := s.store.GetWorkspace(wsID)
+	if err != nil {
+		return err
+	}
+	chat, err := s.store.GetChat(wsID, chatID)
+	if err != nil {
+		return err
+	}
+	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
+		return err
+	}
+	cwd := chat.Cwd
+	if cwd == "" {
+		cwd = ws.Path
+	}
+	current, err := cursors.GetChat(chat.ID)
+	if err == nil {
+		current.WorkspaceID, current.CWD, current.Name = ws.ID, cwd, chat.Name
+		return cursors.SaveChat(current)
+	}
+	return cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt})
+}
+
 // Run initializes the store, session store, and HTTP server, then serves until
 // ctx is cancelled.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady func() error) error {
@@ -94,27 +129,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			if err == nil {
 				v2Manager = v2session.NewManager(v2session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
 				prepareChat := func(_ context.Context, wsID, chatID string) error {
-					ws, lookupErr := st.GetWorkspace(wsID)
-					if lookupErr != nil {
-						return lookupErr
-					}
-					chat, lookupErr := st.GetChat(wsID, chatID)
-					if lookupErr != nil {
-						return lookupErr
-					}
-					if saveErr := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); saveErr != nil {
-						return saveErr
-					}
-					cwd := chat.Cwd
-					if cwd == "" {
-						cwd = ws.Path
-					}
-					current, getErr := cursors.GetChat(chat.ID)
-					if getErr == nil {
-						current.WorkspaceID, current.CWD, current.Name = ws.ID, cwd, chat.Name
-						return cursors.SaveChat(current)
-					}
-					return cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt})
+					return apiServer.prepareV2Chat(cursors, wsID, chatID)
 				}
 				v2Bridge = wsbridge.New(wsbridge.Config{
 					Context: ctx, Manager: v2Manager, Store: cursors,

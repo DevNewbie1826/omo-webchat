@@ -29,6 +29,9 @@
         "bad_resume",
         "bad_send",
         "bad_set",
+        "set_model_failed",
+        "set_thinking_failed",
+        "approval_failed",
         "no_session",
         "send_failed",
         "compact_failed"

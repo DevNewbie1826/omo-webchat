@@ -3,18 +3,25 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lxzan/gws"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
 )
+
+const chatStopTimeout = 10 * time.Second
+
+var newChatStopContext = context.WithTimeout
 
 type createChatRequest struct {
 	Name           string `json:"name"`
@@ -78,25 +85,46 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	if s.beforeChatDelete != nil {
 		s.beforeChatDelete()
 	}
+
+	// Serialize the complete v2 stop-and-delete transition with PrepareChat.
+	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
+	// not turn a still-live provider session into successfully deleted metadata.
 	s.chatLifecycleMu.Lock()
-	_, err := s.store.RemoveChat(wsID, chatID)
-	s.chatLifecycleMu.Unlock()
-	if err != nil {
+	if _, err := s.store.GetChat(wsID, chatID); err != nil {
+		s.chatLifecycleMu.Unlock()
 		s.writeStoreError(w, err)
 		return
 	}
-	// Provider shutdown is I/O and must stay outside chatLifecycleMu. A create
-	// that opened concurrently rechecks the store under the same mutex before
-	// publishing its attachment and tears itself down if this delete won.
-	s.chats.Stop(chatID)
-	if manager, cursors := s.v2Stack(); manager != nil {
-		// StopContext enters the per-chat flight even when the session is still
-		// opening and therefore not yet visible through Get.
-		_ = manager.StopContext(r.Context(), chatID)
-		if cursors != nil {
-			_ = cursors.DeleteChat(chatID)
+	manager, cursors := s.v2Stack()
+	if manager != nil {
+		stopCtx, cancelStop := newChatStopContext(context.Background(), chatStopTimeout)
+		err := manager.StopContext(stopCtx, chatID)
+		cancelStop()
+		if err != nil {
+			s.chatLifecycleMu.Unlock()
+			s.logger.Error("stopping v2 chat for delete", "err", err, "chatId", chatID)
+			writeError(w, http.StatusInternalServerError, "failed to stop chat")
+			return
 		}
 	}
+	if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
+		s.chatLifecycleMu.Unlock()
+		s.writeStoreError(w, err)
+		return
+	}
+	if cursors != nil {
+		if err := cursors.DeleteChat(chatID); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
+			s.chatLifecycleMu.Unlock()
+			s.logger.Error("deleting v2 chat cursor", "err", err, "chatId", chatID)
+			writeError(w, http.StatusInternalServerError, "failed to delete chat cursor")
+			return
+		}
+	}
+	s.chatLifecycleMu.Unlock()
+
+	// Legacy provider shutdown stays outside the lifecycle lock. The v1 record
+	// is already absent, so an in-flight open cannot publish its attachment.
+	s.chats.Stop(chatID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

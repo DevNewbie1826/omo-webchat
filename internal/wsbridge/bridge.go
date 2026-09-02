@@ -463,6 +463,7 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) {
 	c.unbind()
 	c.sub = newSubscriber(c)
+	sub := c.sub
 	if c.bridge.cfg.PrepareChat != nil {
 		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
 			c.sendError("no_chat", err.Error(), "", "")
@@ -479,16 +480,20 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, c.sub, func(acquired *session.Session, started bool, acquiredDetach func()) {
+	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, func(acquired *session.Session, started bool, acquiredDetach func()) {
+		wrappedDetach := sub.wrapDetach(acquiredDetach)
 		c.stateMu.Lock()
 		if c.closed.Load() {
 			c.stateMu.Unlock()
-			acquiredDetach()
+			wrappedDetach()
 			return
 		}
-		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, acquiredDetach
+		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, wrappedDetach
 		c.stateMu.Unlock()
-		c.sub.activate(!started)
+		if !sub.activate(ctx, !started) {
+			c.unbind()
+			return
+		}
 		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
 			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
 		}
@@ -623,10 +628,11 @@ func contextUsageWithPercent(raw json.RawMessage) json.RawMessage {
 		used, usedOK = usage["tokens"].(float64)
 		total, totalOK = usage["contextWindow"].(float64)
 	}
-	if !usedOK || !totalOK || total <= 0 {
-		return raw
+	percent := 0.0
+	if usedOK && totalOK && total > 0 {
+		percent = used / total * 100
 	}
-	usage["percent"] = used / total * 100
+	usage["percent"] = percent
 	normalized, err := json.Marshal(usage)
 	if err != nil {
 		return raw

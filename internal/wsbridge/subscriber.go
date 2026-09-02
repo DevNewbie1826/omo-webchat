@@ -1,8 +1,10 @@
 package wsbridge
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
@@ -21,10 +23,13 @@ type subscriber struct {
 	overflowed     bool
 	ready          chan struct{}
 	readyOnce      sync.Once
+	detachSignal   chan struct{}
+	detachOnce     sync.Once
+	detached       atomic.Bool
 }
 
 func newSubscriber(c *connection) *subscriber {
-	return &subscriber{conn: c, ready: make(chan struct{})}
+	return &subscriber{conn: c, ready: make(chan struct{}), detachSignal: make(chan struct{})}
 }
 
 // SynchronousAttach asks session's broadcaster to finish queueing its initial
@@ -48,30 +53,57 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 	}
 	return s.deliver(f)
 }
-func (s *subscriber) activate(reattach bool) {
-	<-s.ready
+func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
+	select {
+	case <-s.ready:
+	case <-s.detachSignal:
+		return false
+	case <-ctx.Done():
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.detached.Load() || ctx.Err() != nil {
+		return false
+	}
 	if s.active {
-		return
+		return true
 	}
 	s.treatAsResumed = reattach
 	s.active = true
 	if s.overflowed {
 		s.pending = nil
 		go s.Cancel()
-		return
+		return true
 	}
 	for _, f := range s.pending {
 		if err := s.deliver(f); err != nil {
 			s.pending = nil
 			go s.Cancel()
-			return
+			return true
 		}
 	}
 	s.pending = nil
+	return true
+}
+func (s *subscriber) signalDetach() {
+	s.detachOnce.Do(func() {
+		s.detached.Store(true)
+		close(s.detachSignal)
+		s.readyOnce.Do(func() { close(s.ready) })
+	})
+}
+func (s *subscriber) wrapDetach(detach func()) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.signalDetach()
+			detach()
+		})
+	}
 }
 func (s *subscriber) Cancel() error {
+	s.signalDetach()
 	if nc := s.conn.socket.NetConn(); nc != nil {
 		return nc.Close()
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
+	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
 type collector struct {
@@ -72,6 +73,26 @@ func TestContextUsageWithPercentFillsProviderOmission(t *testing.T) {
 	if usage["percent"] != 0.075 {
 		t.Fatalf("normalized context usage = %s", got)
 	}
+}
+
+func TestContextUsageWithPercentHandlesZeroDenominator(t *testing.T) {
+	got := contextUsageWithPercent(json.RawMessage(`{"tokens":0,"contextWindow":0}`))
+	var usage map[string]float64
+	if err := json.Unmarshal(got, &usage); err != nil {
+		t.Fatal(err)
+	}
+	percent, ok := usage["percent"]
+	if !ok || percent != 0 || usage["tokens"] != 0 || usage["contextWindow"] != 0 {
+		t.Fatalf("normalized zero context usage = %s", got)
+	}
+	frame, err := json.Marshal(map[string]any{"type": "stats", "sessionId": "chat-1", "contextUsage": got})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wscontract.ParseServerFrame(frame); err != nil {
+		t.Fatalf("generated Go parser rejected normalized stats: %v", err)
+	}
+	// The lib raw-JSON contract test covers acceptance by the generated TS parser.
 }
 
 func TestHelloWriteFailureShutdownRemovesConnectionRegistry(t *testing.T) {

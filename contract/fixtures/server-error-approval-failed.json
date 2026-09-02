@@ -1,0 +1,1 @@
+{ "type": "error", "sessionId": "sess-1", "code": "approval_failed", "message": "provider rejected approval response", "command": "extension_ui_response", "requestId": "req-approval-1" }

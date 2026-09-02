@@ -35,6 +35,43 @@ type v2ControlEnv struct {
 
 type v2ControlRef struct{ id, cwd string }
 
+type v2StopControl struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+type blockingV2PrepareStore struct {
+	store        *cursorstore.Store
+	saveStarted  chan struct{}
+	continueSave chan struct{}
+}
+
+func (s *blockingV2PrepareStore) SaveWorkspace(workspace cursorstore.Workspace) error {
+	close(s.saveStarted)
+	<-s.continueSave
+	return s.store.SaveWorkspace(workspace)
+}
+
+func (s *blockingV2PrepareStore) GetChat(chatID string) (cursorstore.Chat, error) {
+	return s.store.GetChat(chatID)
+}
+
+func (s *blockingV2PrepareStore) SaveChat(chat cursorstore.Chat) error {
+	return s.store.SaveChat(chat)
+}
+
+func receiveV2Control[T any](t *testing.T, ch <-chan T, event string) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s", event)
+		var zero T
+		return zero
+	}
+}
+
 func (r v2ControlRef) ChatID() string { return r.id }
 func (r v2ControlRef) CWD() string    { return r.cwd }
 
@@ -92,6 +129,94 @@ func newV2ControlEnv(t *testing.T) *v2ControlEnv {
 	server := New(t.Context(), &config.Config{Root: dir}, st, auth.NewSessionStore(t.Context(), "pw", logger), logger)
 	server.installV2(manager, cursors, http.NotFoundHandler())
 	return &v2ControlEnv{server: server, manager: manager, cursors: cursors, daemon: d, wsID: workspace.ID, chatID: chat.ID}
+}
+
+func TestDeleteChatCanceledRequestDoesNotDiscardLiveV2State(t *testing.T) {
+	e := newV2ControlEnv(t)
+	releaseFlight, err := e.manager.EnterChat(context.Background(), e.chatID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseFlight()
+
+	stopContextReady := make(chan v2StopControl, 1)
+	originalStopContext := newChatStopContext
+	newChatStopContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
+		stopContextReady <- v2StopControl{ctx: ctx, cancel: cancel}
+		return ctx, cancel
+	}
+	t.Cleanup(func() { newChatStopContext = originalStopContext })
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodDelete, "/", nil).WithContext(requestCtx)
+	req.SetPathValue("wsId", e.wsID)
+	req.SetPathValue("chatId", e.chatID)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		e.server.handleDeleteChat(rec, req)
+		done <- rec
+	}()
+
+	stopControl := receiveV2Control(t, stopContextReady, "delete stop context")
+	cancelRequest()
+	if err := stopControl.ctx.Err(); err != nil {
+		t.Fatalf("request cancellation reached lifecycle stop context: %v", err)
+	}
+	stopControl.cancel()
+	rec := receiveV2Control(t, done, "failed delete response")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("delete status=%d, want %d: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+	if _, err := e.server.store.GetChat(e.wsID, e.chatID); err != nil {
+		t.Fatalf("v1 chat removed after failed stop: %v", err)
+	}
+	if _, err := e.cursors.GetChat(e.chatID); err != nil {
+		t.Fatalf("v2 cursor removed after failed stop: %v", err)
+	}
+	if _, active := e.manager.Get(e.chatID); !active {
+		t.Fatal("v2 session disappeared after failed stop")
+	}
+}
+
+func TestDeleteChatAndPrepareV2ChatAreLinearized(t *testing.T) {
+	e := newV2ControlEnv(t)
+	prepareRead := make(chan struct{})
+	continuePrepare := make(chan struct{})
+	deleteStarted := make(chan struct{})
+	e.server.beforeChatDelete = func() { close(deleteStarted) }
+	prepareStore := &blockingV2PrepareStore{store: e.cursors, saveStarted: prepareRead, continueSave: continuePrepare}
+
+	prepared := make(chan error, 1)
+	go func() { prepared <- e.server.prepareV2Chat(prepareStore, e.wsID, e.chatID) }()
+	receiveV2Control(t, prepareRead, "prepare metadata read")
+	deleted := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/", nil)
+		req.SetPathValue("wsId", e.wsID)
+		req.SetPathValue("chatId", e.chatID)
+		rec := httptest.NewRecorder()
+		e.server.handleDeleteChat(rec, req)
+		deleted <- rec
+	}()
+	receiveV2Control(t, deleteStarted, "concurrent delete start")
+	close(continuePrepare)
+	if err := receiveV2Control(t, prepared, "prepare completion"); err != nil {
+		t.Fatalf("prepare v2 chat: %v", err)
+	}
+	if rec := receiveV2Control(t, deleted, "delete completion"); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d: %s", rec.Code, rec.Body.String())
+	}
+
+	if _, err := e.server.store.GetChat(e.wsID, e.chatID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("v1 chat lookup after race = %v, want not found", err)
+	}
+	if _, err := e.cursors.GetChat(e.chatID); !errors.Is(err, cursorstore.ErrNotFound) {
+		t.Fatalf("v2 cursor was stale-republished after delete: %v", err)
+	}
+	if _, active := e.manager.Get(e.chatID); active {
+		t.Fatal("v2 session remains active after delete won lifecycle race")
+	}
 }
 
 func TestV2ControlPlaneRoutes(t *testing.T) {
