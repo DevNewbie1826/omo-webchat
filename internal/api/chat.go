@@ -40,7 +40,8 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
-	if name == "" {
+	placeholder := name == ""
+	if placeholder {
 		name = s.defaultChatName(ws)
 	}
 	identity := strings.TrimSpace(req.ResumeIdentity)
@@ -57,7 +58,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	c := cursorstore.Chat{ID: id, WorkspaceID: wsID, CWD: ws.Path, SessionFile: identity, Name: name, NameSource: cursorstore.NameSourceAuto, CreatedAt: time.Now().UnixMilli()}
+	c := cursorstore.Chat{ID: id, WorkspaceID: wsID, CWD: ws.Path, SessionFile: identity, Name: name, NameSource: cursorstore.NameSourceAuto, TitleIsPlaceholder: placeholder, CreatedAt: time.Now().UnixMilli()}
 	if err = s.cursors.SaveChat(c); err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -185,8 +186,15 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, cursorstore.ErrNotFound)
 		return
 	}
-	c.Name, c.NameSource = name, cursorstore.NameSourceUser
-	if err = s.cursors.UpdateChat(c); err != nil {
+	// Atomic name mutation: an open persisting a new identity between the
+	// read above and this write cannot be clobbered, and any established
+	// name clears the placeholder marker.
+	if err = s.cursors.UpdateName(id, name, cursorstore.NameSourceUser); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	c, err = s.cursors.GetChat(id)
+	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
