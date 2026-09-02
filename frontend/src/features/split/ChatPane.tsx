@@ -30,7 +30,7 @@ export interface ChatPaneProps {
   readonly onOpenSidebar: () => void;
   readonly connect: ChatConnector;
   readonly notify: (msg: string, kind?: ToastKind) => void;
-  readonly onChatName?: (name: string, origin: "auto" | "provider") => void;
+  readonly onChatName?: (name: string, origin: "auto" | "user" | "provider") => void;
 }
 
 export function ChatPane({

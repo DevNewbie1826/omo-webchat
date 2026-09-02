@@ -97,6 +97,32 @@ func (h *workspaceDeleteHarness) delete(ctx context.Context) *httptest.ResponseR
 	return rec
 }
 
+func TestDeleteWorkspaceStopsLiveUnsupportedProviderSession(t *testing.T) {
+	h := newWorkspaceDeleteHarness(t, 1)
+	unsupported := h.chats[0]
+	unsupported.Provider = "omp"
+	if err := h.store.UpdateChat(unsupported); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.store.ListChats(h.ws.ID); len(got) != 0 {
+		t.Fatalf("unsupported fixture unexpectedly listed: %+v", got)
+	}
+
+	rec := h.delete(context.Background())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := h.manager.LiveSummaries(); len(got) != 0 {
+		t.Fatalf("live manager sessions after delete = %d", len(got))
+	}
+	if got := h.daemon.LiveSessions(); len(got) != 0 {
+		t.Fatalf("live daemon sessions after delete = %v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdCloseSession); got != 1 {
+		t.Fatalf("close requests = %d, want 1", got)
+	}
+}
+
 func TestDeleteWorkspaceStopsEveryActiveChatBeforeDeletingMetadata(t *testing.T) {
 	h := newWorkspaceDeleteHarness(t, 3)
 	rec := h.delete(context.Background())

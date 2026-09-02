@@ -105,6 +105,9 @@ func (s *Server) prepareChatVersion(_ context.Context, wsID, chatID string) (uin
 	if err != nil || c.WorkspaceID != wsID {
 		return 0, cursorstore.ErrNotFound
 	}
+	if !cursorstore.IsLaunchableProvider(c.Provider) {
+		return 0, wsbridge.ErrUnsupportedProvider
+	}
 	return s.chatLifecycleVersion(chatID), nil
 }
 func (s *Server) chatLifecycleVersion(id string) uint64 {

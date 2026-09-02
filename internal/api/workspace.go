@@ -42,7 +42,9 @@ func projectChat(c cursorstore.Chat) chatResponse {
 	if identity == "" {
 		identity = c.DurableSessionID
 	}
-	return chatResponse{ID: c.ID, Name: c.Name, NameSource: c.NameSource, WsID: c.WorkspaceID, CWD: c.CWD, PiSessionID: identity, Provider: "omo", CreatedAt: c.CreatedAt, LastUsedAt: c.LastUsedAt}
+	createdAt := cursorstore.RecencyMillis(cursorstore.Chat{CreatedAt: c.CreatedAt})
+	lastUsedAt := cursorstore.RecencyMillis(cursorstore.Chat{LastUsedAt: c.LastUsedAt})
+	return chatResponse{ID: c.ID, Name: c.Name, NameSource: c.NameSource, WsID: c.WorkspaceID, CWD: c.CWD, PiSessionID: identity, Provider: "omo", CreatedAt: createdAt, LastUsedAt: lastUsedAt}
 }
 func (s *Server) projectWorkspace(ws cursorstore.Workspace) workspaceResponse {
 	rows := s.cursors.ListChats(ws.ID)
@@ -114,7 +116,7 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// close outcome, so a transient stop failure can be retried safely.
 	s.chatLifecycleMu.Lock()
 	defer s.chatLifecycleMu.Unlock()
-	chats := s.cursors.ListChats(id)
+	chats := s.workspaceLifecycleChats(id)
 	for _, c := range chats {
 		s.chatDeleting[c.ID] = true
 		s.bumpChatLifecycleVersion(c.ID)
@@ -149,6 +151,32 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	clearDeleting()
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// workspaceLifecycleChats includes filtered UI rows plus any raw metadata rows
+// that already have a live manager session. Unsupported rows cannot launch now,
+// but sessions opened by an older process still need stop-first teardown.
+func (s *Server) workspaceLifecycleChats(workspaceID string) []cursorstore.Chat {
+	chats := s.cursors.ListChats(workspaceID)
+	seen := make(map[string]struct{}, len(chats))
+	for _, chat := range chats {
+		seen[chat.ID] = struct{}{}
+	}
+	if s.manager == nil {
+		return chats
+	}
+	for _, summary := range s.manager.LiveSummaries() {
+		if _, ok := seen[summary.ChatID]; ok {
+			continue
+		}
+		chat, err := s.cursors.GetChat(summary.ChatID)
+		if err == nil && chat.WorkspaceID == workspaceID {
+			chats = append(chats, chat)
+			seen[chat.ID] = struct{}{}
+		}
+	}
+	return chats
+}
+
 func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req renameRequest
 	if decodeJSON(r, &req) != nil {

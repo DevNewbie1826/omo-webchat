@@ -19,6 +19,61 @@ func TestDeriveSessionTitleMatchesLegacyRules(t *testing.T) {
 	}
 }
 
+func TestOpenIdentityUpdatePreservesConcurrentUserRename(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	releaseOpen := d.BlockHandler("open_session")
+	defer releaseOpen()
+	mgr := testManager(t, client, store, 64)
+	chat := testChat{id: "rename-during-open", cwd: t.TempDir()}
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.Acquire(context.Background(), chat, nil)
+		done <- err
+	}()
+	if !d.AwaitRequestCount("open_session", 1, testTimeout) {
+		t.Fatal("open_session did not block")
+	}
+	if err := store.UpdateName(context.Background(), chat.id, "User won", NameSourceUser); err != nil {
+		t.Fatal(err)
+	}
+	releaseOpen()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	cur := store.stored(chat.id)
+	if cur.Name != "User won" || cur.NameSource != NameSourceUser {
+		t.Fatalf("open completion clobbered concurrent rename: %+v", cur)
+	}
+	if cur.SessionFile == "" || cur.DurableSessionID == "" {
+		t.Fatalf("open completion did not persist identity: %+v", cur)
+	}
+}
+
+func TestCursorFieldUpdatesDoNotClobberOtherFields(t *testing.T) {
+	store := newMemStore()
+	ctx := context.Background()
+	const chatID = "scoped"
+	initial := Cursor{SessionFile: "/old", DurableSessionID: "old-id", Name: "Old name", NameSource: NameSourceUser}
+	if err := store.SaveCursor(ctx, chatID, initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateIdentity(ctx, chatID, "/new", "new-id"); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.stored(chatID); got.Name != initial.Name || got.NameSource != initial.NameSource {
+		t.Fatalf("identity update clobbered name fields: %+v", got)
+	}
+	if err := store.UpdateName(ctx, chatID, "New name", NameSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.stored(chatID); got.SessionFile != "/new" || got.DurableSessionID != "new-id" {
+		t.Fatalf("name update clobbered identity fields: %+v", got)
+	}
+}
+
 func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
@@ -44,10 +99,13 @@ func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	}
 }
 
-func TestFirstPromptAutoTitlePersistsAndFrames(t *testing.T) {
+func TestFirstPromptReplacesCreationPlaceholder(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
+	if err := store.SaveCursor(context.Background(), "auto-title", Cursor{Name: "workspace", NameSource: NameSourceAuto}); err != nil {
+		t.Fatal(err)
+	}
 	mgr := testManager(t, client, store, 64)
 	sub := newRecorder(16)
 	sess, _, _ := acquire(t, mgr, testChat{id: "auto-title", cwd: t.TempDir()}, sub)
@@ -61,6 +119,45 @@ func TestFirstPromptAutoTitlePersistsAndFrames(t *testing.T) {
 	}
 	if cur := store.stored(sess.ChatID()); cur.Name != "Ship naming semantics" || cur.NameSource != NameSourceAuto {
 		t.Fatalf("stored name = %+v", cur)
+	}
+}
+
+func TestStoredAutoTitleSurvivesRestartAndPlainPrompt(t *testing.T) {
+	d := newDaemon(t)
+	store := newMemStore()
+	chat := testChat{id: "stable-auto-title", cwd: t.TempDir()}
+
+	client := dial(t, d)
+	mgr := testManager(t, client, store, 64)
+	sub := newRecorder(32)
+	sess, _, detach := acquire(t, mgr, chat, sub)
+	sub.next(t)
+	runScript(t, d, sess, "Established title")
+	sub.await(t, FrameName)
+	detach()
+	if err := mgr.CloseAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	d.Restart()
+
+	client = dial(t, d)
+	mgr = testManager(t, client, store, 64)
+	sub = newRecorder(32)
+	sess, _, _ = acquire(t, mgr, chat, sub)
+	sub.next(t)
+	sub.await(t, FrameEntries)
+	runScript(t, d, sess, "A later plain prompt")
+	if got := store.stored(chat.id); got.Name != "Established title" || got.NameSource != NameSourceAuto {
+		t.Fatalf("persisted auto title changed after restart: %+v", got)
+	}
+	if summary, ok := sess.summary(); !ok || summary.Title != "Established title" {
+		t.Fatalf("recreated session lost auto title: %+v", summary)
+	}
+	for _, frame := range sub.drain() {
+		if frame.Kind == FrameName {
+			t.Fatalf("plain prompt emitted replacement name: %+v", frame)
+		}
 	}
 }
 

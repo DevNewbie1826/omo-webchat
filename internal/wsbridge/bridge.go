@@ -25,9 +25,13 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 )
 
-// ErrChatDeleted reports that deletion advanced after a create captured its
-// metadata generation but before the acquired provider route was published.
-var ErrChatDeleted = errors.New("chat was deleted while opening")
+var (
+	// ErrChatDeleted reports that deletion advanced after a create captured its
+	// metadata generation but before the acquired provider route was published.
+	ErrChatDeleted = errors.New("chat was deleted while opening")
+	// ErrUnsupportedProvider reports metadata that this bridge cannot launch.
+	ErrUnsupportedProvider = errors.New("chat provider is not supported")
+)
 
 // Config supplies the independently-owned v2 session stack.
 type Config struct {
@@ -442,15 +446,22 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
 		if err != nil {
 			code := "no_chat"
-			if errors.Is(err, ErrChatDeleted) {
+			switch {
+			case errors.Is(err, ErrChatDeleted):
 				code = "chat_deleted"
+			case errors.Is(err, ErrUnsupportedProvider):
+				code = "unsupported_provider"
 			}
 			c.sendError(code, err.Error(), "", "")
 			return
 		}
 	} else if c.bridge.cfg.PrepareChat != nil {
 		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
-			c.sendError("no_chat", err.Error(), "", "")
+			code := "no_chat"
+			if errors.Is(err, ErrUnsupportedProvider) {
+				code = "unsupported_provider"
+			}
+			c.sendError(code, err.Error(), "", "")
 			return
 		}
 	}
@@ -461,6 +472,10 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 	}
 	if rec.WorkspaceID != f.WsID {
 		c.sendError("bad_create", "chat does not belong to workspace", "", "")
+		return
+	}
+	if !cursorstore.IsLaunchableProvider(rec.Provider) {
+		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
@@ -743,6 +758,24 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 	c.SessionFile, c.DurableSessionID = cur.SessionFile, cur.DurableSessionID
 	c.Name, c.NameSource = cur.Name, cur.NameSource
 	return st.SaveChat(c)
+}
+func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
+	st := (*cursorstore.Store)(s)
+	c, err := st.GetChat(id)
+	if err != nil {
+		return err
+	}
+	c.SessionFile, c.DurableSessionID = sessionFile, durableID
+	return st.UpdateChat(c)
+}
+func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) error {
+	st := (*cursorstore.Store)(s)
+	c, err := st.GetChat(id)
+	if err != nil {
+		return err
+	}
+	c.Name, c.NameSource = name, source
+	return st.UpdateChat(c)
 }
 
 var _ session.CursorStore = (*CursorStore)(nil)

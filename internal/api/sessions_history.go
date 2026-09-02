@@ -270,10 +270,7 @@ func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 // last-used stamp when the record carries one, else creation time for legacy
 // rows that never recorded a use.
 func chatRecencyMs(ch cursorstore.Chat) int64 {
-	if ch.LastUsedAt > 0 {
-		return ch.LastUsedAt
-	}
-	return ch.CreatedAt
+	return cursorstore.RecencyMillis(ch)
 }
 
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {

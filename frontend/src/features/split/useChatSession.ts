@@ -8,7 +8,7 @@ import { useChatFrameState } from "./useChatFrameState";
 export function useChatSession(
   session: ChatSessionRef,
   connect: ChatConnector,
-  onChatName?: (name: string, origin: "auto" | "provider") => void,
+  onChatName?: (name: string, origin: "auto" | "user" | "provider") => void,
 ) {
   const frameState = useChatFrameState();
   const clientRef = useRef<ChatClient | null>(null);

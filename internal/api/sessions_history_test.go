@@ -69,6 +69,41 @@ func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 		t.Fatalf("disk=%+v", page.Items[1])
 	}
 }
+func TestListWorkspaceSessionsNormalizesMixedResolutionAcrossPages(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	fixtures := []cursorstore.Chat{
+		{ID: "seconds-newest", CreatedAt: 1_700_000_500},
+		{ID: "millis-2", CreatedAt: 1_700_000_400_000},
+		{ID: "seconds-3", CreatedAt: 1_700_000_300},
+		{ID: "millis-4", CreatedAt: 1_700_000_200_000},
+		{ID: "seconds-5", CreatedAt: 1_700_000_100},
+		{ID: "millis-oldest", CreatedAt: 1_700_000_000_000},
+	}
+	for _, chat := range fixtures {
+		chat.WorkspaceID, chat.CWD, chat.Name, chat.NameSource = ws.ID, ws.Path, chat.ID, cursorstore.NameSourceAuto
+		if err := st.SaveChat(chat); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(first.Items) != 5 || first.NextCursor == "" {
+		t.Fatalf("first page = %+v", first)
+	}
+	for i, want := range []string{"seconds-newest", "millis-2", "seconds-3", "millis-4", "seconds-5"} {
+		if first.Items[i].ID != want {
+			t.Fatalf("first page item %d = %s, want %s", i, first.Items[i].ID, want)
+		}
+	}
+	if first.Items[0].RecencyMs != 1_700_000_500_000 || first.Items[4].RecencyMs != 1_700_000_100_000 {
+		t.Fatalf("normalized recencies = %d ... %d", first.Items[0].RecencyMs, first.Items[4].RecencyMs)
+	}
+	second := listWorkspaceSessions(t, s, ws.ID, "cursor="+first.NextCursor)
+	if len(second.Items) != 1 || second.Items[0].ID != "millis-oldest" || second.NextCursor != "" {
+		t.Fatalf("second page = %+v", second)
+	}
+}
+
 func TestListWorkspaceSessionsPaginatesDeterministically(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	for i := 0; i < 7; i++ {

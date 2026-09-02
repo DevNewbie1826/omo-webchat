@@ -65,9 +65,6 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	if nameSource == "" {
 		nameSource = NameSourceAuto
 	}
-	if nameSource != NameSourceUser {
-		name = ""
-	}
 	s := &Session{manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
@@ -480,8 +477,7 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	route := s.routingID
 	s.lifecycleMu.Unlock()
 
-	cur.Name, cur.NameSource = name, NameSourceAuto
-	if err := s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur); err != nil {
+	if err := s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, NameSourceAuto); err != nil {
 		return
 	}
 	s.lifecycleMu.Lock()
@@ -515,8 +511,7 @@ func (s *Session) applyProviderName(name string) {
 	}
 	s.lifecycleMu.Unlock()
 
-	cur.Name, cur.NameSource = name, NameSourceAuto
-	if err := s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur); err != nil {
+	if err := s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, NameSourceAuto); err != nil {
 		return
 	}
 	s.lifecycleMu.Lock()
@@ -535,12 +530,10 @@ func (s *Session) currentCursor(ctx context.Context) (Cursor, error) {
 }
 
 func (s *Session) persistName(ctx context.Context, name, source string) error {
-	cur, err := s.currentCursor(ctx)
-	if err != nil {
-		return err
+	if s.manager.cfg.Store == nil {
+		return errors.New("session: nil cursor store")
 	}
-	cur.Name, cur.NameSource = name, source
-	return s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur)
+	return s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, source)
 }
 
 // RespondApproval publishes the correlated acceptance ack before notifying the

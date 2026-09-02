@@ -55,6 +55,30 @@ func (s *memCursorStore) SaveCursor(_ context.Context, chatID string, cur Cursor
 	return nil
 }
 
+func (s *memCursorStore) UpdateIdentity(_ context.Context, chatID, sessionFile, durableID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursors == nil {
+		s.cursors = map[string]Cursor{}
+	}
+	cur := s.cursors[chatID]
+	cur.SessionFile, cur.DurableSessionID = sessionFile, durableID
+	s.cursors[chatID] = cur
+	return nil
+}
+
+func (s *memCursorStore) UpdateName(_ context.Context, chatID, name, source string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cursors == nil {
+		s.cursors = map[string]Cursor{}
+	}
+	cur := s.cursors[chatID]
+	cur.Name, cur.NameSource = name, source
+	s.cursors[chatID] = cur
+	return nil
+}
+
 func (s *memCursorStore) stored(chatID string) Cursor {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -50,6 +50,8 @@ type Cursor struct {
 type CursorStore interface {
 	CursorFor(context.Context, string) (Cursor, error)
 	SaveCursor(context.Context, string, Cursor) error
+	UpdateIdentity(ctx context.Context, chatID, sessionFile, durableID string) error
+	UpdateName(ctx context.Context, chatID, name, source string) error
 }
 
 type ChatRef interface {

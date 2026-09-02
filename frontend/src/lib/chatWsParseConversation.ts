@@ -39,7 +39,7 @@ export function parseConversationFrame(
       if (name === null) return null;
       const origin = optString(msg, "origin");
       if (origin === null) return null;
-      if (origin !== undefined && origin !== "auto" && origin !== "provider") return null;
+      if (origin !== undefined && origin !== "auto" && origin !== "user" && origin !== "provider") return null;
       return {
         type: "chat.name",
         sessionId,
