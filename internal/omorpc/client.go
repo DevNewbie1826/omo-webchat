@@ -49,7 +49,15 @@ type pendingRequest struct {
 
 type callResult struct {
 	response *Response
+	epoch    EpochToken
 	err      error
+}
+
+// EpochToken identifies one concrete transport connection epoch. Its value is
+// opaque but comparable, so consumers can bind state to the exact epoch that
+// settled an RPC response.
+type EpochToken struct {
+	epoch *connectionEpoch
 }
 
 type connectionEpoch struct {
@@ -287,7 +295,7 @@ func (c *Client) settleResponse(ep *connectionEpoch, resp *Response) {
 	}
 	c.mu.Unlock()
 	if ok {
-		pending.result <- callResult{response: resp, err: resp.Err()}
+		pending.result <- callResult{response: resp, epoch: EpochToken{epoch: ep}, err: resp.Err()}
 		return
 	}
 	// A response whose caller has canceled is unsolicited from this point
@@ -404,25 +412,74 @@ func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
 
 // Call sends a two-way request and waits for its correlated response.
 func (c *Client) Call(ctx context.Context, cmd Command) (*Response, error) {
-	ep, err := c.connection(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return c.callOnEpoch(ctx, ep, cmd)
+	resp, _, err := c.CallInEpoch(ctx, cmd)
+	return resp, err
 }
 
-func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Command) (*Response, error) {
+// CallInEpoch is Call plus the exact connection epoch that settled the
+// correlated response. The zero token is returned when no response settled.
+func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, EpochToken, error) {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		return nil, EpochToken{}, err
+	}
+	return c.callOnEpochInEpoch(ctx, ep, cmd)
+}
+
+// CallDetached sends a request and transfers completion ownership to complete.
+// Once the frame is written, caller-context cancellation does not remove the
+// correlation: complete runs when a response arrives or the epoch dies.
+func (c *Client) CallDetached(ctx context.Context, cmd Command, complete func(*Response, EpochToken, error)) error {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		return err
+	}
 	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
 	frame, err := EncodeRequest(id, cmd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	result := make(chan callResult, 1)
 
 	c.mu.Lock()
 	if c.closed || c.current != ep {
 		c.mu.Unlock()
-		return nil, ErrDisconnected
+		return ErrDisconnected
+	}
+	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
+	c.mu.Unlock()
+
+	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+		c.removePending(id, result)
+		if attempted {
+			c.invalidate(ep, err)
+		}
+		return err
+	}
+	go func() {
+		got := <-result
+		complete(got.response, got.epoch, got.err)
+	}()
+	return nil
+}
+
+func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Command) (*Response, error) {
+	resp, _, err := c.callOnEpochInEpoch(ctx, ep, cmd)
+	return resp, err
+}
+
+func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cmd Command) (*Response, EpochToken, error) {
+	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
+	frame, err := EncodeRequest(id, cmd)
+	if err != nil {
+		return nil, EpochToken{}, err
+	}
+	result := make(chan callResult, 1)
+
+	c.mu.Lock()
+	if c.closed || c.current != ep {
+		c.mu.Unlock()
+		return nil, EpochToken{}, ErrDisconnected
 	}
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
@@ -433,15 +490,15 @@ func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Comma
 			// A failed write may be partial, so reconnect before the next call.
 			c.invalidate(ep, err)
 		}
-		return nil, err
+		return nil, EpochToken{}, err
 	}
 
 	select {
 	case got := <-result:
-		return got.response, got.err
+		return got.response, got.epoch, got.err
 	case <-ctx.Done():
 		c.removePending(id, result)
-		return nil, ctx.Err()
+		return nil, EpochToken{}, ctx.Err()
 	}
 }
 
@@ -520,14 +577,38 @@ func (c *Client) DroppedEvents() uint64 { return c.dropped.Load() }
 
 // Events returns the stream for the current connection epoch.
 func (c *Client) Events() <-chan *Event {
+	_, events := c.CurrentEpoch()
+	return events
+}
+
+// CurrentEpoch atomically snapshots the current epoch and its event stream.
+func (c *Client) CurrentEpoch() (EpochToken, <-chan *Event) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.current != nil {
-		return c.current.events.out
+		return EpochToken{epoch: c.current}, c.current.events.out
+	}
+	closed := make(chan *Event)
+	close(closed)
+	return EpochToken{}, closed
+}
+
+// EventsInEpoch returns the event stream owned by token. A zero token yields
+// an already-closed stream.
+func (c *Client) EventsInEpoch(token EpochToken) <-chan *Event {
+	if token.epoch != nil {
+		return token.epoch.events.out
 	}
 	closed := make(chan *Event)
 	close(closed)
 	return closed
+}
+
+// EpochCurrent reports whether token still identifies the live connection.
+func (c *Client) EpochCurrent(token EpochToken) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return token.epoch != nil && c.current == token.epoch
 }
 
 // ProtocolInfo returns a copy of the negotiated handshake payload.

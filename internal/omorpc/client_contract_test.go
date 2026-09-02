@@ -116,6 +116,30 @@ func TestClientDialHandshake(t *testing.T) {
 	}
 }
 
+func TestClientDetachedCallSurvivesCallerCancellation(t *testing.T) {
+	d := newMockDaemon(t)
+	release := d.BlockHandler(CmdOpenSession)
+	c := dialForTest(t, d, Config{})
+	ctx, cancel := context.WithCancel(context.Background())
+	completed := make(chan callResult, 1)
+	if err := c.CallDetached(ctx, OpenSession{CWD: t.TempDir()}, func(resp *Response, epoch EpochToken, err error) {
+		completed <- callResult{response: resp, epoch: epoch, err: err}
+	}); err != nil {
+		t.Fatalf("CallDetached: %v", err)
+	}
+	d.awaitRequest(t, CmdOpenSession, testAwaitTimeout)
+	cancel()
+	release()
+	select {
+	case got := <-completed:
+		if got.err != nil || got.response == nil || !got.response.Success || got.epoch.epoch == nil {
+			t.Fatalf("detached completion = %+v", got)
+		}
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("detached call did not retain its correlation")
+	}
+}
+
 // TestClientRequestCorrelation: two overlapping requests resolve to their
 // own responses — ids never cross, replies may arrive out of order. The
 // daemon delays the first command so its reply overtakes the second's
