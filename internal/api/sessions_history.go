@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
 )
 
@@ -457,6 +458,32 @@ func parseSessionHistoryLimit(raw string) (int, error) {
 	return n, nil
 }
 
+func unionWorkspaceChats(stored []store.Chat, cursors []cursorstore.Chat) []store.Chat {
+	out := append([]store.Chat(nil), stored...)
+	seen := make(map[string]struct{}, len(stored))
+	for _, chat := range stored {
+		seen[chat.ID] = struct{}{}
+	}
+	for _, cursor := range cursors {
+		if _, exists := seen[cursor.ID]; exists {
+			// Legacy rows keep discovery-aware names and therefore win all ID
+			// conflicts; cursor names are used only for cursor-only sessions.
+			continue
+		}
+		identity := cursor.SessionFile
+		if identity == "" {
+			identity = cursor.DurableSessionID
+		}
+		out = append(out, store.Chat{
+			ID: cursor.ID, Name: cursor.Name, NameSource: cursor.NameSource,
+			PiSessionID: identity, WsID: cursor.WorkspaceID, Cwd: cursor.CWD,
+			CreatedAt: cursor.CreatedAt, LastUsedAt: cursor.LastUsedAt,
+		})
+		seen[cursor.ID] = struct{}{}
+	}
+	return out
+}
+
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	ws, err := s.store.GetWorkspace(r.PathValue("wsId"))
 	if err != nil {
@@ -468,7 +495,11 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid limit")
 		return
 	}
-	items := mergeSessionHistory(ws.Chats, listDiskSessions(ws.Path))
+	chats := ws.Chats
+	if _, cursors := s.v2Stack(); cursors != nil {
+		chats = unionWorkspaceChats(chats, cursors.ListChats(ws.ID))
+	}
+	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

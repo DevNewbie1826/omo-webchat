@@ -64,6 +64,28 @@ func (s *blockingV2PrepareStore) SaveChat(chat cursorstore.Chat) error {
 	return s.store.SaveChat(chat)
 }
 
+type v2LiveRecorder struct{ frames chan v2session.Frame }
+
+func (r *v2LiveRecorder) Deliver(frame v2session.Frame) { r.frames <- frame }
+func (r *v2LiveRecorder) Cancel() error                 { return nil }
+
+func (r *v2LiveRecorder) awaitActivity(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case frame := <-r.frames:
+			if frame.Kind == v2session.FrameExtensionEvent {
+				if data, ok := frame.Data.(map[string]any); ok && data["name"] == name {
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", name)
+		}
+	}
+}
+
 func receiveV2Control[T any](t *testing.T, ch <-chan T, event string) T {
 	t.Helper()
 	select {
@@ -133,6 +155,62 @@ func newV2ControlEnv(t *testing.T) *v2ControlEnv {
 	server := New(t.Context(), &config.Config{Root: dir}, st, auth.NewSessionStore(t.Context(), "pw", logger), logger)
 	server.installV2(manager, cursors, http.NotFoundHandler())
 	return &v2ControlEnv{server: server, manager: manager, cursors: cursors, daemon: d, client: client, wsID: workspace.ID, chatID: chat.ID}
+}
+
+func TestListLiveSessionsEnrichesV2SummaryWithCompatibleShape(t *testing.T) {
+	e := newV2ControlEnv(t)
+	sess, ok := e.manager.Get(e.chatID)
+	if !ok {
+		t.Fatal("v2 session missing")
+	}
+	recorder := &v2LiveRecorder{frames: make(chan v2session.Frame, 8)}
+	detach := sess.Attach(recorder)
+	t.Cleanup(detach)
+
+	if err := sess.SendPrompt(t.Context(), "# Build v2 surface", nil); err != nil {
+		t.Fatal(err)
+	}
+	task := map[string]any{"tasks": []any{map[string]any{"task_id": "t1", "status": "running"}}}
+	dag := map[string]any{"runs": []any{map[string]any{"run_id": "r1", "status": "running", "nodes": []any{map[string]any{"state": "running", "task_id": "t1"}}}}}
+	e.daemon.EmitSession(sess.SessionFile(), map[string]any{"type": "extension_event", "name": "omo.task.updated", "data": task})
+	recorder.awaitActivity(t, "omo.task.updated")
+	e.daemon.EmitSession(sess.SessionFile(), map[string]any{"type": "extension_event", "name": "omo.dag.updated", "data": dag})
+	recorder.awaitActivity(t, "omo.dag.updated")
+
+	rec := httptest.NewRecorder()
+	e.server.handleListLiveSessions(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/live", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || len(body.Sessions) != 1 {
+		t.Fatalf("response = %+v, %v", body, err)
+	}
+	row := body.Sessions[0]
+	if row["title"] != "Build v2 surface" || row["task"] == nil || row["dag"] == nil || row["task_digest"] == nil || row["dag_digest"] == nil {
+		t.Fatalf("v2 live row = %+v", row)
+	}
+	if row["task_oversized"] != false || row["dag_oversized"] != false {
+		t.Fatalf("oversized flags = (%v, %v)", row["task_oversized"], row["dag_oversized"])
+	}
+
+	// An over-cap event is forwarded but does not replace the bounded raw cache.
+	e.daemon.EmitSession(sess.SessionFile(), map[string]any{
+		"type": "extension_event", "name": "omo.task.updated",
+		"data": map[string]any{"pad": strings.Repeat("x", 64<<10)},
+	})
+	recorder.awaitActivity(t, "omo.task.updated")
+	rec = httptest.NewRecorder()
+	e.server.handleListLiveSessions(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/live", nil))
+	body.Sessions = nil
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || len(body.Sessions) != 1 {
+		t.Fatalf("oversized response = %+v, %v", body, err)
+	}
+	if body.Sessions[0]["task_oversized"] != true || body.Sessions[0]["task"] == nil {
+		t.Fatalf("oversized v2 live row = %+v", body.Sessions[0])
+	}
 }
 
 func TestDeleteChatCanceledRequestDoesNotDiscardLiveV2State(t *testing.T) {

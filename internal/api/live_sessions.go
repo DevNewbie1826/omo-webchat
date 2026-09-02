@@ -7,27 +7,32 @@ import (
 )
 
 type liveSessionResponse struct {
-	ID            string                   `json:"id"`
-	Title         string                   `json:"title"`
-	Task          json.RawMessage          `json:"task"`
-	Dag           json.RawMessage          `json:"dag"`
-	TaskOversized bool                     `json:"task_oversized"`
-	DagOversized  bool                     `json:"dag_oversized"`
-	TaskDigest    *chat.ActivityTaskDigest `json:"task_digest,omitempty"`
-	DagDigest     *chat.ActivityDagDigest  `json:"dag_digest,omitempty"`
+	ID            string          `json:"id"`
+	Title         string          `json:"title"`
+	Task          json.RawMessage `json:"task"`
+	Dag           json.RawMessage `json:"dag"`
+	TaskOversized bool            `json:"task_oversized"`
+	DagOversized  bool            `json:"dag_oversized"`
+	TaskDigest    any             `json:"task_digest,omitempty"`
+	DagDigest     any             `json:"dag_digest,omitempty"`
 }
 
 func liveSessionFromSummary(summary chat.LiveSummary, title string) liveSessionResponse {
-	return liveSessionResponse{
+	row := liveSessionResponse{
 		ID:            summary.ID,
 		Title:         title,
 		Task:          rawOrNull(summary.Pair.Task),
 		Dag:           rawOrNull(summary.Pair.Dag),
 		TaskOversized: summary.TaskOversized,
 		DagOversized:  summary.DagOversized,
-		TaskDigest:    summary.TaskDigest,
-		DagDigest:     summary.DagDigest,
 	}
+	if summary.TaskDigest != nil {
+		row.TaskDigest = summary.TaskDigest
+	}
+	if summary.DagDigest != nil {
+		row.DagDigest = summary.DagDigest
+	}
+	return row
 }
 
 type liveSessionsResponse struct {
@@ -43,12 +48,19 @@ func rawOrNull(data json.RawMessage) json.RawMessage {
 
 func (s *Server) liveChatTitles() map[string]string {
 	titles := make(map[string]string)
-	if s.store == nil {
-		return titles
+	if _, cursors := s.v2Stack(); cursors != nil {
+		for _, ws := range cursors.ListWorkspaces() {
+			for _, c := range cursors.ListChats(ws.ID) {
+				titles[c.ID] = c.Name
+			}
+		}
 	}
-	for _, ws := range s.store.ListWorkspaces() {
-		for _, c := range ws.Chats {
-			titles[c.ID] = c.Name
+	if s.store != nil {
+		for _, ws := range s.store.ListWorkspaces() {
+			for _, c := range ws.Chats {
+				// Legacy metadata remains authoritative for overlapping IDs.
+				titles[c.ID] = c.Name
+			}
 		}
 	}
 	return titles

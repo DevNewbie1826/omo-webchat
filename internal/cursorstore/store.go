@@ -264,6 +264,19 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	return c, nil
 }
 
+// ListChats returns a snapshot of chats belonging to workspaceID.
+func (s *Store) ListChats(workspaceID string) []Chat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Chat, 0)
+	for _, chat := range s.data.Chats {
+		if chat.WorkspaceID == workspaceID {
+			out = append(out, chat)
+		}
+	}
+	return out
+}
+
 // DeleteChat removes a chat cursor record.
 func (s *Store) DeleteChat(id string) error {
 	s.mu.Lock()

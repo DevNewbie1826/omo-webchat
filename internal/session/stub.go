@@ -135,6 +135,12 @@ type Summary struct {
 	CWD              string
 	Active           bool
 	Attachments      int
+	Title            string
+	ActivityPair     ActivityPair
+	TaskOversized    bool
+	DagOversized     bool
+	TaskDigest       *TaskDigest
+	DagDigest        *DagDigest
 }
 
 // Stats preserves provider statistics verbatim so structured token/cache data

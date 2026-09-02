@@ -191,9 +191,15 @@ export function SessionTree({
 
             <fieldset className={`th-tree-children${isOpen ? "" : " th-tree-children--closed"}`}>
               {(sessionLists.get(ws.id) ?? []).map((item) => {
-                const tm = item.source === "stored"
-                  ? ws.chats.find((chat) => chat.id === item.id)
-                  : undefined;
+                const stored = item.source === "stored";
+                const listed = stored ? ws.chats.find((chat) => chat.id === item.id) : undefined;
+                // v2 union: the sessions REST also lists cursorstore-only chats
+                // the legacy workspace chat list does not carry. They are real
+                // chats — activate them through the same select flow instead of
+                // rendering a dead row. Dangling identities stay inert.
+                const tm = listed ?? (stored && item.dangling !== true
+                  ? { id: item.id, name: item.name, provider: "omo" as const }
+                  : undefined);
                 const discovered = item.source === "discovered";
                 const interactive = tm !== undefined || discovered;
                 const active = tm !== undefined && item.id === activeTerminalId;

@@ -313,7 +313,22 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 			if seen[summary.ChatID] {
 				continue
 			}
-			sessions = append(sessions, liveSessionResponse{ID: summary.ChatID, Title: titles[summary.ChatID]})
+			title := summary.Title
+			if title == "" {
+				title = titles[summary.ChatID]
+			}
+			row := liveSessionResponse{
+				ID: summary.ChatID, Title: title,
+				Task: rawOrNull(summary.ActivityPair.Task), Dag: rawOrNull(summary.ActivityPair.Dag),
+				TaskOversized: summary.TaskOversized, DagOversized: summary.DagOversized,
+			}
+			if summary.TaskDigest != nil {
+				row.TaskDigest = summary.TaskDigest
+			}
+			if summary.DagDigest != nil {
+				row.DagDigest = summary.DagDigest
+			}
+			sessions = append(sessions, row)
 		}
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})

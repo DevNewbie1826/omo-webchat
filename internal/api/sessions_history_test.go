@@ -18,6 +18,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
 )
 
@@ -105,6 +106,63 @@ func TestSessionDirNameForCwdMatchesOmoLayout(t *testing.T) {
 			continue
 		}
 		t.Logf("sessionDirNameForCwd(%q) = %q", test.cwd, got)
+	}
+}
+
+func TestListWorkspaceSessionsUnionsCursorChatsWithStoredChatsWinningConflicts(t *testing.T) {
+	srv, st, ws, _ := newSessionHistoryTestServer(t)
+	stored, err := st.NewChat(ws.ID, "stored name", ws.Path, "", "omo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursors, err := cursorstore.Open(filepath.Join(t.TempDir(), "v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []cursorstore.Chat{
+		{ID: stored.ID, WorkspaceID: ws.ID, CWD: ws.Path, Name: "cursor must lose", CreatedAt: stored.CreatedAt + 1},
+		{ID: "v2-only", WorkspaceID: ws.ID, CWD: ws.Path, Name: "cursor name", CreatedAt: stored.CreatedAt + 2},
+	} {
+		if err := cursors.SaveChat(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv.installV2(nil, cursors, nil)
+
+	page := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(page.Items) != 2 {
+		t.Fatalf("items = %+v, want stored+cursor union", page.Items)
+	}
+	byID := make(map[string]sessionHistoryItem, len(page.Items))
+	for _, item := range page.Items {
+		byID[item.ID] = item
+	}
+	if got := byID[stored.ID].Name; got != "stored name" {
+		t.Fatalf("overlap name = %q, want stored name", got)
+	}
+	if got := byID["v2-only"].Name; got != "cursor name" {
+		t.Fatalf("cursor-only name = %q, want cursor name", got)
+	}
+}
+
+func TestListWorkspaceSessionsEmptyCursorStorePreservesLegacyResult(t *testing.T) {
+	srv, st, ws, _ := newSessionHistoryTestServer(t)
+	stored, err := st.NewChat(ws.ID, "legacy", ws.Path, "", "omo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	cursors, err := cursorstore.Open(filepath.Join(t.TempDir(), "v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.installV2(nil, cursors, nil)
+	after := decodeSessionHistoryPage(t, listWorkspaceSessions(t, srv, ws.ID, ""))
+	if len(after.Items) != 1 || after.Items[0] != before.Items[0] || after.Items[0].ID != stored.ID {
+		t.Fatalf("with empty cursorstore = %+v, before = %+v", after, before)
 	}
 }
 

@@ -275,9 +275,21 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           provider: tm.provider,
         });
       }
+      // v2 union rows: chats the sessions REST lists but the legacy chat list
+      // does not carry. Register them so activation opens the same pane flow.
+      for (const item of sessionLists.get(ws.id) ?? []) {
+        if (item.source !== "stored" || item.dangling === true || map.has(item.id)) continue;
+        map.set(item.id, {
+          id: item.id,
+          name: item.name,
+          wsId: ws.id,
+          cwd: ws.path,
+          provider: "omo",
+        });
+      }
     }
     return map;
-  }, [workspaces]);
+  }, [workspaces, sessionLists]);
 
   const toggleExpanded = (wsId: string): void => {
     setExpanded((prev) => {
