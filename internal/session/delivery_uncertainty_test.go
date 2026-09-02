@@ -31,6 +31,22 @@ func (c *sessionTriggeredDeadline) Err() error {
 }
 func (c *sessionTriggeredDeadline) expire() { c.once.Do(func() { close(c.done) }) }
 
+type closeJoinContext struct {
+	context.Context
+	entered chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func newCloseJoinContext() *closeJoinContext {
+	return &closeJoinContext{Context: context.Background(), entered: make(chan struct{}), done: make(chan struct{})}
+}
+
+func (c *closeJoinContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.entered) })
+	return c.done
+}
+
 type cancelRecorder struct {
 	*recorder
 	canceled chan struct{}
@@ -283,6 +299,159 @@ func TestDeliveryUncertaintyCloseLateOutcome(t *testing.T) {
 				t.Fatal("late close success did not remove the route")
 			}
 		})
+	}
+}
+
+func TestDeliveryUncertaintyIdleCloseRetainsLateOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reject bool
+	}{
+		{name: "success"},
+		{name: "rejection", reject: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDaemon(t)
+			client := dial(t, d)
+			mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 64, IdleAfter: time.Hour, CloseTimeout: 20 * time.Millisecond})
+			t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+			s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "idle-late-" + tc.name, cwd: t.TempDir()}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			release := d.BlockHandler(omorpc.CmdCloseSession)
+			defer release()
+			if tc.reject {
+				d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
+			}
+			evicted := make(chan struct{})
+			go func() { mgr.evict(s); close(evicted) }()
+			if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+				t.Fatal("idle close was not written")
+			}
+			select {
+			case <-evicted:
+			case <-time.After(testTimeout):
+				t.Fatal("idle eviction did not return at its close budget")
+			}
+			if got, live := mgr.Get(s.ChatID()); !live || got != s {
+				t.Fatal("unanswered idle close retired the route before its outcome")
+			}
+			if _, err := s.QueryState(context.Background()); !errors.Is(err, ErrSessionClosed) {
+				t.Fatalf("unanswered idle close revived the route: %v", err)
+			}
+
+			joined := newCloseJoinContext()
+			observed := make(chan error, 1)
+			go func() { observed <- s.closeContext(joined) }()
+			select {
+			case <-joined.entered:
+			case <-time.After(testTimeout):
+				t.Fatal("explicit close did not join idle close transaction")
+			}
+			if got := d.RequestCount(omorpc.CmdCloseSession); got != 1 {
+				t.Fatalf("joined idle close requests = %d, want 1", got)
+			}
+			release()
+			err = <-observed
+			if tc.reject {
+				var stable *omorpc.StableError
+				if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeMissingSessionID {
+					t.Fatalf("joined rejection = %v, want %s", err, omorpc.ErrCodeMissingSessionID)
+				}
+				if got, live := mgr.Get(s.ChatID()); !live || got != s {
+					t.Fatal("definitively rejected idle close did not retain the route")
+				}
+				if _, err := s.QueryState(context.Background()); err != nil {
+					t.Fatalf("rejected idle close did not revive route: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("joined success = %v", err)
+			}
+			if _, live := mgr.Get(s.ChatID()); live {
+				t.Fatal("late idle close success did not retire route")
+			}
+		})
+	}
+}
+
+func TestDeliveryUncertaintyOverlappingClosesShareTransaction(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	s, _, _ := acquire(t, mgr, testChat{id: "overlapping-close", cwd: t.TempDir()}, nil)
+	release := d.BlockHandler(omorpc.CmdCloseSession)
+	defer release()
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
+
+	first := make(chan error, 1)
+	go func() { first <- s.Close() }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("first close was not written")
+	}
+	joined := newCloseJoinContext()
+	second := make(chan error, 1)
+	go func() { second <- s.closeContext(joined) }()
+	select {
+	case <-joined.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("second close did not join pending transaction")
+	}
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 1 {
+		t.Fatalf("overlapping close requests = %d, want 1", got)
+	}
+
+	release()
+	for i, result := range []<-chan error{first, second} {
+		select {
+		case err := <-result:
+			var stable *omorpc.StableError
+			if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeMissingSessionID {
+				t.Fatalf("close %d outcome = %v, want shared %s rejection", i+1, err, omorpc.ErrCodeMissingSessionID)
+			}
+		case <-time.After(testTimeout):
+			t.Fatalf("close %d did not settle", i+1)
+		}
+	}
+	if got, live := mgr.Get(s.ChatID()); !live || got != s {
+		t.Fatal("single rejected close outcome did not leave route live")
+	}
+	if _, err := s.QueryState(context.Background()); err != nil {
+		t.Fatalf("rejected shared close did not revive route: %v", err)
+	}
+}
+
+func TestDeliveryUncertaintyCloseEpochDeathSettlesTransaction(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	s, _, _ := acquire(t, mgr, testChat{id: "close-epoch-death", cwd: t.TempDir()}, nil)
+	release := d.BlockHandler(omorpc.CmdCloseSession)
+	defer release()
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("close was not written")
+	}
+	d.DropConnections()
+	select {
+	case err := <-closed:
+		if !errors.Is(err, omorpc.ErrDisconnected) {
+			t.Fatalf("close epoch death = %v, want ErrDisconnected", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("epoch death did not settle close transaction")
+	}
+	if !s.Resumable() {
+		t.Fatal("close epoch death did not make session resumable")
+	}
+	mgr.mu.Lock()
+	_, routed := mgr.byRoute[s.RoutingID()]
+	mgr.mu.Unlock()
+	if routed {
+		t.Fatal("dead close epoch retained a live route")
 	}
 }
 

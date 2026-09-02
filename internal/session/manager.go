@@ -881,35 +881,13 @@ func (m *Manager) evict(s *Session) {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	s.closing = true
-	route := s.routingID
+	txn := s.beginCloseLocked(true)
 	s.lifecycleMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
-	_, err = m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	err = s.executeClose(ctx, txn)
 	cancel()
-	if err != nil && !definitiveCloseFailure(err) {
-		s.lifecycleMu.Lock()
-		s.closing = false
-		s.reconcileFailedCloseLocked()
-		s.scheduleIdleLocked()
-		s.lifecycleMu.Unlock()
-		slog.Warn("idle session close failed; retaining session", "chat_id", s.chatID, "error", err)
-		return
+	if err != nil {
+		slog.Warn("idle session close pending or rejected; retaining session", "chat_id", s.chatID, "error", err)
 	}
-
-	s.lifecycleMu.Lock()
-	s.closing = false
-	s.closed = true
-	s.cancelIdleLocked()
-	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
-	m.mu.Lock()
-	if m.byChat[s.chatID] == s {
-		delete(m.byChat, s.chatID)
-		delete(m.byRoute, route)
-		m.bumpSlotGenerationLocked(s.chatID)
-	}
-	m.mu.Unlock()
-	s.lifecycleMu.Unlock()
-	s.broadcast.close(ErrSubscriberSessionEnd)
 }

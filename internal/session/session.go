@@ -21,6 +21,12 @@ const (
 
 var activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
 
+type closeTransaction struct {
+	done chan struct{}
+	err  error
+	idle bool
+}
+
 type Session struct {
 	manager                           *Manager
 	client                            *omorpc.Client
@@ -45,6 +51,7 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
+	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
@@ -654,68 +661,113 @@ func (s *Session) closeContext(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
-	s.closing = true
-	s.cancelIdleLocked()
-	route := s.routingID
+	txn := s.closeTxn
+	owner := txn == nil
+	if owner {
+		txn = s.beginCloseLocked(false)
+	}
 	s.lifecycleMu.Unlock()
 
+	if !owner {
+		return waitCloseTransaction(ctx, txn)
+	}
+	return s.executeClose(ctx, txn)
+}
+
+func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
+	txn := &closeTransaction{done: make(chan struct{}), idle: idle}
+	s.closeTxn = txn
+	s.closing = true
+	s.cancelIdleLocked()
+	return txn
+}
+
+func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
+	route := s.routingID
 	_, err := s.client.CallRetained(ctx, omorpc.CloseSession{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
-		s.completeClose(route, callErr)
+		s.completeClose(txn, route, callErr)
 	})
-	if deliveryUncertain(err) {
-		s.manager.mu.Lock()
-		managerClosed := s.manager.closed
-		s.manager.mu.Unlock()
-		if managerClosed {
-			// Manager shutdown is itself a local lifecycle terminal. Do not keep
-			// subscribers alive while the retained RPC awaits its provider outcome.
-			s.completeClose(route, err)
+	return closeResult(err)
+}
+
+func waitCloseTransaction(ctx context.Context, txn *closeTransaction) error {
+	select {
+	case <-txn.done:
+		return closeResult(txn.err)
+	default:
+	}
+	select {
+	case <-txn.done:
+		return closeResult(txn.err)
+	case <-ctx.Done():
+		select {
+		case <-txn.done:
+			return closeResult(txn.err)
+		default:
+			return ctx.Err()
 		}
 	}
+}
+
+func closeResult(err error) error {
 	if definitiveCloseFailure(err) {
 		return nil
 	}
 	return err
 }
 
-func (s *Session) completeClose(route string, callErr error) {
+func (s *Session) completeClose(txn *closeTransaction, route string, callErr error) {
 	s.noteTransportError(callErr)
 	s.manager.mu.Lock()
 	managerClosed := s.manager.closed
 	s.manager.mu.Unlock()
-	if !definitiveCloseFailure(callErr) && !managerClosed {
-		s.lifecycleMu.Lock()
+	accepted := definitiveCloseFailure(callErr)
+	epochDead := errors.Is(callErr, omorpc.ErrDisconnected)
+
+	s.lifecycleMu.Lock()
+	if !accepted && !managerClosed {
 		if !s.closed {
 			s.closing = false
-			// Provider events are otherwise suppressed while close_session owns the
-			// route. Replay a buffered run terminal before reviving the session so a
-			// failed close cannot leave stale in-flight latches or suppress eviction.
-			s.reconcileFailedCloseLocked()
-			s.scheduleIdleLocked()
+			s.closeTxn = nil
+			if !epochDead {
+				// Provider events are otherwise suppressed while close_session owns the
+				// route. Replay a buffered run terminal before reviving the session so a
+				// failed close cannot leave stale in-flight latches or suppress eviction.
+				s.reconcileFailedCloseLocked()
+				s.scheduleIdleLocked()
+			}
 		}
+		txn.err = callErr
+		close(txn.done)
 		s.lifecycleMu.Unlock()
 		return
 	}
 
-	s.lifecycleMu.Lock()
-	if s.closed {
-		s.lifecycleMu.Unlock()
-		return
+	newlyClosed := !s.closed
+	if newlyClosed {
+		s.closed = true
+		s.closing = false
+		s.closeTxn = nil
+		s.closeRunSettled = false
+		s.closeRunReason = ""
+		s.cancelIdleLocked()
+		if txn.idle {
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
+		}
+		s.manager.mu.Lock()
+		if s.manager.byChat[s.chatID] == s {
+			delete(s.manager.byChat, s.chatID)
+			delete(s.manager.byRoute, route)
+			s.manager.bumpSlotGenerationLocked(s.chatID)
+		}
+		s.manager.mu.Unlock()
 	}
-	s.closed = true
-	s.closing = false
-	s.closeRunSettled = false
-	s.closeRunReason = ""
-	s.cancelIdleLocked()
-	s.manager.mu.Lock()
-	if s.manager.byChat[s.chatID] == s {
-		delete(s.manager.byChat, s.chatID)
-		delete(s.manager.byRoute, route)
-		s.manager.bumpSlotGenerationLocked(s.chatID)
-	}
-	s.manager.mu.Unlock()
+	txn.err = callErr
+	close(txn.done)
 	s.lifecycleMu.Unlock()
-	s.broadcast.close(ErrSubscriberSessionEnd)
+	if newlyClosed {
+		s.broadcast.close(ErrSubscriberSessionEnd)
+	}
 }
 func definitiveCloseFailure(err error) bool {
 	if err == nil {
@@ -723,12 +775,6 @@ func definitiveCloseFailure(err error) bool {
 	}
 	var stable *omorpc.StableError
 	return errors.As(err, &stable) && (stable.Code == omorpc.ErrCodeUnknownSession || stable.Code == omorpc.ErrCodeSessionClosing)
-}
-
-// Written-unanswered proves the request reached the transport but no response
-// settled, so state-changing latches must await provider lifecycle evidence.
-func deliveryUncertain(err error) bool {
-	return errors.Is(err, omorpc.ErrWrittenUnanswered)
 }
 
 func (s *Session) retireReplaced() {
