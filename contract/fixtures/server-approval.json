@@ -1,0 +1,1 @@
+{ "type": "approval", "sessionId": "sess-1", "id": "ap-7", "method": "select", "title": "Pick one", "message": "Choose an option", "options": ["a", "b"], "prefill": "a", "placeholder": "type here", "timeout": 30 }

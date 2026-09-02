@@ -20,7 +20,14 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if s.closed || s.closing || s.resumable {
+	if s.closed || s.resumable {
+		return
+	}
+	if s.closing {
+		if ev.Type == "agent_settled" && !s.closeRunSettled && (s.providerRunActive || s.promptInFlight || s.localCommandActive) {
+			s.closeRunSettled = true
+			s.closeRunReason, _ = raw["reason"].(string)
+		}
 		return
 	}
 
@@ -38,12 +45,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 			return
 		}
 		reason, _ := raw["reason"].(string)
-		s.providerRunActive = false
-		s.promptInFlight = false
-		s.localCommandActive = false
-		s.promptResponse = false
-		s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
-		s.scheduleIdleLocked()
+		s.completeProviderRunLocked(reason)
 	case "command_invocation":
 		if commandSource(raw) == "extension" && s.promptInFlight {
 			s.localCommandActive = true
@@ -53,11 +55,15 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 			}
 		}
 	case "message_delta", "message_update":
-		s.publishLocked(Frame{Kind: FrameMessageDelta, SessionID: s.durableID, Data: eventPayload(raw)})
+		s.publishLocked(Frame{Kind: FrameMessageDelta, SessionID: s.durableID, Data: messageDeltaPayload(raw)})
 	case "message", "message_end":
-		s.publishLocked(Frame{Kind: FrameMessage, SessionID: s.durableID, Data: eventPayload(raw)})
+		s.publishLocked(Frame{Kind: FrameMessage, SessionID: s.durableID, Data: messagePayload(raw)})
 	case "tool", "tool_execution_start", "tool_execution_update", "tool_execution_end":
 		payload := eventPayload(raw)
+		if partial, ok := payload["partialResult"]; ok {
+			payload["partial"] = partial
+			delete(payload, "partialResult")
+		}
 		if _, ok := payload["phase"]; !ok {
 			switch ev.Type {
 			case "tool_execution_start":
@@ -83,7 +89,18 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.cancelIdleLocked()
 		s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "provider unloaded the session"}})
 	case "state", "state_changed":
-		s.publishLocked(Frame{Kind: FrameState, SessionID: s.durableID, Data: eventPayload(raw)})
+		payload := eventPayload(raw)
+		if model, ok := payload["model"].(map[string]any); ok {
+			model = cloneAnyMap(model)
+			if id, ok := model["id"]; ok {
+				model["modelId"] = id
+				delete(model, "id")
+			}
+			payload["model"] = model
+		}
+		payload["isStreaming"] = s.promptInFlight || s.providerRunActive || s.localCommandActive
+		payload["isCompacting"] = s.compactionActive
+		s.publishLocked(Frame{Kind: FrameState, SessionID: s.durableID, Data: payload})
 	case "session_info_changed":
 		if name, _ := raw["name"].(string); name != "" {
 			s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
@@ -101,6 +118,25 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		payload["kind"] = ev.Type
 		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 	}
+}
+
+func (s *Session) completeProviderRunLocked(reason string) {
+	s.providerRunActive = false
+	s.promptInFlight = false
+	s.localCommandActive = false
+	s.promptResponse = false
+	s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
+	s.scheduleIdleLocked()
+}
+
+func (s *Session) reconcileFailedCloseLocked() {
+	if !s.closeRunSettled {
+		return
+	}
+	reason := s.closeRunReason
+	s.closeRunSettled = false
+	s.closeRunReason = ""
+	s.completeProviderRunLocked(reason)
 }
 
 func (s *Session) beginCompactionLocked(raw map[string]any) {
@@ -208,6 +244,56 @@ func (s *Session) deliverStreamedEntriesLocked(raw map[string]any) {
 		}
 		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: pageLeaf, Final: pageFinal}})
 	}
+}
+
+func messageDeltaPayload(raw map[string]any) map[string]any {
+	if nested, ok := raw["assistantMessageEvent"].(map[string]any); ok {
+		delta := cloneAnyMap(nested)
+		if kind, ok := delta["type"]; ok {
+			delta["kind"] = kind
+			delete(delta, "type")
+		}
+		out := map[string]any{"delta": delta}
+		if id, ok := raw["messageId"].(string); ok && id != "" {
+			out["messageId"] = id
+		}
+		return out
+	}
+	return eventPayload(raw)
+}
+
+func messagePayload(raw map[string]any) map[string]any {
+	message, ok := raw["message"].(map[string]any)
+	if !ok {
+		return eventPayload(raw)
+	}
+	message = cloneAnyMap(message)
+	if content, ok := message["content"].([]any); ok {
+		blocks := make([]any, 0, len(content))
+		for _, item := range content {
+			if block, ok := item.(map[string]any); ok {
+				block = cloneAnyMap(block)
+				if kind, ok := block["type"]; ok {
+					block["kind"] = kind
+					delete(block, "type")
+				}
+				blocks = append(blocks, block)
+			} else {
+				blocks = append(blocks, item)
+			}
+		}
+		message["blocks"] = blocks
+		delete(message, "content")
+	}
+	return map[string]any{"message": message}
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func eventPayload(raw map[string]any) map[string]any {

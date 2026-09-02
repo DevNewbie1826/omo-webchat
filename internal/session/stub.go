@@ -17,6 +17,7 @@ var (
 	ErrSessionClosed        = errors.New("session: closed")
 	ErrSessionResumable     = errors.New("session: provider session is resumable")
 	ErrManagerClosed        = errors.New("session: manager closed")
+	ErrOpenBusy             = errors.New("session: detached open limit reached")
 	ErrSubscriberOverflow   = errors.New("session: subscriber queue overflow")
 	ErrSubscriberDetached   = errors.New("session: subscriber detached")
 	ErrSubscriberDelivery   = errors.New("session: subscriber delivery failed")
@@ -29,6 +30,9 @@ const (
 	DefaultRetryAttempt = 3
 	DefaultRetryBackoff = 500 * time.Millisecond
 	DefaultCloseTimeout = 5 * time.Second
+	// DefaultDetachedOpenLimit bounds RPC correlations and cleanup goroutines
+	// retained by cancelled open_session calls across all chat IDs.
+	DefaultDetachedOpenLimit = 32
 )
 
 type Cursor struct {
@@ -47,13 +51,14 @@ type ChatRef interface {
 }
 
 type Config struct {
-	Client        *omorpc.Client
-	Store         CursorStore
-	IdleAfter     time.Duration
-	QueueSize     int
-	RetryAttempts int
-	RetryBackoff  time.Duration
-	CloseTimeout  time.Duration
+	Client            *omorpc.Client
+	Store             CursorStore
+	IdleAfter         time.Duration
+	QueueSize         int
+	RetryAttempts     int
+	RetryBackoff      time.Duration
+	CloseTimeout      time.Duration
+	DetachedOpenLimit int
 	// OnDetach is called exactly once after a subscription pump exits.
 	OnDetach func(Subscriber, error)
 }
@@ -117,6 +122,12 @@ type Subscriber interface {
 	Cancel() error
 }
 
+// SynchronousAttachHook marks subscribers that must observe the complete
+// attach-time replay before Manager.Acquire returns.
+type SynchronousAttachHook interface {
+	SynchronousAttach()
+}
+
 type Summary struct {
 	ChatID           string
 	DurableSessionID string
@@ -126,10 +137,19 @@ type Summary struct {
 	Attachments      int
 }
 
+// Stats preserves provider statistics verbatim so structured token/cache data
+// reaches frontend consumers without a lossy numeric projection.
 type Stats struct {
-	Tokens             int64
-	Cost, ContextUsage float64
+	Tokens       json.RawMessage `json:"tokens,omitempty"`
+	Cost         float64         `json:"cost,omitempty"`
+	ContextUsage json.RawMessage `json:"contextUsage,omitempty"`
 }
+
+type RunSnapshot struct {
+	Streaming  bool
+	Compacting bool
+}
+
 type Model struct{ Provider, ModelID, Name string }
 type CommandSourceInfo struct {
 	Path, BaseDir, Source, Scope, Origin string

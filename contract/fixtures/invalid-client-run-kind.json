@@ -1,0 +1,8 @@
+{
+  "type": "chat.send",
+  "sessionId": "sess-1",
+  "run": {
+    "kind": "bogus",
+    "message": "must be rejected"
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "shared-types.json",
+  "title": "Shared payload types used by server and client frames",
+  "$defs": {
+    "JsonValue": {
+      "description": "Any JSON value. Generators map this to json.RawMessage / JsonValue."
+    },
+    "TokenUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input": { "type": "integer" },
+        "output": { "type": "integer" },
+        "cacheRead": { "type": "integer" },
+        "cacheWrite": { "type": "integer" },
+        "total": { "type": "integer" }
+      }
+    },
+    "ContextUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["percent"],
+      "properties": {
+        "used": { "type": "integer" },
+        "total": { "type": "integer" },
+        "percent": { "type": "number" },
+        "tokens": { "type": "integer" },
+        "contextWindow": { "type": "integer" }
+      }
+    },
+    "ToolPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "text": { "type": "string" } }
+          }
+        },
+        "details": { "$ref": "#/$defs/JsonValue" }
+      }
+    },
+    "AssistantDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string" },
+        "contentIndex": { "type": "integer" },
+        "delta": { "type": "string" },
+        "content": { "type": "string" },
+        "reason": { "type": "string" },
+        "partial": { "$ref": "#/$defs/JsonValue" }
+      }
+    },
+    "ContentBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string" },
+        "text": { "type": "string" },
+        "thinking": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": { "$ref": "#/$defs/JsonValue" },
+        "isError": { "type": "boolean" }
+      }
+    },
+    "AssistantMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "role": { "type": "string" },
+        "customType": { "type": "string" },
+        "blocks": { "type": "array", "items": { "$ref": "#/$defs/ContentBlock" } },
+        "content": { "type": "string" },
+        "model": { "type": "string" },
+        "usage": { "$ref": "#/$defs/JsonValue" },
+        "ts": { "type": "number" },
+        "timestamp": { "type": "number" }
+      }
+    },
+    "ChatImage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data", "mimeType"],
+      "properties": {
+        "data": { "type": "string" },
+        "mimeType": { "type": "string" }
+      }
+    },
+    "CommandSourceInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "baseDir": { "type": "string" },
+        "source": { "type": "string" },
+        "scope": { "type": "string" },
+        "origin": { "type": "string" }
+      }
+    },
+    "CommandEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "source": { "type": "string" },
+        "syntax": { "type": "string" },
+        "sourceInfo": { "$ref": "#/$defs/CommandSourceInfo" }
+      }
+    },
+    "ModelInfo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "modelId"],
+      "properties": {
+        "provider": { "type": "string" },
+        "modelId": { "type": "string" },
+        "name": { "type": "string" },
+        "input": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ResumeCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "hostPath": { "type": "string" }
+      }
+    },
+    "NameOrigin": {
+      "type": "string",
+      "enum": ["auto", "user", "provider"]
+    },
+    "ToolPhase": {
+      "type": "string",
+      "enum": ["start", "update", "end"]
+    },
+    "ApprovalMethod": {
+      "type": "string",
+      "enum": ["select", "confirm", "input", "editor"]
+    },
+    "RunKind": {
+      "type": "string",
+      "enum": ["prompt", "steer", "follow_up"]
+    },
+    "ModelRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "modelId"],
+      "properties": {
+        "provider": { "type": "string" },
+        "modelId": { "type": "string" }
+      }
+    }
+  }
+}

@@ -16,6 +16,12 @@ import {
 
 type SessionFrameType = "state" | "stats" | "extensionEvent" | "approval" | "commands" | "models" | "entries";
 
+/**
+ * Session-surface frames, built field-by-field into the generated contract
+ * members. entries now enforces the v2 wire contract: `entries` must be an
+ * array and `final` is REQUIRED on every page (invariant 18) — the seam keeps
+ * `final` optional only because features deliver typed literals directly.
+ */
 export function parseSessionFrame(
   type: SessionFrameType,
   msg: Record<string, unknown>,
@@ -54,7 +60,7 @@ export function parseSessionFrame(
       if (sessionId === null) return null;
       const cost = optNumber(msg, "cost");
       const contextUsage = parseContextUsage(msg["contextUsage"]);
-      const tokens = msg["tokens"];
+      const tokens = msg["tokens"] as import("./contract/types_gen").TokenUsage | undefined;
       if (cost === null || contextUsage === null) return null;
       if (cost === undefined && contextUsage === undefined && tokens === undefined) return null;
       return {
@@ -62,7 +68,7 @@ export function parseSessionFrame(
         sessionId,
         ...(cost !== undefined ? { cost } : {}),
         ...(contextUsage !== undefined ? { contextUsage } : {}),
-        ...(tokens !== undefined ? { tokens: sanitizeJson(tokens) } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
       };
     }
     case "extensionEvent": {
@@ -70,7 +76,6 @@ export function parseSessionFrame(
       const name = reqString(msg, "name");
       const data = msg["data"];
       if (name === null || name.length === 0) return null;
-      if (data !== undefined && !isRecord(data)) return null;
       return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
     }
     case "approval": {
@@ -111,13 +116,16 @@ export function parseSessionFrame(
     }
     case "entries": {
       if (sessionId === null) return null;
-      const entries = msg["entries"];
-      if (entries === undefined) return null;
+      const rawEntries = msg["entries"];
+      if (!Array.isArray(rawEntries)) return null;
+      const entries = rawEntries.map((item) => sanitizeJson(item));
       const leafId = optString(msg, "leafId");
       if (leafId === null) return null;
-      const final = optBoolean(msg, "final");
+      // final is REQUIRED on every entries page (invariant 18); a frame
+      // without it is malformed wire data, not a terminal page.
+      const final = reqBoolean(msg, "final");
       if (final === null) return null;
-      return { type: "entries", sessionId, entries: sanitizeJson(entries), ...(leafId !== undefined ? { leafId } : {}), ...(final !== undefined ? { final } : {}) };
+      return { type: "entries", sessionId, entries, ...(leafId !== undefined ? { leafId } : {}), final };
     }
   }
 }

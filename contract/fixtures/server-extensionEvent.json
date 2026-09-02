@@ -1,0 +1,1 @@
+{ "type": "extensionEvent", "sessionId": "sess-1", "name": "omo.task.updated", "data": { "tasks": [ { "id": "t1", "state": "running" } ] } }

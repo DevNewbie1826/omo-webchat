@@ -351,6 +351,162 @@ func TestMergeGateManualTombstoneCannotSwallowAutomaticCompaction(t *testing.T) 
 	}
 }
 
+func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sub := newRecorder(32)
+	s, _, _ := acquire(t, mgr, testChat{id: "close-revival", cwd: t.TempDir()}, sub)
+	sub.next(t)
+	injectEvent(t, s, map[string]any{"type": "agent_start"})
+	sub.await(t, FrameRunStarted)
+
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(ctx, s.ChatID()) }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("close_session was not pending")
+	}
+	injectEvent(t, s, map[string]any{"type": "agent_settled", "reason": "end_turn"})
+	cancel()
+	if err := <-stopped; !errors.Is(err, context.Canceled) {
+		t.Fatalf("failed close = %v, want context.Canceled", err)
+	}
+	_, firstDone := sub.await(t, FrameRunDone)
+	if firstDone.Data.(RunInfo).Reason != "end_turn" {
+		t.Fatalf("replayed terminal = %+v", firstDone)
+	}
+
+	d.SetPromptScript(s.SessionFile(), map[string]any{"type": "agent_settled", "reason": "next_turn"})
+	if err := s.SendPrompt(context.Background(), "after failed close", nil); err != nil {
+		t.Fatalf("revived session rejected prompt: %v", err)
+	}
+	prior, secondDone := sub.await(t, FrameRunDone)
+	if got := counts(prior)[FrameRunDone]; got != 0 {
+		t.Fatalf("replayed terminal emitted more than once: %+v", prior)
+	}
+	if secondDone.Data.(RunInfo).Reason != "next_turn" {
+		t.Fatalf("next run terminal = %+v", secondDone)
+	}
+}
+
+func TestMergeGateRetiringRouteIsRetriedByStop(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 16, CloseTimeout: 30 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	generationMismatch := errors.New("generation mismatch")
+	validationCalls := 0
+	_, _, _, err := mgr.AcquireInitializedChecked(context.Background(), testChat{id: "retiring", cwd: t.TempDir()}, nil, nil, func() error {
+		validationCalls++
+		if validationCalls > 1 {
+			return generationMismatch
+		}
+		return nil
+	})
+	if !errors.Is(err, generationMismatch) {
+		t.Fatalf("checked acquire = %v, want generation mismatch", err)
+	}
+	if _, live := mgr.Get("retiring"); live {
+		t.Fatal("generation-mismatched route was published")
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(context.Background(), "retiring") }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 2, testTimeout) {
+		t.Fatal("stop did not retry the retained route")
+	}
+	releaseClose()
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop retiring route: %v", err)
+	}
+	if live := d.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider route survived stop: %v", live)
+	}
+	mgr.mu.Lock()
+	retiring := len(mgr.retiringByChat["retiring"])
+	mgr.mu.Unlock()
+	if retiring != 0 {
+		t.Fatalf("retiring routes after definitive close = %d", retiring)
+	}
+}
+
+func TestMergeGateStopFirstRejectsPreparedAcquireBeforeOpen(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 16, CloseTimeout: 30 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	chat := testChat{id: "stop-first", cwd: t.TempDir()}
+	_, _, _ = acquire(t, mgr, chat, nil)
+	baselineOpens := d.RequestCount(omorpc.CmdOpenSession)
+
+	mgr.mu.Lock()
+	preparedGeneration := mgr.slotGeneration[chat.id]
+	mgr.mu.Unlock()
+	generationMismatch := errors.New("generation mismatch")
+	validate := func() error {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		if mgr.slotGeneration[chat.id] != preparedGeneration {
+			return generationMismatch
+		}
+		return nil
+	}
+
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(context.Background(), chat.id) }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("stop did not acquire the chat flight")
+	}
+
+	releaseOpen := d.BlockHandler(omorpc.CmdOpenSession)
+	defer releaseOpen()
+	acquired := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.AcquireInitializedChecked(context.Background(), chat, nil, nil, validate)
+		acquired <- err
+	}()
+	releaseClose()
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// If a stale acquire opens despite losing the flight, make its discard
+	// non-definitive. This reproduces the route that used to enter the retiring
+	// set only after Stop's drain and therefore survive the successful delete.
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
+	releaseOpen()
+	if err := <-acquired; !errors.Is(err, generationMismatch) {
+		t.Fatalf("checked acquire = %v, want generation mismatch", err)
+	}
+	opensAfterStop := d.RequestCount(omorpc.CmdOpenSession)
+	liveAfterStop := d.LiveSessions()
+
+	// A repeated stop models the manager state seen by a subsequent not-found
+	// DELETE: there must be no latent retiring work left behind.
+	if err := mgr.StopContext(context.Background(), chat.id); err != nil {
+		t.Fatalf("second stop: %v", err)
+	}
+	mgr.mu.Lock()
+	retiring := len(mgr.retiringByChat[chat.id])
+	mgr.mu.Unlock()
+	if retiring != 0 {
+		t.Fatalf("retiring routes after second stop = %d", retiring)
+	}
+	if opensAfterStop != baselineOpens {
+		t.Fatalf("stale stop-first acquire opened %d routes", opensAfterStop-baselineOpens)
+	}
+	if len(liveAfterStop) != 0 {
+		t.Fatalf("successful stop left a provider orphan: %v", liveAfterStop)
+	}
+}
+
 func TestMergeGateCompletedCompactionTombstonesAreBounded(t *testing.T) {
 	s := &Session{completedCompactions: make(map[string]struct{})}
 	for i := 0; i < maxCompletedCompactions+3; i++ {
@@ -895,5 +1051,39 @@ func TestMergeGateSlotGenerationsAreBounded(t *testing.T) {
 	m.mu.Unlock()
 	if got > maxSlotGenerations {
 		t.Fatalf("slot generations = %d, bound %d", got, maxSlotGenerations)
+	}
+}
+
+func TestMergeGateGlobalDetachedOpenLimitDrains(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), DetachedOpenLimit: 2})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	release := d.BlockHandler(omorpc.CmdOpenSession)
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		chat := testChat{id: fmt.Sprintf("bounded-%d", i), cwd: t.TempDir()}
+		go func() {
+			_, _, _, err := mgr.Acquire(context.Background(), chat, nil)
+			results <- err
+		}()
+	}
+	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 2, testTimeout) {
+		t.Fatal("bounded opens did not occupy both slots")
+	}
+	_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "excess", cwd: t.TempDir()}, nil)
+	if !errors.Is(err, ErrOpenBusy) {
+		t.Fatalf("excess acquire error = %v, want ErrOpenBusy", err)
+	}
+	release()
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("bounded acquire failed: %v", err)
+		}
+	}
+	if _, _, detach, err := mgr.Acquire(context.Background(), testChat{id: "after-drain", cwd: t.TempDir()}, nil); err != nil {
+		t.Fatalf("acquire after drain: %v", err)
+	} else if detach != nil {
+		detach()
 	}
 }

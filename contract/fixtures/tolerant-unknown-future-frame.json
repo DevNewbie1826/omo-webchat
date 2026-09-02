@@ -1,0 +1,1 @@
+{ "type": "future.capability", "sessionId": "sess-1", "someNewField": { "deep": [true, null] } }

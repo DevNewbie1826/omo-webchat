@@ -3,18 +3,25 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lxzan/gws"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
 )
+
+const chatStopTimeout = 10 * time.Second
+
+var newChatStopContext = context.WithTimeout
 
 type createChatRequest struct {
 	Name           string `json:"name"`
@@ -78,16 +85,68 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	if s.beforeChatDelete != nil {
 		s.beforeChatDelete()
 	}
+
+	// Publish a deletion generation before provider I/O. Prepare captures the
+	// prior generation under this lock; bridge publication validates it without
+	// taking the lock from inside the manager flight.
 	s.chatLifecycleMu.Lock()
-	_, err := s.store.RemoveChat(wsID, chatID)
-	s.chatLifecycleMu.Unlock()
-	if err != nil {
+	if _, err := s.store.GetChat(wsID, chatID); err != nil {
+		s.chatLifecycleMu.Unlock()
 		s.writeStoreError(w, err)
 		return
 	}
-	// Provider shutdown is I/O and must stay outside chatLifecycleMu. A create
-	// that opened concurrently rechecks the store under the same mutex before
-	// publishing its attachment and tears itself down if this delete won.
+	if s.chatDeleting[chatID] {
+		s.chatLifecycleMu.Unlock()
+		writeError(w, http.StatusConflict, "chat deletion is already in progress")
+		return
+	}
+	s.chatDeleting[chatID] = true
+	s.bumpChatLifecycleVersion(chatID)
+	s.chatLifecycleMu.Unlock()
+
+	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
+	// not turn a still-live provider session into successfully deleted metadata.
+	manager, cursors := s.v2Stack()
+	if manager != nil {
+		stopCtx, cancelStop := newChatStopContext(context.Background(), chatStopTimeout)
+		err := manager.StopContext(stopCtx, chatID)
+		cancelStop()
+		if err != nil {
+			s.chatLifecycleMu.Lock()
+			delete(s.chatDeleting, chatID)
+			s.chatLifecycleMu.Unlock()
+			s.logger.Error("stopping v2 chat for delete", "err", err, "chatId", chatID)
+			writeError(w, http.StatusInternalServerError, "failed to stop chat")
+			return
+		}
+	}
+	if s.afterV2ChatStop != nil {
+		s.afterV2ChatStop()
+	}
+
+	// Deletion exclusion remains active through both metadata stores, but no
+	// API lifecycle lock is held across the provider RPC above.
+	s.chatLifecycleMu.Lock()
+	if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
+		delete(s.chatDeleting, chatID)
+		s.chatLifecycleMu.Unlock()
+		s.writeStoreError(w, err)
+		return
+	}
+	if cursors != nil {
+		if err := cursors.DeleteChat(chatID); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
+			delete(s.chatDeleting, chatID)
+			s.chatLifecycleMu.Unlock()
+			s.logger.Error("deleting v2 chat cursor", "err", err, "chatId", chatID)
+			writeError(w, http.StatusInternalServerError, "failed to delete chat cursor")
+			return
+		}
+	}
+	delete(s.chatDeleting, chatID)
+	s.chatLifecycleMu.Unlock()
+
+	// Legacy provider shutdown stays outside the lifecycle lock. The v1 record
+	// is already absent, so an in-flight open cannot publish its attachment.
 	s.chats.Stop(chatID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -113,8 +172,20 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// The user owns the title from here on: push it to the live provider
 	// session best-effort so its own name reporting cannot drift the UI.
-	if sess := s.chats.Get(r.PathValue("chatId")); sess != nil {
+	chatID := r.PathValue("chatId")
+	if sess := s.chats.Get(chatID); sess != nil {
 		_ = sess.SetSessionName(name)
+	}
+	if manager, cursors := s.v2Stack(); manager != nil {
+		if sess, active := manager.Get(chatID); active {
+			_ = sess.SetSessionName(r.Context(), name)
+			if cursors != nil {
+				if record, getErr := cursors.GetChat(chatID); getErr == nil {
+					record.Name, record.NameSource = name, "user"
+					_ = cursors.SaveChat(record)
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, c)
 }
@@ -228,12 +299,22 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 	summaries := s.chats.LiveSummaries()
 	titles := s.liveChatTitles()
 	sessions := make([]liveSessionResponse, 0, len(summaries))
+	seen := make(map[string]bool, len(summaries))
 	for _, summary := range summaries {
 		title := summary.Title
 		if title == "" {
 			title = titles[summary.ID]
 		}
 		sessions = append(sessions, liveSessionFromSummary(summary, title))
+		seen[summary.ID] = true
+	}
+	if manager, _ := s.v2Stack(); manager != nil {
+		for _, summary := range manager.LiveSummaries() {
+			if seen[summary.ChatID] {
+				continue
+			}
+			sessions = append(sessions, liveSessionResponse{ID: summary.ChatID, Title: titles[summary.ChatID]})
+		}
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
 }

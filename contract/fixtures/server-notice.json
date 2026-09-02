@@ -1,0 +1,1 @@
+{ "type": "notice", "sessionId": "sess-1", "kind": "retry_fallback_applied", "payload": { "attempt": 1 }, "at": "2026-09-02T10:00:00.123456789Z", "nid": "nid-3" }

@@ -1,0 +1,7 @@
+{
+  "type": "approval",
+  "sessionId": "sess-1",
+  "id": "ap-empty",
+  "method": "select",
+  "options": []
+}

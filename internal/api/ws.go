@@ -33,6 +33,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "websocket origin not allowed")
 		return
 	}
+	if s.ctx.Err() != nil {
+		writeError(w, http.StatusServiceUnavailable, "server is shutting down")
+		return
+	}
 	socket, err := s.upgrader.Upgrade(w, r)
 	if err != nil {
 		s.logger.Warn("websocket upgrade failed", "err", err)
@@ -41,7 +45,29 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	connCtx, cancel := context.WithCancel(s.ctx)
 	h := &connHandler{srv: s, conn: socket, ctx: connCtx, cancel: cancel}
 	s.conns.Store(socket, h)
+	if s.ctx.Err() != nil {
+		s.OnClose(socket, context.Canceled)
+		if conn := socket.NetConn(); conn != nil {
+			_ = conn.Close()
+		}
+		return
+	}
 	go socket.ReadLoop()
+}
+
+// CloseConnections cancels and detaches every v1 upgraded socket.
+func (s *Server) CloseConnections() {
+	s.conns.Range(func(key, value any) bool {
+		s.conns.Delete(key)
+		h := value.(*connHandler)
+		h.cancelConnection()
+		_, detach := h.detachSession()
+		if detach != nil {
+			detach()
+		}
+		_ = h.Close()
+		return true
+	})
 }
 
 func (s *Server) OnMessage(socket *gws.Conn, message *gws.Message) {

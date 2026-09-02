@@ -13,6 +13,12 @@ import {
 
 type ConversationFrameType = "ready" | "chat.name" | "messageDelta" | "message" | "tool";
 
+/**
+ * Conversation-lifecycle frames, built field-by-field into the generated
+ * contract members. chat.name keeps the v1 client origin union ("auto" |
+ * "provider"): the workspace title callback in features/ is typed to exactly
+ * that pair, and any other origin never reached the UI in v1 either.
+ */
 export function parseConversationFrame(
   type: ConversationFrameType,
   msg: Record<string, unknown>,

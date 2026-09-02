@@ -1,12 +1,26 @@
 /**
  * WebSocket connection with JSON text frames, auto-reconnect, and liveness
- * detection tuned for mobile Safari.
+ * detection tuned for mobile Safari — the v1 transport engine, rewritten on
+ * the generated WS contract: the heartbeat ping/pong are now contract frames
+ * (`PingFrame`/`PongFrame`) instead of ad-hoc literals.
  *
  * iOS suspends the tab (and its sockets) when the app is backgrounded or the
  * screen locks. On resume the socket is often dead but `onclose` never fires,
  * so a client-side ping heartbeat detects the dead connection and forces a
  * reconnect. Returning to the foreground also triggers an immediate check.
+ *
+ * Carried v1 transport patterns (behavioral invariants):
+ * - capped exponential backoff: 1s, 2s, 4s, ... capped at 10s; reset on open
+ * - application ping/pong heartbeat: ping every 20s, pong timeout 10s
+ * - visibilitychange probe replacing a stale socket on return to foreground
+ * - upgrade-failure auth probe: a socket that closes without ever opening is
+ *   likely an expired session, confirmed via a REST probe before retrying
+ * - double-close guards: a stale socket reports close exactly once
+ * - close-code veto: `reconnect(code) === false` ends reconnection for good
  */
+
+import { frameTypeOf } from "./contract/types_gen";
+import type { PingFrame } from "./contract/types_gen";
 
 export interface WsHandlers {
   readonly onOpen?: () => void;
@@ -43,12 +57,12 @@ const PONG_TIMEOUT_MS = 10_000;
 const CLOSE_PING_TIMEOUT = 4000;
 /** Application close code when a visibility reconnect replaces a stale socket. */
 const CLOSE_VISIBILITY = 4001;
+/** Backoff floor and cap (invariants: capped exponential backoff 1s -> 10s). */
+const BACKOFF_BASE_MS = 1000;
+const BACKOFF_CAP_MS = 10_000;
 
-/**
- * Connect to `path` (e.g. `/api/.../ws`). Reconnects with capped exponential
- * backoff until `close()` is called or `reconnect` vetoes a close code.
- * Returns a stable handle whose `send` targets the live socket.
- */
+const heartbeatPing = (): PingFrame => ({ type: "ping" });
+
 export function connectWs(path: string, handlers: WsHandlers, options: WsOptions = {}): WsConn {
   let socket: WebSocket | null = null;
   let closed = false;
@@ -71,11 +85,18 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     awaitingPong = false;
   };
 
+  const backoffDelay = (): number => Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
+
   const scheduleReconnect = (): void => {
     if (closed) return;
-    const delay = Math.min(1000 * 2 ** attempt, 10_000);
+    const delay = backoffDelay();
     attempt += 1;
     retryTimer = window.setTimeout(open, delay);
+  };
+
+  const vetoReconnect = (): void => {
+    reconnectVetoed = true;
+    window.clearTimeout(retryTimer);
   };
 
   const open = (): void => {
@@ -110,7 +131,9 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
         handlers.onParseError?.(ev.data);
         return;
       }
-      if (isPong(parsed)) {
+      // The heartbeat consumes pong frames itself (contract frame, R1-adjacent:
+      // anything else flows to the layer above untouched).
+      if (frameTypeOf(parsed) === "pong") {
         awaitingPong = false;
         window.clearTimeout(pongTimer);
         return;
@@ -126,8 +149,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       handlers.onClose?.(ev.code);
       if (closed) return;
       if (!(options.reconnect?.(ev.code) ?? true)) {
-        reconnectVetoed = true;
-        window.clearTimeout(retryTimer);
+        vetoReconnect();
         return;
       }
       if (!opened && options.onUpgradeFailure) {
@@ -156,8 +178,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     }
     if (closed || reconnectVetoed || socket !== failed) return;
     if (!retry) {
-      reconnectVetoed = true;
-      window.clearTimeout(retryTimer);
+      vetoReconnect();
       return;
     }
     scheduleReconnect();
@@ -176,8 +197,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     handlers.onClose?.(CLOSE_PING_TIMEOUT);
     if (closed) return;
     if (!(options.reconnect?.(CLOSE_PING_TIMEOUT) ?? true)) {
-      reconnectVetoed = true;
-      window.clearTimeout(retryTimer);
+      vetoReconnect();
       return;
     }
     scheduleReconnect();
@@ -194,7 +214,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
         return;
       }
       awaitingPong = true;
-      ws.send(JSON.stringify({ type: "ping" }));
+      ws.send(JSON.stringify(heartbeatPing()));
       pongTimer = window.setTimeout(() => {
         if (awaitingPong) handleLivenessLoss(ws);
       }, PONG_TIMEOUT_MS);
@@ -235,6 +255,9 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       return true;
     },
     close(): void {
+      // Double-close guard: the handle is a stable object features may drop
+      // from several lifecycles; closing twice must be a no-op.
+      if (closed) return;
       closed = true;
       clearTimers();
       window.clearTimeout(retryTimer);
@@ -247,8 +270,4 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       }
     },
   };
-}
-
-function isPong(msg: unknown): msg is { readonly type: "pong" } {
-  return typeof msg === "object" && msg !== null && "type" in msg && msg.type === "pong";
 }

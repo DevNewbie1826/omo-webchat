@@ -1,0 +1,1 @@
+{ "type": "error", "sessionId": "sess-1", "code": "resume_failed", "message": "stored identity no longer resolves", "command": "new_session", "requestId": "req-12", "dangling": true, "candidates": [ { "id": "pi-sibling-1", "name": "branch-a", "hostPath": "/tmp/a.json" } ] }

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hello.json",
+  "title": "Version handshake envelope. Server hello is the first server frame after upgrade; client hello is the first client frame. Version mismatch warns, then proceeds.",
+  "$defs": {
+    "HelloFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version", "serverVersion"],
+      "properties": {
+        "type": { "const": "hello" },
+        "version": { "type": "integer", "description": "Wire contract version this server speaks" },
+        "serverVersion": { "type": "string", "description": "Human-readable server build identity" }
+      }
+    },
+    "ClientHelloFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "version"],
+      "properties": {
+        "type": { "const": "hello" },
+        "version": { "type": "integer", "description": "Wire contract version the client expects" }
+      }
+    }
+  }
+}

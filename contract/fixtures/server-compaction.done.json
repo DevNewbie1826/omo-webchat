@@ -1,0 +1,1 @@
+{ "type": "compaction.done", "sessionId": "sess-1", "error": "provider died mid-compact" }

@@ -1,0 +1,1 @@
+{ "type": "chat.set", "sessionId": "sess-1", "requestId": "req-11", "model": { "provider": "anthropic", "modelId": "claude-opus" }, "thinkingLevel": "high" }

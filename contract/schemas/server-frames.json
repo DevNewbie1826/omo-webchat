@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "server-frames.json",
+  "title": "Server -> client frames. Wire names keep v1 continuity; unknown type values are forward-compatible via UnknownFrame passthrough.",
+  "oneOf": [
+    { "$ref": "#/$defs/ReadyFrame" },
+    { "$ref": "#/$defs/ChatNameFrame" },
+    { "$ref": "#/$defs/MessageDeltaFrame" },
+    { "$ref": "#/$defs/MessageFrame" },
+    { "$ref": "#/$defs/ToolFrame" },
+    { "$ref": "#/$defs/StateFrame" },
+    { "$ref": "#/$defs/StatsFrame" },
+    { "$ref": "#/$defs/ExtensionEventFrame" },
+    { "$ref": "#/$defs/ApprovalFrame" },
+    { "$ref": "#/$defs/CommandsFrame" },
+    { "$ref": "#/$defs/ModelsFrame" },
+    { "$ref": "#/$defs/EntriesFrame" },
+    { "$ref": "#/$defs/CompactionStartedFrame" },
+    { "$ref": "#/$defs/CompactionDoneFrame" },
+    { "$ref": "#/$defs/RunStartedFrame" },
+    { "$ref": "#/$defs/RunDoneFrame" },
+    { "$ref": "#/$defs/AckFrame" },
+    { "$ref": "#/$defs/ControlResultFrame" },
+    { "$ref": "#/$defs/ErrorFrame" },
+    { "$ref": "#/$defs/NoticeFrame" },
+    { "$ref": "#/$defs/PongFrame" },
+    { "$ref": "hello.json#/$defs/HelloFrame" }
+  ],
+  "$defs": {
+    "ReadyFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "piSessionId", "resumed"],
+      "properties": {
+        "type": { "const": "ready" },
+        "sessionId": { "type": "string" },
+        "piSessionId": { "anyOf": [{ "type": "null" }, { "type": "string" }] },
+        "resumed": { "type": "boolean" }
+      }
+    },
+    "ChatNameFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "name", "origin"],
+      "properties": {
+        "type": { "const": "chat.name" },
+        "sessionId": { "type": "string" },
+        "name": { "type": "string" },
+        "origin": { "$ref": "shared-types.json#/$defs/NameOrigin" }
+      }
+    },
+    "MessageDeltaFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "delta"],
+      "properties": {
+        "type": { "const": "messageDelta" },
+        "sessionId": { "type": "string" },
+        "messageId": { "type": "string" },
+        "delta": { "$ref": "shared-types.json#/$defs/AssistantDelta" }
+      }
+    },
+    "MessageFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "message"],
+      "properties": {
+        "type": { "const": "message" },
+        "sessionId": { "type": "string" },
+        "message": { "$ref": "shared-types.json#/$defs/AssistantMessage" }
+      }
+    },
+    "ToolFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "toolCallId", "toolName", "phase"],
+      "properties": {
+        "type": { "const": "tool" },
+        "sessionId": { "type": "string" },
+        "toolCallId": { "type": "string" },
+        "toolName": { "type": "string" },
+        "phase": { "$ref": "shared-types.json#/$defs/ToolPhase" },
+        "args": { "$ref": "shared-types.json#/$defs/JsonValue" },
+        "partial": { "$ref": "shared-types.json#/$defs/ToolPayload" },
+        "result": { "$ref": "shared-types.json#/$defs/ToolPayload" },
+        "isError": { "type": "boolean" }
+      }
+    },
+    "StateFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "isStreaming", "isCompacting"],
+      "properties": {
+        "type": { "const": "state" },
+        "sessionId": { "type": "string" },
+        "isStreaming": { "type": "boolean" },
+        "isCompacting": { "type": "boolean" },
+        "thinkingLevel": { "type": "string" },
+        "model": { "anyOf": [{ "type": "null" }, { "$ref": "shared-types.json#/$defs/ModelRef" }] },
+        "sessionName": { "type": "string" }
+      }
+    },
+    "StatsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "stats" },
+        "sessionId": { "type": "string" },
+        "cost": { "type": "number" },
+        "contextUsage": { "$ref": "shared-types.json#/$defs/ContextUsage" },
+        "tokens": { "$ref": "shared-types.json#/$defs/TokenUsage" }
+      }
+    },
+    "ExtensionEventFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "name"],
+      "properties": {
+        "type": { "const": "extensionEvent" },
+        "sessionId": { "type": "string" },
+        "name": { "type": "string" },
+        "data": { "$ref": "shared-types.json#/$defs/JsonValue" }
+      }
+    },
+    "ApprovalFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "id", "method"],
+      "properties": {
+        "type": { "const": "approval" },
+        "sessionId": { "type": "string" },
+        "id": { "type": "string" },
+        "method": { "$ref": "shared-types.json#/$defs/ApprovalMethod" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "prefill": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "timeout": { "type": "integer" }
+      }
+    },
+    "CommandsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "commands"],
+      "properties": {
+        "type": { "const": "commands" },
+        "sessionId": { "type": "string" },
+        "commands": { "type": "array", "items": { "$ref": "shared-types.json#/$defs/CommandEntry" } }
+      }
+    },
+    "ModelsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "models"],
+      "properties": {
+        "type": { "const": "models" },
+        "sessionId": { "type": "string" },
+        "models": { "type": "array", "items": { "$ref": "shared-types.json#/$defs/ModelInfo" } }
+      }
+    },
+    "EntriesFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "entries", "final"],
+      "properties": {
+        "type": { "const": "entries" },
+        "sessionId": { "type": "string" },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "shared-types.json#/$defs/JsonValue" },
+          "description": "History entries; bounds per invariant 18 (100 entries / 256 KiB per page)"
+        },
+        "leafId": { "type": "string", "description": "Present only on the terminal page" },
+        "final": { "type": "boolean", "description": "REQUIRED on every entries frame (invariant 18)" }
+      }
+    },
+    "CompactionStartedFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "compaction.started" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "CompactionDoneFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "compaction.done" },
+        "sessionId": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    },
+    "RunStartedFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "run.started" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "RunDoneFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "reason"],
+      "properties": {
+        "type": { "const": "run.done" },
+        "sessionId": { "type": "string" },
+        "reason": { "type": "string" }
+      }
+    },
+    "AckFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "command"],
+      "properties": {
+        "type": { "const": "ack" },
+        "sessionId": { "type": "string" },
+        "command": { "type": "string" },
+        "id": { "type": "string" },
+        "requestId": { "type": "string", "description": "Correlates with the client request (invariant 19)" }
+      }
+    },
+    "ControlResultFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "command", "success"],
+      "properties": {
+        "type": { "const": "control.result" },
+        "sessionId": { "type": "string" },
+        "command": { "type": "string" },
+        "requestId": { "type": "string" },
+        "success": { "type": "boolean" },
+        "message": { "type": "string" }
+      }
+    },
+    "ErrorFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message"],
+      "properties": {
+        "type": { "const": "error" },
+        "sessionId": { "type": "string" },
+        "code": { "$ref": "error-codes.json#/$defs/ErrorCode" },
+        "message": { "type": "string" },
+        "command": { "type": "string", "description": "FailedRpcCommand — provider command string, open on purpose" },
+        "requestId": { "type": "string" },
+        "dangling": {
+          "type": "boolean",
+          "description": "resume_failed only: stored identity path no longer exists"
+        },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "shared-types.json#/$defs/ResumeCandidate" },
+          "description": "resume_failed only: scanned branch candidates"
+        }
+      }
+    },
+    "NoticeFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "kind", "at"],
+      "properties": {
+        "type": { "const": "notice" },
+        "sessionId": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "description": "Open set: durable kinds are enumerated in notice-kinds.json; everything else is transient"
+        },
+        "payload": { "$ref": "shared-types.json#/$defs/JsonValue" },
+        "at": {
+          "type": "string",
+          "format": "rfc3339nano",
+          "description": "RFC3339Nano receipt time; every notice carries one (invariant 14)"
+        },
+        "nid": { "type": "string", "description": "Server-assigned replay identity for durable notices" }
+      }
+    },
+    "PongFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "pong" },
+        "sessionId": { "type": "string" }
+      }
+    }
+  }
+}

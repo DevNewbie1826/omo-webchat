@@ -1,0 +1,1 @@
+{ "type": "stats", "sessionId": "sess-1", "cost": 0.25, "contextUsage": { "tokens": 12000, "contextWindow": 200000, "percent": 6 }, "tokens": { "input": 12000, "output": 340 } }

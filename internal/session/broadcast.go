@@ -8,12 +8,15 @@ import (
 type errorDeliverer interface{ DeliverFrame(Frame) error }
 
 type subscription struct {
-	sub      Subscriber
-	q        chan Frame
-	stopCh   chan struct{}
-	exited   chan struct{}
-	stopOnce sync.Once
-	retire   func(error)
+	sub              Subscriber
+	q                chan Frame
+	stopCh           chan struct{}
+	exited           chan struct{}
+	initialDone      chan struct{}
+	initialRemaining int
+	initialOnce      sync.Once
+	stopOnce         sync.Once
+	retire           func(error)
 }
 
 func (x *subscription) start() { go x.run() }
@@ -21,6 +24,7 @@ func (x *subscription) start() { go x.run() }
 func (x *subscription) run() {
 	var retireReason error
 	defer func() {
+		x.initialOnce.Do(func() { close(x.initialDone) })
 		close(x.exited)
 		if retireReason != nil {
 			x.retire(retireReason)
@@ -50,14 +54,22 @@ func (x *subscription) run() {
 			} else {
 				x.sub.Deliver(f)
 			}
+			if x.initialRemaining > 0 {
+				x.initialRemaining--
+				if x.initialRemaining == 0 {
+					x.initialOnce.Do(func() { close(x.initialDone) })
+				}
+			}
 		}
 	}
 }
 
-func (x *subscription) stop() {
+func (x *subscription) stop(cancel bool) {
 	x.stopOnce.Do(func() {
 		close(x.stopCh)
-		_ = x.sub.Cancel()
+		if cancel {
+			_ = x.sub.Cancel()
+		}
 	})
 }
 
@@ -92,8 +104,8 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 	}
 	b.next++
 	id := b.next
-	x := &subscription{sub: sub, q: make(chan Frame, size), stopCh: make(chan struct{}), exited: make(chan struct{})}
-	x.retire = func(reason error) { b.retire(id, reason) }
+	x := &subscription{sub: sub, q: make(chan Frame, size), stopCh: make(chan struct{}), exited: make(chan struct{}), initialDone: make(chan struct{}), initialRemaining: len(initial)}
+	x.retire = func(reason error) { b.retire(id, reason, true) }
 	b.subs[id] = x
 	accepted := true
 	for _, f := range initial {
@@ -104,15 +116,21 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 		}
 	}
 	b.mu.Unlock()
+	if x.initialRemaining == 0 {
+		x.initialOnce.Do(func() { close(x.initialDone) })
+	}
 	x.start()
+	if _, synchronous := sub.(SynchronousAttachHook); synchronous {
+		<-x.initialDone
+	}
 	if !accepted {
-		b.finish(x, ErrSubscriberOverflow, true)
+		b.finish(x, ErrSubscriberOverflow, true, true)
 	}
 	var once sync.Once
-	return id, func() { once.Do(func() { b.retire(id, ErrSubscriberDetached) }) }
+	return id, func() { once.Do(func() { b.retire(id, ErrSubscriberDetached, false) }) }
 }
 
-func (b *broadcaster) retire(id uint64, reason error) {
+func (b *broadcaster) retire(id uint64, reason error, cancel bool) {
 	if id == 0 {
 		return
 	}
@@ -121,12 +139,12 @@ func (b *broadcaster) retire(id uint64, reason error) {
 	delete(b.subs, id)
 	b.mu.Unlock()
 	if x != nil {
-		b.finish(x, reason, true)
+		b.finish(x, reason, true, cancel)
 	}
 }
 
-func (b *broadcaster) finish(x *subscription, reason error, wait bool) {
-	x.stop()
+func (b *broadcaster) finish(x *subscription, reason error, wait, cancel bool) {
+	x.stop(cancel)
 	if wait {
 		<-x.exited
 	}
@@ -146,7 +164,7 @@ func (b *broadcaster) publish(f Frame) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		b.finish(x, ErrSubscriberOverflow, true)
+		b.finish(x, ErrSubscriberOverflow, true, true)
 	}
 }
 
@@ -159,7 +177,7 @@ func (b *broadcaster) close(reason error) {
 	}
 	b.mu.Unlock()
 	for _, x := range all {
-		b.finish(x, reason, true)
+		b.finish(x, reason, true, true)
 	}
 }
 

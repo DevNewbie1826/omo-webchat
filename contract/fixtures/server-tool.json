@@ -1,0 +1,1 @@
+{ "type": "tool", "sessionId": "sess-1", "toolCallId": "tc1", "toolName": "bash", "phase": "end", "args": { "cmd": "ls -la" }, "result": { "content": [ { "text": "total 0" } ], "details": { "exit": 0 } }, "isError": false } 

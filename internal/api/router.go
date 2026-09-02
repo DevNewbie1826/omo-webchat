@@ -20,27 +20,46 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	v2session "github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
+	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
-const chatOpenTimeout = 15 * time.Second
+const (
+	chatOpenTimeout                   = 15 * time.Second
+	maxChatLifecycleGenerationRecords = 1024
+)
+
+type chatLifecycleGenerationRecord struct {
+	chatID     string
+	generation uint64
+}
 
 // Server holds shared dependencies for all HTTP handlers.
 type Server struct {
 	gws.BuiltinEventHandler
-	cfg                   *config.Config
-	store                 *store.Store
-	sessions              *auth.SessionStore
-	chats                 *chat.Manager
-	logger                *slog.Logger
-	upgrader              *gws.Upgrader
-	ctx                   context.Context
-	conns                 sync.Map
-	chatLifecycleMu       sync.Mutex
-	afterChatLookup       func()
-	beforeChatDelete      func()
-	beforeWorkspaceDelete func()
-	openChatContext       func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	cfg                         *config.Config
+	store                       *store.Store
+	sessions                    *auth.SessionStore
+	chats                       *chat.Manager
+	logger                      *slog.Logger
+	upgrader                    *gws.Upgrader
+	ctx                         context.Context
+	conns                       sync.Map
+	chatLifecycleMu             sync.Mutex
+	chatLifecycleGeneration     sync.Map // chat id -> uint64; lock-free publication validation
+	chatLifecycleGenerationFIFO []chatLifecycleGenerationRecord
+	chatDeleting                map[string]bool
+	afterChatLookup             func()
+	beforeChatDelete            func()
+	afterV2ChatStop             func()
+	beforeWorkspaceDelete       func()
+	openChatContext             func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	v2Mu                        sync.RWMutex
+	v2Manager                   *v2session.Manager
+	v2Store                     *cursorstore.Store
+	v2Handler                   http.Handler
 }
 
 // New creates the API server.
@@ -52,6 +71,7 @@ func New(ctx context.Context, cfg *config.Config, st *store.Store, sessions *aut
 		sessions:        sessions,
 		logger:          logger,
 		chats:           chat.NewManagerWithLogger(logger),
+		chatDeleting:    make(map[string]bool),
 		openChatContext: context.WithTimeout,
 	}
 	s.upgrader = gws.NewUpgrader(s, &gws.ServerOption{
@@ -96,6 +116,11 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/sessions/live", s.handleListLiveSessions)
 
 	protected.HandleFunc("GET /api/ws", s.handleWS)
+	// Resolve the atomically installed v2 stack at request time. Startup may
+	// replace a diagnostic 503 after this mux has already been constructed.
+	protected.HandleFunc("GET /api/v2/ws", func(w http.ResponseWriter, r *http.Request) {
+		s.v2Endpoint().ServeHTTP(w, r)
+	})
 
 	protected.HandleFunc("GET /api/fs/browse", s.handleBrowse)
 	protected.HandleFunc("GET /api/fs/list", s.handleList)
@@ -116,6 +141,27 @@ func (s *Server) Handler() http.Handler {
 }
 
 // staticHandler serves the embedded frontend with SPA fallback to index.html.
+func (s *Server) installV2(manager *v2session.Manager, cursors *cursorstore.Store, handler http.Handler) {
+	s.v2Mu.Lock()
+	s.v2Manager, s.v2Store, s.v2Handler = manager, cursors, handler
+	s.v2Mu.Unlock()
+}
+
+func (s *Server) v2Stack() (*v2session.Manager, *cursorstore.Store) {
+	s.v2Mu.RLock()
+	defer s.v2Mu.RUnlock()
+	return s.v2Manager, s.v2Store
+}
+
+func (s *Server) v2Endpoint() http.Handler {
+	s.v2Mu.RLock()
+	defer s.v2Mu.RUnlock()
+	if s.v2Handler != nil {
+		return s.v2Handler
+	}
+	return wsbridge.Unavailable("provider daemon initialization pending")
+}
+
 func (s *Server) staticHandler() http.Handler {
 	sub, err := fs.Sub(frontend.Dist, "dist")
 	if err != nil {

@@ -35,6 +35,8 @@ type Session struct {
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
 	promptResponse                                                          bool
+	closeRunSettled                                                         bool
+	closeRunReason                                                          string
 	promptSeq, localCommandSeq, compactSeq                                  uint64
 	compactRPCID, compactProviderID, compactPhase                           string
 	completedCompactions                                                    map[string]struct{}
@@ -75,6 +77,16 @@ func (s *Session) routeLocked() (string, error) {
 		return "", ErrSessionResumable
 	}
 	return s.routingID, nil
+}
+
+// RunSnapshot returns the client-visible run latches atomically.
+func (s *Session) RunSnapshot() RunSnapshot {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return RunSnapshot{
+		Streaming:  s.promptInFlight || s.providerRunActive || s.localCommandActive,
+		Compacting: s.compactionActive,
+	}
 }
 
 func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[string]string) error {
@@ -120,6 +132,38 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	return err
 }
 
+func (s *Session) SendSteer(ctx context.Context, msg string) error {
+	return s.sendDuringRun(ctx, func(route string) (any, error) {
+		return s.client.Call(ctx, omorpc.Steer{SessionID: route, Message: msg})
+	})
+}
+
+func (s *Session) SendFollowUp(ctx context.Context, msg string) error {
+	return s.sendDuringRun(ctx, func(route string) (any, error) {
+		return s.client.Call(ctx, omorpc.FollowUp{SessionID: route, Message: msg})
+	})
+}
+
+func (s *Session) sendDuringRun(_ context.Context, call func(string) (any, error)) error {
+	s.lifecycleMu.Lock()
+	if s.compactionActive {
+		s.lifecycleMu.Unlock()
+		return ErrCompactionInFlight
+	}
+	if !s.promptInFlight && !s.providerRunActive {
+		s.lifecycleMu.Unlock()
+		return ErrPromptInFlight
+	}
+	route, err := s.routeLocked()
+	s.lifecycleMu.Unlock()
+	if err != nil {
+		return err
+	}
+	_, err = call(route)
+	s.noteTransportError(err)
+	return err
+}
+
 func (s *Session) completeLocalCommandLocked(seq uint64) {
 	if s.promptSeq != seq || !s.promptInFlight || !s.localCommandActive {
 		return
@@ -145,14 +189,19 @@ func (s *Session) Abort(ctx context.Context) error {
 	}
 	s.abortInFlight = true
 	s.lifecycleMu.Unlock()
-	go func() {
-		_, callErr := s.client.Call(ctx, omorpc.Abort{SessionID: route})
+	err = s.client.CallDetached(ctx, omorpc.Abort{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
 		s.lifecycleMu.Lock()
 		s.abortInFlight = false
 		s.lifecycleMu.Unlock()
-	}()
-	return nil
+	})
+	if err != nil {
+		s.noteTransportError(err)
+		s.lifecycleMu.Lock()
+		s.abortInFlight = false
+		s.lifecycleMu.Unlock()
+	}
+	return err
 }
 
 func (s *Session) Compact(ctx context.Context) error {
@@ -292,6 +341,7 @@ func (s *Session) Models(ctx context.Context) ([]Model, error) {
 		Models []struct {
 			Provider string `json:"provider"`
 			ModelID  string `json:"modelId"`
+			ID       string `json:"id"`
 			Name     string `json:"name"`
 		} `json:"models"`
 	}
@@ -300,6 +350,9 @@ func (s *Session) Models(ctx context.Context) ([]Model, error) {
 	}
 	out := make([]Model, len(wire.Models))
 	for i, x := range wire.Models {
+		if x.ModelID == "" {
+			x.ModelID = x.ID
+		}
 		out[i] = Model{x.Provider, x.ModelID, x.Name}
 	}
 	return out, nil
@@ -370,16 +423,35 @@ func (s *Session) SetSessionName(ctx context.Context, name string) error {
 // RespondApproval publishes the correlated acceptance ack before notifying the
 // provider, preserving ordering with any stream resumed by that response.
 func (s *Session) RespondApproval(id string, value json.RawMessage, confirmed *bool, cancelled bool) error {
+	return s.respondApproval(id, id, value, confirmed, cancelled)
+}
+
+// RespondApprovalRequest preserves the provider-native approval id while
+// correlating the acknowledgement with the browser's request id. Value is
+// encoded as a JSON string; it is never reinterpreted as client-supplied JSON.
+func (s *Session) RespondApprovalRequest(ctx context.Context, id, requestID, value string, confirmed *bool, cancelled bool) error {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return s.respondApprovalContext(ctx, id, requestID, encoded, confirmed, cancelled)
+}
+
+func (s *Session) respondApproval(id, requestID string, value json.RawMessage, confirmed *bool, cancelled bool) error {
+	return s.respondApprovalContext(context.Background(), id, requestID, value, confirmed, cancelled)
+}
+
+func (s *Session) respondApprovalContext(ctx context.Context, id, requestID string, value json.RawMessage, confirmed *bool, cancelled bool) error {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	if err == nil {
-		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: id})
+		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: id})
 	}
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err
 	}
-	return s.client.Notify(context.Background(), omorpc.ExtensionUIResponse{SessionID: route, ID: id, Value: value, Confirmed: confirmed, Cancelled: cancelled})
+	return s.client.Notify(ctx, omorpc.ExtensionUIResponse{SessionID: route, ID: id, Value: value, Confirmed: confirmed, Cancelled: cancelled})
 }
 
 func (s *Session) Attach(sub Subscriber) func() {
@@ -446,10 +518,33 @@ func (s *Session) closeContext(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
-	s.closed = true
-	s.closing = false
+	s.closing = true
 	s.cancelIdleLocked()
 	route := s.routingID
+	s.lifecycleMu.Unlock()
+
+	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	s.manager.mu.Lock()
+	managerClosed := s.manager.closed
+	s.manager.mu.Unlock()
+	if !definitiveCloseFailure(err) && !managerClosed {
+		s.lifecycleMu.Lock()
+		s.closing = false
+		// Provider events are otherwise suppressed while close_session owns the
+		// route. Replay a buffered run terminal before reviving the session so a
+		// failed close cannot leave stale in-flight latches or suppress eviction.
+		s.reconcileFailedCloseLocked()
+		s.scheduleIdleLocked()
+		s.lifecycleMu.Unlock()
+		return err
+	}
+
+	s.lifecycleMu.Lock()
+	s.closed = true
+	s.closing = false
+	s.closeRunSettled = false
+	s.closeRunReason = ""
+	s.cancelIdleLocked()
 	s.manager.mu.Lock()
 	if s.manager.byChat[s.chatID] == s {
 		delete(s.manager.byChat, s.chatID)
@@ -459,7 +554,6 @@ func (s *Session) closeContext(ctx context.Context) error {
 	s.manager.mu.Unlock()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
-	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
 	if definitiveCloseFailure(err) {
 		return nil
 	}
@@ -579,6 +673,11 @@ func (s *Session) publishEntriesLocked(entries []json.RawMessage, leaf string) {
 		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: leafID, Final: final}})
 	}
 }
+
+// LoadEntries streams the provider's paged history through the regular
+// bounded subscriber path. It is used when attaching to an existing session.
+func (s *Session) LoadEntries(ctx context.Context) { s.loadEntries(ctx) }
+
 func (s *Session) loadEntries(ctx context.Context) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()

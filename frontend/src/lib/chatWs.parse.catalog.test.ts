@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { parseChatServerFrame } from "./chatWs";
 
 describe("parseChatServerFrame", () => {
+  it("parses raw JSON errors for every established backend code", () => {
+    const codes = [
+      "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight",
+      "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "bad_frame",
+      "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed",
+      "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume",
+      "bad_send", "bad_set", "no_session", "send_failed", "compact_failed",
+    ];
+    for (const code of codes) {
+      const raw = JSON.stringify({ type: "error", sessionId: "c1", code, message: code });
+      expect(parseChatServerFrame(JSON.parse(raw))).toMatchObject({ type: "error", code, message: code });
+    }
+  });
+
   it("preserves the input modalities field on each model", () => {
     const frame = parseChatServerFrame({
       type: "models",
@@ -38,20 +52,22 @@ describe("parseChatServerFrame", () => {
       sessionId: "c1",
       entries: JSON.parse('[{"type":"message","message":{"role":"user","content":"hi","__proto__":{"bad":true}}}]'),
       leafId: "leaf",
+      final: true,
     });
     expect(frame).toMatchObject({ type: "entries", leafId: "leaf" });
-    const entries = frame?.type === "entries" ? (frame.entries as Array<Record<string, unknown>>) : [];
+    const entries = frame?.type === "entries" ? (frame.entries as unknown as Array<Record<string, unknown>>) : [];
     const message = entries[0]?.["message"] as Record<string, unknown>;
     expect(Object.keys(message ?? {}).includes("__proto__")).toBe(false);
     expect(message?.["content"]).toBe("hi");
   });
 
-  it("parses entries.final as an optional boolean", () => {
+  it("requires entries.final on every page (invariant 18) and an array payload", () => {
     const base = { type: "entries", sessionId: "c1", entries: [] as readonly unknown[] };
     expect(parseChatServerFrame({ ...base, final: true })).toMatchObject({ type: "entries", final: true });
     expect(parseChatServerFrame({ ...base, final: false })).toMatchObject({ type: "entries", final: false });
-    expect(parseChatServerFrame({ ...base })).toMatchObject({ type: "entries" });
+    expect(parseChatServerFrame({ ...base })).toBeNull();
     expect(parseChatServerFrame({ ...base, final: "no" })).toBeNull();
+    expect(parseChatServerFrame({ ...base, final: true, entries: "nope" })).toBeNull();
   });
 
   it("keeps the real Omo command fields (syntax, sourceInfo) and drops location", () => {
