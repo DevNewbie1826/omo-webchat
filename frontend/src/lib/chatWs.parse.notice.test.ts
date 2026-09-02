@@ -73,7 +73,7 @@ describe("parseChatServerFrame notice", () => {
     expect(seconds?.type === "notice" && seconds.at).toBe(Date.parse("2026-01-02T03:04:05Z"));
   });
 
-  it("omits an absent or invalid at stamp for the client-clock fallback", () => {
+  it("passes through an absent or schema-invalid at stamp without rewriting input", () => {
     expect(parseChatServerFrame({ type: "notice", sessionId: "chat-1", kind: "k" })).toEqual({
       type: "notice", sessionId: "chat-1", kind: "k",
     });

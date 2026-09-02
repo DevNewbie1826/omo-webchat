@@ -41,9 +41,11 @@ type Config struct {
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
 type Handler struct {
 	gws.BuiltinEventHandler
-	cfg      Config
-	upgrader *gws.Upgrader
-	conns    sync.Map // *gws.Conn -> *connection
+	cfg                Config
+	upgrader           *gws.Upgrader
+	conns              sync.Map // *gws.Conn -> *connection
+	shutdownGeneration atomic.Uint64
+	shuttingDown       atomic.Bool
 }
 
 // New builds a bridge endpoint. Authentication deliberately remains the API
@@ -76,6 +78,8 @@ func New(cfg Config) *Handler {
 // CloseConnections closes every upgraded socket, including sockets that have
 // not completed hello or bound a chat.
 func (h *Handler) CloseConnections() {
+	h.shuttingDown.Store(true)
+	h.shutdownGeneration.Add(1)
 	h.conns.Range(func(key, value any) bool {
 		h.conns.Delete(key)
 		value.(*connection).shutdown()
@@ -159,6 +163,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "websocket origin not allowed", http.StatusForbidden)
 		return
 	}
+	if h.shuttingDown.Load() || h.cfg.Context.Err() != nil {
+		http.Error(w, "v2 websocket bridge is shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	generation := h.shutdownGeneration.Load()
 	sock, err := h.upgrader.Upgrade(w, r)
 	if err != nil {
 		h.cfg.Logger.Warn("v2 websocket upgrade failed", "error", err)
@@ -168,6 +177,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel, work: make(chan []byte, 64)}
 	c.sub = newSubscriber(c)
 	h.conns.Store(sock, c)
+	if h.shuttingDown.Load() || h.cfg.Context.Err() != nil || h.shutdownGeneration.Load() != generation {
+		c.shutdown()
+		return
+	}
 	go c.run()
 	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.cfg.ServerVersion}); err != nil {
 		c.shutdown()
@@ -466,9 +479,14 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, c.sub, func(acquired *session.Session, started bool) {
+	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, c.sub, func(acquired *session.Session, started bool, acquiredDetach func()) {
 		c.stateMu.Lock()
-		c.wsID, c.chatID, c.sess = f.WsID, f.ChatID, acquired
+		if c.closed.Load() {
+			c.stateMu.Unlock()
+			acquiredDetach()
+			return
+		}
+		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, acquiredDetach
 		c.stateMu.Unlock()
 		c.sub.activate(!started)
 		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
@@ -487,10 +505,11 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		return
 	}
 	c.stateMu.Lock()
-	if c.sess == sess {
-		c.detach = detach
-	}
+	stillBound := c.sess == sess
 	c.stateMu.Unlock()
+	if !stillBound && detach != nil {
+		detach()
+	}
 }
 
 func (c *connection) sendAck(command, requestID string) {
@@ -588,9 +607,31 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 		frame["tokens"] = x.Tokens
 	}
 	if len(x.ContextUsage) != 0 {
-		frame["contextUsage"] = x.ContextUsage
+		frame["contextUsage"] = contextUsageWithPercent(x.ContextUsage)
 	}
 	_ = c.write(frame)
+}
+
+func contextUsageWithPercent(raw json.RawMessage) json.RawMessage {
+	var usage map[string]any
+	if json.Unmarshal(raw, &usage) != nil || usage["percent"] != nil {
+		return raw
+	}
+	used, usedOK := usage["used"].(float64)
+	total, totalOK := usage["total"].(float64)
+	if !usedOK || !totalOK {
+		used, usedOK = usage["tokens"].(float64)
+		total, totalOK = usage["contextWindow"].(float64)
+	}
+	if !usedOK || !totalOK || total <= 0 {
+		return raw
+	}
+	usage["percent"] = used / total * 100
+	normalized, err := json.Marshal(usage)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func commandEntry(x session.CommandInfo) wscontract.CommandEntry {

@@ -21,7 +21,17 @@
         "bad_provider",
         "no_workspace",
         "no_chat",
-        "start_failed"
+        "start_failed",
+        "initialize_failed",
+        "provider_overflow",
+        "provider_timeout",
+        "bad_approval",
+        "bad_resume",
+        "bad_send",
+        "bad_set",
+        "no_session",
+        "send_failed",
+        "compact_failed"
       ]
     }
   }

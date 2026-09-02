@@ -1632,6 +1632,16 @@ const (
 	ErrorCodeNoWorkspace        ErrorCode = "no_workspace"
 	ErrorCodeNoChat             ErrorCode = "no_chat"
 	ErrorCodeStartFailed        ErrorCode = "start_failed"
+	ErrorCodeInitializeFailed   ErrorCode = "initialize_failed"
+	ErrorCodeProviderOverflow   ErrorCode = "provider_overflow"
+	ErrorCodeProviderTimeout    ErrorCode = "provider_timeout"
+	ErrorCodeBadApproval        ErrorCode = "bad_approval"
+	ErrorCodeBadResume          ErrorCode = "bad_resume"
+	ErrorCodeBadSend            ErrorCode = "bad_send"
+	ErrorCodeBadSet             ErrorCode = "bad_set"
+	ErrorCodeNoSession          ErrorCode = "no_session"
+	ErrorCodeSendFailed         ErrorCode = "send_failed"
+	ErrorCodeCompactFailed      ErrorCode = "compact_failed"
 )
 
 // DurableNoticeKind values, from notice-kinds.json.
@@ -1858,7 +1868,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "error":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "message": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "no_session", "send_failed", "compact_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "message": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
 				return nil, err
 			}
 		case "notice":

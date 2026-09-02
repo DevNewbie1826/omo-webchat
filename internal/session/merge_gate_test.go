@@ -897,3 +897,37 @@ func TestMergeGateSlotGenerationsAreBounded(t *testing.T) {
 		t.Fatalf("slot generations = %d, bound %d", got, maxSlotGenerations)
 	}
 }
+
+func TestMergeGateGlobalDetachedOpenLimitDrains(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), DetachedOpenLimit: 2})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	release := d.BlockHandler(omorpc.CmdOpenSession)
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		chat := testChat{id: fmt.Sprintf("bounded-%d", i), cwd: t.TempDir()}
+		go func() {
+			_, _, _, err := mgr.Acquire(context.Background(), chat, nil)
+			results <- err
+		}()
+	}
+	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 2, testTimeout) {
+		t.Fatal("bounded opens did not occupy both slots")
+	}
+	_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "excess", cwd: t.TempDir()}, nil)
+	if !errors.Is(err, ErrOpenBusy) {
+		t.Fatalf("excess acquire error = %v, want ErrOpenBusy", err)
+	}
+	release()
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("bounded acquire failed: %v", err)
+		}
+	}
+	if _, _, detach, err := mgr.Acquire(context.Background(), testChat{id: "after-drain", cwd: t.TempDir()}, nil); err != nil {
+		t.Fatalf("acquire after drain: %v", err)
+	} else if detach != nil {
+		detach()
+	}
+}

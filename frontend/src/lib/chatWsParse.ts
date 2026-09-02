@@ -25,28 +25,17 @@ const SESSION_FRAME_TYPES: ReadonlySet<string> = new Set(
 );
 
 export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
-  let validated = parseServerFrame(msg);
-  let parsedInput: unknown = validated;
-  // Legacy notice producers omitted `at` or sent an invalid stamp. The
-  // generated parser still authoritatively rejects that wire value; validate
-  // the rest of the frame with a known-valid stamp, then retain the original
-  // input so the seam applies its established client-clock fallback.
-  if (validated === null && isRecord(msg) && msg["type"] === "notice") {
-    validated = parseServerFrame({ ...msg, at: "1970-01-01T00:00:00Z" });
-    if (validated !== null) {
-      const withoutAt = { ...msg };
-      delete withoutAt["at"];
-      parsedInput = withoutAt;
-    }
-  }
-  if (validated === null || !isRecord(validated) || !isRecord(parsedInput)) return null;
-  msg = parsedInput;
-  if (!isRecord(msg)) return null;
-  const type = msg["type"];
+  const generated = parseServerFrame(msg);
+  // Established notice producers may omit `at`. Preserve that compatibility
+  // by passing the original object to the notice seam; never fabricate a
+  // schema-valid replacement and mistake rewritten input for validation.
+  const validated = generated ?? (isRecord(msg) && msg["type"] === "notice" ? msg : null);
+  if (validated === null || !isRecord(validated)) return null;
+  const type = validated["type"];
   if (typeof type !== "string" || !SESSION_FRAME_TYPES.has(type)) return null;
   // ack/error may omit sessionId; every other frame is session-scoped.
   const sessionOptional = type === "ack" || type === "error";
-  const sessionId = reqString(msg, "sessionId");
+  const sessionId = reqString(validated, "sessionId");
   if (!sessionOptional && sessionId === null) return null;
   switch (type) {
     case "ready":
@@ -54,7 +43,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "messageDelta":
     case "message":
     case "tool":
-      return parseConversationFrame(type, msg, sessionId);
+      return parseConversationFrame(type, validated, sessionId);
     case "state":
     case "stats":
     case "extensionEvent":
@@ -62,7 +51,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "commands":
     case "models":
     case "entries":
-      return parseSessionFrame(type, msg, sessionId);
+      return parseSessionFrame(type, validated, sessionId);
     case "compaction.started":
     case "compaction.done":
     case "run.started":
@@ -71,7 +60,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "control.result":
     case "error":
     case "notice":
-      return parseLifecycleFrame(type, msg, sessionId);
+      return parseLifecycleFrame(type, validated, sessionId);
     default:
       return null;
   }

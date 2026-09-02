@@ -3,8 +3,8 @@ import type { WsHandlers } from "./ws";
 import { notifyUnauthorized } from "./api";
 import { sessionExpired } from "../features/auth/auth";
 import { parseChatServerFrame } from "./chatWsParse";
-import { isRecord, sanitizeJson } from "./chatWsParseFields";
-import { frameTypeOf } from "./contract/types_gen";
+import { sanitizeJson } from "./chatWsParseFields";
+import { frameTypeOf, parseServerFrame } from "./contract/types_gen";
 import type * as ct from "./contract/types_gen";
 
 export { parseChatServerFrame, sanitizeJson } from "./chatWsParse";
@@ -89,10 +89,9 @@ type MessageFrameSeam = Omit<ct.MessageFrame, "message"> & { readonly message: A
 
 /**
  * Seam adapter: error.code stays an open string at the client boundary. The
- * features terminal-error sets name legacy codes (initialize_failed,
- * provider_overflow, provider_timeout, ...) that the closed wire enum does not
- * carry, so a strict-enum parser would drop live error frames instead of
- * surfacing them. FailedRpcCommand stays open for the same reason.
+ * Feature code treats errors as an open string even though every currently
+ * established backend code is represented by the closed wire enum.
+ * FailedRpcCommand stays open for provider command compatibility.
  */
 interface ErrorFrameSeam {
   readonly type: "error";
@@ -169,11 +168,10 @@ export const CHAT_WS_ENDPOINT = "/api/v2/ws";
 
 /** Validate the connector's handshake frame against the generated HelloFrame. */
 function parseHello(msg: unknown): ct.HelloFrame | null {
-  if (!isRecord(msg) || msg["type"] !== "hello") return null;
-  const version = msg["version"];
-  const serverVersion = msg["serverVersion"];
-  if (typeof version !== "number" || typeof serverVersion !== "string") return null;
-  return { type: "hello", version, serverVersion };
+  const parsed = parseServerFrame(msg);
+  // The generated union includes UnknownFrame, so its open `type` prevents
+  // control-flow narrowing even though the generated parser chose HelloFrame.
+  return parsed?.type === "hello" ? parsed as ct.HelloFrame : null;
 }
 
 export const connectChat: ChatConnector = (handlers) => {

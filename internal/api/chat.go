@@ -90,11 +90,11 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	// publishing its attachment and tears itself down if this delete won.
 	s.chats.Stop(chatID)
 	if manager, cursors := s.v2Stack(); manager != nil {
-		if _, active := manager.Get(chatID); active {
-			_ = manager.StopContext(r.Context(), chatID)
-			if cursors != nil {
-				_ = cursors.DeleteChat(chatID)
-			}
+		// StopContext enters the per-chat flight even when the session is still
+		// opening and therefore not yet visible through Get.
+		_ = manager.StopContext(r.Context(), chatID)
+		if cursors != nil {
+			_ = cursors.DeleteChat(chatID)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)

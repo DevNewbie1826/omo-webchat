@@ -15,6 +15,10 @@ func TestGeneratorsFailClosed(t *testing.T) {
 	}{
 		{"oneOf misuse", `{"oneOf":[{"type":"string"},{"type":"integer"}]}`, "oneOf"},
 		{"dangling unused ref", `{"$ref":"#/$defs/DoesNotExist"}`, "ref"},
+		{"ref with semantic sibling", `{"$ref":"#/$defs/JsonValue","type":"string"}`, "$ref sibling"},
+		{"properties on scalar", `{"type":"string","properties":{"x":{"type":"string"}}}`, "properties require object"},
+		{"array without items", `{"type":"array"}`, "array type requires items"},
+		{"conflicting enum type", `{"type":"integer","enum":["one"]}`, "enum"},
 	}
 	generators := []struct {
 		name string

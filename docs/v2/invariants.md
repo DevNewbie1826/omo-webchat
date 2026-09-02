@@ -271,7 +271,7 @@ Server -> SPA (engine/manager to client):
 - `ack` — API-level acceptance ack `{command, requestId}` (set_model, set_thinking, approval respond, extension_ui_response).
 - `extensionEvent` — capability-gated passthrough `{name, data?}`; cached snapshots (`omo.task.updated`, `omo.dag.updated`) replay on attach before live frames; `omo.dag.activity`/`omo.dag.heartbeat` never cached (invariant 17).
 - `notice` — advisory `{kind, payload, at, nid?}`; durable kinds replay + persist, transient kinds fire once (invariants 14-15).
-- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `persist_failed`, `decode_failed`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`.
+- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `persist_failed`, `decode_failed`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`, `initialize_failed`, `provider_overflow`, `provider_timeout`, `bad_approval`, `bad_resume`, `bad_send`, `bad_set`, `no_session`, `send_failed`, `compact_failed`.
 - `pong` — reply to `ping`.
 
 Client -> SPA server (decoded ONLY through `ParseClientFrame` — keep this chokepoint in v2):

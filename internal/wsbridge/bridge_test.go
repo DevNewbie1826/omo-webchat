@@ -63,6 +63,17 @@ func (c *collector) next(t *testing.T, typ string) map[string]any {
 		}
 	}
 }
+func TestContextUsageWithPercentFillsProviderOmission(t *testing.T) {
+	got := contextUsageWithPercent(json.RawMessage(`{"used":150,"total":200000}`))
+	var usage map[string]float64
+	if err := json.Unmarshal(got, &usage); err != nil {
+		t.Fatal(err)
+	}
+	if usage["percent"] != 0.075 {
+		t.Fatalf("normalized context usage = %s", got)
+	}
+}
+
 func TestHelloWriteFailureShutdownRemovesConnectionRegistry(t *testing.T) {
 	h := New(Config{Context: context.Background()})
 	sock := &gws.Conn{}

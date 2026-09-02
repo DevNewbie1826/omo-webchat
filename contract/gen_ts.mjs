@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Generates frontend/src/lib/contract/types_gen.ts from the JSON Schemas.
 // Implemented subset: object properties/required fields, scalar/array types,
-// string enum/const, local or cross-file $ref, nullable anyOf, opaque JSON,
-// and the top-level frame oneOf. Every other construct fails generation.
+// string enum/const, local or cross-file $ref (title/description metadata
+// siblings only), nullable anyOf, opaque JSON, and the top-level frame oneOf.
+// Every other construct fails generation.
 // Run: node contract/gen_ts.mjs. Output is committed; no runtime codegen.
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -35,6 +36,20 @@ function validateSchemaDocument(fileID, root) {
   const walk = (node, path) => {
     if (!node || typeof node !== "object" || Array.isArray(node)) throw new Error(`${fileID}${path}: schema node must be an object`);
     for (const key of Object.keys(node)) if (!SCHEMA_KEYWORDS.has(key)) throw new Error(`${fileID}${path}: unsupported schema keyword ${JSON.stringify(key)}`);
+    if ("$ref" in node) {
+      const allowed = new Set(["$ref", "title", "description"]);
+      for (const key of Object.keys(node)) if (!allowed.has(key)) throw new Error(`${fileID}${path}: unsupported $ref sibling ${JSON.stringify(key)}`);
+    }
+    if ("anyOf" in node) {
+      const allowed = new Set(["anyOf", "title", "description"]);
+      for (const key of Object.keys(node)) if (!allowed.has(key)) throw new Error(`${fileID}${path}: unsupported anyOf sibling ${JSON.stringify(key)}`);
+    }
+    if ("enum" in node && "const" in node) throw new Error(`${fileID}${path}: enum and const cannot be combined`);
+    if ("properties" in node && node.type !== "object") throw new Error(`${fileID}${path}: properties require object type`);
+    if ("required" in node && node.type !== "object") throw new Error(`${fileID}${path}: required requires object type`);
+    if ("additionalProperties" in node && node.type !== "object") throw new Error(`${fileID}${path}: additionalProperties requires object type`);
+    if ("items" in node && node.type !== "array") throw new Error(`${fileID}${path}: items require array type`);
+    if (node.type === "array" && !("items" in node)) throw new Error(`${fileID}${path}: array type requires items`);
     if ("type" in node && (!SCHEMA_TYPES.has(node.type))) throw new Error(`${fileID}${path}: invalid schema type ${JSON.stringify(node.type)}`);
     if ("format" in node && (node.format !== "rfc3339nano" || node.type !== "string")) throw new Error(`${fileID}${path}: unsupported format ${JSON.stringify(node.format)}`);
     if ("properties" in node) {
@@ -60,7 +75,9 @@ function validateSchemaDocument(fileID, root) {
       if (!Array.isArray(node.required)) throw new Error(`${fileID}${path}/required: must be an array`);
       for (const name of node.required) if (typeof name !== "string" || !(name in (node.properties ?? {}))) throw new Error(`${fileID}${path}/required: invalid property ${JSON.stringify(name)}`);
     }
+    if ("enum" in node && ("type" in node && node.type !== "string")) throw new Error(`${fileID}${path}/enum: string enum conflicts with type ${JSON.stringify(node.type)}`);
     if ("enum" in node && (!Array.isArray(node.enum) || node.enum.length === 0 || node.enum.some((v) => typeof v !== "string"))) throw new Error(`${fileID}${path}/enum: only a non-empty string enum is supported`);
+    if ("const" in node && ("type" in node && node.type !== "string")) throw new Error(`${fileID}${path}/const: string const conflicts with type ${JSON.stringify(node.type)}`);
     if ("const" in node && typeof node.const !== "string") throw new Error(`${fileID}${path}/const: only string constants are supported`);
     if ("$ref" in node && (typeof node.$ref !== "string" || node.$ref === "")) throw new Error(`${fileID}${path}/$ref: must be a non-empty string`);
   };

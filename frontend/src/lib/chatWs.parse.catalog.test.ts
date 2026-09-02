@@ -2,6 +2,20 @@ import { describe, expect, it } from "vitest";
 import { parseChatServerFrame } from "./chatWs";
 
 describe("parseChatServerFrame", () => {
+  it("parses raw JSON errors for every established backend code", () => {
+    const codes = [
+      "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight",
+      "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "bad_frame",
+      "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed",
+      "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume",
+      "bad_send", "bad_set", "no_session", "send_failed", "compact_failed",
+    ];
+    for (const code of codes) {
+      const raw = JSON.stringify({ type: "error", sessionId: "c1", code, message: code });
+      expect(parseChatServerFrame(JSON.parse(raw))).toMatchObject({ type: "error", code, message: code });
+    }
+  });
+
   it("preserves the input modalities field on each model", () => {
     const frame = parseChatServerFrame({
       type: "models",

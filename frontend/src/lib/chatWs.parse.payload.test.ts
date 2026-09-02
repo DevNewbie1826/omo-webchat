@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { parseChatServerFrame } from "./chatWs";
 
 describe("parseChatServerFrame", () => {
+  it("parses a raw JSON stats frame with complete context usage", () => {
+    const raw = `{"type":"stats","sessionId":"c1","cost":0.001,"contextUsage":{"used":150,"total":200000,"percent":0.075}}`;
+    expect(parseChatServerFrame(JSON.parse(raw))).toMatchObject({
+      type: "stats", sessionId: "c1", contextUsage: { used: 150, total: 200000, percent: 0.075 },
+    });
+  });
+
   it("parses stats contextUsage and accepts a cost-less stats frame", () => {
     expect(
       parseChatServerFrame({

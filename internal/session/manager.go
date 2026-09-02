@@ -93,6 +93,7 @@ type Manager struct {
 	eventWG            sync.WaitGroup
 	openCleanupExpired chan struct{}
 	pendingOpen        map[string]bool
+	openSlots          chan struct{}
 }
 
 func NewManager(cfg Config) *Manager {
@@ -111,8 +112,11 @@ func NewManager(cfg Config) *Manager {
 	if cfg.CloseTimeout == 0 {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
+	if cfg.DetachedOpenLimit == 0 {
+		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
+	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -187,11 +191,11 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
-func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool)) (*Session, bool, func(), error) {
+func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, initialize)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool)) (*Session, bool, func(), error) {
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -234,7 +238,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		detach, err := existing.attachChecked(sub)
 		if err == nil {
 			if initialize != nil {
-				initialize(existing, false)
+				initialize(existing, false, detach)
 			}
 			return existing, false, detach, nil
 		}
@@ -351,7 +355,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		s.loadEntries(ctx)
 	}
 	if initialize != nil {
-		initialize(s, true)
+		initialize(s, true, detach)
 	}
 	return s, true, detach, nil
 }
@@ -405,9 +409,15 @@ type openResult struct {
 // tracks that ownership until the response or epoch death is observed and any
 // routing handle from a late success has been closed.
 func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+	select {
+	case m.openSlots <- struct{}{}:
+	default:
+		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ErrOpenBusy
+	}
 	m.mu.Lock()
 	if m.pendingOpen[chatID] {
 		m.mu.Unlock()
+		<-m.openSlots
 		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, errors.New("session: open already in flight")
 	}
 	m.pendingOpen[chatID] = true
@@ -462,7 +472,10 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 
 func (m *Manager) clearPendingOpen(chatID string) {
 	m.mu.Lock()
-	delete(m.pendingOpen, chatID)
+	if m.pendingOpen[chatID] {
+		delete(m.pendingOpen, chatID)
+		<-m.openSlots
+	}
 	m.mu.Unlock()
 }
 

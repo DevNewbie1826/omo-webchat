@@ -24,6 +24,8 @@ import (
 // Run initializes the store, session store, and HTTP server, then serves until
 // ctx is cancelled.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady func() error) error {
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	var (
 		st  *store.Store
 		err error
@@ -43,10 +45,10 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		v2Manager *v2session.Manager
 		v2Bridge  *wsbridge.Handler
 		ensured   *omorpc.EnsuredDaemon
-		cleanup   sync.Once
+		v2Cleanup sync.Once
 	)
 	closeV2 := func() {
-		cleanup.Do(func() {
+		v2Cleanup.Do(func() {
 			apiServer.installV2(nil, nil, wsbridge.Unavailable("server stopped"))
 			if v2Bridge != nil {
 				v2Bridge.CloseConnections()
@@ -67,9 +69,18 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			}
 		})
 	}
+	var cleanup sync.Once
+	cleanupAll := func() {
+		cleanup.Do(func() {
+			cancelRun()
+			apiServer.CloseConnections()
+			apiServer.chats.CloseAll()
+			closeV2()
+		})
+	}
 	// Cleanup is established before each acquisition below can make an error
 	// return observable (bind/readiness/Serve included).
-	defer closeV2()
+	defer cleanupAll()
 
 	stateDir := cfg.StateDir
 	if stateDir == "" {
@@ -126,8 +137,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 
 	go func() {
 		<-ctx.Done()
-		apiServer.chats.CloseAll()
-		closeV2()
+		cleanupAll()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
@@ -146,8 +156,12 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			return fmt.Errorf("daemon readiness: %w", err)
 		}
 	}
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("http server: %w", err)
+	serveErr := srv.Serve(ln)
+	if serveErr != nil {
+		cleanupAll()
+		if !errors.Is(serveErr, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", serveErr)
+		}
 	}
 	return nil
 }

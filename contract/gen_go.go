@@ -4,8 +4,9 @@
 // Command gen_go.go regenerates internal/wscontract/types_gen.go from the JSON
 // Schemas in contract/schemas/. Implemented subset: object properties and
 // required fields, scalar/array types, string enum/const, local or cross-file
-// $ref, nullable anyOf, opaque JSON values, and the top-level frame oneOf.
-// Every other JSON-Schema construct fails generation. `go generate ./contract`
+// $ref (with title/description metadata siblings only), nullable anyOf, opaque
+// JSON values, and the top-level frame oneOf. Every other JSON-Schema construct
+// fails generation. `go generate ./contract`
 // runs both generators and writes the committed mirrors; there is no runtime
 // codegen.
 package main
@@ -182,6 +183,43 @@ func validateSchemaDocument(fileID string, doc schema) {
 				fatal("%s%s: unsupported schema keyword %q", fileID, path, key)
 			}
 		}
+		metadataOnly := map[string]bool{"$ref": true, "title": true, "description": true}
+		if _, ok := node["$ref"]; ok {
+			for key := range node {
+				if !metadataOnly[key] {
+					fatal("%s%s: unsupported $ref sibling %q", fileID, path, key)
+				}
+			}
+		}
+		if _, ok := node["anyOf"]; ok {
+			for key := range node {
+				if key != "anyOf" && key != "title" && key != "description" {
+					fatal("%s%s: unsupported anyOf sibling %q", fileID, path, key)
+				}
+			}
+		}
+		if _, both := node["enum"]; both {
+			if _, ok := node["const"]; ok {
+				fatal("%s%s: enum and const cannot be combined", fileID, path)
+			}
+		}
+		if _, ok := node["properties"]; ok && node["type"] != "object" {
+			fatal("%s%s: properties require object type", fileID, path)
+		}
+		if _, ok := node["required"]; ok && node["type"] != "object" {
+			fatal("%s%s: required requires object type", fileID, path)
+		}
+		if _, ok := node["additionalProperties"]; ok && node["type"] != "object" {
+			fatal("%s%s: additionalProperties requires object type", fileID, path)
+		}
+		if _, ok := node["items"]; ok && node["type"] != "array" {
+			fatal("%s%s: items require array type", fileID, path)
+		}
+		if node["type"] == "array" {
+			if _, ok := node["items"]; !ok {
+				fatal("%s%s: array type requires items", fileID, path)
+			}
+		}
 		if typ, ok := node["type"]; ok {
 			s, ok := typ.(string)
 			if !ok || !map[string]bool{"null": true, "boolean": true, "string": true, "integer": true, "number": true, "array": true, "object": true}[s] {
@@ -258,6 +296,9 @@ func validateSchemaDocument(fileID string, doc schema) {
 			}
 		}
 		if enum, ok := node["enum"]; ok {
+			if typ, exists := node["type"]; exists && typ != "string" {
+				fatal("%s%s/enum: string enum conflicts with type %v", fileID, path, typ)
+			}
 			list, ok := enum.([]any)
 			if !ok || len(list) == 0 {
 				fatal("%s%s/enum: must be a non-empty array", fileID, path)
@@ -269,6 +310,9 @@ func validateSchemaDocument(fileID string, doc schema) {
 			}
 		}
 		if c, ok := node["const"]; ok {
+			if typ, exists := node["type"]; exists && typ != "string" {
+				fatal("%s%s/const: string const conflicts with type %v", fileID, path, typ)
+			}
 			if _, ok := c.(string); !ok {
 				fatal("%s%s/const: only string values are supported", fileID, path)
 			}

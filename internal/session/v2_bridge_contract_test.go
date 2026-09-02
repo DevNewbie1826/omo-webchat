@@ -14,11 +14,11 @@ func TestStructuredStatsPreserveProviderShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{
 		"tokens":{"input":100,"output":50,"cacheRead":7,"total":157},
 		"cost":0.001,
-		"contextUsage":{"used":150,"total":200000}
+		"contextUsage":{"used":150,"total":200000,"percent":0.075}
 	}`), &got); err != nil {
 		t.Fatal(err)
 	}
-	if string(got.Tokens) != `{"input":100,"output":50,"cacheRead":7,"total":157}` || got.Cost != 0.001 || string(got.ContextUsage) != `{"used":150,"total":200000}` {
+	if string(got.Tokens) != `{"input":100,"output":50,"cacheRead":7,"total":157}` || got.Cost != 0.001 || string(got.ContextUsage) != `{"used":150,"total":200000,"percent":0.075}` {
 		t.Fatalf("preserved stats = %+v", got)
 	}
 }
