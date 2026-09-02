@@ -52,6 +52,14 @@ func (d cappedDialer) Dial(network, address string) (net.Conn, error) {
 	return cappedReadConn{Conn: conn, maxRead: d.maxRead}, nil
 }
 
+// historyCursorStore keeps these history-only fixtures on their registered
+// daemon paths. Production CursorStore migration is covered by adoption tests.
+type historyCursorStore struct{ *CursorStore }
+
+func (s *historyCursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
+	return s.CursorFor(ctx, id)
+}
+
 type historyBridgeHarness struct {
 	daemon    *omorpctest.Daemon
 	client    *omorpc.Client
@@ -92,7 +100,7 @@ func newHistoryBridgeHarness(t *testing.T, historyTimeout time.Duration) *histor
 	}); err != nil {
 		t.Fatal(err)
 	}
-	mgr := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store)})
+	mgr := session.NewManager(session.Config{Client: client, Store: &historyCursorStore{CursorStore: (*CursorStore)(store)}})
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	h := New(Config{
 		Manager: mgr, Store: store, ServerVersion: client.ServerVersion(),

@@ -52,6 +52,11 @@ type Cursor struct {
 }
 
 type CursorStore interface {
+	// CursorForOpen may prepare persisted identity for a provider open. Manager
+	// calls it only inside the per-chat flight, after attempting to attach an
+	// existing live session.
+	CursorForOpen(context.Context, string) (Cursor, error)
+	// CursorFor is a read-only lookup used after a route has been established.
 	CursorFor(context.Context, string) (Cursor, error)
 	SaveCursor(context.Context, string, Cursor) error
 	UpdateIdentity(ctx context.Context, chatID, sessionFile, durableID string) error

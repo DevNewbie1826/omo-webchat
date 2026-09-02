@@ -306,7 +306,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 
 	cur := Cursor{}
 	if m.cfg.Store != nil {
-		cur, err = m.cfg.Store.CursorFor(ctx, chatID)
+		cur, err = m.cfg.Store.CursorForOpen(ctx, chatID)
 		if err != nil {
 			return nil, false, nil, err
 		}

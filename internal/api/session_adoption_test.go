@@ -293,8 +293,34 @@ func TestAdoptionHTTPToBridgePreservesOriginalThroughCompletedTurn(t *testing.T)
 	}
 }
 
+type adoptionSessionSubscriber struct {
+	frames chan session.Frame
+}
+
+func (s *adoptionSessionSubscriber) Deliver(frame session.Frame) { s.frames <- frame }
+func (s *adoptionSessionSubscriber) Cancel() error               { return nil }
+func (s *adoptionSessionSubscriber) await(t *testing.T, kind session.FrameKind) session.Frame {
+	t.Helper()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case frame := <-s.frames:
+			if frame.Kind == kind {
+				return frame
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for session frame %s", kind)
+		}
+	}
+}
+
 type adoptionUnsafeCursorStore struct {
 	store *cursorstore.Store
+}
+
+func (s adoptionUnsafeCursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
+	return s.CursorFor(ctx, id)
 }
 
 func (s adoptionUnsafeCursorStore) CursorFor(_ context.Context, id string) (session.Cursor, error) {
@@ -353,6 +379,140 @@ func newAdoptionLifecycleHarness(t *testing.T, store *cursorstore.Store) (*sessi
 		daemon.Stop()
 	})
 	return manager, daemon
+}
+
+func TestCatalogWhileLegacyRouteLiveMigratesLatestFileOnRestart(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-live-restart", "Live legacy")
+	chat := cursorstore.Chat{ID: "chat-live-restart", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "durable-live-restart", Name: "live", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+
+	daemonDir, err := os.MkdirTemp("", "adopt-restart-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	daemon := omorpctest.New(daemonDir)
+	if err := daemon.LoadSessionFile(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldManager := session.NewManager(session.Config{Client: client, Store: adoptionUnsafeCursorStore{store: st.Store}})
+	s.manager = oldManager
+	sub := &adoptionSessionSubscriber{frames: make(chan session.Frame, 32)}
+	live, _, detach, err := oldManager.Acquire(t.Context(), adoptionChatRef{chat: chat}, sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live.SessionFile() != source {
+		t.Fatalf("live route path = %q, want legacy source %q", live.SessionFile(), source)
+	}
+	sub.await(t, session.FrameReady)
+
+	listWorkspaceSessions(t, s, ws.ID, "")
+	if stored, err := st.GetChat(chat.ID); err != nil || stored.SessionFile != source {
+		t.Fatalf("catalog changed live cursor: %+v, %v", stored, err)
+	}
+
+	daemon.SetPromptScript(source,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventMessage, "message": map[string]any{"role": "assistant", "content": "turn-after-catalog"}},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	if err := live.SendPrompt(t.Context(), "after catalog", nil); err != nil {
+		t.Fatal(err)
+	}
+	sub.await(t, session.FrameRunDone)
+	detach()
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := oldManager.CloseAll(closeCtx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	cancel()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	daemon.Restart()
+
+	restartedClient, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedManager := session.NewManager(session.Config{Client: restartedClient, Store: (*wsbridge.CursorStore)(st.Store)})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = restartedManager.CloseAll(ctx)
+		_ = restartedClient.Close()
+		daemon.Stop()
+	})
+
+	releaseOpen := daemon.BlockHandler(omorpc.CmdOpenSession)
+	result := make(chan struct {
+		sess *session.Session
+		err  error
+	}, 1)
+	go func() {
+		reopened, _, reopenedDetach, acquireErr := restartedManager.Acquire(context.Background(), adoptionChatRef{chat: chat}, nil)
+		if reopenedDetach != nil {
+			reopenedDetach()
+		}
+		result <- struct {
+			sess *session.Session
+			err  error
+		}{reopened, acquireErr}
+	}()
+	if !daemon.AwaitRequestCount(omorpc.CmdOpenSession, 2, 5*time.Second) {
+		releaseOpen()
+		t.Fatal("restart open did not reach provider")
+	}
+	stored, err := st.GetChat(chat.ID)
+	if err != nil {
+		releaseOpen()
+		t.Fatal(err)
+	}
+	if stored.SessionFile == source || !cursorstore.IsOwnedSession(stored, st.OwnedSessionDir()) {
+		releaseOpen()
+		t.Fatalf("restart did not migrate legacy route: %+v", stored)
+	}
+	if err := daemon.LoadSessionFile(stored.SessionFile); err != nil {
+		releaseOpen()
+		t.Fatal(err)
+	}
+	releaseOpen()
+	var reopened struct {
+		sess *session.Session
+		err  error
+	}
+	select {
+	case reopened = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart acquire did not complete")
+	}
+	if reopened.err != nil {
+		t.Fatal(reopened.err)
+	}
+	if reopened.sess.SessionFile() != stored.SessionFile {
+		t.Fatalf("restart route path = %q, stored path = %q", reopened.sess.SessionFile(), stored.SessionFile)
+	}
+	copied, err := os.ReadFile(stored.SessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(copied, []byte("turn-after-catalog")) {
+		t.Fatal("migrated restart file lost the turn completed after catalog GET")
+	}
 }
 
 func TestAdoptWorkspaceSessionStopsLiveOriginalBeforeInstallingCopy(t *testing.T) {

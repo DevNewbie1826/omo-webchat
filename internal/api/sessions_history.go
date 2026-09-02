@@ -420,17 +420,6 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	// Reading the catalog is the earliest safe opportunity to convert legacy
-	// external resume pointers. Failures leave the original row visible but the
-	// store's typed open guard prevents it from being opened in place.
-	for i := range chats {
-		if chats[i].SessionFile == "" || cursorstore.IsOwnedSession(chats[i], s.cursors.OwnedSessionDir()) {
-			continue
-		}
-		if migrated, migrateErr := s.cursors.MigrateLegacySession(r.Context(), chats[i].ID); migrateErr == nil {
-			chats[i] = migrated
-		}
-	}
 	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), s.cursors.OwnedSessionDir())
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {

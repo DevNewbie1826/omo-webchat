@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,44 @@ func TestSessionDirNameForCwdMatchesOmoLayout(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+func TestListWorkspaceSessionsDoesNotMigrateLegacyCursor(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	source := writeDiskSession(t, agent, ws.Path, "legacy-durable", "Legacy", time.Now())
+	chat := cursorstore.Chat{ID: "legacy-chat", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "legacy-durable", Name: "legacy", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(st.StateDir(), "state-v2.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) == 0 {
+		t.Fatal("legacy chat missing from catalog")
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("sessions GET mutated cursor state")
+	}
+	stored, err := st.GetChat(chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SessionFile != source || stored.SessionProvenance != "" {
+		t.Fatalf("sessions GET migrated legacy cursor: %+v", stored)
+	}
+	if _, err := os.Stat(st.OwnedSessionDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sessions GET created owned session directory: %v", err)
+	}
+}
+
 func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	agent := t.TempDir()

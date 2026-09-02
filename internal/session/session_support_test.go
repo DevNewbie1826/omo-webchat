@@ -38,6 +38,10 @@ func newMemStore() *memCursorStore {
 	return &memCursorStore{cursors: map[string]Cursor{}}
 }
 
+func (s *memCursorStore) CursorForOpen(ctx context.Context, chatID string) (Cursor, error) {
+	return s.CursorFor(ctx, chatID)
+}
+
 func (s *memCursorStore) CursorFor(_ context.Context, chatID string) (Cursor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

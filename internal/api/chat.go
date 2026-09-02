@@ -92,22 +92,13 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-func (s *Server) prepareChatVersion(ctx context.Context, wsID, chatID string) (uint64, error) {
+func (s *Server) prepareChatVersion(_ context.Context, wsID, chatID string) (uint64, error) {
 	c, err := s.cursors.GetChat(chatID)
 	if err != nil || c.WorkspaceID != wsID {
 		return 0, cursorstore.ErrNotFound
 	}
 	if !cursorstore.IsLaunchableProvider(c.Provider) {
 		return 0, wsbridge.ErrUnsupportedProvider
-	}
-	live := false
-	if s.manager != nil {
-		_, live = s.manager.Get(chatID)
-	}
-	if !live {
-		if _, err := s.cursors.MigrateLegacySession(ctx, chatID); err != nil {
-			return 0, err
-		}
 	}
 	s.chatLifecycleMu.Lock()
 	defer s.chatLifecycleMu.Unlock()
