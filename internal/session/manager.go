@@ -86,6 +86,9 @@ type Manager struct {
 	mu                   sync.Mutex
 	byChat               map[string]*Session
 	byRoute              map[string]*Session
+	byDurableEpoch       map[omorpc.EpochToken]map[string]*Session
+	durableToChat        map[string]string
+	invalidatedEpochs    map[omorpc.EpochToken]struct{}
 	retiringByChat       map[string]map[string]struct{}
 	retiringFIFO         []retiringRecord
 	slotGeneration       map[string]uint64
@@ -129,7 +132,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*Session), durableToChat: make(map[string]string), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -165,18 +168,14 @@ func (m *Manager) eventLoop() {
 				continue
 			}
 			backoff = time.Millisecond
-			if ev == nil || ev.SessionID == "" {
+			if ev == nil || ev.SessionID == "" || !m.cfg.Client.EpochCurrent(token) {
 				continue
 			}
-			m.mu.Lock()
-			s := m.byRoute[ev.SessionID]
-			bound := s != nil && s.epoch == token
-			if !bound {
-				m.ingestUnboundOverviewLocked(token, ev)
-			}
-			m.mu.Unlock()
-			if bound {
+			s, snapshot, subscribers := m.ingestEpochEvent(token, ev)
+			if s != nil {
 				s.dispatchEpoch(token, ev)
+			} else {
+				deliverOverview(subscribers, snapshot)
 			}
 		}
 	}
@@ -186,7 +185,19 @@ func (m *Manager) eventLoop() {
 // delayed failure from an older request therefore cannot invalidate sessions
 // registered after reconnect.
 func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
+	all := m.detachEpoch(token)
+	for _, s := range all {
+		s.invalidate("provider_disconnected", "provider connection lost")
+	}
+}
+
+// detachEpoch establishes the ingestion/publication barrier before session
+// lifecycle invalidation. It deliberately does not take lifecycleMu, preserving
+// the lifecycleMu -> Manager.mu lock order used by bound publication.
+func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.invalidatedEpochs[token] = struct{}{}
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
 		if s.epoch == token {
@@ -194,19 +205,17 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 			delete(m.byRoute, s.routingID)
 		}
 	}
+	delete(m.byDurableEpoch, token)
 	for id, entry := range m.overviewCache {
 		if entry.epoch == token {
 			delete(m.overviewCache, id)
-			delete(m.overviewCurrent, id)
+			delete(m.overviewCurrent, entry.chatID)
 		}
 	}
 	for _, s := range all {
 		delete(m.overviewCurrent, s.chatID)
 	}
-	m.mu.Unlock()
-	for _, s := range all {
-		s.invalidate("provider_disconnected", "provider connection lost")
-	}
+	return all
 }
 
 // ReplayBackpressureSubscriber lets a transport apply replay-specific write
@@ -438,10 +447,15 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}
+		var overviewSnapshot Summary
+		var overviewSubscribers []*overviewSubscriber
 		s.lifecycleMu.Lock()
 		m.mu.Lock()
 		valid = !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 		epochLive := m.cfg.Client.EpochCurrent(epoch)
+		if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
+			epochLive = false
+		}
 		if valid && epochLive {
 			if existing != nil {
 				delete(m.byRoute, existing.routingID)
@@ -449,10 +463,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.byChat[chatID] = s
 			m.byRoute[data.SessionID] = s
 			delete(m.overviewCurrent, chatID)
-			m.mergeOverviewIntoSessionLocked(s)
+			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
 		m.mu.Unlock()
 		s.lifecycleMu.Unlock()
+		deliverOverview(overviewSubscribers, overviewSnapshot)
 		if !valid || !epochLive {
 			detach()
 			s.retireReplaced()
@@ -468,10 +483,15 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return s, true, detach, nil
 	}
 
+	var overviewSnapshot Summary
+	var overviewSubscribers []*overviewSubscriber
 	s.lifecycleMu.Lock()
 	m.mu.Lock()
 	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 	epochLive := m.cfg.Client.EpochCurrent(epoch)
+	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
+		epochLive = false
+	}
 	if valid {
 		if existing != nil {
 			delete(m.byRoute, existing.routingID)
@@ -480,11 +500,12 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		delete(m.overviewCurrent, chatID)
 		if epochLive {
 			m.byRoute[data.SessionID] = s
-			m.mergeOverviewIntoSessionLocked(s)
+			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
 	}
 	m.mu.Unlock()
 	s.lifecycleMu.Unlock()
+	deliverOverview(overviewSubscribers, overviewSnapshot)
 	if !valid {
 		m.discardRouting(chatID, data.SessionID)
 		return nil, false, nil, ErrManagerClosed
@@ -826,7 +847,7 @@ func (m *Manager) LiveSummaries() []Summary {
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {
-		cached = append(cached, entry.summary(id))
+		cached = append(cached, entry.summary(entry.chatID, id))
 	}
 	m.mu.Unlock()
 	out := make([]Summary, 0, len(all)+len(cached))
@@ -927,6 +948,9 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 	}
 	m.byChat = make(map[string]*Session)
 	m.byRoute = make(map[string]*Session)
+	m.byDurableEpoch = make(map[omorpc.EpochToken]map[string]*Session)
+	m.durableToChat = make(map[string]string)
+	m.invalidatedEpochs = make(map[omorpc.EpochToken]struct{})
 	m.slotGeneration = make(map[string]uint64)
 	m.slotGenerationFIFO = nil
 	m.overviewCache = make(map[string]*overviewCacheEntry)
