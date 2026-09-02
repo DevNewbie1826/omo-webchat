@@ -16,14 +16,7 @@ describe("parseChatServerFrame", () => {
       name: "Weekly recap",
       origin: "provider",
     });
-    expect(
-      parseChatServerFrame({ type: "chat.name", sessionId: "c1", name: "Weekly recap" }),
-    ).toEqual({
-      type: "chat.name",
-      sessionId: "c1",
-      name: "Weekly recap",
-      origin: "auto",
-    });
+    expect(parseChatServerFrame({ type: "chat.name", sessionId: "c1", name: "Weekly recap" })).toBeNull();
     expect(parseChatServerFrame({ type: "chat.name", sessionId: "c1" })).toBeNull();
   });
 

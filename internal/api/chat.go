@@ -89,6 +89,14 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 	// that opened concurrently rechecks the store under the same mutex before
 	// publishing its attachment and tears itself down if this delete won.
 	s.chats.Stop(chatID)
+	if manager, cursors := s.v2Stack(); manager != nil {
+		if _, active := manager.Get(chatID); active {
+			_ = manager.StopContext(r.Context(), chatID)
+			if cursors != nil {
+				_ = cursors.DeleteChat(chatID)
+			}
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -113,8 +121,20 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 	}
 	// The user owns the title from here on: push it to the live provider
 	// session best-effort so its own name reporting cannot drift the UI.
-	if sess := s.chats.Get(r.PathValue("chatId")); sess != nil {
+	chatID := r.PathValue("chatId")
+	if sess := s.chats.Get(chatID); sess != nil {
 		_ = sess.SetSessionName(name)
+	}
+	if manager, cursors := s.v2Stack(); manager != nil {
+		if sess, active := manager.Get(chatID); active {
+			_ = sess.SetSessionName(r.Context(), name)
+			if cursors != nil {
+				if record, getErr := cursors.GetChat(chatID); getErr == nil {
+					record.Name, record.NameSource = name, "user"
+					_ = cursors.SaveChat(record)
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, c)
 }
@@ -228,12 +248,22 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 	summaries := s.chats.LiveSummaries()
 	titles := s.liveChatTitles()
 	sessions := make([]liveSessionResponse, 0, len(summaries))
+	seen := make(map[string]bool, len(summaries))
 	for _, summary := range summaries {
 		title := summary.Title
 		if title == "" {
 			title = titles[summary.ID]
 		}
 		sessions = append(sessions, liveSessionFromSummary(summary, title))
+		seen[summary.ID] = true
+	}
+	if manager, _ := s.v2Stack(); manager != nil {
+		for _, summary := range manager.LiveSummaries() {
+			if seen[summary.ChatID] {
+				continue
+			}
+			sessions = append(sessions, liveSessionResponse{ID: summary.ChatID, Title: titles[summary.ChatID]})
+		}
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
 }

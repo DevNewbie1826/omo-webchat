@@ -2,9 +2,12 @@
 //go:generate node gen_ts.mjs
 
 // Command gen_go.go regenerates internal/wscontract/types_gen.go from the JSON
-// Schemas in contract/schemas/. `go generate ./contract` runs both this Go
-// generator and gen_ts.mjs (Node.js is therefore required) and writes the
-// committed Go and TypeScript mirrors; there is no runtime codegen.
+// Schemas in contract/schemas/. Implemented subset: object properties and
+// required fields, scalar/array types, string enum/const, local or cross-file
+// $ref, nullable anyOf, opaque JSON values, and the top-level frame oneOf.
+// Every other JSON-Schema construct fails generation. `go generate ./contract`
+// runs both generators and writes the committed mirrors; there is no runtime
+// codegen.
 package main
 
 import (
@@ -26,8 +29,16 @@ func main() {
 		fatal("cannot locate gen_go.go source path")
 	}
 	dir := filepath.Dir(thisFile)
-	g := newGen(filepath.Join(dir, "schemas"))
-	g.generate(filepath.Join(dir, "..", "internal", "wscontract", "types_gen.go"))
+	schemasDir := os.Getenv("OMO_CONTRACT_SCHEMAS")
+	if schemasDir == "" {
+		schemasDir = filepath.Join(dir, "schemas")
+	}
+	outPath := os.Getenv("OMO_CONTRACT_GO_OUT")
+	if outPath == "" {
+		outPath = filepath.Join(dir, "..", "internal", "wscontract", "types_gen.go")
+	}
+	g := newGen(schemasDir)
+	g.generate(outPath)
 }
 
 func fatal(format string, args ...any) {
@@ -77,8 +88,9 @@ func (g *gen) load(fileID string) schema {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		fatal("parse %s: %v", fileID, err)
 	}
-	validateSchemaDocument(fileID, doc)
 	g.files[fileID] = doc
+	validateSchemaDocument(fileID, doc)
+	g.validateRefs(fileID, doc)
 	return doc
 }
 
@@ -205,6 +217,20 @@ func validateSchemaDocument(fileID string, doc schema) {
 				if !ok || len(list) == 0 {
 					fatal("%s%s/%s: must be a non-empty array", fileID, path, keyword)
 				}
+				if keyword == "oneOf" && !(path == "" && (fileID == "server-frames.json" || fileID == "client-frames.json")) {
+					fatal("%s%s: unsupported schema construct oneOf", fileID, path)
+				}
+				if keyword == "anyOf" {
+					nulls := 0
+					for _, branch := range list {
+						if m, ok := branch.(map[string]any); ok && m["type"] == "null" {
+							nulls++
+						}
+					}
+					if len(list) != 2 || nulls != 1 {
+						fatal("%s%s: unsupported schema construct anyOf (only nullable values are implemented)", fileID, path)
+					}
+				}
 				for i, child := range list {
 					walk(child, fmt.Sprintf("%s/%s/%d", path, keyword, i))
 				}
@@ -254,6 +280,38 @@ func validateSchemaDocument(fileID string, doc schema) {
 		}
 	}
 	walk(doc, "")
+}
+
+func (g *gen) validateRefs(fileID string, doc schema) {
+	var walk func(any)
+	walk = func(value any) {
+		node, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		if ref, ok := node["$ref"].(string); ok {
+			g.def(ref, fileID)
+		}
+		for _, key := range []string{"properties", "$defs"} {
+			if children, ok := node[key].(map[string]any); ok {
+				for _, child := range children {
+					walk(child)
+				}
+			}
+		}
+		for _, key := range []string{"anyOf", "oneOf"} {
+			if children, ok := node[key].([]any); ok {
+				for _, child := range children {
+					walk(child)
+				}
+			}
+		}
+		walk(node["items"])
+		if _, boolean := node["additionalProperties"].(bool); !boolean {
+			walk(node["additionalProperties"])
+		}
+	}
+	walk(map[string]any(doc))
 }
 
 // unionDefs returns the def names referenced by a top-level oneOf, in order.

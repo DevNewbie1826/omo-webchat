@@ -3,14 +3,13 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"math"
 	"testing"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
-func TestStructuredStatsNormalizeToNumericProjection(t *testing.T) {
+func TestStructuredStatsPreserveProviderShape(t *testing.T) {
 	var got Stats
 	if err := json.Unmarshal([]byte(`{
 		"tokens":{"input":100,"output":50,"cacheRead":7,"total":157},
@@ -19,8 +18,8 @@ func TestStructuredStatsNormalizeToNumericProjection(t *testing.T) {
 	}`), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Tokens != 150 || got.Cost != 0.001 || math.Abs(got.ContextUsage-0.00075) > 1e-12 {
-		t.Fatalf("normalized stats = %+v", got)
+	if string(got.Tokens) != `{"input":100,"output":50,"cacheRead":7,"total":157}` || got.Cost != 0.001 || string(got.ContextUsage) != `{"used":150,"total":200000}` {
+		t.Fatalf("preserved stats = %+v", got)
 	}
 }
 

@@ -27,9 +27,9 @@ func newSubscriber(c *connection) *subscriber {
 	return &subscriber{conn: c, ready: make(chan struct{})}
 }
 
-// synchronousAttach asks session's broadcaster to finish queueing its initial
+// SynchronousAttach asks session's broadcaster to finish queueing its initial
 // replay before Acquire returns.
-func (*subscriber) synchronousAttach() {}
+func (*subscriber) SynchronousAttach() {}
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
@@ -266,4 +266,5 @@ func normalizedErrorCode(code string) string {
 }
 
 var _ session.Subscriber = (*subscriber)(nil)
+var _ session.SynchronousAttachHook = (*subscriber)(nil)
 var _ interface{ DeliverFrame(session.Frame) error } = (*subscriber)(nil)

@@ -84,6 +84,14 @@ describe("server frame fixtures roundtrip against generated types", () => {
     expect(parseClientFrame(badEnum?.data)).toBeNull();
   });
 
+  it("validates RFC3339Nano exactly rather than using Date.parse leniency", () => {
+    const base = { type: "notice", sessionId: "s1", kind: "k" };
+    expect(parseServerFrame({ ...base, at: "2026-01-02T03:04:05.123456789Z" })).not.toBeNull();
+    for (const at of ["2026-02-29T03:04:05Z", "2026-01-02 03:04:05Z", "2026-01-02T03:04:05.1234567890Z"]) {
+      expect(parseServerFrame({ ...base, at })).toBeNull();
+    }
+  });
+
   it("distinguishes nullable and optional wire shapes", () => {
     for (const name of [
       "server-ready-null.json",

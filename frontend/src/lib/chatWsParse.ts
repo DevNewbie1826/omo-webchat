@@ -3,7 +3,7 @@ import { parseConversationFrame } from "./chatWsParseConversation";
 import { isRecord, reqString } from "./chatWsParseFields";
 import { parseLifecycleFrame } from "./chatWsParseLifecycle";
 import { parseSessionFrame } from "./chatWsParseSession";
-import { SERVER_FRAME_TYPES } from "./contract/types_gen";
+import { parseServerFrame, SERVER_FRAME_TYPES } from "./contract/types_gen";
 
 export { sanitizeJson } from "./chatWsParseFields";
 
@@ -25,6 +25,22 @@ const SESSION_FRAME_TYPES: ReadonlySet<string> = new Set(
 );
 
 export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
+  let validated = parseServerFrame(msg);
+  let parsedInput: unknown = validated;
+  // Legacy notice producers omitted `at` or sent an invalid stamp. The
+  // generated parser still authoritatively rejects that wire value; validate
+  // the rest of the frame with a known-valid stamp, then retain the original
+  // input so the seam applies its established client-clock fallback.
+  if (validated === null && isRecord(msg) && msg["type"] === "notice") {
+    validated = parseServerFrame({ ...msg, at: "1970-01-01T00:00:00Z" });
+    if (validated !== null) {
+      const withoutAt = { ...msg };
+      delete withoutAt["at"];
+      parsedInput = withoutAt;
+    }
+  }
+  if (validated === null || !isRecord(validated) || !isRecord(parsedInput)) return null;
+  msg = parsedInput;
   if (!isRecord(msg)) return null;
   const type = msg["type"];
   if (typeof type !== "string" || !SESSION_FRAME_TYPES.has(type)) return null;

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
 type createWorkspaceRequest struct {
@@ -75,8 +77,15 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stop may wait on provider I/O. The store deletion is the lifecycle
 	// linearization point; concurrent opens recheck it before attachment.
+	manager, cursors := s.v2Stack()
 	for _, record := range removed.Chats {
 		s.chats.Stop(record.ID)
+		if manager != nil {
+			_ = manager.StopContext(r.Context(), record.ID)
+		}
+	}
+	if cursors != nil {
+		_ = cursors.DeleteWorkspace(wsID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -96,6 +105,9 @@ func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
+	}
+	if _, cursors := s.v2Stack(); cursors != nil {
+		_ = cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path})
 	}
 	writeJSON(w, http.StatusOK, ws)
 }

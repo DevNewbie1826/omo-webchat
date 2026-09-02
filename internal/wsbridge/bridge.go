@@ -64,7 +64,23 @@ func New(cfg Config) *Handler {
 		PermessageDeflate: gws.PermessageDeflate{Enabled: true},
 		Authorize:         func(r *http.Request, _ gws.SessionStorage) bool { return originAllowed(r) },
 	})
+	if done := cfg.Context.Done(); done != nil {
+		go func() {
+			<-done
+			h.CloseConnections()
+		}()
+	}
 	return h
+}
+
+// CloseConnections closes every upgraded socket, including sockets that have
+// not completed hello or bound a chat.
+func (h *Handler) CloseConnections() {
+	h.conns.Range(func(key, value any) bool {
+		h.conns.Delete(key)
+		value.(*connection).shutdown()
+		return true
+	})
 }
 
 // DefaultHandler is the production mount seam while the v1 Server constructor
@@ -80,7 +96,8 @@ var (
 	endpointID      atomic.Uint64
 )
 
-func unavailable(reason string) http.Handler {
+// Unavailable returns a diagnostic endpoint for a v2 stack that could not start.
+func Unavailable(reason string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -91,7 +108,7 @@ func unavailable(reason string) http.Handler {
 	})
 }
 
-func init() { defaultEndpoint.Store(endpointHolder{handler: unavailable("startup not completed")}) }
+func init() { defaultEndpoint.Store(endpointHolder{handler: Unavailable("startup not completed")}) }
 
 // InstallDefault atomically installs the endpoint used by the API mount and
 // returns an ownership-safe remover for server shutdown.
@@ -104,13 +121,13 @@ func InstallDefault(h http.Handler) func() {
 	return func() {
 		current := defaultEndpoint.Load().(endpointHolder)
 		if current.id == id {
-			defaultEndpoint.Store(endpointHolder{handler: unavailable("server stopped")})
+			defaultEndpoint.Store(endpointHolder{handler: Unavailable("server stopped")})
 		}
 	}
 }
 
 // InstallUnavailable publishes a diagnostic 503 endpoint.
-func InstallUnavailable(reason string) func() { return InstallDefault(unavailable(reason)) }
+func InstallUnavailable(reason string) func() { return InstallDefault(Unavailable(reason)) }
 
 // DefaultHandler returns the currently installed v2 endpoint.
 func DefaultHandler() http.Handler { return defaultEndpoint.Load().(endpointHolder).handler }
@@ -224,6 +241,7 @@ type netClosedError struct{}
 func (netClosedError) Error() string { return "websocket closed" }
 
 func (c *connection) shutdown() {
+	c.bridge.conns.Delete(c.socket)
 	if !c.closed.CompareAndSwap(false, true) {
 		return
 	}
@@ -305,17 +323,14 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 		return
 	}
 
-	switch frame.(type) {
-	case *wscontract.ClientHelloFrame:
+	if f, ok := frame.(*wscontract.ClientHelloFrame); ok {
+		if f.Version != ContractVersion {
+			c.sendError("bad_frame", "wire contract version mismatch", "", "")
+			return
+		}
 		c.stateMu.Lock()
 		c.hello = true
 		c.stateMu.Unlock()
-		if f, ok := frame.(*wscontract.ClientHelloFrame); ok && f.Version != ContractVersion {
-			c.sendError("bad_frame", "wire contract version mismatch", "", "")
-		}
-		return
-	case *wscontract.PingFrame:
-		_ = c.write(wscontract.PongFrame{Type: "pong"})
 		return
 	}
 	c.stateMu.Lock()
@@ -323,6 +338,10 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 	c.stateMu.Unlock()
 	if !greeted {
 		c.sendError("bad_frame", "client hello required", "", "")
+		return
+	}
+	if _, ok := frame.(*wscontract.PingFrame); ok {
+		_ = c.write(wscontract.PongFrame{Type: "pong"})
 		return
 	}
 	if f, ok := frame.(*wscontract.ChatCreateFrame); ok {
@@ -447,25 +466,31 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	sess, started, detach, err := c.bridge.cfg.Manager.Acquire(ctx, ref, c.sub)
+	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, c.sub, func(acquired *session.Session, started bool) {
+		c.stateMu.Lock()
+		c.wsID, c.chatID, c.sess = f.WsID, f.ChatID, acquired
+		c.stateMu.Unlock()
+		c.sub.activate(!started)
+		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
+			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
+		}
+		c.queryState(ctx, acquired)
+		c.queryModels(ctx, acquired)
+		c.queryCommands(ctx, acquired)
+		c.queryStats(ctx, acquired)
+		if !started {
+			acquired.LoadEntries(ctx)
+		}
+	})
 	if err != nil {
 		c.sendError("start_failed", err.Error(), "", "")
 		return
 	}
 	c.stateMu.Lock()
-	c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, sess, detach
+	if c.sess == sess {
+		c.detach = detach
+	}
 	c.stateMu.Unlock()
-	c.sub.activate(!started)
-	if err := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); err != nil {
-		c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", err)
-	}
-	c.queryState(ctx, sess)
-	c.queryModels(ctx, sess)
-	c.queryCommands(ctx, sess)
-	c.queryStats(ctx, sess)
-	if !started {
-		sess.LoadEntries(ctx)
-	}
 }
 
 func (c *connection) sendAck(command, requestID string) {
@@ -558,7 +583,14 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 		return
 	}
 	sid, _ := c.binding()
-	_ = c.write(map[string]any{"type": "stats", "sessionId": sid, "tokens": x.Tokens, "cost": x.Cost, "contextUsage": x.ContextUsage})
+	frame := map[string]any{"type": "stats", "sessionId": sid, "cost": x.Cost}
+	if len(x.Tokens) != 0 {
+		frame["tokens"] = x.Tokens
+	}
+	if len(x.ContextUsage) != 0 {
+		frame["contextUsage"] = x.ContextUsage
+	}
+	_ = c.write(frame)
 }
 
 func commandEntry(x session.CommandInfo) wscontract.CommandEntry {

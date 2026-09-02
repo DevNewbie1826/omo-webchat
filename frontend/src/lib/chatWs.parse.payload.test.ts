@@ -11,6 +11,12 @@ describe("parseChatServerFrame", () => {
         contextUsage: { tokens: 16161, contextWindow: 1000000, percent: 1.616 },
       }),
     ).toMatchObject({ type: "stats", contextUsage: { tokens: 16161, percent: 1.616 } });
+    expect(parseChatServerFrame({
+      type: "stats",
+      sessionId: "c1",
+      tokens: { input: 100, output: 50, cacheRead: 7, cacheWrite: 3, total: 160 },
+      contextUsage: { used: 150, total: 200000, percent: 0.075 },
+    })).toMatchObject({ tokens: { input: 100, cacheRead: 7 }, contextUsage: { used: 150, total: 200000, percent: 0.075 } });
     // contextUsage only, no cost — must still be accepted
     expect(
       parseChatServerFrame({ type: "stats", sessionId: "c1", contextUsage: { tokens: 1, contextWindow: 10, percent: 10 } }),
@@ -60,6 +66,18 @@ describe("parseChatServerFrame", () => {
         customType: "senpi-task.usage",
         blocks: [{ kind: "text", text: "<omo-senpi-task>hook</omo-senpi-task>" }],
       },
+    });
+  });
+
+  it("preserves canonical string custom-message content and timestamp", () => {
+    expect(parseChatServerFrame({
+      type: "message",
+      sessionId: "c1",
+      message: { role: "custom", customType: "hook", content: "canonical hook output", timestamp: 1735689600.25 },
+    })).toEqual({
+      type: "message",
+      sessionId: "c1",
+      message: { role: "custom", customType: "hook", blocks: [{ kind: "text", text: "canonical hook output" }], ts: 1735689600.25 },
     });
   });
 

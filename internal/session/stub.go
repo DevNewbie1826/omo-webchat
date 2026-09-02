@@ -117,6 +117,12 @@ type Subscriber interface {
 	Cancel() error
 }
 
+// SynchronousAttachHook marks subscribers that must observe the complete
+// attach-time replay before Manager.Acquire returns.
+type SynchronousAttachHook interface {
+	SynchronousAttach()
+}
+
 type Summary struct {
 	ChatID           string
 	DurableSessionID string
@@ -126,76 +132,12 @@ type Summary struct {
 	Attachments      int
 }
 
+// Stats preserves provider statistics verbatim so structured token/cache data
+// reaches frontend consumers without a lossy numeric projection.
 type Stats struct {
-	Tokens             int64
-	Cost, ContextUsage float64
-}
-
-// UnmarshalJSON normalizes the provider's structured statistics into the
-// numeric v1 wire projection. Older numeric responses remain accepted.
-func (s *Stats) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Tokens       json.RawMessage `json:"tokens"`
-		Cost         float64         `json:"cost"`
-		ContextUsage json.RawMessage `json:"contextUsage"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	s.Cost = raw.Cost
-	if len(raw.Tokens) > 0 {
-		if err := json.Unmarshal(raw.Tokens, &s.Tokens); err != nil {
-			var tokens struct {
-				Input, Output json.RawMessage
-			}
-			if err := json.Unmarshal(raw.Tokens, &tokens); err != nil {
-				return err
-			}
-			s.Tokens = numericTokenCount(tokens.Input) + numericTokenCount(tokens.Output)
-		}
-	}
-	if len(raw.ContextUsage) > 0 {
-		if err := json.Unmarshal(raw.ContextUsage, &s.ContextUsage); err != nil {
-			var usage struct {
-				Used, Total           json.RawMessage
-				Tokens, ContextWindow json.RawMessage
-			}
-			if err := json.Unmarshal(raw.ContextUsage, &usage); err != nil {
-				return err
-			}
-			used, total := float64(numericTokenCount(usage.Used)), float64(numericTokenCount(usage.Total))
-			if total > 0 {
-				s.ContextUsage = used / total
-			} else {
-				tokens, window := float64(numericTokenCount(usage.Tokens)), float64(numericTokenCount(usage.ContextWindow))
-				if window > 0 {
-					s.ContextUsage = tokens / window
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func numericTokenCount(raw json.RawMessage) int64 {
-	var number int64
-	if json.Unmarshal(raw, &number) == nil {
-		return number
-	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil {
-		return 0
-	}
-	for _, key := range []string{"total", "tokens", "count"} {
-		if value, ok := object[key]; ok {
-			return numericTokenCount(value)
-		}
-	}
-	var total int64
-	for _, value := range object {
-		total += numericTokenCount(value)
-	}
-	return total
+	Tokens       json.RawMessage `json:"tokens,omitempty"`
+	Cost         float64         `json:"cost,omitempty"`
+	ContextUsage json.RawMessage `json:"contextUsage,omitempty"`
 }
 
 type RunSnapshot struct {

@@ -120,7 +120,7 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 		x.initialOnce.Do(func() { close(x.initialDone) })
 	}
 	x.start()
-	if _, synchronous := sub.(interface{ synchronousAttach() }); synchronous {
+	if _, synchronous := sub.(SynchronousAttachHook); synchronous {
 		<-x.initialDone
 	}
 	if !accepted {

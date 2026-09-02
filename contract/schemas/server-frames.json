@@ -109,7 +109,7 @@
         "sessionId": { "type": "string" },
         "cost": { "type": "number" },
         "contextUsage": { "$ref": "shared-types.json#/$defs/ContextUsage" },
-        "tokens": { "$ref": "shared-types.json#/$defs/JsonValue" }
+        "tokens": { "$ref": "shared-types.json#/$defs/TokenUsage" }
       }
     },
     "ExtensionEventFrame": {

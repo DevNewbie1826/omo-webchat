@@ -36,7 +36,11 @@ describe("parseChatServerFrame extensionEvent", () => {
   });
 
   it("drops extension events with non-record data", () => {
-    expect(parseChatServerFrame({ type: "extensionEvent", sessionId: "s1", name: "event", data: [] })).toBeNull();
-    expect(parseChatServerFrame({ type: "extensionEvent", sessionId: "s1", name: "event", data: "value" })).toBeNull();
+    expect(parseChatServerFrame({ type: "extensionEvent", sessionId: "s1", name: "event", data: [] })).toEqual({
+      type: "extensionEvent", sessionId: "s1", name: "event", data: [],
+    });
+    expect(parseChatServerFrame({ type: "extensionEvent", sessionId: "s1", name: "event", data: "value" })).toEqual({
+      type: "extensionEvent", sessionId: "s1", name: "event", data: "value",
+    });
   });
 });

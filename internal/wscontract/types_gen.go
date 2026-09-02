@@ -26,9 +26,11 @@ type AssistantDelta struct {
 
 type AssistantMessage struct {
 	Blocks     []ContentBlock  `json:"blocks,omitempty"`
+	Content    *string         `json:"content,omitempty"`
 	CustomType *string         `json:"customType,omitempty"`
 	Model      *string         `json:"model,omitempty"`
 	Role       string          `json:"role"`
+	Timestamp  *float64        `json:"timestamp,omitempty"`
 	Ts         *float64        `json:"ts,omitempty"`
 	Usage      json.RawMessage `json:"usage,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
@@ -75,9 +77,11 @@ type ContentBlock struct {
 }
 
 type ContextUsage struct {
-	ContextWindow int64   `json:"contextWindow"`
+	ContextWindow *int64  `json:"contextWindow,omitempty"`
 	Percent       float64 `json:"percent"`
-	Tokens        int64   `json:"tokens"`
+	Tokens        *int64  `json:"tokens,omitempty"`
+	Total         *int64  `json:"total,omitempty"`
+	Used          *int64  `json:"used,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -102,6 +106,16 @@ type ResumeCandidate struct {
 	HostPath *string `json:"hostPath,omitempty"`
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type TokenUsage struct {
+	CacheRead  *int64 `json:"cacheRead,omitempty"`
+	CacheWrite *int64 `json:"cacheWrite,omitempty"`
+	Input      *int64 `json:"input,omitempty"`
+	Output     *int64 `json:"output,omitempty"`
+	Total      *int64 `json:"total,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -327,11 +341,11 @@ type StateFrame struct {
 }
 
 type StatsFrame struct {
-	ContextUsage *ContextUsage   `json:"contextUsage,omitempty"`
-	Cost         *float64        `json:"cost,omitempty"`
-	SessionID    string          `json:"sessionId"`
-	Tokens       json.RawMessage `json:"tokens,omitempty"`
-	Type         string          `json:"type"`
+	ContextUsage *ContextUsage `json:"contextUsage,omitempty"`
+	Cost         *float64      `json:"cost,omitempty"`
+	SessionID    string        `json:"sessionId"`
+	Tokens       *TokenUsage   `json:"tokens,omitempty"`
+	Type         string        `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -544,7 +558,7 @@ func (v *AssistantMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"blocks", "customType", "model", "role", "ts", "usage"}, []string{}, []string{"blocks"})
+	extra, err := captureExtraFields(data, []string{"blocks", "content", "customType", "model", "role", "timestamp", "ts", "usage"}, []string{}, []string{"blocks"})
 	if err != nil {
 		return err
 	}
@@ -634,7 +648,7 @@ func (v *ContextUsage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"contextWindow", "percent", "tokens"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"contextWindow", "percent", "tokens", "total", "used"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -698,6 +712,24 @@ func (v *ResumeCandidate) UnmarshalJSON(data []byte) error {
 
 func (v ResumeCandidate) MarshalJSON() ([]byte, error) {
 	type plain ResumeCandidate
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TokenUsage) UnmarshalJSON(data []byte) error {
+	type plain TokenUsage
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"cacheRead", "cacheWrite", "input", "output", "total"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TokenUsage) MarshalJSON() ([]byte, error) {
+	type plain TokenUsage
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -1766,7 +1798,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "message":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "content": validationSchema{Type: "string"}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "timestamp": validationSchema{Type: "number"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
 				return nil, err
 			}
 		case "tool":
@@ -1778,7 +1810,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "stats":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"contextUsage": validationSchema{Type: "object", Properties: map[string]validationSchema{"contextWindow": validationSchema{Type: "integer"}, "percent": validationSchema{Type: "number"}, "tokens": validationSchema{Type: "integer"}}, Required: []string{"tokens", "contextWindow", "percent"}}, "cost": validationSchema{Type: "number"}, "sessionId": validationSchema{Type: "string"}, "tokens": validationSchema{}, "type": validationSchema{Const: "stats"}}, Required: []string{"type", "sessionId"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"contextUsage": validationSchema{Type: "object", Properties: map[string]validationSchema{"contextWindow": validationSchema{Type: "integer"}, "percent": validationSchema{Type: "number"}, "tokens": validationSchema{Type: "integer"}, "total": validationSchema{Type: "integer"}, "used": validationSchema{Type: "integer"}}, Required: []string{"percent"}}, "cost": validationSchema{Type: "number"}, "sessionId": validationSchema{Type: "string"}, "tokens": validationSchema{Type: "object", Properties: map[string]validationSchema{"cacheRead": validationSchema{Type: "integer"}, "cacheWrite": validationSchema{Type: "integer"}, "input": validationSchema{Type: "integer"}, "output": validationSchema{Type: "integer"}, "total": validationSchema{Type: "integer"}}}, "type": validationSchema{Const: "stats"}}, Required: []string{"type", "sessionId"}}); err != nil {
 				return nil, err
 			}
 		case "extensionEvent":

@@ -60,7 +60,7 @@ export function parseSessionFrame(
       if (sessionId === null) return null;
       const cost = optNumber(msg, "cost");
       const contextUsage = parseContextUsage(msg["contextUsage"]);
-      const tokens = msg["tokens"];
+      const tokens = msg["tokens"] as import("./contract/types_gen").TokenUsage | undefined;
       if (cost === null || contextUsage === null) return null;
       if (cost === undefined && contextUsage === undefined && tokens === undefined) return null;
       return {
@@ -68,7 +68,7 @@ export function parseSessionFrame(
         sessionId,
         ...(cost !== undefined ? { cost } : {}),
         ...(contextUsage !== undefined ? { contextUsage } : {}),
-        ...(tokens !== undefined ? { tokens: sanitizeJson(tokens) } : {}),
+        ...(tokens !== undefined ? { tokens } : {}),
       };
     }
     case "extensionEvent": {
@@ -76,7 +76,6 @@ export function parseSessionFrame(
       const name = reqString(msg, "name");
       const data = msg["data"];
       if (name === null || name.length === 0) return null;
-      if (data !== undefined && !isRecord(data)) return null;
       return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
     }
     case "approval": {

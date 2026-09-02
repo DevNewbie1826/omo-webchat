@@ -76,9 +76,17 @@ export function parseContextUsage(value: unknown): ContextUsage | null | undefin
   if (!isRecord(value)) return null;
   const tokens = optNumber(value, "tokens");
   const contextWindow = optNumber(value, "contextWindow");
+  const used = optNumber(value, "used");
+  const total = optNumber(value, "total");
   const percent = optNumber(value, "percent");
-  if (typeof tokens !== "number" || typeof contextWindow !== "number" || typeof percent !== "number") return null;
-  return { tokens, contextWindow, percent };
+  if (tokens === null || contextWindow === null || used === null || total === null || typeof percent !== "number") return null;
+  return {
+    percent,
+    ...(tokens !== undefined ? { tokens } : {}),
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(used !== undefined ? { used } : {}),
+    ...(total !== undefined ? { total } : {}),
+  };
 }
 
 export function optStringArray(record: Record<string, unknown>, key: string): readonly string[] | null | undefined {
@@ -132,10 +140,15 @@ export function parseAssistantMessage(record: Record<string, unknown>): Assistan
   if (role === null) return null;
   const customType = optString(record, "customType");
   const model = optString(record, "model");
-  const ts = optNumber(record, "ts");
-  if (customType === null || model === null || ts === null) return null;
+  const explicitTs = optNumber(record, "ts");
+  const timestamp = optNumber(record, "timestamp");
+  const content = optString(record, "content");
+  if (customType === null || model === null || explicitTs === null || timestamp === null || content === null) return null;
+  const ts = explicitTs ?? timestamp;
   const rawBlocks = record["blocks"];
-  const blocks = rawBlocks === undefined ? undefined : mapRecords(rawBlocks, parseContentBlock);
+  const blocks = rawBlocks === undefined
+    ? (content === undefined ? undefined : [{ kind: "text", text: content }])
+    : mapRecords(rawBlocks, parseContentBlock);
   if (blocks === null) return null;
   const usage = record["usage"];
   return {

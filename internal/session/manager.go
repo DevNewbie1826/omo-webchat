@@ -92,6 +92,7 @@ type Manager struct {
 	cleanupWG          sync.WaitGroup
 	eventWG            sync.WaitGroup
 	openCleanupExpired chan struct{}
+	pendingOpen        map[string]bool
 }
 
 func NewManager(cfg Config) *Manager {
@@ -111,7 +112,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -180,6 +181,17 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, nil)
+}
+
+// AcquireInitialized keeps the per-chat flight through initialize, allowing a
+// transport to publish its binding and complete initial state/history queries
+// without cross-socket controls interleaving.
+func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool)) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize)
+}
+
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool)) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -221,6 +233,9 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	if existing != nil && !existing.Resumable() {
 		detach, err := existing.attachChecked(sub)
 		if err == nil {
+			if initialize != nil {
+				initialize(existing, false)
+			}
 			return existing, false, detach, nil
 		}
 		if !errors.Is(err, ErrSessionClosed) && !errors.Is(err, ErrSessionResumable) {
@@ -237,7 +252,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	}
 
 	resumed := cur.SessionFile != ""
-	data, epoch, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
+	data, epoch, openErr := m.open(ctx, chatID, chat.CWD(), cur.SessionFile)
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
 	}
@@ -258,7 +273,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 			}
 			return nil, false, nil, openErr
 		}
-		data, epoch, err = m.open(ctx, chat.CWD(), "")
+		data, epoch, err = m.open(ctx, chatID, chat.CWD(), "")
 		if err == nil {
 			err = validateOpen(data, Cursor{}, false)
 		}
@@ -335,6 +350,9 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	if resumed {
 		s.loadEntries(ctx)
 	}
+	if initialize != nil {
+		initialize(s, true)
+	}
 	return s, true, detach, nil
 }
 
@@ -380,47 +398,75 @@ type openResult struct {
 	response *omorpc.Response
 	epoch    omorpc.EpochToken
 	err      error
+	detached bool
 }
 
 // open keeps transport ownership after its caller stops waiting. The manager
 // tracks that ownership until the response or epoch death is observed and any
 // routing handle from a late success has been closed.
-func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+	m.mu.Lock()
+	if m.pendingOpen[chatID] {
+		m.mu.Unlock()
+		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, errors.New("session: open already in flight")
+	}
+	m.pendingOpen[chatID] = true
+	m.mu.Unlock()
 	opCtx, cancel := context.WithCancel(context.Background())
 	result := make(chan openResult, 1)
 	m.cleanupWG.Add(1)
 	go func() {
-		data, epoch, err := m.openCall(opCtx, cwd, path)
-		result <- openResult{data: data, epoch: epoch, err: err}
+		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path)
+		result <- openResult{data: data, epoch: epoch, err: err, detached: detached}
 	}()
 
 	select {
 	case got := <-result:
 		cancel()
+		if !got.detached {
+			m.clearPendingOpen(chatID)
+		}
 		m.cleanupWG.Done()
 		return got.data, got.epoch, got.err
 	case <-ctx.Done():
-		timer := time.AfterFunc(m.cfg.CloseTimeout, func() {
+		timer := time.NewTimer(m.cfg.CloseTimeout)
+		select {
+		case got := <-result:
+			timer.Stop()
+			cancel()
+			if !got.detached {
+				m.clearPendingOpen(chatID)
+			}
+			if got.data.SessionID != "" {
+				m.discardRouting(got.data.SessionID)
+			}
+			m.cleanupWG.Done()
+		case <-timer.C:
 			cancel()
 			select {
 			case m.openCleanupExpired <- struct{}{}:
 			default:
 			}
-		})
-		go func() {
 			got := <-result
-			timer.Stop()
-			cancel()
+			if !got.detached {
+				m.clearPendingOpen(chatID)
+			}
 			if got.data.SessionID != "" {
 				m.discardRouting(got.data.SessionID)
 			}
 			m.cleanupWG.Done()
-		}()
+		}
 		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ctx.Err()
 	}
 }
 
-func (m *Manager) openCall(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+func (m *Manager) clearPendingOpen(chatID string) {
+	m.mu.Lock()
+	delete(m.pendingOpen, chatID)
+	m.mu.Unlock()
+}
+
+func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
 	cmd := omorpc.OpenSession{CWD: cwd}
 	if path != "" {
 		cmd = omorpc.OpenSession{SessionPath: path}
@@ -434,15 +480,35 @@ func (m *Manager) openCall(ctx context.Context, cwd, path string) (omorpc.OpenSe
 		})
 		var resp *omorpc.Response
 		if err == nil {
-			got := <-completion
-			resp, epoch, err = got.response, got.epoch, got.err
+			select {
+			case got := <-completion:
+				resp, epoch, err = got.response, got.epoch, got.err
+			case <-ctx.Done():
+				// The caller stops waiting now, but detached correlation ownership
+				// remains until the response or epoch settles. A late success is
+				// closed so cancellation can never orphan a provider route.
+				m.cleanupWG.Add(1)
+				go func() {
+					defer m.cleanupWG.Done()
+					defer m.clearPendingOpen(chatID)
+					got := <-completion
+					if got.err != nil || got.response == nil {
+						return
+					}
+					var late omorpc.OpenSessionData
+					if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
+						m.discardRouting(late.SessionID)
+					}
+				}()
+				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
+			}
 		}
 		if err == nil {
 			var out omorpc.OpenSessionData
 			if err := json.Unmarshal(resp.Data, &out); err != nil {
-				return out, epoch, fmt.Errorf("session: decode open_session: %w", err)
+				return out, epoch, false, fmt.Errorf("session: decode open_session: %w", err)
 			}
-			return out, epoch, nil
+			return out, epoch, false, nil
 		}
 		last = err
 		var stable *omorpc.StableError
@@ -454,10 +520,10 @@ func (m *Manager) openCall(ctx context.Context, cwd, path string) (omorpc.OpenSe
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
-			return omorpc.OpenSessionData{}, epoch, ctx.Err()
+			return omorpc.OpenSessionData{}, epoch, false, ctx.Err()
 		}
 	}
-	return omorpc.OpenSessionData{}, epoch, last
+	return omorpc.OpenSessionData{}, epoch, false, last
 }
 
 func danglingResume(err error) bool {

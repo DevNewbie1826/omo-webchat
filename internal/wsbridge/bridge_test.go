@@ -63,6 +63,18 @@ func (c *collector) next(t *testing.T, typ string) map[string]any {
 		}
 	}
 }
+func TestHelloWriteFailureShutdownRemovesConnectionRegistry(t *testing.T) {
+	h := New(Config{Context: context.Background()})
+	sock := &gws.Conn{}
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel}
+	h.conns.Store(sock, c)
+	c.shutdown()
+	if _, ok := h.conns.Load(sock); ok {
+		t.Fatal("failed hello left connection registered")
+	}
+}
+
 func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	dir, err := os.MkdirTemp("", "wsbridge-")
 	if err != nil {
@@ -131,7 +143,9 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 		t.Fatalf("pre-hello frame accepted: %v", got)
 	}
 	writeClient(t, preHello, map[string]any{"type": "ping"})
-	preHelloFrames.next(t, "pong")
+	if got := preHelloFrames.next(t, "error"); got["code"] != "bad_frame" {
+		t.Fatalf("pre-hello ping accepted: %v", got)
+	}
 	writeClient(t, preHello, map[string]any{"type": "hello", "version": 99})
 	if got := preHelloFrames.next(t, "error"); got["code"] != "bad_frame" {
 		t.Fatalf("version mismatch accepted silently: %v", got)
@@ -153,6 +167,7 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 		map[string]any{"type": "message_update", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "hello"}}}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": "hello", "partial": map[string]any{"type": "text", "text": "hello"}}},
 		map[string]any{"type": "tool_execution_update", "toolCallId": "call-1", "toolName": "bash", "args": map[string]any{"command": "pwd"}, "partialResult": map[string]any{"content": []any{map[string]any{"type": "text", "text": "/tmp"}}}},
 		map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "hello"}}, "model": "mock-model"}},
+		map[string]any{"type": "message_end", "message": map[string]any{"role": "custom", "customType": "hook", "content": "canonical hook output", "timestamp": 1735689600.25}},
 		map[string]any{"type": "extension_event", "name": "omo.task.updated", "data": map[string]any{"tasks": []any{}}},
 		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
 	)
@@ -170,6 +185,10 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	completed := message["message"].(map[string]any)
 	if _, ok := completed["blocks"].([]any); !ok || completed["content"] != nil {
 		t.Fatalf("canonical message not normalized: %v", message)
+	}
+	custom := c.next(t, "message")["message"].(map[string]any)
+	if custom["content"] != "canonical hook output" || custom["timestamp"] != 1735689600.25 {
+		t.Fatalf("canonical string message lost content/timestamp: %v", custom)
 	}
 	c.next(t, "extensionEvent")
 	c.next(t, "run.done")

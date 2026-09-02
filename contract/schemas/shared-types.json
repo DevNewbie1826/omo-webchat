@@ -6,14 +6,27 @@
     "JsonValue": {
       "description": "Any JSON value. Generators map this to json.RawMessage / JsonValue."
     },
+    "TokenUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "input": { "type": "integer" },
+        "output": { "type": "integer" },
+        "cacheRead": { "type": "integer" },
+        "cacheWrite": { "type": "integer" },
+        "total": { "type": "integer" }
+      }
+    },
     "ContextUsage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tokens", "contextWindow", "percent"],
+      "required": ["percent"],
       "properties": {
+        "used": { "type": "integer" },
+        "total": { "type": "integer" },
+        "percent": { "type": "number" },
         "tokens": { "type": "integer" },
-        "contextWindow": { "type": "integer" },
-        "percent": { "type": "number" }
+        "contextWindow": { "type": "integer" }
       }
     },
     "ToolPayload": {
@@ -66,9 +79,11 @@
         "role": { "type": "string" },
         "customType": { "type": "string" },
         "blocks": { "type": "array", "items": { "$ref": "#/$defs/ContentBlock" } },
+        "content": { "type": "string" },
         "model": { "type": "string" },
         "usage": { "$ref": "#/$defs/JsonValue" },
-        "ts": { "type": "number" }
+        "ts": { "type": "number" },
+        "timestamp": { "type": "number" }
       }
     },
     "ChatImage": {

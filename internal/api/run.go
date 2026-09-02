@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
@@ -38,14 +39,38 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	sessions := auth.NewSessionStore(ctx, cfg.Password, logger)
 	apiServer := New(ctx, cfg, st, sessions, logger)
 
-	// The v2 endpoint is optional at startup failure, but never inert: publish a
-	// diagnostic 503 first, then replace it atomically after the independent
-	// cursor/session stack is ready.
-	removeV2 := wsbridge.InstallUnavailable("provider daemon initialization pending")
 	var (
 		v2Manager *v2session.Manager
+		v2Bridge  *wsbridge.Handler
 		ensured   *omorpc.EnsuredDaemon
+		cleanup   sync.Once
 	)
+	closeV2 := func() {
+		cleanup.Do(func() {
+			apiServer.installV2(nil, nil, wsbridge.Unavailable("server stopped"))
+			if v2Bridge != nil {
+				v2Bridge.CloseConnections()
+			}
+			if v2Manager != nil {
+				managerCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if closeErr := v2Manager.CloseAll(managerCtx); closeErr != nil {
+					logger.Error("closing v2 sessions", "err", closeErr)
+				}
+				cancel()
+			}
+			if ensured != nil {
+				clientCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if stopErr := ensured.Stop(clientCtx); stopErr != nil {
+					logger.Error("closing v2 provider client", "err", stopErr)
+				}
+				cancel()
+			}
+		})
+	}
+	// Cleanup is established before each acquisition below can make an error
+	// return observable (bind/readiness/Serve included).
+	defer closeV2()
+
 	stateDir := cfg.StateDir
 	if stateDir == "" {
 		stateDir, err = store.StateDir()
@@ -80,18 +105,17 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 					}
 					return cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt})
 				}
-				removeV2()
-				removeV2 = wsbridge.InstallDefault(wsbridge.New(wsbridge.Config{
+				v2Bridge = wsbridge.New(wsbridge.Config{
 					Context: ctx, Manager: v2Manager, Store: cursors,
 					ServerVersion: ensured.Client.ServerVersion(), Logger: logger, PrepareChat: prepareChat,
-				}))
+				})
+				apiServer.installV2(v2Manager, cursors, v2Bridge)
 			}
 		}
 	}
 	if err != nil {
 		logger.Error("v2 websocket bridge unavailable", "err", err)
-		removeV2()
-		removeV2 = wsbridge.InstallUnavailable(err.Error())
+		apiServer.installV2(nil, nil, wsbridge.Unavailable(err.Error()))
 	}
 
 	srv := &http.Server{
@@ -102,25 +126,12 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 
 	go func() {
 		<-ctx.Done()
-		// Settle and close logical provider sessions before the HTTP shutdown
-		// returns. CloseAll marks shared-provider termination intentional, so a
-		// normal server stop never leaks a synthetic pi_eof to clients.
 		apiServer.chats.CloseAll()
+		closeV2()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if v2Manager != nil {
-			if err := v2Manager.CloseAll(shutdownCtx); err != nil {
-				logger.Error("closing v2 sessions", "err", err)
-			}
-		}
-		removeV2()
-		if ensured != nil {
-			if err := ensured.Stop(shutdownCtx); err != nil {
-				logger.Error("closing v2 provider client", "err", err)
-			}
-		}
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("graceful shutdown failed", "err", err)
+		if shutdownErr := srv.Shutdown(shutdownCtx); shutdownErr != nil {
+			logger.Error("graceful shutdown failed", "err", shutdownErr)
 		}
 	}()
 

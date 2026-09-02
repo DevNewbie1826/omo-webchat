@@ -165,6 +165,7 @@ func TestWebSocketChatDisconnect(t *testing.T) {
 	}
 	sessions := auth.NewSessionStore(ctx, "pw", logger)
 	apiServer := New(ctx, &config.Config{Root: tmp, Provider: "omo"}, st, sessions, logger)
+	defer apiServer.chats.CloseAll()
 	server := httptest.NewServer(http.HandlerFunc(apiServer.handleWS))
 	defer server.Close()
 	defer server.CloseClientConnections()
@@ -223,6 +224,9 @@ func TestWebSocketChatDisconnect(t *testing.T) {
 	if got := apiServer.chats.Get(chat.ID); got != nil {
 		t.Fatalf("disconnected chat came back: %p", got)
 	}
+	server.CloseClientConnections()
+	server.Close()
+	apiServer.chats.CloseAll()
 }
 
 func TestWebSocketChatRoundTrip(t *testing.T) {
@@ -250,6 +254,7 @@ func TestWebSocketChatRoundTrip(t *testing.T) {
 	}
 	sessions := auth.NewSessionStore(ctx, "pw", logger)
 	apiServer := New(ctx, &config.Config{Root: tmp, Provider: "omo"}, st, sessions, logger)
+	defer apiServer.chats.CloseAll()
 	server := httptest.NewServer(http.HandlerFunc(apiServer.handleWS))
 	defer server.Close()
 	defer server.CloseClientConnections()
@@ -302,4 +307,7 @@ func TestWebSocketChatRoundTrip(t *testing.T) {
 	if !collector.hasType("messageDelta") || !collector.hasType("message") {
 		t.Fatalf("expected messageDelta + message frames; have: %s", collector.types())
 	}
+	server.CloseClientConnections()
+	server.Close()
+	apiServer.chats.CloseAll()
 }
