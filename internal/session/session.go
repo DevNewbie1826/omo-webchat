@@ -620,6 +620,16 @@ func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 }
 
 func (s *Session) attachCheckedTarget(sub Subscriber) (func(), *subscription, error) {
+	return s.attachCheckedTargetWithReplay(sub, false, nil)
+}
+
+// attachCheckedReplayTarget publishes the subscription, queues any explicit
+// initial frames, and arms replay while lifecycleMu excludes live publication.
+func (s *Session) attachCheckedReplayTarget(sub Subscriber, initial ...Frame) (func(), *subscription, error) {
+	return s.attachCheckedTargetWithReplay(sub, true, initial)
+}
+
+func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, replayInitial []Frame) (func(), *subscription, error) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
@@ -640,6 +650,12 @@ func (s *Session) attachCheckedTarget(sub Subscriber) (func(), *subscription, er
 		}
 	}
 	id, target, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
+	for _, frame := range replayInitial {
+		s.publishLocked(frame)
+	}
+	if replay && target != nil {
+		target.beginReplay()
+	}
 	s.lifecycleMu.Unlock()
 	var once sync.Once
 	return func() {
@@ -926,17 +942,19 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		return nil
 	}
 	publishErr := func(err error) {
-		if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+		if target != nil {
+			// Once the history context or session route is gone, terminal
+			// delivery cannot be acknowledged reliably. Retiring the target
+			// tears down replay instead of trapping pending live frames.
+			if ctx.Err() != nil || errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+				target.retire(err)
+				return
+			}
+		} else if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
 			return
 		}
 		info := historyErrorInfo(err)
 		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: info}
-		if target != nil && ctx.Err() != nil {
-			if !target.enqueueReplayTerminalNow(frame) {
-				target.retire(ctx.Err())
-			}
-			return
-		}
 		if emitErr := emit(frame, true); emitErr != nil && target != nil {
 			target.retire(emitErr)
 		}

@@ -361,6 +361,64 @@ func TestHistoryHybridReattachHistoryIsTargetedAndLiveFramesResume(t *testing.T)
 	}
 }
 
+func TestHistoryHybridInitializeLiveFrameFollowsHistoryTerminal(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	chat := testChat{id: "initialize-replay-order", cwd: t.TempDir()}
+	sess, _, _ := acquire(t, mgr, chat, nil)
+	path := filepath.Join(t.TempDir(), "initialize-replay-order.jsonl")
+	path, leaf := writeHistorySessionAt(t, path, sess.ID(), 2, 0)
+	sess.lifecycleMu.Lock()
+	sess.sessionFile = path
+	sess.lifecycleMu.Unlock()
+
+	release := d.BlockHandler(omorpc.CmdGetEntries)
+	defer release()
+	sub := newRecorder(32)
+	result := make(chan struct {
+		detach func()
+		err    error
+	}, 1)
+	go func() {
+		_, _, detach, err := mgr.AcquireInitialized(context.Background(), chat, sub, func(initialized *Session, _ bool, _ func()) {
+			initialized.lifecycleMu.Lock()
+			initialized.publishLocked(Frame{Kind: FrameState, SessionID: initialized.ID()})
+			initialized.lifecycleMu.Unlock()
+		})
+		result <- struct {
+			detach func()
+			err    error
+		}{detach: detach, err: err}
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("reattach tail request absent")
+	}
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
+	d.WriteRaw(fmt.Appendf(nil, `{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[],"leafId":%q}}`+"\n", id, sid, leaf))
+	got := <-result
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	defer got.detach()
+
+	terminalSeen := false
+	for {
+		frame := sub.next(t)
+		if frame.Kind == FrameEntries && frame.Data.(EntriesFrame).Final {
+			terminalSeen = true
+		}
+		if frame.Kind == FrameState {
+			if !terminalSeen {
+				t.Fatal("live initialize frame overtook the history terminal")
+			}
+			break
+		}
+	}
+}
+
 type stuckHistorySubscriber struct {
 	ready       chan struct{}
 	entered     chan struct{}
@@ -384,6 +442,88 @@ func (s *stuckHistorySubscriber) Cancel() error {
 }
 func (s *stuckHistorySubscriber) unblock() {
 	s.releaseOnce.Do(func() { close(s.release) })
+}
+
+func replayState(target *subscription) (bool, int) {
+	target.replayMu.Lock()
+	defer target.replayMu.Unlock()
+	return target.replaying, len(target.pendingLive)
+}
+
+func TestHistoryHybridEpochDeathDuringReplayRetiresTarget(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 1)
+	sess, _, _ := acquire(t, mgr, testChat{id: "epoch-death-history", cwd: t.TempDir()}, nil)
+	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
+	_, target, err := sess.attachCheckedReplayTarget(stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "epoch-death-history.jsonl")
+	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
+	done := make(chan struct{})
+	go func() {
+		sess.hydrateEntries(context.Background(), path, target)
+		close(done)
+	}()
+	select {
+	case <-stuck.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("disk replay did not enter delivery")
+	}
+
+	mgr.invalidateEpoch(sess.epoch)
+	stuck.unblock()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("epoch death did not terminate hydration")
+	}
+	if got := sess.broadcast.count(); got != 0 {
+		t.Fatalf("subscriber count after epoch death = %d, want 0", got)
+	}
+	if active, pending := replayState(target); active || pending != 0 {
+		t.Fatalf("replay survived epoch death: active=%v pending=%d", active, pending)
+	}
+}
+
+func TestHistoryHybridContextCancelDuringReplayRetiresTarget(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 1)
+	sess, _, _ := acquire(t, mgr, testChat{id: "cancel-history", cwd: t.TempDir()}, nil)
+	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
+	_, target, err := sess.attachCheckedReplayTarget(stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cancel-history.jsonl")
+	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		sess.hydrateEntries(ctx, path, target)
+		close(done)
+	}()
+	select {
+	case <-stuck.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("disk replay did not enter delivery")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("context cancellation did not terminate hydration")
+	}
+	if got := sess.broadcast.count(); got != 0 {
+		t.Fatalf("subscriber count after context cancellation = %d, want 0", got)
+	}
+	if active, pending := replayState(target); active || pending != 0 {
+		t.Fatalf("replay survived context cancellation: active=%v pending=%d", active, pending)
+	}
 }
 
 func TestHistoryHybridReplayAdmissionObservesDeadlineWithoutLifecycleLock(t *testing.T) {

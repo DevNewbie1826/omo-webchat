@@ -276,8 +276,15 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	existing := m.byChat[chatID]
 	m.mu.Unlock()
 	if existing != nil && !existing.Resumable() {
-		detach, target, err := existing.attachCheckedTarget(sub)
-		if err == nil {
+		var detach func()
+		var target *subscription
+		var attachErr error
+		if existing.sessionFile != "" {
+			detach, target, attachErr = existing.attachCheckedReplayTarget(sub)
+		} else {
+			detach, target, attachErr = existing.attachCheckedTarget(sub)
+		}
+		if attachErr == nil {
 			if initialize != nil {
 				initialize(existing, false, detach)
 			}
@@ -292,8 +299,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return existing, false, detach, nil
 		}
-		if !errors.Is(err, ErrSessionClosed) && !errors.Is(err, ErrSessionResumable) {
-			return nil, false, nil, err
+		if !errors.Is(attachErr, ErrSessionClosed) && !errors.Is(attachErr, ErrSessionResumable) {
+			return nil, false, nil, attachErr
 		}
 	}
 
@@ -377,17 +384,31 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, ErrSessionResumable
 		}
-		detach, target, err := s.attachCheckedTarget(sub)
-		if err != nil {
+		var detach func()
+		var target *subscription
+		var attachErr error
+		if resumed {
+			initial := make([]Frame, 0, 2)
+			if recovery != nil {
+				initial = append(initial, Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+			}
+			initial = append(initial, Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: true})
+			detach, target, attachErr = s.attachCheckedReplayTarget(sub, initial...)
+		} else {
+			detach, target, attachErr = s.attachCheckedTarget(sub)
+		}
+		if attachErr != nil {
 			m.discardRouting(chatID, data.SessionID)
-			return nil, false, nil, err
+			return nil, false, nil, attachErr
 		}
-		s.lifecycleMu.Lock()
-		if recovery != nil {
-			s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		if !resumed {
+			s.lifecycleMu.Lock()
+			if recovery != nil {
+				s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+			}
+			s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID()})
+			s.lifecycleMu.Unlock()
 		}
-		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
-		s.lifecycleMu.Unlock()
 		if initialize != nil {
 			initialize(s, true, detach)
 		}
@@ -451,8 +472,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return s, true, nil, ErrSessionResumable
 	}
 
-	detach, target, err := s.attachCheckedTarget(sub)
-	if err != nil {
+	var detach func()
+	var target *subscription
+	var attachErr error
+	if resumed {
+		initial := make([]Frame, 0, 2)
+		if recovery != nil {
+			initial = append(initial, Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		}
+		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: true})
+		detach, target, attachErr = s.attachCheckedReplayTarget(sub, initial...)
+	} else {
+		detach, target, attachErr = s.attachCheckedTarget(sub)
+	}
+	if attachErr != nil {
 		m.mu.Lock()
 		if m.byChat[chatID] == s {
 			delete(m.byChat, chatID)
@@ -461,14 +494,16 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		m.mu.Unlock()
 		m.discardRouting(chatID, data.SessionID)
-		return nil, false, nil, err
+		return nil, false, nil, attachErr
 	}
-	s.lifecycleMu.Lock()
-	if recovery != nil {
-		s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+	if !resumed {
+		s.lifecycleMu.Lock()
+		if recovery != nil {
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		}
+		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID()})
+		s.lifecycleMu.Unlock()
 	}
-	s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
-	s.lifecycleMu.Unlock()
 	if existing != nil {
 		existing.retireReplaced()
 	}
