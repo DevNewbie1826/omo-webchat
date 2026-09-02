@@ -158,6 +158,12 @@ func TestManagerPermanentDeletionDropsLaterEpochDurableEvent(t *testing.T) {
 	mgr.byChat[chatID], mgr.byRoute[s.routingID] = s, s
 	mgr.bindIdentityLocked(s)
 	mgr.mu.Unlock()
+	invalidated := newRecorder(1)
+	detach, err := s.attachChecked(invalidated)
+	if err != nil {
+		t.Fatalf("attach invalidation observer: %v", err)
+	}
+	defer detach()
 
 	mgr.RetireIdentity(chatID)
 	mgr.mu.Lock()
@@ -166,12 +172,22 @@ func TestManagerPermanentDeletionDropsLaterEpochDurableEvent(t *testing.T) {
 	if mapped {
 		t.Fatal("permanently deleted durable identity remained mapped")
 	}
+	if live := mgr.LiveSummaries(); len(live) != 0 {
+		t.Fatalf("permanently deleted identity remained live: %+v", live)
+	}
 
 	d.DropConnections()
 	select {
 	case <-oldEvents:
 	case <-time.After(testTimeout):
 		t.Fatal("old epoch did not close")
+	}
+	invalidated.awaitError(t, "provider_disconnected")
+	mgr.mu.Lock()
+	_, stillRetired := mgr.retiredDurable[durableID]
+	mgr.mu.Unlock()
+	if !stillRetired {
+		t.Fatal("epoch invalidation revived permanently deleted durable identity")
 	}
 	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
 		t.Fatalf("reconnect: %v", err)

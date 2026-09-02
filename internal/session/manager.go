@@ -278,14 +278,18 @@ func (m *Manager) endEpochIngestion(token omorpc.EpochToken) {
 }
 
 // bindIdentityLocked publishes one live durable identity and retires any old
-// durable identity previously associated with the same chat. Manager.mu is held.
+// durable identity previously associated with the same chat. It deliberately
+// cannot revive a permanently retired durable; only a validated session
+// activation may do that. Manager.mu is held.
 func (m *Manager) bindIdentityLocked(s *Session) {
+	if _, retired := m.retiredDurable[s.durableID]; retired {
+		return
+	}
 	for durable, chatID := range m.durableToChat {
 		if chatID == s.chatID && durable != s.durableID {
 			m.retireDurableLocked(durable, chatID)
 		}
 	}
-	delete(m.retiredDurable, s.durableID)
 	m.durableToChat[s.durableID] = s.chatID
 	byDurable := m.byDurableEpoch[s.epoch]
 	if byDurable == nil {
@@ -293,6 +297,19 @@ func (m *Manager) bindIdentityLocked(s *Session) {
 		m.byDurableEpoch[s.epoch] = byDurable
 	}
 	byDurable[s.durableID] = &durableEpochBinding{session: s, chatID: s.chatID}
+}
+
+// activateIdentityLocked revives an identity only for a session whose acquire
+// has passed the chat-generation and epoch checks and published its live route.
+// Epoch invalidation removes that route before touching Session lifecycle state,
+// so a stale invalidation-side publication cannot clear permanent retirement.
+func (m *Manager) activateIdentityLocked(s *Session) {
+	if m.byChat[s.chatID] == s && m.byRoute[s.routingID] == s {
+		if _, invalidated := m.invalidatedEpochs[s.epoch]; !invalidated {
+			delete(m.retiredDurable, s.durableID)
+		}
+	}
+	m.bindIdentityLocked(s)
 }
 
 // tombstoneSessionIdentityLocked drops the full Session reference while
@@ -1009,7 +1026,9 @@ func (m *Manager) LiveSummaries() []Summary {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
-		all = append(all, s)
+		if _, retired := m.retiredDurable[s.durableID]; !retired {
+			all = append(all, s)
+		}
 	}
 	cached := make([]Summary, 0, len(m.overviewCache))
 	for id, entry := range m.overviewCache {

@@ -339,7 +339,7 @@ func (entry *overviewCacheEntry) summary(chatID, durableID string) Summary {
 // caller holds Session.lifecycleMu followed by Manager.mu. That ordering makes
 // route publication and cache eviction one atomic event-loop transition.
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
-	m.bindIdentityLocked(s)
+	m.activateIdentityLocked(s)
 
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
