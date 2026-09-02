@@ -943,10 +943,13 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 	}
 	publishErr := func(err error) {
 		if target != nil {
-			// Once the history context or session route is gone, terminal
-			// delivery cannot be acknowledged reliably. Retiring the target
-			// tears down replay instead of trapping pending live frames.
-			if ctx.Err() != nil || errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+			// A history-context deadline is an expected, user-visible outcome:
+			// the terminal error must still be delivered (non-blocking; the
+			// pump ends replay after delivery) so the socket stays usable for
+			// live frames. Only cancellation or a lost route retires the target,
+			// because there terminal delivery cannot be acknowledged reliably
+			// and retiring tears down replay instead of trapping live frames.
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
 				target.retire(err)
 				return
 			}
@@ -955,6 +958,12 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		}
 		info := historyErrorInfo(err)
 		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: info}
+		if target != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if !target.enqueueReplayTerminalNow(frame) {
+				target.retire(ErrSubscriberDetached)
+			}
+			return
+		}
 		if emitErr := emit(frame, true); emitErr != nil && target != nil {
 			target.retire(emitErr)
 		}
