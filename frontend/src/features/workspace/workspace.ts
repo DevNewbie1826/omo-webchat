@@ -121,11 +121,16 @@ export async function listWorkspaceSessions(
 
 /** Resolve otherwise-unknown live IDs through the complete union independently
  * of the sidebar's expansion state and visible pagination. */
+export interface WorkspaceSessionMembership {
+  memberships: ReadonlyMap<string, ReadonlySet<string>>;
+  hadFailures: boolean;
+}
+
 export async function resolveWorkspaceSessionMembership(
   workspaces: readonly Workspace[],
   sessionIds: ReadonlySet<string>,
   signal?: AbortSignal,
-): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+): Promise<WorkspaceSessionMembership> {
   const results = await Promise.allSettled(workspaces.map(async (workspace) => {
     const matches = new Set<string>();
     const seenCursors = new Set<string>();
@@ -142,7 +147,9 @@ export async function resolveWorkspaceSessionMembership(
     return [workspace.id, matches] as const;
   }));
   if (signal?.aborted) throw new DOMException("Membership resolution aborted", "AbortError");
-  return new Map(results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
+  const memberships = new Map(results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
+  const hadFailures = results.some((result) => result.status === "rejected");
+  return { memberships, hadFailures };
 }
 
 export async function listWorkspaces(): Promise<readonly Workspace[]> {

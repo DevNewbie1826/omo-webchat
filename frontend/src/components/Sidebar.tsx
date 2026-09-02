@@ -6,6 +6,10 @@ import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons"
 import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
+
+/** Bounded retry cadence for union-membership crawls whose workspaces failed. */
+const MEMBERSHIP_MAX_RETRIES = 5;
+const MEMBERSHIP_RETRY_DELAY_MS = 2000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
@@ -89,6 +93,8 @@ export function Sidebar({
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
+  const [membershipRetry, setMembershipRetry] = useState(0);
+  const membershipRetryTimer = useRef<number | undefined>(undefined);
   const previousSessionLists = useRef(sessionLists);
   const activeMembershipCrawl = useRef<{
     readonly fingerprint: string;
@@ -103,6 +109,11 @@ export function Sidebar({
     previousSessionLists.current = sessionLists;
     setResolvedRunningMembership(new Map());
     setMembershipGeneration((generation) => generation + 1);
+    setMembershipRetry(0);
+    if (membershipRetryTimer.current !== undefined) {
+      window.clearTimeout(membershipRetryTimer.current);
+      membershipRetryTimer.current = undefined;
+    }
   }, [sessionLists]);
 
   const unresolvedRunningIds = useMemo(() => {
@@ -116,10 +127,10 @@ export function Sidebar({
   }, [resolvedRunningMembership, runningCounts, sessionLists, workspaces]);
   const membershipFingerprint = JSON.stringify([
     membershipGeneration,
+    membershipRetry,
     [...workspaces].map((workspace) => workspace.id).sort(),
     [...unresolvedRunningIds].sort(),
-  ]);
-  const aggregateSessionIds = useMemo(
+  ]);  const aggregateSessionIds = useMemo(
     () => new Map([...resolvedRunningMembership].map(([wsId, ids]) => [
       wsId,
       new Set([...ids].filter((id) => runningCounts.has(id))),
@@ -139,7 +150,7 @@ export function Sidebar({
     const crawl = { fingerprint: membershipFingerprint, controller };
     activeMembershipCrawl.current = crawl;
     void resolveWorkspaceSessionMembership(workspaces, unresolvedRunningIds, controller.signal)
-      .then((resolved) => {
+      .then(({ memberships: resolved, hadFailures }) => {
         if (activeMembershipCrawl.current !== crawl || controller.signal.aborted) return;
         setResolvedRunningMembership((previous) => {
           const next = new Map(previous);
@@ -148,6 +159,16 @@ export function Sidebar({
           }
           return next;
         });
+        // A failed workspace leaves its IDs unresolved without changing the
+        // fingerprint, so nothing would retrigger the crawl. Schedule a
+        // bounded retry tick; the tick participates in the fingerprint via
+        // the retry state below.
+        if (hadFailures && membershipRetry < MEMBERSHIP_MAX_RETRIES) {
+          membershipRetryTimer.current = window.setTimeout(() => {
+            membershipRetryTimer.current = undefined;
+            setMembershipRetry((retry) => retry + 1);
+          }, MEMBERSHIP_RETRY_DELAY_MS);
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted || (error instanceof DOMException && error.name === "AbortError")) return;
@@ -160,6 +181,7 @@ export function Sidebar({
   useEffect(() => () => {
     activeMembershipCrawl.current?.controller.abort();
     activeMembershipCrawl.current = undefined;
+    if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
   }, []);
 
   const hiddenMobileDrawer = isMobile && collapsed;

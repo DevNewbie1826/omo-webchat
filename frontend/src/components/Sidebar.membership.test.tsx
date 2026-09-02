@@ -169,4 +169,71 @@ describe("Sidebar running membership crawl", () => {
     expect(nodes[1]?.querySelector(".th-tree-running--workspace")).toBeNull();
     expect(calls.get("ws-2")).toBe(2);
   });
+
+  it("retries a failed workspace after a delay even when the fingerprint is unchanged", async () => {
+    const workspaces: readonly Workspace[] = [
+      workspace,
+      { id: "ws-2", name: "Workspace Two", path: "/two", chats: [] },
+    ];
+    let ws2Failing = true;
+    const calls = new Map<string, number>();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const wsId = String(input).includes("ws-1") ? "ws-1" : "ws-2";
+      calls.set(wsId, (calls.get(wsId) ?? 0) + 1);
+      if (wsId === "ws-2" && ws2Failing) throw new Error("workspace two unavailable");
+      return page(wsId === "ws-1"
+        ? [{ id: "session-a", name: "Session A", source: "stored", recencyMs: 1 }]
+        : [{ id: "session-b", name: "Session B", source: "stored", recencyMs: 1 }]);
+    }));
+    vi.mocked(useLiveSessionSummaries).mockReturnValue([
+      summary("session-a", 3),
+      summary("session-b", 1),
+    ]);
+    vi.useFakeTimers();
+    try {
+      await act(async () => renderSidebar({
+        workspaces,
+        lists: new Map([["ws-1", []], ["ws-2", []]]),
+      }));
+      // ws-2 failed; nothing retried yet.
+      const before = calls.get("ws-2") ?? 0;
+      expect(before).toBeGreaterThan(0);
+      const nodes = container.querySelectorAll(".th-tree-workspace");
+      expect(nodes[1]?.querySelector(".th-tree-running--workspace")).toBeNull();
+
+      ws2Failing = false;
+      await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+
+      const after = calls.get("ws-2") ?? 0;
+      expect(after).toBeGreaterThan(before);
+      expect(container.querySelectorAll(".th-tree-workspace")[1]?.querySelector(".th-tree-running--workspace")?.textContent).toContain("1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds membership retries for a persistently failing workspace", async () => {
+    const workspaces: readonly Workspace[] = [
+      { id: "ws-2", name: "Workspace Two", path: "/two", chats: [] },
+    ];
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      throw new Error("persistently unavailable");
+    }));
+    vi.mocked(useLiveSessionSummaries).mockReturnValue([
+      summary("session-b", 1),
+    ]);
+    vi.useFakeTimers();
+    try {
+      await act(async () => renderSidebar({
+        workspaces,
+        lists: new Map([["ws-2", []]]),
+      }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(calls).toBeLessThanOrEqual(6);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

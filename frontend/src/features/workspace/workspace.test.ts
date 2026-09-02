@@ -74,6 +74,7 @@ describe("listWorkspaceSessions", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(membership.get("ws-1")).toEqual(new Set(["cursor-only"]));
+    expect(membership.memberships.get("ws-1")).toEqual(new Set(["cursor-only"]));
+    expect(membership.hadFailures).toBe(false);
   });
 });
