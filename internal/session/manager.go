@@ -192,6 +192,24 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 	}
 }
 
+// ReplayBackpressureSubscriber opts a transport into blocking enqueue only
+// while durable history is being replayed. The stop channel must close when
+// delivery can no longer make progress, allowing the broadcaster to detach the
+// subscriber without retaining the session lifecycle lock.
+type ReplayBackpressureSubscriber interface {
+	BeginReplay()
+	EndReplay()
+	ReplayBackpressure() (<-chan struct{}, bool)
+}
+
+func hydrateForSubscriber(ctx context.Context, s *Session, path string, sub Subscriber) {
+	if replay, ok := sub.(ReplayBackpressureSubscriber); ok {
+		replay.BeginReplay()
+		defer replay.EndReplay()
+	}
+	s.hydrateEntries(ctx, path)
+}
+
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, nil, nil)
 }
@@ -262,11 +280,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if existing != nil && !existing.Resumable() {
 		detach, err := existing.attachChecked(sub)
 		if err == nil {
-			if existing.sessionFile != "" {
-				existing.hydrateEntries(ctx, existing.sessionFile)
-			}
 			if initialize != nil {
 				initialize(existing, false, detach)
+			}
+			if existing.sessionFile != "" {
+				hydrateForSubscriber(ctx, existing, existing.sessionFile, sub)
 			}
 			if validate != nil {
 				if err := validate(); err != nil {
@@ -372,11 +390,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
 		s.lifecycleMu.Unlock()
-		if resumed {
-			s.hydrateEntries(ctx, cur.SessionFile)
-		}
 		if initialize != nil {
 			initialize(s, true, detach)
+		}
+		if resumed {
+			hydrateForSubscriber(ctx, s, cur.SessionFile, sub)
 		}
 		if err := validate(); err != nil {
 			detach()
@@ -456,11 +474,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if existing != nil {
 		existing.retireReplaced()
 	}
-	if resumed {
-		s.hydrateEntries(ctx, cur.SessionFile)
-	}
 	if initialize != nil {
 		initialize(s, true, detach)
+	}
+	if resumed {
+		hydrateForSubscriber(ctx, s, cur.SessionFile, sub)
 	}
 	return s, true, detach, nil
 }

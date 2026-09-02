@@ -79,6 +79,18 @@ func (x *subscription) enqueue(f Frame) bool {
 		return false
 	default:
 	}
+	if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+		if deliveryStopped, active := replay.ReplayBackpressure(); active {
+			select {
+			case x.q <- f:
+				return true
+			case <-x.stopCh:
+				return false
+			case <-deliveryStopped:
+				return false
+			}
+		}
+	}
 	select {
 	case x.q <- f:
 		return true

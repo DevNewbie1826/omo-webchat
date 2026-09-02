@@ -11,9 +11,9 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-// subscriber buffers acquire-time replay until Manager.Acquire reports whether
-// this is a fresh open or a reattachment. Holding mu through the activation
-// flush prevents a live frame from overtaking the replay snapshot.
+// subscriber buffers only the attach-time Ready/snapshot frames until the
+// bridge publishes its binding. Durable history starts after activation and is
+// written synchronously, with the connection deadline bounding each page.
 type subscriber struct {
 	conn           *connection
 	mu             sync.Mutex
@@ -26,6 +26,7 @@ type subscriber struct {
 	detachSignal   chan struct{}
 	detachOnce     sync.Once
 	detached       atomic.Bool
+	replaying      atomic.Bool
 }
 
 func newSubscriber(c *connection) *subscriber {
@@ -35,6 +36,12 @@ func newSubscriber(c *connection) *subscriber {
 // SynchronousAttach asks session's broadcaster to finish queueing its initial
 // replay before Acquire returns.
 func (*subscriber) SynchronousAttach() {}
+
+func (s *subscriber) BeginReplay() { s.replaying.Store(true) }
+func (s *subscriber) EndReplay()   { s.replaying.Store(false) }
+func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
+	return s.detachSignal, s.replaying.Load()
+}
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
@@ -51,7 +58,11 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 		s.pending = append(s.pending, f)
 		return nil
 	}
-	return s.deliver(f)
+	err := s.deliver(f)
+	if err != nil {
+		s.signalDetach()
+	}
+	return err
 }
 func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 	select {

@@ -1,10 +1,15 @@
 package wsbridge
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,9 +31,10 @@ import (
 
 type collector struct {
 	gws.BuiltinEventHandler
-	mu     sync.Mutex
-	frames []json.RawMessage
-	notify chan struct{}
+	mu      sync.Mutex
+	frames  []json.RawMessage
+	notify  chan struct{}
+	timeout time.Duration
 }
 
 func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
@@ -43,7 +49,11 @@ func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
 }
 func (c *collector) next(t *testing.T, typ string) map[string]any {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	for {
 		c.mu.Lock()
@@ -64,6 +74,179 @@ func (c *collector) next(t *testing.T, typ string) map[string]any {
 		}
 	}
 }
+
+// cappedReadConn keeps the test client reading continuously while limiting each
+// syscall. This supplies deterministic, mild socket backpressure without
+// timing-based sleeps.
+type cappedReadConn struct {
+	net.Conn
+	maxRead int
+}
+
+func (c cappedReadConn) Read(p []byte) (int, error) {
+	if len(p) > c.maxRead {
+		p = p[:c.maxRead]
+	}
+	return c.Conn.Read(p)
+}
+
+type cappedDialer struct{ maxRead int }
+
+func (d cappedDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return cappedReadConn{Conn: conn, maxRead: d.maxRead}, nil
+}
+
+func writeBridgeHistory(t *testing.T, entryCount, randomBytes int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "large-session.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriterSize(file, 256<<10)
+	encoder := json.NewEncoder(writer)
+	if err := encoder.Encode(map[string]any{
+		"type": "session", "version": 3, "id": "history-session",
+		"timestamp": "2026-09-02T00:00:00.000Z", "cwd": filepath.Dir(path),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent := any(nil)
+	random := make([]byte, randomBytes)
+	source := rand.New(rand.NewSource(1))
+	for i := 0; i < entryCount; i++ {
+		if _, err := source.Read(random); err != nil {
+			t.Fatal(err)
+		}
+		id := fmt.Sprintf("entry-%03d", i)
+		if err := encoder.Encode(map[string]any{
+			"type": "message", "id": id, "parentId": parent,
+			"timestamp": "2026-09-02T00:00:00.001Z",
+			"message": map[string]any{"role": "user", "content": []any{map[string]any{
+				"type": "text", "text": base64.StdEncoding.EncodeToString(random),
+			}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		parent = id
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestHistoryReplayBackpressuresRealWebSocket(t *testing.T) {
+	const entryCount = 320 // every entry exceeds the page byte target: incident-sized replay
+	path := writeBridgeHistory(t, entryCount, 200<<10)
+
+	daemonDir, err := os.MkdirTemp("", "wsbridge-history-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	d := omorpctest.New(daemonDir)
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	client, err := omorpc.Dial(t.Context(), d.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	epoch, _ := client.CurrentEpoch()
+
+	store, err := cursorstore.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := cursorstore.Workspace{ID: "ws-history", Name: "history", Path: filepath.Dir(path)}
+	if err := store.SaveWorkspace(workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveChat(cursorstore.Chat{
+		ID: "chat-history", WorkspaceID: workspace.ID, CWD: workspace.Path,
+		SessionFile: path, Name: "history", NameSource: cursorstore.NameSourceAuto,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store)})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	h := New(Config{
+		Manager: mgr, Store: store, ServerVersion: client.ServerVersion(),
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WriteTimeout: 5 * time.Second, HistoryTimeout: 30 * time.Second,
+	})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	frames := &collector{notify: make(chan struct{}, entryCount+32), timeout: 30 * time.Second}
+	conn, _, err := gws.NewClient(frames, &gws.ClientOption{
+		Addr:      "ws" + strings.TrimPrefix(ts.URL, "http"),
+		NewDialer: func() (gws.Dialer, error) { return cappedDialer{maxRead: 1024}, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go conn.ReadLoop()
+	defer conn.WriteClose(1000, nil)
+	frames.next(t, "hello")
+	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": workspace.ID, "chatId": "chat-history"})
+
+	seen := make(map[string]int, entryCount)
+	terminal := 0
+	for len(seen) < entryCount || terminal == 0 {
+		entryFrame := frames.next(t, "entries")
+		entries, _ := entryFrame["entries"].([]any)
+		for _, rawEntry := range entries {
+			entry, _ := rawEntry.(map[string]any)
+			id, _ := entry["id"].(string)
+			seen[id]++
+		}
+		if final, _ := entryFrame["final"].(bool); final {
+			terminal++
+		}
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong") // proves the replay did not close the socket
+	frames.mu.Lock()
+	for _, raw := range frames.frames {
+		var frame struct {
+			Type  string `json:"type"`
+			Final bool   `json:"final"`
+		}
+		if json.Unmarshal(raw, &frame) == nil && frame.Type == "entries" && frame.Final {
+			terminal++
+		}
+	}
+	frames.mu.Unlock()
+	if len(seen) != entryCount {
+		t.Fatalf("replayed unique entries = %d, want %d", len(seen), entryCount)
+	}
+	for i := 0; i < entryCount; i++ {
+		id := fmt.Sprintf("entry-%03d", i)
+		if seen[id] != 1 {
+			t.Fatalf("entry %s deliveries = %d, want 1", id, seen[id])
+		}
+	}
+	if terminal != 1 {
+		t.Fatalf("terminal entries frames = %d, want 1", terminal)
+	}
+	if !client.EpochCurrent(epoch) {
+		t.Fatal("history replay changed the provider epoch")
+	}
+}
+
 func TestContextUsageWithPercentFillsProviderOmission(t *testing.T) {
 	got := contextUsageWithPercent(json.RawMessage(`{"used":150,"total":200000}`))
 	var usage map[string]float64
@@ -271,8 +454,11 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if got := c2.next(t, "extensionEvent"); got["name"] != "omo.task.updated" {
 		t.Fatalf("snapshot=%v", got)
 	}
-	if got := c2.next(t, "entries"); got["final"] != true {
-		t.Fatalf("reattach history=%v", got)
+	for {
+		got := c2.next(t, "entries")
+		if got["final"] == true {
+			break
+		}
 	}
 	writeClient(t, conn2, map[string]any{"type": "activity.refresh", "sessionId": "chat-1"})
 	c2.next(t, "extensionEvent")
