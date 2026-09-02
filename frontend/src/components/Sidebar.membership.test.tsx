@@ -6,7 +6,7 @@ import type { LiveSessionSummary } from "../features/workspace/useLiveSessionSum
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import { useMediaQuery } from "../lib/useMediaQuery";
-import { Sidebar } from "./Sidebar";
+import { MEMBERSHIP_RETRY_DELAY_MS, Sidebar } from "./Sidebar";
 
 vi.mock("../lib/useMediaQuery", () => ({ useMediaQuery: vi.fn() }));
 vi.mock("../features/workspace/useLiveSessionSummaries", () => ({ useLiveSessionSummaries: vi.fn() }));
@@ -230,8 +230,16 @@ describe("Sidebar running membership crawl", () => {
         workspaces,
         lists: new Map([["ws-2", []]]),
       }));
+      // Initial crawl + one retry per tick, stepping so each retry settles
+      // before the next is scheduled.
+      for (let i = 0; i < 12; i += 1) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(MEMBERSHIP_RETRY_DELAY_MS + 100); });
+      }
+      // 1 initial crawl + at most MEMBERSHIP_MAX_RETRIES retries.
+      expect(calls).toBe(1 + 5);
+      expect(vi.getTimerCount()).toBe(0);
       await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      expect(calls).toBeLessThanOrEqual(6);
+      expect(calls).toBe(1 + 5);
     } finally {
       vi.useRealTimers();
     }

@@ -8,8 +8,8 @@ import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
-const MEMBERSHIP_MAX_RETRIES = 5;
-const MEMBERSHIP_RETRY_DELAY_MS = 2000;
+export const MEMBERSHIP_MAX_RETRIES = 5;
+export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
@@ -93,6 +93,7 @@ export function Sidebar({
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
+  const membershipGenerationRef = useRef(0);
   const [membershipRetry, setMembershipRetry] = useState(0);
   const membershipRetryTimer = useRef<number | undefined>(undefined);
   const previousSessionLists = useRef(sessionLists);
@@ -108,7 +109,11 @@ export function Sidebar({
     if (previousSessionLists.current === sessionLists) return;
     previousSessionLists.current = sessionLists;
     setResolvedRunningMembership(new Map());
-    setMembershipGeneration((generation) => generation + 1);
+    setMembershipGeneration((generation) => {
+      const next = generation + 1;
+      membershipGenerationRef.current = next;
+      return next;
+    });
     setMembershipRetry(0);
     if (membershipRetryTimer.current !== undefined) {
       window.clearTimeout(membershipRetryTimer.current);
@@ -164,8 +169,14 @@ export function Sidebar({
         // bounded retry tick; the tick participates in the fingerprint via
         // the retry state below.
         if (hadFailures && membershipRetry < MEMBERSHIP_MAX_RETRIES) {
+          // Exactly one pending retry timer: a newer crawl supersedes the
+          // older timer, and the callback is inert once its generation is
+          // no longer current.
+          if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
+          const scheduledGeneration = membershipGenerationRef.current;
           membershipRetryTimer.current = window.setTimeout(() => {
             membershipRetryTimer.current = undefined;
+            if (membershipGenerationRef.current !== scheduledGeneration) return;
             setMembershipRetry((retry) => retry + 1);
           }, MEMBERSHIP_RETRY_DELAY_MS);
         }
