@@ -20,7 +20,7 @@ func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, id+".jsonl")
-	body := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"timestamp\":%q}\n", id, at.Format(time.RFC3339Nano))
+	body := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q}\n", id, at.Format(time.RFC3339Nano), cwd)
 	if name != "" {
 		body += fmt.Sprintf("{\"type\":\"session_info\",\"name\":%q}\n", name)
 	}
@@ -69,6 +69,61 @@ func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 		t.Fatalf("disk=%+v", page.Items[1])
 	}
 }
+func TestListDiskSessionsRejectsCollidingDirectoryFromAnotherWorkspace(t *testing.T) {
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	base := t.TempDir()
+	workspaceA := filepath.Join(base, "a-b", "c")
+	workspaceB := filepath.Join(base, "a", "b-c")
+	if err := os.MkdirAll(workspaceA, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspaceB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if sessionDirNameForCwd(workspaceA) != sessionDirNameForCwd(workspaceB) {
+		t.Fatal("test paths do not reproduce the non-injective directory encoding")
+	}
+	writeDiskSession(t, agent, workspaceB, "foreign", "Foreign", time.Now())
+	if got := listDiskSessions(workspaceA); len(got) != 0 {
+		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v", got)
+	}
+}
+
+func TestMergeSessionHistoryRequiresOwnedProvenanceAndExactIdentity(t *testing.T) {
+	ownedDir := filepath.Join(t.TempDir(), "adopted")
+	session := diskSession{ID: "durable", Path: "/catalog/shared.jsonl"}
+	tests := []struct {
+		name string
+		chat cursorstore.Chat
+		want string
+	}{
+		{
+			name: "legacy exact durable id is not ownership",
+			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: session.Path},
+			want: sessionHistorySourceDiscovered,
+		},
+		{
+			name: "owned copy with basename only does not match",
+			chat: cursorstore.Chat{SessionFile: filepath.Join(ownedDir, filepath.Base(session.Path)), SessionProvenance: cursorstore.SessionProvenanceAdopted},
+			want: sessionHistorySourceDiscovered,
+		},
+		{
+			name: "owned copy with exact durable id marks source",
+			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: filepath.Join(ownedDir, "owned.jsonl"), SessionProvenance: cursorstore.SessionProvenanceAdopted},
+			want: sessionHistorySourceAlreadyAdopted,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session}, ownedDir)
+			if len(items) != 2 || items[1].Source != tt.want {
+				t.Fatalf("merged items = %+v, want disk source %q", items, tt.want)
+			}
+		})
+	}
+}
+
 func TestListWorkspaceSessionsNormalizesMixedResolutionAcrossPages(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	fixtures := []cursorstore.Chat{

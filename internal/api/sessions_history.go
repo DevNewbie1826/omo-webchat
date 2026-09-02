@@ -51,6 +51,7 @@ type diskSession struct {
 	ID        string
 	Name      string
 	Path      string
+	CWD       string
 	RecencyMs int64
 }
 
@@ -85,7 +86,8 @@ func sessionDirNameForCwd(cwd string) string {
 
 func listDiskSessions(cwd string) []diskSession {
 	agentDir := codingAgentDir()
-	if agentDir == "" || cwd == "" {
+	canonicalCWD, ok := canonicalSessionCWD(cwd)
+	if agentDir == "" || !ok {
 		return nil
 	}
 	dir := filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
@@ -100,6 +102,10 @@ func listDiskSessions(cwd string) []diskSession {
 		}
 		sess, ok := parseSessionFile(filepath.Join(dir, entry.Name()))
 		if !ok {
+			continue
+		}
+		headerCWD, ok := canonicalSessionCWD(sess.CWD)
+		if !ok || headerCWD != canonicalCWD {
 			continue
 		}
 		out = append(out, sess)
@@ -119,6 +125,17 @@ func resolveDiskSessionPath(cwd, identity string) (string, bool) {
 	return "", false
 }
 
+func canonicalSessionCWD(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(resolved), true
+}
+
 func parseSessionFile(path string) (diskSession, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -134,14 +151,16 @@ func parseSessionFile(path string) (diskSession, bool) {
 		Type      string `json:"type"`
 		ID        string `json:"id"`
 		Timestamp string `json:"timestamp"`
+		CWD       string `json:"cwd"`
 	}
-	if json.Unmarshal(headerLine, &header) != nil || header.Type != "session" || header.ID == "" {
+	if json.Unmarshal(headerLine, &header) != nil || header.Type != "session" || header.ID == "" || header.CWD == "" {
 		return diskSession{}, false
 	}
 	createdAt, _ := time.Parse(time.RFC3339Nano, header.Timestamp)
 	return diskSession{
 		ID:        header.ID,
 		Path:      path,
+		CWD:       header.CWD,
 		RecencyMs: createdAt.UnixMilli(),
 	}, true
 }
@@ -250,16 +269,9 @@ func populateSessionHistoryNames(items []sessionHistoryItem) {
 }
 
 func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
-	for _, identity := range []string{chat.DurableSessionID, chat.SessionFile} {
-		identity = strings.TrimSpace(identity)
-		if identity == "" {
-			continue
-		}
-		if identity == sess.ID || identity == sess.Path || filepath.Base(identity) == filepath.Base(sess.Path) {
-			return true
-		}
-	}
-	return false
+	durableID := strings.TrimSpace(chat.DurableSessionID)
+	sessionFile := strings.TrimSpace(chat.SessionFile)
+	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
 // chatRecencyMs is the recency key for a stored chat in MRU orderings: the
@@ -269,7 +281,7 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 	return cursorstore.RecencyMillis(ch)
 }
 
-func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
+func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	for _, ch := range chats {
 		items = append(items, sessionHistoryItem{
@@ -285,7 +297,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 	for _, sess := range disk {
 		source := sessionHistorySourceDiscovered
 		for _, chat := range chats {
-			if sessionMatchesChat(sess, chat) {
+			if cursorstore.IsOwnedSession(chat, ownedDir) && sessionMatchesChat(sess, chat) {
 				source = sessionHistorySourceAlreadyAdopted
 				break
 			}
@@ -408,7 +420,18 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
+	// Reading the catalog is the earliest safe opportunity to convert legacy
+	// external resume pointers. Failures leave the original row visible but the
+	// store's typed open guard prevents it from being opened in place.
+	for i := range chats {
+		if chats[i].SessionFile == "" || cursorstore.IsOwnedSession(chats[i], s.cursors.OwnedSessionDir()) {
+			continue
+		}
+		if migrated, migrateErr := s.cursors.MigrateLegacySession(r.Context(), chats[i].ID); migrateErr == nil {
+			chats[i] = migrated
+		}
+	}
+	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), s.cursors.OwnedSessionDir())
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
