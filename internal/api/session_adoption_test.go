@@ -88,7 +88,7 @@ func (c *adoptionWSCollector) next(t *testing.T, typ string) map[string]any {
 	}
 }
 
-func TestAdoptionHTTPToBridgeOpensOnlyOwnedCopy(t *testing.T) {
+func TestAdoptionHTTPToBridgePreservesOriginalThroughCompletedTurn(t *testing.T) {
 	dir := t.TempDir()
 	daemonDir, err := os.MkdirTemp("", "adopt-e2e-*")
 	if err != nil {
@@ -140,31 +140,84 @@ func TestAdoptionHTTPToBridgeOpensOnlyOwnedCopy(t *testing.T) {
 	agentDir := t.TempDir()
 	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
 	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-e2e", "Bridge copy")
-	body, err := json.Marshal(map[string]string{"id": "durable-e2e", "resumeIdentity": source})
+	sourceBefore, err := os.ReadFile(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, testServer.URL+"/api/workspaces/"+ws.ID+"/sessions/adopt", bytes.NewReader(body))
+	sourceHashBefore := sha256.Sum256(sourceBefore)
+	sourceInfoBefore, err := os.Stat(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+
+	post := func(path string, body any) *http.Response {
+		t.Helper()
+		raw, marshalErr := json.Marshal(body)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		req, requestErr := http.NewRequestWithContext(t.Context(), http.MethodPost, testServer.URL+path, bytes.NewReader(raw))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		resp, requestErr := http.DefaultClient.Do(req)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return resp
+	}
+
+	legacyCreate := post("/api/workspaces/"+ws.ID+"/chats", map[string]string{
+		"name": "legacy", "provider": "omo", "resumeIdentity": source,
+	})
+	_, _ = io.Copy(io.Discard, legacyCreate.Body)
+	_ = legacyCreate.Body.Close()
+	if legacyCreate.StatusCode != http.StatusBadRequest {
+		t.Fatalf("legacy create status = %d, want %d", legacyCreate.StatusCode, http.StatusBadRequest)
+	}
+
+	const chatID = "legacy-adopt-e2e"
+	if err := store.SaveChat(cursorstore.Chat{
+		ID: chatID, WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source,
+		DurableSessionID: "durable-e2e", Name: "Bridge copy", NameSource: cursorstore.NameSourceAuto,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if _, err := store.GetChatForOpen(chatID); !errors.Is(err, cursorstore.ErrAdoptionRequired) {
+		t.Fatalf("original-backed chat was openable before migration: %v", err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("provider received %d opens before migration", got)
+	}
+
+	resp := post("/api/workspaces/"+ws.ID+"/sessions/adopt", map[string]string{
+		"id": "durable-e2e", "resumeIdentity": source,
+	})
+	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 		t.Fatalf("adopt status = %d, body = %s", resp.StatusCode, raw)
 	}
 	var adopted chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&adopted); err != nil {
+		_ = resp.Body.Close()
 		t.Fatal(err)
 	}
-	stored, err := store.GetChat(adopted.ID)
+	_ = resp.Body.Close()
+	if adopted.ID != chatID {
+		t.Fatalf("adoption replaced legacy chat id: got %q want %q", adopted.ID, chatID)
+	}
+	stored, err := store.GetChatForOpen(chatID)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("migrated chat is not openable: %v", err)
+	}
+	if !cursorstore.IsOwnedSession(stored, store.OwnedSessionDir()) || stored.SessionFile == source {
+		t.Fatalf("migration did not install an owned copy: %+v", stored)
+	}
+	if err := daemon.LoadSessionFile(stored.SessionFile); err != nil {
+		t.Fatalf("register owned copy with test daemon: %v", err)
 	}
 
 	collector := &adoptionWSCollector{frames: make(chan map[string]any, 32)}
@@ -188,24 +241,55 @@ func TestAdoptionHTTPToBridgeOpensOnlyOwnedCopy(t *testing.T) {
 		}
 	}
 	write(map[string]any{"type": "hello", "version": 2})
-	write(map[string]any{"type": "chat.create", "wsId": ws.ID, "chatId": adopted.ID})
+	write(map[string]any{"type": "chat.create", "wsId": ws.ID, "chatId": chatID})
 	collector.next(t, "ready")
 
-	foundOwned := false
-	for _, opened := range daemon.Requests() {
-		if opened["type"] != omorpc.CmdOpenSession {
-			continue
-		}
-		path, _ := opened["sessionPath"].(string)
-		if path == source {
-			t.Fatalf("bridge opened original path %q", source)
-		}
-		if path == stored.SessionFile {
-			foundOwned = true
-		}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != 1 {
+		t.Fatalf("open_session count = %d, want 1; requests = %+v", got, daemon.Requests())
 	}
-	if !foundOwned {
-		t.Fatalf("bridge never opened owned path %q; requests = %+v", stored.SessionFile, daemon.Requests())
+	opened := daemon.LastRequest(omorpc.CmdOpenSession)
+	openedPath, _ := opened["sessionPath"].(string)
+	if openedPath != stored.SessionFile {
+		t.Fatalf("open_session sessionPath = %q, want owned copy %q", openedPath, stored.SessionFile)
+	}
+	copyInfoBefore, err := os.Stat(openedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	daemon.SetPromptScript(openedPath,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventMessageDelta, "delta": "owned-copy-turn"},
+		map[string]any{"type": omorpctest.EventMessage, "message": map[string]any{"role": "assistant", "content": "owned-copy-turn"}},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	write(map[string]any{"type": "chat.send", "sessionId": chatID, "run": map[string]any{"kind": "prompt", "message": "write only to the owned copy"}})
+	collector.next(t, "run.started")
+	done := collector.next(t, "run.done")
+	if done["sessionId"] != chatID || done["reason"] != "end_turn" {
+		t.Fatalf("completion frame = %+v", done)
+	}
+
+	sourceAfter, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceInfoAfter, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceHashAfter := sha256.Sum256(sourceAfter); sourceHashAfter != sourceHashBefore {
+		t.Fatalf("completed turn changed original sha256: before=%x after=%x", sourceHashBefore, sourceHashAfter)
+	}
+	if !sourceInfoAfter.ModTime().Equal(sourceInfoBefore.ModTime()) {
+		t.Fatalf("completed turn changed original mtime: before=%s after=%s", sourceInfoBefore.ModTime(), sourceInfoAfter.ModTime())
+	}
+	copyInfoAfter, err := os.Stat(openedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copyInfoAfter.Size() <= copyInfoBefore.Size() {
+		t.Fatalf("owned copy did not grow during turn: before=%d after=%d", copyInfoBefore.Size(), copyInfoAfter.Size())
 	}
 }
 

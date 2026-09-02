@@ -254,6 +254,18 @@ func TestServerKillPreservesDaemonSessionAndReconnectResumes(t *testing.T) {
 		t.Fatalf("close daemon liveness probe: %v", err)
 	}
 
+	migrationStore, err := cursorstore.Open(filepath.Join(stateDir, "state-v2.json"))
+	if err != nil {
+		t.Fatalf("open cursor store for restart migration: %v", err)
+	}
+	migrated, err := migrationStore.MigrateLegacySession(t.Context(), chatID)
+	if err != nil {
+		t.Fatalf("migrate restart cursor: %v", err)
+	}
+	if err := daemon.LoadSessionFile(migrated.SessionFile); err != nil {
+		t.Fatalf("register migrated copy with test daemon: %v", err)
+	}
+
 	second := startServer(t, binary, args, env)
 	cookie = login(t, second, address)
 	ws2, frames2 := connect(t, address, cookie)
@@ -268,8 +280,11 @@ func TestServerKillPreservesDaemonSessionAndReconnectResumes(t *testing.T) {
 		t.Fatalf("durable id changed across server exec: got %q want %q", got, durableID)
 	}
 	persisted := loadCursor(t, stateDir, chatID)
-	if persisted.DurableSessionID != durableID || persisted.SessionFile != cursor.SessionFile {
-		t.Fatalf("cursor changed across server exec: before=%+v after=%+v", cursor, persisted)
+	if persisted.DurableSessionID != durableID {
+		t.Fatalf("durable id changed during restart migration: before=%+v after=%+v", cursor, persisted)
+	}
+	if persisted.SessionFile == cursor.SessionFile || !cursorstore.IsOwnedSession(persisted, filepath.Join(stateDir, "adopted")) {
+		t.Fatalf("restart did not migrate the legacy cursor to an owned copy: before=%+v after=%+v", cursor, persisted)
 	}
 	var replayed []any
 	for {
