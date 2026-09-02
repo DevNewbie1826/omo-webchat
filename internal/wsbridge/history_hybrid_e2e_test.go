@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -244,6 +246,48 @@ func assertNoQueuedHistoryFailure(t *testing.T, frames *collector, terminal *int
 	}
 }
 
+func assertNoQueuedFrameTypes(t *testing.T, frames *collector, types ...string) {
+	t.Helper()
+	forbidden := make(map[string]struct{}, len(types))
+	for _, typ := range types {
+		forbidden[typ] = struct{}{}
+	}
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		if json.Unmarshal(raw, &frame) != nil {
+			continue
+		}
+		if typ, _ := frame["type"].(string); typ != "" {
+			if _, found := forbidden[typ]; found {
+				t.Fatalf("unexpected %s frame: %v", typ, frame)
+			}
+		}
+	}
+}
+
+type triggeredDeadlineContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newTriggeredDeadlineContext() *triggeredDeadlineContext {
+	return &triggeredDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *triggeredDeadlineContext) Done() <-chan struct{} { return c.done }
+func (c *triggeredDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (c *triggeredDeadlineContext) expire() { c.once.Do(func() { close(c.done) }) }
+
 func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testing.T) {
 	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2/3)
 	path, diskLeaf, expected := seedLargeHybridHistory(t, h)
@@ -315,6 +359,124 @@ func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testi
 	}
 	if !h.client.EpochCurrent(epoch) || h.daemon.CloseCount() != 0 {
 		t.Fatalf("history replay changed provider epoch or closed a session: closes=%d", h.daemon.CloseCount())
+	}
+}
+
+func TestHistoryHybridSecondSocketReplayAndLateControlOutcome(t *testing.T) {
+	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2/3)
+	path, diskLeaf, expected := seedLargeHybridHistory(t, h)
+	h.saveChat(t, "combined-history", path)
+	epoch, _ := h.client.CurrentEpoch()
+	deadline := time.Now().Add(historyE2ETestBudget)
+
+	firstConn, firstFrames := h.connect(t, 0)
+	writeClient(t, firstConn, map[string]any{
+		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "combined-history",
+	})
+	firstFrames.nextWithin(t, "ready", time.Until(deadline))
+	for {
+		frame := firstFrames.nextWithin(t, "entries", time.Until(deadline))
+		if frame["final"] == true {
+			break
+		}
+	}
+	assertNoQueuedFrameTypes(t, firstFrames, "entries", "error")
+
+	releaseTail := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, path)
+	defer releaseTail()
+	secondConn, secondFrames := h.connect(t, 1024)
+	writeClient(t, secondConn, map[string]any{
+		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "combined-history",
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 2, time.Until(deadline)) {
+		t.Fatal("reattach tail request was not observed")
+	}
+	if request := h.daemon.LastRequest(omorpc.CmdGetEntries); request["since"] != diskLeaf {
+		t.Fatalf("reattach cursor = %#v, want %q", request["since"], diskLeaf)
+	}
+
+	sess, ok := h.manager.Get("combined-history")
+	if !ok || sess.Resumable() {
+		t.Fatal("reattached session is not live")
+	}
+	releaseControl := h.daemon.BlockHandler(omorpc.CmdSetModel)
+	defer releaseControl()
+	h.daemon.FailNext(omorpc.CmdSetModel, omorpc.ErrCodeUnknownSession)
+	controlContext := newTriggeredDeadlineContext()
+	controlReturned := make(chan error, 1)
+	go func() {
+		controlReturned <- sess.SetModel(controlContext, "anthropic", "late-model", "late-control")
+	}()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdSetModel, 1, time.Until(deadline)) {
+		t.Fatal("control request was not written")
+	}
+	controlContext.expire()
+	select {
+	case err := <-controlReturned:
+		if !errors.Is(err, omorpc.ErrWrittenUnanswered) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("control timeout = %v, want written-unanswered deadline", err)
+		}
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("written-unanswered control did not return")
+	}
+	assertNoQueuedFrameTypes(t, firstFrames, "control.result", "entries", "error")
+	assertNoQueuedFrameTypes(t, secondFrames, "control.result", "error")
+
+	releaseControl()
+	firstResult := firstFrames.nextWithin(t, "control.result", time.Until(deadline))
+	if firstResult["requestId"] != "late-control" || firstResult["success"] != false {
+		t.Fatalf("first socket late control outcome = %v", firstResult)
+	}
+	assertNoQueuedFrameTypes(t, firstFrames, "entries", "error")
+	assertNoQueuedFrameTypes(t, secondFrames, "control.result", "error")
+
+	releaseTail()
+	seen := make(map[string]int, len(expected))
+	entryFrames, terminals := 0, 0
+	var terminalIDs []string
+	for len(seen) < len(expected) || terminals == 0 {
+		frame := secondFrames.nextWithin(t, "entries", time.Until(deadline))
+		entryFrames++
+		ids := entriesIDs(t, frame)
+		for _, id := range ids {
+			seen[id]++
+		}
+		if frame["final"] == true {
+			terminals++
+			terminalIDs = ids
+		}
+	}
+	secondResult := secondFrames.nextWithin(t, "control.result", time.Until(deadline))
+	if secondResult["requestId"] != "late-control" || secondResult["success"] != false {
+		t.Fatalf("second socket late control outcome = %v", secondResult)
+	}
+	assertNoQueuedHistoryFailure(t, secondFrames, &terminals)
+
+	if len(seen) != len(expected) {
+		t.Fatalf("unique history IDs = %d, want %d", len(seen), len(expected))
+	}
+	for id := range expected {
+		if seen[id] != 1 {
+			t.Fatalf("entry %s deliveries = %d, want 1", id, seen[id])
+		}
+	}
+	if entryFrames <= 64 {
+		t.Fatalf("reattach history pages = %d, want more than 64", entryFrames)
+	}
+	if terminals != 1 {
+		t.Fatalf("terminal entries frames = %d, want 1", terminals)
+	}
+	if want := []string{"entry-82", "entry-83"}; fmt.Sprint(terminalIDs) != fmt.Sprint(want) {
+		t.Fatalf("terminal daemon tail IDs = %v, want %v", terminalIDs, want)
+	}
+
+	assertNoQueuedFrameTypes(t, firstFrames, "entries", "error")
+	writeClient(t, firstConn, map[string]any{"type": "ping"})
+	firstFrames.nextWithin(t, "pong", time.Until(deadline))
+	writeClient(t, secondConn, map[string]any{"type": "ping"})
+	secondFrames.nextWithin(t, "pong", time.Until(deadline))
+	if !h.client.EpochCurrent(epoch) || h.daemon.CloseCount() != 0 {
+		t.Fatalf("combined regression changed provider epoch or closed the session: closes=%d", h.daemon.CloseCount())
 	}
 }
 
