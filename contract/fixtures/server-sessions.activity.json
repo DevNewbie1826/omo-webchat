@@ -1,6 +1,8 @@
 {
   "type": "sessions.activity",
-  "sessionId": "child-session-1",
+  "sessionId": "chat-1",
+  "durableSessionId": "child-session-1",
+  "replacesSessionId": "child-session-1",
   "snapshots": [
     {
       "name": "omo.task.updated",

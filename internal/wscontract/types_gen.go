@@ -352,14 +352,16 @@ type RunStartedFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
-// SessionsActivityFrame — Latest overview activity for one subscribed session. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.
+// SessionsActivityFrame — Latest overview activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.
 type SessionsActivityFrame struct {
-	DagDigest  *DagDigest         `json:"dagDigest,omitempty"`
-	Overflow   bool               `json:"overflow"`
-	SessionID  string             `json:"sessionId"`
-	Snapshots  []ActivitySnapshot `json:"snapshots"`
-	TaskDigest *TaskDigest        `json:"taskDigest,omitempty"`
-	Type       string             `json:"type"`
+	DagDigest         *DagDigest         `json:"dagDigest,omitempty"`
+	DurableSessionID  string             `json:"durableSessionId"`
+	Overflow          bool               `json:"overflow"`
+	ReplacesSessionID *string            `json:"replacesSessionId,omitempty"`
+	SessionID         string             `json:"sessionId"`
+	Snapshots         []ActivitySnapshot `json:"snapshots"`
+	TaskDigest        *TaskDigest        `json:"taskDigest,omitempty"`
+	Type              string             `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1249,7 +1251,7 @@ func (v *SessionsActivityFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"dagDigest", "overflow", "sessionId", "snapshots", "taskDigest", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"dagDigest", "durableSessionId", "overflow", "replacesSessionId", "sessionId", "snapshots", "taskDigest", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2025,7 +2027,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "sessions.activity":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated"}}, "overflow": validationSchema{Type: "boolean"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "snapshots", "overflow"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated"}}, "durableSessionId": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "snapshots", "overflow"}}); err != nil {
 				return nil, err
 			}
 		case "approval":

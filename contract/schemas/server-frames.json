@@ -177,11 +177,13 @@
     "SessionsActivityFrame": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "sessionId", "snapshots", "overflow"],
-      "description": "Latest overview activity for one subscribed session. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.",
+      "required": ["type", "sessionId", "durableSessionId", "snapshots", "overflow"],
+      "description": "Latest overview activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.",
       "properties": {
         "type": { "const": "sessions.activity" },
         "sessionId": { "type": "string" },
+        "durableSessionId": { "type": "string" },
+        "replacesSessionId": { "type": "string" },
         "snapshots": { "type": "array", "items": { "$ref": "#/$defs/ActivitySnapshot" } },
         "taskDigest": { "$ref": "#/$defs/TaskDigest" },
         "dagDigest": { "$ref": "#/$defs/DagDigest" },

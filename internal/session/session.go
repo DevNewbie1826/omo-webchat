@@ -771,12 +771,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 			s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
 		}
 		s.manager.mu.Lock()
-		if s.manager.byChat[s.chatID] == s {
-			delete(s.manager.byChat, s.chatID)
-			delete(s.manager.byRoute, route)
-			delete(s.manager.overviewCurrent, s.chatID)
-			s.manager.bumpSlotGenerationLocked(s.chatID)
-		}
+		s.manager.retireSessionIdentityLocked(s, true)
 		s.manager.mu.Unlock()
 	}
 	txn.err = callErr

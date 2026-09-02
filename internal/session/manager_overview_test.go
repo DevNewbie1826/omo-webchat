@@ -78,16 +78,22 @@ func TestManagerAcquireRemapsOverviewAndRoutesRetiredHandleByDurableID(t *testin
 	explicit := make(chan Summary, 2)
 	_, unsubscribeExplicit := mgr.SubscribeActivity(false, []string{chatID}, func(snapshot Summary, _ bool) { explicit <- snapshot })
 	defer unsubscribeExplicit()
+	provisionalExplicit := make(chan Summary, 2)
+	_, unsubscribeProvisional := mgr.SubscribeActivity(false, []string{durableID}, func(snapshot Summary, _ bool) { provisionalExplicit <- snapshot })
+	defer unsubscribeProvisional()
 	sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, nil)
 	if sess.ID() != durableID {
 		t.Fatalf("opened durable id = %q, want %q", sess.ID(), durableID)
 	}
 	remapped := awaitOverview(t, arrived)
-	if remapped.ChatID != chatID || remapped.DurableSessionID != durableID {
-		t.Fatalf("remapped identity = (%q, %q)", remapped.ChatID, remapped.DurableSessionID)
+	if remapped.ChatID != chatID || remapped.DurableSessionID != durableID || remapped.ReplacesSessionID != durableID {
+		t.Fatalf("remapped identity = (%q, %q, replaces %q)", remapped.ChatID, remapped.DurableSessionID, remapped.ReplacesSessionID)
 	}
 	if got := awaitOverview(t, explicit); got.ChatID != chatID {
-		t.Fatalf("explicit subscriber missed remap: %+v", got)
+		t.Fatalf("chat subscriber missed remap: %+v", got)
+	}
+	if got := awaitOverview(t, provisionalExplicit); got.ChatID != chatID || got.ReplacesSessionID != durableID {
+		t.Fatalf("provisional subscriber missed remap: %+v", got)
 	}
 
 	// The provider can deliver a child snapshot on a routing handle retired by
@@ -103,6 +109,106 @@ func TestManagerAcquireRemapsOverviewAndRoutesRetiredHandleByDurableID(t *testin
 	live := mgr.LiveSummaries()
 	if len(live) != 1 || live[0].ChatID != chatID || live[0].DurableSessionID != durableID {
 		t.Fatalf("transition produced duplicate or unresolvable rows: %+v", live)
+	}
+}
+
+func TestManagerClosedIdentityTombstonesAreBoundedAndLightweight(t *testing.T) {
+	mgr := NewManager(Config{})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	token := omorpc.EpochToken{}
+
+	mgr.mu.Lock()
+	for i := 0; i < maxIdentityTombstones+32; i++ {
+		id := fmt.Sprintf("durable-%03d", i)
+		s := newSession(mgr, fmt.Sprintf("chat-%03d", i), "/tmp", omorpc.OpenSessionData{
+			SessionID: "route-" + id, State: omorpc.SessionState{SessionID: id, SessionFile: "/tmp/" + id},
+		}, false, token)
+		mgr.byChat[s.chatID], mgr.byRoute[s.routingID] = s, s
+		mgr.bindIdentityLocked(s)
+		mgr.retireSessionIdentityLocked(s, false)
+	}
+	entries := mgr.byDurableEpoch[token]
+	indexLen, fifoLen := len(entries), len(mgr.durableTombstones)
+	var retainedSession string
+	for durable, binding := range entries {
+		if binding.session != nil {
+			retainedSession = durable
+			break
+		}
+	}
+	mgr.mu.Unlock()
+	if indexLen != maxIdentityTombstones || fifoLen != maxIdentityTombstones {
+		t.Fatalf("same-epoch tombstones = (%d index, %d fifo), want %d", indexLen, fifoLen, maxIdentityTombstones)
+	}
+	if retainedSession != "" {
+		t.Fatalf("tombstone %q retained full session", retainedSession)
+	}
+}
+
+func TestManagerPermanentDeletionDropsLaterEpochDurableEvent(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	oldToken, oldEvents := client.CurrentEpoch()
+	const chatID, durableID = "deleted-chat", "deleted-durable"
+	s := newSession(mgr, chatID, "/tmp", omorpc.OpenSessionData{
+		SessionID: "deleted-route", State: omorpc.SessionState{SessionID: durableID, SessionFile: "/tmp/deleted"},
+	}, false, oldToken)
+	mgr.mu.Lock()
+	mgr.byChat[chatID], mgr.byRoute[s.routingID] = s, s
+	mgr.bindIdentityLocked(s)
+	mgr.mu.Unlock()
+
+	mgr.RetireIdentity(chatID)
+	mgr.mu.Lock()
+	_, mapped := mgr.durableToChat[durableID]
+	mgr.mu.Unlock()
+	if mapped {
+		t.Fatal("permanently deleted durable identity remained mapped")
+	}
+
+	d.DropConnections()
+	select {
+	case <-oldEvents:
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	if _, err := client.Call(context.Background(), omorpc.ListSessions{}); err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	newToken, _ := client.CurrentEpoch()
+	raw := json.RawMessage(`{"type":"extension_event","sessionId":"deleted-durable","name":"omo.task.updated","data":{"tasks":[]}}`)
+	_, snapshot, subscribers := mgr.ingestEpochEvent(newToken, &omorpc.Event{Type: "extension_event", SessionID: durableID, Raw: raw})
+	deliverOverview(subscribers, snapshot)
+	if live := mgr.LiveSummaries(); len(live) != 0 {
+		t.Fatalf("later-epoch deleted identity recreated overview: %+v", live)
+	}
+}
+
+func TestManagerEpochBarrierRetiresOnSuccessorIngestion(t *testing.T) {
+	mgr := NewManager(Config{})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	old := omorpc.EpochToken{}
+	mgr.detachEpoch(old)
+	mgr.mu.Lock()
+	if len(mgr.invalidatedEpochs) != 1 {
+		t.Fatalf("invalidation barriers before successor = %d, want 1", len(mgr.invalidatedEpochs))
+	}
+	mgr.mu.Unlock()
+
+	// Tokens are opaque outside omorpc, so a live daemon supplies a distinct
+	// successor token without depending on token representation.
+	d := newDaemon(t)
+	client := dial(t, d)
+	newToken, _ := client.CurrentEpoch()
+	if newToken == old {
+		t.Fatal("daemon returned zero epoch token")
+	}
+	mgr.observeEpoch(newToken)
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	if len(mgr.invalidatedEpochs) != 0 {
+		t.Fatalf("invalidation barriers after successor = %d, want 0", len(mgr.invalidatedEpochs))
 	}
 }
 

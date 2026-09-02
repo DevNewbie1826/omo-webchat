@@ -274,8 +274,11 @@ func cloneActivitySummary(summary session.Summary) session.Summary {
 
 func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsActivityFrame {
 	frame := wscontract.SessionsActivityFrame{
-		Type: "sessions.activity", SessionID: summary.ChatID, Overflow: overflow,
+		Type: "sessions.activity", SessionID: summary.ChatID, DurableSessionID: summary.DurableSessionID, Overflow: overflow,
 		Snapshots: make([]wscontract.ActivitySnapshot, 0, 2),
+	}
+	if summary.ReplacesSessionID != "" {
+		frame.ReplacesSessionID = &summary.ReplacesSessionID
 	}
 	if len(summary.ActivityPair.Task) > 0 || summary.TaskOversized {
 		frame.Snapshots = append(frame.Snapshots, wscontract.ActivitySnapshot{

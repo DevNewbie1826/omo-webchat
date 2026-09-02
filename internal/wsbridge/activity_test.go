@@ -123,7 +123,7 @@ func connectActivityBridge(t *testing.T, source ActivitySource) (*gws.Conn, *col
 
 func activitySummary(id string) session.Summary {
 	return session.Summary{
-		ChatID: id,
+		ChatID: id, DurableSessionID: id,
 		ActivityPair: session.ActivityPair{
 			Task: json.RawMessage(`{"parent_session_id":"child-1","tasks":[{"task_id":"t1","status":"running","updated_at":"2026-09-03T00:00:00Z"}],"truncated_tasks":false}`),
 			Dag:  json.RawMessage(`{"runs":[{"run_id":"r1","status":"running","nodes":[{"task_id":"t1","state":"running"}]}],"truncated_runs":false}`),
@@ -224,7 +224,7 @@ func TestSubscribeWithoutAttachReceivesActivityAndUnsubscribeStops(t *testing.T)
 	source.publish(activitySummary("other"))
 	source.publish(activitySummary("child-1"))
 	got := frames.next(t, "sessions.activity")
-	if got["sessionId"] != "child-1" || got["overflow"] != false {
+	if got["sessionId"] != "child-1" || got["durableSessionId"] != "child-1" || got["overflow"] != false {
 		t.Fatalf("activity envelope = %v", got)
 	}
 	snapshots, ok := got["snapshots"].([]any)
@@ -249,6 +249,26 @@ func TestSubscribeWithoutAttachReceivesActivityAndUnsubscribeStops(t *testing.T)
 	source.publish(activitySummary("child-1"))
 	if after := activityFrameCount(frames); after != before {
 		t.Fatalf("unsubscribe delivered activity: before=%d after=%d", before, after)
+	}
+}
+
+func TestActivityFrameCarriesExplicitRemapIdentity(t *testing.T) {
+	frame := activityFrame(session.Summary{
+		ChatID: "chat-stable", DurableSessionID: "durable-provisional", ReplacesSessionID: "durable-provisional",
+	}, false)
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["sessionId"] != "chat-stable" || got["durableSessionId"] != "durable-provisional" || got["replacesSessionId"] != "durable-provisional" {
+		t.Fatalf("remap wire identity = %v", got)
+	}
+	if _, err := wscontract.ParseServerFrame(raw); err != nil {
+		t.Fatalf("remap frame outside contract: %v", err)
 	}
 }
 

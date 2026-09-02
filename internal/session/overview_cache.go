@@ -72,7 +72,7 @@ func (m *Manager) SubscribeActivity(allLive bool, sessionIDs []string, onSnapsho
 	}
 	initial := make([]Summary, 0, len(m.overviewCurrent))
 	for _, snapshot := range m.overviewCurrent {
-		if sub.matches(snapshot.ChatID) {
+		if sub.matches(snapshot) {
 			initial = append(initial, snapshot)
 		}
 	}
@@ -107,12 +107,16 @@ func (m *Manager) SubscribeOverview(onSnapshot func(Summary)) func() {
 	return unsubscribe
 }
 
-func (s *overviewSubscriber) matches(id string) bool {
+func (s *overviewSubscriber) matches(snapshot Summary) bool {
 	if s.allLive {
 		return true
 	}
-	_, ok := s.sessionIDs[id]
-	return ok
+	for _, id := range [...]string{snapshot.ChatID, snapshot.DurableSessionID, snapshot.ReplacesSessionID} {
+		if _, ok := s.sessionIDs[id]; ok && id != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // updateOverviewLocked stores immutable current state and evaluates filters.
@@ -127,7 +131,7 @@ func (m *Manager) updateOverviewLocked(snapshot Summary) []*overviewSubscriber {
 	m.overviewCurrent[snapshot.ChatID] = snapshot
 	matched := make([]*overviewSubscriber, 0, len(m.overviewSubscribers))
 	for _, sub := range m.overviewSubscribers {
-		if sub.matches(snapshot.ChatID) {
+		if sub.matches(snapshot) {
 			matched = append(matched, sub)
 		}
 	}
@@ -221,9 +225,15 @@ func (m *Manager) ingestEpochEvent(epoch omorpc.EpochToken, ev *omorpc.Event) (*
 	}
 	if durableID, _, _, ok := decodeOverviewEvent(ev); ok {
 		if byDurable := m.byDurableEpoch[epoch]; byDurable != nil {
-			if s := byDurable[durableID]; s != nil {
-				return s, Summary{}, nil
+			if binding := byDurable[durableID]; binding != nil {
+				if binding.session == nil {
+					return nil, Summary{}, nil
+				}
+				return binding.session, Summary{}, nil
 			}
+		}
+		if _, retired := m.retiredDurable[durableID]; retired {
+			return nil, Summary{}, nil
 		}
 	}
 	snapshot, subscribers := m.ingestUnboundOverviewLocked(epoch, ev)
@@ -235,6 +245,9 @@ func (m *Manager) ingestEpochEvent(epoch omorpc.EpochToken, ev *omorpc.Event) (*
 func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorpc.Event) (Summary, []*overviewSubscriber) {
 	durableID, name, data, ok := decodeOverviewEvent(ev)
 	if !ok {
+		return Summary{}, nil
+	}
+	if _, retired := m.retiredDurable[durableID]; retired {
 		return Summary{}, nil
 	}
 	chatID := durableID
@@ -326,19 +339,7 @@ func (entry *overviewCacheEntry) summary(chatID, durableID string) Summary {
 // caller holds Session.lifecycleMu followed by Manager.mu. That ordering makes
 // route publication and cache eviction one atomic event-loop transition.
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
-	if m.byDurableEpoch == nil {
-		m.byDurableEpoch = make(map[omorpc.EpochToken]map[string]*Session)
-	}
-	byDurable := m.byDurableEpoch[s.epoch]
-	if byDurable == nil {
-		byDurable = make(map[string]*Session)
-		m.byDurableEpoch[s.epoch] = byDurable
-	}
-	byDurable[s.durableID] = s
-	if m.durableToChat == nil {
-		m.durableToChat = make(map[string]string)
-	}
-	m.durableToChat[s.durableID] = s.chatID
+	m.bindIdentityLocked(s)
 
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
@@ -360,5 +361,8 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 	// This replacement is the remap signal for subscribers that observed the
 	// provisional durable-keyed row before its stable chat identity was known.
 	snapshot := cloneSummary(s.summaryLocked())
+	if entry.chatID != s.chatID {
+		snapshot.ReplacesSessionID = entry.chatID
+	}
 	return snapshot, m.updateOverviewLocked(snapshot)
 }
