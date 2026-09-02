@@ -50,6 +50,9 @@ type Config struct {
 	// manager's per-chat flight.
 	PrepareChatVersion func(context.Context, string, string) (uint64, error)
 	ChatVersion        func(string) uint64
+	// ActivitySource defaults to Manager when it implements ActivitySource.
+	// The explicit field keeps the manager-cache seam independently testable.
+	ActivitySource ActivitySource
 }
 
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
@@ -203,6 +206,8 @@ type connection struct {
 	wsID, chatID string
 	sess         *session.Session
 	detach       func()
+	activityMu   sync.Mutex
+	activity     *activitySubscription
 	hello        bool
 	work         chan []byte
 	closed       atomic.Bool
@@ -239,6 +244,11 @@ func (c *connection) shutdown() {
 		return
 	}
 	c.cancel()
+	c.activityMu.Lock()
+	activity := c.activity
+	c.activity = nil
+	c.activityMu.Unlock()
+	activity.stop()
 	c.unbind()
 	if nc := c.socket.NetConn(); nc != nil {
 		_ = nc.Close()
@@ -339,6 +349,10 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 	}
 	if f, ok := frame.(*wscontract.ChatCreateFrame); ok {
 		c.create(ctx, f)
+		return
+	}
+	if f, ok := frame.(*wscontract.SessionsSubscribeFrame); ok {
+		c.subscribeActivity(f)
 		return
 	}
 

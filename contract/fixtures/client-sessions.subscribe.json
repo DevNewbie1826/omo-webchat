@@ -1,0 +1,5 @@
+{
+  "type": "sessions.subscribe",
+  "mode": "explicit",
+  "sessionIds": ["chat-2", "child-session-1"]
+}

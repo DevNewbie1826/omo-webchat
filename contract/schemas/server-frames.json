@@ -11,6 +11,7 @@
     { "$ref": "#/$defs/StateFrame" },
     { "$ref": "#/$defs/StatsFrame" },
     { "$ref": "#/$defs/ExtensionEventFrame" },
+    { "$ref": "#/$defs/SessionsActivityFrame" },
     { "$ref": "#/$defs/ApprovalFrame" },
     { "$ref": "#/$defs/CommandsFrame" },
     { "$ref": "#/$defs/ModelsFrame" },
@@ -121,6 +122,70 @@
         "sessionId": { "type": "string" },
         "name": { "type": "string" },
         "data": { "$ref": "shared-types.json#/$defs/JsonValue" }
+      }
+    },
+    "ActivitySnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "oversized"],
+      "properties": {
+        "name": { "type": "string", "enum": ["omo.task.updated", "omo.dag.updated"] },
+        "data": { "$ref": "shared-types.json#/$defs/JsonValue" },
+        "oversized": { "type": "boolean" }
+      }
+    },
+    "TaskDigestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["task_id", "status"],
+      "properties": {
+        "task_id": { "type": "string" },
+        "status": { "type": "string" },
+        "updated_at": { "type": "string" }
+      }
+    },
+    "TaskDigest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tasks", "truncated"],
+      "properties": {
+        "tasks": { "type": "array", "items": { "$ref": "#/$defs/TaskDigestEntry" } },
+        "truncated": { "type": "boolean" },
+        "received_at": { "type": "string" }
+      }
+    },
+    "RunDigestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "status", "running_task_ids"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "status": { "type": "string" },
+        "running_task_ids": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "DagDigest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runs", "truncated"],
+      "properties": {
+        "runs": { "type": "array", "items": { "$ref": "#/$defs/RunDigestEntry" } },
+        "truncated": { "type": "boolean" },
+        "received_at": { "type": "string" }
+      }
+    },
+    "SessionsActivityFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "snapshots", "overflow"],
+      "description": "Latest overview activity for one subscribed session. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.",
+      "properties": {
+        "type": { "const": "sessions.activity" },
+        "sessionId": { "type": "string" },
+        "snapshots": { "type": "array", "items": { "$ref": "#/$defs/ActivitySnapshot" } },
+        "taskDigest": { "$ref": "#/$defs/TaskDigest" },
+        "dagDigest": { "$ref": "#/$defs/DagDigest" },
+        "overflow": { "type": "boolean" }
       }
     },
     "ApprovalFrame": {
