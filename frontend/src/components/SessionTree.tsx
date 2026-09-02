@@ -28,7 +28,7 @@ export interface SessionTreeProps {
   readonly onToggle: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
-  readonly onImport: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+  readonly onAdopt: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
   readonly onDeleteTerminal: (ws: Workspace, tm: Terminal) => void;
@@ -57,7 +57,7 @@ export function SessionTree({
   onToggle,
   onLoadMoreSessions,
   onSelect,
-  onImport,
+  onAdopt,
   onAddTerminal,
   onDeleteWorkspace,
   onDeleteTerminal,
@@ -67,25 +67,24 @@ export function SessionTree({
 }: SessionTreeProps) {
   const { t } = useT();
   const [rename, setRename] = useState<RenameTarget | null>(null);
-  const importing = useRef(new Set<string>());
+  const [adopting, setAdopting] = useState<ReadonlySet<string>>(new Set());
+  const adoptingRef = useRef(new Set<string>());
 
-  useEffect(() => {
-    const discovered = new Set<string>();
-    for (const ws of workspaces) {
-      for (const session of sessionLists.get(ws.id) ?? []) {
-        if (session.source === "discovered") discovered.add(`${ws.id}:${session.id}`);
-      }
-    }
-    for (const key of importing.current) {
-      if (!discovered.has(key)) importing.current.delete(key);
-    }
-  }, [sessionLists, workspaces]);
-
-  const importDiscovered = (ws: Workspace, session: WorkspaceSession): void => {
+  const adoptDiscovered = (ws: Workspace, session: WorkspaceSession): void => {
     const key = `${ws.id}:${session.id}`;
-    if (importing.current.has(key)) return;
-    importing.current.add(key);
-    void onImport(ws, session).catch(() => importing.current.delete(key));
+    if (adoptingRef.current.has(key)) return;
+    adoptingRef.current.add(key);
+    setAdopting((current) => new Set(current).add(key));
+    void onAdopt(ws, session)
+      .catch(() => undefined)
+      .finally(() => {
+        adoptingRef.current.delete(key);
+        setAdopting((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
+      });
   };
 
   const commitRename = (target: RenameTarget, value: string): void => {
@@ -211,7 +210,11 @@ export function SessionTree({
                   ? { id: item.id, name: item.name, provider: "omo" as const }
                   : undefined);
                 const discovered = item.source === "discovered";
+                const adopted = item.source === "alreadyAdopted";
+                const adoptionKey = `${ws.id}:${item.id}`;
+                const adoptionInFlight = discovered && adopting.has(adoptionKey);
                 const interactive = tm !== undefined || discovered;
+                const rowDisabled = !interactive || adoptionInFlight;
                 const active = tm !== undefined && item.id === activeTerminalId;
                 const live = tm !== undefined && liveSessions.has(item.id);
                 const renamingTm = tm !== undefined && rename?.kind === "terminal" && rename.tmId === item.id
@@ -224,19 +227,23 @@ export function SessionTree({
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: displayName })
                   : undefined;
-                const dangling = !discovered && item.dangling === true;
+                const adoptedLabel = adopted ? t("sidebar.tm.adopted") : undefined;
+                const dangling = item.source === "stored" && item.dangling === true;
                 const danglingHint = dangling
                   ? t("sidebar.tm.missingOriginalHint", { name: displayName })
                   : undefined;
-                const title = danglingHint ?? discoveredLabel ?? (live ? t("sidebar.tm.liveProcess") : undefined);
+                const title = danglingHint
+                  ?? (adoptionInFlight ? t("sidebar.tm.adopting") : discoveredLabel)
+                  ?? adoptedLabel
+                  ?? (live ? t("sidebar.tm.liveProcess") : undefined);
                 const activate = (): void => {
                   if (tm !== undefined) onSelect(ws, tm);
-                  else if (discovered) importDiscovered(ws, item);
+                  else if (discovered) adoptDiscovered(ws, item);
                 };
                 return (
                   <div
                     key={`${item.source}:${item.id}`}
-                    className={`th-tree-node${active ? " th-tree-node--active" : ""}${interactive ? "" : " th-tree-node--disabled"}`}
+                    className={`th-tree-node${active ? " th-tree-node--active" : ""}${rowDisabled ? " th-tree-node--disabled" : ""}`}
                   >
                     {live && <span className="th-tree-live" aria-hidden="true" />}
                     <span
@@ -255,12 +262,17 @@ export function SessionTree({
                         title={title}
                         aria-label={discoveredLabel}
                         aria-current={active ? "true" : undefined}
-                        disabled={!interactive}
+                        aria-busy={adoptionInFlight || undefined}
+                        disabled={rowDisabled}
                         onClick={activate}
                       >
                         <span className="th-tree-label">{displayName}</span>
-                        {item.source === "discovered" ? (
-                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.discovered")}</span>
+                        {discovered ? (
+                          <span className="th-tree-source" aria-hidden="true">
+                            {t(adoptionInFlight ? "sidebar.tm.adopting" : "sidebar.tm.discovered")}
+                          </span>
+                        ) : adopted ? (
+                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.adopted")}</span>
                         ) : dangling ? (
                           <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.missingOriginal")}</span>
                         ) : null}

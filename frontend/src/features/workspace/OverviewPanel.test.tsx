@@ -89,7 +89,7 @@ describe("OverviewPanel", () => {
   interface PanelHandlers {
     onClose?: () => void;
     onSelect?: (ws: Workspace, tm: Terminal) => void;
-    onImport?: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+    onAdopt?: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
   }
 
   function renderPanel(
@@ -106,7 +106,7 @@ describe("OverviewPanel", () => {
             workspaces={[workspace]}
             sessionLists={new Map([["ws-1", discoveredSessions]])}
             onSelect={handlers.onSelect ?? (() => undefined)}
-            onImport={handlers.onImport ?? (async () => undefined)}
+            onAdopt={handlers.onAdopt ?? (async () => undefined)}
           />
         </I18nContext.Provider>,
       );
@@ -186,15 +186,15 @@ describe("OverviewPanel", () => {
   it("imports a discovered session that has no stored chat yet", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
-    const onImport = vi.fn(async () => undefined);
-    renderPanel({}, { onClose, onSelect, onImport });
+    const onAdopt = vi.fn(async () => undefined);
+    renderPanel({}, { onClose, onSelect, onAdopt });
 
     act(() => {
       card(1).click();
     });
 
-    expect(onImport).toHaveBeenCalledTimes(1);
-    expect(onImport).toHaveBeenCalledWith(workspace, discoveredSessions[1]);
+    expect(onAdopt).toHaveBeenCalledTimes(1);
+    expect(onAdopt).toHaveBeenCalledWith(workspace, discoveredSessions[1]);
     expect(onSelect).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });

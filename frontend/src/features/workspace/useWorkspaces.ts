@@ -38,7 +38,7 @@ export interface UseWorkspacesResult {
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
   readonly load: () => Promise<void>;
-  readonly addCreatedSession: (wsId: string, tm: Terminal, replacedSessionId?: string) => void;
+  readonly addCreatedSession: (wsId: string, tm: Terminal, adoptedSourceId?: string) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
@@ -211,21 +211,24 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     }
   }, [expanded, fetchSessionPage, workspaces]);
 
-  const addCreatedSession = useCallback((wsId: string, tm: Terminal, replacedSessionId?: string): void => {
+  const addCreatedSession = useCallback((wsId: string, tm: Terminal, adoptedSourceId?: string): void => {
     const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: Date.now() };
-    const isReplaced = (item: WorkspaceSession): boolean =>
-      item.id === tm.id || item.id === replacedSessionId;
+    const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => [
+      created,
+      ...items
+        .filter((item) => item.id !== tm.id)
+        .map((item) => item.id === adoptedSourceId && item.source !== "stored"
+          ? { ...item, source: "alreadyAdopted" as const }
+          : item),
+    ];
     if (!sessionPagesRef.current.get(wsId)?.ready) {
       const pending = pendingCreatedSessionsRef.current.get(wsId) ?? [];
-      pendingCreatedSessionsRef.current.set(wsId, [
-        created,
-        ...pending.filter((item) => !isReplaced(item)),
-      ]);
+      pendingCreatedSessionsRef.current.set(wsId, mergeCreated(pending));
       return;
     }
     const listed = sessionListsRef.current.get(wsId) ?? [];
     const next = new Map(sessionListsRef.current);
-    next.set(wsId, [created, ...listed.filter((item) => !isReplaced(item))]);
+    next.set(wsId, mergeCreated(listed));
     replaceSessionLists(next);
   }, [replaceSessionLists]);
 

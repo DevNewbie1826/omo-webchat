@@ -78,7 +78,7 @@ describe("SessionTree session-row hierarchy", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onImport={async () => undefined}
+            onAdopt={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}

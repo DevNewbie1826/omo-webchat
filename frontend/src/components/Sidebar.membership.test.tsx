@@ -80,7 +80,7 @@ describe("Sidebar running membership crawl", () => {
         onToggleExpanded={() => undefined}
         onLoadMoreSessions={() => undefined}
         onSelectTerminal={() => undefined}
-        onImportSession={async () => undefined}
+        onAdoptSession={async () => undefined}
         onAddWorkspace={() => undefined}
         onAddTerminal={() => undefined}
         onDeleteWorkspace={() => undefined}
