@@ -79,3 +79,18 @@ permanent no-op now that no v1 `state.json` exists anywhere; deletion is pure ch
   live protocol probing or our own design decisions — no external product analysis.
 - Contract changes flow through `contract/schemas/` single source; regenerate Go + TS.
 - `go test ./...`, `go test -race ./internal/...`, `npx vitest run` all green per phase.
+
+## Phase C evidence appendix (2026-09-03, live probe + engine source)
+
+- Live WS probe (real daemon, one subagent-spawning turn): 1516 frames — run.started→run.done,
+  1484 deltas, 12 tool frames, 2 extensionEvent (`senpi.eval.execution`), 2 approvals. Only the
+  chat's own sessionId appears; engine-spawned child sessions never get their own socket frames.
+- Engine source (local install, task plugin): the task extension emits
+  `rpc.emit("omo.task.updated", {parent_session_id, tasks: [...max 256], truncated_tasks})`
+  with per-task `child_session_id`, `run_stats`, and `live_progress` (subscribeChild-driven),
+  and re-emits on every store mutation while attached. Snapshot names match our
+  `activitySnapshotOrder` (`omo.task.updated` / `omo.dag.updated`).
+- Consequence: subagent "lists" are parent-scoped snapshot payloads, not separate sessions.
+  Phase C's `sessions.subscribe` must (a) keep per-session snapshots for chats with no live
+  pane socket and (b) run a real DAG during QA to observe `omo.dag.updated` end-to-end — the
+  simple probe above did not trigger task.updated (spawn went outside the task manager path).
