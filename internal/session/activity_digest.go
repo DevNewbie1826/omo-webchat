@@ -90,6 +90,9 @@ func parseOptionalBool(doc map[string]json.RawMessage, key string) (bool, bool) 
 	if !ok {
 		return false, true
 	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false, false
+	}
 	var value bool
 	return value, json.Unmarshal(raw, &value) == nil
 }
@@ -126,6 +129,11 @@ func parseTaskDigest(data json.RawMessage) (*TaskDigest, bool) {
 		tasks = append(tasks, TaskDigestEntry{TaskID: id, Status: status, UpdatedAt: updated})
 	}
 	return &TaskDigest{Tasks: tasks, Truncated: truncated, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
+}
+
+var terminalTaskStatuses = map[string]bool{
+	"completed": true, "failed": true, "cancelled": true, "canceled": true,
+	"lost": true, "interrupted": true, "error": true, "skipped": true,
 }
 
 var terminalDagStatuses = map[string]bool{"completed": true, "failed": true, "cancelled": true, "canceled": true}
@@ -191,6 +199,109 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 		runs = append(runs, RunDigestEntry{RunID: id, Status: status, RunningTaskIDs: ids})
 	}
 	return &DagDigest{Runs: runs, Truncated: truncated, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
+}
+
+type dagTaskOutcome struct {
+	status   string
+	fromNode bool
+}
+
+func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
+	if len(dag) == 0 {
+		return nil
+	}
+	var doc struct {
+		Runs []struct {
+			Status string `json:"status"`
+			Nodes  []struct {
+				TaskID string `json:"task_id"`
+				State  string `json:"state"`
+			} `json:"nodes"`
+		} `json:"runs"`
+	}
+	if json.Unmarshal(dag, &doc) != nil {
+		return nil
+	}
+	var outcomes map[string]dagTaskOutcome
+	for _, run := range doc.Runs {
+		if !terminalDagStatuses[run.Status] {
+			continue
+		}
+		for _, node := range run.Nodes {
+			if node.TaskID == "" {
+				continue
+			}
+			outcome := dagTaskOutcome{status: run.Status}
+			if terminalTaskStatuses[node.State] {
+				outcome = dagTaskOutcome{status: node.State, fromNode: true}
+			}
+			if previous, exists := outcomes[node.TaskID]; exists && previous.fromNode && !outcome.fromNode {
+				continue
+			}
+			if outcomes == nil {
+				outcomes = make(map[string]dagTaskOutcome)
+			}
+			outcomes[node.TaskID] = outcome
+		}
+	}
+	return outcomes
+}
+
+func reconcileTaskPayloadWithOutcomes(task json.RawMessage, outcomes map[string]dagTaskOutcome) (json.RawMessage, bool) {
+	if len(outcomes) == 0 || len(task) == 0 {
+		return nil, false
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(task, &doc) != nil {
+		return nil, false
+	}
+	var tasks []map[string]json.RawMessage
+	if raw, ok := doc["tasks"]; !ok || json.Unmarshal(raw, &tasks) != nil || tasks == nil {
+		return nil, false
+	}
+	changed := false
+	for _, row := range tasks {
+		var id string
+		var status *string
+		if json.Unmarshal(row["task_id"], &id) != nil || id == "" ||
+			json.Unmarshal(row["status"], &status) != nil || status == nil || *status == "" {
+			continue
+		}
+		outcome, vouched := outcomes[id]
+		if !vouched || terminalTaskStatuses[*status] {
+			continue
+		}
+		row["status"], _ = json.Marshal(outcome.status)
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	doc["tasks"], _ = json.Marshal(tasks)
+	out, err := json.Marshal(doc)
+	return out, err == nil
+}
+
+// reconcileActivityCacheLocked demotes stale task rows using terminal DAG
+// outcomes. The caller holds lifecycleMu, which protects both projections.
+func (s *Session) reconcileActivityCacheLocked(dag json.RawMessage) {
+	outcomes := terminalDagRunTaskOutcomes(dag)
+	if len(outcomes) == 0 {
+		return
+	}
+	if task, changed := reconcileTaskPayloadWithOutcomes(s.activitySnapshots[activitySnapshotOrder[0]], outcomes); changed {
+		s.activitySnapshots[activitySnapshotOrder[0]] = task
+	}
+	if s.taskDigest == nil {
+		return
+	}
+	for i := range s.taskDigest.Tasks {
+		row := &s.taskDigest.Tasks[i]
+		outcome, vouched := outcomes[row.TaskID]
+		if vouched && !terminalTaskStatuses[row.Status] {
+			row.Status = outcome.status
+		}
+	}
 }
 
 func cloneTaskDigest(src *TaskDigest) *TaskDigest {

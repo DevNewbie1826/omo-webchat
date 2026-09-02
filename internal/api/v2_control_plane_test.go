@@ -157,6 +157,104 @@ func newV2ControlEnv(t *testing.T) *v2ControlEnv {
 	return &v2ControlEnv{server: server, manager: manager, cursors: cursors, daemon: d, client: client, wsID: workspace.ID, chatID: chat.ID}
 }
 
+func TestCursorOnlyChatCreateBindsAndPrompts(t *testing.T) {
+	e := newV2ControlEnv(t)
+	if _, err := e.server.store.RemoveChat(e.wsID, e.chatID); err != nil {
+		t.Fatal(err)
+	}
+	bridge := wsbridge.New(wsbridge.Config{
+		Context: t.Context(), Manager: e.manager, Store: e.cursors,
+		ServerVersion: "test", Logger: e.server.logger,
+		PrepareChatVersion: func(_ context.Context, wsID, chatID string) (uint64, error) {
+			return e.server.prepareV2ChatVersion(e.cursors, wsID, chatID)
+		},
+		ChatVersion: e.server.chatLifecycleVersion,
+	})
+	httpServer := httptest.NewServer(bridge)
+	defer httpServer.Close()
+	frames := &frameCollector{notify: make(chan struct{}, 64)}
+	client, _, err := gws.NewClient(frames, &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(httpServer.URL, "http")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.WriteClose(1000, nil)
+	go client.ReadLoop()
+	frames.waitFor(t, "hello", time.Second)
+	writeFrame(t, client, map[string]any{"type": "hello", "version": 2})
+	writeFrame(t, client, map[string]any{"type": "chat.create", "wsId": e.wsID, "chatId": e.chatID})
+	frames.waitFor(t, "ready", time.Second)
+	writeFrame(t, client, map[string]any{"type": "chat.send", "sessionId": e.chatID, "run": map[string]any{"kind": "prompt", "message": "cursor only"}})
+	if !e.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, time.Second) {
+		t.Fatal("cursor-only chat did not forward its prompt")
+	}
+}
+
+func TestRenameCursorOnlyChatUpdatesCursorAndLiveTitle(t *testing.T) {
+	e := newV2ControlEnv(t)
+	if _, err := e.server.store.RemoveChat(e.wsID, e.chatID); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/", bytes.NewBufferString(`{"name":"cursor renamed"}`))
+	req.SetPathValue("wsId", e.wsID)
+	req.SetPathValue("chatId", e.chatID)
+	rec := httptest.NewRecorder()
+	e.server.handleRenameChat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rename status=%d: %s", rec.Code, rec.Body.String())
+	}
+	chat, err := e.cursors.GetChat(e.chatID)
+	if err != nil || chat.Name != "cursor renamed" || chat.NameSource != cursorstore.NameSourceUser {
+		t.Fatalf("renamed cursor = %+v, %v", chat, err)
+	}
+	summaries := e.manager.LiveSummaries()
+	if len(summaries) != 1 || summaries[0].Title != "cursor renamed" {
+		t.Fatalf("live summaries after rename = %+v", summaries)
+	}
+}
+
+func TestDeleteCursorOnlyChatRemovesCursor(t *testing.T) {
+	e := newV2ControlEnv(t)
+	if _, err := e.server.store.RemoveChat(e.wsID, e.chatID); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/", nil)
+	req.SetPathValue("wsId", e.wsID)
+	req.SetPathValue("chatId", e.chatID)
+	rec := httptest.NewRecorder()
+	e.server.handleDeleteChat(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := e.cursors.GetChat(e.chatID); !errors.Is(err, cursorstore.ErrNotFound) {
+		t.Fatalf("cursor lookup after delete = %v", err)
+	}
+}
+
+func TestListLiveSessionsPrefersStoredMetadataOverDerivedTitle(t *testing.T) {
+	e := newV2ControlEnv(t)
+	sess, ok := e.manager.Get(e.chatID)
+	if !ok {
+		t.Fatal("v2 session missing")
+	}
+	if err := sess.SendPrompt(t.Context(), "# Derived title", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.server.store.UpdateChat(e.wsID, e.chatID, func(chat *store.Chat) {
+		chat.Name = "Authoritative metadata"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	e.server.handleListLiveSessions(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/live", nil))
+	var body liveSessionsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Sessions) != 1 || body.Sessions[0].Title != "Authoritative metadata" {
+		t.Fatalf("live sessions = %+v", body.Sessions)
+	}
+}
+
 func TestListLiveSessionsEnrichesV2SummaryWithCompatibleShape(t *testing.T) {
 	e := newV2ControlEnv(t)
 	sess, ok := e.manager.Get(e.chatID)
@@ -189,7 +287,7 @@ func TestListLiveSessionsEnrichesV2SummaryWithCompatibleShape(t *testing.T) {
 		t.Fatalf("response = %+v, %v", body, err)
 	}
 	row := body.Sessions[0]
-	if row["title"] != "Build v2 surface" || row["task"] == nil || row["dag"] == nil || row["task_digest"] == nil || row["dag_digest"] == nil {
+	if row["title"] != "chat" || row["task"] == nil || row["dag"] == nil || row["task_digest"] == nil || row["dag_digest"] == nil {
 		t.Fatalf("v2 live row = %+v", row)
 	}
 	if row["task_oversized"] != false || row["dag_oversized"] != false {

@@ -107,9 +107,6 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 		s.lifecycleMu.Unlock()
 		return err
 	}
-	if s.title == "" {
-		s.title = DeriveSessionTitle(msg)
-	}
 	s.promptSeq++
 	seq := s.promptSeq
 	s.promptInFlight = true
@@ -128,6 +125,9 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 			s.promptResponse = false
 			s.scheduleIdleLocked()
 		} else if err == nil {
+			if s.title == "" {
+				s.title = DeriveSessionTitle(msg)
+			}
 			s.promptResponse = true
 			if s.localCommandActive && s.localCommandSeq == seq {
 				s.completeLocalCommandLocked(seq)
@@ -418,6 +418,9 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 func (s *Session) SetSessionName(ctx context.Context, name string) error {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
+	if err == nil {
+		s.title = name
+	}
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err

@@ -48,24 +48,30 @@ func (s *Server) prepareV2ChatVersion(cursors v2ChatPreparerStore, wsID, chatID 
 	if err != nil {
 		return 0, err
 	}
-	chat, err := s.store.GetChat(wsID, chatID)
-	if err != nil {
-		return 0, err
+	chat, legacyErr := s.store.GetChat(wsID, chatID)
+	current, cursorErr := cursors.GetChat(chatID)
+	if legacyErr != nil {
+		if cursorErr != nil || current.WorkspaceID != wsID {
+			return 0, legacyErr
+		}
+		if current.CWD == "" {
+			current.CWD = ws.Path
+		}
+	} else {
+		cwd := chat.Cwd
+		if cwd == "" {
+			cwd = ws.Path
+		}
+		if cursorErr == nil {
+			current.WorkspaceID, current.CWD, current.Name = ws.ID, cwd, chat.Name
+		} else {
+			current = cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt}
+		}
 	}
 	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
 		return 0, err
 	}
-	cwd := chat.Cwd
-	if cwd == "" {
-		cwd = ws.Path
-	}
-	current, err := cursors.GetChat(chat.ID)
-	if err == nil {
-		current.WorkspaceID, current.CWD, current.Name = ws.ID, cwd, chat.Name
-		if err := cursors.SaveChat(current); err != nil {
-			return 0, err
-		}
-	} else if err := cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt}); err != nil {
+	if err := cursors.SaveChat(current); err != nil {
 		return 0, err
 	}
 	return s.chatLifecycleVersion(chatID), nil

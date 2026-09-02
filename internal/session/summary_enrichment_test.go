@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -15,6 +16,19 @@ func TestDeriveSessionTitleMatchesLegacyRules(t *testing.T) {
 		if got := DeriveSessionTitle(test.prompt); got != test.want {
 			t.Fatalf("DeriveSessionTitle(%q) = %q, want %q", test.prompt, got, test.want)
 		}
+	}
+}
+
+func TestSetSessionNameUpdatesLocalSummaryTitle(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sess, _, _ := acquire(t, mgr, testChat{id: "rename-title", cwd: t.TempDir()}, nil)
+	if err := sess.SetSessionName(context.Background(), "User title"); err != nil {
+		t.Fatal(err)
+	}
+	if summary, ok := sess.summary(); !ok || summary.Title != "User title" {
+		t.Fatalf("summary after rename = %+v", summary)
 	}
 }
 

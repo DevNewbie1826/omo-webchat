@@ -111,6 +111,8 @@ export function SessionTree({
       {workspaces.map((ws) => {
         const isOpen = expanded.has(ws.id);
         const paging = sessionPages.get(ws.id);
+        const mergedSessionIds = new Set(ws.chats.map((chat) => chat.id));
+        for (const session of sessionLists.get(ws.id) ?? []) mergedSessionIds.add(session.id);
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         return (
@@ -142,11 +144,11 @@ export function SessionTree({
                   {ws.name}
                 </button>
               )}
-              <span className="th-tree-count">{ws.chats.length}</span>
+              <span className="th-tree-count">{mergedSessionIds.size}</span>
               {(() => {
-                const workspaceRunning = ws.chats.reduce((total, chat) => total + (runningCounts?.get(chat.id)?.count ?? 0), 0);
-                const workspacePartial = ws.chats.some((chat) => runningCounts?.get(chat.id)?.partial === true);
-                const workspaceUnknown = ws.chats.some((chat) => runningCounts?.get(chat.id)?.unknown === true);
+                const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id)?.count ?? 0), 0);
+                const workspacePartial = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.partial === true);
+                const workspaceUnknown = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.unknown === true);
                 return workspaceRunning > 0 || workspaceUnknown ? (
                   <span
                     className="th-tree-running th-tree-running--workspace"

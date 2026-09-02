@@ -1,7 +1,7 @@
 # Stage-4 gap ledger
 
 2026-09-02 · explore pass on main `86569ef` · branch `v2/data-surfaces`.
-Decisions: `FIXED-here` / `DEFERRED-stage-5` / `INTENTIONAL-REMOVAL` / `NOT-A-GAP`.
+Decisions: `FIXED (completed in the round-2 follow-up commit: end-to-end usability, DAG reconciliation, title lifecycle)` / `DEFERRED-stage-5` / `INTENTIONAL-REMOVAL` / `NOT-A-GAP`.
 
 ## 1. Sidebar tree missing v2 sessions
 
@@ -50,3 +50,10 @@ Decisions: `FIXED-here` / `DEFERRED-stage-5` / `INTENTIONAL-REMOVAL` / `NOT-A-GA
 **Decision.** NOT-A-GAP
 
 **Rationale.** Chat WS is attach-scoped, so background sessions never emit `extensionEvent` on the pane socket. The 4s live-list poll (now title/digest-enriched) is the intended fill. Orphan overrides without a poll row stay inert until `sessions.subscribe` (gap 4). Known behavior, not a stage-4 defect.
+
+
+## Round-2 addendum
+The initial merge-state of items 1-3 was incomplete: cursor-only rows were visible but not
+operable (create/rename/delete), terminal-DAG reconciliation and the title lifecycle diverged
+from v1. These are closed by the round-2 fix commit; the ledger marks them FIXED only in that
+final sense.

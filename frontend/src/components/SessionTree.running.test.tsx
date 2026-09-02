@@ -44,20 +44,22 @@ function tree(
   runningCounts?: ReadonlyMap<string, RunningCount>,
   touchActions = false,
   expanded = new Set(["ws-1"]),
+  renderedWorkspace = workspace,
+  renderedSessions = sessions,
 ): void {
   const root = (container as HTMLDivElement & { __root?: Root }).__root!;
   act(() => {
     root.render(
       <I18nContext.Provider value={i18n}>
         <SessionTree
-          workspaces={[workspace]}
+          workspaces={[renderedWorkspace]}
           touchActions={touchActions}
           liveSessions={new Set(["tm-live", "tm-idle"])}
           runningCounts={runningCounts}
           activeTerminalId={null}
           placedSessions={new Set()}
           expanded={expanded}
-          sessionLists={new Map([["ws-1", sessions]])}
+          sessionLists={new Map([["ws-1", renderedSessions]])}
           sessionPages={new Map()}
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
@@ -160,6 +162,22 @@ describe("SessionTree running-agent badge", () => {
     const chip = workspaceRow.querySelector(".th-tree-running");
     expect(chip?.textContent).toBe("2");
     expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 2");
+  });
+
+  it("counts a cursor-only running session in the collapsed workspace aggregate", () => {
+    const cursorOnly = { id: "cursor-only", name: "Cursor only", source: "stored" as const, recencyMs: 3 };
+    tree(
+      container,
+      new Map([["cursor-only", { count: 1, partial: false }]]),
+      false,
+      new Set(),
+      { ...workspace, chats: [] },
+      [cursorOnly],
+    );
+
+    const workspaceRow = row("Workspace");
+    expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("1");
+    expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("1");
   });
 
   it("renders the workspace aggregate and per-session badges when expanded", () => {

@@ -122,6 +122,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 }
 
 func (s *Session) completeProviderRunLocked(reason string) {
+	s.reconcileActivityCacheLocked(s.activitySnapshots[activitySnapshotOrder[1]])
 	s.providerRunActive = false
 	s.promptInFlight = false
 	s.localCommandActive = false
@@ -238,6 +239,7 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 			if digest, ok := parseDagDigest(dataBytes); ok {
 				s.dagDigest = digest
 			}
+			s.reconcileActivityCacheLocked(dataBytes)
 		}
 	}
 	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})
