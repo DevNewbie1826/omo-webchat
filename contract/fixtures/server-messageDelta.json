@@ -1,0 +1,1 @@
+{ "type": "messageDelta", "sessionId": "sess-1", "messageId": "msg-9", "delta": { "kind": "text", "contentIndex": 2, "delta": "partial text", "partial": { "nested": [1, 2, 3] } } }

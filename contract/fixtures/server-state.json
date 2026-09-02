@@ -1,0 +1,1 @@
+{ "type": "state", "sessionId": "sess-1", "isStreaming": false, "isCompacting": false, "thinkingLevel": "high", "model": { "provider": "anthropic", "modelId": "claude-opus" }, "sessionName": "sess-1-title" }

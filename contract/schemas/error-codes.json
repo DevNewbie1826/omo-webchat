@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "error-codes.json",
+  "title": "Closed error-code enum for error frames (R: closed enum + required message)",
+  "$defs": {
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "pi_eof",
+        "resume_failed",
+        "session_unloaded",
+        "session_mismatch",
+        "prompt_in_flight",
+        "compaction_in_flight",
+        "provider_error",
+        "persist_failed",
+        "decode_failed",
+        "bad_frame",
+        "unknown_type",
+        "bad_create",
+        "bad_provider",
+        "no_workspace",
+        "no_chat",
+        "start_failed"
+      ]
+    }
+  }
+}

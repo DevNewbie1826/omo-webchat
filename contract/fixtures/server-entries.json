@@ -1,0 +1,1 @@
+{ "type": "entries", "sessionId": "sess-1", "entries": [ { "role": "user", "text": "hi" }, { "role": "assistant", "blocks": [] } ], "leafId": "leaf-2", "final": true }

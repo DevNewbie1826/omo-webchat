@@ -1,0 +1,1 @@
+{ "type": "chat.send", "sessionId": "sess-1", "run": { "kind": "prompt", "message": "hello there", "images": [ { "data": "aGk=", "mimeType": "image/png" } ] } }

@@ -1,0 +1,1 @@
+{ "type": "commands", "sessionId": "sess-1", "commands": [ { "name": "compact", "description": "Compact history", "source": "omo", "syntax": "slash", "sourceInfo": { "path": "/x/commands/compact.md", "baseDir": "/x/commands", "source": "omo", "scope": "user", "origin": "builtin" } }, { "name": "review" } ] }

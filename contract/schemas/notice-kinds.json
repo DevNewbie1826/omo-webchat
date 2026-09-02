@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "notice-kinds.json",
+  "title": "Durable notice kinds (replayed to every attach + persisted). All other kinds are transient.",
+  "$defs": {
+    "DurableNoticeKind": {
+      "type": "string",
+      "enum": [
+        "retry_fallback_applied",
+        "retry_fallback_reverted",
+        "retry_fallback_succeeded",
+        "retry_fallback_exhausted",
+        "server_fallback_aborted",
+        "high_reasoning_warning"
+      ]
+    }
+  }
+}

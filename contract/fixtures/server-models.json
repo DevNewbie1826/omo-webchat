@@ -1,0 +1,1 @@
+{ "type": "models", "sessionId": "sess-1", "models": [ { "provider": "anthropic", "modelId": "claude-opus", "name": "Opus", "input": ["text", "image"] } ] }

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wire-names.json",
+  "title": "v2 session FrameKind -> v1 wire name mapping, owned by the bridge. Server side maps Frame.Kind to the wire type value; client side commands are identity.",
+  "$defs": {
+    "WireNames": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contractVersion", "server", "client"],
+      "properties": {
+        "contractVersion": { "type": "integer" },
+        "server": {
+          "type": "object",
+          "description": "v2 FrameKind -> wire type emitted on the socket",
+          "additionalProperties": { "type": "string" },
+          "required": [
+            "ready", "message.delta", "message", "tool", "state", "name", "stats",
+            "models", "commands", "entries", "compaction.started", "compaction.done",
+            "control.result", "ack", "approval", "notice", "extensionEvent", "error",
+            "run.started", "run.done"
+          ],
+          "properties": {
+            "ready": { "const": "ready" },
+            "message.delta": { "const": "messageDelta" },
+            "message": { "const": "message" },
+            "tool": { "const": "tool" },
+            "state": { "const": "state" },
+            "name": { "const": "chat.name" },
+            "stats": { "const": "stats" },
+            "models": { "const": "models" },
+            "commands": { "const": "commands" },
+            "entries": { "const": "entries" },
+            "compaction.started": { "const": "compaction.started" },
+            "compaction.done": { "const": "compaction.done" },
+            "control.result": { "const": "control.result" },
+            "ack": { "const": "ack" },
+            "approval": { "const": "approval" },
+            "notice": { "const": "notice" },
+            "extensionEvent": { "const": "extensionEvent" },
+            "error": { "const": "error" },
+            "run.started": { "const": "run.started" },
+            "run.done": { "const": "run.done" }
+          }
+        },
+        "client": {
+          "type": "object",
+          "description": "Client command names (identity; v1 continuity)",
+          "additionalProperties": { "type": "string" },
+          "required": [
+            "ping", "chat.create", "chat.send", "chat.abort", "chat.set",
+            "approval.respond", "chat.commands", "chat.compact", "chat.models",
+            "chat.stats", "activity.refresh", "chat.resume", "chat.close", "chat.disconnect"
+          ],
+          "properties": {
+            "ping": { "const": "ping" },
+            "chat.create": { "const": "chat.create" },
+            "chat.send": { "const": "chat.send" },
+            "chat.abort": { "const": "chat.abort" },
+            "chat.set": { "const": "chat.set" },
+            "approval.respond": { "const": "approval.respond" },
+            "chat.commands": { "const": "chat.commands" },
+            "chat.compact": { "const": "chat.compact" },
+            "chat.models": { "const": "chat.models" },
+            "chat.stats": { "const": "chat.stats" },
+            "activity.refresh": { "const": "activity.refresh" },
+            "chat.resume": { "const": "chat.resume" },
+            "chat.close": { "const": "chat.close" },
+            "chat.disconnect": { "const": "chat.disconnect" }
+          }
+        }
+      }
+    }
+  }
+}

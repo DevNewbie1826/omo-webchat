@@ -1,0 +1,1 @@
+{ "type": "message", "sessionId": "sess-1", "message": { "role": "assistant", "customType": "text", "blocks": [ { "kind": "text", "text": "done" }, { "kind": "toolCall", "id": "tc1", "name": "bash", "arguments": { "cmd": "ls" }, "isError": false } ], "model": "claude-opus", "usage": { "input": 10 }, "ts": 1735689600.25 } }

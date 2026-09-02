@@ -1,0 +1,1 @@
+{ "type": "control.result", "sessionId": "sess-1", "command": "set_model", "requestId": "req-11", "success": true, "message": "model applied" }

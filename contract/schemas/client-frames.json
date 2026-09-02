@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "client-frames.json",
+  "title": "Client -> server frames. Decoded only through the parse chokepoint; unknown types answer error{code:\"unknown_type\"}, malformed JSON answers error{code:\"bad_frame\"}.",
+  "oneOf": [
+    { "$ref": "#/$defs/PingFrame" },
+    { "$ref": "#/$defs/ChatCreateFrame" },
+    { "$ref": "#/$defs/ChatSendFrame" },
+    { "$ref": "#/$defs/ChatAbortFrame" },
+    { "$ref": "#/$defs/ChatSetFrame" },
+    { "$ref": "#/$defs/ApprovalRespondFrame" },
+    { "$ref": "#/$defs/ChatCommandsFrame" },
+    { "$ref": "#/$defs/ChatCompactFrame" },
+    { "$ref": "#/$defs/ChatModelsFrame" },
+    { "$ref": "#/$defs/ChatStatsFrame" },
+    { "$ref": "#/$defs/ActivityRefreshFrame" },
+    { "$ref": "#/$defs/ChatResumeFrame" },
+    { "$ref": "#/$defs/ChatCloseFrame" },
+    { "$ref": "#/$defs/ChatDisconnectFrame" },
+    { "$ref": "hello.json#/$defs/ClientHelloFrame" }
+  ],
+  "$defs": {
+    "PingFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": { "type": { "const": "ping" } }
+    },
+    "ChatCreateFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "wsId", "chatId"],
+      "properties": {
+        "type": { "const": "chat.create" },
+        "wsId": { "type": "string" },
+        "chatId": { "type": "string" }
+      }
+    },
+    "ChatSendFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "run"],
+      "properties": {
+        "type": { "const": "chat.send" },
+        "sessionId": { "type": "string" },
+        "run": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "message"],
+          "properties": {
+            "kind": { "$ref": "shared-types.json#/$defs/RunKind" },
+            "message": { "type": "string" },
+            "images": { "type": "array", "items": { "$ref": "shared-types.json#/$defs/ChatImage" } }
+          }
+        }
+      }
+    },
+    "ChatAbortFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.abort" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatSetFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.set" },
+        "sessionId": { "type": "string" },
+        "requestId": { "type": "string" },
+        "model": { "$ref": "shared-types.json#/$defs/ModelRef" },
+        "thinkingLevel": { "type": "string" }
+      }
+    },
+    "ApprovalRespondFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "id"],
+      "properties": {
+        "type": { "const": "approval.respond" },
+        "sessionId": { "type": "string" },
+        "requestId": { "type": "string" },
+        "id": { "type": "string" },
+        "value": { "type": "string" },
+        "confirmed": { "type": "boolean" },
+        "cancelled": { "type": "boolean" }
+      }
+    },
+    "ChatCommandsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.commands" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatCompactFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.compact" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatModelsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.models" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatStatsFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.stats" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ActivityRefreshFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "activity.refresh" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatResumeFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.resume" },
+        "sessionId": { "type": "string" },
+        "since": { "type": "string" }
+      }
+    },
+    "ChatCloseFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.close" },
+        "sessionId": { "type": "string" }
+      }
+    },
+    "ChatDisconnectFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId"],
+      "properties": {
+        "type": { "const": "chat.disconnect" },
+        "sessionId": { "type": "string" }
+      }
+    }
+  }
+}
