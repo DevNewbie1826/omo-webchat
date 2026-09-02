@@ -88,7 +88,7 @@ func TestEdgeEventForUnownedSessionDroppedQuietly(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	chatA := testChat{id: "chat-a", cwd: t.TempDir()}
 	chatB := testChat{id: "chat-b", cwd: t.TempDir()}
@@ -187,7 +187,7 @@ func TestEdgeStaleAgentSettledWithoutArmedRunIgnored(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(128)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -232,7 +232,7 @@ func TestEdgeStaleCompactRPCResponseDoesNotClearNewerLatch(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -333,7 +333,7 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		client := dial(t, d)
 		store := newMemStore()
 		chat := testChat{id: "chat-1", cwd: t.TempDir()}
-		mgr := testManager(client, store, 64)
+		mgr := testManager(t, client, store, 64)
 		sub := newRecorder(64)
 		sess, _, _ := acquire(t, mgr, chat, sub)
 		sub.next(t) // ready
@@ -357,7 +357,7 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		client := dial(t, d)
 		store := newMemStore()
 		chat := testChat{id: "chat-1", cwd: t.TempDir()}
-		mgr := testManager(client, store, 64)
+		mgr := testManager(t, client, store, 64)
 		sub := newRecorder(64)
 		sess, _, _ := acquire(t, mgr, chat, sub)
 		sub.next(t) // ready
@@ -414,7 +414,7 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		client := dial(t, d)
 		store := newMemStore()
 		chat := testChat{id: "chat-1", cwd: t.TempDir()}
-		mgr := testManager(client, store, 64)
+		mgr := testManager(t, client, store, 64)
 		sub := newRecorder(128)
 		sess, _, _ := acquire(t, mgr, chat, sub)
 		sub.next(t) // ready
@@ -492,7 +492,7 @@ func TestEdgeConcurrentAcquireSingleFlight(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	// Park the daemon's open handler: while the first Acquire is in
 	// flight, the second must be waiting on the manager's single-flight
@@ -575,7 +575,7 @@ func TestEdgeMidRunAttachSeesStateWithoutTerminalDuplication(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub1 := newRecorder(128)
 	sess, _, _ := acquire(t, mgr, chat, sub1)
@@ -675,7 +675,7 @@ func (p *parkingSub) unblock() {
 	p.releaseOnce.Do(func() { close(p.release) })
 }
 
-func (p *parkingSub) Close() error { p.unblock(); return nil }
+func (p *parkingSub) Cancel() error { p.unblock(); return nil }
 
 func TestEdgeSlowSubscriberDetachBackpressureIsolation(t *testing.T) {
 	d := newDaemon(t)
@@ -683,7 +683,7 @@ func TestEdgeSlowSubscriberDetachBackpressureIsolation(t *testing.T) {
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
 	const queueSize = 64
-	mgr := testManager(client, store, queueSize)
+	mgr := testManager(t, client, store, queueSize)
 
 	sess, _, _ := acquire(t, mgr, chat, nil)
 
@@ -787,7 +787,7 @@ func TestEdgeCloseAllDuringInflightPromptTypedFailureNoLeak(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -873,7 +873,7 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
 
 	client := dial(t, d)
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 	sub := newRecorder(128)
 	sess, _, detach := acquire(t, mgr, chat, sub)
 	ready := sub.next(t)
@@ -899,7 +899,7 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 		_ = client.Close()
 		d.Restart()
 		client = dial(t, d)
-		mgr = testManager(client, store, 64)
+		mgr = testManager(t, client, store, 64)
 
 		sub = newRecorder(128)
 		var started bool

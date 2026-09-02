@@ -39,6 +39,7 @@ type Session struct {
 	compactRPCID, compactProviderID, compactPhase                           string
 	completedCompactions                                                    map[string]struct{}
 	completedCompactionFIFO                                                 [][]string
+	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
@@ -183,6 +184,12 @@ func (s *Session) Compact(ctx context.Context) error {
 		providerID := s.compactProviderID
 		s.compactionActive = false
 		s.rememberCompletedCompactionLocked(rpcID, providerID)
+		if providerID == "" {
+			s.completedUnpaired = append(s.completedUnpaired, rpcID)
+			if len(s.completedUnpaired) > maxCompletedCompactions {
+				s.completedUnpaired = s.completedUnpaired[len(s.completedUnpaired)-maxCompletedCompactions:]
+			}
+		}
 		info := CompactionInfo{Phase: "manual"}
 		if callErr != nil {
 			info.Error = callErr.Error()
@@ -308,16 +315,20 @@ func (s *Session) Commands(ctx context.Context) ([]CommandInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeCommands(resp.Data)
+}
+
+func decodeCommands(data []byte) ([]CommandInfo, error) {
 	var wire struct {
 		Commands []struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-			Source      string `json:"source"`
-			Syntax      string `json:"syntax"`
-			SourceInfo  string `json:"sourceInfo"`
+			Name        string             `json:"name"`
+			Description string             `json:"description"`
+			Source      string             `json:"source"`
+			Syntax      string             `json:"syntax"`
+			SourceInfo  *CommandSourceInfo `json:"sourceInfo"`
 		} `json:"commands"`
 	}
-	if err := json.Unmarshal(resp.Data, &wire); err != nil {
+	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, err
 	}
 	out := make([]CommandInfo, len(wire.Commands))
@@ -378,6 +389,21 @@ func (s *Session) Attach(sub Subscriber) func() {
 	}
 	return detach
 }
+
+// ActivitySnapshot returns a stable copy of the latest bounded activity
+// projections in replay order.
+func (s *Session) ActivitySnapshot() []Frame {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	out := make([]Frame, 0, len(activitySnapshotOrder))
+	for _, name := range activitySnapshotOrder {
+		if data := s.activitySnapshots[name]; len(data) > 0 {
+			out = append(out, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
+		}
+	}
+	return out
+}
+
 func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
@@ -428,20 +454,25 @@ func (s *Session) closeContext(ctx context.Context) error {
 	if s.manager.byChat[s.chatID] == s {
 		delete(s.manager.byChat, s.chatID)
 		delete(s.manager.byRoute, route)
-		s.manager.slotGeneration[s.chatID]++
+		s.manager.bumpSlotGenerationLocked(s.chatID)
 	}
 	s.manager.mu.Unlock()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
 	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
-	if err != nil {
-		var stable *omorpc.StableError
-		if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeUnknownSession {
-			return nil
-		}
+	if definitiveCloseFailure(err) {
+		return nil
 	}
 	return err
 }
+func definitiveCloseFailure(err error) bool {
+	if err == nil {
+		return true
+	}
+	var stable *omorpc.StableError
+	return errors.As(err, &stable) && (stable.Code == omorpc.ErrCodeUnknownSession || stable.Code == omorpc.ErrCodeSessionClosing)
+}
+
 func (s *Session) retireReplaced() {
 	s.lifecycleMu.Lock()
 	s.closed = true
@@ -563,9 +594,12 @@ func (s *Session) loadEntries(ctx context.Context) {
 		Entries []json.RawMessage `json:"entries"`
 		LeafID  string            `json:"leafId"`
 	}
-	if json.Unmarshal(resp.Data, &wire) != nil {
+	if !json.Valid(resp.Data) {
 		return
 	}
+	// A valid response with malformed fields still terminates history loading;
+	// json.Unmarshal preserves any entries decoded before the bad field.
+	_ = json.Unmarshal(resp.Data, &wire)
 	s.lifecycleMu.Lock()
 	if !s.closed && !s.resumable {
 		s.publishEntriesLocked(wire.Entries, wire.LeafID)

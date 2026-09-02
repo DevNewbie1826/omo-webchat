@@ -6,7 +6,6 @@ import (
 )
 
 type errorDeliverer interface{ DeliverFrame(Frame) error }
-type subscriberCloser interface{ Close() error }
 
 type subscription struct {
 	sub      Subscriber
@@ -20,7 +19,13 @@ type subscription struct {
 func (x *subscription) start() { go x.run() }
 
 func (x *subscription) run() {
-	defer close(x.exited)
+	var retireReason error
+	defer func() {
+		close(x.exited)
+		if retireReason != nil {
+			x.retire(retireReason)
+		}
+	}()
 	for {
 		select {
 		case <-x.stopCh:
@@ -39,7 +44,7 @@ func (x *subscription) run() {
 			}
 			if d, ok := x.sub.(errorDeliverer); ok {
 				if err := d.DeliverFrame(f); err != nil {
-					x.retire(errors.Join(ErrSubscriberDelivery, err))
+					retireReason = errors.Join(ErrSubscriberDelivery, err)
 					return
 				}
 			} else {
@@ -52,9 +57,7 @@ func (x *subscription) run() {
 func (x *subscription) stop() {
 	x.stopOnce.Do(func() {
 		close(x.stopCh)
-		if c, ok := x.sub.(subscriberCloser); ok {
-			_ = c.Close()
-		}
+		_ = x.sub.Cancel()
 	})
 }
 
@@ -103,7 +106,7 @@ func (b *broadcaster) attach(sub Subscriber, size int, initial []Frame) (uint64,
 	b.mu.Unlock()
 	x.start()
 	if !accepted {
-		b.finish(x, ErrSubscriberOverflow)
+		b.finish(x, ErrSubscriberOverflow, true)
 	}
 	var once sync.Once
 	return id, func() { once.Do(func() { b.retire(id, ErrSubscriberDetached) }) }
@@ -118,12 +121,15 @@ func (b *broadcaster) retire(id uint64, reason error) {
 	delete(b.subs, id)
 	b.mu.Unlock()
 	if x != nil {
-		b.finish(x, reason)
+		b.finish(x, reason, true)
 	}
 }
 
-func (b *broadcaster) finish(x *subscription, reason error) {
+func (b *broadcaster) finish(x *subscription, reason error, wait bool) {
 	x.stop()
+	if wait {
+		<-x.exited
+	}
 	if b.onDetach != nil {
 		b.onDetach(x.sub, reason)
 	}
@@ -140,7 +146,7 @@ func (b *broadcaster) publish(f Frame) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		b.finish(x, ErrSubscriberOverflow)
+		b.finish(x, ErrSubscriberOverflow, true)
 	}
 }
 
@@ -153,7 +159,7 @@ func (b *broadcaster) close(reason error) {
 	}
 	b.mu.Unlock()
 	for _, x := range all {
-		b.finish(x, reason)
+		b.finish(x, reason, true)
 	}
 }
 

@@ -84,6 +84,7 @@ func (r *recorder) Deliver(f Frame) {
 		// recorder itself never blocks the manager; capacity sized by the test
 	}
 }
+func (r *recorder) Cancel() error { return nil }
 
 // next awaits the next frame of any kind.
 func (r *recorder) next(t *testing.T) Frame {
@@ -184,14 +185,17 @@ func dial(t *testing.T, d *omorpctest.Daemon) *omorpc.Client {
 	return c
 }
 
-func testManager(client *omorpc.Client, store *memCursorStore, queueSize int) *Manager {
-	return NewManager(Config{
+func testManager(t *testing.T, client *omorpc.Client, store *memCursorStore, queueSize int) *Manager {
+	t.Helper()
+	m := NewManager(Config{
 		Client:        client,
 		Store:         store,
 		QueueSize:     queueSize,
 		RetryAttempts: 3,
 		RetryBackoff:  5 * time.Millisecond,
 	})
+	t.Cleanup(func() { _ = m.CloseAll(context.Background()) })
+	return m
 }
 
 // mustOK fails the test on any error (the RED signal: stub methods return

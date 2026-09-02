@@ -27,10 +27,9 @@ type chatFlight struct {
 	refs   int
 }
 
-// enter serializes operations for one chat through a permit channel. The map
-// mutex is released before waiting and no mutex is held during RPC or store
-// I/O; unrelated chat permits are independent.
-func (k *keyedFlight) enter(key string) func() {
+// enter serializes operations for one chat through a permit channel. Waiting
+// is cancellable so manager shutdown can drain every keyed-flight entry.
+func (k *keyedFlight) enter(ctx context.Context, key string) (func(), error) {
 	k.mu.Lock()
 	if k.flights == nil {
 		k.flights = make(map[string]*chatFlight)
@@ -43,30 +42,51 @@ func (k *keyedFlight) enter(key string) func() {
 	}
 	x.refs++
 	k.mu.Unlock()
-	<-x.permit
-	return func() {
-		x.permit <- struct{}{}
-		k.mu.Lock()
-		x.refs--
-		if x.refs == 0 {
-			delete(k.flights, key)
-		}
-		k.mu.Unlock()
+	select {
+	case <-x.permit:
+		return func() {
+			x.permit <- struct{}{}
+			k.release(key, x)
+		}, nil
+	case <-ctx.Done():
+		k.release(key, x)
+		return nil, ctx.Err()
 	}
+}
+
+func (k *keyedFlight) release(key string, x *chatFlight) {
+	k.mu.Lock()
+	x.refs--
+	if x.refs == 0 {
+		delete(k.flights, key)
+	}
+	k.mu.Unlock()
+}
+
+const maxSlotGenerations = 1024
+
+type generationRecord struct {
+	chatID     string
+	generation uint64
 }
 
 type Manager struct {
 	cfg Config
 
-	chats          keyedFlight
-	mu             sync.Mutex
-	byChat         map[string]*Session
-	byRoute        map[string]*Session
-	slotGeneration map[string]uint64
-	generation     uint64
-	closed         bool
-	done           chan struct{}
-	closeOnce      sync.Once
+	chats              keyedFlight
+	mu                 sync.Mutex
+	byChat             map[string]*Session
+	byRoute            map[string]*Session
+	slotGeneration     map[string]uint64
+	slotGenerationFIFO []generationRecord
+	generation         uint64
+	closed             bool
+	done               chan struct{}
+	shutdownCtx        context.Context
+	shutdownCancel     context.CancelFunc
+	closeOnce          sync.Once
+	acquireWG          sync.WaitGroup
+	eventWG            sync.WaitGroup
 }
 
 func NewManager(cfg Config) *Manager {
@@ -85,14 +105,18 @@ func NewManager(cfg Config) *Manager {
 	if cfg.CloseTimeout == 0 {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{})}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel}
 	if cfg.Client != nil {
+		m.eventWG.Add(1)
 		go m.eventLoop()
 	}
 	return m
 }
 
 func (m *Manager) eventLoop() {
+	defer m.eventWG.Done()
+	backoff := time.Millisecond
 	for {
 		ch := m.cfg.Client.Events()
 		select {
@@ -101,23 +125,32 @@ func (m *Manager) eventLoop() {
 		case ev, ok := <-ch:
 			if !ok {
 				m.invalidateEpoch(ch)
-				// Events changes only when the next RPC establishes an epoch.
-				// A timer avoids spinning on the closed old channel.
+				// omorpc currently has no epoch-change notification. Exponential
+				// closed-channel backoff avoids polling hot while still discovering
+				// an epoch established by the next RPC within 250ms.
+				timer := time.NewTimer(backoff)
 				select {
 				case <-m.done:
+					timer.Stop()
 					return
-				case <-time.After(time.Millisecond):
+				case <-timer.C:
+				}
+				backoff *= 2
+				if backoff > 250*time.Millisecond {
+					backoff = 250 * time.Millisecond
 				}
 				continue
 			}
+			backoff = time.Millisecond
 			if ev == nil || ev.SessionID == "" {
 				continue
 			}
 			m.mu.Lock()
 			s := m.byRoute[ev.SessionID]
+			bound := s != nil && s.epochEvents == ch
 			m.mu.Unlock()
-			if s != nil {
-				s.dispatch(ev)
+			if bound {
+				s.dispatchEpoch(ch, ev)
 			}
 		}
 	}
@@ -148,8 +181,27 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	if m.cfg.Client == nil {
 		return nil, false, nil, errors.New("session: nil rpc client")
 	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil, false, nil, ErrManagerClosed
+	}
+	m.acquireWG.Add(1)
+	m.mu.Unlock()
+	defer m.acquireWG.Done()
+
+	ctx, cancel := context.WithCancel(ctx)
+	stopShutdownCancel := context.AfterFunc(m.shutdownCtx, cancel)
+	defer func() { stopShutdownCancel(); cancel() }()
+
 	chatID := chat.ChatID()
-	unlock := m.chats.enter(chatID)
+	unlock, err := m.chats.enter(ctx, chatID)
+	if err != nil {
+		if m.isClosed() {
+			return nil, false, nil, ErrManagerClosed
+		}
+		return nil, false, nil, err
+	}
 	defer unlock()
 
 	m.mu.Lock()
@@ -172,7 +224,6 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	}
 
 	cur := Cursor{}
-	var err error
 	if m.cfg.Store != nil {
 		cur, err = m.cfg.Store.CursorFor(ctx, chatID)
 		if err != nil {
@@ -181,15 +232,18 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	}
 
 	resumed := cur.SessionFile != ""
-	data, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
-	var recovery *ErrorInfo
-	preserveCursor := false
+	data, epochEvents, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
-		if openErr != nil && data.SessionID != "" {
-			m.discardRouting(data.SessionID)
-		}
 	}
+	if openErr != nil && data.SessionID != "" {
+		m.discardRouting(data.SessionID)
+	}
+	if openErr != nil && m.isClosed() {
+		return nil, false, nil, ErrManagerClosed
+	}
+	var recovery *ErrorInfo
+	preserveCursor := false
 	if openErr != nil && resumed {
 		info := ErrorInfo{Code: "resume_failed", Message: openErr.Error(), StoredIdentity: cur, Dangling: danglingResume(openErr)}
 		recovery = &info
@@ -199,7 +253,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 			}
 			return nil, false, nil, openErr
 		}
-		data, err = m.open(ctx, chat.CWD(), "")
+		data, epochEvents, err = m.open(ctx, chat.CWD(), "")
 		if err == nil {
 			err = validateOpen(data, Cursor{}, false)
 		}
@@ -212,10 +266,12 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 		resumed = false
 		preserveCursor = true
 	} else if openErr != nil {
+		if m.isClosed() {
+			return nil, false, nil, ErrManagerClosed
+		}
 		return nil, false, nil, openErr
 	}
 
-	epochEvents := m.cfg.Client.Events()
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epochEvents)
 	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
 	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
@@ -227,17 +283,27 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 
 	m.mu.Lock()
 	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
+	epochLive := epochEvents == m.cfg.Client.Events()
 	if valid {
 		if existing != nil {
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
-		m.byRoute[data.SessionID] = s
+		if epochLive {
+			m.byRoute[data.SessionID] = s
+		}
 	}
 	m.mu.Unlock()
 	if !valid {
 		m.discardRouting(data.SessionID)
 		return nil, false, nil, ErrManagerClosed
+	}
+	if !epochLive {
+		s.invalidate("provider_disconnected", "provider connection changed while opening session")
+		if existing != nil {
+			existing.retireReplaced()
+		}
+		return s, true, nil, ErrSessionResumable
 	}
 
 	detach, err := s.attachChecked(sub)
@@ -246,7 +312,7 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 		if m.byChat[chatID] == s {
 			delete(m.byChat, chatID)
 			delete(m.byRoute, data.SessionID)
-			m.slotGeneration[chatID]++
+			m.bumpSlotGenerationLocked(chatID)
 		}
 		m.mu.Unlock()
 		m.discardRouting(data.SessionID)
@@ -299,23 +365,33 @@ func (m *Manager) discardRouting(route string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	defer cancel()
-	_, _ = m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	if _, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route}); err != nil {
+		slog.Warn("failed to discard provider routing handle", "routing_id", route, "error", err)
+	}
 }
 
-func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, error) {
+func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, <-chan *omorpc.Event, error) {
 	cmd := omorpc.OpenSession{CWD: cwd}
 	if path != "" {
 		cmd = omorpc.OpenSession{SessionPath: path}
 	}
 	var last error
+	var epoch <-chan *omorpc.Event
 	for attempt := 0; attempt < m.cfg.RetryAttempts; attempt++ {
+		reconnecting := m.cfg.Client.ProtocolInfo() == nil
+		epoch = m.cfg.Client.Events()
 		resp, err := m.cfg.Client.Call(ctx, cmd)
 		if err == nil {
+			// When no epoch existed before Call, Call itself established one;
+			// that newly established channel is the pre-response epoch.
+			if reconnecting {
+				epoch = m.cfg.Client.Events()
+			}
 			var out omorpc.OpenSessionData
 			if err := json.Unmarshal(resp.Data, &out); err != nil {
-				return out, fmt.Errorf("session: decode open_session: %w", err)
+				return out, epoch, fmt.Errorf("session: decode open_session: %w", err)
 			}
-			return out, nil
+			return out, epoch, nil
 		}
 		last = err
 		var stable *omorpc.StableError
@@ -327,10 +403,10 @@ func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessio
 		case <-t.C:
 		case <-ctx.Done():
 			t.Stop()
-			return omorpc.OpenSessionData{}, ctx.Err()
+			return omorpc.OpenSessionData{}, epoch, ctx.Err()
 		}
 	}
-	return omorpc.OpenSessionData{}, last
+	return omorpc.OpenSessionData{}, epoch, last
 }
 
 func danglingResume(err error) bool {
@@ -339,6 +415,27 @@ func danglingResume(err error) bool {
 		return false
 	}
 	return stable.Code == omorpc.ErrCodeInvalidPath || (stable.Code == omorpc.ErrCodeOpenFailed && strings.Contains(strings.ToLower(stable.Detail), "no such"))
+}
+
+func (m *Manager) isClosed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.closed
+}
+
+func (m *Manager) bumpSlotGenerationLocked(chatID string) {
+	m.slotGeneration[chatID]++
+	record := generationRecord{chatID: chatID, generation: m.slotGeneration[chatID]}
+	m.slotGenerationFIFO = append(m.slotGenerationFIFO, record)
+	for len(m.slotGenerationFIFO) > maxSlotGenerations {
+		old := m.slotGenerationFIFO[0]
+		m.slotGenerationFIFO = m.slotGenerationFIFO[1:]
+		if m.slotGeneration[old.chatID] == old.generation {
+			if _, live := m.byChat[old.chatID]; !live {
+				delete(m.slotGeneration, old.chatID)
+			}
+		}
+	}
 }
 
 func (m *Manager) Get(chatID string) (*Session, bool) {
@@ -367,10 +464,13 @@ func (m *Manager) LiveSummaries() []Summary {
 
 func (m *Manager) Stop(chatID string) error { return m.stopContext(context.Background(), chatID) }
 func (m *Manager) stopContext(ctx context.Context, chatID string) error {
-	unlock := m.chats.enter(chatID)
+	unlock, err := m.chats.enter(ctx, chatID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	m.mu.Lock()
-	m.slotGeneration[chatID]++
+	m.bumpSlotGenerationLocked(chatID)
 	s := m.byChat[chatID]
 	m.mu.Unlock()
 	if s == nil {
@@ -380,16 +480,35 @@ func (m *Manager) stopContext(ctx context.Context, chatID string) error {
 }
 
 func (m *Manager) CloseAll(ctx context.Context) error {
-	m.closeOnce.Do(func() { close(m.done) })
 	m.mu.Lock()
-	m.closed = true
-	m.generation++
+	if !m.closed {
+		m.closed = true
+		m.generation++
+		m.closeOnce.Do(func() {
+			m.shutdownCancel()
+			close(m.done)
+		})
+	}
+	m.mu.Unlock()
+
+	acquiresDone := make(chan struct{})
+	go func() { m.acquireWG.Wait(); close(acquiresDone) }()
+	select {
+	case <-acquiresDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	m.eventWG.Wait()
+
+	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
 		all = append(all, s)
 	}
 	m.byChat = make(map[string]*Session)
 	m.byRoute = make(map[string]*Session)
+	m.slotGeneration = make(map[string]uint64)
+	m.slotGenerationFIFO = nil
 	m.mu.Unlock()
 	var first error
 	for _, s := range all {
@@ -401,7 +520,10 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 }
 
 func (m *Manager) evict(s *Session) {
-	unlock := m.chats.enter(s.chatID)
+	unlock, err := m.chats.enter(context.Background(), s.chatID)
+	if err != nil {
+		return
+	}
 	defer unlock()
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 {
@@ -420,9 +542,9 @@ func (m *Manager) evict(s *Session) {
 	s.lifecycleMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
-	_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	_, err = m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
 	cancel()
-	if err != nil {
+	if err != nil && !definitiveCloseFailure(err) {
 		s.lifecycleMu.Lock()
 		s.closing = false
 		s.scheduleIdleLocked()
@@ -440,7 +562,7 @@ func (m *Manager) evict(s *Session) {
 	if m.byChat[s.chatID] == s {
 		delete(m.byChat, s.chatID)
 		delete(m.byRoute, route)
-		m.slotGeneration[s.chatID]++
+		m.bumpSlotGenerationLocked(s.chatID)
 	}
 	m.mu.Unlock()
 	s.lifecycleMu.Unlock()

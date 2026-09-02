@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func TestMergeGateAcquireSerializesPerChatOnly(t *testing.T) {
 	base := newMemStore()
 	store := &blockingCursorStore{memCursorStore: base, chat: "a", entered: make(chan struct{}), release: make(chan struct{})}
 	mgr := NewManager(Config{Client: client, Store: store, QueueSize: 64, RetryAttempts: 3, RetryBackoff: time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	aDone := make(chan error, 1)
 	go func() {
 		_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
@@ -71,7 +73,7 @@ func TestMergeGateAcquireSerializesPerChatOnly(t *testing.T) {
 func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	release := d.BlockHandler(omorpc.CmdOpenSession)
 	result := make(chan error, 1)
 	go func() {
@@ -81,9 +83,18 @@ func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 1, testTimeout) {
 		t.Fatal("open did not reach daemon")
 	}
-	if err := mgr.CloseAll(context.Background()); err != nil {
-		t.Fatalf("CloseAll: %v", err)
+	closed := make(chan error, 1)
+	go func() { closed <- mgr.CloseAll(context.Background()) }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("CloseAll: %v", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("CloseAll did not cancel and drain blocked open")
 	}
+	// The provider gate is intentionally released only after CloseAll proves
+	// it no longer depends on the blocked RPC.
 	release()
 	select {
 	case err := <-result:
@@ -96,15 +107,21 @@ func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
 	if _, ok := mgr.Get("a"); ok {
 		t.Fatal("pending open registered after CloseAll")
 	}
-	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
-		t.Fatal("landed pending open was not discarded")
+	mgr.chats.mu.Lock()
+	flights := len(mgr.chats.flights)
+	mgr.chats.mu.Unlock()
+	if flights != 0 {
+		t.Fatalf("keyed flights after CloseAll = %d", flights)
+	}
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 0 {
+		t.Fatalf("canceled open registered provider session; closes = %d", got)
 	}
 }
 
 func TestMergeGateEpochInvalidationIsChannelScoped(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	oldCh := make(chan *omorpc.Event)
 	newCh := make(chan *omorpc.Event)
@@ -130,7 +147,7 @@ func TestMergeGateResumeDisconnectDoesNotFallback(t *testing.T) {
 	chat := testChat{id: "a", cwd: t.TempDir()}
 	cur := Cursor{SessionFile: "/tmp/resume.jsonl", DurableSessionID: "durable-stored"}
 	_ = store.SaveCursor(context.Background(), chat.id, cur)
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 	release := d.BlockHandler(omorpc.CmdOpenSession)
 	done := make(chan error, 1)
 	go func() { _, _, _, err := mgr.Acquire(context.Background(), chat, nil); done <- err }()
@@ -162,7 +179,7 @@ func TestMergeGateResumeMismatchClosesRoutingAndKeepsCursor(t *testing.T) {
 	chat := testChat{id: "a", cwd: t.TempDir()}
 	cur := Cursor{SessionFile: "/tmp/mismatch.jsonl", DurableSessionID: "not-the-provider-id"}
 	_ = store.SaveCursor(context.Background(), chat.id, cur)
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 	sub := newRecorder(16)
 	s, _, _, err := mgr.Acquire(context.Background(), chat, sub)
 	if err != nil {
@@ -196,7 +213,7 @@ func TestMergeGateOpenValidationRequiresCompleteDurableIdentity(t *testing.T) {
 func TestMergeGateCompactionResponseThenDelayedStartExactlyOnce(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	sub := newRecorder(32)
 	s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, sub)
 	sub.next(t)
@@ -242,7 +259,7 @@ func TestMergeGateLocalCommandCompletesInEitherOrdering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newDaemon(t)
 			client := dial(t, d)
-			mgr := testManager(client, newMemStore(), 64)
+			mgr := testManager(t, client, newMemStore(), 64)
 			sub := newRecorder(16)
 			s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, sub)
 			sub.next(t)
@@ -293,7 +310,7 @@ func (s *cancellableSub) Deliver(f Frame) {
 	s.once.Do(func() { close(s.entered) })
 	<-s.stop
 }
-func (s *cancellableSub) Close() error {
+func (s *cancellableSub) Cancel() error {
 	select {
 	case <-s.stop:
 	default:
@@ -307,6 +324,7 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 	client := dial(t, d)
 	detached := make(chan error, 2)
 	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 2, OnDetach: func(_ Subscriber, err error) { detached <- err }})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +370,7 @@ func TestMergeGateOverflowCancelsAndDetachesOnce(t *testing.T) {
 func TestMergeGateCloseCancelsBlockedSubscriber(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 2)
+	mgr := testManager(t, client, newMemStore(), 2)
 	s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, nil)
 	sub := newCancellableSub()
 	s.Attach(sub)
@@ -379,7 +397,7 @@ func TestMergeGateCloseCancelsBlockedSubscriber(t *testing.T) {
 func TestMergeGateAbortStormSingleFlight(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, nil)
 	release := d.BlockHandler(omorpc.CmdAbort)
 	for i := 0; i < 100; i++ {
@@ -399,7 +417,7 @@ func TestMergeGateAbortStormSingleFlight(t *testing.T) {
 func TestMergeGateActivityReplayFilteringAndToolProjection(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, nil)
 	injectEvent(t, s, map[string]any{"type": "extension_event", "name": "omo.task.updated", "data": map[string]any{"parent_session_id": s.ID(), "tasks": []any{1}}})
 	injectEvent(t, s, map[string]any{"type": "extension_event", "name": "omo.dag.updated", "data": map[string]any{"runs": []any{2}}})
@@ -431,19 +449,24 @@ func TestMergeGateActivityReplayFilteringAndToolProjection(t *testing.T) {
 func TestMergeGateEntriesPagingAndApprovalAck(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(client, newMemStore(), 64)
+	mgr := testManager(t, client, newMemStore(), 64)
 	sub := newRecorder(16)
 	s, _, _ := acquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, sub)
 	sub.next(t)
-	entries := make([]json.RawMessage, 300)
+	entries := make([]any, 300)
 	for i := range entries {
-		entries[i] = json.RawMessage(`{"x":1}`)
+		entries[i] = map[string]any{"x": 1}
 	}
-	s.lifecycleMu.Lock()
-	s.publishEntriesLocked(entries, "leaf")
-	s.lifecycleMu.Unlock()
+	d.SetPromptScript(s.SessionFile(),
+		map[string]any{"type": "entries.stream", "entries": entries, "leafId": "leaf", "final": true},
+		map[string]any{"type": "extension_ui_request", "id": "approval-1", "requestId": "client-7", "method": "select"},
+		map[string]any{"type": "agent_settled", "reason": "end_turn"},
+	)
+	if err := s.SendPrompt(context.Background(), "history", nil); err != nil {
+		t.Fatal(err)
+	}
 	for page := 0; page < 3; page++ {
-		f := sub.next(t)
+		_, f := sub.await(t, FrameEntries)
 		data := f.Data.(EntriesFrame)
 		if len(data.Entries) != 100 {
 			t.Fatalf("page %d entries = %d", page, len(data.Entries))
@@ -455,12 +478,16 @@ func TestMergeGateEntriesPagingAndApprovalAck(t *testing.T) {
 			t.Fatalf("terminal leaf = %q", data.LeafID)
 		}
 	}
+	_, approval := sub.await(t, FrameApproval)
+	if approval.ApprovalID != "approval-1" || approval.RequestID != "client-7" {
+		t.Fatalf("approval correlation lost: %+v", approval)
+	}
 	confirmed := true
-	if err := s.RespondApproval("approval-1", json.RawMessage(`"yes"`), &confirmed, false); err != nil {
+	if err := s.RespondApproval(approval.ApprovalID, json.RawMessage(`"yes"`), &confirmed, false); err != nil {
 		t.Fatal(err)
 	}
-	ack := sub.next(t)
-	if ack.Kind != FrameAck || ack.RequestID != "approval-1" {
+	_, ack := sub.await(t, FrameAck)
+	if ack.RequestID != "approval-1" {
 		t.Fatalf("approval ack: %+v", ack)
 	}
 	if !d.AwaitRequestCount(omorpc.CmdExtensionUIResponse, 1, testTimeout) {
@@ -472,21 +499,18 @@ func TestMergeGateIdleEvictionConfirmsBeforeRemoval(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 64, IdleAfter: time.Hour, CloseTimeout: 50 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeSessionClosing)
-	mgr.evict(s)
-	if got, ok := mgr.Get("a"); !ok || got != s {
-		t.Fatal("failed close removed live session")
-	}
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeUnknownSession)
 	mgr.evict(s)
 	if _, ok := mgr.Get("a"); ok {
-		t.Fatal("successful eviction retained session")
+		t.Fatal("definitive unknown_session retained stale session")
 	}
-	if got := d.RequestCount(omorpc.CmdCloseSession); got != 2 {
-		t.Fatalf("close retries = %d", got)
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 1 {
+		t.Fatalf("definitive close requests = %d", got)
 	}
 	replacement, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
 	if err != nil {
@@ -501,6 +525,7 @@ func TestMergeGateIdleEvictionTimeoutRetainsSession(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 64, IdleAfter: time.Hour, CloseTimeout: 20 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -517,4 +542,222 @@ func TestMergeGateIdleEvictionTimeoutRetainsSession(t *testing.T) {
 		t.Fatal("timed-out close removed session")
 	}
 	release()
+}
+
+func TestMergeGateEpochLostAfterOpenIsResumable(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	release := d.BlockHandler(omorpc.CmdOpenSession)
+	result := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "epoch-lost", cwd: t.TempDir()}, nil)
+		result <- err
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 1, testTimeout) {
+		t.Fatal("open request absent")
+	}
+	req := d.LastRequest(omorpc.CmdOpenSession)
+	id, _ := req["id"].(string)
+	oldEpoch := client.Events()
+	mgr.mu.Lock() // hold attachment until the response epoch is dead
+	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"open_session","success":true,"data":{"sessionId":"route-lost","state":{"sessionId":"durable-lost","sessionFile":"/tmp/lost.jsonl"}}}`+"\n", id)))
+	d.DropConnections()
+	select {
+	case _, ok := <-oldEpoch:
+		if ok {
+			t.Fatal("unexpected event before epoch close")
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	mgr.mu.Unlock()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrSessionResumable) {
+			t.Fatalf("Acquire = %v, want ErrSessionResumable", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("Acquire did not settle")
+	}
+	release()
+	s, ok := mgr.Get("epoch-lost")
+	if !ok || !s.Resumable() {
+		t.Fatalf("epoch-lost session = (%v, %v), want registered resumable", s, ok)
+	}
+	mgr.mu.Lock()
+	_, routed := mgr.byRoute["route-lost"]
+	mgr.mu.Unlock()
+	if routed {
+		t.Fatal("epoch-lost route remained live")
+	}
+}
+
+func TestMergeGateStaleEpochEventCannotReachSuccessor(t *testing.T) {
+	oldEpoch := make(chan *omorpc.Event, 1)
+	newEpoch := make(chan *omorpc.Event, 1)
+	s := &Session{durableID: "successor", routingID: "reused", epochEvents: newEpoch, activitySnapshots: map[string]json.RawMessage{}, activityOversized: map[string]bool{}}
+	raw := json.RawMessage(`{"type":"state_changed","sessionId":"reused","value":"stale"}`)
+	s.dispatchEpoch(oldEpoch, &omorpc.Event{Type: "state_changed", SessionID: "reused", Raw: raw})
+	if s.broadcast.next != 0 {
+		t.Fatal("stale epoch event reached successor")
+	}
+}
+
+func TestMergeGateMalformedResumeClosesRoutingOnceBeforeFallback(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	chat := testChat{id: "malformed", cwd: t.TempDir()}
+	cur := Cursor{SessionFile: "/tmp/malformed.jsonl", DurableSessionID: "stored"}
+	_ = store.SaveCursor(context.Background(), chat.id, cur)
+	mgr := testManager(t, client, store, 64)
+	release := d.BlockHandler(omorpc.CmdOpenSession)
+	result := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.Acquire(context.Background(), chat, nil)
+		result <- err
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 1, testTimeout) {
+		t.Fatal("resume request absent")
+	}
+	id, _ := d.LastRequest(omorpc.CmdOpenSession)["id"].(string)
+	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"open_session","success":true,"data":{"sessionId":"orphan-route","state":"garbage"}}`+"\n", id)))
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("partially decoded route was not closed")
+	}
+	release()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("fallback acquire: %v", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("fallback acquire did not settle")
+	}
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 1 {
+		t.Fatalf("orphan close count = %d, want 1", got)
+	}
+	if got := store.stored(chat.id); got != cur {
+		t.Fatalf("cursor changed after fallback: %+v", got)
+	}
+}
+
+func TestMergeGateDelayedCompactionIDDoesNotBindSuccessor(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	s, _, _ := acquire(t, mgr, testChat{id: "compact-delay", cwd: t.TempDir()}, nil)
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	releaseB := d.BlockHandler(omorpc.CmdCompact)
+	bDone := make(chan error, 1)
+	go func() { bDone <- s.Compact(context.Background()) }()
+	if !d.AwaitRequestCount(omorpc.CmdCompact, 2, testTimeout) {
+		t.Fatal("successor compact absent")
+	}
+	injectEvent(t, s, map[string]any{"type": "compaction_start", "reason": "manual", "requestId": "provider-a"})
+	s.lifecycleMu.Lock()
+	if s.compactProviderID != "" {
+		t.Fatalf("delayed A id bound to B: %q", s.compactProviderID)
+	}
+	s.lifecycleMu.Unlock()
+	injectEvent(t, s, map[string]any{"type": "compaction_end", "requestId": "provider-a"})
+	injectEvent(t, s, map[string]any{"type": "compaction_start", "reason": "manual", "requestId": "provider-b"})
+	s.lifecycleMu.Lock()
+	if s.compactProviderID != "provider-b" || !s.compactionActive {
+		t.Fatalf("B lifecycle corrupted: id=%q active=%v", s.compactProviderID, s.compactionActive)
+	}
+	s.lifecycleMu.Unlock()
+	injectEvent(t, s, map[string]any{"type": "compaction_end", "requestId": "provider-b"})
+	releaseB()
+	if err := <-bDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	chat := testChat{id: "history", cwd: t.TempDir()}
+	cur := Cursor{SessionFile: "/tmp/history.jsonl"}
+	_ = store.SaveCursor(context.Background(), chat.id, cur)
+	mgr := testManager(t, client, store, 64)
+	release := d.BlockHandler(omorpc.CmdGetEntries)
+	sub := newRecorder(16)
+	result := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.Acquire(context.Background(), chat, sub)
+		result <- err
+	}()
+	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
+		t.Fatal("get_entries absent")
+	}
+	id, _ := d.LastRequest(omorpc.CmdGetEntries)["id"].(string)
+	sid, _ := d.LastRequest(omorpc.CmdGetEntries)["sessionId"].(string)
+	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[{"x":1}],"leafId":123}}`+"\n", id, sid)))
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("Acquire blocked on malformed history")
+	}
+	release()
+	_, frame := sub.await(t, FrameEntries)
+	entries := frame.Data.(EntriesFrame)
+	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != "" {
+		t.Fatalf("terminal malformed history frame: %+v", entries)
+	}
+}
+
+func TestMergeGateCommandSourceInfoAndActivityAccessor(t *testing.T) {
+	commands, err := decodeCommands([]byte(`{"commands":[{"name":"hooks","sourceInfo":{"path":"<builtin:hooks>","baseDir":"/tmp/omo","source":"builtin","scope":"temporary","origin":"top-level"}}]}`))
+	if err != nil || len(commands) != 1 || commands[0].SourceInfo == nil || commands[0].SourceInfo.Path != "<builtin:hooks>" || commands[0].SourceInfo.BaseDir != "/tmp/omo" {
+		t.Fatalf("sourceInfo decode = (%+v, %v)", commands, err)
+	}
+	s := &Session{durableID: "durable", activitySnapshots: map[string]json.RawMessage{"omo.task.updated": json.RawMessage(`{"tasks":[1]}`)}, activityOversized: map[string]bool{}}
+	first := s.ActivitySnapshot()
+	if len(first) != 1 || first[0].Kind != FrameExtensionEvent {
+		t.Fatalf("activity snapshot = %+v", first)
+	}
+	first[0].Data.(map[string]any)["name"] = "mutated"
+	if got := s.ActivitySnapshot()[0].Data.(map[string]any)["name"]; got != "omo.task.updated" {
+		t.Fatalf("activity accessor exposed mutable cache: %v", got)
+	}
+}
+
+func TestMergeGateClosedClientEventLoopExitsAtCloseAll(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	m := testManager(t, client, newMemStore(), 64)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CloseAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() { m.eventWG.Wait(); close(exited) }()
+	select {
+	case <-exited:
+	case <-time.After(testTimeout):
+		t.Fatal("event loop survived CloseAll")
+	}
+}
+
+func TestMergeGateSlotGenerationsAreBounded(t *testing.T) {
+	m := NewManager(Config{})
+	m.mu.Lock()
+	for i := 0; i < maxSlotGenerations+200; i++ {
+		m.bumpSlotGenerationLocked(fmt.Sprintf("chat-%d", i))
+	}
+	got := len(m.slotGeneration)
+	m.mu.Unlock()
+	if got > maxSlotGenerations {
+		t.Fatalf("slot generations = %d, bound %d", got, maxSlotGenerations)
+	}
 }

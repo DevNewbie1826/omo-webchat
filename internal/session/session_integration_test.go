@@ -26,7 +26,7 @@ func TestIntegrationHappyPathResumeAcrossRestart(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(128)
 	sess, started, detach := acquire(t, mgr, chat, sub)
@@ -105,7 +105,7 @@ func TestIntegrationHappyPathResumeAcrossRestart(t *testing.T) {
 	d.Restart()
 
 	client2 := dial(t, d)
-	mgr2 := testManager(client2, store, 64)
+	mgr2 := testManager(t, client2, store, 64)
 	sub2 := newRecorder(128)
 	sess2, _, _ := acquire(t, mgr2, chat, sub2)
 
@@ -154,7 +154,7 @@ func TestIntegrationTransientPathInUseRetriedUnchanged(t *testing.T) {
 	// third attempt succeeds.
 	d.FailOpenPath(stored.SessionFile, omorpctest.CodeSessionPathInUse, 2)
 
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)
 
@@ -203,7 +203,7 @@ func TestIntegrationPermanentOpenFailureFallsBackKeepingCursor(t *testing.T) {
 	}
 	d.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeOpenFailed+": no such session file")
 
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 	sub := newRecorder(64)
 	sess, _, _, err := mgr.Acquire(context.Background(), chat, sub)
 	if err != nil {
@@ -251,7 +251,7 @@ func TestIntegrationIdleUnloadExactlyOnceThenReopen(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -307,7 +307,7 @@ func TestIntegrationEpochInvalidationMarksSessionsResumable(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)

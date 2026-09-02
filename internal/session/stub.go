@@ -54,9 +54,7 @@ type Config struct {
 	RetryAttempts int
 	RetryBackoff  time.Duration
 	CloseTimeout  time.Duration
-	// OnDetach is called exactly once when a subscription is retired. A
-	// cancellable subscriber should also implement Close() error; Close is
-	// invoked before this hook so a blocked Deliver can return.
+	// OnDetach is called exactly once after a subscription pump exits.
 	OnDetach func(Subscriber, error)
 }
 
@@ -103,18 +101,21 @@ type RunInfo struct{ Reason string }
 type CompactionInfo struct{ Phase, Error string }
 
 type Frame struct {
-	Kind      FrameKind
-	SessionID string
-	Resumed   bool
-	Command   string
-	RequestID string
-	Data      any
+	Kind       FrameKind
+	SessionID  string
+	Resumed    bool
+	Command    string
+	RequestID  string
+	ApprovalID string
+	Data       any
 }
 
-// Subscriber receives frames serially. Implementing Close() error is the
-// cancellation contract for potentially blocking Deliver methods. For
-// compatibility, non-blocking subscribers need only implement Deliver.
-type Subscriber interface{ Deliver(Frame) }
+// Subscriber receives frames serially. Cancel must release any blocked
+// Deliver call; session shutdown waits for the delivery pump to exit.
+type Subscriber interface {
+	Deliver(Frame)
+	Cancel() error
+}
 
 type Summary struct {
 	ChatID           string
@@ -130,4 +131,10 @@ type Stats struct {
 	Cost, ContextUsage float64
 }
 type Model struct{ Provider, ModelID, Name string }
-type CommandInfo struct{ Name, Description, Source, Syntax, SourceInfo string }
+type CommandSourceInfo struct {
+	Path, BaseDir, Source, Scope, Origin string
+}
+type CommandInfo struct {
+	Name, Description, Source, Syntax string
+	SourceInfo                        *CommandSourceInfo
+}

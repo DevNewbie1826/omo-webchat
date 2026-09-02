@@ -6,6 +6,13 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
+func (s *Session) dispatchEpoch(ch <-chan *omorpc.Event, ev *omorpc.Event) {
+	if ch != s.epochEvents {
+		return
+	}
+	s.dispatch(ev)
+}
+
 func (s *Session) dispatch(ev *omorpc.Event) {
 	var raw map[string]any
 	if json.Unmarshal(ev.Raw, &raw) != nil {
@@ -86,7 +93,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "extension_event":
 		s.forwardExtensionEventLocked(raw)
 	case "extension_ui_request":
-		s.publishLocked(Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["id"]), Data: eventPayload(raw)})
+		s.publishLocked(Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: eventPayload(raw)})
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
 	case "high_reasoning_warning", "retry_fallback_applied", "retry_fallback_reverted", "retry_fallback_succeeded", "retry_fallback_exhausted", "server_fallback_aborted", "auto_retry_start", "auto_retry_end", "extension_notify":
@@ -100,6 +107,14 @@ func (s *Session) beginCompactionLocked(raw map[string]any) {
 	id, _ := raw["requestId"].(string)
 	if id != "" {
 		if _, done := s.completedCompactions[id]; done {
+			return
+		}
+		// A manual RPC can complete before its provider id event arrives. The
+		// oldest bounded unpaired tombstone claims the next start, even if a
+		// successor is armed, so that delayed lifecycle can never bind to it.
+		if len(s.completedUnpaired) > 0 {
+			s.completedUnpaired = s.completedUnpaired[1:]
+			s.rememberCompletedCompactionLocked(id)
 			return
 		}
 	}

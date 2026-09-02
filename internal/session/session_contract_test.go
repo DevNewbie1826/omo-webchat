@@ -25,7 +25,7 @@ func TestContractGatesRejectDuringActiveRun(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(128)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -68,7 +68,7 @@ func TestContractAbortIsFireAndForget(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(64)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -104,7 +104,7 @@ func TestContractRunTerminalDiscipline(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
-	mgr := testManager(client, store, 64)
+	mgr := testManager(t, client, store, 64)
 
 	sub := newRecorder(128)
 	sess, _, _ := acquire(t, mgr, chat, sub)
@@ -195,7 +195,7 @@ func (b *blockingSub) unblock() {
 	})
 }
 
-func (b *blockingSub) Close() error { b.unblock(); return nil }
+func (b *blockingSub) Cancel() error { b.unblock(); return nil }
 
 // Overflow-detach: a subscriber whose Deliver never drains receives at most
 // the queue bound, while the session keeps streaming and settles normally
@@ -206,7 +206,7 @@ func TestContractSlowSubscriberDetachedSessionSurvives(t *testing.T) {
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
 	const queueSize = 8
-	mgr := testManager(client, store, queueSize)
+	mgr := testManager(t, client, store, queueSize)
 
 	sess, _, _ := acquire(t, mgr, chat, nil)
 
