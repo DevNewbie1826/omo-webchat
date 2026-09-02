@@ -90,6 +90,15 @@ func (d *EnsuredDaemon) Close() error {
 	return d.Client.Close()
 }
 
+// StopBounded tears down the ensured daemon using a lifecycle-owned deadline.
+// It is intended for callers whose request or startup context may already be
+// canceled when cleanup begins.
+func (d *EnsuredDaemon) StopBounded(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return d.Stop(ctx)
+}
+
 // Stop closes the client and, when this ensure call spawned the supervisor,
 // sends SIGTERM, waits up to three seconds, then falls back to SIGKILL.
 func (d *EnsuredDaemon) Stop(ctx context.Context) error {
@@ -155,7 +164,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = ensureExtensionEventsCapability(cfg.Env)
+	cmd.Env = EnsureExtensionEventsCapability(cfg.Env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -370,7 +379,8 @@ func releaseEnsureLock(file *os.File) {
 	_ = file.Close()
 }
 
-func ensureExtensionEventsCapability(env []string) []string {
+// EnsureExtensionEventsCapability adds extension_events exactly once to the daemon environment.
+func EnsureExtensionEventsCapability(env []string) []string {
 	const key = "SENPI_RPC_CLIENT_CAPABILITIES"
 	out := make([]string, 0, len(env)+1)
 	merged := false

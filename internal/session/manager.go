@@ -327,10 +327,17 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return nil, false, nil, openErr
 	}
 
-	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch)
-	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
-	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
-		if err := m.cfg.Store.SaveCursor(ctx, chatID, newCur); err != nil {
+	// Only an explicitly marked creation-time default is replaceable. Empty
+	// names also derive naturally; every other auto/provider name is established,
+	// regardless of which durable identity fields happen to be available.
+	name := cur.Name
+	if cur.TitleIsPlaceholder {
+		name = ""
+	}
+	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
+	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID
+	if m.cfg.Store != nil && !preserveCursor && identityChanged {
+		if err := m.cfg.Store.UpdateIdentity(ctx, chatID, data.State.SessionFile, data.State.SessionID); err != nil {
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}

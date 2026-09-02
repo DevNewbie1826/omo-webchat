@@ -95,22 +95,16 @@ func writeFileAtomic(path string, data []byte) error {
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	ws, err := s.store.GetWorkspace(r.PathValue("wsId"))
+	ws, err := s.cursors.GetWorkspace(r.PathValue("wsId"))
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
 	chatID := r.PathValue("chatId")
-	if _, err := s.store.GetChat(ws.ID, chatID); err != nil {
-		_, cursors := s.v2Stack()
-		cursor, cursorErr := cursorstore.Chat{}, cursorstore.ErrNotFound
-		if cursors != nil {
-			cursor, cursorErr = cursors.GetChat(chatID)
-		}
-		if cursorErr != nil || cursor.WorkspaceID != ws.ID {
-			s.writeStoreError(w, err)
-			return
-		}
+	chat, err := s.cursors.GetChat(chatID)
+	if err != nil || chat.WorkspaceID != ws.ID {
+		s.writeStoreError(w, cursorstore.ErrNotFound)
+		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {

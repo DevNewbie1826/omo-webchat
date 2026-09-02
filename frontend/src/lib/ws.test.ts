@@ -154,7 +154,7 @@ describe("connectWs upgrade failure probe", () => {
   it("vetoes reconnection and stays vetoed when the probe confirms auth failure", async () => {
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     const onUpgradeFailure = vi.fn(async () => false);
-    conn = connectWs("/api/ws", { onMessage: () => undefined }, { onUpgradeFailure });
+    conn = connectWs("/api/v2/ws", { onMessage: () => undefined }, { onUpgradeFailure });
     expect(FakeWebSocket.instances).toHaveLength(1);
 
     // The upgrade was refused: the socket closes without ever opening.
@@ -171,7 +171,7 @@ describe("connectWs upgrade failure probe", () => {
 
   it("keeps the normal reconnect backoff when the probe reports the session valid", async () => {
     const onUpgradeFailure = vi.fn(async () => true);
-    conn = connectWs("/api/ws", { onMessage: () => undefined }, { onUpgradeFailure });
+    conn = connectWs("/api/v2/ws", { onMessage: () => undefined }, { onUpgradeFailure });
     FakeWebSocket.instances[0]!.serverClose(1006);
 
     await vi.advanceTimersByTimeAsync(500); // verdict in, first backoff pending
@@ -186,7 +186,7 @@ describe("connectWs upgrade failure probe", () => {
     const onUpgradeFailure = vi.fn(async () => {
       throw new Error("probe failed");
     });
-    conn = connectWs("/api/ws", { onMessage: () => undefined }, { onUpgradeFailure });
+    conn = connectWs("/api/v2/ws", { onMessage: () => undefined }, { onUpgradeFailure });
     FakeWebSocket.instances[0]!.serverClose(1006);
 
     await vi.advanceTimersByTimeAsync(1000);

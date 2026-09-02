@@ -5,7 +5,7 @@ import { isPromptTerminalError } from "./chatErrorState";
 type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
 
 // The backend forwards the provider's raw RPC command string on error frames
-// (see internal/chat/response_mapping.go: prompt, steer, follow_up, set_model,
+// (see internal/session/dispatch.go: prompt, steer, follow_up, set_model,
 // set_thinking_level, get_state, get_session_stats, get_commands,
 // get_available_models, get_entries, new_session, switch_session,
 // extension_ui_response). The parse boundary must

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -13,35 +16,73 @@ type createWorkspaceRequest struct {
 	Name string `json:"name"`
 	Path string `json:"path"`
 }
-
 type renameRequest struct {
 	Name string `json:"name"`
 }
-
-func (s *Server) handleListWorkspaces(w http.ResponseWriter, _ *http.Request) {
-	// Read-only: the store projects legacy launchable chats as omo and hides
-	// unsupported ones in the returned copies without writing anything back.
-	workspaces := s.store.ListWorkspaces()
-	// ListWorkspaces returns per-workspace copies with cloned chats
-	// (store.copyWorkspace), so this sort reorders only the response; the
-	// store keeps insertion order. MRU first: most recent use wins, legacy
-	// rows without a stamp fall back to creation time, ties break by ID.
-	for i := range workspaces {
-		chats := workspaces[i].Chats
-		sort.SliceStable(chats, func(a, b int) bool {
-			ra, rb := chatRecencyMs(chats[a]), chatRecencyMs(chats[b])
-			if ra != rb {
-				return ra > rb
-			}
-			return chats[a].ID < chats[b].ID
-		})
-	}
-	writeJSON(w, http.StatusOK, workspaces)
+type chatResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	NameSource  string `json:"nameSource,omitempty"`
+	WsID        string `json:"wsId"`
+	CWD         string `json:"cwd"`
+	PiSessionID string `json:"piSessionId,omitempty"`
+	Provider    string `json:"provider"`
+	CreatedAt   int64  `json:"createdAt"`
+	LastUsedAt  int64  `json:"lastUsedAt,omitempty"`
+}
+type workspaceResponse struct {
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Path  string         `json:"path"`
+	Chats []chatResponse `json:"chats"`
 }
 
+func projectChat(c cursorstore.Chat) chatResponse {
+	identity := c.SessionFile
+	if identity == "" {
+		identity = c.DurableSessionID
+	}
+	createdAt := cursorstore.RecencyMillis(cursorstore.Chat{CreatedAt: c.CreatedAt})
+	lastUsedAt := cursorstore.RecencyMillis(cursorstore.Chat{LastUsedAt: c.LastUsedAt})
+	return chatResponse{ID: c.ID, Name: c.Name, NameSource: c.NameSource, WsID: c.WorkspaceID, CWD: c.CWD, PiSessionID: identity, Provider: "omo", CreatedAt: createdAt, LastUsedAt: lastUsedAt}
+}
+func (s *Server) projectWorkspace(ws cursorstore.Workspace) workspaceResponse {
+	rows := s.cursors.ListChats(ws.ID)
+	sort.SliceStable(rows, func(i, j int) bool {
+		ai, aj := cursorRecency(rows[i]), cursorRecency(rows[j])
+		if ai != aj {
+			return ai > aj
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	chats := make([]chatResponse, len(rows))
+	for i, c := range rows {
+		chats[i] = projectChat(c)
+	}
+	return workspaceResponse{ID: ws.ID, Name: ws.Name, Path: ws.Path, Chats: chats}
+}
+func cursorRecency(c cursorstore.Chat) int64 {
+	return cursorstore.RecencyMillis(c)
+}
+
+func (s *Server) handleListWorkspaces(w http.ResponseWriter, _ *http.Request) {
+	rows := s.cursors.ListWorkspaces()
+	out := make([]workspaceResponse, len(rows))
+	for i, ws := range rows {
+		out[i] = s.projectWorkspace(ws)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+func newID(prefix string) (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(b), nil
+}
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req createWorkspaceRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if decodeJSON(r, &req) != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -50,49 +91,76 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	absPath, err := s.resolvePath(req.Path)
+	path, err := s.resolvePath(req.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	ws, err := s.store.CreateWorkspace(name, absPath)
+	id, err := newID("ws-")
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, ws)
+	ws := cursorstore.Workspace{ID: id, Name: name, Path: path}
+	if err = s.cursors.SaveWorkspace(ws); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.projectWorkspace(ws))
 }
-
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
-	wsID := r.PathValue("wsId")
-	if s.beforeWorkspaceDelete != nil {
-		s.beforeWorkspaceDelete()
-	}
+	id := r.PathValue("wsId")
+
+	// Serialize the complete stop-first transaction with chat opens. Metadata
+	// must remain available until every provider route has reached a definitive
+	// close outcome, so a transient stop failure can be retried safely.
 	s.chatLifecycleMu.Lock()
-	removed, err := s.store.DeleteWorkspace(wsID)
-	s.chatLifecycleMu.Unlock()
-	if err != nil {
-		s.writeStoreError(w, err)
-		return
+	defer s.chatLifecycleMu.Unlock()
+	chats := s.workspaceLifecycleChats(id)
+	for _, c := range chats {
+		s.chatDeleting[c.ID] = true
+		s.bumpChatLifecycleVersion(c.ID)
 	}
-	// Stop may wait on provider I/O. The store deletion is the lifecycle
-	// linearization point; concurrent opens recheck it before attachment.
-	manager, cursors := s.v2Stack()
-	for _, record := range removed.Chats {
-		s.chats.Stop(record.ID)
-		if manager != nil {
-			_ = manager.StopContext(r.Context(), record.ID)
+	clearDeleting := func() {
+		for _, c := range chats {
+			delete(s.chatDeleting, c.ID)
 		}
 	}
-	if cursors != nil {
-		_ = cursors.DeleteWorkspace(wsID)
+
+	var stopErr error
+	if s.manager != nil {
+		for _, c := range chats {
+			stopCtx, cancel := newChatStopContext(context.Background(), chatStopTimeout)
+			err := s.manager.StopContext(stopCtx, c.ID)
+			cancel()
+			if err != nil && stopErr == nil {
+				stopErr = err
+			}
+		}
 	}
+	if stopErr != nil {
+		clearDeleting()
+		writeError(w, http.StatusInternalServerError, "failed to stop workspace chats")
+		return
+	}
+	if err := s.cursors.DeleteWorkspace(id); err != nil {
+		clearDeleting()
+		s.writeStoreError(w, err)
+		return
+	}
+	clearDeleting()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// workspaceLifecycleChats uses raw metadata because resumable and retiring
+// manager routes are intentionally absent from live/UI projections.
+func (s *Server) workspaceLifecycleChats(workspaceID string) []cursorstore.Chat {
+	return s.cursors.ListChatsRaw(workspaceID)
 }
 
 func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req renameRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if decodeJSON(r, &req) != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -101,19 +169,13 @@ func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	ws, err := s.store.RenameWorkspace(r.PathValue("wsId"), name)
+	ws, err := s.cursors.RenameWorkspace(r.PathValue("wsId"), name)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	if _, cursors := s.v2Stack(); cursors != nil {
-		_ = cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path})
-	}
-	writeJSON(w, http.StatusOK, ws)
+	writeJSON(w, http.StatusOK, s.projectWorkspace(ws))
 }
-
-// resolvePath cleans p (defaulting to --root when empty), resolves symlinks,
-// and enforces the root boundary.
 func (s *Server) resolvePath(p string) (string, error) {
 	if strings.TrimSpace(p) == "" {
 		return s.cfg.Root, nil

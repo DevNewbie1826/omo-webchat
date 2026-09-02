@@ -42,11 +42,10 @@ export type ChatImage = ct.ChatImage;
 export type FailedRpcCommand = string;
 
 /**
- * Seam adapter: chat.name keeps the v1 client origin union. The workspace
- * title callback in features (useChatSession/ChatPane) is typed
- * (name, origin: "auto" | "provider") and must keep compiling unmodified.
+ * Seam adapter: chat.name origin union (auto | user | provider) — the
+ * workspace title callbacks in features accept the same union.
  */
-type ChatNameFrameSeam = Omit<ct.ChatNameFrame, "origin"> & { readonly origin: "auto" | "provider" };
+type ChatNameFrameSeam = Omit<ct.ChatNameFrame, "origin"> & { readonly origin: "auto" | "user" | "provider" };
 
 /**
  * Seam adapter: notice carries epoch milliseconds at the client boundary (the

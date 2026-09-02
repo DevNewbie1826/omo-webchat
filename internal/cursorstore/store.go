@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -56,11 +57,18 @@ type Chat struct {
 	ID               string `json:"id"`
 	WorkspaceID      string `json:"workspaceId"`
 	CWD              string `json:"cwd"`
-	SessionFile      string `json:"sessionFile"`
+	SessionFile      string `json:"sessionFile,omitempty"`
 	DurableSessionID string `json:"durableSessionId,omitempty"`
-	Name             string `json:"name"`
+	// Provider preserves the v1 runtime identity. Empty, "senpi", and "omo"
+	// are launchable by omo; other values remain persisted but are hidden from
+	// listings so they cannot be mistaken for omo sessions.
+	Provider string `json:"provider,omitempty"`
+	Name     string `json:"name"`
 	// NameSource is "auto" (generated) or "user" (explicitly named).
 	NameSource string `json:"nameSource"`
+	// TitleIsPlaceholder marks the pre-identity default name that auto-title
+	// derivation may replace; any established name clears it.
+	TitleIsPlaceholder bool `json:"titleIsPlaceholder,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	// LastUsedAt is the Unix-millisecond stamp of the most recent successful
 	// open; zero means never used.
@@ -196,6 +204,55 @@ func (s *Store) SaveWorkspace(ws Workspace) error {
 	return s.flushLocked(candidate)
 }
 
+// GetWorkspace returns workspace metadata by ID.
+func (s *Store) GetWorkspace(id string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ws := range s.data.Workspaces {
+		if ws.ID == id {
+			return ws, nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
+// UpdateWorkspace replaces existing workspace metadata.
+func (s *Store) UpdateWorkspace(ws Workspace) (Workspace, error) {
+	if ws.ID == "" {
+		return Workspace{}, ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneState(s.data)
+	for i := range candidate.Workspaces {
+		if candidate.Workspaces[i].ID == ws.ID {
+			candidate.Workspaces[i] = ws
+			if err := s.flushLocked(candidate); err != nil {
+				return Workspace{}, err
+			}
+			return ws, nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
+// RenameWorkspace updates only the workspace's display name.
+func (s *Store) RenameWorkspace(id, name string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneState(s.data)
+	for i := range candidate.Workspaces {
+		if candidate.Workspaces[i].ID == id {
+			candidate.Workspaces[i].Name = name
+			if err := s.flushLocked(candidate); err != nil {
+				return Workspace{}, err
+			}
+			return candidate.Workspaces[i], nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
 // ListWorkspaces returns a snapshot of all workspace metadata.
 func (s *Store) ListWorkspaces() []Workspace {
 	s.mu.Lock()
@@ -253,6 +310,70 @@ func (s *Store) SaveChat(c Chat) error {
 	return s.flushLocked(candidate)
 }
 
+// UpdateChat replaces an existing chat cursor record.
+func (s *Store) UpdateChat(c Chat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.data.Chats[c.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.WorkspaceID != current.WorkspaceID || !s.hasWorkspaceLocked(c.WorkspaceID) {
+		return ErrNotFound
+	}
+	switch c.NameSource {
+	case "", NameSourceAuto, NameSourceUser:
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidNameSource, c.NameSource)
+	}
+	candidate := cloneState(s.data)
+	candidate.Chats[c.ID] = c
+	return s.flushLocked(candidate)
+}
+
+// UpdateIdentity updates only the durable provider identity. The read and
+// write share one critical section so concurrent name changes cannot be lost.
+func (s *Store) UpdateIdentity(id, sessionFile, durableID string) error {
+	return s.updateChatFields(id, func(c *Chat) error {
+		c.SessionFile = sessionFile
+		c.DurableSessionID = durableID
+		return nil
+	})
+}
+
+// UpdateName updates only the display-name fields atomically with respect to
+// every other store mutation.
+func (s *Store) UpdateName(id, name, source string) error {
+	return s.updateChatFields(id, func(c *Chat) error {
+		switch source {
+		case "", NameSourceAuto, NameSourceUser:
+		default:
+			return fmt.Errorf("%w: %q", ErrInvalidNameSource, source)
+		}
+		c.Name = name
+		c.NameSource = source
+		// Any established name clears the pre-identity placeholder marker.
+		c.TitleIsPlaceholder = false
+		return nil
+	})
+}
+
+func (s *Store) updateChatFields(id string, mutate func(*Chat) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data.Chats[id]
+	if !ok {
+		return ErrNotFound
+	}
+	candidate := cloneState(s.data)
+	updated := candidate.Chats[id]
+	if err := mutate(&updated); err != nil {
+		return err
+	}
+	candidate.Chats[id] = updated
+	return s.flushLocked(candidate)
+}
+
 // GetChat returns a copy of the chat cursor record.
 func (s *Store) GetChat(id string) (Chat, error) {
 	s.mu.Lock()
@@ -264,17 +385,65 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	return c, nil
 }
 
-// ListChats returns a snapshot of chats belonging to workspaceID.
+// ListChats returns launchable chats belonging to workspaceID in MRU order.
+// Unsupported v1 providers remain addressable through GetChat so their raw
+// records survive unrelated writes, but are not projected into UI listings.
+// Legacy second-resolution timestamps are compared as milliseconds without
+// changing the values persisted in Chat.
 func (s *Store) ListChats(workspaceID string) []Chat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.listChatsLocked(workspaceID, true)
+}
+
+// ListChatsRaw returns every persisted chat belonging to workspaceID. It is
+// for lifecycle teardown and migration, never UI projection.
+func (s *Store) ListChatsRaw(workspaceID string) []Chat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listChatsLocked(workspaceID, false)
+}
+
+func (s *Store) listChatsLocked(workspaceID string, launchableOnly bool) []Chat {
 	out := make([]Chat, 0)
 	for _, chat := range s.data.Chats {
-		if chat.WorkspaceID == workspaceID {
+		if chat.WorkspaceID == workspaceID && (!launchableOnly || IsLaunchableProvider(chat.Provider)) {
 			out = append(out, chat)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := RecencyMillis(out[i]), RecencyMillis(out[j])
+		if ri != rj {
+			return ri > rj
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
+}
+
+// IsLaunchableProvider reports whether omo can resume a persisted provider.
+// Empty predates provider persistence and "senpi" is the pre-rebrand alias.
+func IsLaunchableProvider(provider string) bool {
+	switch provider {
+	case "", "senpi", "omo":
+		return true
+	default:
+		return false
+	}
+}
+
+// RecencyMillis returns a comparable MRU key while preserving raw timestamps.
+// V1 wrote Unix seconds; v2 writes Unix milliseconds. Positive values below
+// 10^12 are therefore projected to milliseconds for ordering only.
+func RecencyMillis(chat Chat) int64 {
+	recency := chat.LastUsedAt
+	if recency <= 0 {
+		recency = chat.CreatedAt
+	}
+	if recency > 0 && recency < 1_000_000_000_000 {
+		return recency * 1000
+	}
+	return recency
 }
 
 // DeleteChat removes a chat cursor record.

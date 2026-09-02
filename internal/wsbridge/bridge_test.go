@@ -133,6 +133,9 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if err := store.SaveChat(cursorstore.Chat{ID: "chat-1", WorkspaceID: "ws-1", CWD: dir, Name: "chat", NameSource: cursorstore.NameSourceAuto}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SaveChat(cursorstore.Chat{ID: "unsupported", WorkspaceID: "ws-1", CWD: dir, Provider: "omp", Name: "legacy", NameSource: cursorstore.NameSourceAuto}); err != nil {
+		t.Fatal(err)
+	}
 	mgr := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store)})
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -185,6 +188,16 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	_ = preHello.WriteClose(1000, nil)
 
 	conn, c := connect()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "unsupported"})
+	if got := c.next(t, "error"); got["code"] != "unsupported_provider" {
+		t.Fatalf("unsupported provider create = %v", got)
+	}
+	if got := mgr.LiveSummaries(); len(got) != 0 {
+		t.Fatalf("unsupported provider launched sessions: %+v", got)
+	}
+	if got := d.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("unsupported provider opened daemon sessions: %d", got)
+	}
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "chat-1"})
 	ready := c.next(t, "ready")
 	if ready["resumed"] != false {

@@ -61,7 +61,7 @@ interface ChatFrameHandlerBindings {
 /**
  * Error codes that prove the conversation history will never arrive. Three
  * groups: the open/create/resume sequence failing, the provider-termination
- * switch in internal/chat/session.go whose kinds all tear the session down,
+ * switch in internal/session/dispatch.go whose terminal kinds tear the session down,
  * and a failed get_entries response. Control rejections - set_model_failed,
  * set_thinking_failed, approval_failed, persist_failed - are absent by
  * design: treating those as history failure would re-expose the notice-only

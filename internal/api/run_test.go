@@ -3,15 +3,40 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
+func useMockEnsure(t *testing.T) {
+	t.Helper()
+	daemon := omorpctest.New(t.TempDir())
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	old := ensureDaemon
+	ensureDaemon = func(ctx context.Context, _ omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		client, err := omorpc.Dial(ctx, daemon.SocketPath())
+		if err != nil {
+			return nil, err
+		}
+		return &omorpc.EnsuredDaemon{Client: client}, nil
+	}
+	t.Cleanup(func() { ensureDaemon = old; daemon.Stop() })
+}
+
 func TestRunSignalsReadyAndShutsDown(t *testing.T) {
+	useMockEnsure(t)
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,7 +72,80 @@ func TestRunSignalsReadyAndShutsDown(t *testing.T) {
 	}
 }
 
+func TestRunDaemonFailureIsFatal(t *testing.T) {
+	old := ensureDaemon
+	ensureDaemon = func(context.Context, omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		return nil, errors.New("offline")
+	}
+	t.Cleanup(func() { ensureDaemon = old })
+	err := Run(t.Context(), &config.Config{Root: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err == nil || !strings.Contains(err.Error(), "starting required omo daemon") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestRunOwnedDaemonHelper(t *testing.T) {
+	dir := os.Getenv("OMO_API_RUN_HELPER_DIR")
+	if dir == "" {
+		return
+	}
+	d := omorpctest.New(dir)
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pid"), []byte(fmt.Sprintf("%d", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {}
+}
+
+func TestRunStartupFailureStopsOwnedDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("", "api-run-owned-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	script := filepath.Join(dir, "supervisor.sh")
+	contents := "#!/bin/sh\nexec \"$OMO_API_RUN_TEST_BINARY\" -test.run='^TestRunOwnedDaemonHelper$'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := ensureDaemon
+	ensureDaemon = func(ctx context.Context, _ omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		return omorpc.EnsureDaemon(ctx, omorpc.EnsureConfig{
+			AgentDir: dir, SocketPath: filepath.Join(dir, "d.sock"), BinaryPath: script,
+			ReadyTimeout: 5 * time.Second, ProbeTimeout: 100 * time.Millisecond,
+			Env: append(os.Environ(), "OMO_API_RUN_HELPER_DIR="+dir, "OMO_API_RUN_TEST_BINARY="+os.Args[0]),
+		})
+	}
+	t.Cleanup(func() { ensureDaemon = old })
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = Run(context.Background(), &config.Config{Root: t.TempDir(), StateDir: stateDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err == nil || !strings.Contains(err.Error(), "migrating v1 metadata") {
+		t.Fatalf("Run error = %v, want migration failure", err)
+	}
+	pidBytes, err := os.ReadFile(filepath.Join(dir, "pid"))
+	if err != nil {
+		t.Fatalf("read helper pid: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err != nil {
+		t.Fatalf("parse helper pid: %v", err)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("owned supervisor process %d remains after startup failure: %v", pid, err)
+	}
+}
+
 func TestRunReturnsReadyError(t *testing.T) {
+	useMockEnsure(t)
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

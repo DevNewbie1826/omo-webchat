@@ -145,18 +145,10 @@ func multipartUploadRequest(t *testing.T, path, filename, content string) *http.
 }
 
 func TestUploadAcceptsCursorStoreOnlyChatAndRejectsMissingChat(t *testing.T) {
-	s, _, ws := newChatCreateTestServer(t)
-	cursors, err := cursorstore.Open(filepath.Join(t.TempDir(), "v2.json"))
-	if err != nil {
+	s, st, ws := newChatCreateTestServer(t)
+	if err := st.SaveChat(cursorstore.Chat{ID: "v2-only", WorkspaceID: ws.ID, CWD: ws.Path, Name: "v2"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cursors.SaveChat(cursorstore.Chat{ID: "v2-only", WorkspaceID: ws.ID, CWD: ws.Path, Name: "v2"}); err != nil {
-		t.Fatal(err)
-	}
-	s.installV2(nil, cursors, nil)
 
 	for _, test := range []struct {
 		chatID string

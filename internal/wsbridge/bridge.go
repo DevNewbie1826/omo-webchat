@@ -25,9 +25,13 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 )
 
-// ErrChatDeleted reports that deletion advanced after a create captured its
-// metadata generation but before the acquired provider route was published.
-var ErrChatDeleted = errors.New("chat was deleted while opening")
+var (
+	// ErrChatDeleted reports that deletion advanced after a create captured its
+	// metadata generation but before the acquired provider route was published.
+	ErrChatDeleted = errors.New("chat was deleted while opening")
+	// ErrUnsupportedProvider reports metadata that this bridge cannot launch.
+	ErrUnsupportedProvider = errors.New("chat provider is not supported")
+)
 
 // Config supplies the independently-owned v2 session stack.
 type Config struct {
@@ -37,8 +41,7 @@ type Config struct {
 	ServerVersion string
 	Logger        *slog.Logger
 	WriteTimeout  time.Duration
-	// PrepareChat lazily mirrors v1 workspace/chat metadata into Store. The v2
-	// cursor file remains independently owned and only resume pointers mutate.
+	// PrepareChat validates workspace/chat metadata immediately before attach.
 	PrepareChat func(context.Context, string, string) error
 	// PrepareChatVersion captures a deletion generation atomically with prepare;
 	// ChatVersion must be a lock-free read because validation runs inside the
@@ -96,20 +99,7 @@ func (h *Handler) CloseConnections() {
 	})
 }
 
-// DefaultHandler is the production mount seam while the v1 Server constructor
-// remains byte-compatible. A v2 bootstrap can install a configured endpoint
-// without making the v1 API own v2 lifecycle dependencies.
-type endpointHolder struct {
-	handler http.Handler
-	id      uint64
-}
-
-var (
-	defaultEndpoint atomic.Value // endpointHolder
-	endpointID      atomic.Uint64
-)
-
-// Unavailable returns a diagnostic endpoint for a v2 stack that could not start.
+// Unavailable returns a diagnostic endpoint for tests and explicit diagnostics.
 func Unavailable(reason string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -120,30 +110,6 @@ func Unavailable(reason string) http.Handler {
 		})
 	})
 }
-
-func init() { defaultEndpoint.Store(endpointHolder{handler: Unavailable("startup not completed")}) }
-
-// InstallDefault atomically installs the endpoint used by the API mount and
-// returns an ownership-safe remover for server shutdown.
-func InstallDefault(h http.Handler) func() {
-	if h == nil {
-		return func() {}
-	}
-	id := endpointID.Add(1)
-	defaultEndpoint.Store(endpointHolder{handler: h, id: id})
-	return func() {
-		current := defaultEndpoint.Load().(endpointHolder)
-		if current.id == id {
-			defaultEndpoint.Store(endpointHolder{handler: Unavailable("server stopped")})
-		}
-	}
-}
-
-// InstallUnavailable publishes a diagnostic 503 endpoint.
-func InstallUnavailable(reason string) func() { return InstallDefault(Unavailable(reason)) }
-
-// DefaultHandler returns the currently installed v2 endpoint.
-func DefaultHandler() http.Handler { return defaultEndpoint.Load().(endpointHolder).handler }
 
 func originAllowed(r *http.Request) bool {
 	origins := r.Header.Values("Origin")
@@ -480,15 +446,22 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
 		if err != nil {
 			code := "no_chat"
-			if errors.Is(err, ErrChatDeleted) {
+			switch {
+			case errors.Is(err, ErrChatDeleted):
 				code = "chat_deleted"
+			case errors.Is(err, ErrUnsupportedProvider):
+				code = "unsupported_provider"
 			}
 			c.sendError(code, err.Error(), "", "")
 			return
 		}
 	} else if c.bridge.cfg.PrepareChat != nil {
 		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
-			c.sendError("no_chat", err.Error(), "", "")
+			code := "no_chat"
+			if errors.Is(err, ErrUnsupportedProvider) {
+				code = "unsupported_provider"
+			}
+			c.sendError(code, err.Error(), "", "")
 			return
 		}
 	}
@@ -499,6 +472,10 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 	}
 	if rec.WorkspaceID != f.WsID {
 		c.sendError("bad_create", "chat does not belong to workspace", "", "")
+		return
+	}
+	if !cursorstore.IsLaunchableProvider(rec.Provider) {
+		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
@@ -770,7 +747,7 @@ func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, e
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID}, nil
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}, nil
 }
 func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Cursor) error {
 	st := (*cursorstore.Store)(s)
@@ -779,7 +756,15 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 		return err
 	}
 	c.SessionFile, c.DurableSessionID = cur.SessionFile, cur.DurableSessionID
+	c.Name, c.NameSource = cur.Name, cur.NameSource
+	c.TitleIsPlaceholder = cur.TitleIsPlaceholder
 	return st.SaveChat(c)
+}
+func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
+	return (*cursorstore.Store)(s).UpdateIdentity(id, sessionFile, durableID)
+}
+func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) error {
+	return (*cursorstore.Store)(s).UpdateName(id, name, source)
 }
 
 var _ session.CursorStore = (*CursorStore)(nil)
