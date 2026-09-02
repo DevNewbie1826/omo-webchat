@@ -271,11 +271,16 @@ func TestServerKillPreservesDaemonSessionAndReconnectResumes(t *testing.T) {
 	if persisted.DurableSessionID != durableID || persisted.SessionFile != cursor.SessionFile {
 		t.Fatalf("cursor changed across server exec: before=%+v after=%+v", cursor, persisted)
 	}
-	entries := frames2.await(t, "entries")
-	if final, _ := entries["final"].(bool); !final {
-		t.Fatalf("history replay was not terminal: %v", entries)
+	var replayed []any
+	for {
+		entries := frames2.await(t, "entries")
+		page, _ := entries["entries"].([]any)
+		replayed = append(replayed, page...)
+		if final, _ := entries["final"].(bool); final {
+			break
+		}
 	}
-	rawEntries, err := json.Marshal(entries["entries"])
+	rawEntries, err := json.Marshal(replayed)
 	if err != nil || !bytes.Contains(rawEntries, []byte(turnMarker)) {
 		t.Fatalf("completed turn missing from replay: err=%v entries=%s", err, rawEntries)
 	}
