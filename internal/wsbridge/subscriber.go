@@ -18,19 +18,38 @@ type subscriber struct {
 	active         bool
 	treatAsResumed bool
 	pending        []session.Frame
+	overflowed     bool
+	ready          chan struct{}
+	readyOnce      sync.Once
 }
+
+func newSubscriber(c *connection) *subscriber {
+	return &subscriber{conn: c, ready: make(chan struct{})}
+}
+
+// synchronousAttach asks session's broadcaster to finish queueing its initial
+// replay before Acquire returns.
+func (*subscriber) synchronousAttach() {}
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
+	if f.Kind == session.FrameReady {
+		s.readyOnce.Do(func() { close(s.ready) })
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.active {
+		if len(s.pending) >= session.DefaultQueueSize {
+			s.pending = s.pending[1:]
+			s.overflowed = true
+		}
 		s.pending = append(s.pending, f)
 		return nil
 	}
 	return s.deliver(f)
 }
 func (s *subscriber) activate(reattach bool) {
+	<-s.ready
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active {
@@ -38,6 +57,11 @@ func (s *subscriber) activate(reattach bool) {
 	}
 	s.treatAsResumed = reattach
 	s.active = true
+	if s.overflowed {
+		s.pending = nil
+		go s.Cancel()
+		return
+	}
 	for _, f := range s.pending {
 		if err := s.deliver(f); err != nil {
 			s.pending = nil
@@ -75,7 +99,8 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 	}
 	switch f.Kind {
 	case session.FrameReady:
-		return wscontract.ReadyFrame{Type: typ, SessionID: chatID, PISessionID: f.SessionID, Resumed: f.Resumed || reattach}, nil
+		piSessionID := f.SessionID
+		return wscontract.ReadyFrame{Type: typ, SessionID: chatID, PISessionID: &piSessionID, Resumed: f.Resumed || reattach}, nil
 	case session.FrameEntries:
 		x, ok := f.Data.(session.EntriesFrame)
 		if !ok {

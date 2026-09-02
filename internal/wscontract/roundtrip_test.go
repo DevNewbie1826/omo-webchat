@@ -6,22 +6,47 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-// fixturesDir locates contract/fixtures relative to this file so the test is
-// build-safe no matter the working directory.
+// fixturesDir avoids source-file paths, which are rewritten by -trimpath.
+// An override supports packaged tests; repository runs discover from CWD or
+// the test executable location.
 func fixturesDir(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot locate roundtrip_test.go")
+	if override := os.Getenv("WS_CONTRACT_FIXTURES"); override != "" {
+		if info, err := os.Stat(override); err == nil && info.IsDir() {
+			return override
+		}
+		t.Fatalf("WS_CONTRACT_FIXTURES=%q is not a directory", override)
 	}
-	return filepath.Join(filepath.Dir(thisFile), "..", "..", "contract", "fixtures")
+	find := func(start string) string {
+		for dir := start; ; dir = filepath.Dir(dir) {
+			candidate := filepath.Join(dir, "contract", "fixtures")
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				return candidate
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return ""
+			}
+		}
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		if found := find(cwd); found != "" {
+			return found
+		}
+	}
+	if executable, err := os.Executable(); err == nil {
+		if found := find(filepath.Dir(executable)); found != "" {
+			return found
+		}
+	}
+	t.Fatal("cannot locate contract/fixtures (set WS_CONTRACT_FIXTURES)")
+	return ""
 }
 
 type fixture struct {
@@ -95,6 +120,35 @@ func TestClientFrameFixturesRoundtrip(t *testing.T) {
 		frame, err := ParseClientFrame(fx.data)
 		assertRoundtrip(t, fx.name, fx.data, frame, err)
 	}
+}
+
+func TestInvalidFixturesAreRejected(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		server bool
+	}{
+		{name: "invalid-server-hello-missing-required.json", server: true},
+		{name: "invalid-client-run-kind.json"},
+	} {
+		data, err := os.ReadFile(filepath.Join(fixturesDir(t), test.name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if test.server {
+			_, err = ParseServerFrame(data)
+		} else {
+			_, err = ParseClientFrame(data)
+		}
+		if err == nil {
+			t.Errorf("%s: malformed known frame parsed successfully", test.name)
+		}
+	}
+}
+
+func TestKnownFramePreservesAdditionalProperties(t *testing.T) {
+	data := []byte(`{"type":"hello","version":2,"serverVersion":"v2","future":{"enabled":true}}`)
+	frame, err := ParseServerFrame(data)
+	assertRoundtrip(t, "known-extra", data, frame, err)
 }
 
 // isKnownTypeTolerant selects tolerant-* fixtures whose wire type IS in the

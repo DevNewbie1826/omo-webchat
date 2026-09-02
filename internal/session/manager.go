@@ -489,6 +489,12 @@ func (m *Manager) bumpSlotGenerationLocked(chatID string) {
 	}
 }
 
+// EnterChat serializes transport work for a chat. The returned release must be
+// called exactly once; waiting respects ctx cancellation.
+func (m *Manager) EnterChat(ctx context.Context, chatID string) (func(), error) {
+	return m.chats.enter(ctx, chatID)
+}
+
 func (m *Manager) Get(chatID string) (*Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -514,6 +520,12 @@ func (m *Manager) LiveSummaries() []Summary {
 }
 
 func (m *Manager) Stop(chatID string) error { return m.stopContext(context.Background(), chatID) }
+
+// StopContext is the cancellable form used by request-bound transports.
+func (m *Manager) StopContext(ctx context.Context, chatID string) error {
+	return m.stopContext(ctx, chatID)
+}
+
 func (m *Manager) stopContext(ctx context.Context, chatID string) error {
 	unlock, err := m.chats.enter(ctx, chatID)
 	if err != nil {

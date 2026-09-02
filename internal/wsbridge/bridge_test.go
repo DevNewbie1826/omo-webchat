@@ -109,7 +109,7 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 			t.Fatalf("unauthenticated status=%d", resp.StatusCode)
 		}
 	}
-	connect := func() (*gws.Conn, *collector) {
+	connectRaw := func() (*gws.Conn, *collector) {
 		c := &collector{notify: make(chan struct{}, 64)}
 		conn, _, err := gws.NewClient(c, &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(ts.URL, "http"), RequestHeader: http.Header{"Cookie": []string{auth.CookieName + "=" + token}}})
 		if err != nil {
@@ -117,9 +117,27 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 		}
 		go conn.ReadLoop()
 		c.next(t, "hello")
+		return conn, c
+	}
+	connect := func() (*gws.Conn, *collector) {
+		conn, c := connectRaw()
 		writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 		return conn, c
 	}
+
+	preHello, preHelloFrames := connectRaw()
+	writeClient(t, preHello, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "chat-1"})
+	if got := preHelloFrames.next(t, "error"); got["code"] != "bad_frame" {
+		t.Fatalf("pre-hello frame accepted: %v", got)
+	}
+	writeClient(t, preHello, map[string]any{"type": "ping"})
+	preHelloFrames.next(t, "pong")
+	writeClient(t, preHello, map[string]any{"type": "hello", "version": 99})
+	if got := preHelloFrames.next(t, "error"); got["code"] != "bad_frame" {
+		t.Fatalf("version mismatch accepted silently: %v", got)
+	}
+	_ = preHello.WriteClose(1000, nil)
+
 	conn, c := connect()
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "chat-1"})
 	ready := c.next(t, "ready")
@@ -132,14 +150,50 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	}
 	d.SetPromptScript(chat.SessionFile,
 		map[string]any{"type": omorpctest.EventAgentStart},
-		map[string]any{"type": omorpctest.EventMessageDelta, "delta": "hello"},
+		map[string]any{"type": "message_update", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "hello"}}}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": "hello", "partial": map[string]any{"type": "text", "text": "hello"}}},
+		map[string]any{"type": "tool_execution_update", "toolCallId": "call-1", "toolName": "bash", "args": map[string]any{"command": "pwd"}, "partialResult": map[string]any{"content": []any{map[string]any{"type": "text", "text": "/tmp"}}}},
+		map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "hello"}}, "model": "mock-model"}},
 		map[string]any{"type": "extension_event", "name": "omo.task.updated", "data": map[string]any{"tasks": []any{}}},
 		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
 	)
 	writeClient(t, conn, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "prompt", "message": "hi"}})
 	c.next(t, "run.started")
-	c.next(t, "messageDelta")
+	delta := c.next(t, "messageDelta")
+	if got := delta["delta"].(map[string]any); got["kind"] != "text_delta" || got["delta"] != "hello" {
+		t.Fatalf("canonical delta not normalized: %v", delta)
+	}
+	tool := c.next(t, "tool")
+	if _, ok := tool["partial"].(map[string]any); !ok || tool["partialResult"] != nil {
+		t.Fatalf("canonical tool update not normalized: %v", tool)
+	}
+	message := c.next(t, "message")
+	completed := message["message"].(map[string]any)
+	if _, ok := completed["blocks"].([]any); !ok || completed["content"] != nil {
+		t.Fatalf("canonical message not normalized: %v", message)
+	}
 	c.next(t, "extensionEvent")
+	c.next(t, "run.done")
+	writeClient(t, conn, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "followUp", "message": "later"}})
+	if got := c.next(t, "error"); got["code"] != "prompt_in_flight" {
+		t.Fatalf("followUp was not dispatched: %v", got)
+	}
+
+	d.SetPromptScript(chat.SessionFile,
+		map[string]any{"type": "extension_ui_request", "id": "approval-native", "method": "input"},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "prompt", "message": "approve"}})
+	c.next(t, "approval")
+	writeClient(t, conn, map[string]any{"type": "approval.respond", "sessionId": "chat-1", "id": "approval-native", "requestId": "browser-7", "value": `{"allow":true}`})
+	if ack := c.next(t, "ack"); ack["requestId"] != "browser-7" || ack["id"] != "approval-native" {
+		t.Fatalf("approval correlation=%v", ack)
+	}
+	if !d.AwaitRequestCount(omorpc.CmdExtensionUIResponse, 1, 5*time.Second) {
+		t.Fatal("approval response not sent")
+	}
+	if value := d.LastRequest(omorpc.CmdExtensionUIResponse)["value"]; value != `{"allow":true}` {
+		t.Fatalf("approval value retyped: %#v", value)
+	}
 	c.next(t, "run.done")
 	_ = conn.WriteClose(1000, nil)
 
@@ -153,8 +207,14 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if got := c2.next(t, "extensionEvent"); got["name"] != "omo.task.updated" {
 		t.Fatalf("snapshot=%v", got)
 	}
+	if got := c2.next(t, "entries"); got["final"] != true {
+		t.Fatalf("reattach history=%v", got)
+	}
 	writeClient(t, conn2, map[string]any{"type": "activity.refresh", "sessionId": "chat-1"})
 	c2.next(t, "extensionEvent")
+	writeClient(t, conn2, map[string]any{"type": "chat.close", "sessionId": "chat-1"})
+	writeClient(t, conn2, map[string]any{"type": "ping"})
+	c2.next(t, "pong") // normal detach must not cancel the WebSocket
 	writeClient(t, conn2, map[string]any{"type": "future.command"})
 	if got := c2.next(t, "error"); got["code"] != "unknown_type" {
 		t.Fatalf("unknown error=%v", got)

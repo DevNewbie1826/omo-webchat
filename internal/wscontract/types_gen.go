@@ -2,11 +2,16 @@
 //
 // Single-source WS contract for v2: wire names keep v1 continuity,
 // v2 session FrameKind -> wire name mapping is FrameKindToWireName.
-// Regenerate with: go generate ./contract (Go) and node contract/gen_ts.mjs (TS).
+// Regenerate both mirrors with: go generate ./contract (requires Node.js).
 
 package wscontract
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"time"
+)
 
 type AssistantDelta struct {
 	Content      *string         `json:"content,omitempty"`
@@ -15,6 +20,8 @@ type AssistantDelta struct {
 	Kind         string          `json:"kind"`
 	Partial      json.RawMessage `json:"partial,omitempty"`
 	Reason       *string         `json:"reason,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type AssistantMessage struct {
@@ -24,11 +31,15 @@ type AssistantMessage struct {
 	Role       string          `json:"role"`
 	Ts         *float64        `json:"ts,omitempty"`
 	Usage      json.RawMessage `json:"usage,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatImage struct {
 	Data     string `json:"data"`
 	MimeType string `json:"mimeType"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type CommandEntry struct {
@@ -37,6 +48,8 @@ type CommandEntry struct {
 	Source      *string            `json:"source,omitempty"`
 	SourceInfo  *CommandSourceInfo `json:"sourceInfo,omitempty"`
 	Syntax      *string            `json:"syntax,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type CommandSourceInfo struct {
@@ -45,6 +58,8 @@ type CommandSourceInfo struct {
 	Path    *string `json:"path,omitempty"`
 	Scope   *string `json:"scope,omitempty"`
 	Source  *string `json:"source,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ContentBlock struct {
@@ -55,12 +70,16 @@ type ContentBlock struct {
 	Name      *string         `json:"name,omitempty"`
 	Text      *string         `json:"text,omitempty"`
 	Thinking  *string         `json:"thinking,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ContextUsage struct {
 	ContextWindow int64   `json:"contextWindow"`
 	Percent       float64 `json:"percent"`
 	Tokens        int64   `json:"tokens"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ModelInfo struct {
@@ -68,32 +87,44 @@ type ModelInfo struct {
 	ModelID  string   `json:"modelId"`
 	Name     *string  `json:"name,omitempty"`
 	Provider string   `json:"provider"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ModelRef struct {
 	ModelID  string `json:"modelId"`
 	Provider string `json:"provider"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ResumeCandidate struct {
 	HostPath *string `json:"hostPath,omitempty"`
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ToolPayloadContentItem struct {
 	Text *string `json:"text,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ToolPayload struct {
 	Content []ToolPayloadContentItem `json:"content,omitempty"`
 	Details json.RawMessage          `json:"details,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ClientHelloFrame struct {
 	Type string `json:"type"`
 	// Wire contract version the client expects
 	Version int64 `json:"version"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type HelloFrame struct {
@@ -102,6 +133,8 @@ type HelloFrame struct {
 	Type          string `json:"type"`
 	// Wire contract version this server speaks
 	Version int64 `json:"version"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type AckFrame struct {
@@ -111,6 +144,8 @@ type AckFrame struct {
 	RequestID *string `json:"requestId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ApprovalFrame struct {
@@ -124,6 +159,8 @@ type ApprovalFrame struct {
 	Timeout     *int64         `json:"timeout,omitempty"`
 	Title       *string        `json:"title,omitempty"`
 	Type        string         `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatNameFrame struct {
@@ -131,23 +168,31 @@ type ChatNameFrame struct {
 	Origin    NameOrigin `json:"origin"`
 	SessionID string     `json:"sessionId"`
 	Type      string     `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type CommandsFrame struct {
 	Commands  []CommandEntry `json:"commands"`
 	SessionID string         `json:"sessionId"`
 	Type      string         `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type CompactionDoneFrame struct {
 	Error     *string `json:"error,omitempty"`
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type CompactionStartedFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ControlResultFrame struct {
@@ -157,6 +202,8 @@ type ControlResultFrame struct {
 	SessionID string  `json:"sessionId"`
 	Success   bool    `json:"success"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type EntriesFrame struct {
@@ -168,6 +215,8 @@ type EntriesFrame struct {
 	LeafID    *string `json:"leafId,omitempty"`
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ErrorFrame struct {
@@ -182,6 +231,8 @@ type ErrorFrame struct {
 	RequestID *string `json:"requestId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ExtensionEventFrame struct {
@@ -189,6 +240,8 @@ type ExtensionEventFrame struct {
 	Name      string          `json:"name"`
 	SessionID string          `json:"sessionId"`
 	Type      string          `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type MessageDeltaFrame struct {
@@ -196,18 +249,24 @@ type MessageDeltaFrame struct {
 	MessageID *string        `json:"messageId,omitempty"`
 	SessionID string         `json:"sessionId"`
 	Type      string         `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type MessageFrame struct {
 	Message   AssistantMessage `json:"message"`
 	SessionID string           `json:"sessionId"`
 	Type      string           `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ModelsFrame struct {
 	Models    []ModelInfo `json:"models"`
 	SessionID string      `json:"sessionId"`
 	Type      string      `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type NoticeFrame struct {
@@ -220,29 +279,39 @@ type NoticeFrame struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	SessionID string          `json:"sessionId"`
 	Type      string          `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type PongFrame struct {
 	SessionID *string `json:"sessionId,omitempty"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ReadyFrame struct {
-	PISessionID string `json:"piSessionId"`
-	Resumed     bool   `json:"resumed"`
-	SessionID   string `json:"sessionId"`
-	Type        string `json:"type"`
+	PISessionID *string `json:"piSessionId"`
+	Resumed     bool    `json:"resumed"`
+	SessionID   string  `json:"sessionId"`
+	Type        string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type RunDoneFrame struct {
 	Reason    string `json:"reason"`
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type RunStartedFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type StateFrame struct {
@@ -253,6 +322,8 @@ type StateFrame struct {
 	SessionName   *string   `json:"sessionName,omitempty"`
 	ThinkingLevel *string   `json:"thinkingLevel,omitempty"`
 	Type          string    `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type StatsFrame struct {
@@ -261,6 +332,8 @@ type StatsFrame struct {
 	SessionID    string          `json:"sessionId"`
 	Tokens       json.RawMessage `json:"tokens,omitempty"`
 	Type         string          `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ToolFrame struct {
@@ -273,11 +346,15 @@ type ToolFrame struct {
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
 	Type       string          `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ActivityRefreshFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ApprovalRespondFrame struct {
@@ -288,60 +365,82 @@ type ApprovalRespondFrame struct {
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
 	Value     *string `json:"value,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatAbortFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatCloseFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatCommandsFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatCompactFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatCreateFrame struct {
 	ChatID string `json:"chatId"`
 	Type   string `json:"type"`
 	WsID   string `json:"wsId"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatDisconnectFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatModelsFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatResumeFrame struct {
 	SessionID string  `json:"sessionId"`
 	Since     *string `json:"since,omitempty"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatSendFrameRun struct {
 	Images  []ChatImage `json:"images,omitempty"`
 	Kind    RunKind     `json:"kind"`
 	Message string      `json:"message"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatSendFrame struct {
 	Run       ChatSendFrameRun `json:"run"`
 	SessionID string           `json:"sessionId"`
 	Type      string           `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatSetFrame struct {
@@ -350,15 +449,1088 @@ type ChatSetFrame struct {
 	SessionID     string    `json:"sessionId"`
 	ThinkingLevel *string   `json:"thinkingLevel,omitempty"`
 	Type          string    `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type ChatStatsFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
 type PingFrame struct {
 	Type string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// Known frame and nested object decoders retain unknown properties. This is an
+// intentional forward-compatibility exception to schema additionalProperties:false.
+func captureExtraFields(data []byte, known, preserveNullable, preserveArrays []string) (map[string]json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	knownSet := make(map[string]bool, len(known))
+	for _, key := range known {
+		knownSet[key] = true
+	}
+	preserveNullSet := make(map[string]bool, len(preserveNullable))
+	for _, key := range preserveNullable {
+		preserveNullSet[key] = true
+	}
+	preserveArraySet := make(map[string]bool, len(preserveArrays))
+	for _, key := range preserveArrays {
+		preserveArraySet[key] = true
+	}
+	for key, raw := range fields {
+		if !knownSet[key] {
+			continue
+		}
+		text := string(raw)
+		if preserveNullSet[key] && text == "null" {
+			continue
+		}
+		if preserveArraySet[key] && text == "[]" {
+			continue
+		}
+		delete(fields, key)
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	return fields, nil
+}
+
+func marshalWithExtra(known any, extra map[string]json.RawMessage) ([]byte, error) {
+	data, err := json.Marshal(known)
+	if err != nil || len(extra) == 0 {
+		return data, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	for key, raw := range extra {
+		if _, exists := fields[key]; !exists {
+			fields[key] = raw
+		}
+	}
+	return json.Marshal(fields)
+}
+
+func (v *AssistantDelta) UnmarshalJSON(data []byte) error {
+	type plain AssistantDelta
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"content", "contentIndex", "delta", "kind", "partial", "reason"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v AssistantDelta) MarshalJSON() ([]byte, error) {
+	type plain AssistantDelta
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *AssistantMessage) UnmarshalJSON(data []byte) error {
+	type plain AssistantMessage
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"blocks", "customType", "model", "role", "ts", "usage"}, []string{}, []string{"blocks"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v AssistantMessage) MarshalJSON() ([]byte, error) {
+	type plain AssistantMessage
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatImage) UnmarshalJSON(data []byte) error {
+	type plain ChatImage
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"data", "mimeType"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatImage) MarshalJSON() ([]byte, error) {
+	type plain ChatImage
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *CommandEntry) UnmarshalJSON(data []byte) error {
+	type plain CommandEntry
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"description", "name", "source", "sourceInfo", "syntax"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v CommandEntry) MarshalJSON() ([]byte, error) {
+	type plain CommandEntry
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *CommandSourceInfo) UnmarshalJSON(data []byte) error {
+	type plain CommandSourceInfo
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"baseDir", "origin", "path", "scope", "source"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v CommandSourceInfo) MarshalJSON() ([]byte, error) {
+	type plain CommandSourceInfo
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ContentBlock) UnmarshalJSON(data []byte) error {
+	type plain ContentBlock
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"arguments", "id", "isError", "kind", "name", "text", "thinking"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ContentBlock) MarshalJSON() ([]byte, error) {
+	type plain ContentBlock
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ContextUsage) UnmarshalJSON(data []byte) error {
+	type plain ContextUsage
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"contextWindow", "percent", "tokens"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ContextUsage) MarshalJSON() ([]byte, error) {
+	type plain ContextUsage
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ModelInfo) UnmarshalJSON(data []byte) error {
+	type plain ModelInfo
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"input", "modelId", "name", "provider"}, []string{}, []string{"input"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ModelInfo) MarshalJSON() ([]byte, error) {
+	type plain ModelInfo
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ModelRef) UnmarshalJSON(data []byte) error {
+	type plain ModelRef
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"modelId", "provider"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ModelRef) MarshalJSON() ([]byte, error) {
+	type plain ModelRef
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ResumeCandidate) UnmarshalJSON(data []byte) error {
+	type plain ResumeCandidate
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"hostPath", "id", "name"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ResumeCandidate) MarshalJSON() ([]byte, error) {
+	type plain ResumeCandidate
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ToolPayloadContentItem) UnmarshalJSON(data []byte) error {
+	type plain ToolPayloadContentItem
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"text"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ToolPayloadContentItem) MarshalJSON() ([]byte, error) {
+	type plain ToolPayloadContentItem
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ToolPayload) UnmarshalJSON(data []byte) error {
+	type plain ToolPayload
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"content", "details"}, []string{}, []string{"content"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ToolPayload) MarshalJSON() ([]byte, error) {
+	type plain ToolPayload
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ClientHelloFrame) UnmarshalJSON(data []byte) error {
+	type plain ClientHelloFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"type", "version"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ClientHelloFrame) MarshalJSON() ([]byte, error) {
+	type plain ClientHelloFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *HelloFrame) UnmarshalJSON(data []byte) error {
+	type plain HelloFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"serverVersion", "type", "version"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v HelloFrame) MarshalJSON() ([]byte, error) {
+	type plain HelloFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *AckFrame) UnmarshalJSON(data []byte) error {
+	type plain AckFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"command", "id", "requestId", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v AckFrame) MarshalJSON() ([]byte, error) {
+	type plain AckFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
+	type plain ApprovalFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"id", "message", "method", "options", "placeholder", "prefill", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ApprovalFrame) MarshalJSON() ([]byte, error) {
+	type plain ApprovalFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatNameFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatNameFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"name", "origin", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatNameFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatNameFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *CommandsFrame) UnmarshalJSON(data []byte) error {
+	type plain CommandsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"commands", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v CommandsFrame) MarshalJSON() ([]byte, error) {
+	type plain CommandsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *CompactionDoneFrame) UnmarshalJSON(data []byte) error {
+	type plain CompactionDoneFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"error", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v CompactionDoneFrame) MarshalJSON() ([]byte, error) {
+	type plain CompactionDoneFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *CompactionStartedFrame) UnmarshalJSON(data []byte) error {
+	type plain CompactionStartedFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v CompactionStartedFrame) MarshalJSON() ([]byte, error) {
+	type plain CompactionStartedFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ControlResultFrame) UnmarshalJSON(data []byte) error {
+	type plain ControlResultFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"command", "message", "requestId", "sessionId", "success", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ControlResultFrame) MarshalJSON() ([]byte, error) {
+	type plain ControlResultFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *EntriesFrame) UnmarshalJSON(data []byte) error {
+	type plain EntriesFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"entries", "final", "leafId", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v EntriesFrame) MarshalJSON() ([]byte, error) {
+	type plain EntriesFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ErrorFrame) UnmarshalJSON(data []byte) error {
+	type plain ErrorFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"candidates", "code", "command", "dangling", "message", "requestId", "sessionId", "type"}, []string{}, []string{"candidates"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ErrorFrame) MarshalJSON() ([]byte, error) {
+	type plain ErrorFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ExtensionEventFrame) UnmarshalJSON(data []byte) error {
+	type plain ExtensionEventFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"data", "name", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ExtensionEventFrame) MarshalJSON() ([]byte, error) {
+	type plain ExtensionEventFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *MessageDeltaFrame) UnmarshalJSON(data []byte) error {
+	type plain MessageDeltaFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"delta", "messageId", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v MessageDeltaFrame) MarshalJSON() ([]byte, error) {
+	type plain MessageDeltaFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *MessageFrame) UnmarshalJSON(data []byte) error {
+	type plain MessageFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"message", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v MessageFrame) MarshalJSON() ([]byte, error) {
+	type plain MessageFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ModelsFrame) UnmarshalJSON(data []byte) error {
+	type plain ModelsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"models", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ModelsFrame) MarshalJSON() ([]byte, error) {
+	type plain ModelsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *NoticeFrame) UnmarshalJSON(data []byte) error {
+	type plain NoticeFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"at", "kind", "nid", "payload", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v NoticeFrame) MarshalJSON() ([]byte, error) {
+	type plain NoticeFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *PongFrame) UnmarshalJSON(data []byte) error {
+	type plain PongFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v PongFrame) MarshalJSON() ([]byte, error) {
+	type plain PongFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ReadyFrame) UnmarshalJSON(data []byte) error {
+	type plain ReadyFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"piSessionId", "resumed", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ReadyFrame) MarshalJSON() ([]byte, error) {
+	type plain ReadyFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *RunDoneFrame) UnmarshalJSON(data []byte) error {
+	type plain RunDoneFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"reason", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v RunDoneFrame) MarshalJSON() ([]byte, error) {
+	type plain RunDoneFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *RunStartedFrame) UnmarshalJSON(data []byte) error {
+	type plain RunStartedFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v RunStartedFrame) MarshalJSON() ([]byte, error) {
+	type plain RunStartedFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *StateFrame) UnmarshalJSON(data []byte) error {
+	type plain StateFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"isCompacting", "isStreaming", "model", "sessionId", "sessionName", "thinkingLevel", "type"}, []string{"model"}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v StateFrame) MarshalJSON() ([]byte, error) {
+	type plain StateFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *StatsFrame) UnmarshalJSON(data []byte) error {
+	type plain StatsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"contextUsage", "cost", "sessionId", "tokens", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v StatsFrame) MarshalJSON() ([]byte, error) {
+	type plain StatsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ToolFrame) UnmarshalJSON(data []byte) error {
+	type plain ToolFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"args", "isError", "partial", "phase", "result", "sessionId", "toolCallId", "toolName", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ToolFrame) MarshalJSON() ([]byte, error) {
+	type plain ToolFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ActivityRefreshFrame) UnmarshalJSON(data []byte) error {
+	type plain ActivityRefreshFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ActivityRefreshFrame) MarshalJSON() ([]byte, error) {
+	type plain ActivityRefreshFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ApprovalRespondFrame) UnmarshalJSON(data []byte) error {
+	type plain ApprovalRespondFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"cancelled", "confirmed", "id", "requestId", "sessionId", "type", "value"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ApprovalRespondFrame) MarshalJSON() ([]byte, error) {
+	type plain ApprovalRespondFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatAbortFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatAbortFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatAbortFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatAbortFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatCloseFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatCloseFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatCloseFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatCloseFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatCommandsFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatCommandsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatCommandsFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatCommandsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatCompactFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatCompactFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatCompactFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatCompactFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatCreateFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatCreateFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"chatId", "type", "wsId"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatCreateFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatCreateFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatDisconnectFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatDisconnectFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatDisconnectFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatDisconnectFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatModelsFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatModelsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatModelsFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatModelsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatResumeFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatResumeFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "since", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatResumeFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatResumeFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatSendFrameRun) UnmarshalJSON(data []byte) error {
+	type plain ChatSendFrameRun
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"images", "kind", "message"}, []string{}, []string{"images"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatSendFrameRun) MarshalJSON() ([]byte, error) {
+	type plain ChatSendFrameRun
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatSendFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatSendFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"run", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatSendFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatSendFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatSetFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatSetFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"model", "requestId", "sessionId", "thinkingLevel", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatSetFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatSetFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatStatsFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatStatsFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatStatsFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatStatsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *PingFrame) UnmarshalJSON(data []byte) error {
+	type plain PingFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v PingFrame) MarshalJSON() ([]byte, error) {
+	type plain PingFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+type validationSchema struct {
+	Type       string
+	Format     string
+	Const      string
+	Enum       []string
+	AnyOf      []validationSchema
+	Properties map[string]validationSchema
+	Required   []string
+	Items      *validationSchema
+}
+
+func validateFrameJSON(data []byte, spec validationSchema) error {
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	return validateValue(value, spec, "frame")
+}
+
+func validateValue(value any, spec validationSchema, path string) error {
+	if len(spec.AnyOf) > 0 {
+		for _, branch := range spec.AnyOf {
+			if validateValue(value, branch, path) == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s does not match any allowed schema", path)
+	}
+	if spec.Const != "" {
+		if value != spec.Const {
+			return fmt.Errorf("%s must equal %q", path, spec.Const)
+		}
+	}
+	if len(spec.Enum) > 0 {
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string enum", path)
+		}
+		found := false
+		for _, allowed := range spec.Enum {
+			if text == allowed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s has invalid enum value %q", path, text)
+		}
+	}
+	switch spec.Type {
+	case "":
+		return nil
+	case "null":
+		if value != nil {
+			return fmt.Errorf("%s must be null", path)
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be a string", path)
+		}
+		if spec.Format == "rfc3339nano" {
+			if _, err := time.Parse(time.RFC3339Nano, text); err != nil {
+				return fmt.Errorf("%s must be RFC3339Nano: %w", path, err)
+			}
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be a boolean", path)
+		}
+	case "number":
+		if _, ok := value.(float64); !ok {
+			return fmt.Errorf("%s must be a number", path)
+		}
+	case "integer":
+		number, ok := value.(float64)
+		if !ok || math.Trunc(number) != number {
+			return fmt.Errorf("%s must be an integer", path)
+		}
+	case "array":
+		values, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s must be an array", path)
+		}
+		if spec.Items != nil {
+			for i, item := range values {
+				if err := validateValue(item, *spec.Items, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+					return err
+				}
+			}
+		}
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s must be an object", path)
+		}
+		for _, key := range spec.Required {
+			if _, exists := object[key]; !exists {
+				return fmt.Errorf("%s.%s is required", path, key)
+			}
+		}
+		for key, child := range spec.Properties {
+			if item, exists := object[key]; exists {
+				if err := validateValue(item, child, path+"."+key); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ServerFrame is implemented by every server->client frame struct.
@@ -576,7 +1748,100 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
+	if probe.Type == "" {
+		return nil, fmt.Errorf("frame type is required")
+	}
 	if target := NewServerFrame(probe.Type); target != nil {
+		switch probe.Type {
+		case "ready":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"piSessionId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "null"}, validationSchema{Type: "string"}}}, "resumed": validationSchema{Type: "boolean"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ready"}}, Required: []string{"type", "sessionId", "piSessionId", "resumed"}}); err != nil {
+				return nil, err
+			}
+		case "chat.name":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"name": validationSchema{Type: "string"}, "origin": validationSchema{Type: "string", Enum: []string{"auto", "user", "provider"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.name"}}, Required: []string{"type", "sessionId", "name", "origin"}}); err != nil {
+				return nil, err
+			}
+		case "messageDelta":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"delta": validationSchema{Type: "object", Properties: map[string]validationSchema{"content": validationSchema{Type: "string"}, "contentIndex": validationSchema{Type: "integer"}, "delta": validationSchema{Type: "string"}, "kind": validationSchema{Type: "string"}, "partial": validationSchema{}, "reason": validationSchema{Type: "string"}}, Required: []string{"kind"}}, "messageId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "messageDelta"}}, Required: []string{"type", "sessionId", "delta"}}); err != nil {
+				return nil, err
+			}
+		case "message":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
+				return nil, err
+			}
+		case "tool":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"args": validationSchema{}, "isError": validationSchema{Type: "boolean"}, "partial": validationSchema{Type: "object", Properties: map[string]validationSchema{"content": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"text": validationSchema{Type: "string"}}}}, "details": validationSchema{}}}, "phase": validationSchema{Type: "string", Enum: []string{"start", "update", "end"}}, "result": validationSchema{Type: "object", Properties: map[string]validationSchema{"content": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"text": validationSchema{Type: "string"}}}}, "details": validationSchema{}}}, "sessionId": validationSchema{Type: "string"}, "toolCallId": validationSchema{Type: "string"}, "toolName": validationSchema{Type: "string"}, "type": validationSchema{Const: "tool"}}, Required: []string{"type", "sessionId", "toolCallId", "toolName", "phase"}}); err != nil {
+				return nil, err
+			}
+		case "state":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"isCompacting": validationSchema{Type: "boolean"}, "isStreaming": validationSchema{Type: "boolean"}, "model": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "null"}, validationSchema{Type: "object", Properties: map[string]validationSchema{"modelId": validationSchema{Type: "string"}, "provider": validationSchema{Type: "string"}}, Required: []string{"provider", "modelId"}}}}, "sessionId": validationSchema{Type: "string"}, "sessionName": validationSchema{Type: "string"}, "thinkingLevel": validationSchema{Type: "string"}, "type": validationSchema{Const: "state"}}, Required: []string{"type", "sessionId", "isStreaming", "isCompacting"}}); err != nil {
+				return nil, err
+			}
+		case "stats":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"contextUsage": validationSchema{Type: "object", Properties: map[string]validationSchema{"contextWindow": validationSchema{Type: "integer"}, "percent": validationSchema{Type: "number"}, "tokens": validationSchema{Type: "integer"}}, Required: []string{"tokens", "contextWindow", "percent"}}, "cost": validationSchema{Type: "number"}, "sessionId": validationSchema{Type: "string"}, "tokens": validationSchema{}, "type": validationSchema{Const: "stats"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "extensionEvent":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "extensionEvent"}}, Required: []string{"type", "sessionId", "name"}}); err != nil {
+				return nil, err
+			}
+		case "approval":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor"}}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+				return nil, err
+			}
+		case "commands":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"commands": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "source": validationSchema{Type: "string"}, "sourceInfo": validationSchema{Type: "object", Properties: map[string]validationSchema{"baseDir": validationSchema{Type: "string"}, "origin": validationSchema{Type: "string"}, "path": validationSchema{Type: "string"}, "scope": validationSchema{Type: "string"}, "source": validationSchema{Type: "string"}}}, "syntax": validationSchema{Type: "string"}}, Required: []string{"name"}}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "commands"}}, Required: []string{"type", "sessionId", "commands"}}); err != nil {
+				return nil, err
+			}
+		case "models":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"models": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"input": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "modelId": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "provider": validationSchema{Type: "string"}}, Required: []string{"provider", "modelId"}}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "models"}}, Required: []string{"type", "sessionId", "models"}}); err != nil {
+				return nil, err
+			}
+		case "entries":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "leafId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+				return nil, err
+			}
+		case "compaction.started":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "compaction.started"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "compaction.done":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"error": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "compaction.done"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "run.started":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "run.started"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "run.done":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"reason": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "run.done"}}, Required: []string{"type", "sessionId", "reason"}}); err != nil {
+				return nil, err
+			}
+		case "ack":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ack"}}, Required: []string{"type", "command"}}); err != nil {
+				return nil, err
+			}
+		case "control.result":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "success": validationSchema{Type: "boolean"}, "type": validationSchema{Const: "control.result"}}, Required: []string{"type", "sessionId", "command", "success"}}); err != nil {
+				return nil, err
+			}
+		case "error":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "message": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
+				return nil, err
+			}
+		case "notice":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"at": validationSchema{Type: "string", Format: "rfc3339nano"}, "kind": validationSchema{Type: "string"}, "nid": validationSchema{Type: "string"}, "payload": validationSchema{}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "notice"}}, Required: []string{"type", "sessionId", "kind", "at"}}); err != nil {
+				return nil, err
+			}
+		case "pong":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "pong"}}, Required: []string{"type"}}); err != nil {
+				return nil, err
+			}
+		case "hello":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"serverVersion": validationSchema{Type: "string"}, "type": validationSchema{Const: "hello"}, "version": validationSchema{Type: "integer"}}, Required: []string{"type", "version", "serverVersion"}}); err != nil {
+				return nil, err
+			}
+		}
 		if err := json.Unmarshal(data, target); err != nil {
 			return nil, err
 		}
@@ -665,7 +1930,72 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return nil, err
 	}
+	if probe.Type == "" {
+		return nil, fmt.Errorf("frame type is required")
+	}
 	if target := NewClientFrame(probe.Type); target != nil {
+		switch probe.Type {
+		case "ping":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"type": validationSchema{Const: "ping"}}, Required: []string{"type"}}); err != nil {
+				return nil, err
+			}
+		case "chat.create":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"chatId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.create"}, "wsId": validationSchema{Type: "string"}}, Required: []string{"type", "wsId", "chatId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.send":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"run": validationSchema{Type: "object", Properties: map[string]validationSchema{"images": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}}, Required: []string{"data", "mimeType"}}}, "kind": validationSchema{Type: "string", Enum: []string{"prompt", "steer", "follow_up"}}, "message": validationSchema{Type: "string"}}, Required: []string{"kind", "message"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.send"}}, Required: []string{"type", "sessionId", "run"}}); err != nil {
+				return nil, err
+			}
+		case "chat.abort":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.abort"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.set":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"model": validationSchema{Type: "object", Properties: map[string]validationSchema{"modelId": validationSchema{Type: "string"}, "provider": validationSchema{Type: "string"}}, Required: []string{"provider", "modelId"}}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "thinkingLevel": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.set"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "approval.respond":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"cancelled": validationSchema{Type: "boolean"}, "confirmed": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.respond"}, "value": validationSchema{Type: "string"}}, Required: []string{"type", "sessionId", "id"}}); err != nil {
+				return nil, err
+			}
+		case "chat.commands":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.commands"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.compact":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.compact"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.models":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.models"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.stats":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.stats"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "activity.refresh":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "activity.refresh"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.resume":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "since": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.resume"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.close":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.close"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.disconnect":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.disconnect"}}, Required: []string{"type", "sessionId"}}); err != nil {
+				return nil, err
+			}
+		case "hello":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"type": validationSchema{Const: "hello"}, "version": validationSchema{Type: "integer"}}, Required: []string{"type", "version"}}); err != nil {
+				return nil, err
+			}
+		}
 		if err := json.Unmarshal(data, target); err != nil {
 			return nil, err
 		}

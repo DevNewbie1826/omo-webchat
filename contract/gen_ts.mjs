@@ -14,9 +14,51 @@ const outPath = join(here, "..", "frontend", "src", "lib", "contract", "types_ge
 const files = new Map();
 async function load(fileID) {
   if (!files.has(fileID)) {
-    files.set(fileID, JSON.parse(await readFile(join(schemasDir, fileID), "utf8")));
+    const parsed = JSON.parse(await readFile(join(schemasDir, fileID), "utf8"));
+    validateSchemaDocument(fileID, parsed);
+    files.set(fileID, parsed);
   }
   return files.get(fileID);
+}
+
+const SCHEMA_KEYWORDS = new Set([
+  "$schema", "$id", "$defs", "$ref", "title", "description", "type",
+  "properties", "required", "items", "enum", "const", "anyOf", "oneOf",
+  "additionalProperties", "format",
+]);
+const SCHEMA_TYPES = new Set(["null", "boolean", "string", "integer", "number", "array", "object"]);
+
+// Fail closed on schema vocabulary the generator does not implement. In
+// particular, a misspelled type or semantic keyword must never become JsonValue.
+function validateSchemaDocument(fileID, root) {
+  const walk = (node, path) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) throw new Error(`${fileID}${path}: schema node must be an object`);
+    for (const key of Object.keys(node)) if (!SCHEMA_KEYWORDS.has(key)) throw new Error(`${fileID}${path}: unsupported schema keyword ${JSON.stringify(key)}`);
+    if ("type" in node && (!SCHEMA_TYPES.has(node.type))) throw new Error(`${fileID}${path}: invalid schema type ${JSON.stringify(node.type)}`);
+    if ("format" in node && (node.format !== "rfc3339nano" || node.type !== "string")) throw new Error(`${fileID}${path}: unsupported format ${JSON.stringify(node.format)}`);
+    if ("properties" in node) {
+      if (!node.properties || typeof node.properties !== "object" || Array.isArray(node.properties)) throw new Error(`${fileID}${path}/properties: must be an object`);
+      for (const [name, child] of Object.entries(node.properties)) walk(child, `${path}/properties/${name}`);
+    }
+    if ("$defs" in node) {
+      if (!node.$defs || typeof node.$defs !== "object" || Array.isArray(node.$defs)) throw new Error(`${fileID}${path}/$defs: must be an object`);
+      for (const [name, child] of Object.entries(node.$defs)) walk(child, `${path}/$defs/${name}`);
+    }
+    for (const keyword of ["anyOf", "oneOf"]) if (keyword in node) {
+      if (!Array.isArray(node[keyword]) || node[keyword].length === 0) throw new Error(`${fileID}${path}/${keyword}: must be a non-empty array`);
+      node[keyword].forEach((child, i) => walk(child, `${path}/${keyword}/${i}`));
+    }
+    if ("items" in node) walk(node.items, `${path}/items`);
+    if ("additionalProperties" in node && typeof node.additionalProperties !== "boolean") walk(node.additionalProperties, `${path}/additionalProperties`);
+    if ("required" in node) {
+      if (!Array.isArray(node.required)) throw new Error(`${fileID}${path}/required: must be an array`);
+      for (const name of node.required) if (typeof name !== "string" || !(name in (node.properties ?? {}))) throw new Error(`${fileID}${path}/required: invalid property ${JSON.stringify(name)}`);
+    }
+    if ("enum" in node && (!Array.isArray(node.enum) || node.enum.length === 0 || node.enum.some((v) => typeof v !== "string"))) throw new Error(`${fileID}${path}/enum: only a non-empty string enum is supported`);
+    if ("const" in node && typeof node.const !== "string") throw new Error(`${fileID}${path}/const: only string constants are supported`);
+    if ("$ref" in node && (typeof node.$ref !== "string" || node.$ref === "")) throw new Error(`${fileID}${path}/$ref: must be a non-empty string`);
+  };
+  walk(root, "");
 }
 
 function defName(ref) {
@@ -92,13 +134,24 @@ function tsObjectLiteral(node, ctxFile) {
   return `{\n${lines.join("\n")}\n}`;
 }
 
+function validationSchema(node, ctxFile) {
+  if (node.$ref) return validationSchema(resolveRef(node.$ref, ctxFile), node.$ref.includes("#") && node.$ref.split("#")[0] ? node.$ref.split("#")[0] : ctxFile);
+  if (isOpaque(node)) return { json: true };
+  const out = {};
+  for (const key of ["type", "const", "enum", "required", "format"]) if (key in node) out[key] = node[key];
+  if (node.anyOf) out.anyOf = node.anyOf.map((child) => validationSchema(child, ctxFile));
+  if (node.properties) out.properties = Object.fromEntries(Object.entries(node.properties).map(([key, child]) => [key, validationSchema(child, ctxFile)]));
+  if (node.items) out.items = validationSchema(node.items, ctxFile);
+  return out;
+}
+
 function unionDefs(fileID) {
   const d = doc(fileID);
   return d.oneOf.map((item) => {
     const ref = item.$ref;
     const name = defName(ref);
     const def = resolveRef(ref, fileID);
-    return { name, wireConst: def.properties.type.const };
+    return { name, wireConst: def.properties.type.const, validation: validationSchema(def, ref.includes("#") && ref.split("#")[0] ? ref.split("#")[0] : fileID) };
   });
 }
 
@@ -111,7 +164,7 @@ async function main() {
   b.push("// Code generated by contract/gen_ts.mjs from contract/schemas; DO NOT EDIT.");
   b.push("//");
   b.push("// Single-source WS contract for v2 (same source as internal/wscontract/types_gen.go).");
-  b.push("// Regenerate with: node contract/gen_ts.mjs");
+  b.push("// Regenerate both mirrors with: go generate ./contract (requires Node.js).");
   b.push("");
   b.push("export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };");
   b.push("export type JsonObject = { readonly [key: string]: JsonValue };");
@@ -169,6 +222,50 @@ async function main() {
   b.push("  if (typeof raw !== \"object\" || raw === null || Array.isArray(raw)) return null;");
   b.push("  const t = (raw as { type?: unknown }).type;");
   b.push("  return typeof t === \"string\" ? t : null;");
+  b.push("}");
+  b.push("");
+  b.push("type ValidationSchema = { readonly json?: true; readonly type?: string; readonly const?: string; readonly enum?: readonly string[]; readonly required?: readonly string[]; readonly format?: string; readonly anyOf?: readonly ValidationSchema[]; readonly properties?: Readonly<Record<string, ValidationSchema>>; readonly items?: ValidationSchema };");
+  b.push(`const SERVER_SCHEMAS: Readonly<Record<string, ValidationSchema>> = ${JSON.stringify(Object.fromEntries(server.map((d) => [d.wireConst, d.validation])))};`);
+  b.push(`const CLIENT_SCHEMAS: Readonly<Record<string, ValidationSchema>> = ${JSON.stringify(Object.fromEntries(client.map((d) => [d.wireConst, d.validation])))};`);
+  b.push("function isJsonValue(value: unknown): boolean {");
+  b.push("  if (value === null || typeof value === \"string\" || typeof value === \"boolean\") return true;");
+  b.push("  if (typeof value === \"number\") return Number.isFinite(value);");
+  b.push("  if (Array.isArray(value)) return value.every(isJsonValue);");
+  b.push("  if (typeof value !== \"object\") return false;");
+  b.push("  return Object.values(value as Record<string, unknown>).every(isJsonValue);");
+  b.push("}");
+  b.push("function validates(value: unknown, spec: ValidationSchema): boolean {");
+  b.push("  if (spec.anyOf) return spec.anyOf.some((branch) => validates(value, branch));");
+  b.push("  if (spec.json) return isJsonValue(value);");
+  b.push("  if (spec.const !== undefined && value !== spec.const) return false;");
+  b.push("  if (spec.enum && (typeof value !== \"string\" || !spec.enum.includes(value))) return false;");
+  b.push("  switch (spec.type) {");
+  b.push("    case \"null\": return value === null;");
+  b.push("    case \"string\": return typeof value === \"string\" && (spec.format !== \"rfc3339nano\" || !Number.isNaN(Date.parse(value)));");
+  b.push("    case \"boolean\": return typeof value === \"boolean\";");
+  b.push("    case \"number\": return typeof value === \"number\" && Number.isFinite(value);");
+  b.push("    case \"integer\": return typeof value === \"number\" && Number.isInteger(value);");
+  b.push("    case \"array\": return Array.isArray(value) && (!spec.items || value.every((item) => validates(item, spec.items!)));");
+  b.push("    case \"object\": {");
+  b.push("      if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;");
+  b.push("      const object = value as Record<string, unknown>;");
+  b.push("      if (spec.required?.some((key) => !Object.prototype.hasOwnProperty.call(object, key))) return false;");
+  b.push("      return Object.entries(spec.properties ?? {}).every(([key, child]) => !Object.prototype.hasOwnProperty.call(object, key) || validates(object[key], child));");
+  b.push("    }");
+  b.push("    default: return true;");
+  b.push("  }");
+  b.push("}");
+  b.push("/** Strictly validates known server frames; unknown string types pass through unchanged. */");
+  b.push("export function parseServerFrame(raw: unknown): ChatServerFrame | null {");
+  b.push("  const type = frameTypeOf(raw); if (type === null) return null;");
+  b.push("  const spec = SERVER_SCHEMAS[type];");
+  b.push("  return spec && !validates(raw, spec) ? null : raw as ChatServerFrame;");
+  b.push("}");
+  b.push("/** Strictly validates known client frames; unknown string types pass through unchanged. */");
+  b.push("export function parseClientFrame(raw: unknown): ChatClientFrame | null {");
+  b.push("  const type = frameTypeOf(raw); if (type === null) return null;");
+  b.push("  const spec = CLIENT_SCHEMAS[type];");
+  b.push("  return spec && !validates(raw, spec) ? null : raw as ChatClientFrame;");
   b.push("}");
   b.push("");
 

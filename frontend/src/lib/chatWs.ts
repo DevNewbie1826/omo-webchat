@@ -165,6 +165,7 @@ export type ChatConnector = (handlers: ChatHandlers) => ChatClient;
  * a mismatch warns and proceeds (contract: version skew is never fatal).
  */
 export const CHAT_WIRE_VERSION = 2;
+export const CHAT_WS_ENDPOINT = "/api/v2/ws";
 
 /** Validate the connector's handshake frame against the generated HelloFrame. */
 function parseHello(msg: unknown): ct.HelloFrame | null {
@@ -245,7 +246,7 @@ export const connectChat: ChatConnector = (handlers) => {
     ...(handlers.onClose ? { onClose: handlers.onClose } : {}),
   };
 
-  const conn = connectWs("/api/ws", wsHandlers, {
+  const conn = connectWs(CHAT_WS_ENDPOINT, wsHandlers, {
     // The websocket never sees the HTTP status of a refused upgrade: a socket
     // that closes without ever opening is the likely expired-session signal.
     // Confirm with a REST auth probe — on 401 send the SPA to the login page

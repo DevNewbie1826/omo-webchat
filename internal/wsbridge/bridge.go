@@ -33,6 +33,9 @@ type Config struct {
 	ServerVersion string
 	Logger        *slog.Logger
 	WriteTimeout  time.Duration
+	// PrepareChat lazily mirrors v1 workspace/chat metadata into Store. The v2
+	// cursor file remains independently owned and only resume pointers mutate.
+	PrepareChat func(context.Context, string, string) error
 }
 
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
@@ -67,22 +70,47 @@ func New(cfg Config) *Handler {
 // DefaultHandler is the production mount seam while the v1 Server constructor
 // remains byte-compatible. A v2 bootstrap can install a configured endpoint
 // without making the v1 API own v2 lifecycle dependencies.
-type endpointHolder struct{ handler http.Handler }
-
-var defaultEndpoint atomic.Value // endpointHolder
-
-func init() {
-	defaultEndpoint.Store(endpointHolder{http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "v2 websocket bridge is not configured", http.StatusServiceUnavailable)
-	})})
+type endpointHolder struct {
+	handler http.Handler
+	id      uint64
 }
 
-// InstallDefault atomically installs the endpoint used by the API mount.
-func InstallDefault(h http.Handler) {
-	if h != nil {
-		defaultEndpoint.Store(endpointHolder{h})
+var (
+	defaultEndpoint atomic.Value // endpointHolder
+	endpointID      atomic.Uint64
+)
+
+func unavailable(reason string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":  "v2 websocket bridge is not configured",
+			"reason": reason,
+		})
+	})
+}
+
+func init() { defaultEndpoint.Store(endpointHolder{handler: unavailable("startup not completed")}) }
+
+// InstallDefault atomically installs the endpoint used by the API mount and
+// returns an ownership-safe remover for server shutdown.
+func InstallDefault(h http.Handler) func() {
+	if h == nil {
+		return func() {}
+	}
+	id := endpointID.Add(1)
+	defaultEndpoint.Store(endpointHolder{handler: h, id: id})
+	return func() {
+		current := defaultEndpoint.Load().(endpointHolder)
+		if current.id == id {
+			defaultEndpoint.Store(endpointHolder{handler: unavailable("server stopped")})
+		}
 	}
 }
+
+// InstallUnavailable publishes a diagnostic 503 endpoint.
+func InstallUnavailable(reason string) func() { return InstallDefault(unavailable(reason)) }
 
 // DefaultHandler returns the currently installed v2 endpoint.
 func DefaultHandler() http.Handler { return defaultEndpoint.Load().(endpointHolder).handler }
@@ -120,9 +148,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithCancel(h.cfg.Context)
-	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel}
-	c.sub = &subscriber{conn: c}
+	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel, work: make(chan []byte, 64)}
+	c.sub = newSubscriber(c)
 	h.conns.Store(sock, c)
+	go c.run()
 	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.cfg.ServerVersion}); err != nil {
 		c.shutdown()
 		return
@@ -133,7 +162,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) OnMessage(sock *gws.Conn, msg *gws.Message) {
 	defer msg.Close()
 	if raw, ok := h.conns.Load(sock); ok {
-		raw.(*connection).route(append([]byte(nil), msg.Bytes()...))
+		c := raw.(*connection)
+		frame := append([]byte(nil), msg.Bytes()...)
+		select {
+		case c.work <- frame:
+		case <-c.ctx.Done():
+		default:
+			c.sendError("bad_frame", "too many queued client frames", "", "")
+			c.shutdown()
+		}
 	}
 }
 func (h *Handler) OnClose(sock *gws.Conn, err error) {
@@ -157,6 +194,7 @@ type connection struct {
 	sess         *session.Session
 	detach       func()
 	hello        bool
+	work         chan []byte
 	closed       atomic.Bool
 }
 
@@ -211,7 +249,20 @@ func (c *connection) binding() (string, *session.Session) {
 	return c.chatID, c.sess
 }
 
-func (c *connection) route(raw []byte) {
+func (c *connection) run() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case raw := <-c.work:
+			ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
+			c.route(ctx, raw)
+			cancel()
+		}
+	}
+}
+
+func (c *connection) route(ctx context.Context, raw []byte) {
 	var probe map[string]json.RawMessage
 	if json.Unmarshal(raw, &probe) != nil || probe == nil {
 		c.sendError("bad_frame", "invalid json frame", "", "")
@@ -221,6 +272,24 @@ func (c *connection) route(raw []byte) {
 	if json.Unmarshal(probe["type"], &typ) != nil || typ == "" {
 		c.sendError("bad_frame", "frame type is required", "", "")
 		return
+	}
+	// Accept the documented browser spelling while the generated enum retains
+	// the provider command spelling.
+	if typ == "chat.send" {
+		var send struct {
+			Run struct {
+				Kind string `json:"kind"`
+			} `json:"run"`
+		}
+		if json.Unmarshal(raw, &send) == nil && send.Run.Kind == "followUp" {
+			var normalized map[string]any
+			if json.Unmarshal(raw, &normalized) == nil {
+				if run, ok := normalized["run"].(map[string]any); ok {
+					run["kind"] = "follow_up"
+					raw, _ = json.Marshal(normalized)
+				}
+			}
+		}
 	}
 	frame, err := wscontract.ParseClientFrame(raw)
 	if err != nil {
@@ -241,6 +310,9 @@ func (c *connection) route(raw []byte) {
 		c.stateMu.Lock()
 		c.hello = true
 		c.stateMu.Unlock()
+		if f, ok := frame.(*wscontract.ClientHelloFrame); ok && f.Version != ContractVersion {
+			c.sendError("bad_frame", "wire contract version mismatch", "", "")
+		}
 		return
 	case *wscontract.PingFrame:
 		_ = c.write(wscontract.PongFrame{Type: "pong"})
@@ -254,7 +326,7 @@ func (c *connection) route(raw []byte) {
 		return
 	}
 	if f, ok := frame.(*wscontract.ChatCreateFrame); ok {
-		c.create(f)
+		c.create(ctx, f)
 		return
 	}
 
@@ -269,54 +341,73 @@ func (c *connection) route(raw []byte) {
 		return
 	}
 
+	// Session operations from different sockets share the manager's per-chat
+	// flight. Disconnect already enters that flight internally via StopContext.
+	if typ != "chat.disconnect" && bound != "" {
+		release, lockErr := c.bridge.cfg.Manager.EnterChat(ctx, bound)
+		if lockErr != nil {
+			c.sendSessionError(lockErr, typ, requestID(frame))
+			return
+		}
+		defer release()
+	}
+
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
 		images := make([]map[string]string, len(f.Run.Images))
 		for i, x := range f.Run.Images {
 			images[i] = map[string]string{"data": x.Data, "mimeType": x.MimeType}
 		}
-		if err := sess.SendPrompt(c.ctx, f.Run.Message, images); err != nil {
+		switch string(f.Run.Kind) {
+		case "prompt":
+			err = sess.SendPrompt(ctx, f.Run.Message, images)
+		case "steer":
+			err = sess.SendSteer(ctx, f.Run.Message)
+		case "follow_up", "followUp":
+			err = sess.SendFollowUp(ctx, f.Run.Message)
+		default:
+			c.sendError("bad_frame", "unknown run kind", "chat.send", "")
+			return
+		}
+		if err != nil {
 			c.sendSessionError(err, "chat.send", "")
 		}
 	case *wscontract.ChatAbortFrame:
-		if err := sess.Abort(c.ctx); err != nil {
+		if err := sess.Abort(ctx); err != nil {
 			c.sendSessionError(err, "chat.abort", "")
 		}
 	case *wscontract.ChatSetFrame:
 		rid := deref(f.RequestID)
 		if f.Model != nil {
 			c.sendAck("set_model", rid)
-			if err := sess.SetModel(c.ctx, f.Model.Provider, f.Model.ModelID, rid); err != nil {
+			if err := sess.SetModel(ctx, f.Model.Provider, f.Model.ModelID, rid); err != nil {
 				c.sendSessionError(err, "set_model", rid)
 			}
 		}
 		if f.ThinkingLevel != nil {
 			c.sendAck("set_thinking", rid)
-			if err := sess.SetThinking(c.ctx, *f.ThinkingLevel, rid); err != nil {
+			if err := sess.SetThinking(ctx, *f.ThinkingLevel, rid); err != nil {
 				c.sendSessionError(err, "set_thinking", rid)
 			}
 		}
 	case *wscontract.ApprovalRespondFrame:
-		var value json.RawMessage
+		value := ""
 		if f.Value != nil {
-			value = json.RawMessage(*f.Value)
-			if !json.Valid(value) {
-				value, _ = json.Marshal(*f.Value)
-			}
+			value = *f.Value
 		}
-		if err := sess.RespondApproval(f.ID, value, f.Confirmed, f.Cancelled != nil && *f.Cancelled); err != nil {
+		if err := sess.RespondApprovalRequest(ctx, f.ID, deref(f.RequestID), value, f.Confirmed, f.Cancelled != nil && *f.Cancelled); err != nil {
 			c.sendSessionError(err, "approval.respond", deref(f.RequestID))
 		}
 	case *wscontract.ChatCommandsFrame:
-		c.queryCommands(sess)
+		c.queryCommands(ctx, sess)
 	case *wscontract.ChatCompactFrame:
-		if err := sess.Compact(c.ctx); err != nil {
+		if err := sess.Compact(ctx); err != nil {
 			c.sendSessionError(err, "chat.compact", "")
 		}
 	case *wscontract.ChatModelsFrame:
-		c.queryModels(sess)
+		c.queryModels(ctx, sess)
 	case *wscontract.ChatStatsFrame:
-		c.queryStats(sess)
+		c.queryStats(ctx, sess)
 	case *wscontract.ActivityRefreshFrame:
 		if sess != nil {
 			for _, x := range sess.ActivitySnapshot() {
@@ -324,22 +415,28 @@ func (c *connection) route(raw []byte) {
 			}
 		}
 	case *wscontract.ChatResumeFrame:
-		c.queryState(sess)
+		c.queryState(ctx, sess)
 	case *wscontract.ChatCloseFrame:
 		c.unbind()
 	case *wscontract.ChatDisconnectFrame:
 		id, _ := c.unbind()
 		if id != "" {
-			_ = c.bridge.cfg.Manager.Stop(id)
+			_ = c.bridge.cfg.Manager.StopContext(ctx, id)
 		}
 	default:
 		c.sendError("unknown_type", "unknown frame type: "+typ, "", requestID(frame))
 	}
 }
 
-func (c *connection) create(f *wscontract.ChatCreateFrame) {
+func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) {
 	c.unbind()
-	c.sub = &subscriber{conn: c}
+	c.sub = newSubscriber(c)
+	if c.bridge.cfg.PrepareChat != nil {
+		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
+			c.sendError("no_chat", err.Error(), "", "")
+			return
+		}
+	}
 	rec, err := c.bridge.cfg.Store.GetChat(f.ChatID)
 	if err != nil {
 		c.sendError("no_chat", "chat not found", "", "")
@@ -350,7 +447,7 @@ func (c *connection) create(f *wscontract.ChatCreateFrame) {
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	sess, started, detach, err := c.bridge.cfg.Manager.Acquire(c.ctx, ref, c.sub)
+	sess, started, detach, err := c.bridge.cfg.Manager.Acquire(ctx, ref, c.sub)
 	if err != nil {
 		c.sendError("start_failed", err.Error(), "", "")
 		return
@@ -362,9 +459,13 @@ func (c *connection) create(f *wscontract.ChatCreateFrame) {
 	if err := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); err != nil {
 		c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", err)
 	}
-	c.queryState(sess)
-	c.queryModels(sess)
-	c.queryCommands(sess)
+	c.queryState(ctx, sess)
+	c.queryModels(ctx, sess)
+	c.queryCommands(ctx, sess)
+	c.queryStats(ctx, sess)
+	if !started {
+		sess.LoadEntries(ctx)
+	}
 }
 
 func (c *connection) sendAck(command, requestID string) {
@@ -403,21 +504,26 @@ func (c *connection) sendSessionError(err error, command, requestID string) {
 	c.sendError(code, err.Error(), command, requestID)
 }
 
-func (c *connection) queryState(s *session.Session) {
-	x, err := s.QueryState(c.ctx)
+func (c *connection) queryState(ctx context.Context, s *session.Session) {
+	x, err := s.QueryState(ctx)
 	if err != nil {
 		c.sendSessionError(err, "get_state", "")
 		return
 	}
-	var model any
+	var model map[string]any
 	if len(x.Model) > 0 {
 		_ = json.Unmarshal(x.Model, &model)
+		if id, ok := model["id"].(string); ok {
+			model["modelId"] = id
+			delete(model, "id")
+		}
 	}
+	run := s.RunSnapshot()
 	sid, _ := c.binding()
-	_ = c.write(map[string]any{"type": "state", "sessionId": sid, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": false, "isCompacting": false, "messageCount": x.MessageCount})
+	_ = c.write(map[string]any{"type": "state", "sessionId": sid, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
 }
-func (c *connection) queryModels(s *session.Session) {
-	xs, err := s.Models(c.ctx)
+func (c *connection) queryModels(ctx context.Context, s *session.Session) {
+	xs, err := s.Models(ctx)
 	if err != nil {
 		c.sendSessionError(err, "get_available_models", "")
 		return
@@ -432,8 +538,8 @@ func (c *connection) queryModels(s *session.Session) {
 	}
 	_ = c.write(wscontract.ModelsFrame{Type: "models", SessionID: sid, Models: out})
 }
-func (c *connection) queryCommands(s *session.Session) {
-	xs, err := s.Commands(c.ctx)
+func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
+	xs, err := s.Commands(ctx)
 	if err != nil {
 		c.sendSessionError(err, "get_commands", "")
 		return
@@ -445,8 +551,8 @@ func (c *connection) queryCommands(s *session.Session) {
 	}
 	_ = c.write(wscontract.CommandsFrame{Type: "commands", SessionID: sid, Commands: out})
 }
-func (c *connection) queryStats(s *session.Session) {
-	x, err := s.Stats(c.ctx)
+func (c *connection) queryStats(ctx context.Context, s *session.Session) {
+	x, err := s.Stats(ctx)
 	if err != nil {
 		c.sendSessionError(err, "get_session_stats", "")
 		return

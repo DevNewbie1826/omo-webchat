@@ -6,11 +6,8 @@ import {
   ERROR_CODE,
   FrameKindToWireName,
   SERVER_FRAME_TYPES,
-} from "./types_gen";
-import type {
-  ChatClientFrame,
-  ChatServerFrame,
-  UnknownFrame,
+  parseClientFrame,
+  parseServerFrame,
 } from "./types_gen";
 
 // Same fixtures the Go roundtrip test consumes (internal/wscontract/
@@ -47,8 +44,8 @@ describe("server frame fixtures roundtrip against generated types", () => {
       const type = typeOf(f);
       expect(typeof type, f.name).toBe("string");
       expect(SERVER_FRAME_TYPES, f.name).toContain(type);
-      // Compile-time: the fixture must satisfy the generated union member.
-      const frame = f.data as ChatServerFrame;
+      const frame = parseServerFrame(f.data);
+      expect(frame, f.name).not.toBeNull();
       expect(frame, f.name).toEqual(f.data);
     }
   });
@@ -58,7 +55,8 @@ describe("server frame fixtures roundtrip against generated types", () => {
     expect(relevant.length).toBeGreaterThanOrEqual(15);
     for (const f of relevant) {
       expect(CLIENT_FRAME_TYPES, f.name).toContain(typeOf(f));
-      const frame = f.data as ChatClientFrame;
+      const frame = parseClientFrame(f.data);
+      expect(frame, f.name).not.toBeNull();
       expect(frame, f.name).toEqual(f.data);
     }
   });
@@ -71,9 +69,31 @@ describe("server frame fixtures roundtrip against generated types", () => {
       expect(typeof type).toBe("string");
       expect(SERVER_FRAME_TYPES).not.toContain(type);
       expect(CLIENT_FRAME_TYPES).not.toContain(type);
-      const passthrough = f.data as UnknownFrame;
-      expect(passthrough.type).toBe(type);
+      const passthrough = parseServerFrame(f.data);
+      expect(passthrough?.type).toBe(type);
       expect(passthrough).toEqual(f.data);
+    }
+  });
+
+  it("rejects malformed required properties and enum values", () => {
+    const missing = fixtures.find((f) => f.name === "invalid-server-hello-missing-required.json");
+    const badEnum = fixtures.find((f) => f.name === "invalid-client-run-kind.json");
+    expect(missing).toBeDefined();
+    expect(badEnum).toBeDefined();
+    expect(parseServerFrame(missing?.data)).toBeNull();
+    expect(parseClientFrame(badEnum?.data)).toBeNull();
+  });
+
+  it("distinguishes nullable and optional wire shapes", () => {
+    for (const name of [
+      "server-ready-null.json",
+      "tolerant-state-model-absent.json",
+      "tolerant-state-model-null.json",
+      "tolerant-approval-empty-options.json",
+    ]) {
+      const fixture = fixtures.find((f) => f.name === name);
+      expect(fixture, name).toBeDefined();
+      expect(parseServerFrame(fixture?.data), name).toEqual(fixture?.data);
     }
   });
 });

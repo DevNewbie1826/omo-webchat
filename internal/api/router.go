@@ -97,7 +97,11 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/sessions/live", s.handleListLiveSessions)
 
 	protected.HandleFunc("GET /api/ws", s.handleWS)
-	protected.Handle("GET /api/v2/ws", wsbridge.DefaultHandler())
+	// Resolve the atomically installed v2 stack at request time. Startup may
+	// replace a diagnostic 503 after this mux has already been constructed.
+	protected.HandleFunc("GET /api/v2/ws", func(w http.ResponseWriter, r *http.Request) {
+		wsbridge.DefaultHandler().ServeHTTP(w, r)
+	})
 
 	protected.HandleFunc("GET /api/fs/browse", s.handleBrowse)
 	protected.HandleFunc("GET /api/fs/list", s.handleList)
