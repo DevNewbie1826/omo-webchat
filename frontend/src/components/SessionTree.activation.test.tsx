@@ -75,7 +75,7 @@ describe("SessionTree session-row activation target", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onImport: SessionTreeProps["onImport"] = async () => undefined): void {
+  function render(onAdopt: SessionTreeProps["onAdopt"] = async () => undefined): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
@@ -90,7 +90,7 @@ describe("SessionTree session-row activation target", () => {
             onToggle={() => undefined}
             onLoadMoreSessions={() => undefined}
             onSelect={() => undefined}
-            onImport={onImport}
+            onAdopt={onAdopt}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -134,15 +134,15 @@ describe("SessionTree session-row activation target", () => {
     expect(danglingActivation?.querySelector(".th-tree-source")).not.toBeNull();
   });
 
-  it("imports a discovered session when its metadata badge is clicked", () => {
-    const onImport = vi.fn(async () => undefined);
-    render(onImport);
+  it("adopts a discovered session when its metadata badge is clicked", () => {
+    const onAdopt = vi.fn(async () => undefined);
+    render(onAdopt);
     const badge = row("Discovered session").querySelector(".th-tree-activation .th-tree-source");
     expect(badge).not.toBeNull();
     act(() => {
       badge?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onImport).toHaveBeenCalledTimes(1);
-    expect(onImport).toHaveBeenCalledWith(workspace, discoveredSession);
+    expect(onAdopt).toHaveBeenCalledTimes(1);
+    expect(onAdopt).toHaveBeenCalledWith(workspace, discoveredSession);
   });
 });

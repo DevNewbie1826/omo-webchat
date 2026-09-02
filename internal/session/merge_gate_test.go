@@ -23,6 +23,10 @@ type blockingCursorStore struct {
 	once    sync.Once
 }
 
+func (s *blockingCursorStore) CursorForOpen(ctx context.Context, chatID string) (Cursor, error) {
+	return s.CursorFor(ctx, chatID)
+}
+
 func (s *blockingCursorStore) CursorFor(ctx context.Context, chatID string) (Cursor, error) {
 	if chatID == s.chat {
 		s.once.Do(func() { close(s.entered) })

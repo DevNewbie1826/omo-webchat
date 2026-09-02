@@ -158,7 +158,11 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := sessions.Middleware(New(Config{Manager: mgr, Store: store, ServerVersion: client.ServerVersion(), Logger: logger}))
+	h := sessions.Middleware(New(Config{
+		Manager: mgr, Store: store, ServerVersion: client.ServerVersion(), Logger: logger,
+		PrepareChatVersion: func(context.Context, string, string) (uint64, error) { return 0, nil },
+		ChatVersion:        func(string) uint64 { return 0 },
+	}))
 	ts := httptest.NewServer(h)
 	defer ts.Close()
 
@@ -221,6 +225,19 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if err != nil || chat.SessionFile == "" {
 		t.Fatalf("cursor not persisted: %+v, %v", chat, err)
 	}
+
+	connB, cB := connect()
+	writeClient(t, connB, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "chat-1"})
+	if secondReady := cB.next(t, "ready"); secondReady["sessionId"] != "chat-1" {
+		t.Fatalf("live reattach ready=%v", secondReady)
+	}
+	afterReattach, err := store.GetChat("chat-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReattach.SessionFile != chat.SessionFile || afterReattach.SessionProvenance != "" {
+		t.Fatalf("live reattach migrated active route: before=%+v after=%+v", chat, afterReattach)
+	}
 	d.SetPromptScript(chat.SessionFile,
 		map[string]any{"type": omorpctest.EventAgentStart},
 		map[string]any{"type": "message_update", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "hello"}}}, "assistantMessageEvent": map[string]any{"type": "text_delta", "contentIndex": 0, "delta": "hello", "partial": map[string]any{"type": "text", "text": "hello"}}},
@@ -230,7 +247,7 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 		map[string]any{"type": "extension_event", "name": "omo.task.updated", "data": map[string]any{"tasks": []any{}}},
 		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
 	)
-	writeClient(t, conn, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "prompt", "message": "hi"}})
+	writeClient(t, connB, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "prompt", "message": "hi"}})
 	c.next(t, "run.started")
 	delta := c.next(t, "messageDelta")
 	if got := delta["delta"].(map[string]any); got["kind"] != "text_delta" || got["delta"] != "hello" {
@@ -251,6 +268,10 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	}
 	c.next(t, "extensionEvent")
 	c.next(t, "run.done")
+	if secondDone := cB.next(t, "run.done"); secondDone["sessionId"] != "chat-1" {
+		t.Fatalf("second socket did not receive completed turn: %v", secondDone)
+	}
+	_ = connB.WriteClose(1000, nil)
 	writeClient(t, conn, map[string]any{"type": "chat.send", "sessionId": "chat-1", "run": map[string]any{"kind": "followUp", "message": "later"}})
 	if got := c.next(t, "error"); got["code"] != "prompt_in_flight" {
 		t.Fatalf("followUp was not dispatched: %v", got)

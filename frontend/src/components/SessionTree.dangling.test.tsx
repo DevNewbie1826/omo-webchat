@@ -38,6 +38,13 @@ const sessions: readonly WorkspaceSession[] = [
   } as WorkspaceSession,
   { id: "tm-2", name: "Stored session", source: "stored", recencyMs: 2 },
   {
+    id: "durable-adopted",
+    name: "Adopted source",
+    source: "alreadyAdopted",
+    recencyMs: 1,
+    resumeIdentity: "/sessions/adopted-source.jsonl",
+  },
+  {
     id: "disk-1",
     name: "Discovered session",
     source: "discovered",
@@ -81,7 +88,7 @@ describe("SessionTree dangling stored-row badge", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onImport={async () => undefined}
+            onAdopt={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -114,10 +121,23 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(label?.getAttribute("aria-hidden")).toBeNull();
   });
 
-  it("gives a stored session row no extra badge when dangling is unset", () => {
-    render();
+  it("keeps an adopted copy readable when its source is gone", () => {
+    const onSelect = vi.fn();
+    render(() => undefined, onSelect);
     const stored = row("Stored session");
+    const activation = stored.querySelector<HTMLButtonElement>(".th-tree-activation");
     expect(stored.querySelector(".th-tree-source")).toBeNull();
+    expect(activation?.disabled).toBe(false);
+    act(() => activation?.click());
+    expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
+  });
+
+  it("renders an already-adopted source as inert adopted metadata", () => {
+    render();
+    const adopted = row("Adopted source");
+    const badge = adopted.querySelector(".th-tree-source");
+    expect(badge?.textContent).toBe("sidebar.tm.adopted");
+    expect(adopted.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
   });
 
   it("leaves a discovered session row on the import badge", () => {

@@ -453,13 +453,17 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
 		if err != nil {
 			code := "no_chat"
+			message := err.Error()
 			switch {
 			case errors.Is(err, ErrChatDeleted):
 				code = "chat_deleted"
 			case errors.Is(err, ErrUnsupportedProvider):
 				code = "unsupported_provider"
+			case errors.Is(err, cursorstore.ErrAdoptionRequired):
+				code = "adoption_required"
+				message = "session must be adopted before opening"
 			}
-			c.sendError(code, err.Error(), "", "")
+			c.sendError(code, message, "", "")
 			return
 		}
 	} else if c.bridge.cfg.PrepareChat != nil {
@@ -474,7 +478,11 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	}
 	rec, err := c.bridge.cfg.Store.GetChat(f.ChatID)
 	if err != nil {
-		c.sendError("no_chat", "chat not found", "", "")
+		if errors.Is(err, cursorstore.ErrAdoptionRequired) {
+			c.sendError("adoption_required", "session must be adopted before opening", "", "")
+		} else {
+			c.sendError("no_chat", "chat not found", "", "")
+		}
 		return
 	}
 	if rec.WorkspaceID != f.WsID {
@@ -524,10 +532,15 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	if err != nil {
 		c.unbind()
 		code := "start_failed"
-		if errors.Is(err, ErrChatDeleted) {
+		message := err.Error()
+		switch {
+		case errors.Is(err, ErrChatDeleted):
 			code = "chat_deleted"
+		case errors.Is(err, cursorstore.ErrAdoptionRequired):
+			code = "adoption_required"
+			message = "session must be adopted before opening"
 		}
-		c.sendError(code, err.Error(), "", "")
+		c.sendError(code, message, "", "")
 		return
 	}
 	c.stateMu.Lock()
@@ -746,12 +759,24 @@ func (c chatRef) CWD() string    { return c.cwd }
 // CursorStore adapts cursorstore's atomic chat records to session persistence.
 type CursorStore cursorstore.Store
 
+func sessionCursor(c cursorstore.Chat) session.Cursor {
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}
+}
+
+func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
+	c, err := (*cursorstore.Store)(s).MigrateLegacySession(ctx, id)
+	if err != nil {
+		return session.Cursor{}, err
+	}
+	return sessionCursor(c), nil
+}
+
 func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, error) {
 	c, err := (*cursorstore.Store)(s).GetChat(id)
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}, nil
+	return sessionCursor(c), nil
 }
 func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Cursor) error {
 	st := (*cursorstore.Store)(s)

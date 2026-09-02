@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	sessionHistoryDefaultLimit     = 5
-	sessionHistoryMaxLimit         = 5
-	sessionHistoryMaxJSONLLine     = 1 << 20 // 1 MiB; metadata records are normally only a few KiB.
-	sessionHistorySourceStored     = "stored"
-	sessionHistorySourceDiscovered = "discovered"
+	sessionHistoryDefaultLimit         = 5
+	sessionHistoryMaxLimit             = 5
+	sessionHistoryMaxJSONLLine         = 1 << 20 // 1 MiB; metadata records are normally only a few KiB.
+	sessionHistorySourceStored         = "stored"
+	sessionHistorySourceDiscovered     = "discovered"
+	sessionHistorySourceAlreadyAdopted = "alreadyAdopted"
 	// Bounds for the dangling-recovery branch scan: at most this many session
 	// files are opened, and at most this many candidates are returned.
 	sessionBranchScanMaxFiles      = 32
@@ -36,8 +37,8 @@ type sessionHistoryItem struct {
 	Source         string `json:"source"`
 	RecencyMs      int64  `json:"recencyMs"`
 	ResumeIdentity string `json:"resumeIdentity,omitempty"`
-	// Dangling flags a stored row whose piSessionId is an absolute path whose
-	// session file is gone. Discovered rows never set it.
+	// Dangling flags a stored row whose owned session copy is gone. Source
+	// catalog rows never set it.
 	Dangling bool `json:"dangling,omitempty"`
 }
 
@@ -50,6 +51,7 @@ type diskSession struct {
 	ID        string
 	Name      string
 	Path      string
+	CWD       string
 	RecencyMs int64
 }
 
@@ -84,7 +86,8 @@ func sessionDirNameForCwd(cwd string) string {
 
 func listDiskSessions(cwd string) []diskSession {
 	agentDir := codingAgentDir()
-	if agentDir == "" || cwd == "" {
+	canonicalCWD, ok := canonicalSessionCWD(cwd)
+	if agentDir == "" || !ok {
 		return nil
 	}
 	dir := filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
@@ -99,6 +102,10 @@ func listDiskSessions(cwd string) []diskSession {
 		}
 		sess, ok := parseSessionFile(filepath.Join(dir, entry.Name()))
 		if !ok {
+			continue
+		}
+		headerCWD, ok := canonicalSessionCWD(sess.CWD)
+		if !ok || headerCWD != canonicalCWD {
 			continue
 		}
 		out = append(out, sess)
@@ -118,6 +125,17 @@ func resolveDiskSessionPath(cwd, identity string) (string, bool) {
 	return "", false
 }
 
+func canonicalSessionCWD(path string) (string, bool) {
+	if !filepath.IsAbs(path) {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(resolved), true
+}
+
 func parseSessionFile(path string) (diskSession, bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -133,14 +151,16 @@ func parseSessionFile(path string) (diskSession, bool) {
 		Type      string `json:"type"`
 		ID        string `json:"id"`
 		Timestamp string `json:"timestamp"`
+		CWD       string `json:"cwd"`
 	}
-	if json.Unmarshal(headerLine, &header) != nil || header.Type != "session" || header.ID == "" {
+	if json.Unmarshal(headerLine, &header) != nil || header.Type != "session" || header.ID == "" || header.CWD == "" {
 		return diskSession{}, false
 	}
 	createdAt, _ := time.Parse(time.RFC3339Nano, header.Timestamp)
 	return diskSession{
 		ID:        header.ID,
 		Path:      path,
+		CWD:       header.CWD,
 		RecencyMs: createdAt.UnixMilli(),
 	}, true
 }
@@ -242,28 +262,16 @@ func deriveSessionTitle(prompt string) string { return session.DeriveSessionTitl
 
 func populateSessionHistoryNames(items []sessionHistoryItem) {
 	for i := range items {
-		if items[i].Source == sessionHistorySourceDiscovered {
+		if items[i].Source != sessionHistorySourceStored {
 			items[i].Name = readSessionName(items[i].ResumeIdentity)
 		}
 	}
 }
 
 func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
-	id := strings.TrimSpace(chat.SessionFile)
-	if id == "" {
-		id = strings.TrimSpace(chat.DurableSessionID)
-	}
-	if id == "" {
-		return false
-	}
-	if id == sess.ID || id == sess.Path {
-		return true
-	}
-	base := filepath.Base(id)
-	if base == filepath.Base(sess.Path) {
-		return true
-	}
-	return false
+	durableID := strings.TrimSpace(chat.DurableSessionID)
+	sessionFile := strings.TrimSpace(chat.SessionFile)
+	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
 // chatRecencyMs is the recency key for a stored chat in MRU orderings: the
@@ -273,35 +281,31 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 	return cursorstore.RecencyMillis(ch)
 }
 
-func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
-	matched := make([]bool, len(disk))
+func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	for _, ch := range chats {
-		for i, sess := range disk {
-			if matched[i] || !sessionMatchesChat(sess, ch) {
-				continue
-			}
-			matched[i] = true
-			break
-		}
 		items = append(items, sessionHistoryItem{
 			ID:        ch.ID,
 			Name:      ch.Name,
 			Source:    sessionHistorySourceStored,
 			RecencyMs: chatRecencyMs(ch),
-			// A cheap Stat per stored row: flags identities whose session file
-			// vanished. Never a branch scan — that is recovery-time work.
+			// A cheap Stat per stored row flags an owned copy that vanished.
+			// Never a branch scan — that is recovery-time work.
 			Dangling: storedIdentityDangling(ch.SessionFile),
 		})
 	}
-	for i, sess := range disk {
-		if matched[i] {
-			continue
+	for _, sess := range disk {
+		source := sessionHistorySourceDiscovered
+		for _, chat := range chats {
+			if cursorstore.IsOwnedSession(chat, ownedDir) && sessionMatchesChat(sess, chat) {
+				source = sessionHistorySourceAlreadyAdopted
+				break
+			}
 		}
 		items = append(items, sessionHistoryItem{
 			ID:             sess.ID,
 			Name:           sess.Name,
-			Source:         sessionHistorySourceDiscovered,
+			Source:         source,
 			RecencyMs:      sess.RecencyMs,
 			ResumeIdentity: sess.Path,
 		})
@@ -416,7 +420,7 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
+	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), s.cursors.OwnedSessionDir())
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +21,7 @@ func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, id+".jsonl")
-	body := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"timestamp\":%q}\n", id, at.Format(time.RFC3339Nano))
+	body := fmt.Sprintf("{\"type\":\"session\",\"id\":%q,\"timestamp\":%q,\"cwd\":%q}\n", id, at.Format(time.RFC3339Nano), cwd)
 	if name != "" {
 		body += fmt.Sprintf("{\"type\":\"session_info\",\"name\":%q}\n", name)
 	}
@@ -49,6 +50,44 @@ func TestSessionDirNameForCwdMatchesOmoLayout(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+func TestListWorkspaceSessionsDoesNotMigrateLegacyCursor(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	source := writeDiskSession(t, agent, ws.Path, "legacy-durable", "Legacy", time.Now())
+	chat := cursorstore.Chat{ID: "legacy-chat", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "legacy-durable", Name: "legacy", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(st.StateDir(), "state-v2.json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) == 0 {
+		t.Fatal("legacy chat missing from catalog")
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("sessions GET mutated cursor state")
+	}
+	stored, err := st.GetChat(chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SessionFile != source || stored.SessionProvenance != "" {
+		t.Fatalf("sessions GET migrated legacy cursor: %+v", stored)
+	}
+	if _, err := os.Stat(st.OwnedSessionDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sessions GET created owned session directory: %v", err)
+	}
+}
+
 func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	agent := t.TempDir()
@@ -69,6 +108,61 @@ func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 		t.Fatalf("disk=%+v", page.Items[1])
 	}
 }
+func TestListDiskSessionsRejectsCollidingDirectoryFromAnotherWorkspace(t *testing.T) {
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	base := t.TempDir()
+	workspaceA := filepath.Join(base, "a-b", "c")
+	workspaceB := filepath.Join(base, "a", "b-c")
+	if err := os.MkdirAll(workspaceA, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspaceB, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if sessionDirNameForCwd(workspaceA) != sessionDirNameForCwd(workspaceB) {
+		t.Fatal("test paths do not reproduce the non-injective directory encoding")
+	}
+	writeDiskSession(t, agent, workspaceB, "foreign", "Foreign", time.Now())
+	if got := listDiskSessions(workspaceA); len(got) != 0 {
+		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v", got)
+	}
+}
+
+func TestMergeSessionHistoryRequiresOwnedProvenanceAndExactIdentity(t *testing.T) {
+	ownedDir := filepath.Join(t.TempDir(), "adopted")
+	session := diskSession{ID: "durable", Path: "/catalog/shared.jsonl"}
+	tests := []struct {
+		name string
+		chat cursorstore.Chat
+		want string
+	}{
+		{
+			name: "legacy exact durable id is not ownership",
+			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: session.Path},
+			want: sessionHistorySourceDiscovered,
+		},
+		{
+			name: "owned copy with basename only does not match",
+			chat: cursorstore.Chat{SessionFile: filepath.Join(ownedDir, filepath.Base(session.Path)), SessionProvenance: cursorstore.SessionProvenanceAdopted},
+			want: sessionHistorySourceDiscovered,
+		},
+		{
+			name: "owned copy with exact durable id marks source",
+			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: filepath.Join(ownedDir, "owned.jsonl"), SessionProvenance: cursorstore.SessionProvenanceAdopted},
+			want: sessionHistorySourceAlreadyAdopted,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session}, ownedDir)
+			if len(items) != 2 || items[1].Source != tt.want {
+				t.Fatalf("merged items = %+v, want disk source %q", items, tt.want)
+			}
+		})
+	}
+}
+
 func TestListWorkspaceSessionsNormalizesMixedResolutionAcrossPages(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	fixtures := []cursorstore.Chat{

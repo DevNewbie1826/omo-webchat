@@ -234,7 +234,7 @@ describe("useWorkspaces paginated session history", () => {
     });
   });
 
-  it("replaces an imported discovered row once and preserves load-more pagination", async () => {
+  it("marks an adopted source and preserves it beside the stored copy through pagination", async () => {
     let latest: ReturnType<typeof useWorkspaces> | undefined;
     vi.mocked(listWorkspaceSessions)
       .mockResolvedValueOnce({
@@ -279,20 +279,22 @@ describe("useWorkspaces paginated session history", () => {
     }, "disk-session"));
 
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4",
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session",
     ]);
+    expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "disk-session")?.source)
+      .toBe("alreadyAdopted");
     expect(latest?.sessionPages.get("ws-1")?.nextCursor).toBe("next-page");
 
     await act(async () => latest?.loadMoreSessions("ws-1"));
 
     expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "next-page");
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "chat-6",
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session", "chat-6",
     ]);
     expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-new"))
       .toHaveLength(1);
-    expect(latest?.sessionLists.get("ws-1")?.some((item) => item.id === "disk-session"))
-      .toBe(false);
+    expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "disk-session")?.source)
+      .toBe("alreadyAdopted");
     expect(latest?.sessionPages.get("ws-1")).toMatchObject({
       ready: true,
       loading: false,

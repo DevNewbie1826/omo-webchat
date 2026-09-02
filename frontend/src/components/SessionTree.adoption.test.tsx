@@ -82,8 +82,8 @@ const discovered: WorkspaceSession = {
   resumeIdentity: "/sessions/disk-session.jsonl",
 };
 
-const imported: Terminal = {
-  id: "chat-imported",
+const adoptedChat: Terminal = {
+  id: "chat-adopted",
   name: "Disk session",
   provider: "omo",
 };
@@ -101,33 +101,33 @@ function installMatchMedia(): void {
   }));
 }
 
-describe("discovered-session import wiring", () => {
+describe("discovered-session adoption wiring", () => {
   let container: HTMLDivElement;
   let root: Root;
   let workspaceResponse: Deferred<Response>;
   let sessionsResponse: Deferred<Response>;
-  let createResponses: Promise<Response>[];
+  let adoptionResponses: Promise<Response>[];
   let fetchMock: ReturnType<typeof vi.fn>;
 
-  const createCalls = (): readonly (readonly [RequestInfo | URL, RequestInit | undefined])[] =>
+  const adoptionCalls = (): readonly (readonly [RequestInfo | URL, RequestInit | undefined])[] =>
     fetchMock.mock.calls
-      .filter(([, init]) => init?.method === "POST")
+      .filter(([input, init]) => String(input).endsWith("/sessions/adopt") && init?.method === "POST")
       .map(([input, init]) => [input as RequestInfo | URL, init as RequestInit | undefined] as const);
 
-  const discoveredRow = (): HTMLElement => {
+  const sourceRow = (): HTMLElement => {
     const row = Array.from(container.querySelectorAll<HTMLElement>(".th-tree-children > .th-tree-node"))
-      .find((item) => item.textContent?.includes(discovered.name));
+      .find((item) => item.textContent?.includes(discovered.name) && item.querySelector(".th-tree-source") !== null);
     expect(row).toBeDefined();
     return row!;
   };
 
-  const discoveredActivation = (): HTMLButtonElement => {
-    const activation = discoveredRow().querySelector<HTMLButtonElement>(".th-tree-activation");
+  const sourceActivation = (): HTMLButtonElement => {
+    const activation = sourceRow().querySelector<HTMLButtonElement>(".th-tree-activation");
     expect(activation).not.toBeNull();
     return activation!;
   };
 
-  async function renderLoadedTree(): Promise<void> {
+  async function renderLoadedTree(items: readonly WorkspaceSession[] = [discovered]): Promise<void> {
     await act(async () => {
       root.render(<App />);
     });
@@ -142,10 +142,9 @@ describe("discovered-session import wiring", () => {
     expect(workspaceExpand).not.toBeNull();
     act(() => workspaceExpand?.click());
     await act(async () => {
-      sessionsResponse.resolve(jsonResponse({ items: [discovered], nextCursor: "" }));
+      sessionsResponse.resolve(jsonResponse({ items, nextCursor: "" }));
       await sessionsResponse.promise;
     });
-    expect(discoveredRow()).toBeDefined();
   }
 
   beforeEach(() => {
@@ -155,13 +154,13 @@ describe("discovered-session import wiring", () => {
     appMocks.checkAuth.mockResolvedValue(true);
     workspaceResponse = deferred<Response>();
     sessionsResponse = deferred<Response>();
-    createResponses = [];
+    adoptionResponses = [];
     fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const path = String(input);
       if (path === "/api/workspaces") return workspaceResponse.promise;
       if (path.startsWith("/api/workspaces/ws-1/sessions?")) return sessionsResponse.promise;
-      if (path === "/api/workspaces/ws-1/chats" && init?.method === "POST") {
-        const response = createResponses.shift();
+      if (path === "/api/workspaces/ws-1/sessions/adopt" && init?.method === "POST") {
+        const response = adoptionResponses.shift();
         if (response) return response;
       }
       return Promise.reject(new Error(`unexpected request: ${init?.method ?? "GET"} ${path}`));
@@ -180,76 +179,86 @@ describe("discovered-session import wiring", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts the discovered session resume identity when its row is activated", async () => {
-    const createResponse = deferred<Response>();
-    createResponses.push(createResponse.promise);
+  it("adopts a discovered row and opens the returned chat", async () => {
+    const adoptionResponse = deferred<Response>();
+    adoptionResponses.push(adoptionResponse.promise);
     await renderLoadedTree();
 
-    act(() => discoveredActivation().click());
+    act(() => sourceActivation().click());
 
-    expect(createCalls()).toHaveLength(1);
-    const [path, init] = createCalls()[0]!;
-    expect(path).toBe("/api/workspaces/ws-1/chats");
+    expect(adoptionCalls()).toHaveLength(1);
+    const [path, init] = adoptionCalls()[0]!;
+    expect(path).toBe("/api/workspaces/ws-1/sessions/adopt");
     expect(JSON.parse(String(init?.body))).toEqual({
+      id: discovered.id,
       name: discovered.name,
-      provider: "omo",
       resumeIdentity: discovered.resumeIdentity,
     });
 
-    createResponse.resolve(jsonResponse(imported, 201));
+    await act(async () => {
+      adoptionResponse.resolve(jsonResponse(adoptedChat, 201));
+      await adoptionResponse.promise;
+    });
+    expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", adoptedChat.id);
   });
 
-  it("replaces the discovered row with the stored chat after a successful import", async () => {
-    const createResponse = deferred<Response>();
-    createResponses.push(createResponse.promise);
+  it("keeps the source row and renders its adopted state after success", async () => {
+    const adoptionResponse = deferred<Response>();
+    adoptionResponses.push(adoptionResponse.promise);
     await renderLoadedTree();
 
-    act(() => discoveredActivation().click());
+    act(() => sourceActivation().click());
     await act(async () => {
-      createResponse.resolve(jsonResponse(imported, 201));
-      await createResponse.promise;
+      adoptionResponse.resolve(jsonResponse(adoptedChat, 201));
+      await adoptionResponse.promise;
     });
 
     const matchingRows = Array.from(container.querySelectorAll<HTMLElement>(".th-tree-children > .th-tree-node"))
-      .filter((item) => item.textContent?.includes(imported.name));
-    expect(matchingRows).toHaveLength(1);
-    expect(matchingRows[0]?.querySelector(".th-tree-source")).toBeNull();
-    expect(matchingRows[0]?.querySelectorAll(".th-tree-actions button")).toHaveLength(2);
+      .filter((item) => item.textContent?.includes(adoptedChat.name));
+    expect(matchingRows).toHaveLength(2);
+    const storedRow = matchingRows.find((row) => row.querySelector(".th-tree-source") === null);
+    const adoptedSourceRow = matchingRows.find((row) => row.querySelector(".th-tree-source") !== null);
+    expect(storedRow?.querySelectorAll(".th-tree-actions button")).toHaveLength(2);
+    expect(adoptedSourceRow?.querySelector(".th-tree-source")?.textContent).toBe("Adopted");
+    expect(adoptedSourceRow?.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
   });
 
-  it("issues exactly one create request for double activation while import is pending", async () => {
-    createResponses.push(deferred<Response>().promise);
+  it("shows progress and issues exactly one request while adoption is pending", async () => {
+    adoptionResponses.push(deferred<Response>().promise);
     await renderLoadedTree();
-    const activation = discoveredActivation();
+    const activation = sourceActivation();
 
     act(() => {
       activation.click();
       activation.click();
     });
 
-    expect(createCalls()).toHaveLength(1);
+    expect(adoptionCalls()).toHaveLength(1);
+    expect(activation.disabled).toBe(true);
+    expect(activation.getAttribute("aria-busy")).toBe("true");
+    expect(activation.textContent).toContain("Adopting");
   });
 
-  it("allows the discovered row to retry after a failed import", async () => {
+  it("surfaces an adoption failure notice and allows retry", async () => {
     const failedResponse = deferred<Response>();
-    createResponses.push(failedResponse.promise, deferred<Response>().promise);
+    adoptionResponses.push(failedResponse.promise, deferred<Response>().promise);
     await renderLoadedTree();
 
-    act(() => discoveredActivation().click());
+    act(() => sourceActivation().click());
     await act(async () => {
-      failedResponse.resolve(jsonResponse({ error: "import failed" }, 500));
+      failedResponse.resolve(jsonResponse({ error: "adoption failed" }, 500));
       await failedResponse.promise;
     });
-    expect(container.querySelector(".th-toast--error")).not.toBeNull();
-    expect(createCalls()).toHaveLength(1);
-    expect(discoveredRow().querySelector(".th-tree-source")).not.toBeNull();
 
-    act(() => discoveredActivation().click());
+    expect(container.querySelector(".th-toast--error")?.textContent).toBe("Something went wrong");
+    expect(adoptionCalls()).toHaveLength(1);
+    expect(sourceActivation().disabled).toBe(false);
 
-    expect(createCalls()).toHaveLength(2);
+    act(() => sourceActivation().click());
+    expect(adoptionCalls()).toHaveLength(2);
   });
 
-  it("posts the raw empty name when an unnamed discovered session is imported", async () => {
+  it("posts the raw empty name when an unnamed discovered session is adopted", async () => {
     const unnamed: WorkspaceSession = {
       id: "disk-empty-session",
       name: "",
@@ -257,26 +266,8 @@ describe("discovered-session import wiring", () => {
       recencyMs: 1,
       resumeIdentity: "/sessions/disk-empty.jsonl",
     };
-    const createResponse = deferred<Response>();
-    createResponses.push(createResponse.promise);
-
-    await act(async () => {
-      root.render(<App />);
-    });
-    await act(async () => {
-      workspaceResponse.resolve(jsonResponse([workspace]));
-      await workspaceResponse.promise;
-    });
-
-    const workspaceExpand = container.querySelector<HTMLButtonElement>(
-      ".th-tree-workspace > .th-tree-node > .th-tree-chevron[aria-expanded]",
-    );
-    expect(workspaceExpand).not.toBeNull();
-    act(() => workspaceExpand?.click());
-    await act(async () => {
-      sessionsResponse.resolve(jsonResponse({ items: [unnamed], nextCursor: "" }));
-      await sessionsResponse.promise;
-    });
+    adoptionResponses.push(deferred<Response>().promise);
+    await renderLoadedTree([unnamed]);
 
     const activation = container.querySelector<HTMLButtonElement>(
       ".th-tree-children > .th-tree-node .th-tree-activation",
@@ -284,15 +275,12 @@ describe("discovered-session import wiring", () => {
     expect(activation).not.toBeNull();
     act(() => activation?.click());
 
-    expect(createCalls()).toHaveLength(1);
-    const [path, init] = createCalls()[0]!;
-    expect(path).toBe("/api/workspaces/ws-1/chats");
+    const [path, init] = adoptionCalls()[0]!;
+    expect(path).toBe("/api/workspaces/ws-1/sessions/adopt");
     expect(JSON.parse(String(init?.body))).toEqual({
+      id: unnamed.id,
       name: "",
-      provider: "omo",
       resumeIdentity: unnamed.resumeIdentity,
     });
-
-    createResponse.resolve(jsonResponse(imported, 201));
   });
 });

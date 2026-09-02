@@ -82,7 +82,7 @@ describe("Sidebar sessions overview entry", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={onSelect}
-          onImportSession={async () => undefined}
+          onAdoptSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}

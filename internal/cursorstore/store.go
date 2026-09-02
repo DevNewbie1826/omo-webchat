@@ -30,6 +30,9 @@ var (
 	ErrInvalidNameSource = errors.New("cursor store: invalid nameSource")
 	// ErrPersistence classifies failures while atomically installing state.
 	ErrPersistence = errors.New("cursor store: persistence failed")
+	// ErrAdoptionRequired reports a chat whose session file has no verified
+	// server-owned provenance. Call MigrateLegacySession before opening it.
+	ErrAdoptionRequired = errors.New("cursor store: session adoption required")
 )
 
 type Clock interface{ Now() time.Time }
@@ -42,6 +45,10 @@ func (systemClock) Now() time.Time { return time.Now() }
 const (
 	NameSourceAuto = "auto"
 	NameSourceUser = "user"
+
+	// SessionProvenanceAdopted is persisted only after a session has been
+	// copied into the store's owned session directory and verified.
+	SessionProvenanceAdopted = "adopted-copy"
 )
 
 // Workspace is UI metadata for a workspace directory.
@@ -59,6 +66,9 @@ type Chat struct {
 	CWD              string `json:"cwd"`
 	SessionFile      string `json:"sessionFile,omitempty"`
 	DurableSessionID string `json:"durableSessionId,omitempty"`
+	// SessionProvenance is empty for pre-provenance rows. Such rows may point
+	// at externally owned files and must be adopted before they are opened.
+	SessionProvenance string `json:"sessionProvenance,omitempty"`
 	// Provider preserves the v1 runtime identity. Empty, "senpi", and "omo"
 	// are launchable by omo; other values remain persisted but are hidden from
 	// listings so they cannot be mistaken for omo sessions.
@@ -68,8 +78,8 @@ type Chat struct {
 	NameSource string `json:"nameSource"`
 	// TitleIsPlaceholder marks the pre-identity default name that auto-title
 	// derivation may replace; any established name clears it.
-	TitleIsPlaceholder bool `json:"titleIsPlaceholder,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
+	TitleIsPlaceholder bool  `json:"titleIsPlaceholder,omitempty"`
+	CreatedAt          int64 `json:"createdAt"`
 	// LastUsedAt is the Unix-millisecond stamp of the most recent successful
 	// open; zero means never used.
 	LastUsedAt int64 `json:"lastUsedAt,omitempty"`
@@ -98,6 +108,30 @@ type Store struct {
 // exist. A present-but-unreadable or invalid file is a typed ErrCorrupt, never
 // a silent reset. The parent directory is created when absent.
 func Open(path string) (*Store, error) { return OpenWithClock(path, systemClock{}) }
+
+// StateDir returns the directory containing the cursor state file. Owned
+// session assets live beneath this directory so custom state locations remain
+// self-contained.
+func (s *Store) StateDir() string { return filepath.Dir(s.path) }
+
+// OwnedSessionDir is the only directory whose verified copies may carry owned
+// provenance. Files are direct children so path validation is unambiguous.
+func (s *Store) OwnedSessionDir() string { return filepath.Join(s.StateDir(), "adopted") }
+
+// IsOwnedSession reports whether chat carries adopted-copy provenance and its
+// session file is a direct child of ownedDir. The path check prevents a forged
+// or stale marker from granting ownership to an external file.
+func IsOwnedSession(chat Chat, ownedDir string) bool {
+	if chat.SessionProvenance != SessionProvenanceAdopted || chat.SessionFile == "" {
+		return false
+	}
+	ownedDir, err := filepath.Abs(filepath.Clean(ownedDir))
+	if err != nil {
+		return false
+	}
+	sessionFile, err := filepath.Abs(filepath.Clean(chat.SessionFile))
+	return err == nil && filepath.Dir(sessionFile) == ownedDir
+}
 
 // OpenWithClock is Open with an injected clock for deterministic LastUsedAt.
 func OpenWithClock(path string, clock Clock) (*Store, error) {
@@ -333,10 +367,29 @@ func (s *Store) UpdateChat(c Chat) error {
 
 // UpdateIdentity updates only the durable provider identity. The read and
 // write share one critical section so concurrent name changes cannot be lost.
+// It deliberately clears adopted provenance: ordinary provider updates cannot
+// assert that an arbitrary path is a server-owned verified copy.
 func (s *Store) UpdateIdentity(id, sessionFile, durableID string) error {
 	return s.updateChatFields(id, func(c *Chat) error {
 		c.SessionFile = sessionFile
 		c.DurableSessionID = durableID
+		c.SessionProvenance = ""
+		return nil
+	})
+}
+
+// UpdateOwnedIdentity persists a verified adopted copy. The destination must
+// be a direct child of this store's owned directory; callers cannot label an
+// external path as owned.
+func (s *Store) UpdateOwnedIdentity(id, sessionFile, durableID string) error {
+	candidate := Chat{SessionFile: sessionFile, SessionProvenance: SessionProvenanceAdopted}
+	if !IsOwnedSession(candidate, s.OwnedSessionDir()) {
+		return fmt.Errorf("%w: invalid owned session destination", ErrAdoptionRequired)
+	}
+	return s.updateChatFields(id, func(c *Chat) error {
+		c.SessionFile = sessionFile
+		c.DurableSessionID = durableID
+		c.SessionProvenance = SessionProvenanceAdopted
 		return nil
 	})
 }
@@ -381,6 +434,20 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	c, ok := s.data.Chats[id]
 	if !ok {
 		return Chat{}, ErrNotFound
+	}
+	return c, nil
+}
+
+// GetChatForOpen returns only identities safe to pass to the provider. Empty
+// session files create a new provider session; non-empty legacy or
+// unknown-provenance paths require migration first.
+func (s *Store) GetChatForOpen(id string) (Chat, error) {
+	c, err := s.GetChat(id)
+	if err != nil {
+		return Chat{}, err
+	}
+	if c.SessionFile != "" && !IsOwnedSession(c, s.OwnedSessionDir()) {
+		return Chat{}, fmt.Errorf("%w: chat %q", ErrAdoptionRequired, id)
 	}
 	return c, nil
 }

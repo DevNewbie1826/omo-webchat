@@ -669,6 +669,49 @@ func (d *Daemon) SetProtocolVersion(v int)   { d.mu.Lock(); d.protocolVersion = 
 func (d *Daemon) SetCapabilities(c []string) { d.mu.Lock(); d.capabilities = c; d.mu.Unlock() }
 func (d *Daemon) SetMode(m string)           { d.mu.Lock(); d.mode = m; d.mu.Unlock() }
 
+// LoadSessionFile registers the durable identity and transcript from a real
+// session file so a later open_session request resumes it as the provider
+// would. Tests that need an intentionally incomplete daemon history should not
+// call this method.
+func (d *Daemon) LoadSessionFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	rec := &daemonSession{path: path}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var entry map[string]any
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			return err
+		}
+		typ, _ := entry["type"].(string)
+		id, _ := entry["id"].(string)
+		if typ == "session" {
+			if rec.durableID == "" {
+				rec.durableID = id
+			}
+			continue
+		}
+		if id != "" {
+			rec.history = append(rec.history, entry)
+			rec.leafID = id
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if rec.durableID == "" {
+		return fmt.Errorf("omorpctest: session file %s has no durable identity", path)
+	}
+	d.mu.Lock()
+	d.registry[path] = rec
+	d.mu.Unlock()
+	return nil
+}
+
 // BlockHandler holds future requests of cmd at an explicit gate. The
 // returned release function is idempotent and removes the gate.
 func (d *Daemon) BlockHandler(cmd string) (release func()) {

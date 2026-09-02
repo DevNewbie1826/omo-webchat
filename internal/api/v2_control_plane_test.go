@@ -46,6 +46,22 @@ func TestCursorMetadataCRUD(t *testing.T) {
 		t.Fatal("chat survived delete")
 	}
 }
+func TestCreateChatRejectsResumeIdentity(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	create := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"name":"legacy","provider":"omo","resumeIdentity":"/tmp/original.jsonl"}`))
+	create.SetPathValue("wsId", ws.ID)
+	w := httptest.NewRecorder()
+
+	s.handleCreateChat(w, create)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if chats := st.ListChats(ws.ID); len(chats) != 0 {
+		t.Fatalf("rejected resume identity created chats: %+v", chats)
+	}
+}
+
 func TestLegacyWebSocketRouteIsGone(t *testing.T) {
 	s, _, _ := newChatCreateTestServer(t)
 	token, err := s.sessions.Create(t.Context())

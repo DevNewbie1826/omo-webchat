@@ -82,7 +82,7 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
 
 /** Where a session-history entry came from: a stored chat row or an omo
  * session file discovered on disk. */
-export type WorkspaceSessionSource = "stored" | "discovered";
+export type WorkspaceSessionSource = "stored" | "discovered" | "alreadyAdopted";
 
 /** One entry of GET /api/workspaces/{wsId}/sessions (newest first). */
 export interface WorkspaceSession {
@@ -116,6 +116,24 @@ export async function listWorkspaceSessions(
   return apiJson<WorkspaceSessionPage>(
     `/api/workspaces/${encodeURIComponent(wsId)}/sessions${query}`,
     signal ? { signal } : {},
+  );
+}
+
+/** Adopt a discovered source into a verified, webchat-owned session copy. */
+export async function adoptWorkspaceSession(
+  wsId: string,
+  session: WorkspaceSession,
+): Promise<Terminal> {
+  return apiJson<Terminal>(
+    `/api/workspaces/${encodeURIComponent(wsId)}/sessions/adopt`,
+    {
+      method: "POST",
+      body: {
+        id: session.id,
+        name: session.name,
+        resumeIdentity: session.resumeIdentity,
+      },
+    },
   );
 }
 

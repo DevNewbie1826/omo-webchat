@@ -15,6 +15,7 @@ import type { SplitActions } from "./features/split/SplitView";
 import { useLayout } from "./features/split/useLayout";
 import { findLeaf } from "./features/split/paneTree";
 import { createTerminal } from "./features/terminal/terminal";
+import { adoptWorkspaceSession } from "./features/workspace/workspace";
 import type {
   ProviderDiscoveryState,
   Terminal,
@@ -134,20 +135,21 @@ export function App() {
     }
   };
 
-  const importDiscoveredSession = async (
+  const adoptDiscoveredSession = async (
     ws: Workspace,
     session: WorkspaceSession,
   ): Promise<void> => {
-    if (!session.resumeIdentity) {
-      notify(t("toast.error"), "error");
-      throw new Error("discovered session is missing its resume identity");
-    }
     try {
-      const tm = await createTerminal(ws.id, session.name, "omo", session.resumeIdentity);
+      const tm = await adoptWorkspaceSession(ws.id, session);
       setWorkspaces((prev) =>
         prev.map((workspace) =>
           workspace.id === ws.id
-            ? { ...workspace, chats: [...workspace.chats, tm] }
+            ? {
+                ...workspace,
+                chats: workspace.chats.some((chat) => chat.id === tm.id)
+                  ? workspace.chats
+                  : [...workspace.chats, tm],
+              }
             : workspace,
         ),
       );
@@ -244,7 +246,7 @@ export function App() {
             onToggleExpanded={toggleExpanded}
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
-            onImportSession={importDiscoveredSession}
+            onAdoptSession={adoptDiscoveredSession}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}

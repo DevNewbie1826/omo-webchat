@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path/filepath"
@@ -17,9 +18,9 @@ const chatStopTimeout = 10 * time.Second
 var newChatStopContext = context.WithTimeout
 
 type createChatRequest struct {
-	Name           string `json:"name"`
-	Provider       string `json:"provider"`
-	ResumeIdentity string `json:"resumeIdentity"`
+	Name                   string           `json:"name"`
+	Provider               string           `json:"provider"`
+	RejectedResumeIdentity *json.RawMessage `json:"resumeIdentity"`
 }
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +35,10 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.RejectedResumeIdentity != nil {
+		writeError(w, http.StatusBadRequest, "discovered sessions must be adopted")
+		return
+	}
 	provider := strings.TrimSpace(req.Provider)
 	if provider != "" && provider != "omo" && provider != "senpi" {
 		writeError(w, http.StatusBadRequest, "provider must be omo")
@@ -44,21 +49,12 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	if placeholder {
 		name = s.defaultChatName(ws)
 	}
-	identity := strings.TrimSpace(req.ResumeIdentity)
-	if identity != "" {
-		var ok bool
-		identity, ok = resolveDiskSessionPath(ws.Path, identity)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "resume identity does not belong to workspace")
-			return
-		}
-	}
 	id, err := newID("chat-")
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	c := cursorstore.Chat{ID: id, WorkspaceID: wsID, CWD: ws.Path, SessionFile: identity, Name: name, NameSource: cursorstore.NameSourceAuto, TitleIsPlaceholder: placeholder, CreatedAt: time.Now().UnixMilli()}
+	c := cursorstore.Chat{ID: id, WorkspaceID: wsID, CWD: ws.Path, Name: name, NameSource: cursorstore.NameSourceAuto, TitleIsPlaceholder: placeholder, CreatedAt: time.Now().UnixMilli()}
 	if err = s.cursors.SaveChat(c); err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -97,12 +93,19 @@ func itoa(n int) string {
 }
 
 func (s *Server) prepareChatVersion(_ context.Context, wsID, chatID string) (uint64, error) {
+	c, err := s.cursors.GetChat(chatID)
+	if err != nil || c.WorkspaceID != wsID {
+		return 0, cursorstore.ErrNotFound
+	}
+	if !cursorstore.IsLaunchableProvider(c.Provider) {
+		return 0, wsbridge.ErrUnsupportedProvider
+	}
 	s.chatLifecycleMu.Lock()
 	defer s.chatLifecycleMu.Unlock()
 	if s.chatDeleting[chatID] {
 		return 0, wsbridge.ErrChatDeleted
 	}
-	c, err := s.cursors.GetChat(chatID)
+	c, err = s.cursors.GetChat(chatID)
 	if err != nil || c.WorkspaceID != wsID {
 		return 0, cursorstore.ErrNotFound
 	}

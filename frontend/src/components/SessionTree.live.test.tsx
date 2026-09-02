@@ -52,7 +52,7 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onImport={async () => undefined}
+          onAdopt={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -120,7 +120,7 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onImport={async () => undefined}
+          onAdopt={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}
@@ -154,9 +154,9 @@ describe("SessionTree live-process indicator", () => {
     );
   });
 
-  it("renders discovered sessions as importable rows with no store actions", () => {
+  it("renders discovered sessions as adoptable rows with no store actions", () => {
     const onSelect = vi.fn();
-    const onImport = vi.fn(async () => undefined);
+    const onAdopt = vi.fn(async () => undefined);
     const onDeleteTerminal = vi.fn();
     const onRenameTerminal = vi.fn(async () => undefined);
     const workspace: Workspace = {
@@ -182,7 +182,7 @@ describe("SessionTree live-process indicator", () => {
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={onSelect}
-          onImport={onImport}
+          onAdopt={onAdopt}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={onDeleteTerminal}
@@ -210,7 +210,7 @@ describe("SessionTree live-process indicator", () => {
       activation?.click();
     });
 
-    expect(onImport).toHaveBeenCalledTimes(1);
+    expect(onAdopt).toHaveBeenCalledTimes(1);
     expect(onSelect).not.toHaveBeenCalled();
     expect(onDeleteTerminal).not.toHaveBeenCalled();
     expect(onRenameTerminal).not.toHaveBeenCalled();

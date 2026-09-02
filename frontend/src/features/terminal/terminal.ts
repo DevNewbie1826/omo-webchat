@@ -5,13 +5,10 @@ export async function createTerminal(
   wsId: string,
   name: string,
   provider: ChatProvider,
-  resumeIdentity?: string,
 ): Promise<Terminal> {
   return apiJson<Terminal>(`/api/workspaces/${encodeURIComponent(wsId)}/chats`, {
     method: "POST",
-    body: resumeIdentity === undefined
-      ? { name, provider }
-      : { name, provider, resumeIdentity },
+    body: { name, provider },
   });
 }
 
