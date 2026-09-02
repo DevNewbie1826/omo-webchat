@@ -33,10 +33,21 @@ const listeners = new Set<() => void>();
 let overrides: ReadonlyMap<string, SessionOverride> = new Map();
 let lastArrivalMs = 0;
 
-// Poll arrival is tracked by content rather than array identity because the
-// summary freshness tick can regenerate an equal array without a new poll.
-let lastPollFingerprint = "";
-let pollArrivalMs = 0;
+interface PollSideArrival {
+  readonly fingerprint: string;
+  readonly arrival: number;
+}
+
+interface PollSessionArrival {
+  readonly task: PollSideArrival;
+  readonly dag: PollSideArrival;
+}
+
+// Poll-side arrival is tracked by content because the summary freshness tick
+// can regenerate equal rows without a new source update. Keeping it per
+// session prevents an unrelated overview push from aging every attached frame.
+let pollArrivals: ReadonlyMap<string, PollSessionArrival> = new Map();
+let sessionAliases: ReadonlyMap<string, string> = new Map();
 
 function emit(): void {
   for (const listener of listeners) listener();
@@ -89,10 +100,11 @@ function sweepExpired(nowMs: number): void {
  * clears that side; unknown frame names leave the store untouched. */
 export function ingestExtensionEvent(sessionId: string, frameName: string, data: unknown): void {
   if (frameName !== TASK_FRAME && frameName !== DAG_FRAME) return;
-  const previous = overrides.get(sessionId) ?? {};
+  const id = sessionAliases.get(sessionId) ?? sessionId;
+  const previous = overrides.get(id) ?? {};
   const side = { payload: data ?? null, arrival: nextArrival() };
   const next = new Map(overrides);
-  next.set(sessionId, frameName === TASK_FRAME
+  next.set(id, frameName === TASK_FRAME
     ? { ...previous, task: side }
     : { ...previous, dag: side });
   overrides = next;
@@ -123,22 +135,46 @@ export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> 
 function newerPayload(
   side: SideOverride | undefined,
   pollPayload: unknown,
+  pollArrival: number,
   nowMs: number,
 ): { readonly payload: unknown; readonly replaced: boolean } {
   if (side === undefined || side.payload === null) return { payload: pollPayload, replaced: false };
-  if (side.arrival <= pollArrivalMs) return { payload: pollPayload, replaced: false };
+  if (side.arrival <= pollArrival) return { payload: pollPayload, replaced: false };
   if (nowMs - side.arrival > OVERRIDE_TTL_MS) return { payload: pollPayload, replaced: false };
   return { payload: side.payload, replaced: true };
 }
 
-/** Poll summaries and WS frames merged last-writer-wins independently for the
- * task and DAG sides. The poll provides one shared arrival stamp for both. */
-export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummary[]): readonly LiveSessionSummary[] {
-  const fingerprint = JSON.stringify(pollSummaries);
-  if (fingerprint !== lastPollFingerprint) {
-    lastPollFingerprint = fingerprint;
-    pollArrivalMs = nextArrival();
+function parentSessionIdOf(summary: LiveSessionSummary): string | undefined {
+  for (const payload of [summary.task, summary.dag]) {
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) continue;
+    const parent = (payload as Record<string, unknown>)["parent_session_id"];
+    if (typeof parent === "string" && parent.length > 0) return parent;
   }
+  return undefined;
+}
+
+/** Poll summaries and attached-socket frames merged independently for each
+ * session and activity side. */
+export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummary[]): readonly LiveSessionSummary[] {
+  const nextPollArrivals = new Map<string, PollSessionArrival>();
+  const nextAliases = new Map<string, string>();
+  for (const poll of pollSummaries) {
+    const parentId = parentSessionIdOf(poll);
+    if (parentId !== undefined && parentId !== poll.id) nextAliases.set(parentId, poll.id);
+    const previous = pollArrivals.get(poll.id);
+    const taskFingerprint = JSON.stringify([poll.task ?? null, poll.taskSideOversized, poll.taskDigest]);
+    const dagFingerprint = JSON.stringify([poll.dag ?? null, poll.dagSideOversized, poll.dagDigest]);
+    nextPollArrivals.set(poll.id, {
+      task: previous?.task.fingerprint === taskFingerprint
+        ? previous.task
+        : { fingerprint: taskFingerprint, arrival: nextArrival() },
+      dag: previous?.dag.fingerprint === dagFingerprint
+        ? previous.dag
+        : { fingerprint: dagFingerprint, arrival: nextArrival() },
+    });
+  }
+  pollArrivals = nextPollArrivals;
+  sessionAliases = nextAliases;
   const snapshot = useSyncExternalStore(subscribeOverrides, getOverridesSnapshot);
   const [clockMs, setClockMs] = useState(() => Date.now());
 
@@ -155,10 +191,12 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
 
   return useMemo(
     () => pollSummaries.map((poll) => {
-      const entry = snapshot.get(poll.id);
+      const parentId = parentSessionIdOf(poll);
+      const entry = snapshot.get(poll.id) ?? (parentId === undefined ? undefined : snapshot.get(parentId));
       if (entry === undefined) return poll;
-      const task = newerPayload(entry.task, poll.task ?? null, clockMs);
-      const dag = newerPayload(entry.dag, poll.dag ?? null, clockMs);
+      const arrivals = pollArrivals.get(poll.id);
+      const task = newerPayload(entry.task, poll.task ?? null, arrivals?.task.arrival ?? 0, clockMs);
+      const dag = newerPayload(entry.dag, poll.dag ?? null, arrivals?.dag.arrival ?? 0, clockMs);
       const mergedInfo = {
         id: poll.id,
         title: poll.title,
@@ -179,7 +217,7 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
 export function __resetLiveBadgeStoreForTests(): void {
   overrides = new Map();
   lastArrivalMs = 0;
-  lastPollFingerprint = "";
-  pollArrivalMs = 0;
+  pollArrivals = new Map();
+  sessionAliases = new Map();
   emit();
 }

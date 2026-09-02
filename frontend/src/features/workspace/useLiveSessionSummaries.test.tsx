@@ -842,9 +842,13 @@ describe("live polling hooks", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the latest snapshot usable and refreshes REST after overflow", async () => {
+  it("repairs a stale same-id snapshot with the REST refresh after overflow", async () => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn(async () => okResponse({ sessions: [] }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({ sessions: [] }))
+      .mockResolvedValueOnce(okResponse({
+        sessions: [{ id: "overflow-child", title: "Recovered", task: null, dag: null }],
+      }));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(<Host enabled={true} />));
     openPush();
@@ -859,6 +863,121 @@ describe("live polling hooks", () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(0));
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(captured.summaries[0]).toMatchObject({ id: "overflow-child", title: "Recovered", runningCount: 0 });
+  });
+
+  it("lets a successful poll started after a push replace the same-id activity", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({ sessions: [] }))
+      .mockResolvedValueOnce(okResponse({
+        sessions: [{ id: "same-id", title: "REST", task: null, dag: null }],
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+    push({
+      type: "sessions.activity",
+      sessionId: "same-id",
+      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      overflow: false,
+    });
+    expect(captured.summaries[0]?.runningCount).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+
+    expect(captured.summaries[0]).toMatchObject({ id: "same-id", title: "REST", runningCount: 0 });
+  });
+
+  it("settles task and DAG independently when one side races a poll", async () => {
+    vi.useFakeTimers();
+    let resolvePoll: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({ sessions: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolvePoll = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+    push({
+      type: "sessions.activity",
+      sessionId: "split-order",
+      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      overflow: false,
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+    push({
+      type: "sessions.activity",
+      sessionId: "split-order",
+      snapshots: [{ name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD }],
+      overflow: false,
+    });
+    await act(async () => resolvePoll?.(okResponse({
+      sessions: [{ id: "split-order", title: "REST", task: null, dag: null }],
+    })));
+
+    expect(captured.summaries[0]).toMatchObject({
+      id: "split-order",
+      title: "REST",
+      lastLine: null,
+      runningCount: 1,
+      dagRunning: 1,
+    });
+  });
+
+  it("remaps an unbound frame that races the attach poll onto the chat id", async () => {
+    vi.useFakeTimers();
+    let resolveAttach: ((response: Response) => void) | undefined;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({ sessions: [] }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveAttach = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+
+    push({
+      type: "sessions.activity",
+      sessionId: "durable-child",
+      snapshots: [{
+        name: "omo.task.updated",
+        oversized: false,
+        data: { ...TASK_PAYLOAD, parent_session_id: "durable-child" },
+      }],
+      overflow: false,
+    });
+    await act(async () => resolveAttach?.(okResponse({
+      sessions: [{
+        id: "attached-chat",
+        title: "Attached",
+        task: { parent_session_id: "durable-child", tasks: [] },
+        dag: null,
+      }],
+    })));
+
+    expect(captured.summaries).toHaveLength(1);
+    expect(captured.summaries[0]).toMatchObject({ id: "attached-chat", title: "Attached", runningCount: 1 });
+  });
+
+  it("bounds push-only rows while REST is unavailable", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    act(() => {
+      for (let index = 0; index < 257; index += 1) {
+        handlers?.onFrame({
+          type: "sessions.activity",
+          sessionId: `push-${index}`,
+          snapshots: [{ name: "omo.task.updated", oversized: false, data: null }],
+          overflow: false,
+        });
+      }
+    });
+
+    expect(captured.summaries).toHaveLength(256);
+    expect(captured.ids.has("push-0")).toBe(false);
+    expect(captured.ids.has("push-256")).toBe(true);
   });
 
   it("exposes per-session summaries and keeps the ReadonlySet id contract", async () => {
