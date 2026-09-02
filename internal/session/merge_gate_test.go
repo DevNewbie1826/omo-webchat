@@ -364,6 +364,7 @@ func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
 
 	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() { stopped <- mgr.StopContext(ctx, s.ChatID()) }()
@@ -375,6 +376,10 @@ func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
 	if err := <-stopped; !errors.Is(err, context.Canceled) {
 		t.Fatalf("failed close = %v, want context.Canceled", err)
 	}
+	if got := counts(sub.drain()); got[FrameRunDone] != 0 {
+		t.Fatalf("uncertain close replayed terminal before rejection: %+v", got)
+	}
+	releaseClose()
 	_, firstDone := sub.await(t, FrameRunDone)
 	if firstDone.Data.(RunInfo).Reason != "end_turn" {
 		t.Fatalf("replayed terminal = %+v", firstDone)

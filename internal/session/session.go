@@ -128,16 +128,22 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 
-	_, err = s.client.Call(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images})
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completePrompt(seq, msg, callErr)
+	})
+	return err
+}
+
+func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
+	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
 	if s.promptSeq == seq {
-		if err != nil && !deliveryUncertain(err) && !s.providerRunActive {
+		if callErr != nil && !s.providerRunActive {
 			s.promptInFlight = false
 			s.localCommandActive = false
 			s.promptResponse = false
 			s.scheduleIdleLocked()
-		} else if err == nil {
+		} else if callErr == nil {
 			s.promptResponse = true
 			if s.localCommandActive && s.localCommandSeq == seq {
 				s.completeLocalCommandLocked(seq)
@@ -145,25 +151,24 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 	}
 	s.lifecycleMu.Unlock()
-	if err == nil {
-		s.applyAutoTitle(ctx, msg)
+	if callErr == nil {
+		s.applyAutoTitle(context.Background(), msg)
 	}
-	return err
 }
 
 func (s *Session) SendSteer(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) (any, error) {
-		return s.client.Call(ctx, omorpc.Steer{SessionID: route, Message: msg})
+	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
+		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
 
 func (s *Session) SendFollowUp(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) (any, error) {
-		return s.client.Call(ctx, omorpc.FollowUp{SessionID: route, Message: msg})
+	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
+		return omorpc.FollowUp{SessionID: route, Message: msg}
 	})
 }
 
-func (s *Session) sendDuringRun(_ context.Context, call func(string) (any, error)) error {
+func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc.Command) error {
 	s.lifecycleMu.Lock()
 	if s.compactionActive {
 		s.lifecycleMu.Unlock()
@@ -178,8 +183,9 @@ func (s *Session) sendDuringRun(_ context.Context, call func(string) (any, error
 	if err != nil {
 		return err
 	}
-	_, err = call(route)
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, command(route), func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.noteTransportError(callErr)
+	})
 	return err
 }
 
@@ -245,10 +251,16 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.publishLocked(Frame{Kind: FrameCompactionStart, SessionID: s.durableID, RequestID: rpcID, Data: CompactionInfo{Phase: "manual"}})
 	s.lifecycleMu.Unlock()
 
-	_, callErr := s.client.Call(ctx, omorpc.Compact{SessionID: route})
+	_, callErr := s.client.CallRetained(ctx, omorpc.Compact{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, completionErr error) {
+		s.completeCompact(seq, rpcID, completionErr)
+	})
+	return callErr
+}
+
+func (s *Session) completeCompact(seq uint64, rpcID string, callErr error) {
 	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
-	if s.compactSeq == seq && s.compactionActive && s.compactRPCID == rpcID && !deliveryUncertain(callErr) {
+	if s.compactSeq == seq && s.compactionActive && s.compactRPCID == rpcID {
 		providerID := s.compactProviderID
 		s.compactionActive = false
 		s.rememberCompletedCompactionLocked(rpcID, providerID)
@@ -268,7 +280,6 @@ func (s *Session) Compact(ctx context.Context) error {
 		s.scheduleIdleLocked()
 	}
 	s.lifecycleMu.Unlock()
-	return callErr
 }
 
 func (s *Session) rememberCompletedCompactionLocked(ids ...string) {
@@ -297,34 +308,37 @@ func (s *Session) rememberCompletedCompactionLocked(ids ...string) {
 }
 
 func (s *Session) SetModel(ctx context.Context, provider, modelID, requestID string) error {
-	return s.control(ctx, "set_model", requestID, func(route string) error {
-		_, err := s.client.Call(ctx, omorpc.SetModel{SessionID: route, Provider: provider, ModelID: modelID})
-		return err
+	return s.control(ctx, "set_model", requestID, func(route string) omorpc.Command {
+		return omorpc.SetModel{SessionID: route, Provider: provider, ModelID: modelID}
 	})
 }
 func (s *Session) SetThinking(ctx context.Context, level, requestID string) error {
-	return s.control(ctx, "set_thinking", requestID, func(route string) error {
-		_, err := s.client.Call(ctx, omorpc.SetThinkingLevel{SessionID: route, Level: level})
-		return err
+	return s.control(ctx, "set_thinking", requestID, func(route string) omorpc.Command {
+		return omorpc.SetThinkingLevel{SessionID: route, Level: level}
 	})
 }
-func (s *Session) control(_ context.Context, command, requestID string, call func(string) error) error {
+func (s *Session) control(ctx context.Context, command, requestID string, build func(string) omorpc.Command) error {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err
 	}
-	err = call(route)
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, build(route), func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completeControl(command, requestID, callErr)
+	})
+	return err
+}
+
+func (s *Session) completeControl(command, requestID string, callErr error) {
+	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
-	data := map[string]any{"success": err == nil}
-	if err != nil {
-		data["message"] = err.Error()
+	data := map[string]any{"success": callErr == nil}
+	if callErr != nil {
+		data["message"] = callErr.Error()
 	}
 	s.publishLocked(Frame{Kind: FrameControlResult, SessionID: s.durableID, Command: command, RequestID: requestID, Data: data})
 	s.lifecycleMu.Unlock()
-	return err
 }
 
 func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) {
@@ -640,23 +654,49 @@ func (s *Session) closeContext(ctx context.Context) error {
 	route := s.routingID
 	s.lifecycleMu.Unlock()
 
-	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	_, err := s.client.CallRetained(ctx, omorpc.CloseSession{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completeClose(route, callErr)
+	})
+	if deliveryUncertain(err) {
+		s.manager.mu.Lock()
+		managerClosed := s.manager.closed
+		s.manager.mu.Unlock()
+		if managerClosed {
+			// Manager shutdown is itself a local lifecycle terminal. Do not keep
+			// subscribers alive while the retained RPC awaits its provider outcome.
+			s.completeClose(route, err)
+		}
+	}
+	if definitiveCloseFailure(err) {
+		return nil
+	}
+	return err
+}
+
+func (s *Session) completeClose(route string, callErr error) {
+	s.noteTransportError(callErr)
 	s.manager.mu.Lock()
 	managerClosed := s.manager.closed
 	s.manager.mu.Unlock()
-	if !definitiveCloseFailure(err) && !managerClosed {
+	if !definitiveCloseFailure(callErr) && !managerClosed {
 		s.lifecycleMu.Lock()
-		s.closing = false
-		// Provider events are otherwise suppressed while close_session owns the
-		// route. Replay a buffered run terminal before reviving the session so a
-		// failed close cannot leave stale in-flight latches or suppress eviction.
-		s.reconcileFailedCloseLocked()
-		s.scheduleIdleLocked()
+		if !s.closed {
+			s.closing = false
+			// Provider events are otherwise suppressed while close_session owns the
+			// route. Replay a buffered run terminal before reviving the session so a
+			// failed close cannot leave stale in-flight latches or suppress eviction.
+			s.reconcileFailedCloseLocked()
+			s.scheduleIdleLocked()
+		}
 		s.lifecycleMu.Unlock()
-		return err
+		return
 	}
 
 	s.lifecycleMu.Lock()
+	if s.closed {
+		s.lifecycleMu.Unlock()
+		return
+	}
 	s.closed = true
 	s.closing = false
 	s.closeRunSettled = false
@@ -671,10 +711,6 @@ func (s *Session) closeContext(ctx context.Context) error {
 	s.manager.mu.Unlock()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
-	if definitiveCloseFailure(err) {
-		return nil
-	}
-	return err
 }
 func definitiveCloseFailure(err error) bool {
 	if err == nil {

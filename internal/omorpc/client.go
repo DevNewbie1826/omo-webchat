@@ -434,6 +434,69 @@ func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, Epoch
 	return c.callOnEpochInEpoch(ctx, ep, cmd)
 }
 
+// CallRetained sends a two-way request while retaining completion ownership
+// after the caller stops waiting. complete runs exactly once: immediately for
+// a request that could not be written, or when the correlated response or
+// connection-epoch death settles a written request.
+func (c *Client) CallRetained(ctx context.Context, cmd Command, complete func(*Response, EpochToken, error)) (*Response, error) {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
+	frame, err := EncodeRequest(id, cmd)
+	if err != nil {
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+	result := make(chan callResult, 1)
+
+	c.mu.Lock()
+	if c.closed || c.current != ep {
+		c.mu.Unlock()
+		complete(nil, EpochToken{}, ErrDisconnected)
+		return nil, ErrDisconnected
+	}
+	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
+	c.mu.Unlock()
+
+	if transportFailure, writeErr := c.writeFrame(ctx, ep, frame); writeErr != nil {
+		c.removePending(id, result)
+		if transportFailure {
+			c.invalidate(ep, writeErr)
+			err = disconnectedError(ep, writeErr)
+		} else {
+			err = writeErr
+		}
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+
+	completed := make(chan callResult, 1)
+	go func() {
+		got := <-result
+		complete(got.response, got.epoch, got.err)
+		completed <- got
+	}()
+	select {
+	case got := <-completed:
+		return got.response, got.err
+	case <-ctx.Done():
+		// A pending correlation proves no response or epoch death has claimed
+		// completion yet. Leave it registered for the callback.
+		c.mu.Lock()
+		pending, stillPending := c.pending[id]
+		stillPending = stillPending && pending.result == result
+		c.mu.Unlock()
+		if stillPending {
+			return nil, writtenUnansweredError(ctx.Err())
+		}
+		got := <-completed
+		return got.response, got.err
+	}
+}
+
 // CallDetached sends a request and transfers completion ownership to complete.
 // Once the frame is written, caller-context cancellation does not remove the
 // correlation: complete runs when a response arrives or the epoch dies.
