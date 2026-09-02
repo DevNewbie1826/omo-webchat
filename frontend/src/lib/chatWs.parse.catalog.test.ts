@@ -38,20 +38,22 @@ describe("parseChatServerFrame", () => {
       sessionId: "c1",
       entries: JSON.parse('[{"type":"message","message":{"role":"user","content":"hi","__proto__":{"bad":true}}}]'),
       leafId: "leaf",
+      final: true,
     });
     expect(frame).toMatchObject({ type: "entries", leafId: "leaf" });
-    const entries = frame?.type === "entries" ? (frame.entries as Array<Record<string, unknown>>) : [];
+    const entries = frame?.type === "entries" ? (frame.entries as unknown as Array<Record<string, unknown>>) : [];
     const message = entries[0]?.["message"] as Record<string, unknown>;
     expect(Object.keys(message ?? {}).includes("__proto__")).toBe(false);
     expect(message?.["content"]).toBe("hi");
   });
 
-  it("parses entries.final as an optional boolean", () => {
+  it("requires entries.final on every page (invariant 18) and an array payload", () => {
     const base = { type: "entries", sessionId: "c1", entries: [] as readonly unknown[] };
     expect(parseChatServerFrame({ ...base, final: true })).toMatchObject({ type: "entries", final: true });
     expect(parseChatServerFrame({ ...base, final: false })).toMatchObject({ type: "entries", final: false });
-    expect(parseChatServerFrame({ ...base })).toMatchObject({ type: "entries" });
+    expect(parseChatServerFrame({ ...base })).toBeNull();
     expect(parseChatServerFrame({ ...base, final: "no" })).toBeNull();
+    expect(parseChatServerFrame({ ...base, final: true, entries: "nope" })).toBeNull();
   });
 
   it("keeps the real Omo command fields (syntax, sourceInfo) and drops location", () => {

@@ -3,50 +3,33 @@ import type { WsHandlers } from "./ws";
 import { notifyUnauthorized } from "./api";
 import { sessionExpired } from "../features/auth/auth";
 import { parseChatServerFrame } from "./chatWsParse";
+import { isRecord, sanitizeJson } from "./chatWsParseFields";
+import { frameTypeOf } from "./contract/types_gen";
+import type * as ct from "./contract/types_gen";
 
 export { parseChatServerFrame, sanitizeJson } from "./chatWsParse";
 
-export type JsonObject = { readonly [key: string]: JsonValue };
-export type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
+/**
+ * The features/ import seam, rewritten on the generated contract
+ * (lib/contract/types_gen.ts). Shared JSON and UI types are re-exported from
+ * the generated source directly; the server/client unions are assembled from
+ * the generated members, with a handful of explicitly documented seam
+ * adapters where the client-side shape is pinned by unmodifiable features code
+ * or by a parse-boundary conversion.
+ */
 
-export interface ContextUsage {
-  readonly tokens: number;
-  readonly contextWindow: number;
-  readonly percent: number;
-}
-
-export interface ToolPayload {
-  readonly content?: readonly { readonly text?: string }[];
-  readonly details?: JsonValue;
-}
-
-export interface AssistantDelta {
-  readonly kind: string;
-  readonly contentIndex?: number;
-  readonly delta?: string;
-  readonly content?: string;
-  readonly reason?: string;
-  readonly partial?: unknown;
-}
-
-export interface ContentBlock {
-  readonly kind: string;
-  readonly text?: string;
-  readonly thinking?: string;
-  readonly id?: string;
-  readonly name?: string;
-  readonly arguments?: unknown;
-  readonly isError?: boolean;
-}
-
-export interface AssistantMessage {
-  readonly role: string;
-  readonly customType?: string;
-  readonly blocks?: readonly ContentBlock[];
-  readonly model?: string;
-  readonly usage?: unknown;
-  readonly ts?: number;
-}
+// Shared JSON + UI types (generated contract, single source).
+export type JsonValue = ct.JsonValue;
+export type JsonObject = ct.JsonObject;
+export type AssistantDelta = ct.AssistantDelta;
+export type AssistantMessage = AssistantMessageSeam;
+export type ContentBlock = ContentBlockSeam;
+export type ContextUsage = ct.ContextUsage;
+export type ToolPayload = ct.ToolPayload;
+export type ResumeCandidate = ct.ResumeCandidate;
+export type CommandSourceInfo = ct.CommandSourceInfo;
+export type CommandEntry = ct.CommandEntry;
+export type ChatImage = ct.ChatImage;
 
 /**
  * Provider RPC command echoed on an error frame. The backend forwards the
@@ -59,77 +42,109 @@ export interface AssistantMessage {
 export type FailedRpcCommand = string;
 
 /**
- * A sibling provider branch that may hold the lost conversation, surfaced on
- * a resume_failed error frame when the stored identity no longer resolves.
+ * Seam adapter: chat.name keeps the v1 client origin union. The workspace
+ * title callback in features (useChatSession/ChatPane) is typed
+ * (name, origin: "auto" | "provider") and must keep compiling unmodified.
  */
-export interface ResumeCandidate {
-  readonly id: string;
-  readonly name: string;
-  readonly hostPath?: string;
-}
+type ChatNameFrameSeam = Omit<ct.ChatNameFrame, "origin"> & { readonly origin: "auto" | "provider" };
 
-/** Where a discovered command came from, per Omo's get_commands contract. */
-export interface CommandSourceInfo {
-  readonly path?: string;
-  readonly baseDir?: string;
-  readonly source?: string;
-  readonly scope?: string;
-  readonly origin?: string;
-}
+/**
+ * Seam adapter: notice carries epoch milliseconds at the client boundary (the
+ * parse boundary converts the wire's RFC3339Nano `at` string, invariant 14)
+ * and a record payload — useChatFrameState sorts notices numerically by `at`
+ * and stores the payload as JsonObject.
+ */
+type NoticeFrameSeam = Omit<ct.NoticeFrame, "at" | "payload"> & {
+  readonly at?: number;
+  readonly payload?: JsonObject;
+};
 
-export interface CommandEntry {
-  readonly name: string;
-  readonly description?: string;
-  readonly source?: string;
-  /** How the command is invoked ("slash" for palette commands). */
-  readonly syntax?: string;
-  readonly sourceInfo?: CommandSourceInfo;
+/**
+ * Seam adapter: `final` is REQUIRED on every entries page on the wire
+ * (invariant 18) and the parser enforces it, but the seam keeps it optional
+ * because features deliver final-less entries literals directly to handlers;
+ * `entries` stays `unknown` because features construct page payloads from
+ * untyped history records (the parser still emits the generated array type).
+ */
+type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final"> & {
+  readonly entries: unknown;
+  readonly final?: boolean;
+};
+
+/**
+ * Seam adapter: block arguments stay `unknown` at the client boundary —
+ * features rebuild toolResult blocks from untyped history content and assign
+ * structured-argument records the generated JsonValue cannot type.
+ */
+type ContentBlockSeam = Omit<ct.ContentBlock, "arguments"> & { readonly arguments?: unknown };
+
+/** Seam adapter: AssistantMessage carries the seam ContentBlock in blocks, so
+ * features' UiMessage (extends AssistantMessage) keeps one block type. */
+type AssistantMessageSeam = Omit<ct.AssistantMessage, "blocks"> & {
+  readonly blocks?: readonly ContentBlockSeam[];
+};
+
+/** Seam adapter: completed message frames carry the seam AssistantMessage. */
+type MessageFrameSeam = Omit<ct.MessageFrame, "message"> & { readonly message: AssistantMessageSeam };
+
+/**
+ * Seam adapter: error.code stays an open string at the client boundary. The
+ * features terminal-error sets name legacy codes (initialize_failed,
+ * provider_overflow, provider_timeout, ...) that the closed wire enum does not
+ * carry, so a strict-enum parser would drop live error frames instead of
+ * surfacing them. FailedRpcCommand stays open for the same reason.
+ */
+interface ErrorFrameSeam {
+  readonly type: "error";
+  readonly sessionId?: string;
+  readonly code?: string;
+  readonly command?: FailedRpcCommand;
+  readonly requestId?: string;
+  /** resume_failed only: stored identity path no longer exists */
+  readonly dangling?: boolean;
+  /** resume_failed only: scanned sibling branch candidates */
+  readonly candidates?: readonly ResumeCandidate[];
+  readonly message: string;
 }
 
 export type ChatServerFrame =
-  | { readonly type: "ready"; readonly sessionId: string; readonly piSessionId: string | null; readonly resumed: boolean }
-  | { readonly type: "chat.name"; readonly sessionId: string; readonly name: string; readonly origin: "auto" | "provider" }
-  | { readonly type: "messageDelta"; readonly sessionId: string; readonly messageId?: string; readonly delta: AssistantDelta }
-  | { readonly type: "message"; readonly sessionId: string; readonly message: AssistantMessage }
-  | { readonly type: "tool"; readonly sessionId: string; readonly toolCallId: string; readonly toolName: string; readonly phase: "start" | "update" | "end"; readonly args?: JsonValue; readonly partial?: ToolPayload; readonly result?: ToolPayload; readonly isError?: boolean }
-  | { readonly type: "state"; readonly sessionId: string; readonly isStreaming: boolean; readonly isCompacting: boolean; readonly thinkingLevel?: string; readonly model?: { readonly provider: string; readonly modelId: string } | null; readonly sessionName?: string }
-  | { readonly type: "stats"; readonly sessionId: string; readonly cost?: number; readonly contextUsage?: ContextUsage; readonly tokens?: JsonValue }
-  | { readonly type: "extensionEvent"; readonly sessionId: string; readonly name: string; readonly data?: JsonValue }
-  | { readonly type: "approval"; readonly sessionId: string; readonly id: string; readonly method: "select" | "confirm" | "input" | "editor"; readonly title?: string; readonly message?: string; readonly options?: readonly string[]; readonly prefill?: string; readonly placeholder?: string }
-  | { readonly type: "commands"; readonly sessionId: string; readonly commands: readonly CommandEntry[] }
-  | { readonly type: "models"; readonly sessionId: string; readonly models: readonly { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] }[] }
-  | { readonly type: "entries"; readonly sessionId: string; readonly entries: unknown; readonly leafId?: string; readonly final?: boolean }
-  | { readonly type: "compaction.started"; readonly sessionId: string }
-  | { readonly type: "compaction.done"; readonly sessionId: string; readonly error?: string }
-  | { readonly type: "run.started"; readonly sessionId: string }
-  | { readonly type: "run.done"; readonly sessionId: string; readonly reason: string }
-  | { readonly type: "ack"; readonly sessionId?: string; readonly command: string; readonly id?: string; readonly requestId?: string }
-  | { readonly type: "control.result"; readonly sessionId: string; readonly command: string; readonly requestId?: string; readonly success: boolean; readonly message?: string }
-  | { readonly type: "error"; readonly sessionId?: string; readonly code?: string; readonly command?: FailedRpcCommand; readonly requestId?: string; readonly dangling?: boolean; readonly candidates?: readonly ResumeCandidate[]; readonly message: string }
-  // `at` arrives on the wire as an RFC3339Nano string; the lifecycle parse
-  // boundary converts it to epoch milliseconds. Durable notices also carry
-  // the server-assigned identity used for reconnect replay reconciliation.
-  | { readonly type: "notice"; readonly sessionId: string; readonly kind: string; readonly payload?: JsonObject; readonly at?: number; readonly nid?: string };
-
-export interface ChatImage {
-  readonly data: string;
-  readonly mimeType: string;
-}
+  | ct.ReadyFrame
+  | ChatNameFrameSeam
+  | ct.MessageDeltaFrame
+  | MessageFrameSeam
+  | ct.ToolFrame
+  | ct.StateFrame
+  | ct.StatsFrame
+  | ct.ExtensionEventFrame
+  | ct.ApprovalFrame
+  | ct.CommandsFrame
+  | ct.ModelsFrame
+  | EntriesFrameSeam
+  | ct.CompactionStartedFrame
+  | ct.CompactionDoneFrame
+  | ct.RunStartedFrame
+  | ct.RunDoneFrame
+  | ct.AckFrame
+  | ct.ControlResultFrame
+  | ErrorFrameSeam
+  | NoticeFrameSeam;
 
 export type ChatClientFrame =
-  | { readonly type: "chat.create"; readonly wsId: string; readonly chatId: string }
-  | { readonly type: "chat.send"; readonly sessionId: string; readonly run: { readonly kind: "prompt" | "steer" | "follow_up"; readonly message: string; readonly images?: readonly ChatImage[] } }
-  | { readonly type: "chat.abort"; readonly sessionId: string }
-  | { readonly type: "chat.close"; readonly sessionId: string }
-  | { readonly type: "chat.disconnect"; readonly sessionId: string }
-  | { readonly type: "chat.set"; readonly sessionId: string; readonly requestId?: string; readonly model?: { readonly provider: string; readonly modelId: string }; readonly thinkingLevel?: string }
-  | { readonly type: "approval.respond"; readonly sessionId: string; readonly requestId?: string; readonly id: string; readonly value?: string; readonly confirmed?: boolean; readonly cancelled?: boolean }
-  | { readonly type: "chat.commands"; readonly sessionId: string }
-  | { readonly type: "chat.compact"; readonly sessionId: string }
-  | { readonly type: "chat.models"; readonly sessionId: string }
-  | { readonly type: "chat.stats"; readonly sessionId: string }
-  | { readonly type: "activity.refresh"; readonly sessionId: string }
-  | { readonly type: "chat.resume"; readonly sessionId: string; readonly since?: string };
+  | ct.PingFrame
+  | ct.ChatCreateFrame
+  | ct.ChatSendFrame
+  | ct.ChatAbortFrame
+  | ct.ChatCloseFrame
+  | ct.ChatDisconnectFrame
+  | ct.ChatSetFrame
+  | ct.ApprovalRespondFrame
+  | ct.ChatCommandsFrame
+  | ct.ChatCompactFrame
+  | ct.ChatModelsFrame
+  | ct.ChatStatsFrame
+  | ct.ActivityRefreshFrame
+  | ct.ChatResumeFrame
+  | ct.ClientHelloFrame;
 
 export interface ChatClient {
   readonly send: (msg: ChatClientFrame) => boolean;
@@ -145,16 +160,91 @@ export interface ChatHandlers {
 
 export type ChatConnector = (handlers: ChatHandlers) => ChatClient;
 
+/**
+ * Wire contract version this client speaks. The server's hello must match;
+ * a mismatch warns and proceeds (contract: version skew is never fatal).
+ */
+export const CHAT_WIRE_VERSION = 2;
+
+/** Validate the connector's handshake frame against the generated HelloFrame. */
+function parseHello(msg: unknown): ct.HelloFrame | null {
+  if (!isRecord(msg) || msg["type"] !== "hello") return null;
+  const version = msg["version"];
+  const serverVersion = msg["serverVersion"];
+  if (typeof version !== "number" || typeof serverVersion !== "string") return null;
+  return { type: "hello", version, serverVersion };
+}
+
 export const connectChat: ChatConnector = (handlers) => {
+  // --- v2 hello handshake state -------------------------------------------
+  // helloSeen settles on the FIRST server frame whatever it is: a real hello
+  // is swallowed (after a version check); any other first frame means the
+  // server never sends hello (v1 continuity) — warn once and treat the
+  // stream as live. Late hello frames are dropped, never delivered.
+  let helloSeen = false;
+  let helloWarned = false;
+  // --- reconnect re-bind state ---------------------------------------------
+  // The chat binding is rebuilt on reconnect (snapshot-then-live ordering on
+  // the server makes the replay self-settling). The connector remembers the
+  // last chat.create and replays it after the handshake if the consumer has
+  // not already sent one on this connection.
+  let openedOnce = false;
+  let rebindPending = false;
+  let createSentSinceOpen = false;
+  let lastCreate: ct.ChatCreateFrame | null = null;
+  // Assigned right after connectWs() returns; ws.ts only dispatches onOpen/
+  // onMessage from socket callbacks, so it is set before either can fire.
+  let sendClient: ((msg: ChatClientFrame) => boolean) | null = null;
+
+  const replayCreateIfNeeded = (): void => {
+    if (!rebindPending || createSentSinceOpen || lastCreate === null) return;
+    rebindPending = false;
+    sendClient?.(lastCreate);
+  };
+
   const wsHandlers: WsHandlers = {
-    onMessage: (msg) => {
-      const frame = parseChatServerFrame(msg);
-      if (frame) handlers.onFrame(frame);
+    onOpen: () => {
+      helloSeen = false;
+      createSentSinceOpen = false;
+      rebindPending = openedOnce;
+      openedOnce = true;
+      // Contract: the client announces its wire version first.
+      sendClient?.({ type: "hello", version: CHAT_WIRE_VERSION });
+      handlers.onOpen?.();
     },
-    ...(handlers.onOpen ? { onOpen: handlers.onOpen } : {}),
+    onMessage: (msg) => {
+      if (!helloSeen) {
+        helloSeen = true;
+        const hello = parseHello(msg);
+        if (hello) {
+          if (hello.version !== CHAT_WIRE_VERSION) {
+            console.warn(
+              `[chatWs] wire contract version mismatch: client v${CHAT_WIRE_VERSION}, server v${hello.version} (${hello.serverVersion}) — proceeding`,
+            );
+          }
+          // Reconnect re-bind: the consumer may already have sent chat.create
+          // from its onOpen (which fires before the hello arrives); otherwise
+          // the connector replays the remembered binding here.
+          replayCreateIfNeeded();
+          return;
+        }
+        if (!helloWarned) {
+          helloWarned = true;
+          console.warn("[chatWs] server opened the stream without a hello frame — proceeding");
+        }
+        replayCreateIfNeeded();
+        // Fall through: the first frame is a session frame and must be
+        // delivered below.
+      } else if (frameTypeOf(msg) === "hello") {
+        return; // late or replayed hello: not a session frame
+      }
+      const frame = parseChatServerFrame(msg);
+      if (frame) handlers.onFrame(frame); // null drops unknown/malformed silently (R1)
+    },
     ...(handlers.onParseError ? { onParseError: handlers.onParseError } : {}),
     ...(handlers.onClose ? { onClose: handlers.onClose } : {}),
   };
+
   const conn = connectWs("/api/ws", wsHandlers, {
     // The websocket never sees the HTTP status of a refused upgrade: a socket
     // that closes without ever opening is the likely expired-session signal.
@@ -166,8 +256,17 @@ export const connectChat: ChatConnector = (handlers) => {
       return !expired;
     },
   });
-  return {
-    send: (m) => conn.send(m),
+  const client: ChatClient = {
+    send: (m) => {
+      if (m.type === "chat.create") {
+        lastCreate = m;
+        createSentSinceOpen = true;
+        rebindPending = false;
+      }
+      return conn.send(m);
+    },
     close: () => conn.close(),
   };
+  sendClient = client.send;
+  return client;
 };

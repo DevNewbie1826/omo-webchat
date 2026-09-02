@@ -6,16 +6,21 @@ import type {
   ContentBlock,
   ContextUsage,
   JsonValue,
+  ModelInfo,
   ResumeCandidate,
   ToolPayload,
-} from "./chatWs";
+} from "./contract/types_gen";
 
 /**
  * Structural validation primitives and nested parsers shared by the inbound
- * frame parser. Field readers tri-state optional values: undefined = absent,
- * null = present but malformed (so the enclosing frame is rejected), or the
- * narrowed value. Arbitrary provider JSON is sanitized to plain JSON so it can
- * never carry prototype-polluting keys or non-JSON scalars.
+ * frame parser, adapted to the generated contract types: every nested shape
+ * (blocks, deltas, tool payloads, command entries, resume candidates, model
+ * infos) is now the schema-generated type instead of a hand-rolled twin.
+ *
+ * Field readers tri-state optional values: undefined = absent, null = present
+ * but malformed (so the enclosing frame is rejected), or the narrowed value.
+ * Arbitrary provider JSON is sanitized to plain JSON so it can never carry
+ * prototype-polluting keys or non-JSON scalars.
  */
 
 const FORBIDDEN_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
@@ -220,7 +225,10 @@ export function parseCommandEntry(record: Record<string, unknown>): CommandEntry
   };
 }
 
-/** Validate one resume candidate on a resume_failed error frame; id and name are required, hostPath optional. */
+/**
+ * Validate one resume candidate on a resume_failed error frame, shaped exactly
+ * by the generated contract schema: id and name are required, hostPath optional.
+ */
 export function parseResumeCandidate(record: Record<string, unknown>): ResumeCandidate | null {
   const id = reqString(record, "id");
   const name = reqString(record, "name");
@@ -234,9 +242,7 @@ export function parseResumeCandidate(record: Record<string, unknown>): ResumeCan
   };
 }
 
-export function parseModelEntry(
-  record: Record<string, unknown>,
-): { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] } | null {
+export function parseModelEntry(record: Record<string, unknown>): ModelInfo | null {
   const provider = reqString(record, "provider");
   const modelId = reqString(record, "modelId");
   if (provider === null || modelId === null) return null;

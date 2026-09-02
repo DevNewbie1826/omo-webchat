@@ -21,9 +21,9 @@ type LifecycleFrameType =
   | "notice";
 
 /**
- * The server stamps every notice with an RFC3339Nano string. Convert it to
- * epoch milliseconds for the transcript merge; an absent or invalid stamp
- * stays unset so the client can stamp its own receipt time instead.
+ * The server stamps every notice with an RFC3339Nano string (invariant 14).
+ * Convert it to epoch milliseconds for the transcript merge; an absent or
+ * invalid stamp stays unset so the client can stamp its own receipt time.
  */
 function optAtMs(record: Record<string, unknown>): number | undefined {
   const raw = record["at"];
@@ -32,6 +32,15 @@ function optAtMs(record: Record<string, unknown>): number | undefined {
   return Number.isFinite(ms) ? ms : undefined;
 }
 
+/**
+ * Run/compaction lifecycle, acks, notices, and typed errors.
+ *
+ * error frames accept the resume branch candidates under both wire spellings:
+ * the v2 contract name `candidates`, and the v1 continuity name
+ * `branchCandidates` still used by existing fixtures. The code stays an open
+ * string at the client boundary — the features terminal-error sets name
+ * legacy codes the closed wire enum does not carry.
+ */
 export function parseLifecycleFrame(
   type: LifecycleFrameType,
   msg: Record<string, unknown>,
@@ -120,7 +129,7 @@ export function parseLifecycleFrame(
       const dangling = optBoolean(msg, "dangling");
       // Optional resume branch candidates; any malformed entry rejects the
       // whole frame so a half-parsed list never reaches the UI.
-      const rawCandidates = msg["branchCandidates"];
+      const rawCandidates = msg["candidates"] ?? msg["branchCandidates"];
       const candidates = rawCandidates === undefined ? undefined : mapRecords(rawCandidates, parseResumeCandidate);
       if (code === null || command === null || requestId === null || dangling === null || candidates === null) return null;
       return {
