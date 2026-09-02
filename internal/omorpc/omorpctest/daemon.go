@@ -82,6 +82,7 @@ type Daemon struct {
 	handshakes      int
 	refusals        int
 	opens           int
+	closes          int
 	rpcCounter      int
 	registry        map[string]*daemonSession
 	promptScripts   map[string][]map[string]any
@@ -94,6 +95,7 @@ type Daemon struct {
 	requestFeed   chan map[string]any
 	handshakeFeed chan struct{}
 	refusalFeed   chan struct{}
+	closeFeed     chan struct{}
 }
 
 // New creates a stopped daemon that will serve unix://<dir>/d.sock. The
@@ -118,6 +120,7 @@ func New(dir string) *Daemon {
 		requestFeed:     make(chan map[string]any, 256),
 		handshakeFeed:   make(chan struct{}, 1),
 		refusalFeed:     make(chan struct{}, 1),
+		closeFeed:       make(chan struct{}, 256),
 	}
 }
 
@@ -329,6 +332,8 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdCloseSession:
 		d.mu.Lock()
 		rec.live = false
+		d.closes++
+		d.notify(d.closeFeed)
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
 		return
@@ -692,6 +697,9 @@ func (d *Daemon) Refusals() int    { d.mu.Lock(); defer d.mu.Unlock(); return d.
 // restarts.
 func (d *Daemon) OpenCount() int { d.mu.Lock(); defer d.mu.Unlock(); return d.opens }
 
+// CloseCount is the number of close_session handlers that completed.
+func (d *Daemon) CloseCount() int { d.mu.Lock(); defer d.mu.Unlock(); return d.closes }
+
 // LiveSessions lists the durable sessionFile paths currently live.
 func (d *Daemon) LiveSessions() []string {
 	d.mu.Lock()
@@ -751,6 +759,23 @@ func (d *Daemon) AwaitRequestCount(cmd string, n int, timeout time.Duration) boo
 		}
 		select {
 		case <-d.requestFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
+}
+
+// AwaitCloseCount reports whether at least n close_session handlers have
+// completed within the timeout.
+func (d *Daemon) AwaitCloseCount(n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if d.CloseCount() >= n {
+			return true
+		}
+		select {
+		case <-d.closeFeed:
 		case <-deadline.C:
 			return false
 		}

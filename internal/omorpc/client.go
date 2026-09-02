@@ -426,6 +426,43 @@ func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, Epoch
 	return c.callOnEpochInEpoch(ctx, ep, cmd)
 }
 
+// CallDetached sends a request and transfers completion ownership to complete.
+// Once the frame is written, caller-context cancellation does not remove the
+// correlation: complete runs when a response arrives or the epoch dies.
+func (c *Client) CallDetached(ctx context.Context, cmd Command, complete func(*Response, EpochToken, error)) error {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		return err
+	}
+	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
+	frame, err := EncodeRequest(id, cmd)
+	if err != nil {
+		return err
+	}
+	result := make(chan callResult, 1)
+
+	c.mu.Lock()
+	if c.closed || c.current != ep {
+		c.mu.Unlock()
+		return ErrDisconnected
+	}
+	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
+	c.mu.Unlock()
+
+	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+		c.removePending(id, result)
+		if attempted {
+			c.invalidate(ep, err)
+		}
+		return err
+	}
+	go func() {
+		got := <-result
+		complete(got.response, got.epoch, got.err)
+	}()
+	return nil
+}
+
 func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Command) (*Response, error) {
 	resp, _, err := c.callOnEpochInEpoch(ctx, ep, cmd)
 	return resp, err

@@ -63,7 +63,10 @@ func (k *keyedFlight) release(key string, x *chatFlight) {
 	k.mu.Unlock()
 }
 
-const maxSlotGenerations = 1024
+const (
+	maxSlotGenerations  = 1024
+	cleanupDrainTimeout = 5 * time.Second
+)
 
 type generationRecord struct {
 	chatID     string
@@ -86,7 +89,9 @@ type Manager struct {
 	shutdownCancel     context.CancelFunc
 	closeOnce          sync.Once
 	acquireWG          sync.WaitGroup
+	cleanupWG          sync.WaitGroup
 	eventWG            sync.WaitGroup
+	openCleanupExpired chan struct{}
 }
 
 func NewManager(cfg Config) *Manager {
@@ -106,7 +111,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -371,16 +376,19 @@ func (m *Manager) discardRouting(route string) {
 }
 
 type openResult struct {
-	data  omorpc.OpenSessionData
-	epoch omorpc.EpochToken
-	err   error
+	data     omorpc.OpenSessionData
+	response *omorpc.Response
+	epoch    omorpc.EpochToken
+	err      error
 }
 
-// open keeps transport ownership after its caller stops waiting. The bounded
-// completion closes any routing handle that arrives after ownership was lost.
+// open keeps transport ownership after its caller stops waiting. The manager
+// tracks that ownership until the response or epoch death is observed and any
+// routing handle from a late success has been closed.
 func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
 	opCtx, cancel := context.WithCancel(context.Background())
 	result := make(chan openResult, 1)
+	m.cleanupWG.Add(1)
 	go func() {
 		data, epoch, err := m.openCall(opCtx, cwd, path)
 		result <- openResult{data: data, epoch: epoch, err: err}
@@ -389,9 +397,16 @@ func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessio
 	select {
 	case got := <-result:
 		cancel()
+		m.cleanupWG.Done()
 		return got.data, got.epoch, got.err
 	case <-ctx.Done():
-		timer := time.AfterFunc(m.cfg.CloseTimeout, cancel)
+		timer := time.AfterFunc(m.cfg.CloseTimeout, func() {
+			cancel()
+			select {
+			case m.openCleanupExpired <- struct{}{}:
+			default:
+			}
+		})
 		go func() {
 			got := <-result
 			timer.Stop()
@@ -399,6 +414,7 @@ func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessio
 			if got.data.SessionID != "" {
 				m.discardRouting(got.data.SessionID)
 			}
+			m.cleanupWG.Done()
 		}()
 		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ctx.Err()
 	}
@@ -412,8 +428,15 @@ func (m *Manager) openCall(ctx context.Context, cwd, path string) (omorpc.OpenSe
 	var last error
 	var epoch omorpc.EpochToken
 	for attempt := 0; attempt < m.cfg.RetryAttempts; attempt++ {
-		resp, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, cmd)
-		epoch = responseEpoch
+		completion := make(chan openResult, 1)
+		err := m.cfg.Client.CallDetached(ctx, cmd, func(resp *omorpc.Response, responseEpoch omorpc.EpochToken, err error) {
+			completion <- openResult{epoch: responseEpoch, err: err, response: resp}
+		})
+		var resp *omorpc.Response
+		if err == nil {
+			got := <-completion
+			resp, epoch, err = got.response, got.epoch, got.err
+		}
 		if err == nil {
 			var out omorpc.OpenSessionData
 			if err := json.Unmarshal(resp.Data, &out); err != nil {
@@ -527,6 +550,18 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 		return ctx.Err()
 	}
 	m.eventWG.Wait()
+
+	cleanupsDone := make(chan struct{})
+	go func() { m.cleanupWG.Wait(); close(cleanupsDone) }()
+	drainTimer := time.NewTimer(cleanupDrainTimeout)
+	defer drainTimer.Stop()
+	select {
+	case <-cleanupsDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-drainTimer.C:
+		return errors.New("session: timed out draining detached cleanup")
+	}
 
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
 type blockingCursorStore struct {
@@ -71,55 +72,115 @@ func TestMergeGateAcquireSerializesPerChatOnly(t *testing.T) {
 }
 
 func TestMergeGateCloseAllBarsPendingOpenRegistration(t *testing.T) {
-	d := newDaemon(t)
-	client := dial(t, d)
-	mgr := testManager(t, client, newMemStore(), 64)
-	release := d.BlockHandler(omorpc.CmdOpenSession)
-	result := make(chan error, 1)
-	go func() {
-		_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
-		result <- err
-	}()
-	if !d.AwaitRequestCount(omorpc.CmdOpenSession, 1, testTimeout) {
-		t.Fatal("open did not reach daemon")
-	}
-	closed := make(chan error, 1)
-	go func() { closed <- mgr.CloseAll(context.Background()) }()
-	select {
-	case err := <-closed:
-		if err != nil {
-			t.Fatalf("CloseAll: %v", err)
+	newBlockedOpen := func(t *testing.T, closeTimeout time.Duration) (*omorpctest.Daemon, *omorpc.Client, *Manager, func(), <-chan error) {
+		t.Helper()
+		d := newDaemon(t)
+		client := dial(t, d)
+		mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 64, RetryAttempts: 3, RetryBackoff: time.Millisecond, CloseTimeout: closeTimeout})
+		release := d.BlockHandler(omorpc.CmdOpenSession)
+		result := make(chan error, 1)
+		go func() {
+			_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "a", cwd: t.TempDir()}, nil)
+			result <- err
+		}()
+		if !d.AwaitRequestCount(omorpc.CmdOpenSession, 1, testTimeout) {
+			t.Fatal("open did not reach daemon")
 		}
-	case <-time.After(testTimeout):
-		t.Fatal("CloseAll did not cancel and drain blocked open")
+		return d, client, mgr, release, result
 	}
-	// The provider gate is intentionally released only after CloseAll proves
-	// it no longer depends on the blocked RPC. The detached completion must
-	// observe that successful open and close its provider-side orphan.
-	release()
-	select {
-	case err := <-result:
-		if !errors.Is(err, ErrManagerClosed) {
-			t.Fatalf("pending acquire = %v, want ErrManagerClosed", err)
+	assertAcquireClosed := func(t *testing.T, result <-chan error) {
+		t.Helper()
+		select {
+		case err := <-result:
+			if !errors.Is(err, ErrManagerClosed) {
+				t.Fatalf("pending acquire = %v, want ErrManagerClosed", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("pending acquire did not abort")
 		}
-	case <-time.After(testTimeout):
-		t.Fatal("pending acquire did not abort")
 	}
-	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
-		t.Fatal("late successful open was not closed")
+	assertClean := func(t *testing.T, d *omorpctest.Daemon, mgr *Manager) {
+		t.Helper()
+		if !d.AwaitCloseCount(1, testTimeout) {
+			t.Fatal("late successful open was not closed")
+		}
+		if live := d.LiveSessions(); len(live) != 0 {
+			t.Fatalf("provider retained canceled open: %v", live)
+		}
+		if _, ok := mgr.Get("a"); ok {
+			t.Fatal("pending open registered after CloseAll")
+		}
+		mgr.chats.mu.Lock()
+		flights := len(mgr.chats.flights)
+		mgr.chats.mu.Unlock()
+		if flights != 0 {
+			t.Fatalf("keyed flights after CloseAll = %d", flights)
+		}
 	}
-	if live := d.LiveSessions(); len(live) != 0 {
-		t.Fatalf("provider retained canceled open: %v", live)
-	}
-	if _, ok := mgr.Get("a"); ok {
-		t.Fatal("pending open registered after CloseAll")
-	}
-	mgr.chats.mu.Lock()
-	flights := len(mgr.chats.flights)
-	mgr.chats.mu.Unlock()
-	if flights != 0 {
-		t.Fatalf("keyed flights after CloseAll = %d", flights)
-	}
+
+	t.Run("release_after_CloseAll_drains_cleanup", func(t *testing.T) {
+		d, _, mgr, release, result := newBlockedOpen(t, 50*time.Millisecond)
+		closed := make(chan error, 1)
+		go func() { closed <- mgr.CloseAll(context.Background()) }()
+		assertAcquireClosed(t, result)
+		select {
+		case err := <-closed:
+			t.Fatalf("CloseAll returned before detached open completed: %v", err)
+		default:
+		}
+		release()
+		assertClean(t, d, mgr)
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("CloseAll: %v", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("CloseAll did not drain detached open")
+		}
+	})
+
+	t.Run("CloseTimeout_expiry_retains_cleanup_ownership", func(t *testing.T) {
+		d, _, mgr, release, result := newBlockedOpen(t, 20*time.Millisecond)
+		closed := make(chan error, 1)
+		go func() { closed <- mgr.CloseAll(context.Background()) }()
+		assertAcquireClosed(t, result)
+		select {
+		case <-mgr.openCleanupExpired:
+		case <-time.After(testTimeout):
+			t.Fatal("open cleanup timeout did not expire")
+		}
+		release()
+		assertClean(t, d, mgr)
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("CloseAll: %v", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("CloseAll did not drain late success")
+		}
+	})
+
+	t.Run("client_close_after_CloseAll_cannot_orphan", func(t *testing.T) {
+		d, client, mgr, release, result := newBlockedOpen(t, 50*time.Millisecond)
+		closed := make(chan error, 1)
+		go func() { closed <- mgr.CloseAll(context.Background()) }()
+		assertAcquireClosed(t, result)
+		release()
+		select {
+		case err := <-closed:
+			if err != nil {
+				t.Fatalf("CloseAll: %v", err)
+			}
+		case <-time.After(testTimeout):
+			t.Fatal("CloseAll did not drain before client close")
+		}
+		if err := client.Close(); err != nil {
+			t.Fatalf("client Close: %v", err)
+		}
+		assertClean(t, d, mgr)
+	})
 }
 
 func TestMergeGateEpochInvalidationIsTokenScoped(t *testing.T) {
