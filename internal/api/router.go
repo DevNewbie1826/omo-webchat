@@ -38,6 +38,7 @@ type Server struct {
 	ctx      context.Context
 
 	chatLifecycleMu             sync.Mutex
+	adoptionMu                  sync.Mutex
 	chatLifecycleGeneration     sync.Map
 	chatLifecycleGenerationFIFO []chatLifecycleGenerationRecord
 	chatDeleting                map[string]bool
@@ -60,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("DELETE /api/workspaces/{wsId}", s.handleDeleteWorkspace)
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}", s.handleRenameWorkspace)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/sessions", s.handleListWorkspaceSessions)
+	protected.HandleFunc("POST /api/workspaces/{wsId}/sessions/adopt", s.handleAdoptWorkspaceSession)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats", s.handleCreateChat)
 	protected.HandleFunc("DELETE /api/workspaces/{wsId}/chats/{chatId}", s.handleDeleteChat)
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}/chats/{chatId}", s.handleRenameChat)

@@ -68,8 +68,8 @@ type Chat struct {
 	NameSource string `json:"nameSource"`
 	// TitleIsPlaceholder marks the pre-identity default name that auto-title
 	// derivation may replace; any established name clears it.
-	TitleIsPlaceholder bool `json:"titleIsPlaceholder,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
+	TitleIsPlaceholder bool  `json:"titleIsPlaceholder,omitempty"`
+	CreatedAt          int64 `json:"createdAt"`
 	// LastUsedAt is the Unix-millisecond stamp of the most recent successful
 	// open; zero means never used.
 	LastUsedAt int64 `json:"lastUsedAt,omitempty"`
@@ -98,6 +98,11 @@ type Store struct {
 // exist. A present-but-unreadable or invalid file is a typed ErrCorrupt, never
 // a silent reset. The parent directory is created when absent.
 func Open(path string) (*Store, error) { return OpenWithClock(path, systemClock{}) }
+
+// StateDir returns the directory containing the cursor state file. Owned
+// session assets live beneath this directory so custom state locations remain
+// self-contained.
+func (s *Store) StateDir() string { return filepath.Dir(s.path) }
 
 // OpenWithClock is Open with an injected clock for deterministic LastUsedAt.
 func OpenWithClock(path string, clock Clock) (*Store, error) {
