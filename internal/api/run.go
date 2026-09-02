@@ -31,22 +31,30 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	if err != nil {
 		return fmt.Errorf("starting required omo daemon: %w", err)
 	}
+	var stopDaemonOnce sync.Once
+	stopDaemon := func() {
+		stopDaemonOnce.Do(func() {
+			if e := ensured.StopBounded(5 * time.Second); e != nil {
+				logger.Error("closing provider client", "err", e)
+			}
+		})
+	}
+	// Install owned-process teardown immediately: every failure after ensure,
+	// including metadata initialization, must terminate a spawned supervisor.
+	defer stopDaemon()
 	stateDir := cfg.StateDir
 	if stateDir == "" {
 		stateDir, err = cursorstore.StateDir()
 		if err != nil {
-			_ = ensured.Close()
 			return fmt.Errorf("resolving state directory: %w", err)
 		}
 	}
 	cursors, err := cursorstore.Open(filepath.Join(stateDir, "state-v2.json"))
 	if err != nil {
-		_ = ensured.Close()
 		return fmt.Errorf("opening cursor store: %w", err)
 	}
-	summary, err := cursorstore.MigrateV1(filepath.Join(stateDir, "state.json"), cursors)
+	summary, err := cursorstore.MigrateV1FromStateDir(stateDir, cfg.StateDir == "", cursors)
 	if err != nil {
-		_ = ensured.Close()
 		return fmt.Errorf("migrating v1 metadata: %w", err)
 	}
 	logger.Info("v1 metadata migration complete", "workspaces", summary.Workspaces, "chats", summary.Chats, "skipped", summary.Skipped)
@@ -70,11 +78,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 				logger.Error("closing sessions", "err", e)
 			}
 			cancelManager()
-			clientCtx, cancelClient := context.WithTimeout(context.Background(), 5*time.Second)
-			if e := ensured.Stop(clientCtx); e != nil {
-				logger.Error("closing provider client", "err", e)
-			}
-			cancelClient()
+			stopDaemon()
 		})
 	}
 	defer cleanupAll()

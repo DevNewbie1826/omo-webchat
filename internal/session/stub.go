@@ -35,9 +35,16 @@ const (
 	DefaultDetachedOpenLimit = 32
 )
 
+const (
+	NameSourceAuto = "auto"
+	NameSourceUser = "user"
+)
+
 type Cursor struct {
 	SessionFile      string
 	DurableSessionID string
+	Name             string
+	NameSource       string
 }
 
 type CursorStore interface {

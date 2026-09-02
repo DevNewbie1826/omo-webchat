@@ -31,6 +31,7 @@ type Session struct {
 	epoch                             omorpc.EpochToken
 
 	lifecycleMu                                                             sync.Mutex
+	nameMu                                                                  sync.Mutex
 	closed, closing, resumable, invalidated                                 bool
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
@@ -46,17 +47,31 @@ type Session struct {
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
-	title                                                                   string
+	title, nameSource                                                       string
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 
 	broadcast broadcaster
 }
 
-func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, resumed bool, epoch omorpc.EpochToken) *Session {
+func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, resumed bool, epoch omorpc.EpochToken, storedName ...string) *Session {
+	var name, nameSource string
+	if len(storedName) > 0 {
+		name = storedName[0]
+	}
+	if len(storedName) > 1 {
+		nameSource = storedName[1]
+	}
+	if nameSource == "" {
+		nameSource = NameSourceAuto
+	}
+	if nameSource != NameSourceUser {
+		name = ""
+	}
 	s := &Session{manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
+		title: name, nameSource: nameSource,
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
 	s.broadcast.onDetach = m.cfg.OnDetach
 	return s
@@ -125,9 +140,6 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 			s.promptResponse = false
 			s.scheduleIdleLocked()
 		} else if err == nil {
-			if s.title == "" {
-				s.title = DeriveSessionTitle(msg)
-			}
 			s.promptResponse = true
 			if s.localCommandActive && s.localCommandSeq == seq {
 				s.completeLocalCommandLocked(seq)
@@ -135,6 +147,9 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 	}
 	s.lifecycleMu.Unlock()
+	if err == nil {
+		s.applyAutoTitle(ctx, msg)
+	}
 	return err
 }
 
@@ -416,17 +431,116 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 	return &out, nil
 }
 func (s *Session) SetSessionName(ctx context.Context, name string) error {
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
-	if err == nil {
-		s.title = name
+	s.lifecycleMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := s.persistName(ctx, name, NameSourceUser); err != nil {
+		return err
+	}
+	s.lifecycleMu.Lock()
+	if _, err = s.routeLocked(); err == nil {
+		s.title, s.nameSource = name, NameSourceUser
+		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceUser}})
 	}
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err
 	}
 	_, err = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+	s.noteTransportError(err)
 	return err
+}
+
+func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
+	name := DeriveSessionTitle(prompt)
+	if name == "" {
+		return
+	}
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+
+	cur, err := s.currentCursor(ctx)
+	if err != nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if cur.NameSource == NameSourceUser {
+		s.title, s.nameSource = cur.Name, NameSourceUser
+	}
+	if s.closed || s.closing || s.resumable || s.title != "" || s.nameSource == NameSourceUser {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	route := s.routingID
+	s.lifecycleMu.Unlock()
+
+	cur.Name, cur.NameSource = name, NameSourceAuto
+	if err := s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur); err != nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if !s.closed && !s.closing && !s.resumable && s.title == "" && s.nameSource != NameSourceUser {
+		s.title, s.nameSource = name, NameSourceAuto
+		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceAuto}})
+	}
+	s.lifecycleMu.Unlock()
+	_, _ = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+}
+
+func (s *Session) applyProviderName(name string) {
+	if name == "" {
+		return
+	}
+	s.nameMu.Lock()
+	defer s.nameMu.Unlock()
+
+	ctx := context.Background()
+	cur, err := s.currentCursor(ctx)
+	if err != nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if cur.NameSource == NameSourceUser {
+		s.title, s.nameSource = cur.Name, NameSourceUser
+	}
+	if s.closed || s.closing || s.resumable || s.nameSource == NameSourceUser {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	s.lifecycleMu.Unlock()
+
+	cur.Name, cur.NameSource = name, NameSourceAuto
+	if err := s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur); err != nil {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if !s.closed && !s.closing && !s.resumable && s.nameSource != NameSourceUser {
+		s.title, s.nameSource = name, NameSourceAuto
+		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
+	}
+	s.lifecycleMu.Unlock()
+}
+
+func (s *Session) currentCursor(ctx context.Context) (Cursor, error) {
+	if s.manager.cfg.Store == nil {
+		return Cursor{}, errors.New("session: nil cursor store")
+	}
+	return s.manager.cfg.Store.CursorFor(ctx, s.chatID)
+}
+
+func (s *Session) persistName(ctx context.Context, name, source string) error {
+	cur, err := s.currentCursor(ctx)
+	if err != nil {
+		return err
+	}
+	cur.Name, cur.NameSource = name, source
+	return s.manager.cfg.Store.SaveCursor(ctx, s.chatID, cur)
 }
 
 // RespondApproval publishes the correlated acceptance ack before notifying the

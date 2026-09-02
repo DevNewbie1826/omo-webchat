@@ -19,17 +19,98 @@ func TestDeriveSessionTitleMatchesLegacyRules(t *testing.T) {
 	}
 }
 
-func TestSetSessionNameUpdatesLocalSummaryTitle(t *testing.T) {
+func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
-	mgr := testManager(t, client, newMemStore(), 64)
-	sess, _, _ := acquire(t, mgr, testChat{id: "rename-title", cwd: t.TempDir()}, nil)
+	store := newMemStore()
+	mgr := testManager(t, client, store, 64)
+	sub := newRecorder(16)
+	sess, _, _ := acquire(t, mgr, testChat{id: "rename-title", cwd: t.TempDir()}, sub)
+	sub.next(t) // ready
+
 	if err := sess.SetSessionName(context.Background(), "User title"); err != nil {
 		t.Fatal(err)
+	}
+	_, frame := sub.await(t, FrameName)
+	data, _ := frame.Data.(map[string]any)
+	if data["name"] != "User title" || data["origin"] != NameSourceUser {
+		t.Fatalf("name frame = %+v", frame)
 	}
 	if summary, ok := sess.summary(); !ok || summary.Title != "User title" {
 		t.Fatalf("summary after rename = %+v", summary)
 	}
+	if cur := store.stored(sess.ChatID()); cur.Name != "User title" || cur.NameSource != NameSourceUser {
+		t.Fatalf("stored name = %+v", cur)
+	}
+}
+
+func TestFirstPromptAutoTitlePersistsAndFrames(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	mgr := testManager(t, client, store, 64)
+	sub := newRecorder(16)
+	sess, _, _ := acquire(t, mgr, testChat{id: "auto-title", cwd: t.TempDir()}, sub)
+	sub.next(t) // ready
+
+	runScript(t, d, sess, "# Ship   naming semantics")
+	_, frame := sub.await(t, FrameName)
+	data, _ := frame.Data.(map[string]any)
+	if data["name"] != "Ship naming semantics" || data["origin"] != NameSourceAuto {
+		t.Fatalf("name frame = %+v", frame)
+	}
+	if cur := store.stored(sess.ChatID()); cur.Name != "Ship naming semantics" || cur.NameSource != NameSourceAuto {
+		t.Fatalf("stored name = %+v", cur)
+	}
+}
+
+func TestProviderNameOnlyOverwritesAutoSource(t *testing.T) {
+	t.Run("auto", func(t *testing.T) {
+		d := newDaemon(t)
+		client := dial(t, d)
+		store := newMemStore()
+		mgr := testManager(t, client, store, 64)
+		sub := newRecorder(16)
+		sess, _, _ := acquire(t, mgr, testChat{id: "provider-auto", cwd: t.TempDir()}, sub)
+		sub.next(t) // ready
+
+		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Provider title"})
+		_, frame := sub.await(t, FrameName)
+		data, _ := frame.Data.(map[string]any)
+		if data["name"] != "Provider title" || data["origin"] != "provider" {
+			t.Fatalf("name frame = %+v", frame)
+		}
+		if cur := store.stored(sess.ChatID()); cur.Name != "Provider title" || cur.NameSource != NameSourceAuto {
+			t.Fatalf("stored name = %+v", cur)
+		}
+	})
+
+	t.Run("user", func(t *testing.T) {
+		d := newDaemon(t)
+		client := dial(t, d)
+		store := newMemStore()
+		mgr := testManager(t, client, store, 64)
+		sub := newRecorder(16)
+		sess, _, _ := acquire(t, mgr, testChat{id: "provider-user", cwd: t.TempDir()}, sub)
+		sub.next(t) // ready
+		if err := sess.SetSessionName(context.Background(), "User title"); err != nil {
+			t.Fatal(err)
+		}
+		sub.await(t, FrameName)
+
+		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Provider title"})
+		injectEvent(t, sess, map[string]any{"type": "state_changed"})
+		prior, _ := sub.await(t, FrameState)
+		if counts(prior)[FrameName] != 0 {
+			t.Fatalf("provider emitted name after user rename: %+v", prior)
+		}
+		if cur := store.stored(sess.ChatID()); cur.Name != "User title" || cur.NameSource != NameSourceUser {
+			t.Fatalf("stored user name overwritten = %+v", cur)
+		}
+		if summary, _ := sess.summary(); summary.Title != "User title" {
+			t.Fatalf("summary title overwritten = %+v", summary)
+		}
+	})
 }
 
 func TestSummaryCarriesBoundedActivityPairDigestsAndOversizedFlags(t *testing.T) {

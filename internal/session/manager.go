@@ -327,8 +327,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return nil, false, nil, openErr
 	}
 
-	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch)
-	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
+	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, cur.Name, cur.NameSource)
+	newCur := cur
+	newCur.SessionFile, newCur.DurableSessionID = data.State.SessionFile, data.State.SessionID
 	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
 		if err := m.cfg.Store.SaveCursor(ctx, chatID, newCur); err != nil {
 			m.discardRouting(chatID, data.SessionID)

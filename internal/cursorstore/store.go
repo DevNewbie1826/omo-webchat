@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -58,7 +59,11 @@ type Chat struct {
 	CWD              string `json:"cwd"`
 	SessionFile      string `json:"sessionFile,omitempty"`
 	DurableSessionID string `json:"durableSessionId,omitempty"`
-	Name             string `json:"name"`
+	// Provider preserves the v1 runtime identity. Empty, "senpi", and "omo"
+	// are launchable by omo; other values remain persisted but are hidden from
+	// listings so they cannot be mistaken for omo sessions.
+	Provider string `json:"provider,omitempty"`
+	Name     string `json:"name"`
 	// NameSource is "auto" (generated) or "user" (explicitly named).
 	NameSource string `json:"nameSource"`
 	CreatedAt  int64  `json:"createdAt"`
@@ -334,17 +339,53 @@ func (s *Store) GetChat(id string) (Chat, error) {
 	return c, nil
 }
 
-// ListChats returns a snapshot of chats belonging to workspaceID.
+// ListChats returns launchable chats belonging to workspaceID in MRU order.
+// Unsupported v1 providers remain addressable through GetChat so their raw
+// records survive unrelated writes, but are not projected into UI listings.
+// Legacy second-resolution timestamps are compared as milliseconds without
+// changing the values persisted in Chat.
 func (s *Store) ListChats(workspaceID string) []Chat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Chat, 0)
 	for _, chat := range s.data.Chats {
-		if chat.WorkspaceID == workspaceID {
+		if chat.WorkspaceID == workspaceID && IsLaunchableProvider(chat.Provider) {
 			out = append(out, chat)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := RecencyMillis(out[i]), RecencyMillis(out[j])
+		if ri != rj {
+			return ri > rj
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
+}
+
+// IsLaunchableProvider reports whether omo can resume a persisted provider.
+// Empty predates provider persistence and "senpi" is the pre-rebrand alias.
+func IsLaunchableProvider(provider string) bool {
+	switch provider {
+	case "", "senpi", "omo":
+		return true
+	default:
+		return false
+	}
+}
+
+// RecencyMillis returns a comparable MRU key while preserving raw timestamps.
+// V1 wrote Unix seconds; v2 writes Unix milliseconds. Positive values below
+// 10^12 are therefore projected to milliseconds for ordering only.
+func RecencyMillis(chat Chat) int64 {
+	recency := chat.LastUsedAt
+	if recency <= 0 {
+		recency = chat.CreatedAt
+	}
+	if recency > 0 && recency < 1_000_000_000_000 {
+		return recency * 1000
+	}
+	return recency
 }
 
 // DeleteChat removes a chat cursor record.

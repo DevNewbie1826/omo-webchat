@@ -27,6 +27,7 @@ type legacyChat struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	NameSource  string `json:"nameSource"`
+	Provider    string `json:"provider"`
 	PiSessionID string `json:"piSessionId"`
 	WsID        string `json:"wsId"`
 	CWD         string `json:"cwd"`
@@ -35,6 +36,26 @@ type legacyChat struct {
 }
 
 var uuidPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// MigrateV1FromStateDir imports the first existing v1 state source. Default
+// state-dir callers pass historical=true to honor the rename chain:
+// omo-webchat/state.json, then sibling cli-webchat/state.json, then
+// ~/.terminal-hub/state.json. Explicit custom state dirs pass false and remain
+// isolated from default and historical locations.
+func MigrateV1FromStateDir(stateDir string, historical bool, dst *Store) (MigrationSummary, error) {
+	paths, err := v1StatePaths(stateDir, historical)
+	if err != nil {
+		return MigrationSummary{}, err
+	}
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err == nil {
+			return MigrateV1(path, dst)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return MigrationSummary{}, fmt.Errorf("checking v1 state: %w", err)
+		}
+	}
+	return MigrationSummary{}, nil
+}
 
 // MigrateV1 eagerly imports state.json into the cursor store. It only reads
 // legacyPath and skips chat IDs already present, making repeated startups safe.
@@ -88,7 +109,10 @@ func MigrateV1(legacyPath string, dst *Store) (MigrationSummary, error) {
 			if nameSource == "" || nameSource == "default" {
 				nameSource = NameSourceAuto
 			}
-			chat := Chat{ID: oldChat.ID, WorkspaceID: wsID, CWD: cwd, Name: oldChat.Name, NameSource: nameSource, CreatedAt: oldChat.CreatedAt, LastUsedAt: oldChat.LastUsedAt}
+			// Provider and timestamps are intentionally copied verbatim. Listing
+			// filters unsupported providers and normalizes second-resolution
+			// recency only while comparing, preserving an honest v1 record.
+			chat := Chat{ID: oldChat.ID, WorkspaceID: wsID, CWD: cwd, Provider: oldChat.Provider, Name: oldChat.Name, NameSource: nameSource, CreatedAt: oldChat.CreatedAt, LastUsedAt: oldChat.LastUsedAt}
 			switch {
 			case filepath.IsAbs(oldChat.PiSessionID):
 				chat.SessionFile = oldChat.PiSessionID

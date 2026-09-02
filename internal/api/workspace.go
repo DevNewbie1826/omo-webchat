@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -59,10 +60,7 @@ func (s *Server) projectWorkspace(ws cursorstore.Workspace) workspaceResponse {
 	return workspaceResponse{ID: ws.ID, Name: ws.Name, Path: ws.Path, Chats: chats}
 }
 func cursorRecency(c cursorstore.Chat) int64 {
-	if c.LastUsedAt > 0 {
-		return c.LastUsedAt
-	}
-	return c.CreatedAt
+	return cursorstore.RecencyMillis(c)
 }
 
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, _ *http.Request) {
@@ -110,22 +108,45 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("wsId")
-	chats := s.cursors.ListChats(id)
+
+	// Serialize the complete stop-first transaction with chat opens. Metadata
+	// must remain available until every provider route has reached a definitive
+	// close outcome, so a transient stop failure can be retried safely.
 	s.chatLifecycleMu.Lock()
-	err := s.cursors.DeleteWorkspace(id)
+	defer s.chatLifecycleMu.Unlock()
+	chats := s.cursors.ListChats(id)
 	for _, c := range chats {
+		s.chatDeleting[c.ID] = true
 		s.bumpChatLifecycleVersion(c.ID)
 	}
-	s.chatLifecycleMu.Unlock()
-	if err != nil {
+	clearDeleting := func() {
+		for _, c := range chats {
+			delete(s.chatDeleting, c.ID)
+		}
+	}
+
+	var stopErr error
+	if s.manager != nil {
+		for _, c := range chats {
+			stopCtx, cancel := newChatStopContext(context.Background(), chatStopTimeout)
+			err := s.manager.StopContext(stopCtx, c.ID)
+			cancel()
+			if err != nil && stopErr == nil {
+				stopErr = err
+			}
+		}
+	}
+	if stopErr != nil {
+		clearDeleting()
+		writeError(w, http.StatusInternalServerError, "failed to stop workspace chats")
+		return
+	}
+	if err := s.cursors.DeleteWorkspace(id); err != nil {
+		clearDeleting()
 		s.writeStoreError(w, err)
 		return
 	}
-	if s.manager != nil {
-		for _, c := range chats {
-			_ = s.manager.StopContext(r.Context(), c.ID)
-		}
-	}
+	clearDeleting()
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {

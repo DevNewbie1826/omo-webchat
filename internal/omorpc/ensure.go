@@ -90,6 +90,15 @@ func (d *EnsuredDaemon) Close() error {
 	return d.Client.Close()
 }
 
+// StopBounded tears down the ensured daemon using a lifecycle-owned deadline.
+// It is intended for callers whose request or startup context may already be
+// canceled when cleanup begins.
+func (d *EnsuredDaemon) StopBounded(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return d.Stop(ctx)
+}
+
 // Stop closes the client and, when this ensure call spawned the supervisor,
 // sends SIGTERM, waits up to three seconds, then falls back to SIGKILL.
 func (d *EnsuredDaemon) Stop(ctx context.Context) error {

@@ -732,7 +732,7 @@ func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, e
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID}, nil
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource}, nil
 }
 func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Cursor) error {
 	st := (*cursorstore.Store)(s)
@@ -741,6 +741,7 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 		return err
 	}
 	c.SessionFile, c.DurableSessionID = cur.SessionFile, cur.DurableSessionID
+	c.Name, c.NameSource = cur.Name, cur.NameSource
 	return st.SaveChat(c)
 }
 

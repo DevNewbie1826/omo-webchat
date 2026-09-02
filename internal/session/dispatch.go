@@ -18,6 +18,11 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	if json.Unmarshal(ev.Raw, &raw) != nil {
 		return
 	}
+	if ev.Type == "session_info_changed" {
+		name, _ := raw["name"].(string)
+		s.applyProviderName(name)
+		return
+	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.closed || s.resumable {
@@ -101,11 +106,6 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		payload["isStreaming"] = s.promptInFlight || s.providerRunActive || s.localCommandActive
 		payload["isCompacting"] = s.compactionActive
 		s.publishLocked(Frame{Kind: FrameState, SessionID: s.durableID, Data: payload})
-	case "session_info_changed":
-		if name, _ := raw["name"].(string); name != "" {
-			s.title = name
-			s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
-		}
 	case "commands_changed":
 		s.publishLocked(Frame{Kind: FrameCommands, SessionID: s.durableID, Data: eventPayload(raw)})
 	case "extension_event":
