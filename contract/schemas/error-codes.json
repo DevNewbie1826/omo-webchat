@@ -13,6 +13,7 @@
         "prompt_in_flight",
         "compaction_in_flight",
         "provider_error",
+        "unsupported_provider",
         "persist_failed",
         "decode_failed",
         "bad_frame",

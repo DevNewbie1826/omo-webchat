@@ -123,6 +123,76 @@ func TestDeleteWorkspaceStopsLiveUnsupportedProviderSession(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkspaceStopsHiddenResumableAndRetiringRoutes(t *testing.T) {
+	h := newWorkspaceDeleteHarness(t, 0)
+	resumable := cursorstore.Chat{ID: "resumable-hidden", WorkspaceID: h.ws.ID, CWD: h.ws.Path, Provider: "omp", Name: "resumable"}
+	if err := h.store.SaveChat(resumable); err != nil {
+		t.Fatal(err)
+	}
+	sess, _, detach, err := h.manager.Acquire(context.Background(), workspaceDeleteChatRef{id: resumable.ID, cwd: resumable.CWD}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	detach()
+
+	releaseState := h.daemon.BlockHandler(omorpc.CmdGetState)
+	queryDone := make(chan error, 1)
+	go func() {
+		_, err := sess.QueryState(context.Background())
+		queryDone <- err
+	}()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetState, 1, workspaceDeleteTestTimeout) {
+		t.Fatal("resumable fixture did not reach get_state")
+	}
+	h.daemon.DropConnections()
+	if err := <-queryDone; !errors.Is(err, omorpc.ErrDisconnected) {
+		t.Fatalf("epoch invalidation = %v, want disconnected", err)
+	}
+	releaseState()
+	if !sess.Resumable() {
+		t.Fatal("hidden session was not marked resumable")
+	}
+
+	retiring := cursorstore.Chat{ID: "retiring-only", WorkspaceID: h.ws.ID, CWD: h.ws.Path, Provider: "legacy", Name: "retiring"}
+	if err := h.store.SaveChat(retiring); err != nil {
+		t.Fatal(err)
+	}
+	h.daemon.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
+	validationCalls := 0
+	stale := errors.New("stale lifecycle")
+	_, _, _, err = h.manager.AcquireInitializedChecked(context.Background(), workspaceDeleteChatRef{id: retiring.ID, cwd: retiring.CWD}, nil, nil, func() error {
+		validationCalls++
+		if validationCalls > 1 {
+			return stale
+		}
+		return nil
+	})
+	if !errors.Is(err, stale) {
+		t.Fatalf("retiring fixture acquire = %v, want stale lifecycle", err)
+	}
+	if got := h.store.ListChats(h.ws.ID); len(got) != 0 {
+		t.Fatalf("hidden fixtures unexpectedly listed: %+v", got)
+	}
+	if got := h.manager.LiveSummaries(); len(got) != 0 {
+		t.Fatalf("hidden lifecycle routes unexpectedly summarized: %+v", got)
+	}
+	if got := h.daemon.LiveSessions(); len(got) != 2 {
+		t.Fatalf("live fixture routes = %v, want 2", got)
+	}
+	closeRequests := h.daemon.RequestCount(omorpc.CmdCloseSession)
+
+	rec := h.delete(context.Background())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := h.daemon.LiveSessions(); len(got) != 0 {
+		t.Fatalf("workspace delete left daemon routes live: %v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdCloseSession) - closeRequests; got != 2 {
+		t.Fatalf("workspace delete close requests = %d, want 2", got)
+	}
+}
+
 func TestDeleteWorkspaceStopsEveryActiveChatBeforeDeletingMetadata(t *testing.T) {
 	h := newWorkspaceDeleteHarness(t, 3)
 	rec := h.delete(context.Background())

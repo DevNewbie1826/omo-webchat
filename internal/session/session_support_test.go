@@ -75,6 +75,7 @@ func (s *memCursorStore) UpdateName(_ context.Context, chatID, name, source stri
 	}
 	cur := s.cursors[chatID]
 	cur.Name, cur.NameSource = name, source
+	cur.TitleIsPlaceholder = false
 	s.cursors[chatID] = cur
 	return nil
 }

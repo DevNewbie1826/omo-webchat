@@ -66,6 +66,9 @@ type Chat struct {
 	Name     string `json:"name"`
 	// NameSource is "auto" (generated) or "user" (explicitly named).
 	NameSource string `json:"nameSource"`
+	// TitleIsPlaceholder marks the pre-identity default name that auto-title
+	// derivation may replace; any established name clears it.
+	TitleIsPlaceholder bool `json:"titleIsPlaceholder,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	// LastUsedAt is the Unix-millisecond stamp of the most recent successful
 	// open; zero means never used.
@@ -328,6 +331,49 @@ func (s *Store) UpdateChat(c Chat) error {
 	return s.flushLocked(candidate)
 }
 
+// UpdateIdentity updates only the durable provider identity. The read and
+// write share one critical section so concurrent name changes cannot be lost.
+func (s *Store) UpdateIdentity(id, sessionFile, durableID string) error {
+	return s.updateChatFields(id, func(c *Chat) error {
+		c.SessionFile = sessionFile
+		c.DurableSessionID = durableID
+		return nil
+	})
+}
+
+// UpdateName updates only the display-name fields atomically with respect to
+// every other store mutation.
+func (s *Store) UpdateName(id, name, source string) error {
+	return s.updateChatFields(id, func(c *Chat) error {
+		switch source {
+		case "", NameSourceAuto, NameSourceUser:
+		default:
+			return fmt.Errorf("%w: %q", ErrInvalidNameSource, source)
+		}
+		c.Name = name
+		c.NameSource = source
+		// Any established name clears the pre-identity placeholder marker.
+		c.TitleIsPlaceholder = false
+		return nil
+	})
+}
+
+func (s *Store) updateChatFields(id string, mutate func(*Chat) error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data.Chats[id]
+	if !ok {
+		return ErrNotFound
+	}
+	candidate := cloneState(s.data)
+	updated := candidate.Chats[id]
+	if err := mutate(&updated); err != nil {
+		return err
+	}
+	candidate.Chats[id] = updated
+	return s.flushLocked(candidate)
+}
+
 // GetChat returns a copy of the chat cursor record.
 func (s *Store) GetChat(id string) (Chat, error) {
 	s.mu.Lock()
@@ -347,9 +393,21 @@ func (s *Store) GetChat(id string) (Chat, error) {
 func (s *Store) ListChats(workspaceID string) []Chat {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.listChatsLocked(workspaceID, true)
+}
+
+// ListChatsRaw returns every persisted chat belonging to workspaceID. It is
+// for lifecycle teardown and migration, never UI projection.
+func (s *Store) ListChatsRaw(workspaceID string) []Chat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listChatsLocked(workspaceID, false)
+}
+
+func (s *Store) listChatsLocked(workspaceID string, launchableOnly bool) []Chat {
 	out := make([]Chat, 0)
 	for _, chat := range s.data.Chats {
-		if chat.WorkspaceID == workspaceID && IsLaunchableProvider(chat.Provider) {
+		if chat.WorkspaceID == workspaceID && (!launchableOnly || IsLaunchableProvider(chat.Provider)) {
 			out = append(out, chat)
 		}
 	}

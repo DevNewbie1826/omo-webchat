@@ -327,11 +327,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return nil, false, nil, openErr
 	}
 
-	// A non-user name before the first durable identity is the creation-time
-	// placeholder. Once an identity exists, auto/provider names are established
-	// and seed every later session generation.
+	// Only an explicitly marked creation-time default is replaceable. Empty
+	// names also derive naturally; every other auto/provider name is established,
+	// regardless of which durable identity fields happen to be available.
 	name := cur.Name
-	if cur.SessionFile == "" && cur.NameSource != NameSourceUser {
+	if cur.TitleIsPlaceholder {
 		name = ""
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)

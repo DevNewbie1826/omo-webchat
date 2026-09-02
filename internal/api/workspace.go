@@ -152,29 +152,10 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// workspaceLifecycleChats includes filtered UI rows plus any raw metadata rows
-// that already have a live manager session. Unsupported rows cannot launch now,
-// but sessions opened by an older process still need stop-first teardown.
+// workspaceLifecycleChats uses raw metadata because resumable and retiring
+// manager routes are intentionally absent from live/UI projections.
 func (s *Server) workspaceLifecycleChats(workspaceID string) []cursorstore.Chat {
-	chats := s.cursors.ListChats(workspaceID)
-	seen := make(map[string]struct{}, len(chats))
-	for _, chat := range chats {
-		seen[chat.ID] = struct{}{}
-	}
-	if s.manager == nil {
-		return chats
-	}
-	for _, summary := range s.manager.LiveSummaries() {
-		if _, ok := seen[summary.ChatID]; ok {
-			continue
-		}
-		chat, err := s.cursors.GetChat(summary.ChatID)
-		if err == nil && chat.WorkspaceID == workspaceID {
-			chats = append(chats, chat)
-			seen[chat.ID] = struct{}{}
-		}
-	}
-	return chats
+	return s.cursors.ListChatsRaw(workspaceID)
 }
 
 func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {

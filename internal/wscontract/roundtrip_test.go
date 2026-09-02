@@ -122,6 +122,20 @@ func TestClientFrameFixturesRoundtrip(t *testing.T) {
 	}
 }
 
+func TestUnsupportedProviderErrorFixture(t *testing.T) {
+	const name = "server-error-unsupported-provider.json"
+	data, err := os.ReadFile(filepath.Join(fixturesDir(t), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := ParseServerFrame(data)
+	assertRoundtrip(t, name, data, frame, err)
+	errorFrame, ok := frame.(*ErrorFrame)
+	if !ok || errorFrame.Code == nil || *errorFrame.Code != ErrorCodeUnsupportedProvider {
+		t.Fatalf("parsed frame code = %v, want %q", errorFrame, ErrorCodeUnsupportedProvider)
+	}
+}
+
 func TestInvalidFixturesAreRejected(t *testing.T) {
 	for _, test := range []struct {
 		name   string

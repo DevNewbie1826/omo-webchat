@@ -45,6 +45,9 @@ type Cursor struct {
 	DurableSessionID string
 	Name             string
 	NameSource       string
+	// TitleIsPlaceholder is true only for the pre-identity default name that
+	// the first successful plain prompt may replace with a derived title.
+	TitleIsPlaceholder bool
 }
 
 type CursorStore interface {

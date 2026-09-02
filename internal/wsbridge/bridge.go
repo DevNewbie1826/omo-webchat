@@ -747,7 +747,7 @@ func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, e
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource}, nil
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}, nil
 }
 func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Cursor) error {
 	st := (*cursorstore.Store)(s)
@@ -757,25 +757,14 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 	}
 	c.SessionFile, c.DurableSessionID = cur.SessionFile, cur.DurableSessionID
 	c.Name, c.NameSource = cur.Name, cur.NameSource
+	c.TitleIsPlaceholder = cur.TitleIsPlaceholder
 	return st.SaveChat(c)
 }
 func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
-	st := (*cursorstore.Store)(s)
-	c, err := st.GetChat(id)
-	if err != nil {
-		return err
-	}
-	c.SessionFile, c.DurableSessionID = sessionFile, durableID
-	return st.UpdateChat(c)
+	return (*cursorstore.Store)(s).UpdateIdentity(id, sessionFile, durableID)
 }
 func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) error {
-	st := (*cursorstore.Store)(s)
-	c, err := st.GetChat(id)
-	if err != nil {
-		return err
-	}
-	c.Name, c.NameSource = name, source
-	return st.UpdateChat(c)
+	return (*cursorstore.Store)(s).UpdateName(id, name, source)
 }
 
 var _ session.CursorStore = (*CursorStore)(nil)

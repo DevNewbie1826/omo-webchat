@@ -349,6 +349,57 @@ func jsonEqual(a, b []byte) bool {
 	return reflect.DeepEqual(va, vb)
 }
 
+func TestChatFieldMutationsSerializeReadModifyWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s := mustOpen(t, path)
+	if err := s.SaveWorkspace(testWorkspace("ws1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveChat(testChat("c1", "ws1")); err != nil {
+		t.Fatal(err)
+	}
+
+	identityRead := make(chan struct{})
+	releaseIdentity := make(chan struct{})
+	identityDone := make(chan error, 1)
+	go func() {
+		identityDone <- s.updateChatFields("c1", func(c *Chat) error {
+			close(identityRead)
+			<-releaseIdentity
+			c.SessionFile = "/new/session.jsonl"
+			c.DurableSessionID = "durable-new"
+			return nil
+		})
+	}()
+	<-identityRead
+
+	renameStarted := make(chan struct{})
+	renameDone := make(chan error, 1)
+	go func() {
+		close(renameStarted)
+		renameDone <- s.UpdateName("c1", "user rename", NameSourceUser)
+	}()
+	<-renameStarted
+	close(releaseIdentity)
+	if err := <-identityDone; err != nil {
+		t.Fatalf("UpdateIdentity transaction: %v", err)
+	}
+	if err := <-renameDone; err != nil {
+		t.Fatalf("UpdateName: %v", err)
+	}
+
+	got, err := mustOpen(t, path).GetChat("c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "user rename" || got.NameSource != NameSourceUser {
+		t.Fatalf("identity update restored stale name: %+v", got)
+	}
+	if got.SessionFile != "/new/session.jsonl" || got.DurableSessionID != "durable-new" {
+		t.Fatalf("rename lost identity update: %+v", got)
+	}
+}
+
 // TestConcurrentMutations: hammer every mutation path from parallel
 // goroutines; the store must stay consistent and fully persisted.
 func TestConcurrentMutations(t *testing.T) {

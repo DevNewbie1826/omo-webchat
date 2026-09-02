@@ -99,11 +99,16 @@ func TestSetSessionNamePersistsAndFramesUserTitle(t *testing.T) {
 	}
 }
 
-func TestFirstPromptReplacesCreationPlaceholder(t *testing.T) {
+func TestDurableOnlyCreationPlaceholderDerivesOnFirstPrompt(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
-	if err := store.SaveCursor(context.Background(), "auto-title", Cursor{Name: "workspace", NameSource: NameSourceAuto}); err != nil {
+	if err := store.SaveCursor(context.Background(), "auto-title", Cursor{
+		DurableSessionID:   "123e4567-e89b-42d3-a456-426614174000",
+		Name:               "workspace",
+		NameSource:         NameSourceAuto,
+		TitleIsPlaceholder: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	mgr := testManager(t, client, store, 64)
@@ -117,8 +122,39 @@ func TestFirstPromptReplacesCreationPlaceholder(t *testing.T) {
 	if data["name"] != "Ship naming semantics" || data["origin"] != NameSourceAuto {
 		t.Fatalf("name frame = %+v", frame)
 	}
-	if cur := store.stored(sess.ChatID()); cur.Name != "Ship naming semantics" || cur.NameSource != NameSourceAuto {
+	if cur := store.stored(sess.ChatID()); cur.Name != "Ship naming semantics" || cur.NameSource != NameSourceAuto || cur.TitleIsPlaceholder {
 		t.Fatalf("stored name = %+v", cur)
+	}
+}
+
+func TestDurableOnlyEstablishedAutoTitleSurvivesPlainPrompt(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	const chatID = "durable-only-established-title"
+	if err := store.SaveCursor(context.Background(), chatID, Cursor{
+		DurableSessionID: "123e4567-e89b-42d3-a456-426614174000",
+		Name:             "Established title",
+		NameSource:       NameSourceAuto,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mgr := testManager(t, client, store, 64)
+	sub := newRecorder(16)
+	sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, sub)
+	sub.next(t) // ready
+
+	runScript(t, d, sess, "A later plain prompt")
+	if cur := store.stored(chatID); cur.Name != "Established title" || cur.NameSource != NameSourceAuto {
+		t.Fatalf("established title changed: %+v", cur)
+	}
+	if summary, ok := sess.summary(); !ok || summary.Title != "Established title" {
+		t.Fatalf("summary lost established title: %+v", summary)
+	}
+	for _, frame := range sub.drain() {
+		if frame.Kind == FrameName {
+			t.Fatalf("plain prompt emitted replacement name: %+v", frame)
+		}
 	}
 }
 
