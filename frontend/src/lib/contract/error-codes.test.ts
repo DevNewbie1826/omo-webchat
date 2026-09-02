@@ -6,6 +6,7 @@ const addedErrorCodes = [
   "set_thinking_failed",
   "approval_failed",
   "incomplete_history",
+  "adoption_required",
 ] as const;
 
 describe("generated error-code parser", () => {
