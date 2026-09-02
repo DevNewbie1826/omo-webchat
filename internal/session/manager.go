@@ -203,10 +203,10 @@ func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subs
 	return m.acquire(ctx, chat, sub, initialize, nil)
 }
 
-// AcquireInitializedChecked delays publication of a newly opened session
-// until initialize completes and validate confirms that its caller's metadata
-// generation is still current. validate must not acquire a lock that nests
-// outside the manager's per-chat flight.
+// AcquireInitializedChecked validates its caller's metadata generation before
+// provider work and again after initialize, immediately before publication.
+// validate must not acquire a lock that nests outside the manager's per-chat
+// flight.
 func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, initialize, validate)
 }
@@ -240,6 +240,15 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return nil, false, nil, err
 	}
 	defer unlock()
+
+	// A delete that acquired the flight first has already invalidated callers
+	// prepared against its prior metadata generation. Reject them before they
+	// can open a route that would appear after the delete's retiring-set drain.
+	if validate != nil {
+		if err := validate(); err != nil {
+			return nil, false, nil, err
+		}
+	}
 
 	m.mu.Lock()
 	if m.closed {

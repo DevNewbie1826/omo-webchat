@@ -400,8 +400,13 @@ func TestMergeGateRetiringRouteIsRetriedByStop(t *testing.T) {
 	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
 	generationMismatch := errors.New("generation mismatch")
+	validationCalls := 0
 	_, _, _, err := mgr.AcquireInitializedChecked(context.Background(), testChat{id: "retiring", cwd: t.TempDir()}, nil, nil, func() error {
-		return generationMismatch
+		validationCalls++
+		if validationCalls > 1 {
+			return generationMismatch
+		}
+		return nil
 	})
 	if !errors.Is(err, generationMismatch) {
 		t.Fatalf("checked acquire = %v, want generation mismatch", err)
@@ -427,6 +432,78 @@ func TestMergeGateRetiringRouteIsRetriedByStop(t *testing.T) {
 	mgr.mu.Unlock()
 	if retiring != 0 {
 		t.Fatalf("retiring routes after definitive close = %d", retiring)
+	}
+}
+
+func TestMergeGateStopFirstRejectsPreparedAcquireBeforeOpen(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 16, CloseTimeout: 30 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	chat := testChat{id: "stop-first", cwd: t.TempDir()}
+	_, _, _ = acquire(t, mgr, chat, nil)
+	baselineOpens := d.RequestCount(omorpc.CmdOpenSession)
+
+	mgr.mu.Lock()
+	preparedGeneration := mgr.slotGeneration[chat.id]
+	mgr.mu.Unlock()
+	generationMismatch := errors.New("generation mismatch")
+	validate := func() error {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		if mgr.slotGeneration[chat.id] != preparedGeneration {
+			return generationMismatch
+		}
+		return nil
+	}
+
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(context.Background(), chat.id) }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("stop did not acquire the chat flight")
+	}
+
+	releaseOpen := d.BlockHandler(omorpc.CmdOpenSession)
+	defer releaseOpen()
+	acquired := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.AcquireInitializedChecked(context.Background(), chat, nil, nil, validate)
+		acquired <- err
+	}()
+	releaseClose()
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	// If a stale acquire opens despite losing the flight, make its discard
+	// non-definitive. This reproduces the route that used to enter the retiring
+	// set only after Stop's drain and therefore survive the successful delete.
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
+	releaseOpen()
+	if err := <-acquired; !errors.Is(err, generationMismatch) {
+		t.Fatalf("checked acquire = %v, want generation mismatch", err)
+	}
+	opensAfterStop := d.RequestCount(omorpc.CmdOpenSession)
+	liveAfterStop := d.LiveSessions()
+
+	// A repeated stop models the manager state seen by a subsequent not-found
+	// DELETE: there must be no latent retiring work left behind.
+	if err := mgr.StopContext(context.Background(), chat.id); err != nil {
+		t.Fatalf("second stop: %v", err)
+	}
+	mgr.mu.Lock()
+	retiring := len(mgr.retiringByChat[chat.id])
+	mgr.mu.Unlock()
+	if retiring != 0 {
+		t.Fatalf("retiring routes after second stop = %d", retiring)
+	}
+	if opensAfterStop != baselineOpens {
+		t.Fatalf("stale stop-first acquire opened %d routes", opensAfterStop-baselineOpens)
+	}
+	if len(liveAfterStop) != 0 {
+		t.Fatalf("successful stop left a provider orphan: %v", liveAfterStop)
 	}
 }
 

@@ -254,8 +254,13 @@ func TestDeleteChatRetriesGenerationMismatchRetiringRoute(t *testing.T) {
 	releaseClose := e.daemon.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
 	generationMismatch := errors.New("generation mismatch")
+	validationCalls := 0
 	_, _, _, err := manager.AcquireInitializedChecked(context.Background(), v2ControlRef{e.chatID, t.TempDir()}, nil, nil, func() error {
-		return generationMismatch
+		validationCalls++
+		if validationCalls > 1 {
+			return generationMismatch
+		}
+		return nil
 	})
 	if !errors.Is(err, generationMismatch) {
 		t.Fatalf("checked acquire = %v, want generation mismatch", err)
@@ -301,10 +306,19 @@ func TestDeleteChatRejectsBridgePublicationPreparedBeforeDelete(t *testing.T) {
 		<-continuePrepare
 		return generation, err
 	}
+	preparedChatVersion := e.server.chatLifecycleVersion(e.chatID)
+	versionChecks := 0
+	chatVersion := func(chatID string) uint64 {
+		versionChecks++
+		if versionChecks == 1 {
+			return preparedChatVersion
+		}
+		return e.server.chatLifecycleVersion(chatID)
+	}
 	bridge := wsbridge.New(wsbridge.Config{
 		Context: t.Context(), Manager: e.manager, Store: e.cursors,
 		ServerVersion: "test", Logger: e.server.logger,
-		PrepareChatVersion: prepareVersion, ChatVersion: e.server.chatLifecycleVersion,
+		PrepareChatVersion: prepareVersion, ChatVersion: chatVersion,
 	})
 	httpServer := httptest.NewServer(bridge)
 	defer httpServer.Close()
