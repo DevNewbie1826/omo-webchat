@@ -132,7 +132,7 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	s.noteTransportError(err)
 	s.lifecycleMu.Lock()
 	if s.promptSeq == seq {
-		if err != nil && !s.providerRunActive {
+		if err != nil && !deliveryUncertain(err) && !s.providerRunActive {
 			s.promptInFlight = false
 			s.localCommandActive = false
 			s.promptResponse = false
@@ -248,7 +248,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	_, callErr := s.client.Call(ctx, omorpc.Compact{SessionID: route})
 	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
-	if s.compactSeq == seq && s.compactionActive && s.compactRPCID == rpcID {
+	if s.compactSeq == seq && s.compactionActive && s.compactRPCID == rpcID && !deliveryUncertain(callErr) {
 		providerID := s.compactProviderID
 		s.compactionActive = false
 		s.rememberCompletedCompactionLocked(rpcID, providerID)
@@ -684,6 +684,12 @@ func definitiveCloseFailure(err error) bool {
 	return errors.As(err, &stable) && (stable.Code == omorpc.ErrCodeUnknownSession || stable.Code == omorpc.ErrCodeSessionClosing)
 }
 
+// Written-unanswered proves the request reached the transport but no response
+// settled, so state-changing latches must await provider lifecycle evidence.
+func deliveryUncertain(err error) bool {
+	return errors.Is(err, omorpc.ErrWrittenUnanswered)
+}
+
 func (s *Session) retireReplaced() {
 	s.lifecycleMu.Lock()
 	s.closed = true
@@ -811,40 +817,45 @@ func (s *Session) LoadEntries(ctx context.Context, since string) {
 }
 
 // hydrateEntries serves the active branch from the durable JSONL file, then
-// asks the live route only for entries newer than the disk leaf. Local I/O has
-// the long history budget; the caller bounds the incremental RPC. Failures are
-// visible without changing epoch state.
+// asks the live route only for entries newer than the disk leaf. The caller's
+// history context bounds both phases. Disk pages remain non-terminal so the
+// live tail produces exactly one authoritative terminal page.
 func (s *Session) hydrateEntries(ctx context.Context, sessionPath string) {
-	// Disk hydration is isolated from the short acquisition caller budget. The
-	// bridge supplies the longer load budget to the incremental RPC below,
-	// while manager shutdown remains authoritative for local I/O.
-	diskCtx, cancelDisk := context.WithTimeout(s.manager.shutdownCtx, DefaultHistoryTimeout)
-	defer cancelDisk()
-	metadata, err := coldhistory.Stream(diskCtx, sessionPath, coldhistory.Options{
+	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
 		PageEntries: entriesPageMaxCount,
 	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.lifecycleMu.Lock()
 		defer s.lifecycleMu.Unlock()
 		if s.closed || s.resumable {
 			return ErrSessionResumable
 		}
-		leaf := ""
-		if page.Final {
-			leaf = metadata.LeafID
-		}
-		s.publishEntriesPageLocked(page.Entries, leaf, page.Final)
+		// A header-only file has no cursor for an incremental query, so its
+		// empty disk page is the hydration terminal. Every non-empty branch is
+		// finalized only by the live tail below.
+		final := page.Final && metadata.LeafID == ""
+		s.publishEntriesPageLocked(page.Entries, "", final)
 		return nil
 	})
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		s.publishHistoryError(err)
 		return
 	}
 	if metadata.LeafID != "" {
-		s.loadEntries(ctx, metadata.LeafID)
+		s.loadEntriesAfter(ctx, metadata.LeafID, metadata.LeafID)
 	}
 }
 
 func (s *Session) loadEntries(ctx context.Context, since string) {
+	s.loadEntriesAfter(ctx, since, "")
+}
+
+func (s *Session) loadEntriesAfter(ctx context.Context, since, fallbackLeaf string) {
 	if since == "" {
 		return
 	}
@@ -871,6 +882,9 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 	// A valid response with malformed fields still terminates history loading;
 	// json.Unmarshal preserves any entries decoded before the bad field.
 	_ = json.Unmarshal(resp.Data, &wire)
+	if wire.LeafID == "" {
+		wire.LeafID = fallbackLeaf
+	}
 	s.lifecycleMu.Lock()
 	if !s.closed && !s.resumable {
 		s.publishEntriesPageLocked(wire.Entries, wire.LeafID, true)

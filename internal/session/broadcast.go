@@ -160,6 +160,18 @@ func (b *broadcaster) finish(x *subscription, reason error, wait, cancel bool) {
 	if wait {
 		<-x.exited
 	}
+	b.notifyDetach(x, reason)
+}
+
+func (b *broadcaster) finishAsync(x *subscription, reason error, cancel bool) {
+	x.stop(cancel)
+	go func() {
+		<-x.exited
+		b.notifyDetach(x, reason)
+	}()
+}
+
+func (b *broadcaster) notifyDetach(x *subscription, reason error) {
 	if b.onDetach != nil {
 		b.onDetach(x.sub, reason)
 	}
@@ -176,7 +188,9 @@ func (b *broadcaster) publish(f Frame) {
 	}
 	b.mu.Unlock()
 	for _, x := range retired {
-		b.finish(x, ErrSubscriberOverflow, true, true)
+		// publish is called while Session.lifecycleMu is held. Cancellation is
+		// immediate, but pump completion must not receive under that lock.
+		b.finishAsync(x, ErrSubscriberOverflow, true)
 	}
 }
 

@@ -927,11 +927,18 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 		if got := d.OpenCount(); got != cycle+1 {
 			t.Fatalf("cycle %d: open_session count = %d, want %d (one per acquire)", cycle, got, cycle+1)
 		}
-		// History flows after every resume.
-		_, entries := sub.await(t, FrameEntries)
-		data, _ := entries.Data.(EntriesFrame)
-		if !data.Final || (cycle > 1 && len(data.Entries) == 0) {
-			t.Fatalf("cycle %d: resumed history broken: %+v", cycle, data)
+		// History flows after every resume and has one live-tail terminal.
+		total := 0
+		for {
+			_, entries := sub.await(t, FrameEntries)
+			data, _ := entries.Data.(EntriesFrame)
+			total += len(data.Entries)
+			if data.Final {
+				break
+			}
+		}
+		if cycle > 1 && total == 0 {
+			t.Fatalf("cycle %d: resumed history was empty", cycle)
 		}
 		// And the session is usable each time.
 		runScript(t, d, sess, fmt.Sprintf("cycle-%d", cycle))

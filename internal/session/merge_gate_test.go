@@ -1010,8 +1010,8 @@ func TestMergeGateMalformedIncrementalHistoryStillPublishesTerminalFrame(t *test
 		t.Fatalf("incremental cursor = %v, want %q", request["since"], leafID)
 	}
 	_, cold := sub.await(t, FrameEntries)
-	if entries := cold.Data.(EntriesFrame); !entries.Final || entries.LeafID != leafID {
-		t.Fatalf("cold history terminal = %+v", entries)
+	if entries := cold.Data.(EntriesFrame); entries.Final || entries.LeafID != "" {
+		t.Fatalf("cold history page must await the live tail: %+v", entries)
 	}
 	id, _ := request["id"].(string)
 	sid, _ := request["sessionId"].(string)
@@ -1027,7 +1027,7 @@ func TestMergeGateMalformedIncrementalHistoryStillPublishesTerminalFrame(t *test
 	release()
 	_, frame := sub.await(t, FrameEntries)
 	entries := frame.Data.(EntriesFrame)
-	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != "" {
+	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != leafID {
 		t.Fatalf("terminal malformed incremental history frame: %+v", entries)
 	}
 }
