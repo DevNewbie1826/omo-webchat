@@ -14,6 +14,7 @@
     { "$ref": "#/$defs/ChatModelsFrame" },
     { "$ref": "#/$defs/ChatStatsFrame" },
     { "$ref": "#/$defs/ActivityRefreshFrame" },
+    { "$ref": "#/$defs/SessionsSubscribeFrame" },
     { "$ref": "#/$defs/ChatResumeFrame" },
     { "$ref": "#/$defs/ChatCloseFrame" },
     { "$ref": "#/$defs/ChatDisconnectFrame" },
@@ -133,6 +134,17 @@
       "properties": {
         "type": { "const": "activity.refresh" },
         "sessionId": { "type": "string" }
+      }
+    },
+    "SessionsSubscribeFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "mode"],
+      "description": "Replaces this socket's activity subscription. all_live follows every live overview row; explicit follows sessionIds; none unsubscribes.",
+      "properties": {
+        "type": { "const": "sessions.subscribe" },
+        "mode": { "type": "string", "enum": ["all_live", "explicit", "none"] },
+        "sessionIds": { "type": "array", "items": { "type": "string" } }
       }
     },
     "ChatResumeFrame": {

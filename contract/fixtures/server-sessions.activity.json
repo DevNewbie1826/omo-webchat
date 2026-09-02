@@ -1,0 +1,36 @@
+{
+  "type": "sessions.activity",
+  "sessionId": "chat-1",
+  "durableSessionId": "child-session-1",
+  "replacesSessionId": "child-session-1",
+  "snapshots": [
+    {
+      "name": "omo.task.updated",
+      "data": {
+        "parent_session_id": "child-session-1",
+        "tasks": [{"task_id": "task-1", "status": "running", "updated_at": "2026-09-03T00:00:00Z"}],
+        "truncated_tasks": false
+      },
+      "oversized": false
+    },
+    {
+      "name": "omo.dag.updated",
+      "data": {
+        "runs": [{"run_id": "run-1", "status": "running", "nodes": [{"task_id": "task-1", "state": "running"}]}],
+        "truncated_runs": false
+      },
+      "oversized": false
+    }
+  ],
+  "taskDigest": {
+    "tasks": [{"task_id": "task-1", "status": "running", "updated_at": "2026-09-03T00:00:00Z"}],
+    "truncated": false,
+    "received_at": "2026-09-03T00:00:00Z"
+  },
+  "dagDigest": {
+    "runs": [{"run_id": "run-1", "status": "running", "running_task_ids": ["task-1"]}],
+    "truncated": false,
+    "received_at": "2026-09-03T00:00:00Z"
+  },
+  "overflow": false
+}

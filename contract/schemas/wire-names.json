@@ -49,7 +49,7 @@
           "required": [
             "ping", "chat.create", "chat.send", "chat.abort", "chat.set",
             "approval.respond", "chat.commands", "chat.compact", "chat.models",
-            "chat.stats", "activity.refresh", "chat.resume", "chat.close", "chat.disconnect"
+            "chat.stats", "activity.refresh", "sessions.subscribe", "chat.resume", "chat.close", "chat.disconnect"
           ],
           "properties": {
             "ping": { "const": "ping" },
@@ -63,6 +63,7 @@
             "chat.models": { "const": "chat.models" },
             "chat.stats": { "const": "chat.stats" },
             "activity.refresh": { "const": "activity.refresh" },
+            "sessions.subscribe": { "const": "sessions.subscribe" },
             "chat.resume": { "const": "chat.resume" },
             "chat.close": { "const": "chat.close" },
             "chat.disconnect": { "const": "chat.disconnect" }

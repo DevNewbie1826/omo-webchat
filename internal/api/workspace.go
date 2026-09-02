@@ -148,6 +148,11 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	if s.manager != nil {
+		for _, c := range chats {
+			s.manager.RetireIdentity(c.ID)
+		}
+	}
 	clearDeleting()
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -7,6 +7,8 @@ import { useMediaQuery } from "../../lib/useMediaQuery";
 import {
   __resetLiveBadgeStoreForTests,
   ingestExtensionEvent,
+  nextLiveActivitySequence,
+  settleLiveBadgePoll,
   useLiveBadgeOverrides,
   useMergedLiveSummaries,
 } from "./liveBadgeStore";
@@ -143,19 +145,54 @@ describe("liveBadgeStore", () => {
     expect(captured.overrides.has("s1")).toBe(false);
   });
 
-  it("ignores an override that arrived before the current poll snapshot when merging", async () => {
+  it("lets an identical successful poll supersede an older override", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
       ingestExtensionEvent("s1", "omo.dag.updated", DAG_RUNNING_3);
     });
-    // The poll snapshot arrives one second after the frame, so the frame is stale.
-    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(captured.merged.map((summary) => summary.runningCount)).toEqual([3]);
+
+    const requestSequence = nextLiveActivitySequence();
+    act(() => {
+      settleLiveBadgePoll([IDLE_POLL_SUMMARY], requestSequence);
+    });
+
+    expect(captured.merged.map((summary) => summary.runningCount)).toEqual([0]);
+  });
+
+  it("keeps an override that raced after the REST request started", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
       root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
     });
 
-    expect(captured.merged.map((summary) => summary.runningCount)).toEqual([0]);
+    const requestSequence = nextLiveActivitySequence();
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.updated", DAG_RUNNING_3);
+      settleLiveBadgePoll([IDLE_POLL_SUMMARY], requestSequence);
+    });
+
+    expect(captured.merged.map((summary) => summary.runningCount)).toEqual([3]);
+  });
+
+  it("settles task and DAG overrides independently against the request sequence", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1);
+    });
+
+    const requestSequence = nextLiveActivitySequence();
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.updated", DAG_RUNNING_3);
+      settleLiveBadgePoll([IDLE_POLL_SUMMARY], requestSequence);
+    });
+
+    expect(captured.merged[0]).toMatchObject({ runningCount: 3, dagRunning: 3 });
   });
 
   it("prefers an override that arrived after the current poll snapshot when merging", () => {
@@ -267,7 +304,7 @@ describe("liveBadgeStore", () => {
     expect(captured.merged[0]).toMatchObject({ runningCount: 1, dagRunning: 1 });
   });
 
-  it("lets a later poll content change win after same-millisecond WS receipts advance the sequencer", () => {
+  it("does not let unrelated poll metadata clobber a same-session activity override", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     act(() => {
@@ -280,10 +317,33 @@ describe("liveBadgeStore", () => {
     expect(captured.merged[0]?.runningCount).toBe(1);
 
     act(() => {
-      root.render(<Host pollSummaries={[{ ...IDLE_POLL_SUMMARY, title: "New poll content" }]} />);
+      root.render(<Host pollSummaries={[{ ...IDLE_POLL_SUMMARY, title: "New title" }]} />);
     });
 
-    expect(captured.merged[0]?.runningCount).toBe(0);
+    expect(captured.merged[0]?.runningCount).toBe(1);
+    expect(captured.merged[0]?.title).toBe("New title");
+  });
+
+  it("does not let another session's pushed summary age an attached override", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const second = { ...IDLE_POLL_SUMMARY, id: "s2", title: "Second" };
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY, second]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1);
+    });
+
+    act(() => {
+      root.render(<Host pollSummaries={[
+        IDLE_POLL_SUMMARY,
+        { ...second, task: TASK_RUNNING_1, runningCount: 1 },
+      ]} />);
+    });
+
+    expect(captured.merged.find((summary) => summary.id === "s1")?.runningCount).toBe(1);
+    expect(captured.merged.find((summary) => summary.id === "s2")?.runningCount).toBe(1);
   });
 
   it("clears a recognized side on null data and falls back to that poll side", () => {

@@ -14,7 +14,7 @@ import {
   sanitizeJson,
 } from "./chatWsParseFields";
 
-type SessionFrameType = "state" | "stats" | "extensionEvent" | "approval" | "commands" | "models" | "entries";
+type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries";
 
 /**
  * Session-surface frames, built field-by-field into the generated contract
@@ -77,6 +77,38 @@ export function parseSessionFrame(
       const data = msg["data"];
       if (name === null || name.length === 0) return null;
       return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
+    }
+    case "sessions.activity": {
+      if (sessionId === null || !Array.isArray(msg["snapshots"])) return null;
+      const overflow = reqBoolean(msg, "overflow");
+      if (overflow === null) return null;
+      const snapshots = msg["snapshots"].map((value) => {
+        if (!isRecord(value)) return null;
+        const name = value["name"];
+        const oversized = reqBoolean(value, "oversized");
+        if ((name !== "omo.task.updated" && name !== "omo.dag.updated") || oversized === null) return null;
+        return {
+          name,
+          oversized,
+          ...(value["data"] === undefined ? {} : { data: sanitizeJson(value["data"]) }),
+        };
+      });
+      if (snapshots.some((snapshot) => snapshot === null)) return null;
+      const durableSessionId = reqString(msg, "durableSessionId");
+      const replacesSessionId = optString(msg, "replacesSessionId");
+      if (durableSessionId === null || replacesSessionId === null) return null;
+      const taskDigest = msg["taskDigest"] as import("./contract/types_gen").TaskDigest | undefined;
+      const dagDigest = msg["dagDigest"] as import("./contract/types_gen").DagDigest | undefined;
+      return {
+        type: "sessions.activity",
+        sessionId,
+        durableSessionId,
+        ...(replacesSessionId === undefined ? {} : { replacesSessionId }),
+        snapshots: snapshots as import("./contract/types_gen").ActivitySnapshot[],
+        overflow,
+        ...(taskDigest === undefined ? {} : { taskDigest }),
+        ...(dagDigest === undefined ? {} : { dagDigest }),
+      };
     }
     case "approval": {
       if (sessionId === null) return null;

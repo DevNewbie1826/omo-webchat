@@ -50,6 +50,9 @@ type Config struct {
 	// manager's per-chat flight.
 	PrepareChatVersion func(context.Context, string, string) (uint64, error)
 	ChatVersion        func(string) uint64
+	// ActivitySource defaults to Manager when it implements ActivitySource.
+	// The explicit field keeps the manager-cache seam independently testable.
+	ActivitySource ActivitySource
 }
 
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
@@ -198,11 +201,15 @@ type connection struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	sub          *subscriber
-	writeMu      sync.Mutex
+	outboundMu   sync.Mutex
+	replayActive bool
+	replayDone   chan struct{}
 	stateMu      sync.Mutex
 	wsID, chatID string
 	sess         *session.Session
 	detach       func()
+	activityMu   sync.Mutex
+	activity     *activitySubscription
 	hello        bool
 	work         chan []byte
 	closed       atomic.Bool
@@ -213,8 +220,56 @@ func (c *connection) write(v any) error {
 	if err != nil {
 		return err
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
+	c.outboundMu.Lock()
+	defer c.outboundMu.Unlock()
+	return c.writeLocked(b)
+}
+
+// writeActivity shares the socket arbiter but yields while attach history is
+// replaying. Its caller retains bounded queueing and overflow accounting while
+// waiting, so replay cannot be delayed by activity traffic.
+func (c *connection) writeActivity(v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	for {
+		c.outboundMu.Lock()
+		if !c.replayActive {
+			err := c.writeLocked(b)
+			c.outboundMu.Unlock()
+			return err
+		}
+		done := c.replayDone
+		c.outboundMu.Unlock()
+		select {
+		case <-done:
+		case <-c.ctx.Done():
+			return netClosedError{}
+		}
+	}
+}
+
+func (c *connection) beginReplay() {
+	c.outboundMu.Lock()
+	if !c.replayActive {
+		c.replayActive = true
+		c.replayDone = make(chan struct{})
+	}
+	c.outboundMu.Unlock()
+}
+
+func (c *connection) endReplay() {
+	c.outboundMu.Lock()
+	if c.replayActive {
+		c.replayActive = false
+		close(c.replayDone)
+		c.replayDone = nil
+	}
+	c.outboundMu.Unlock()
+}
+
+func (c *connection) writeLocked(b []byte) error {
 	if c.closed.Load() {
 		return netClosedError{}
 	}
@@ -222,7 +277,7 @@ func (c *connection) write(v any) error {
 	if nc == nil {
 		return netClosedError{}
 	}
-	if err = nc.SetWriteDeadline(time.Now().Add(c.bridge.cfg.WriteTimeout)); err != nil {
+	if err := nc.SetWriteDeadline(time.Now().Add(c.bridge.cfg.WriteTimeout)); err != nil {
 		return err
 	}
 	defer nc.SetWriteDeadline(time.Time{})
@@ -239,6 +294,11 @@ func (c *connection) shutdown() {
 		return
 	}
 	c.cancel()
+	c.activityMu.Lock()
+	activity := c.activity
+	c.activity = nil
+	c.activityMu.Unlock()
+	activity.stop()
 	c.unbind()
 	if nc := c.socket.NetConn(); nc != nil {
 		_ = nc.Close()
@@ -339,6 +399,10 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 	}
 	if f, ok := frame.(*wscontract.ChatCreateFrame); ok {
 		c.create(ctx, f)
+		return
+	}
+	if f, ok := frame.(*wscontract.SessionsSubscribeFrame); ok {
+		c.subscribeActivity(f)
 		return
 	}
 

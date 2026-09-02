@@ -65,6 +65,7 @@ type historyBridgeHarness struct {
 	client    *omorpc.Client
 	store     *cursorstore.Store
 	manager   *session.Manager
+	handler   *Handler
 	server    *httptest.Server
 	workspace cursorstore.Workspace
 }
@@ -109,7 +110,7 @@ func newHistoryBridgeHarness(t *testing.T, historyTimeout time.Duration) *histor
 	})
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return &historyBridgeHarness{daemon: d, client: client, store: store, manager: mgr, server: ts, workspace: workspace}
+	return &historyBridgeHarness{daemon: d, client: client, store: store, manager: mgr, handler: h, server: ts, workspace: workspace}
 }
 
 func (h *historyBridgeHarness) connect(t *testing.T, maxRead int) (*gws.Conn, *collector) {
@@ -295,6 +296,70 @@ func (c *triggeredDeadlineContext) Err() error {
 	}
 }
 func (c *triggeredDeadlineContext) expire() { c.once.Do(func() { close(c.done) }) }
+
+func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
+	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2)
+	source := newTestActivitySource()
+	h.handler.cfg.ActivitySource = source
+	path, _, _ := seedLargeHybridHistory(t, h)
+	h.saveChat(t, "activity-history", path)
+
+	conn, frames := h.connect(t, 0)
+	writeClient(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{"activity-history"}})
+	frames.next(t, "ack")
+	releaseTail := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, path)
+	defer releaseTail()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "activity-history",
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, historyE2ETestBudget) {
+		t.Fatal("history replay did not reach daemon tail")
+	}
+	source.publish(activitySummary("activity-history"))
+	releaseTail()
+
+	deadline := time.Now().Add(historyE2ETestBudget * 3)
+	for {
+		frames.mu.Lock()
+		terminal := -1
+		activity := -1
+		for i, raw := range frames.frames {
+			var frame map[string]any
+			_ = json.Unmarshal(raw, &frame)
+			if frame["type"] == "sessions.activity" && activity < 0 {
+				activity = i
+			}
+			if frame["type"] == "entries" && frame["final"] == true {
+				terminal = i
+				break
+			}
+		}
+		if terminal >= 0 {
+			if activity >= 0 && activity < terminal {
+				frames.mu.Unlock()
+				t.Fatal("activity overtook history replay terminal")
+			}
+			frames.mu.Unlock()
+			break
+		}
+		frames.mu.Unlock()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatal("timed out waiting for history terminal")
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-frames.notify:
+			timer.Stop()
+		case <-timer.C:
+			t.Fatal("timed out waiting for history terminal")
+		}
+	}
+	activity := frames.nextWithin(t, "sessions.activity", time.Until(deadline))
+	if activity["sessionId"] != "activity-history" {
+		t.Fatalf("resumed activity frame = %v", activity)
+	}
+}
 
 func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testing.T) {
 	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2/3)

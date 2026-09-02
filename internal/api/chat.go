@@ -170,6 +170,9 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
+	if s.manager != nil {
+		s.manager.RetireIdentity(id)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {

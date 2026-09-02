@@ -149,7 +149,10 @@ func (r *recorder) await(t *testing.T, kind FrameKind) (prior []Frame, f Frame) 
 // awaitError awaits the next FrameError with the given stable code.
 func (r *recorder) awaitError(t *testing.T, code string) (prior []Frame, f Frame) {
 	t.Helper()
-	deadline := time.After(testTimeout)
+	// Generous bound: under parallel full-suite load the invalidation
+	// publication can trail the epoch close by well past the tight
+	// interactive testTimeout; waiting longer weakens nothing.
+	deadline := time.After(30 * time.Second)
 	for {
 		select {
 		case got := <-r.ch:

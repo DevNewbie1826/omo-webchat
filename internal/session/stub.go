@@ -147,18 +147,19 @@ type SynchronousAttachHook interface {
 }
 
 type Summary struct {
-	ChatID           string
-	DurableSessionID string
-	SessionFile      string
-	CWD              string
-	Active           bool
-	Attachments      int
-	Title            string
-	ActivityPair     ActivityPair
-	TaskOversized    bool
-	DagOversized     bool
-	TaskDigest       *TaskDigest
-	DagDigest        *DagDigest
+	ChatID            string
+	DurableSessionID  string
+	ReplacesSessionID string
+	SessionFile       string
+	CWD               string
+	Active            bool
+	Attachments       int
+	Title             string
+	ActivityPair      ActivityPair
+	TaskOversized     bool
+	DagOversized      bool
+	TaskDigest        *TaskDigest
+	DagDigest         *DagDigest
 }
 
 // Stats preserves provider statistics verbatim so structured token/cache data

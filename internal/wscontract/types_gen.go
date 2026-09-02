@@ -162,6 +162,14 @@ type AckFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type ActivitySnapshot struct {
+	Data      json.RawMessage `json:"data,omitempty"`
+	Name      string          `json:"name"`
+	Oversized bool            `json:"oversized"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type ApprovalFrame struct {
 	ID          string         `json:"id"`
 	Message     *string        `json:"message,omitempty"`
@@ -216,6 +224,14 @@ type ControlResultFrame struct {
 	SessionID string  `json:"sessionId"`
 	Success   bool    `json:"success"`
 	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type DagDigest struct {
+	ReceivedAt *string          `json:"received_at,omitempty"`
+	Runs       []RunDigestEntry `json:"runs"`
+	Truncated  bool             `json:"truncated"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -313,6 +329,14 @@ type ReadyFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type RunDigestEntry struct {
+	RunID          string   `json:"run_id"`
+	RunningTaskIds []string `json:"running_task_ids"`
+	Status         string   `json:"status"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type RunDoneFrame struct {
 	Reason    string `json:"reason"`
 	SessionID string `json:"sessionId"`
@@ -324,6 +348,20 @@ type RunDoneFrame struct {
 type RunStartedFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// SessionsActivityFrame — Latest overview activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.
+type SessionsActivityFrame struct {
+	DagDigest         *DagDigest         `json:"dagDigest,omitempty"`
+	DurableSessionID  string             `json:"durableSessionId"`
+	Overflow          bool               `json:"overflow"`
+	ReplacesSessionID *string            `json:"replacesSessionId,omitempty"`
+	SessionID         string             `json:"sessionId"`
+	Snapshots         []ActivitySnapshot `json:"snapshots"`
+	TaskDigest        *TaskDigest        `json:"taskDigest,omitempty"`
+	Type              string             `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -346,6 +384,22 @@ type StatsFrame struct {
 	SessionID    string        `json:"sessionId"`
 	Tokens       *TokenUsage   `json:"tokens,omitempty"`
 	Type         string        `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type TaskDigest struct {
+	ReceivedAt *string           `json:"received_at,omitempty"`
+	Tasks      []TaskDigestEntry `json:"tasks"`
+	Truncated  bool              `json:"truncated"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type TaskDigestEntry struct {
+	Status    string  `json:"status"`
+	TaskID    string  `json:"task_id"`
+	UpdatedAt *string `json:"updated_at,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -476,6 +530,15 @@ type ChatStatsFrame struct {
 
 type PingFrame struct {
 	Type string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// SessionsSubscribeFrame — Replaces this socket's activity subscription. all_live follows every live overview row; explicit follows sessionIds; none unsubscribes.
+type SessionsSubscribeFrame struct {
+	Mode       string   `json:"mode"`
+	SessionIds []string `json:"sessionIds,omitempty"`
+	Type       string   `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -823,6 +886,24 @@ func (v AckFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *ActivitySnapshot) UnmarshalJSON(data []byte) error {
+	type plain ActivitySnapshot
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"data", "name", "oversized"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ActivitySnapshot) MarshalJSON() ([]byte, error) {
+	type plain ActivitySnapshot
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 	type plain ApprovalFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -928,6 +1009,24 @@ func (v *ControlResultFrame) UnmarshalJSON(data []byte) error {
 
 func (v ControlResultFrame) MarshalJSON() ([]byte, error) {
 	type plain ControlResultFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *DagDigest) UnmarshalJSON(data []byte) error {
+	type plain DagDigest
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"received_at", "runs", "truncated"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v DagDigest) MarshalJSON() ([]byte, error) {
+	type plain DagDigest
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -1093,6 +1192,24 @@ func (v ReadyFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *RunDigestEntry) UnmarshalJSON(data []byte) error {
+	type plain RunDigestEntry
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"run_id", "running_task_ids", "status"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v RunDigestEntry) MarshalJSON() ([]byte, error) {
+	type plain RunDigestEntry
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *RunDoneFrame) UnmarshalJSON(data []byte) error {
 	type plain RunDoneFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1129,6 +1246,24 @@ func (v RunStartedFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *SessionsActivityFrame) UnmarshalJSON(data []byte) error {
+	type plain SessionsActivityFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"dagDigest", "durableSessionId", "overflow", "replacesSessionId", "sessionId", "snapshots", "taskDigest", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v SessionsActivityFrame) MarshalJSON() ([]byte, error) {
+	type plain SessionsActivityFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *StateFrame) UnmarshalJSON(data []byte) error {
 	type plain StateFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1162,6 +1297,42 @@ func (v *StatsFrame) UnmarshalJSON(data []byte) error {
 
 func (v StatsFrame) MarshalJSON() ([]byte, error) {
 	type plain StatsFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TaskDigest) UnmarshalJSON(data []byte) error {
+	type plain TaskDigest
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"received_at", "tasks", "truncated"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TaskDigest) MarshalJSON() ([]byte, error) {
+	type plain TaskDigest
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TaskDigestEntry) UnmarshalJSON(data []byte) error {
+	type plain TaskDigestEntry
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"status", "task_id", "updated_at"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TaskDigestEntry) MarshalJSON() ([]byte, error) {
+	type plain TaskDigestEntry
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -1453,6 +1624,24 @@ func (v PingFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *SessionsSubscribeFrame) UnmarshalJSON(data []byte) error {
+	type plain SessionsSubscribeFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"mode", "sessionIds", "type"}, []string{}, []string{"sessionIds"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v SessionsSubscribeFrame) MarshalJSON() ([]byte, error) {
+	type plain SessionsSubscribeFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 type validationSchema struct {
 	Type       string
 	Format     string
@@ -1579,6 +1768,7 @@ func (ToolFrame) serverFrame()              {}
 func (StateFrame) serverFrame()             {}
 func (StatsFrame) serverFrame()             {}
 func (ExtensionEventFrame) serverFrame()    {}
+func (SessionsActivityFrame) serverFrame()  {}
 func (ApprovalFrame) serverFrame()          {}
 func (CommandsFrame) serverFrame()          {}
 func (ModelsFrame) serverFrame()            {}
@@ -1595,22 +1785,23 @@ func (PongFrame) serverFrame()              {}
 func (HelloFrame) serverFrame()             {}
 func (u UnknownFrame) serverFrame()         {}
 
-func (PingFrame) clientFrame()            {}
-func (ChatCreateFrame) clientFrame()      {}
-func (ChatSendFrame) clientFrame()        {}
-func (ChatAbortFrame) clientFrame()       {}
-func (ChatSetFrame) clientFrame()         {}
-func (ApprovalRespondFrame) clientFrame() {}
-func (ChatCommandsFrame) clientFrame()    {}
-func (ChatCompactFrame) clientFrame()     {}
-func (ChatModelsFrame) clientFrame()      {}
-func (ChatStatsFrame) clientFrame()       {}
-func (ActivityRefreshFrame) clientFrame() {}
-func (ChatResumeFrame) clientFrame()      {}
-func (ChatCloseFrame) clientFrame()       {}
-func (ChatDisconnectFrame) clientFrame()  {}
-func (ClientHelloFrame) clientFrame()     {}
-func (u UnknownFrame) clientFrame()       {}
+func (PingFrame) clientFrame()              {}
+func (ChatCreateFrame) clientFrame()        {}
+func (ChatSendFrame) clientFrame()          {}
+func (ChatAbortFrame) clientFrame()         {}
+func (ChatSetFrame) clientFrame()           {}
+func (ApprovalRespondFrame) clientFrame()   {}
+func (ChatCommandsFrame) clientFrame()      {}
+func (ChatCompactFrame) clientFrame()       {}
+func (ChatModelsFrame) clientFrame()        {}
+func (ChatStatsFrame) clientFrame()         {}
+func (ActivityRefreshFrame) clientFrame()   {}
+func (SessionsSubscribeFrame) clientFrame() {}
+func (ChatResumeFrame) clientFrame()        {}
+func (ChatCloseFrame) clientFrame()         {}
+func (ChatDisconnectFrame) clientFrame()    {}
+func (ClientHelloFrame) clientFrame()       {}
+func (u UnknownFrame) clientFrame()         {}
 
 // ErrorCode values, from error-codes.json.
 type ErrorCode = string
@@ -1754,6 +1945,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(StatsFrame)
 	case "extensionEvent":
 		return new(ExtensionEventFrame)
+	case "sessions.activity":
+		return new(SessionsActivityFrame)
 	case "approval":
 		return new(ApprovalFrame)
 	case "commands":
@@ -1831,6 +2024,10 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 			}
 		case "extensionEvent":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "extensionEvent"}}, Required: []string{"type", "sessionId", "name"}}); err != nil {
+				return nil, err
+			}
+		case "sessions.activity":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated"}}, "durableSessionId": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "snapshots", "overflow"}}); err != nil {
 				return nil, err
 			}
 		case "approval":
@@ -1913,6 +2110,7 @@ func ServerFrameTypes() []string {
 		"state",
 		"stats",
 		"extensionEvent",
+		"sessions.activity",
 		"approval",
 		"commands",
 		"models",
@@ -1956,6 +2154,8 @@ func NewClientFrame(wireType string) ClientFrame {
 		return new(ChatStatsFrame)
 	case "activity.refresh":
 		return new(ActivityRefreshFrame)
+	case "sessions.subscribe":
+		return new(SessionsSubscribeFrame)
 	case "chat.resume":
 		return new(ChatResumeFrame)
 	case "chat.close":
@@ -2027,6 +2227,10 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "activity.refresh"}}, Required: []string{"type", "sessionId"}}); err != nil {
 				return nil, err
 			}
+		case "sessions.subscribe":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"mode": validationSchema{Type: "string", Enum: []string{"all_live", "explicit", "none"}}, "sessionIds": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "type": validationSchema{Const: "sessions.subscribe"}}, Required: []string{"type", "mode"}}); err != nil {
+				return nil, err
+			}
 		case "chat.resume":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "since": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.resume"}}, Required: []string{"type", "sessionId"}}); err != nil {
 				return nil, err
@@ -2070,6 +2274,7 @@ func ClientFrameTypes() []string {
 		"chat.models",
 		"chat.stats",
 		"activity.refresh",
+		"sessions.subscribe",
 		"chat.resume",
 		"chat.close",
 		"chat.disconnect",
@@ -2105,18 +2310,19 @@ var FrameKindToWireName = map[string]string{
 // ClientWireNames lists the client->server command names (identity mapping).
 // ping and hello are connection-level and need no session.
 var ClientWireNames = map[string]string{
-	"activity.refresh": "activity.refresh",
-	"approval.respond": "approval.respond",
-	"chat.abort":       "chat.abort",
-	"chat.close":       "chat.close",
-	"chat.commands":    "chat.commands",
-	"chat.compact":     "chat.compact",
-	"chat.create":      "chat.create",
-	"chat.disconnect":  "chat.disconnect",
-	"chat.models":      "chat.models",
-	"chat.resume":      "chat.resume",
-	"chat.send":        "chat.send",
-	"chat.set":         "chat.set",
-	"chat.stats":       "chat.stats",
-	"ping":             "ping",
+	"activity.refresh":   "activity.refresh",
+	"approval.respond":   "approval.respond",
+	"chat.abort":         "chat.abort",
+	"chat.close":         "chat.close",
+	"chat.commands":      "chat.commands",
+	"chat.compact":       "chat.compact",
+	"chat.create":        "chat.create",
+	"chat.disconnect":    "chat.disconnect",
+	"chat.models":        "chat.models",
+	"chat.resume":        "chat.resume",
+	"chat.send":          "chat.send",
+	"chat.set":           "chat.set",
+	"chat.stats":         "chat.stats",
+	"ping":               "ping",
+	"sessions.subscribe": "sessions.subscribe",
 }

@@ -47,6 +47,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "state":
     case "stats":
     case "extensionEvent":
+    case "sessions.activity":
     case "approval":
     case "commands":
     case "models":

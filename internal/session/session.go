@@ -771,11 +771,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 			s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
 		}
 		s.manager.mu.Lock()
-		if s.manager.byChat[s.chatID] == s {
-			delete(s.manager.byChat, s.chatID)
-			delete(s.manager.byRoute, route)
-			s.manager.bumpSlotGenerationLocked(s.chatID)
-		}
+		s.manager.retireSessionIdentityLocked(s, true)
 		s.manager.mu.Unlock()
 	}
 	txn.err = callErr
@@ -823,6 +819,10 @@ func (s *Session) summary() (Summary, bool) {
 	if s.closed || s.closing || s.resumable {
 		return Summary{}, false
 	}
+	return s.summaryLocked(), true
+}
+
+func (s *Session) summaryLocked() Summary {
 	return Summary{
 		ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile,
 		CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count(), Title: s.title,
@@ -834,7 +834,7 @@ func (s *Session) summary() (Summary, bool) {
 		DagOversized:  s.activityOversized[activitySnapshotOrder[1]],
 		TaskDigest:    cloneTaskDigest(s.taskDigest),
 		DagDigest:     cloneDagDigest(s.dagDigest),
-	}, true
+	}
 }
 func (s *Session) publishLocked(f Frame) {
 	if f.Kind == FrameReady {
