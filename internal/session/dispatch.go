@@ -20,7 +20,14 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
-	if s.closed || s.closing || s.resumable {
+	if s.closed || s.resumable {
+		return
+	}
+	if s.closing {
+		if ev.Type == "agent_settled" && !s.closeRunSettled && (s.providerRunActive || s.promptInFlight || s.localCommandActive) {
+			s.closeRunSettled = true
+			s.closeRunReason, _ = raw["reason"].(string)
+		}
 		return
 	}
 
@@ -38,12 +45,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 			return
 		}
 		reason, _ := raw["reason"].(string)
-		s.providerRunActive = false
-		s.promptInFlight = false
-		s.localCommandActive = false
-		s.promptResponse = false
-		s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
-		s.scheduleIdleLocked()
+		s.completeProviderRunLocked(reason)
 	case "command_invocation":
 		if commandSource(raw) == "extension" && s.promptInFlight {
 			s.localCommandActive = true
@@ -116,6 +118,25 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		payload["kind"] = ev.Type
 		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 	}
+}
+
+func (s *Session) completeProviderRunLocked(reason string) {
+	s.providerRunActive = false
+	s.promptInFlight = false
+	s.localCommandActive = false
+	s.promptResponse = false
+	s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
+	s.scheduleIdleLocked()
+}
+
+func (s *Session) reconcileFailedCloseLocked() {
+	if !s.closeRunSettled {
+		return
+	}
+	reason := s.closeRunReason
+	s.closeRunSettled = false
+	s.closeRunReason = ""
+	s.completeProviderRunLocked(reason)
 }
 
 func (s *Session) beginCompactionLocked(raw map[string]any) {

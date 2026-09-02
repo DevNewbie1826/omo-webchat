@@ -351,6 +351,85 @@ func TestMergeGateManualTombstoneCannotSwallowAutomaticCompaction(t *testing.T) 
 	}
 }
 
+func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sub := newRecorder(32)
+	s, _, _ := acquire(t, mgr, testChat{id: "close-revival", cwd: t.TempDir()}, sub)
+	sub.next(t)
+	injectEvent(t, s, map[string]any{"type": "agent_start"})
+	sub.await(t, FrameRunStarted)
+
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(ctx, s.ChatID()) }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("close_session was not pending")
+	}
+	injectEvent(t, s, map[string]any{"type": "agent_settled", "reason": "end_turn"})
+	cancel()
+	if err := <-stopped; !errors.Is(err, context.Canceled) {
+		t.Fatalf("failed close = %v, want context.Canceled", err)
+	}
+	_, firstDone := sub.await(t, FrameRunDone)
+	if firstDone.Data.(RunInfo).Reason != "end_turn" {
+		t.Fatalf("replayed terminal = %+v", firstDone)
+	}
+
+	d.SetPromptScript(s.SessionFile(), map[string]any{"type": "agent_settled", "reason": "next_turn"})
+	if err := s.SendPrompt(context.Background(), "after failed close", nil); err != nil {
+		t.Fatalf("revived session rejected prompt: %v", err)
+	}
+	prior, secondDone := sub.await(t, FrameRunDone)
+	if got := counts(prior)[FrameRunDone]; got != 0 {
+		t.Fatalf("replayed terminal emitted more than once: %+v", prior)
+	}
+	if secondDone.Data.(RunInfo).Reason != "next_turn" {
+		t.Fatalf("next run terminal = %+v", secondDone)
+	}
+}
+
+func TestMergeGateRetiringRouteIsRetriedByStop(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 16, CloseTimeout: 30 * time.Millisecond})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	generationMismatch := errors.New("generation mismatch")
+	_, _, _, err := mgr.AcquireInitializedChecked(context.Background(), testChat{id: "retiring", cwd: t.TempDir()}, nil, nil, func() error {
+		return generationMismatch
+	})
+	if !errors.Is(err, generationMismatch) {
+		t.Fatalf("checked acquire = %v, want generation mismatch", err)
+	}
+	if _, live := mgr.Get("retiring"); live {
+		t.Fatal("generation-mismatched route was published")
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- mgr.StopContext(context.Background(), "retiring") }()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 2, testTimeout) {
+		t.Fatal("stop did not retry the retained route")
+	}
+	releaseClose()
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop retiring route: %v", err)
+	}
+	if live := d.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider route survived stop: %v", live)
+	}
+	mgr.mu.Lock()
+	retiring := len(mgr.retiringByChat["retiring"])
+	mgr.mu.Unlock()
+	if retiring != 0 {
+		t.Fatalf("retiring routes after definitive close = %d", retiring)
+	}
+}
+
 func TestMergeGateCompletedCompactionTombstonesAreBounded(t *testing.T) {
 	s := &Session{completedCompactions: make(map[string]struct{})}
 	for i := 0; i < maxCompletedCompactions+3; i++ {

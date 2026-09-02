@@ -80,7 +80,16 @@ func (s *Server) chatLifecycleVersion(chatID string) uint64 {
 
 // bumpChatLifecycleVersion is called only while chatLifecycleMu is held.
 func (s *Server) bumpChatLifecycleVersion(chatID string) {
-	s.chatLifecycleGeneration.Store(chatID, s.chatLifecycleVersion(chatID)+1)
+	generation := s.chatLifecycleVersion(chatID) + 1
+	s.chatLifecycleGeneration.Store(chatID, generation)
+	s.chatLifecycleGenerationFIFO = append(s.chatLifecycleGenerationFIFO, chatLifecycleGenerationRecord{chatID: chatID, generation: generation})
+	for len(s.chatLifecycleGenerationFIFO) > maxChatLifecycleGenerationRecords {
+		old := s.chatLifecycleGenerationFIFO[0]
+		s.chatLifecycleGenerationFIFO = s.chatLifecycleGenerationFIFO[1:]
+		if current, ok := s.chatLifecycleGeneration.Load(old.chatID); ok && current.(uint64) == old.generation {
+			s.chatLifecycleGeneration.Delete(old.chatID)
+		}
+	}
 }
 
 // Run initializes the store, session store, and HTTP server, then serves until

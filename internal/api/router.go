@@ -26,31 +26,40 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
-const chatOpenTimeout = 15 * time.Second
+const (
+	chatOpenTimeout                   = 15 * time.Second
+	maxChatLifecycleGenerationRecords = 1024
+)
+
+type chatLifecycleGenerationRecord struct {
+	chatID     string
+	generation uint64
+}
 
 // Server holds shared dependencies for all HTTP handlers.
 type Server struct {
 	gws.BuiltinEventHandler
-	cfg                     *config.Config
-	store                   *store.Store
-	sessions                *auth.SessionStore
-	chats                   *chat.Manager
-	logger                  *slog.Logger
-	upgrader                *gws.Upgrader
-	ctx                     context.Context
-	conns                   sync.Map
-	chatLifecycleMu         sync.Mutex
-	chatLifecycleGeneration sync.Map // chat id -> uint64; lock-free publication validation
-	chatDeleting            map[string]bool
-	afterChatLookup         func()
-	beforeChatDelete        func()
-	afterV2ChatStop         func()
-	beforeWorkspaceDelete   func()
-	openChatContext         func(context.Context, time.Duration) (context.Context, context.CancelFunc)
-	v2Mu                    sync.RWMutex
-	v2Manager               *v2session.Manager
-	v2Store                 *cursorstore.Store
-	v2Handler               http.Handler
+	cfg                         *config.Config
+	store                       *store.Store
+	sessions                    *auth.SessionStore
+	chats                       *chat.Manager
+	logger                      *slog.Logger
+	upgrader                    *gws.Upgrader
+	ctx                         context.Context
+	conns                       sync.Map
+	chatLifecycleMu             sync.Mutex
+	chatLifecycleGeneration     sync.Map // chat id -> uint64; lock-free publication validation
+	chatLifecycleGenerationFIFO []chatLifecycleGenerationRecord
+	chatDeleting                map[string]bool
+	afterChatLookup             func()
+	beforeChatDelete            func()
+	afterV2ChatStop             func()
+	beforeWorkspaceDelete       func()
+	openChatContext             func(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	v2Mu                        sync.RWMutex
+	v2Manager                   *v2session.Manager
+	v2Store                     *cursorstore.Store
+	v2Handler                   http.Handler
 }
 
 // New creates the API server.

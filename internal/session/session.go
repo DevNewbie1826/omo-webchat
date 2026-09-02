@@ -35,6 +35,8 @@ type Session struct {
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
 	promptResponse                                                          bool
+	closeRunSettled                                                         bool
+	closeRunReason                                                          string
 	promptSeq, localCommandSeq, compactSeq                                  uint64
 	compactRPCID, compactProviderID, compactPhase                           string
 	completedCompactions                                                    map[string]struct{}
@@ -528,6 +530,10 @@ func (s *Session) closeContext(ctx context.Context) error {
 	if !definitiveCloseFailure(err) && !managerClosed {
 		s.lifecycleMu.Lock()
 		s.closing = false
+		// Provider events are otherwise suppressed while close_session owns the
+		// route. Replay a buffered run terminal before reviving the session so a
+		// failed close cannot leave stale in-flight latches or suppress eviction.
+		s.reconcileFailedCloseLocked()
 		s.scheduleIdleLocked()
 		s.lifecycleMu.Unlock()
 		return err
@@ -536,6 +542,8 @@ func (s *Session) closeContext(ctx context.Context) error {
 	s.lifecycleMu.Lock()
 	s.closed = true
 	s.closing = false
+	s.closeRunSettled = false
+	s.closeRunReason = ""
 	s.cancelIdleLocked()
 	s.manager.mu.Lock()
 	if s.manager.byChat[s.chatID] == s {

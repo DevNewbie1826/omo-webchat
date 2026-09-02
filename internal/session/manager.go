@@ -65,12 +65,18 @@ func (k *keyedFlight) release(key string, x *chatFlight) {
 
 const (
 	maxSlotGenerations  = 1024
+	maxRetiringRoutes   = 1024
 	cleanupDrainTimeout = 5 * time.Second
 )
 
 type generationRecord struct {
 	chatID     string
 	generation uint64
+}
+
+type retiringRecord struct {
+	chatID string
+	route  string
 }
 
 type Manager struct {
@@ -80,6 +86,8 @@ type Manager struct {
 	mu                 sync.Mutex
 	byChat             map[string]*Session
 	byRoute            map[string]*Session
+	retiringByChat     map[string]map[string]struct{}
+	retiringFIFO       []retiringRecord
 	slotGeneration     map[string]uint64
 	slotGenerationFIFO []generationRecord
 	generation         uint64
@@ -116,7 +124,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -275,7 +283,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		openErr = validateOpen(data, cur, resumed)
 	}
 	if openErr != nil && data.SessionID != "" {
-		m.discardRouting(data.SessionID)
+		m.discardRouting(chatID, data.SessionID)
 	}
 	if openErr != nil && m.isClosed() {
 		return nil, false, nil, ErrManagerClosed
@@ -297,7 +305,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		if err != nil {
 			if data.SessionID != "" {
-				m.discardRouting(data.SessionID)
+				m.discardRouting(chatID, data.SessionID)
 			}
 			return nil, false, nil, fmt.Errorf("resume failed (%v), fallback open failed: %w", openErr, err)
 		}
@@ -314,7 +322,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
 	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
 		if err := m.cfg.Store.SaveCursor(ctx, chatID, newCur); err != nil {
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}
 	}
@@ -327,16 +335,16 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 		m.mu.Unlock()
 		if !valid {
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, ErrManagerClosed
 		}
 		if !m.cfg.Client.EpochCurrent(epoch) {
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, ErrSessionResumable
 		}
 		detach, err := s.attachChecked(sub)
 		if err != nil {
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}
 		s.lifecycleMu.Lock()
@@ -354,7 +362,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if err := validate(); err != nil {
 			detach()
 			s.retireReplaced()
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}
 		m.mu.Lock()
@@ -371,7 +379,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if !valid || !epochLive {
 			detach()
 			s.retireReplaced()
-			m.discardRouting(data.SessionID)
+			m.discardRouting(chatID, data.SessionID)
 			if !epochLive {
 				return nil, false, nil, ErrSessionResumable
 			}
@@ -397,7 +405,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	}
 	m.mu.Unlock()
 	if !valid {
-		m.discardRouting(data.SessionID)
+		m.discardRouting(chatID, data.SessionID)
 		return nil, false, nil, ErrManagerClosed
 	}
 	if !epochLive {
@@ -417,7 +425,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.bumpSlotGenerationLocked(chatID)
 		}
 		m.mu.Unlock()
-		m.discardRouting(data.SessionID)
+		m.discardRouting(chatID, data.SessionID)
 		return nil, false, nil, err
 	}
 	s.lifecycleMu.Lock()
@@ -464,15 +472,71 @@ func definitiveResumeFailure(err error) bool {
 	return !errors.Is(err, omorpc.ErrDisconnected) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (m *Manager) discardRouting(route string) {
+func (m *Manager) discardRouting(chatID, route string) {
 	if route == "" {
 		return
 	}
+	m.mu.Lock()
+	m.rememberRetiringLocked(chatID, route)
+	m.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	defer cancel()
-	if _, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route}); err != nil {
-		slog.Warn("failed to discard provider routing handle", "routing_id", route, "error", err)
+	_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	if definitiveCloseFailure(err) {
+		m.mu.Lock()
+		m.removeRetiringLocked(chatID, route)
+		m.mu.Unlock()
+		return
 	}
+	slog.Warn("failed to discard provider routing handle; retaining for delete retry", "chat_id", chatID, "routing_id", route, "error", err)
+}
+
+func (m *Manager) rememberRetiringLocked(chatID, route string) {
+	routes := m.retiringByChat[chatID]
+	if routes == nil {
+		routes = make(map[string]struct{})
+		m.retiringByChat[chatID] = routes
+	}
+	if _, exists := routes[route]; exists {
+		return
+	}
+	routes[route] = struct{}{}
+	m.retiringFIFO = append(m.retiringFIFO, retiringRecord{chatID: chatID, route: route})
+	for len(m.retiringFIFO) > maxRetiringRoutes {
+		old := m.retiringFIFO[0]
+		m.retiringFIFO = m.retiringFIFO[1:]
+		m.removeRetiringLocked(old.chatID, old.route)
+	}
+}
+
+func (m *Manager) removeRetiringLocked(chatID, route string) {
+	routes := m.retiringByChat[chatID]
+	delete(routes, route)
+	if len(routes) == 0 {
+		delete(m.retiringByChat, chatID)
+	}
+}
+
+func (m *Manager) drainRetiring(ctx context.Context, chatID string) error {
+	m.mu.Lock()
+	routes := make([]string, 0, len(m.retiringByChat[chatID]))
+	for route := range m.retiringByChat[chatID] {
+		routes = append(routes, route)
+	}
+	m.mu.Unlock()
+	var first error
+	for _, route := range routes {
+		_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+		if definitiveCloseFailure(err) {
+			m.mu.Lock()
+			m.removeRetiringLocked(chatID, route)
+			m.mu.Unlock()
+		} else if first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 type openResult struct {
@@ -526,7 +590,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 				m.clearPendingOpen(chatID)
 			}
 			if got.data.SessionID != "" {
-				m.discardRouting(got.data.SessionID)
+				m.discardRouting(chatID, got.data.SessionID)
 			}
 			m.cleanupWG.Done()
 		case <-timer.C:
@@ -540,7 +604,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 				m.clearPendingOpen(chatID)
 			}
 			if got.data.SessionID != "" {
-				m.discardRouting(got.data.SessionID)
+				m.discardRouting(chatID, got.data.SessionID)
 			}
 			m.cleanupWG.Done()
 		}
@@ -588,7 +652,7 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 					}
 					var late omorpc.OpenSessionData
 					if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-						m.discardRouting(late.SessionID)
+						m.discardRouting(chatID, late.SessionID)
 					}
 				}()
 				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
@@ -693,10 +757,12 @@ func (m *Manager) stopContext(ctx context.Context, chatID string) error {
 	m.bumpSlotGenerationLocked(chatID)
 	s := m.byChat[chatID]
 	m.mu.Unlock()
-	if s == nil {
-		return nil
+	if s != nil {
+		if err := s.closeContext(ctx); err != nil {
+			return err
+		}
 	}
-	return s.closeContext(ctx)
+	return m.drainRetiring(ctx, chatID)
 }
 
 func (m *Manager) CloseAll(ctx context.Context) error {
@@ -748,6 +814,17 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 			first = err
 		}
 	}
+	m.mu.Lock()
+	retiringChats := make([]string, 0, len(m.retiringByChat))
+	for chatID := range m.retiringByChat {
+		retiringChats = append(retiringChats, chatID)
+	}
+	m.mu.Unlock()
+	for _, chatID := range retiringChats {
+		if err := m.drainRetiring(ctx, chatID); err != nil && first == nil {
+			first = err
+		}
+	}
 	return first
 }
 
@@ -779,6 +856,7 @@ func (m *Manager) evict(s *Session) {
 	if err != nil && !definitiveCloseFailure(err) {
 		s.lifecycleMu.Lock()
 		s.closing = false
+		s.reconcileFailedCloseLocked()
 		s.scheduleIdleLocked()
 		s.lifecycleMu.Unlock()
 		slog.Warn("idle session close failed; retaining session", "chat_id", s.chatID, "error", err)

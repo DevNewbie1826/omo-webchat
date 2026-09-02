@@ -32,6 +32,7 @@ type v2ControlEnv struct {
 	manager *v2session.Manager
 	cursors *cursorstore.Store
 	daemon  *omorpctest.Daemon
+	client  *omorpc.Client
 	wsID    string
 	chatID  string
 }
@@ -131,7 +132,7 @@ func newV2ControlEnv(t *testing.T) *v2ControlEnv {
 	}
 	server := New(t.Context(), &config.Config{Root: dir}, st, auth.NewSessionStore(t.Context(), "pw", logger), logger)
 	server.installV2(manager, cursors, http.NotFoundHandler())
-	return &v2ControlEnv{server: server, manager: manager, cursors: cursors, daemon: d, wsID: workspace.ID, chatID: chat.ID}
+	return &v2ControlEnv{server: server, manager: manager, cursors: cursors, daemon: d, client: client, wsID: workspace.ID, chatID: chat.ID}
 }
 
 func TestDeleteChatCanceledRequestDoesNotDiscardLiveV2State(t *testing.T) {
@@ -237,6 +238,50 @@ func TestDeleteChatRetriesProviderCloseAfterTimeout(t *testing.T) {
 	}
 	if _, active := e.manager.Get(e.chatID); active {
 		t.Fatal("manager retained session after definitive retry")
+	}
+}
+
+func TestDeleteChatRetriesGenerationMismatchRetiringRoute(t *testing.T) {
+	e := newV2ControlEnv(t)
+	if err := e.manager.StopContext(context.Background(), e.chatID); err != nil {
+		t.Fatal(err)
+	}
+	baseline := e.daemon.RequestCount(omorpc.CmdCloseSession)
+	manager := v2session.NewManager(v2session.Config{Client: e.client, Store: (*wsbridge.CursorStore)(e.cursors), CloseTimeout: 30 * time.Millisecond})
+	t.Cleanup(func() { _ = manager.CloseAll(context.Background()) })
+	e.server.installV2(manager, e.cursors, http.NotFoundHandler())
+
+	releaseClose := e.daemon.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	generationMismatch := errors.New("generation mismatch")
+	_, _, _, err := manager.AcquireInitializedChecked(context.Background(), v2ControlRef{e.chatID, t.TempDir()}, nil, nil, func() error {
+		return generationMismatch
+	})
+	if !errors.Is(err, generationMismatch) {
+		t.Fatalf("checked acquire = %v, want generation mismatch", err)
+	}
+
+	deleted := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/", nil)
+		req.SetPathValue("wsId", e.wsID)
+		req.SetPathValue("chatId", e.chatID)
+		rec := httptest.NewRecorder()
+		e.server.handleDeleteChat(rec, req)
+		deleted <- rec
+	}()
+	if !e.daemon.AwaitRequestCount(omorpc.CmdCloseSession, baseline+2, time.Second) {
+		t.Fatal("DELETE did not retry generation-mismatch retiring route")
+	}
+	releaseClose()
+	if rec := receiveV2Control(t, deleted, "retiring-route delete"); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	if live := e.daemon.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider route orphaned after DELETE: %v", live)
+	}
+	if _, live := manager.Get(e.chatID); live {
+		t.Fatal("generation-mismatched route appeared in manager live sessions")
 	}
 }
 

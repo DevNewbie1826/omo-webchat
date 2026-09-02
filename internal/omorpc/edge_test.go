@@ -188,7 +188,9 @@ func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 	}()
 	d.awaitRequest(t, CmdListSessions, testAwaitTimeout)
 	cancelB()
-	releaseList()
+	// Keep the daemon response gated until Call has observed cancellation and
+	// removed its correlation. Releasing both at once made the select race the
+	// response against ctx.Done and intermittently allowed a successful call.
 	select {
 	case got := <-resB:
 		if !errors.Is(got.err, context.Canceled) {
@@ -197,6 +199,7 @@ func TestEdgeStrayResponseIDNeverDisturbsPending(t *testing.T) {
 	case <-time.After(testAwaitTimeout):
 		t.Fatal("cancelled call did not return")
 	}
+	releaseList()
 
 	// The untouched pending call still settles with its own response.
 	releaseEntries()
