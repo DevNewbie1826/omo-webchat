@@ -27,6 +27,10 @@ func testWorkspace(id string) Workspace {
 	return Workspace{ID: id, Name: "ws-" + id, Path: "/tmp/" + id}
 }
 
+type testClock struct{ now time.Time }
+
+func (c *testClock) Now() time.Time { return c.now }
+
 func mustOpen(t *testing.T, path string) *Store {
 	t.Helper()
 	s, err := Open(path)
@@ -92,12 +96,16 @@ func TestMutationRoundtrip(t *testing.T) {
 	})
 
 	t.Run("TouchLastUsed persists", func(t *testing.T) {
-		s := mustOpen(t, path)
+		clock := &testClock{now: time.UnixMilli(1800000000000)}
+		s, err := OpenWithClock(path, clock)
+		if err != nil {
+			t.Fatalf("OpenWithClock: %v", err)
+		}
 		before, err := s.GetChat("c1")
 		if err != nil {
 			t.Fatalf("GetChat: %v", err)
 		}
-		time.Sleep(2 * time.Millisecond)
+		clock.now = clock.now.Add(time.Millisecond)
 		if err := s.TouchLastUsed("c1"); err != nil {
 			t.Fatalf("TouchLastUsed: %v", err)
 		}
@@ -249,8 +257,8 @@ func TestAtomicityFailureLeavesNoPartialState(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(dir, 0o700) })
 
-	if err := s.SaveChat(testChat("c2", "ws1")); err == nil {
-		t.Fatal("expected flush failure for unwritable dir")
+	if err := s.SaveChat(testChat("c2", "ws1")); !errors.Is(err, ErrPersistence) {
+		t.Fatalf("expected typed ErrPersistence for unwritable dir, got %v", err)
 	}
 
 	// In-memory state unchanged: c2 invisible.

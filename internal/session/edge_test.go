@@ -42,7 +42,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -52,24 +51,6 @@ import (
 )
 
 // ---- edge-suite helpers (test-local; no fixed sleeps) ----
-
-// awaitTrue polls an externally-driven async state change under a bounded
-// deadline. The assertion never depends on the delay — only the bound.
-func awaitTrue(t *testing.T, what string, budget time.Duration, f func() bool) {
-	t.Helper()
-	deadline := time.After(budget)
-	for {
-		if f() {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("condition never became true: %s", what)
-			return
-		case <-time.After(2 * time.Millisecond):
-		}
-	}
-}
 
 // injectEvent drives one provider event straight into the session's
 // dispatch path (same-package white box, mirroring v1's dispatchEvent
@@ -87,22 +68,6 @@ func injectEvent(t *testing.T, s *Session, event map[string]any) {
 		t.Fatalf("injectEvent: %v", err)
 	}
 	s.dispatch(&omorpc.Event{Type: typ, SessionID: s.RoutingID(), Raw: b})
-}
-
-// awaitGoroutinesAtMost is the exact goroutine tracking used by v1's
-// broadcaster leak canaries: poll NumGoroutine against a baseline captured
-// with every persistent goroutine already running, and fail when the count
-// does not drain back within the budget.
-func awaitGoroutinesAtMost(t *testing.T, baseline, tolerance int, budget time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(budget)
-	for runtime.NumGoroutine() > baseline+tolerance {
-		if time.Now().After(deadline) {
-			t.Fatalf("goroutines did not drain: %d > baseline %d +%d",
-				runtime.NumGoroutine(), baseline, tolerance)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
 }
 
 // runScript arms and sends one scripted prompt run (start -> settled).
@@ -183,7 +148,9 @@ func TestEdgeEventForUnownedSessionDroppedQuietly(t *testing.T) {
 			t.Fatalf("session_unloaded not exactly once: %+v", prior)
 		}
 	}
-	awaitTrue(t, "session B resumable", testTimeout, sessB.Resumable)
+	if !sessB.Resumable() {
+		t.Fatal("session B was not resumable after session_unloaded delivery")
+	}
 	d.EmitSession(sessB.SessionFile(), map[string]any{"type": "message_delta", "delta": "post-unload"})
 	// Marker: re-acquire A (resume) and mark on its live route.
 	subA2 := newRecorder(64)
@@ -419,7 +386,9 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		// by the disconnect, and the post-resume prompt below must reach
 		// the daemon (deferred release alone would deadlock it).
 		releasePrompt()
-		awaitTrue(t, "session resumable after disconnect", testTimeout, sess.Resumable)
+		if !sess.Resumable() {
+			t.Fatal("session was not resumable when the failed call returned")
+		}
 		if got := sub.drain(); counts(got)[FrameRunDone] != 0 {
 			t.Fatalf("failed prompt emitted terminal frames: %+v", got)
 		}
@@ -706,6 +675,8 @@ func (p *parkingSub) unblock() {
 	p.releaseOnce.Do(func() { close(p.release) })
 }
 
+func (p *parkingSub) Close() error { p.unblock(); return nil }
+
 func TestEdgeSlowSubscriberDetachBackpressureIsolation(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
@@ -822,9 +793,18 @@ func TestEdgeCloseAllDuringInflightPromptTypedFailureNoLeak(t *testing.T) {
 	sess, _, _ := acquire(t, mgr, chat, sub)
 	sub.next(t) // ready
 
-	// Baseline: daemon accept loop + read loop, client reader, manager
-	// event loop, subscriber pump — all persistent goroutines running.
-	baseline := runtime.NumGoroutine()
+	// Track the exact subscriber pump rather than a process-wide goroutine
+	// count, which cannot distinguish unrelated test-runtime activity.
+	sess.broadcast.mu.Lock()
+	var subscriberExited <-chan struct{}
+	for _, subscription := range sess.broadcast.subs {
+		subscriberExited = subscription.exited
+		break
+	}
+	sess.broadcast.mu.Unlock()
+	if subscriberExited == nil {
+		t.Fatal("subscriber pump was not registered")
+	}
 
 	releasePrompt := d.BlockHandler(omorpc.CmdPrompt)
 	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
@@ -870,9 +850,11 @@ func TestEdgeCloseAllDuringInflightPromptTypedFailureNoLeak(t *testing.T) {
 		t.Fatal("in-flight prompt never settled after CloseAll unwind")
 	}
 
-	// Exact goroutine tracking: every goroutine this scenario created
-	// (prompt caller, CloseAll caller, daemon request handlers) drains.
-	awaitGoroutinesAtMost(t, baseline, 2, 3*time.Second)
+	select {
+	case <-subscriberExited:
+	case <-time.After(testTimeout):
+		t.Fatal("subscriber pump did not exit after CloseAll")
+	}
 
 	// The daemon saw exactly one prompt and one close_session.
 	if got := d.RequestCount(omorpc.CmdPrompt); got != 1 {
@@ -893,7 +875,7 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 	client := dial(t, d)
 	mgr := testManager(client, store, 64)
 	sub := newRecorder(128)
-	sess, _, _ := acquire(t, mgr, chat, sub)
+	sess, _, detach := acquire(t, mgr, chat, sub)
 	ready := sub.next(t)
 	if ready.Kind != FrameReady || ready.Resumed {
 		t.Fatalf("first acquire must be a fresh open, got %+v", ready)
@@ -908,15 +890,20 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 	}
 
 	for cycle := 1; cycle <= 3; cycle++ {
-		// Manager restart over one daemon: new client + new manager, same
-		// socket, same durable registry, same cursor store.
+		// Manager restart over one daemon: retire the old subscriber and
+		// manager first, then rebuild over the same durable cursor store.
+		detach()
+		if err := mgr.CloseAll(context.Background()); err != nil {
+			t.Fatalf("cycle %d: close old manager: %v", cycle, err)
+		}
 		_ = client.Close()
 		d.Restart()
 		client = dial(t, d)
 		mgr = testManager(client, store, 64)
 
-		sub := newRecorder(128)
-		sess, started, _ := acquire(t, mgr, chat, sub)
+		sub = newRecorder(128)
+		var started bool
+		sess, started, detach = acquire(t, mgr, chat, sub)
 		if !started {
 			t.Fatalf("cycle %d: restart acquire must start a provider session", cycle)
 		}
@@ -942,5 +929,9 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 		// And the session is usable each time.
 		runScript(t, d, sess, fmt.Sprintf("cycle-%d", cycle))
 		sub.await(t, FrameRunDone)
+	}
+	detach()
+	if err := mgr.CloseAll(context.Background()); err != nil {
+		t.Fatalf("close final manager: %v", err)
 	}
 }

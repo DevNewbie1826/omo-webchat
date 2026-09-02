@@ -1,14 +1,15 @@
 package session
 
 // Lock order: Session.lifecycleMu -> Manager.mu -> broadcaster.mu.
-// A path may skip locks but never acquires them in reverse. No lock is held
-// across omorpc.Call, omorpc.Notify, a subscriber callback, or a channel receive.
+// No mutex in that order is held across RPC or cursor-store I/O. Per-chat
+// work is serialized by an independent single-flight permit.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -17,15 +18,55 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
+type keyedFlight struct {
+	mu      sync.Mutex
+	flights map[string]*chatFlight
+}
+type chatFlight struct {
+	permit chan struct{}
+	refs   int
+}
+
+// enter serializes operations for one chat through a permit channel. The map
+// mutex is released before waiting and no mutex is held during RPC or store
+// I/O; unrelated chat permits are independent.
+func (k *keyedFlight) enter(key string) func() {
+	k.mu.Lock()
+	if k.flights == nil {
+		k.flights = make(map[string]*chatFlight)
+	}
+	x := k.flights[key]
+	if x == nil {
+		x = &chatFlight{permit: make(chan struct{}, 1)}
+		x.permit <- struct{}{}
+		k.flights[key] = x
+	}
+	x.refs++
+	k.mu.Unlock()
+	<-x.permit
+	return func() {
+		x.permit <- struct{}{}
+		k.mu.Lock()
+		x.refs--
+		if x.refs == 0 {
+			delete(k.flights, key)
+		}
+		k.mu.Unlock()
+	}
+}
+
 type Manager struct {
 	cfg Config
 
-	acquireMu sync.Mutex
-	mu        sync.Mutex
-	byChat    map[string]*Session
-	byRoute   map[string]*Session
-	done      chan struct{}
-	closeOnce sync.Once
+	chats          keyedFlight
+	mu             sync.Mutex
+	byChat         map[string]*Session
+	byRoute        map[string]*Session
+	slotGeneration map[string]uint64
+	generation     uint64
+	closed         bool
+	done           chan struct{}
+	closeOnce      sync.Once
 }
 
 func NewManager(cfg Config) *Manager {
@@ -41,7 +82,10 @@ func NewManager(cfg Config) *Manager {
 	if cfg.RetryBackoff == 0 {
 		cfg.RetryBackoff = DefaultRetryBackoff
 	}
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), done: make(chan struct{})}
+	if cfg.CloseTimeout == 0 {
+		cfg.CloseTimeout = DefaultCloseTimeout
+	}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), slotGeneration: make(map[string]uint64), done: make(chan struct{})}
 	if cfg.Client != nil {
 		go m.eventLoop()
 	}
@@ -49,19 +93,16 @@ func NewManager(cfg Config) *Manager {
 }
 
 func (m *Manager) eventLoop() {
-	dead := false
 	for {
+		ch := m.cfg.Client.Events()
 		select {
 		case <-m.done:
 			return
-		case ev, ok := <-m.cfg.Client.Events():
+		case ev, ok := <-ch:
 			if !ok {
-				if !dead {
-					m.invalidateEpoch()
-					dead = true
-				}
-				// The closed channel stays closed; pause briefly before
-				// re-fetching the next epoch's Events channel.
+				m.invalidateEpoch(ch)
+				// Events changes only when the next RPC establishes an epoch.
+				// A timer avoids spinning on the closed old channel.
 				select {
 				case <-m.done:
 					return
@@ -69,7 +110,6 @@ func (m *Manager) eventLoop() {
 				}
 				continue
 			}
-			dead = false
 			if ev == nil || ev.SessionID == "" {
 				continue
 			}
@@ -83,13 +123,18 @@ func (m *Manager) eventLoop() {
 	}
 }
 
-func (m *Manager) invalidateEpoch() {
+// invalidateEpoch only retires sessions opened on the channel that died. A
+// delayed failure from an older request therefore cannot invalidate sessions
+// registered after reconnect.
+func (m *Manager) invalidateEpoch(ch <-chan *omorpc.Event) {
 	m.mu.Lock()
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
-		all = append(all, s)
+		if s.epochEvents == ch {
+			all = append(all, s)
+			delete(m.byRoute, s.routingID)
+		}
 	}
-	m.byRoute = make(map[string]*Session)
 	m.mu.Unlock()
 	for _, s := range all {
 		s.invalidate("provider_disconnected", "provider connection lost")
@@ -103,20 +148,33 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	if m.cfg.Client == nil {
 		return nil, false, nil, errors.New("session: nil rpc client")
 	}
-	m.acquireMu.Lock()
-	defer m.acquireMu.Unlock()
+	chatID := chat.ChatID()
+	unlock := m.chats.enter(chatID)
+	defer unlock()
 
 	m.mu.Lock()
-	existing := m.byChat[chat.ChatID()]
+	if m.closed {
+		m.mu.Unlock()
+		return nil, false, nil, ErrManagerClosed
+	}
+	managerGeneration := m.generation
+	slotGeneration := m.slotGeneration[chatID]
+	existing := m.byChat[chatID]
 	m.mu.Unlock()
 	if existing != nil && !existing.Resumable() {
-		return existing, false, existing.Attach(sub), nil
+		detach, err := existing.attachChecked(sub)
+		if err == nil {
+			return existing, false, detach, nil
+		}
+		if !errors.Is(err, ErrSessionClosed) && !errors.Is(err, ErrSessionResumable) {
+			return nil, false, nil, err
+		}
 	}
 
 	cur := Cursor{}
 	var err error
 	if m.cfg.Store != nil {
-		cur, err = m.cfg.Store.CursorFor(ctx, chat.ChatID())
+		cur, err = m.cfg.Store.CursorFor(ctx, chatID)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -126,14 +184,29 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	data, openErr := m.open(ctx, chat.CWD(), cur.SessionFile)
 	var recovery *ErrorInfo
 	preserveCursor := false
-	if openErr == nil && resumed && cur.DurableSessionID != "" && data.State.SessionID != cur.DurableSessionID {
-		openErr = fmt.Errorf("durable session id mismatch: provider %q, stored %q", data.State.SessionID, cur.DurableSessionID)
+	if openErr == nil {
+		openErr = validateOpen(data, cur, resumed)
+		if openErr != nil && data.SessionID != "" {
+			m.discardRouting(data.SessionID)
+		}
 	}
 	if openErr != nil && resumed {
 		info := ErrorInfo{Code: "resume_failed", Message: openErr.Error(), StoredIdentity: cur, Dangling: danglingResume(openErr)}
 		recovery = &info
+		if !definitiveResumeFailure(openErr) {
+			if existing != nil {
+				existing.publishError(info)
+			}
+			return nil, false, nil, openErr
+		}
 		data, err = m.open(ctx, chat.CWD(), "")
+		if err == nil {
+			err = validateOpen(data, Cursor{}, false)
+		}
 		if err != nil {
+			if data.SessionID != "" {
+				m.discardRouting(data.SessionID)
+			}
 			return nil, false, nil, fmt.Errorf("resume failed (%v), fallback open failed: %w", openErr, err)
 		}
 		resumed = false
@@ -141,41 +214,92 @@ func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*S
 	} else if openErr != nil {
 		return nil, false, nil, openErr
 	}
-	if data.SessionID == "" || data.State.SessionID == "" {
-		return nil, false, nil, errors.New("session: open_session returned incomplete identity")
-	}
 
-	s := newSession(m, chat.ChatID(), chat.CWD(), data, resumed)
-	detach := s.Attach(sub)
+	epochEvents := m.cfg.Client.Events()
+	s := newSession(m, chatID, chat.CWD(), data, resumed, epochEvents)
 	newCur := Cursor{SessionFile: data.State.SessionFile, DurableSessionID: data.State.SessionID}
 	if m.cfg.Store != nil && !preserveCursor && newCur != cur {
-		if err := m.cfg.Store.SaveCursor(ctx, chat.ChatID(), newCur); err != nil {
-			detach()
-			_ = s.closeContext(context.Background())
+		if err := m.cfg.Store.SaveCursor(ctx, chatID, newCur); err != nil {
+			m.discardRouting(data.SessionID)
 			return nil, false, nil, err
 		}
 	}
 
+	m.mu.Lock()
+	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
+	if valid {
+		if existing != nil {
+			delete(m.byRoute, existing.routingID)
+		}
+		m.byChat[chatID] = s
+		m.byRoute[data.SessionID] = s
+	}
+	m.mu.Unlock()
+	if !valid {
+		m.discardRouting(data.SessionID)
+		return nil, false, nil, ErrManagerClosed
+	}
+
+	detach, err := s.attachChecked(sub)
+	if err != nil {
+		m.mu.Lock()
+		if m.byChat[chatID] == s {
+			delete(m.byChat, chatID)
+			delete(m.byRoute, data.SessionID)
+			m.slotGeneration[chatID]++
+		}
+		m.mu.Unlock()
+		m.discardRouting(data.SessionID)
+		return nil, false, nil, err
+	}
 	s.lifecycleMu.Lock()
 	if recovery != nil {
 		s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
 	}
 	s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
 	s.lifecycleMu.Unlock()
-
-	m.mu.Lock()
-	old := m.byChat[chat.ChatID()]
-	if old != nil {
-		delete(m.byRoute, old.routingID)
+	if existing != nil {
+		existing.retireReplaced()
 	}
-	m.byChat[chat.ChatID()] = s
-	m.byRoute[data.SessionID] = s
-	m.mu.Unlock()
-
 	if resumed {
 		s.loadEntries(ctx)
 	}
 	return s, true, detach, nil
+}
+
+func validateOpen(data omorpc.OpenSessionData, cur Cursor, resumed bool) error {
+	if data.SessionID == "" {
+		return errors.New("session: open_session returned empty routing session id")
+	}
+	if data.State.SessionID == "" {
+		return errors.New("session: open_session returned empty durable session id")
+	}
+	if data.State.SessionFile == "" {
+		return errors.New("session: open_session returned empty sessionFile")
+	}
+	if resumed && cur.DurableSessionID != "" && data.State.SessionID != cur.DurableSessionID {
+		return fmt.Errorf("durable session id mismatch: provider %q, stored %q", data.State.SessionID, cur.DurableSessionID)
+	}
+	return nil
+}
+
+func definitiveResumeFailure(err error) bool {
+	var stable *omorpc.StableError
+	if errors.As(err, &stable) {
+		return true
+	}
+	// Validation/decode failures happened after a successful response, so the
+	// request definitively landed and its routing handle was discarded.
+	return !errors.Is(err, omorpc.ErrDisconnected) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func (m *Manager) discardRouting(route string) {
+	if route == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
+	defer cancel()
+	_, _ = m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
 }
 
 func (m *Manager) open(ctx context.Context, cwd, path string) (omorpc.OpenSessionData, error) {
@@ -241,17 +365,13 @@ func (m *Manager) LiveSummaries() []Summary {
 	return out
 }
 
-func (m *Manager) Stop(chatID string) error {
-	return m.stopContext(context.Background(), chatID)
-}
-
+func (m *Manager) Stop(chatID string) error { return m.stopContext(context.Background(), chatID) }
 func (m *Manager) stopContext(ctx context.Context, chatID string) error {
+	unlock := m.chats.enter(chatID)
+	defer unlock()
 	m.mu.Lock()
+	m.slotGeneration[chatID]++
 	s := m.byChat[chatID]
-	if s != nil {
-		delete(m.byChat, chatID)
-		delete(m.byRoute, s.routingID)
-	}
 	m.mu.Unlock()
 	if s == nil {
 		return nil
@@ -262,6 +382,8 @@ func (m *Manager) stopContext(ctx context.Context, chatID string) error {
 func (m *Manager) CloseAll(ctx context.Context) error {
 	m.closeOnce.Do(func() { close(m.done) })
 	m.mu.Lock()
+	m.closed = true
+	m.generation++
 	all := make([]*Session, 0, len(m.byChat))
 	for _, s := range m.byChat {
 		all = append(all, s)
@@ -279,23 +401,48 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 }
 
 func (m *Manager) evict(s *Session) {
+	unlock := m.chats.enter(s.chatID)
+	defer unlock()
 	s.lifecycleMu.Lock()
-	if s.closed || s.resumable || s.activeLocked() || s.broadcast.count() != 0 {
+	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 {
 		s.lifecycleMu.Unlock()
 		return
 	}
 	m.mu.Lock()
-	if m.byChat[s.chatID] != s {
-		m.mu.Unlock()
+	current := m.byChat[s.chatID] == s
+	m.mu.Unlock()
+	if !current {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	delete(m.byChat, s.chatID)
-	delete(m.byRoute, s.routingID)
-	s.closed = true
-	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
-	m.mu.Unlock()
-	routing := s.routingID
+	s.closing = true
+	route := s.routingID
 	s.lifecycleMu.Unlock()
-	_, _ = m.cfg.Client.Call(context.Background(), omorpc.CloseSession{SessionID: routing})
+
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
+	_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	cancel()
+	if err != nil {
+		s.lifecycleMu.Lock()
+		s.closing = false
+		s.scheduleIdleLocked()
+		s.lifecycleMu.Unlock()
+		slog.Warn("idle session close failed; retaining session", "chat_id", s.chatID, "error", err)
+		return
+	}
+
+	s.lifecycleMu.Lock()
+	s.closing = false
+	s.closed = true
+	s.cancelIdleLocked()
+	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
+	m.mu.Lock()
+	if m.byChat[s.chatID] == s {
+		delete(m.byChat, s.chatID)
+		delete(m.byRoute, route)
+		m.slotGeneration[s.chatID]++
+	}
+	m.mu.Unlock()
+	s.lifecycleMu.Unlock()
+	s.broadcast.close(ErrSubscriberSessionEnd)
 }

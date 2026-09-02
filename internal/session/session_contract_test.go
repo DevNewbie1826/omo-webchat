@@ -74,8 +74,8 @@ func TestContractAbortIsFireAndForget(t *testing.T) {
 	sess, _, _ := acquire(t, mgr, chat, sub)
 	sub.next(t) // ready
 
-	// Park the abort handler: Abort must still return promptly, twice
-	// (idempotent).
+	// Park the abort handler: Abort must return promptly and concurrent calls
+	// collapse into the one in-flight provider request.
 	release := d.BlockHandler(omorpc.CmdAbort)
 	defer release()
 
@@ -88,8 +88,11 @@ func TestContractAbortIsFireAndForget(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("Abort blocked on the provider response; must be fire-and-forget")
 	}
-	if !d.AwaitRequestCount(omorpc.CmdAbort, 2, testTimeout) {
-		t.Fatalf("daemon must have received both aborts")
+	if !d.AwaitRequestCount(omorpc.CmdAbort, 1, testTimeout) {
+		t.Fatalf("daemon must have received the abort")
+	}
+	if got := d.RequestCount(omorpc.CmdAbort); got != 1 {
+		t.Fatalf("concurrent aborts issued %d provider requests, want 1", got)
 	}
 }
 
@@ -191,6 +194,8 @@ func (b *blockingSub) unblock() {
 		close(b.release)
 	})
 }
+
+func (b *blockingSub) Close() error { b.unblock(); return nil }
 
 // Overflow-detach: a subscriber whose Deliver never drains receives at most
 // the queue bound, while the session keeps streaming and settles normally

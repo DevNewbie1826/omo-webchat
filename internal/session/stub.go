@@ -11,9 +11,16 @@ import (
 )
 
 var (
-	ErrNotImplemented     = errors.New("not implemented")
-	ErrPromptInFlight     = errors.New("session: prompt in flight")
-	ErrCompactionInFlight = errors.New("session: compaction in flight")
+	ErrNotImplemented       = errors.New("not implemented")
+	ErrPromptInFlight       = errors.New("session: prompt in flight")
+	ErrCompactionInFlight   = errors.New("session: compaction in flight")
+	ErrSessionClosed        = errors.New("session: closed")
+	ErrSessionResumable     = errors.New("session: provider session is resumable")
+	ErrManagerClosed        = errors.New("session: manager closed")
+	ErrSubscriberOverflow   = errors.New("session: subscriber queue overflow")
+	ErrSubscriberDetached   = errors.New("session: subscriber detached")
+	ErrSubscriberDelivery   = errors.New("session: subscriber delivery failed")
+	ErrSubscriberSessionEnd = errors.New("session: subscriber session ended")
 )
 
 const (
@@ -21,6 +28,7 @@ const (
 	DefaultIdleAfter    = 30 * time.Minute
 	DefaultRetryAttempt = 3
 	DefaultRetryBackoff = 500 * time.Millisecond
+	DefaultCloseTimeout = 5 * time.Second
 )
 
 type Cursor struct {
@@ -45,6 +53,11 @@ type Config struct {
 	QueueSize     int
 	RetryAttempts int
 	RetryBackoff  time.Duration
+	CloseTimeout  time.Duration
+	// OnDetach is called exactly once when a subscription is retired. A
+	// cancellable subscriber should also implement Close() error; Close is
+	// invoked before this hook so a blocked Deliver can return.
+	OnDetach func(Subscriber, error)
 }
 
 type FrameKind string
@@ -65,6 +78,7 @@ const (
 	FrameCompactionStart FrameKind = "compaction.started"
 	FrameCompactionDone  FrameKind = "compaction.done"
 	FrameControlResult   FrameKind = "control.result"
+	FrameAck             FrameKind = "ack"
 	FrameApproval        FrameKind = "approval"
 	FrameNotice          FrameKind = "notice"
 	FrameExtensionEvent  FrameKind = "extensionEvent"
@@ -97,6 +111,9 @@ type Frame struct {
 	Data      any
 }
 
+// Subscriber receives frames serially. Implementing Close() error is the
+// cancellation contract for potentially blocking Deliver methods. For
+// compatibility, non-blocking subscribers need only implement Deliver.
 type Subscriber interface{ Deliver(Frame) }
 
 type Summary struct {

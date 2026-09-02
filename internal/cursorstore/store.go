@@ -27,7 +27,15 @@ var (
 	ErrInvalidLayout = errors.New("cursor store: invalid layout")
 	// ErrInvalidNameSource reports a chat name source outside "auto"/"user".
 	ErrInvalidNameSource = errors.New("cursor store: invalid nameSource")
+	// ErrPersistence classifies failures while atomically installing state.
+	ErrPersistence = errors.New("cursor store: persistence failed")
 )
+
+type Clock interface{ Now() time.Time }
+
+type systemClock struct{}
+
+func (systemClock) Now() time.Time { return time.Now() }
 
 // NameSource values for Chat.NameSource.
 const (
@@ -71,8 +79,8 @@ type State struct {
 // Store is a mutex-guarded in-memory cursor store flushed to disk with an
 // atomic temp+fsync+rename write on every mutation. Create with Open.
 type Store struct {
-	path string
-	now  func() time.Time
+	path  string
+	clock Clock
 
 	mu   sync.Mutex
 	data State
@@ -81,16 +89,22 @@ type Store struct {
 // Open loads the state file at path, or starts empty when the file does not
 // exist. A present-but-unreadable or invalid file is a typed ErrCorrupt, never
 // a silent reset. The parent directory is created when absent.
-func Open(path string) (*Store, error) {
+func Open(path string) (*Store, error) { return OpenWithClock(path, systemClock{}) }
+
+// OpenWithClock is Open with an injected clock for deterministic LastUsedAt.
+func OpenWithClock(path string, clock Clock) (*Store, error) {
+	if clock == nil {
+		clock = systemClock{}
+	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("cursorstore: creating state directory: %w", err)
 		}
 	}
 	s := &Store{
-		path: path,
-		now:  time.Now,
-		data: State{Workspaces: []Workspace{}},
+		path:  path,
+		clock: clock,
+		data:  State{Workspaces: []Workspace{}},
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -113,37 +127,52 @@ func Open(path string) (*Store, error) {
 // target, then fsync the directory. Mode is 0600. On failure the in-memory
 // state is left untouched, so no partial state is ever observable.
 func (s *Store) flushLocked(candidate State) error {
+	persistErr := func(op string, err error) error {
+		return fmt.Errorf("%w: %s: %w", ErrPersistence, op, err)
+	}
 	raw, err := json.MarshalIndent(candidate, "", "  ")
 	if err != nil {
-		return fmt.Errorf("cursorstore: encoding state: %w", err)
+		return persistErr("encoding state", err)
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".cursorstore-*")
 	if err != nil {
-		return fmt.Errorf("cursorstore: creating temp file: %w", err)
+		return persistErr("creating temp file", err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op after successful rename
+	closeOnFailure := func(op string, opErr error) error {
+		if closeErr := tmp.Close(); closeErr != nil {
+			return persistErr(op, errors.Join(opErr, fmt.Errorf("closing temp file: %w", closeErr)))
+		}
+		return persistErr(op, opErr)
+	}
 	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cursorstore: writing temp file: %w", err)
+		return closeOnFailure("writing temp file", err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cursorstore: setting temp file mode: %w", err)
+		return closeOnFailure("setting temp file mode", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("cursorstore: syncing temp file: %w", err)
+		return closeOnFailure("syncing temp file", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("cursorstore: closing temp file: %w", err)
+		return persistErr("closing temp file", err)
 	}
 	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("cursorstore: replacing state file: %w", err)
+		return persistErr("replacing state file", err)
 	}
-	if dir, err := os.Open(filepath.Dir(s.path)); err == nil {
-		dir.Sync()
-		dir.Close()
+	dir, err := os.Open(filepath.Dir(s.path))
+	if err != nil {
+		return persistErr("opening state directory", err)
+	}
+	if err := dir.Sync(); err != nil {
+		if closeErr := dir.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("closing state directory: %w", closeErr))
+		}
+		return persistErr("syncing state directory", err)
+	}
+	if err := dir.Close(); err != nil {
+		return persistErr("closing state directory", err)
 	}
 	s.data = candidate
 	return nil
@@ -256,7 +285,7 @@ func (s *Store) TouchLastUsed(id string) error {
 	}
 	candidate := cloneState(s.data)
 	updated := candidate.Chats[id]
-	updated.LastUsedAt = s.now().UnixMilli()
+	updated.LastUsedAt = s.clock.Now().UnixMilli()
 	candidate.Chats[id] = updated
 	return s.flushLocked(candidate)
 }
