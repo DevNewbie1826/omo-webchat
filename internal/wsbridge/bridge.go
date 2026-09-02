@@ -453,13 +453,17 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
 		if err != nil {
 			code := "no_chat"
+			message := err.Error()
 			switch {
 			case errors.Is(err, ErrChatDeleted):
 				code = "chat_deleted"
 			case errors.Is(err, ErrUnsupportedProvider):
 				code = "unsupported_provider"
+			case errors.Is(err, cursorstore.ErrAdoptionRequired):
+				code = "adoption_required"
+				message = "session must be adopted before opening"
 			}
-			c.sendError(code, err.Error(), "", "")
+			c.sendError(code, message, "", "")
 			return
 		}
 	} else if c.bridge.cfg.PrepareChat != nil {
@@ -472,9 +476,19 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			return
 		}
 	}
-	rec, err := c.bridge.cfg.Store.GetChat(f.ChatID)
+	var rec cursorstore.Chat
+	var err error
+	if guarded {
+		rec, err = c.bridge.cfg.Store.GetChatForOpen(f.ChatID)
+	} else {
+		rec, err = c.bridge.cfg.Store.GetChat(f.ChatID)
+	}
 	if err != nil {
-		c.sendError("no_chat", "chat not found", "", "")
+		if errors.Is(err, cursorstore.ErrAdoptionRequired) {
+			c.sendError("adoption_required", "session must be adopted before opening", "", "")
+		} else {
+			c.sendError("no_chat", "chat not found", "", "")
+		}
 		return
 	}
 	if rec.WorkspaceID != f.WsID {

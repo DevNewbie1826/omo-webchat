@@ -7,7 +7,7 @@ describe("createTerminal", () => {
     vi.restoreAllMocks();
   });
 
-  it("sends one explicit provider, an optional resume identity, and never a model", async () => {
+  it("sends one explicit provider and never a model or resume identity", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(
       JSON.stringify({ id: "chat-1", name: "chat", provider: "omo" }),
       { status: 201 },
@@ -21,18 +21,7 @@ describe("createTerminal", () => {
     expect(path).toBe("/api/workspaces/ws-1/chats");
     expect(JSON.parse(String(init?.body))).toEqual({ name: "", provider: "omo" });
     expect(String(init?.body)).not.toContain("model");
-
-    await createTerminal("ws-1", "Disk session", "omo", "/sessions/disk.jsonl");
-
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [resumePath, resumeInit] = fetchMock.mock.calls[1]!;
-    expect(resumePath).toBe("/api/workspaces/ws-1/chats");
-    expect(JSON.parse(String(resumeInit?.body))).toEqual({
-      name: "Disk session",
-      provider: "omo",
-      resumeIdentity: "/sessions/disk.jsonl",
-    });
-    expect(String(resumeInit?.body)).not.toContain("model");
+    expect(String(init?.body)).not.toContain("resumeIdentity");
   });
 });
 

@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,13 @@ type adoptionErrorResponse struct {
 	Error string         `json:"error"`
 	Code  adoptcopy.Kind `json:"code"`
 }
+
+var (
+	saveAdoptedChat = func(store *cursorstore.Store, chat cursorstore.Chat) error {
+		return store.SaveChat(chat)
+	}
+	afterAdoptionInvalidated = func(string) {}
+)
 
 // handleAdoptWorkspaceSession resolves only rows in the workspace's discovered
 // catalog. The source is passed solely to adoptcopy's read-only copy workflow;
@@ -45,33 +53,44 @@ func (s *Server) handleAdoptWorkspaceSession(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "session does not belong to workspace catalog")
 		return
 	}
-	result, err := adoptcopy.Adopt(r.Context(), source.Path, filepath.Join(s.cursors.StateDir(), "adopted"))
-	if err != nil {
-		s.writeAdoptionError(w, err)
-		return
-	}
-	if result.SessionID != source.ID {
-		s.writeAdoptionError(w, &adoptcopy.Error{Kind: adoptcopy.KindInvalidSource, Op: "validate catalog identity", Path: source.Path, Err: adoptcopy.ErrInvalidSource})
-		return
+	ownedDir := s.cursors.OwnedSessionDir()
+	destination := filepath.Join(ownedDir, adoptcopy.DestinationName(source.ID))
+	var existing *cursorstore.Chat
+	for _, candidate := range s.cursors.ListChats(ws.ID) {
+		candidate := candidate
+		if candidate.DurableSessionID == source.ID && candidate.SessionFile == destination && cursorstore.IsOwnedSession(candidate, ownedDir) {
+			info, statErr := os.Lstat(destination)
+			if statErr == nil && info.Mode().IsRegular() {
+				writeJSON(w, http.StatusOK, projectChat(candidate))
+				return
+			}
+			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				s.writeAdoptionError(w, &adoptcopy.Error{Kind: adoptcopy.KindIO, Op: "inspect owned copy", Path: destination, Err: statErr})
+				return
+			}
+			existing = &candidate
+			break
+		}
+		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+			existing = &candidate
+		}
 	}
 
-	for _, chat := range s.cursors.ListChats(ws.ID) {
-		if chat.DurableSessionID != result.SessionID && !sessionMatchesChat(source, chat) {
-			continue
-		}
-		if err := s.cursors.UpdateIdentity(chat.ID, result.Path, result.SessionID); err != nil {
-			s.writeStoreError(w, err)
-			return
-		}
-		chat, err = s.cursors.GetChat(chat.ID)
-		if err != nil {
-			s.writeStoreError(w, err)
+	if existing != nil {
+		chat, transitionErr := s.adoptExistingChat(r, *existing, source, ownedDir)
+		if transitionErr != nil {
+			s.writeAdoptionTransitionError(w, transitionErr)
 			return
 		}
 		writeJSON(w, http.StatusOK, projectChat(chat))
 		return
 	}
 
+	result, err := adoptcopy.Adopt(r.Context(), source.Path, ownedDir, source.ID)
+	if err != nil {
+		s.writeAdoptionError(w, err)
+		return
+	}
 	name := strings.TrimSpace(req.Name)
 	placeholder := name == ""
 	if placeholder {
@@ -89,26 +108,57 @@ func (s *Server) handleAdoptWorkspaceSession(w http.ResponseWriter, r *http.Requ
 		ID:                 id,
 		WorkspaceID:        ws.ID,
 		CWD:                ws.Path,
+		SessionFile:        result.Path,
+		DurableSessionID:   result.SessionID,
+		SessionProvenance:  cursorstore.SessionProvenanceAdopted,
 		Name:               name,
 		NameSource:         cursorstore.NameSourceAuto,
 		TitleIsPlaceholder: placeholder,
 		CreatedAt:          time.Now().UnixMilli(),
 	}
-	if err := s.cursors.SaveChat(chat); err != nil {
-		s.writeStoreError(w, err)
-		return
-	}
-	if err := s.cursors.UpdateIdentity(chat.ID, result.Path, result.SessionID); err != nil {
-		_ = s.cursors.DeleteChat(chat.ID)
-		s.writeStoreError(w, err)
-		return
-	}
-	chat, err = s.cursors.GetChat(chat.ID)
-	if err != nil {
+	if err := saveAdoptedChat(s.cursors, chat); err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, projectChat(chat))
+}
+
+func (s *Server) adoptExistingChat(r *http.Request, chat cursorstore.Chat, source diskSession, ownedDir string) (cursorstore.Chat, error) {
+	s.chatLifecycleMu.Lock()
+	current, err := s.cursors.GetChat(chat.ID)
+	if err != nil || current.WorkspaceID != chat.WorkspaceID || s.chatDeleting[chat.ID] {
+		s.chatLifecycleMu.Unlock()
+		return cursorstore.Chat{}, cursorstore.ErrNotFound
+	}
+	s.bumpChatLifecycleVersion(chat.ID)
+	s.chatLifecycleMu.Unlock()
+	afterAdoptionInvalidated(chat.ID)
+
+	install := func() error {
+		result, copyErr := adoptcopy.Adopt(r.Context(), source.Path, ownedDir, source.ID)
+		if copyErr != nil {
+			return copyErr
+		}
+		return s.cursors.UpdateOwnedIdentity(chat.ID, result.Path, result.SessionID)
+	}
+	if s.manager != nil {
+		err = s.manager.StopAndMutateContext(r.Context(), chat.ID, install)
+	} else {
+		err = install()
+	}
+	if err != nil {
+		return cursorstore.Chat{}, err
+	}
+	return s.cursors.GetChat(chat.ID)
+}
+
+func (s *Server) writeAdoptionTransitionError(w http.ResponseWriter, err error) {
+	var adoptionErr *adoptcopy.Error
+	if errors.As(err, &adoptionErr) {
+		s.writeAdoptionError(w, err)
+		return
+	}
+	s.writeStoreError(w, err)
 }
 
 func findDiskSession(cwd, id, path string) (diskSession, bool) {

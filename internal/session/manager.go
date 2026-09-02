@@ -817,12 +817,34 @@ func (m *Manager) StopContext(ctx context.Context, chatID string) error {
 	return m.stopContext(ctx, chatID)
 }
 
+// StopAndMutateContext retires every provider route for chatID and runs mutate
+// while holding the same per-chat permit used by Acquire. A later acquire
+// therefore cannot observe metadata from before mutate.
+func (m *Manager) StopAndMutateContext(ctx context.Context, chatID string, mutate func() error) error {
+	unlock, err := m.chats.enter(ctx, chatID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := m.stopChatInFlight(ctx, chatID); err != nil {
+		return err
+	}
+	if mutate == nil {
+		return nil
+	}
+	return mutate()
+}
+
 func (m *Manager) stopContext(ctx context.Context, chatID string) error {
 	unlock, err := m.chats.enter(ctx, chatID)
 	if err != nil {
 		return err
 	}
 	defer unlock()
+	return m.stopChatInFlight(ctx, chatID)
+}
+
+func (m *Manager) stopChatInFlight(ctx context.Context, chatID string) error {
 	m.mu.Lock()
 	m.bumpSlotGenerationLocked(chatID)
 	s := m.byChat[chatID]
