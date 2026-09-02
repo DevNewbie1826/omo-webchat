@@ -25,6 +25,10 @@ const (
 	defaultWriteTimeout = 10 * time.Second
 )
 
+// ErrChatDeleted reports that deletion advanced after a create captured its
+// metadata generation but before the acquired provider route was published.
+var ErrChatDeleted = errors.New("chat was deleted while opening")
+
 // Config supplies the independently-owned v2 session stack.
 type Config struct {
 	Context       context.Context
@@ -36,6 +40,11 @@ type Config struct {
 	// PrepareChat lazily mirrors v1 workspace/chat metadata into Store. The v2
 	// cursor file remains independently owned and only resume pointers mutate.
 	PrepareChat func(context.Context, string, string) error
+	// PrepareChatVersion captures a deletion generation atomically with prepare;
+	// ChatVersion must be a lock-free read because validation runs inside the
+	// manager's per-chat flight.
+	PrepareChatVersion func(context.Context, string, string) (uint64, error)
+	ChatVersion        func(string) uint64
 }
 
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
@@ -464,7 +473,20 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 	c.unbind()
 	c.sub = newSubscriber(c)
 	sub := c.sub
-	if c.bridge.cfg.PrepareChat != nil {
+	var preparedGeneration uint64
+	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
+	if guarded {
+		var err error
+		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
+		if err != nil {
+			code := "no_chat"
+			if errors.Is(err, ErrChatDeleted) {
+				code = "chat_deleted"
+			}
+			c.sendError(code, err.Error(), "", "")
+			return
+		}
+	} else if c.bridge.cfg.PrepareChat != nil {
 		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
 			c.sendError("no_chat", err.Error(), "", "")
 			return
@@ -480,7 +502,7 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		return
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	sess, _, detach, err := c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, func(acquired *session.Session, started bool, acquiredDetach func()) {
+	initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
 		wrappedDetach := sub.wrapDetach(acquiredDetach)
 		c.stateMu.Lock()
 		if c.closed.Load() {
@@ -504,9 +526,27 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		if !started {
 			acquired.LoadEntries(ctx)
 		}
-	})
+	}
+	var sess *session.Session
+	var detach func()
+	if guarded {
+		validate := func() error {
+			if c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
+				return ErrChatDeleted
+			}
+			return nil
+		}
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedChecked(ctx, ref, sub, initialize, validate)
+	} else {
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, initialize)
+	}
 	if err != nil {
-		c.sendError("start_failed", err.Error(), "", "")
+		c.unbind()
+		code := "start_failed"
+		if errors.Is(err, ErrChatDeleted) {
+			code = "chat_deleted"
+		}
+		c.sendError(code, err.Error(), "", "")
 		return
 	}
 	c.stateMu.Lock()

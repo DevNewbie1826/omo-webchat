@@ -30,19 +30,30 @@ type v2ChatPreparerStore interface {
 // prepareV2Chat mirrors launch metadata while holding the same lifecycle lock
 // as deletion, so a deleted v1 chat cannot be republished into the v2 store.
 func (s *Server) prepareV2Chat(cursors v2ChatPreparerStore, wsID, chatID string) error {
+	_, err := s.prepareV2ChatVersion(cursors, wsID, chatID)
+	return err
+}
+
+// prepareV2ChatVersion captures the deletion generation in the same critical
+// section as metadata preparation. The bridge later validates it lock-free,
+// avoiding a chatLifecycleMu -> manager-flight lock inversion.
+func (s *Server) prepareV2ChatVersion(cursors v2ChatPreparerStore, wsID, chatID string) (uint64, error) {
 	s.chatLifecycleMu.Lock()
 	defer s.chatLifecycleMu.Unlock()
+	if s.chatDeleting[chatID] {
+		return 0, wsbridge.ErrChatDeleted
+	}
 
 	ws, err := s.store.GetWorkspace(wsID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	chat, err := s.store.GetChat(wsID, chatID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := cursors.SaveWorkspace(cursorstore.Workspace{ID: ws.ID, Name: ws.Name, Path: ws.Path}); err != nil {
-		return err
+		return 0, err
 	}
 	cwd := chat.Cwd
 	if cwd == "" {
@@ -51,9 +62,25 @@ func (s *Server) prepareV2Chat(cursors v2ChatPreparerStore, wsID, chatID string)
 	current, err := cursors.GetChat(chat.ID)
 	if err == nil {
 		current.WorkspaceID, current.CWD, current.Name = ws.ID, cwd, chat.Name
-		return cursors.SaveChat(current)
+		if err := cursors.SaveChat(current); err != nil {
+			return 0, err
+		}
+	} else if err := cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt}); err != nil {
+		return 0, err
 	}
-	return cursors.SaveChat(cursorstore.Chat{ID: chat.ID, WorkspaceID: ws.ID, CWD: cwd, Name: chat.Name, NameSource: cursorstore.NameSourceAuto, CreatedAt: chat.CreatedAt})
+	return s.chatLifecycleVersion(chatID), nil
+}
+
+func (s *Server) chatLifecycleVersion(chatID string) uint64 {
+	if value, ok := s.chatLifecycleGeneration.Load(chatID); ok {
+		return value.(uint64)
+	}
+	return 0
+}
+
+// bumpChatLifecycleVersion is called only while chatLifecycleMu is held.
+func (s *Server) bumpChatLifecycleVersion(chatID string) {
+	s.chatLifecycleGeneration.Store(chatID, s.chatLifecycleVersion(chatID)+1)
 }
 
 // Run initializes the store, session store, and HTTP server, then serves until
@@ -128,12 +155,13 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			ensured, err = omorpc.EnsureDaemon(ctx, omorpc.EnsureConfig{WorkingDir: cfg.Root})
 			if err == nil {
 				v2Manager = v2session.NewManager(v2session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
-				prepareChat := func(_ context.Context, wsID, chatID string) error {
-					return apiServer.prepareV2Chat(cursors, wsID, chatID)
+				prepareChat := func(_ context.Context, wsID, chatID string) (uint64, error) {
+					return apiServer.prepareV2ChatVersion(cursors, wsID, chatID)
 				}
 				v2Bridge = wsbridge.New(wsbridge.Config{
 					Context: ctx, Manager: v2Manager, Store: cursors,
-					ServerVersion: ensured.Client.ServerVersion(), Logger: logger, PrepareChat: prepareChat,
+					ServerVersion: ensured.Client.ServerVersion(), Logger: logger,
+					PrepareChatVersion: prepareChat, ChatVersion: apiServer.chatLifecycleVersion,
 				})
 				apiServer.installV2(v2Manager, cursors, v2Bridge)
 			}

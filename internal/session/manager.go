@@ -185,17 +185,25 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, nil)
+	return m.acquire(ctx, chat, sub, nil, nil)
 }
 
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
 func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize)
+	return m.acquire(ctx, chat, sub, initialize, nil)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
+// AcquireInitializedChecked delays publication of a newly opened session
+// until initialize completes and validate confirms that its caller's metadata
+// generation is still current. validate must not acquire a lock that nests
+// outside the manager's per-chat flight.
+func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate)
+}
+
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -239,6 +247,12 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if err == nil {
 			if initialize != nil {
 				initialize(existing, false, detach)
+			}
+			if validate != nil {
+				if err := validate(); err != nil {
+					detach()
+					return nil, false, nil, err
+				}
 			}
 			return existing, false, detach, nil
 		}
@@ -303,6 +317,70 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(data.SessionID)
 			return nil, false, nil, err
 		}
+	}
+
+	// The checked bridge path initializes an unpublished route first. This lets
+	// API deletion finish its metadata flush while initialization is in flight,
+	// then reject the stale generation without ever exposing it in byChat.
+	if validate != nil {
+		m.mu.Lock()
+		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
+		m.mu.Unlock()
+		if !valid {
+			m.discardRouting(data.SessionID)
+			return nil, false, nil, ErrManagerClosed
+		}
+		if !m.cfg.Client.EpochCurrent(epoch) {
+			m.discardRouting(data.SessionID)
+			return nil, false, nil, ErrSessionResumable
+		}
+		detach, err := s.attachChecked(sub)
+		if err != nil {
+			m.discardRouting(data.SessionID)
+			return nil, false, nil, err
+		}
+		s.lifecycleMu.Lock()
+		if recovery != nil {
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		}
+		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
+		s.lifecycleMu.Unlock()
+		if resumed {
+			s.loadEntries(ctx)
+		}
+		if initialize != nil {
+			initialize(s, true, detach)
+		}
+		if err := validate(); err != nil {
+			detach()
+			s.retireReplaced()
+			m.discardRouting(data.SessionID)
+			return nil, false, nil, err
+		}
+		m.mu.Lock()
+		valid = !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
+		epochLive := m.cfg.Client.EpochCurrent(epoch)
+		if valid && epochLive {
+			if existing != nil {
+				delete(m.byRoute, existing.routingID)
+			}
+			m.byChat[chatID] = s
+			m.byRoute[data.SessionID] = s
+		}
+		m.mu.Unlock()
+		if !valid || !epochLive {
+			detach()
+			s.retireReplaced()
+			m.discardRouting(data.SessionID)
+			if !epochLive {
+				return nil, false, nil, ErrSessionResumable
+			}
+			return nil, false, nil, ErrManagerClosed
+		}
+		if existing != nil {
+			existing.retireReplaced()
+		}
+		return s, true, detach, nil
 	}
 
 	m.mu.Lock()

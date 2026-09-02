@@ -86,40 +86,63 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		s.beforeChatDelete()
 	}
 
-	// Serialize the complete v2 stop-and-delete transition with PrepareChat.
-	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
-	// not turn a still-live provider session into successfully deleted metadata.
+	// Publish a deletion generation before provider I/O. Prepare captures the
+	// prior generation under this lock; bridge publication validates it without
+	// taking the lock from inside the manager flight.
 	s.chatLifecycleMu.Lock()
 	if _, err := s.store.GetChat(wsID, chatID); err != nil {
 		s.chatLifecycleMu.Unlock()
 		s.writeStoreError(w, err)
 		return
 	}
+	if s.chatDeleting[chatID] {
+		s.chatLifecycleMu.Unlock()
+		writeError(w, http.StatusConflict, "chat deletion is already in progress")
+		return
+	}
+	s.chatDeleting[chatID] = true
+	s.bumpChatLifecycleVersion(chatID)
+	s.chatLifecycleMu.Unlock()
+
+	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
+	// not turn a still-live provider session into successfully deleted metadata.
 	manager, cursors := s.v2Stack()
 	if manager != nil {
 		stopCtx, cancelStop := newChatStopContext(context.Background(), chatStopTimeout)
 		err := manager.StopContext(stopCtx, chatID)
 		cancelStop()
 		if err != nil {
+			s.chatLifecycleMu.Lock()
+			delete(s.chatDeleting, chatID)
 			s.chatLifecycleMu.Unlock()
 			s.logger.Error("stopping v2 chat for delete", "err", err, "chatId", chatID)
 			writeError(w, http.StatusInternalServerError, "failed to stop chat")
 			return
 		}
 	}
+	if s.afterV2ChatStop != nil {
+		s.afterV2ChatStop()
+	}
+
+	// Deletion exclusion remains active through both metadata stores, but no
+	// API lifecycle lock is held across the provider RPC above.
+	s.chatLifecycleMu.Lock()
 	if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
+		delete(s.chatDeleting, chatID)
 		s.chatLifecycleMu.Unlock()
 		s.writeStoreError(w, err)
 		return
 	}
 	if cursors != nil {
 		if err := cursors.DeleteChat(chatID); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
+			delete(s.chatDeleting, chatID)
 			s.chatLifecycleMu.Unlock()
 			s.logger.Error("deleting v2 chat cursor", "err", err, "chatId", chatID)
 			writeError(w, http.StatusInternalServerError, "failed to delete chat cursor")
 			return
 		}
 	}
+	delete(s.chatDeleting, chatID)
 	s.chatLifecycleMu.Unlock()
 
 	// Legacy provider shutdown stays outside the lifecycle lock. The v1 record

@@ -516,10 +516,27 @@ func (s *Session) closeContext(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
+	s.closing = true
+	s.cancelIdleLocked()
+	route := s.routingID
+	s.lifecycleMu.Unlock()
+
+	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	s.manager.mu.Lock()
+	managerClosed := s.manager.closed
+	s.manager.mu.Unlock()
+	if !definitiveCloseFailure(err) && !managerClosed {
+		s.lifecycleMu.Lock()
+		s.closing = false
+		s.scheduleIdleLocked()
+		s.lifecycleMu.Unlock()
+		return err
+	}
+
+	s.lifecycleMu.Lock()
 	s.closed = true
 	s.closing = false
 	s.cancelIdleLocked()
-	route := s.routingID
 	s.manager.mu.Lock()
 	if s.manager.byChat[s.chatID] == s {
 		delete(s.manager.byChat, s.chatID)
@@ -529,7 +546,6 @@ func (s *Session) closeContext(ctx context.Context) error {
 	s.manager.mu.Unlock()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
-	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
 	if definitiveCloseFailure(err) {
 		return nil
 	}

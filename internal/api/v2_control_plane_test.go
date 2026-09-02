@@ -11,8 +11,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/lxzan/gws"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
@@ -176,6 +179,147 @@ func TestDeleteChatCanceledRequestDoesNotDiscardLiveV2State(t *testing.T) {
 	}
 	if _, active := e.manager.Get(e.chatID); !active {
 		t.Fatal("v2 session disappeared after failed stop")
+	}
+}
+
+func TestDeleteChatRetriesProviderCloseAfterTimeout(t *testing.T) {
+	e := newV2ControlEnv(t)
+	releaseClose := e.daemon.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+
+	stopContextReady := make(chan context.CancelFunc, 1)
+	originalStopContext := newChatStopContext
+	newChatStopContext = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(parent)
+		stopContextReady <- cancel
+		return ctx, cancel
+	}
+	t.Cleanup(func() { newChatStopContext = originalStopContext })
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/", nil)
+		req.SetPathValue("wsId", e.wsID)
+		req.SetPathValue("chatId", e.chatID)
+		rec := httptest.NewRecorder()
+		e.server.handleDeleteChat(rec, req)
+		firstDone <- rec
+	}()
+	cancelStop := receiveV2Control(t, stopContextReady, "delete stop context")
+	if !e.daemon.AwaitRequestCount(omorpc.CmdCloseSession, 1, time.Second) {
+		t.Fatal("daemon never saw first close_session")
+	}
+	cancelStop()
+	if rec := receiveV2Control(t, firstDone, "timed-out delete"); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("first delete status=%d, want 500: %s", rec.Code, rec.Body.String())
+	}
+	if _, active := e.manager.Get(e.chatID); !active {
+		t.Fatal("non-definitive close removed the retryable manager session")
+	}
+	if _, err := e.cursors.GetChat(e.chatID); err != nil {
+		t.Fatalf("timeout removed cursor metadata: %v", err)
+	}
+
+	releaseClose()
+	retry := httptest.NewRequest(http.MethodDelete, "/", nil)
+	retry.SetPathValue("wsId", e.wsID)
+	retry.SetPathValue("chatId", e.chatID)
+	retryRec := httptest.NewRecorder()
+	e.server.handleDeleteChat(retryRec, retry)
+	if retryRec.Code != http.StatusNoContent {
+		t.Fatalf("retry delete status=%d, want 204: %s", retryRec.Code, retryRec.Body.String())
+	}
+	if got := e.daemon.RequestCount(omorpc.CmdCloseSession); got != 2 {
+		t.Fatalf("close_session requests=%d, want retry count 2", got)
+	}
+	if live := e.daemon.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider sessions orphaned after retry: %v", live)
+	}
+	if _, active := e.manager.Get(e.chatID); active {
+		t.Fatal("manager retained session after definitive retry")
+	}
+}
+
+func TestDeleteChatRejectsBridgePublicationPreparedBeforeDelete(t *testing.T) {
+	e := newV2ControlEnv(t)
+	prepared := make(chan struct{})
+	continuePrepare := make(chan struct{})
+	stopped := make(chan struct{})
+	continueDelete := make(chan struct{})
+	e.server.afterV2ChatStop = func() {
+		close(stopped)
+		<-continueDelete
+	}
+	prepareVersion := func(_ context.Context, wsID, chatID string) (uint64, error) {
+		generation, err := e.server.prepareV2ChatVersion(e.cursors, wsID, chatID)
+		close(prepared)
+		<-continuePrepare
+		return generation, err
+	}
+	bridge := wsbridge.New(wsbridge.Config{
+		Context: t.Context(), Manager: e.manager, Store: e.cursors,
+		ServerVersion: "test", Logger: e.server.logger,
+		PrepareChatVersion: prepareVersion, ChatVersion: e.server.chatLifecycleVersion,
+	})
+	httpServer := httptest.NewServer(bridge)
+	defer httpServer.Close()
+	frames := &frameCollector{notify: make(chan struct{}, 64)}
+	client, _, err := gws.NewClient(frames, &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(httpServer.URL, "http")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.WriteClose(1000, nil)
+	go client.ReadLoop()
+	frames.waitFor(t, "hello", time.Second)
+	writeFrame(t, client, map[string]any{"type": "hello", "version": 2})
+
+	releaseState := e.daemon.BlockHandler(omorpc.CmdGetState)
+	defer releaseState()
+	writeFrame(t, client, map[string]any{"type": "chat.create", "wsId": e.wsID, "chatId": e.chatID})
+	receiveV2Control(t, prepared, "versioned chat prepare")
+
+	deleted := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodDelete, "/", nil)
+		req.SetPathValue("wsId", e.wsID)
+		req.SetPathValue("chatId", e.chatID)
+		rec := httptest.NewRecorder()
+		e.server.handleDeleteChat(rec, req)
+		deleted <- rec
+	}()
+	receiveV2Control(t, stopped, "provider stop before metadata flush")
+	close(continuePrepare)
+	if !e.daemon.AwaitRequestCount(omorpc.CmdGetState, 1, time.Second) {
+		t.Fatal("bridge initialization did not reach blocked get_state")
+	}
+	close(continueDelete)
+	if rec := receiveV2Control(t, deleted, "delete completion"); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	if _, active := e.manager.Get(e.chatID); active {
+		t.Fatal("unvalidated route was published while initialization was blocked")
+	}
+
+	releaseState()
+	frames.waitFor(t, "error", 3*time.Second)
+	var deletionError map[string]any
+	for _, raw := range frames.snapshot() {
+		var frame map[string]any
+		if json.Unmarshal(raw, &frame) == nil && frame["type"] == "error" && frame["code"] == "chat_deleted" {
+			deletionError = frame
+		}
+	}
+	if deletionError == nil {
+		t.Fatalf("socket did not receive typed chat_deleted error; frames: %s", frames.types())
+	}
+	if _, active := e.manager.Get(e.chatID); active {
+		t.Fatal("stale bridge create published a live session after delete")
+	}
+	if _, err := e.cursors.GetChat(e.chatID); !errors.Is(err, cursorstore.ErrNotFound) {
+		t.Fatalf("cursor survived delete/create race: %v", err)
+	}
+	if live := e.daemon.LiveSessions(); len(live) != 0 {
+		t.Fatalf("provider route orphaned by rejected create: %v", live)
 	}
 }
 
