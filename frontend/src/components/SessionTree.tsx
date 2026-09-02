@@ -21,6 +21,7 @@ export interface SessionTreeProps {
   readonly liveSessions: ReadonlySet<string>;
   /** Live session id -> running agent count; rows show a badge while > 0. */
   readonly runningCounts?: ReadonlyMap<string, { readonly count: number; readonly partial: boolean; readonly unknown?: boolean }> | undefined;
+  readonly aggregateSessionIds?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly expanded: ReadonlySet<string>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
@@ -49,6 +50,7 @@ export function SessionTree({
   placedSessions,
   liveSessions,
   runningCounts,
+  aggregateSessionIds,
   expanded,
   sessionLists,
   sessionPages,
@@ -96,7 +98,12 @@ export function SessionTree({
       if (name === ws.name) return;
       onRenameWorkspace(ws, name).catch(() => notify(t("toast.error"), "error"));
     } else {
-      const tm = ws.chats.find((x) => x.id === target.tmId);
+      const item = (sessionLists.get(ws.id) ?? []).find(
+        (session) => session.id === target.tmId && session.source === "stored" && session.dangling !== true,
+      );
+      const tm = ws.chats.find((x) => x.id === target.tmId) ?? (item
+        ? { id: item.id, name: item.name, provider: "omo" as const }
+        : undefined);
       if (!tm || name === tm.name) return;
       onRenameTerminal(ws, tm, name).catch(() => notify(t("toast.error"), "error"));
     }
@@ -113,6 +120,7 @@ export function SessionTree({
         const paging = sessionPages.get(ws.id);
         const mergedSessionIds = new Set(ws.chats.map((chat) => chat.id));
         for (const session of sessionLists.get(ws.id) ?? []) mergedSessionIds.add(session.id);
+        for (const id of aggregateSessionIds?.get(ws.id) ?? []) mergedSessionIds.add(id);
         const renamingWs =
           rename && rename.kind === "workspace" && rename.wsId === ws.id ? rename : null;
         return (

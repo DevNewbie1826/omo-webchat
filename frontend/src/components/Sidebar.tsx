@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
@@ -7,6 +7,7 @@ import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
+import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { useMediaQuery } from "../lib/useMediaQuery";
@@ -85,6 +86,40 @@ export function Sidebar({
     ),
     [summaries],
   );
+  const [resolvedRunningMembership, setResolvedRunningMembership] =
+    useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const unresolvedRunningIds = useMemo(() => {
+    const ids = new Set(runningCounts.keys());
+    for (const workspace of workspaces) {
+      for (const chat of workspace.chats) ids.delete(chat.id);
+      for (const session of sessionLists.get(workspace.id) ?? []) ids.delete(session.id);
+      for (const id of resolvedRunningMembership.get(workspace.id) ?? []) ids.delete(id);
+    }
+    return ids;
+  }, [resolvedRunningMembership, runningCounts, sessionLists, workspaces]);
+  const unresolvedFingerprint = [...unresolvedRunningIds].sort().join("\0");
+  const aggregateSessionIds = useMemo(
+    () => new Map([...resolvedRunningMembership].map(([wsId, ids]) => [
+      wsId,
+      new Set([...ids].filter((id) => runningCounts.has(id))),
+    ])),
+    [resolvedRunningMembership, runningCounts],
+  );
+
+  useEffect(() => {
+    if (unresolvedRunningIds.size === 0) return;
+    const controller = new AbortController();
+    void resolveWorkspaceSessionMembership(workspaces, unresolvedRunningIds, controller.signal)
+      .then((resolved) => setResolvedRunningMembership((previous) => {
+        const next = new Map(previous);
+        for (const [wsId, ids] of resolved) {
+          next.set(wsId, new Set([...(next.get(wsId) ?? []), ...ids]));
+        }
+        return next;
+      }), () => undefined);
+    return () => controller.abort();
+  }, [runningCounts, unresolvedFingerprint, workspaces]);
+
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
     <>
@@ -157,6 +192,7 @@ export function Sidebar({
                 placedSessions={placedSessions}
                 liveSessions={liveSessions}
                 runningCounts={runningCounts}
+                aggregateSessionIds={aggregateSessionIds}
                 expanded={expanded}
                 sessionLists={sessionLists}
                 sessionPages={sessionPages}

@@ -46,6 +46,7 @@ function tree(
   expanded = new Set(["ws-1"]),
   renderedWorkspace = workspace,
   renderedSessions = sessions,
+  aggregateSessionIds: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): void {
   const root = (container as HTMLDivElement & { __root?: Root }).__root!;
   act(() => {
@@ -56,6 +57,7 @@ function tree(
           touchActions={touchActions}
           liveSessions={new Set(["tm-live", "tm-idle"])}
           runningCounts={runningCounts}
+          aggregateSessionIds={aggregateSessionIds}
           activeTerminalId={null}
           placedSessions={new Set()}
           expanded={expanded}
@@ -164,20 +166,36 @@ describe("SessionTree running-agent badge", () => {
     expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgents 2");
   });
 
-  it("counts a cursor-only running session in the collapsed workspace aggregate", () => {
-    const cursorOnly = { id: "cursor-only", name: "Cursor only", source: "stored" as const, recencyMs: 3 };
+  it("counts a running cursor-only session in a cold collapsed workspace", () => {
     tree(
       container,
       new Map([["cursor-only", { count: 1, partial: false }]]),
       false,
       new Set(),
       { ...workspace, chats: [] },
-      [cursorOnly],
+      [],
+      new Map([["ws-1", new Set(["cursor-only"])]]),
     );
 
     const workspaceRow = row("Workspace");
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("1");
     expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("1");
+  });
+
+  it("counts a running cursor-only session beyond the visible first page", () => {
+    tree(
+      container,
+      new Map([["cursor-page-2", { count: 2, partial: false }]]),
+      false,
+      new Set(),
+      { ...workspace, chats: [] },
+      sessions,
+      new Map([["ws-1", new Set(["cursor-page-2"])]]),
+    );
+
+    const workspaceRow = row("Workspace");
+    expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("3");
+    expect(workspaceRow.querySelector(".th-tree-running")?.textContent).toBe("2");
   });
 
   it("renders the workspace aggregate and per-session badges when expanded", () => {

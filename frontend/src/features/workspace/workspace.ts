@@ -119,6 +119,31 @@ export async function listWorkspaceSessions(
   );
 }
 
+/** Resolve otherwise-unknown live IDs through the complete union independently
+ * of the sidebar's expansion state and visible pagination. */
+export async function resolveWorkspaceSessionMembership(
+  workspaces: readonly Workspace[],
+  sessionIds: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+  const entries = await Promise.all(workspaces.map(async (workspace) => {
+    const matches = new Set<string>();
+    const seenCursors = new Set<string>();
+    let cursor = "";
+    do {
+      const page = await listWorkspaceSessions(workspace.id, cursor, signal);
+      for (const item of page.items) {
+        if (item.source === "stored" && sessionIds.has(item.id)) matches.add(item.id);
+      }
+      if (page.nextCursor === "" || seenCursors.has(page.nextCursor)) break;
+      seenCursors.add(page.nextCursor);
+      cursor = page.nextCursor;
+    } while (matches.size < sessionIds.size);
+    return [workspace.id, matches] as const;
+  }));
+  return new Map(entries);
+}
+
 export async function listWorkspaces(): Promise<readonly Workspace[]> {
   return apiJson<readonly Workspace[]>("/api/workspaces");
 }
