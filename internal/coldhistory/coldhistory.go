@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"unsafe"
 )
 
 const (
@@ -23,27 +24,46 @@ const (
 	DefaultMaxLineBytes = 4 << 20
 	DefaultPageBytes    = 4 << 20
 	DefaultPageEntries  = 100
+	DefaultIndexBytes   = 64 << 20
 )
 
 var (
-	ErrEmpty          = errors.New("empty session file")
-	ErrInvalidHeader  = errors.New("invalid session header")
-	ErrCorruptLine    = errors.New("corrupt session line")
-	ErrLineTooLong    = errors.New("session line exceeds limit")
-	ErrDuplicateID    = errors.New("duplicate session entry id")
-	ErrBrokenBranch   = errors.New("active branch has missing parent")
-	ErrBranchCycle    = errors.New("active branch contains a cycle")
-	ErrInvalidOptions = errors.New("invalid cold history options")
+	ErrEmpty               = errors.New("empty session file")
+	ErrInvalidHeader       = errors.New("invalid session header")
+	ErrCorruptLine         = errors.New("corrupt session line")
+	ErrLineTooLong         = errors.New("session line exceeds limit")
+	ErrDuplicateID         = errors.New("duplicate session entry id")
+	ErrBrokenBranch        = errors.New("active branch has missing parent")
+	ErrBranchCycle         = errors.New("active branch contains a cycle")
+	ErrIndexBudgetExceeded = errors.New("session index exceeds memory budget")
+	ErrInvalidOptions      = errors.New("invalid cold history options")
 )
 
-// Options bounds disk reads, individual JSONL records, and emitted pages.
-// Zero fields select the defaults. MaxLineBytes may not exceed PageBytes, so a
-// successful stream never emits a page larger than PageBytes.
+// IndexBudgetError reports the configured bound and the index bytes required
+// by the entry that crossed it. It supports errors.Is with
+// ErrIndexBudgetExceeded.
+type IndexBudgetError struct {
+	Limit    int64
+	Used     int64
+	Required int64
+}
+
+func (e *IndexBudgetError) Error() string {
+	return fmt.Sprintf("%v: limit %d bytes, used %d bytes, required %d bytes", ErrIndexBudgetExceeded, e.Limit, e.Used, e.Required)
+}
+
+func (e *IndexBudgetError) Unwrap() error { return ErrIndexBudgetExceeded }
+
+// Options bounds disk reads, individual JSONL records, the aggregate retained
+// index, and emitted pages. Zero fields select the defaults. MaxLineBytes may
+// not exceed PageBytes, so a successful stream never emits a page larger than
+// PageBytes.
 type Options struct {
 	ChunkBytes   int
 	MaxLineBytes int
 	PageBytes    int
 	PageEntries  int
+	IndexBytes   int64
 }
 
 // Header contains the known session-header fields and its original JSON. The
@@ -119,6 +139,7 @@ type normalizedOptions struct {
 	maxLineBytes int
 	pageBytes    int
 	pageEntries  int
+	indexBytes   int64
 }
 
 func normalizeOptions(options Options) (normalizedOptions, error) {
@@ -127,6 +148,7 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 		maxLineBytes: options.MaxLineBytes,
 		pageBytes:    options.PageBytes,
 		pageEntries:  options.PageEntries,
+		indexBytes:   options.IndexBytes,
 	}
 	if opts.chunkBytes == 0 {
 		opts.chunkBytes = DefaultChunkBytes
@@ -140,7 +162,10 @@ func normalizeOptions(options Options) (normalizedOptions, error) {
 	if opts.pageEntries == 0 {
 		opts.pageEntries = DefaultPageEntries
 	}
-	if opts.chunkBytes < 1 || opts.maxLineBytes < 1 || opts.pageBytes < 1 || opts.pageEntries < 1 {
+	if opts.indexBytes == 0 {
+		opts.indexBytes = DefaultIndexBytes
+	}
+	if opts.chunkBytes < 1 || opts.maxLineBytes < 1 || opts.pageBytes < 1 || opts.pageEntries < 1 || opts.indexBytes < 1 {
 		return normalizedOptions{}, fmt.Errorf("%w: all bounds must be positive", ErrInvalidOptions)
 	}
 	if opts.maxLineBytes > opts.pageBytes {
@@ -163,10 +188,34 @@ type entryEnvelope struct {
 	ParentID json.RawMessage `json:"parentId"`
 }
 
+type indexBudget struct {
+	limit int64
+	used  int64
+}
+
+// reserveEntry includes the retained ID bytes, map coordinate, the refs slice
+// at its worst-case 2x growth, and one full active-branch reference. The map
+// allowance covers a key/value slot plus bucket load and growth overhead.
+func (b *indexBudget) reserveEntry(ref entryRef) error {
+	const mapEntryBytes = int64(3 * (unsafe.Sizeof("") + unsafe.Sizeof(int(0))))
+	fixed := 3*int64(unsafe.Sizeof(entryRef{})) + mapEntryBytes
+	required := fixed + int64(len(ref.id)) + int64(len(ref.parentID))
+	if required > b.limit-b.used {
+		total := b.used + required
+		if total < b.used {
+			total = int64(^uint64(0) >> 1)
+		}
+		return &IndexBudgetError{Limit: b.limit, Used: b.used, Required: total}
+	}
+	b.used += required
+	return nil
+}
+
 func index(ctx context.Context, r io.Reader, opts normalizedOptions) (Metadata, []entryRef, error) {
 	reader := bufio.NewReaderSize(r, opts.chunkBytes)
-	refs := make([]entryRef, 0, 1024)
-	byID := make(map[string]int, 1024)
+	var refs []entryRef
+	byID := make(map[string]int)
+	budget := indexBudget{limit: opts.indexBytes}
 	var metadata Metadata
 	var offset int64
 	lineNumber := 0
@@ -203,6 +252,9 @@ func index(ctx context.Context, r io.Reader, opts normalizedOptions) (Metadata, 
 				if _, exists := byID[ref.id]; exists {
 					return Metadata{}, nil, lineError(ErrDuplicateID, lineNumber, start, fmt.Errorf("id %q", ref.id))
 				}
+				if err := budget.reserveEntry(ref); err != nil {
+					return Metadata{}, nil, fmt.Errorf("index entry at line %d (byte %d): %w", lineNumber, start, err)
+				}
 				byID[ref.id] = len(refs)
 				refs = append(refs, ref)
 			}
@@ -224,13 +276,13 @@ func index(ctx context.Context, r io.Reader, opts normalizedOptions) (Metadata, 
 
 	leaf := refs[len(refs)-1]
 	metadata.LeafID = leaf.id
-	reversed := make([]entryRef, 0, len(refs))
+	branch := make([]entryRef, 0, len(refs))
 	current := leaf
 	for {
-		if len(reversed) >= len(refs) {
+		if len(branch) >= len(refs) {
 			return Metadata{}, nil, fmt.Errorf("%w at entry %q", ErrBranchCycle, current.id)
 		}
-		reversed = append(reversed, current)
+		branch = append(branch, current)
 		if current.parentID == "" {
 			break
 		}
@@ -240,10 +292,8 @@ func index(ctx context.Context, r io.Reader, opts normalizedOptions) (Metadata, 
 		}
 		current = refs[parentIndex]
 	}
-
-	branch := make([]entryRef, len(reversed))
-	for i := range reversed {
-		branch[len(reversed)-1-i] = reversed[i]
+	for left, right := 0, len(branch)-1; left < right; left, right = left+1, right-1 {
+		branch[left], branch[right] = branch[right], branch[left]
 	}
 	metadata.Total = len(branch)
 	return metadata, branch, nil

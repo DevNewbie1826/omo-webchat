@@ -157,6 +157,54 @@ func TestStreamCleanBoundaryErrors(t *testing.T) {
 	}
 }
 
+func TestStreamIndexBudget(t *testing.T) {
+	tests := []struct {
+		name       string
+		entries    int
+		idWidth    int
+		indexBytes int64
+		wantErr    bool
+	}{
+		{name: "many small entries exceed aggregate bound", entries: 512, idWidth: 6, indexBytes: 4 << 10, wantErr: true},
+		{name: "coordinate bytes count toward bound", entries: 64, idWidth: 128, indexBytes: 8 << 10, wantErr: true},
+		{name: "entries within aggregate bound stream", entries: 32, idWidth: 6, indexBytes: 1 << 20},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeEntryChain(t, tt.entries, tt.idWidth)
+			emitted := 0
+			metadata, err := Stream(context.Background(), path, Options{IndexBytes: tt.indexBytes}, func(_ Metadata, page Page) error {
+				emitted += len(page.Entries)
+				return nil
+			})
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if metadata.Total != tt.entries || emitted != tt.entries {
+					t.Fatalf("total/emitted = %d/%d, want %d/%d", metadata.Total, emitted, tt.entries, tt.entries)
+				}
+				return
+			}
+
+			if !errors.Is(err, ErrIndexBudgetExceeded) {
+				t.Fatalf("error = %v, want ErrIndexBudgetExceeded", err)
+			}
+			var budgetErr *IndexBudgetError
+			if !errors.As(err, &budgetErr) {
+				t.Fatalf("error type = %T, want *IndexBudgetError", err)
+			}
+			if budgetErr.Limit != tt.indexBytes || budgetErr.Used > budgetErr.Limit || budgetErr.Required <= budgetErr.Limit {
+				t.Fatalf("budget error = %+v", budgetErr)
+			}
+			if emitted != 0 {
+				t.Fatalf("emitted %d entries before index failure, want 0", emitted)
+			}
+		})
+	}
+}
+
 func TestStreamMultiMegabyteUsesBoundedReadsAndPages(t *testing.T) {
 	const (
 		entries  = 1536
@@ -263,6 +311,38 @@ func writeFixture(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeEntryChain(t *testing.T, entries, idWidth int) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriter(out)
+	if _, err := fmt.Fprintln(writer, testHeader); err != nil {
+		t.Fatal(err)
+	}
+	previous := ""
+	for i := 0; i < entries; i++ {
+		id := fmt.Sprintf("e-%0*d", idWidth-2, i)
+		parent := "null"
+		if previous != "" {
+			parent = fmt.Sprintf("%q", previous)
+		}
+		if _, err := fmt.Fprintf(writer, `{"type":"message","id":%q,"parentId":%s}`+"\n", id, parent); err != nil {
+			t.Fatal(err)
+		}
+		previous = id
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return path
