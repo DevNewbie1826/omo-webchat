@@ -21,6 +21,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/store"
+	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
 const chatOpenTimeout = 15 * time.Second
@@ -96,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/sessions/live", s.handleListLiveSessions)
 
 	protected.HandleFunc("GET /api/ws", s.handleWS)
+	protected.Handle("GET /api/v2/ws", wsbridge.DefaultHandler())
 
 	protected.HandleFunc("GET /api/fs/browse", s.handleBrowse)
 	protected.HandleFunc("GET /api/fs/list", s.handleList)
