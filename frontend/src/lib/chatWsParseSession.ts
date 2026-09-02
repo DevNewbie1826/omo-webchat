@@ -94,11 +94,16 @@ export function parseSessionFrame(
         };
       });
       if (snapshots.some((snapshot) => snapshot === null)) return null;
+      const durableSessionId = reqString(msg, "durableSessionId");
+      const replacesSessionId = optString(msg, "replacesSessionId");
+      if (durableSessionId === null || replacesSessionId === null) return null;
       const taskDigest = msg["taskDigest"] as import("./contract/types_gen").TaskDigest | undefined;
       const dagDigest = msg["dagDigest"] as import("./contract/types_gen").DagDigest | undefined;
       return {
         type: "sessions.activity",
         sessionId,
+        durableSessionId,
+        ...(replacesSessionId === undefined ? {} : { replacesSessionId }),
         snapshots: snapshots as import("./contract/types_gen").ActivitySnapshot[],
         overflow,
         ...(taskDigest === undefined ? {} : { taskDigest }),

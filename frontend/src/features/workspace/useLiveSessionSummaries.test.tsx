@@ -789,8 +789,17 @@ describe("live polling hooks", () => {
     act(() => handlers?.onOpen?.());
   }
 
-  function push(frame: ChatServerFrame): void {
-    act(() => handlers?.onFrame(frame));
+  type ActivityFrameInput = Omit<
+    Extract<ChatServerFrame, { readonly type: "sessions.activity" }>,
+    "durableSessionId"
+  > & {
+    readonly durableSessionId?: string;
+    readonly replacesSessionId?: string;
+    readonly tombstone?: boolean;
+  };
+
+  function push(frame: ChatServerFrame | ActivityFrameInput): void {
+    act(() => handlers?.onFrame(frame as ChatServerFrame));
   }
 
   it("updates overview rows from pushed child-session snapshots", async () => {
@@ -959,6 +968,59 @@ describe("live polling hooks", () => {
     expect(captured.summaries[0]).toMatchObject({ id: "attached-chat", title: "Attached", runningCount: 1 });
   });
 
+  it("atomically remaps a provisional durable row without REST", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    push({
+      type: "sessions.activity",
+      sessionId: "durable-child",
+      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      overflow: false,
+    });
+    push({
+      type: "sessions.activity",
+      sessionId: "attached-chat",
+      durableSessionId: "durable-child",
+      replacesSessionId: "durable-child",
+      snapshots: [{ name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD }],
+      overflow: false,
+    } as ChatServerFrame);
+
+    expect(captured.summaries).toHaveLength(1);
+    expect(captured.summaries[0]).toMatchObject({
+      id: "attached-chat",
+      runningCount: 2,
+      lastLine: "ls",
+      dagRunning: 1,
+    });
+    expect(Array.from(captured.ids)).toEqual(["attached-chat"]);
+  });
+
+  it("removes a provisional row when the backend uses a tombstone remap", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    await act(async () => root.render(<Host enabled={true} />));
+    openPush();
+
+    push({
+      type: "sessions.activity",
+      sessionId: "durable-child",
+      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      overflow: false,
+    });
+    push({
+      type: "sessions.activity",
+      sessionId: "durable-child",
+      tombstone: true,
+      snapshots: [],
+      overflow: false,
+    });
+
+    expect(captured.summaries).toEqual([]);
+    expect(Array.from(captured.ids)).toEqual([]);
+  });
+
   it("bounds push-only rows while REST is unavailable", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
     await act(async () => root.render(<Host enabled={true} />));
@@ -969,6 +1031,7 @@ describe("live polling hooks", () => {
         handlers?.onFrame({
           type: "sessions.activity",
           sessionId: `push-${index}`,
+          durableSessionId: `push-${index}`,
           snapshots: [{ name: "omo.task.updated", oversized: false, data: null }],
           overflow: false,
         });

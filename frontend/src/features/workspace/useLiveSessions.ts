@@ -2,6 +2,11 @@ import { useMemo, useSyncExternalStore } from "react";
 import { connectChat } from "../../lib/chatWs";
 import type { ChatClient, ChatServerFrame } from "../../lib/chatWs";
 import { parseDagDigest, parseTaskDigest } from "./activityDigest";
+import {
+  nextLiveActivitySequence,
+  settleLiveBadgePoll,
+  settleLiveBadgePush,
+} from "./liveBadgeStore";
 import { listLiveSessions } from "./workspace";
 import type { LiveSessionInfo } from "./workspace";
 
@@ -30,7 +35,6 @@ let polling = false;
 let timer: number | undefined;
 let activeCtrl: AbortController | undefined;
 let generation = 0;
-let sequence = 0;
 let refreshRequested = false;
 let pushClient: ChatClient | undefined;
 let pushOpen = false;
@@ -101,7 +105,8 @@ function mergePushedSessions(id: string, first: PushedSession, second: PushedSes
 }
 
 function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): void {
-  const nextAliases = new Map<string, string>();
+  settleLiveBadgePoll(next, requestSequence);
+  const nextAliases = new Map(sessionAliases);
   for (const info of next) {
     const parentId = parentSessionIdOf(info);
     if (parentId === undefined || parentId === info.id) continue;
@@ -153,19 +158,59 @@ function requestFallbackRefresh(): void {
   timer = window.setTimeout(tick, 0);
 }
 
-function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "sessions.activity" }>): void {
+function frameIdentity(frame: Extract<ChatServerFrame, { readonly type: "sessions.activity" }>): {
+  readonly id: string;
+  readonly sourceIds: readonly string[];
+  readonly tombstone: boolean;
+} {
+  const record = frame as unknown as Record<string, unknown>;
+  const replaces = typeof record["replacesSessionId"] === "string" && record["replacesSessionId"].length > 0
+    ? record["replacesSessionId"]
+    : undefined;
+  const durable = typeof record["durableSessionId"] === "string" && record["durableSessionId"].length > 0
+    ? record["durableSessionId"]
+    : undefined;
   const id = sessionAliases.get(frame.sessionId) ?? frame.sessionId;
-  const pushed = pushedSessions.get(id);
-  const previous = pushed?.info ?? polledSessions.find((info) => info.id === id);
+  return {
+    id,
+    sourceIds: [...new Set([replaces, durable].filter((value): value is string => value !== undefined && value !== id))],
+    tombstone: record["tombstone"] === true,
+  };
+}
+
+function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "sessions.activity" }>): void {
+  const identity = frameIdentity(frame);
+  const arrival = nextLiveActivitySequence();
+  if (identity.tombstone) {
+    const removedIds = identity.sourceIds.length > 0 ? identity.sourceIds : [identity.id];
+    for (const removedId of removedIds) {
+      pushedSessions.delete(removedId);
+      settleLiveBadgePush(removedId, [], true, true, arrival);
+    }
+    publishMerged();
+    return;
+  }
+
+  let pushed = pushedSessions.get(identity.id);
+  for (const sourceId of identity.sourceIds) {
+    sessionAliases.set(sourceId, identity.id);
+    const source = pushedSessions.get(sourceId);
+    if (source !== undefined) {
+      pushed = pushed === undefined ? { ...source, info: { ...source.info, id: identity.id } }
+        : mergePushedSessions(identity.id, source, pushed);
+    }
+    pushedSessions.delete(sourceId);
+  }
+  const previous = pushed?.info ?? polledSessions.find((info) => info.id === identity.id);
   const task = frame.snapshots.find((snapshot) => snapshot.name === "omo.task.updated");
   const dag = frame.snapshots.find((snapshot) => snapshot.name === "omo.dag.updated");
   const taskDigest = parseTaskDigest(frame.taskDigest);
   const dagDigest = parseDagDigest(frame.dagDigest);
   const taskUpdated = task !== undefined || taskDigest !== null;
   const dagUpdated = dag !== undefined || dagDigest !== null;
-  const arrival = ++sequence;
+  settleLiveBadgePush(identity.id, identity.sourceIds, taskUpdated, dagUpdated, arrival);
   const info: LiveSessionInfo = {
-    id,
+    id: identity.id,
     title: previous?.title ?? "",
     task: task === undefined
       ? previous?.task ?? null
@@ -186,8 +231,8 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
       ? dagDigest === null ? {} : { dagDigest }
       : previous?.dagDigest === undefined ? {} : { dagDigest: previous.dagDigest }),
   };
-  pushedSessions.delete(id);
-  pushedSessions.set(id, {
+  pushedSessions.delete(identity.id);
+  pushedSessions.set(identity.id, {
     info,
     membershipArrival: arrival,
     ...(taskUpdated ? { taskArrival: arrival } : pushed?.taskArrival === undefined ? {} : { taskArrival: pushed.taskArrival }),
@@ -244,7 +289,7 @@ function stopPush(): void {
 function tick(): void {
   if (!polling) return;
   const requestGeneration = generation;
-  const requestSequence = ++sequence;
+  const requestSequence = nextLiveActivitySequence();
   let settled = false;
   let superseded = false;
   const ctrl = new AbortController();
