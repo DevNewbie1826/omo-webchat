@@ -82,26 +82,31 @@ type retiringRecord struct {
 type Manager struct {
 	cfg Config
 
-	chats              keyedFlight
-	mu                 sync.Mutex
-	byChat             map[string]*Session
-	byRoute            map[string]*Session
-	retiringByChat     map[string]map[string]struct{}
-	retiringFIFO       []retiringRecord
-	slotGeneration     map[string]uint64
-	slotGenerationFIFO []generationRecord
-	generation         uint64
-	closed             bool
-	done               chan struct{}
-	shutdownCtx        context.Context
-	shutdownCancel     context.CancelFunc
-	closeOnce          sync.Once
-	acquireWG          sync.WaitGroup
-	cleanupWG          sync.WaitGroup
-	eventWG            sync.WaitGroup
-	openCleanupExpired chan struct{}
-	pendingOpen        map[string]bool
-	openSlots          chan struct{}
+	chats                keyedFlight
+	mu                   sync.Mutex
+	byChat               map[string]*Session
+	byRoute              map[string]*Session
+	retiringByChat       map[string]map[string]struct{}
+	retiringFIFO         []retiringRecord
+	slotGeneration       map[string]uint64
+	slotGenerationFIFO   []generationRecord
+	generation           uint64
+	closed               bool
+	done                 chan struct{}
+	shutdownCtx          context.Context
+	shutdownCancel       context.CancelFunc
+	closeOnce            sync.Once
+	acquireWG            sync.WaitGroup
+	cleanupWG            sync.WaitGroup
+	eventWG              sync.WaitGroup
+	openCleanupExpired   chan struct{}
+	pendingOpen          map[string]bool
+	openSlots            chan struct{}
+	overviewCache        map[string]*overviewCacheEntry
+	overviewCurrent      map[string]Summary
+	overviewClock        uint64
+	overviewSubscribers  map[uint64]*overviewSubscriber
+	overviewSubscriberID uint64
 }
 
 func NewManager(cfg Config) *Manager {
@@ -124,7 +129,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -166,6 +171,9 @@ func (m *Manager) eventLoop() {
 			m.mu.Lock()
 			s := m.byRoute[ev.SessionID]
 			bound := s != nil && s.epoch == token
+			if !bound {
+				m.ingestUnboundOverviewLocked(token, ev)
+			}
 			m.mu.Unlock()
 			if bound {
 				s.dispatchEpoch(token, ev)
@@ -185,6 +193,15 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 			all = append(all, s)
 			delete(m.byRoute, s.routingID)
 		}
+	}
+	for id, entry := range m.overviewCache {
+		if entry.epoch == token {
+			delete(m.overviewCache, id)
+			delete(m.overviewCurrent, id)
+		}
+	}
+	for _, s := range all {
+		delete(m.overviewCurrent, s.chatID)
 	}
 	m.mu.Unlock()
 	for _, s := range all {
@@ -421,6 +438,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, err
 		}
+		s.lifecycleMu.Lock()
 		m.mu.Lock()
 		valid = !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 		epochLive := m.cfg.Client.EpochCurrent(epoch)
@@ -430,8 +448,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			m.byChat[chatID] = s
 			m.byRoute[data.SessionID] = s
+			delete(m.overviewCurrent, chatID)
+			m.mergeOverviewIntoSessionLocked(s)
 		}
 		m.mu.Unlock()
+		s.lifecycleMu.Unlock()
 		if !valid || !epochLive {
 			detach()
 			s.retireReplaced()
@@ -447,6 +468,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return s, true, detach, nil
 	}
 
+	s.lifecycleMu.Lock()
 	m.mu.Lock()
 	valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 	epochLive := m.cfg.Client.EpochCurrent(epoch)
@@ -455,11 +477,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
+		delete(m.overviewCurrent, chatID)
 		if epochLive {
 			m.byRoute[data.SessionID] = s
+			m.mergeOverviewIntoSessionLocked(s)
 		}
 	}
 	m.mu.Unlock()
+	s.lifecycleMu.Unlock()
 	if !valid {
 		m.discardRouting(chatID, data.SessionID)
 		return nil, false, nil, ErrManagerClosed
@@ -799,13 +824,18 @@ func (m *Manager) LiveSummaries() []Summary {
 	for _, s := range m.byChat {
 		all = append(all, s)
 	}
+	cached := make([]Summary, 0, len(m.overviewCache))
+	for id, entry := range m.overviewCache {
+		cached = append(cached, entry.summary(id))
+	}
 	m.mu.Unlock()
-	out := make([]Summary, 0, len(all))
+	out := make([]Summary, 0, len(all)+len(cached))
 	for _, s := range all {
 		if sum, ok := s.summary(); ok {
 			out = append(out, sum)
 		}
 	}
+	out = append(out, cached...)
 	sort.Slice(out, func(i, j int) bool { return out[i].ChatID < out[j].ChatID })
 	return out
 }
@@ -899,6 +929,12 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 	m.byRoute = make(map[string]*Session)
 	m.slotGeneration = make(map[string]uint64)
 	m.slotGenerationFIFO = nil
+	m.overviewCache = make(map[string]*overviewCacheEntry)
+	m.overviewCurrent = make(map[string]Summary)
+	for id, sub := range m.overviewSubscribers {
+		delete(m.overviewSubscribers, id)
+		close(sub.stop)
+	}
 	m.mu.Unlock()
 	var first error
 	for _, s := range all {
