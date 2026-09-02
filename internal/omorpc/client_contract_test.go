@@ -493,23 +493,37 @@ func hasDuplicate(sorted []string) bool {
 	return false
 }
 
-func TestClientWriteGateAcquisitionHonorsContext(t *testing.T) {
+func TestClientPreWriteCancellationKeepsEpochUsable(t *testing.T) {
 	d := newMockDaemon(t)
 	c := dialForTest(t, d, Config{})
+	token, events := c.CurrentEpoch()
+	handshakes := d.Handshakes()
+
 	<-c.writeGate // deterministically model a sibling write holding the gate
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	_, err := c.Call(ctx, ListSessions{})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Call waiting for write gate = %v, want context deadline", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Call canceled before write = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrWrittenUnanswered) || errors.Is(err, ErrDisconnected) {
+		t.Fatalf("pre-write cancellation reported delivery or transport uncertainty: %v", err)
 	}
 	c.writeGate <- struct{}{}
-	if response, err := c.Call(context.Background(), ListSessions{}); err != nil || !response.Success {
-		t.Fatalf("sibling call after canceled gate wait: response=%+v err=%v", response, err)
+
+	response, err := c.Call(context.Background(), ListSessions{})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("call after pre-write cancellation: response=%+v err=%v", response, err)
+	}
+	if !c.EpochCurrent(token) || c.EventsInEpoch(token) != events {
+		t.Fatal("pre-write cancellation replaced the connection epoch")
+	}
+	if got := d.Handshakes(); got != handshakes {
+		t.Fatalf("pre-write cancellation caused reconnect: handshakes=%d, want %d", got, handshakes)
 	}
 }
 
-func TestClientCallerDeadlineKeepsEpochUsable(t *testing.T) {
+func TestClientPostWriteDeadlineReportsWrittenUnanswered(t *testing.T) {
 	d := newMockDaemon(t)
 	release := d.BlockHandler(CmdGetEntries)
 	defer release()
@@ -518,19 +532,21 @@ func TestClientCallerDeadlineKeepsEpochUsable(t *testing.T) {
 	token, events := c.CurrentEpoch()
 	handshakes := d.Handshakes()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	ctx := newControlledDeadlineContext()
 	result := make(chan error, 1)
 	go func() {
 		_, err := c.Call(ctx, GetEntries{SessionID: opened.SessionID})
 		result <- err
 	}()
 	d.awaitRequest(t, CmdGetEntries, testAwaitTimeout)
-	if err := <-result; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Call waiting for response = %v, want context deadline", err)
+	ctx.expire()
+	if err := <-result; !errors.Is(err, ErrWrittenUnanswered) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call deadline after write = %v, want ErrWrittenUnanswered wrapping context deadline", err)
+	} else if errors.Is(err, ErrDisconnected) {
+		t.Fatalf("written-unanswered call reported dead transport: %v", err)
 	}
 	if !c.EpochCurrent(token) {
-		t.Fatal("caller deadline invalidated the connection epoch")
+		t.Fatal("post-write deadline invalidated the connection epoch")
 	}
 	response, err := c.Call(context.Background(), ListSessions{})
 	if err != nil || response == nil || !response.Success {
@@ -540,7 +556,69 @@ func TestClientCallerDeadlineKeepsEpochUsable(t *testing.T) {
 		t.Fatal("next call used a different connection epoch")
 	}
 	if got := d.Handshakes(); got != handshakes {
-		t.Fatalf("caller deadline caused reconnect: handshakes=%d, want %d", got, handshakes)
+		t.Fatalf("post-write deadline caused reconnect: handshakes=%d, want %d", got, handshakes)
+	}
+}
+
+func TestClientPartialWriteInvalidatesEpochAndReconnects(t *testing.T) {
+	d := newMockDaemon(t)
+	clientConn, peer := net.Pipe()
+	defer peer.Close()
+	c, token := clientAtTransportSeam(t, d, &partialWriteConn{Conn: clientConn})
+
+	_, err := c.Call(context.Background(), ListSessions{})
+	if !errors.Is(err, ErrDisconnected) {
+		t.Fatalf("partial write = %v, want ErrDisconnected", err)
+	}
+	if c.EpochCurrent(token) {
+		t.Fatal("partial write left the corrupted epoch current")
+	}
+	response, err := c.Call(context.Background(), ListSessions{})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("call after partial-write reconnect: response=%+v err=%v", response, err)
+	}
+	if c.EpochCurrent(token) {
+		t.Fatal("call after partial write reused the corrupted epoch")
+	}
+	if got := d.Handshakes(); got != 1 {
+		t.Fatalf("reconnect handshakes = %d, want 1", got)
+	}
+}
+
+func TestClientPeerCloseMidWriteInvalidatesEpoch(t *testing.T) {
+	d := newMockDaemon(t)
+	clientConn, peer := net.Pipe()
+	started := make(chan struct{})
+	c, token := clientAtTransportSeam(t, d, &writeStartedConn{Conn: clientConn, started: started})
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := c.Call(context.Background(), ListSessions{})
+		result <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("transport write did not start")
+	}
+	_ = peer.Close()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrDisconnected) {
+			t.Fatalf("peer close during write = %v, want ErrDisconnected", err)
+		}
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("peer close did not unblock transport write")
+	}
+	if c.EpochCurrent(token) {
+		t.Fatal("peer close during write left the dead epoch current")
+	}
+	response, err := c.Call(context.Background(), ListSessions{})
+	if err != nil || response == nil || !response.Success {
+		t.Fatalf("call after peer-close reconnect: response=%+v err=%v", response, err)
+	}
+	if got := d.Handshakes(); got != 1 {
+		t.Fatalf("reconnect handshakes = %d, want 1", got)
 	}
 }
 
@@ -586,6 +664,74 @@ func TestClientTransportWriteDeadlineInvalidatesEpoch(t *testing.T) {
 	if err != nil || response == nil || !response.Success {
 		t.Fatalf("call after transport reconnect: response=%+v err=%v", response, err)
 	}
+}
+
+type controlledDeadlineContext struct {
+	context.Context
+	done chan struct{}
+	mu   sync.Mutex
+	err  error
+}
+
+func newControlledDeadlineContext() *controlledDeadlineContext {
+	return &controlledDeadlineContext{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *controlledDeadlineContext) Deadline() (time.Time, bool) {
+	return time.Now().Add(time.Hour), true
+}
+
+func (c *controlledDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c *controlledDeadlineContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+func (c *controlledDeadlineContext) expire() {
+	c.mu.Lock()
+	c.err = context.DeadlineExceeded
+	close(c.done)
+	c.mu.Unlock()
+}
+
+type partialWriteConn struct{ net.Conn }
+
+func (c *partialWriteConn) Write(p []byte) (int, error) { return len(p) / 2, nil }
+
+type writeStartedConn struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *writeStartedConn) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Write(p)
+}
+
+func clientAtTransportSeam(t *testing.T, d *mockDaemon, conn net.Conn) (*Client, EpochToken) {
+	t.Helper()
+	lifecycle, cancelLifecycle := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		WriteTimeout: testAwaitTimeout, ReconnectInitial: time.Millisecond,
+		ReconnectMax: time.Millisecond, ReconnectMaxAttempts: 2,
+	})
+	c := &Client{
+		socketPath: d.SocketPath(), cfg: cfg, lifecycle: lifecycle, cancel: cancelLifecycle,
+		pending: make(map[string]pendingRequest), writeGate: make(chan struct{}, 1), epoch: 1,
+	}
+	c.writeGate <- struct{}{}
+	ep := &connectionEpoch{number: 1, conn: conn, events: newEventStream(cfg.EventBuffer, &c.dropped)}
+	c.current = ep
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		c.readLoop(ep)
+	}()
+	t.Cleanup(func() { _ = c.Close() })
+	return c, EpochToken{epoch: ep}
 }
 
 // TestMockDaemonWireSmoke is a fixture sanity check (not a client test):
