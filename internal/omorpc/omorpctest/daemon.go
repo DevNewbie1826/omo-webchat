@@ -68,28 +68,29 @@ type Daemon struct {
 	sockPath   string
 	sessionsDn string
 
-	mu              sync.Mutex
-	ln              net.Listener
-	conns           map[net.Conn]struct{}
-	serverVersion   string
-	protocolVersion int
-	capabilities    []string
-	mode            string
-	handlerGate     map[string]<-chan struct{}
-	failNext        map[string]string
-	pathFailures    map[string]int
-	refuse          bool
-	connections     int
-	handshakes      int
-	refusals        int
-	opens           int
-	closes          int
-	rpcCounter      int
-	registry        map[string]*daemonSession
-	promptScripts   map[string][]map[string]any
-	compactScripts  map[string][]map[string]any
-	promptHolds     map[string]chan struct{}
-	requests        []map[string]any
+	mu                sync.Mutex
+	ln                net.Listener
+	conns             map[net.Conn]struct{}
+	serverVersion     string
+	protocolVersion   int
+	capabilities      []string
+	mode              string
+	handlerGate       map[string]<-chan struct{}
+	handlerGateByPath map[string]map[string]<-chan struct{}
+	failNext          map[string]string
+	pathFailures      map[string]int
+	refuse            bool
+	connections       int
+	handshakes        int
+	refusals          int
+	opens             int
+	closes            int
+	rpcCounter        int
+	registry          map[string]*daemonSession
+	promptScripts     map[string][]map[string]any
+	compactScripts    map[string][]map[string]any
+	promptHolds       map[string]chan struct{}
+	requests          []map[string]any
 
 	writeMu sync.Mutex
 
@@ -104,24 +105,25 @@ type Daemon struct {
 // begin accepting connections.
 func New(dir string) *Daemon {
 	return &Daemon{
-		sockPath:        filepath.Join(dir, "d.sock"),
-		sessionsDn:      filepath.Join(dir, "sessions"),
-		serverVersion:   "1.2.3",
-		protocolVersion: 1,
-		capabilities:    []string{"multi_session", "extension_events", "custom_unsupported"},
-		mode:            "multi",
-		handlerGate:     map[string]<-chan struct{}{},
-		failNext:        map[string]string{},
-		pathFailures:    map[string]int{},
-		conns:           map[net.Conn]struct{}{},
-		registry:        map[string]*daemonSession{},
-		promptScripts:   map[string][]map[string]any{},
-		compactScripts:  map[string][]map[string]any{},
-		promptHolds:     map[string]chan struct{}{},
-		requestFeed:     make(chan map[string]any, 256),
-		handshakeFeed:   make(chan struct{}, 1),
-		refusalFeed:     make(chan struct{}, 1),
-		closeFeed:       make(chan struct{}, 256),
+		sockPath:          filepath.Join(dir, "d.sock"),
+		sessionsDn:        filepath.Join(dir, "sessions"),
+		serverVersion:     "1.2.3",
+		protocolVersion:   1,
+		capabilities:      []string{"multi_session", "extension_events", "custom_unsupported"},
+		mode:              "multi",
+		handlerGate:       map[string]<-chan struct{}{},
+		handlerGateByPath: map[string]map[string]<-chan struct{}{},
+		failNext:          map[string]string{},
+		pathFailures:      map[string]int{},
+		conns:             map[net.Conn]struct{}{},
+		registry:          map[string]*daemonSession{},
+		promptScripts:     map[string][]map[string]any{},
+		compactScripts:    map[string][]map[string]any{},
+		promptHolds:       map[string]chan struct{}{},
+		requestFeed:       make(chan map[string]any, 256),
+		handshakeFeed:     make(chan struct{}, 1),
+		refusalFeed:       make(chan struct{}, 1),
+		closeFeed:         make(chan struct{}, 256),
 	}
 }
 
@@ -248,6 +250,17 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	d.mu.Lock()
 	gate := d.handlerGate[cmd]
+	path, _ := req["sessionPath"].(string)
+	if path == "" {
+		if rec := d.sessionByRPC(sid); rec != nil {
+			path = rec.path
+		}
+	}
+	if pathGates := d.handlerGateByPath[cmd]; pathGates != nil {
+		if pathGate := pathGates[path]; pathGate != nil {
+			gate = pathGate
+		}
+	}
 	code, failing := d.failNext[cmd]
 	if failing {
 		delete(d.failNext, cmd)
@@ -616,6 +629,31 @@ func (d *Daemon) BlockHandler(cmd string) (release func()) {
 		once.Do(func() {
 			d.mu.Lock()
 			delete(d.handlerGate, cmd)
+			d.mu.Unlock()
+			close(gate)
+		})
+	}
+}
+
+// BlockHandlerForPath holds future requests of cmd for one durable session
+// path. Other sessions and commands continue normally. The returned release
+// function is idempotent and removes the gate.
+func (d *Daemon) BlockHandlerForPath(cmd, sessionPath string) (release func()) {
+	gate := make(chan struct{})
+	var once sync.Once
+	d.mu.Lock()
+	if d.handlerGateByPath[cmd] == nil {
+		d.handlerGateByPath[cmd] = make(map[string]<-chan struct{})
+	}
+	d.handlerGateByPath[cmd][sessionPath] = gate
+	d.mu.Unlock()
+	return func() {
+		once.Do(func() {
+			d.mu.Lock()
+			delete(d.handlerGateByPath[cmd], sessionPath)
+			if len(d.handlerGateByPath[cmd]) == 0 {
+				delete(d.handlerGateByPath, cmd)
+			}
 			d.mu.Unlock()
 			close(gate)
 		})
