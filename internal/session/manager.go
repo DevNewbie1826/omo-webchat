@@ -192,6 +192,22 @@ func (m *Manager) invalidateEpoch(token omorpc.EpochToken) {
 	}
 }
 
+// ReplayBackpressureSubscriber lets a transport apply replay-specific write
+// deadlines. EndReplay is called only after the terminal frame is delivered,
+// or when the subscription stops.
+type ReplayBackpressureSubscriber interface {
+	BeginReplay()
+	EndReplay()
+}
+
+func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription) {
+	if target == nil {
+		return
+	}
+	target.beginReplay()
+	s.hydrateEntries(ctx, path, target)
+}
+
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, nil, nil)
 }
@@ -260,10 +276,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	existing := m.byChat[chatID]
 	m.mu.Unlock()
 	if existing != nil && !existing.Resumable() {
-		detach, err := existing.attachChecked(sub)
-		if err == nil {
+		var detach func()
+		var target *subscription
+		var attachErr error
+		if existing.sessionFile != "" {
+			detach, target, attachErr = existing.attachCheckedReplayTarget(sub)
+		} else {
+			detach, target, attachErr = existing.attachCheckedTarget(sub)
+		}
+		if attachErr == nil {
 			if initialize != nil {
 				initialize(existing, false, detach)
+			}
+			if existing.sessionFile != "" {
+				hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
 			}
 			if validate != nil {
 				if err := validate(); err != nil {
@@ -273,8 +299,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return existing, false, detach, nil
 		}
-		if !errors.Is(err, ErrSessionClosed) && !errors.Is(err, ErrSessionResumable) {
-			return nil, false, nil, err
+		if !errors.Is(attachErr, ErrSessionClosed) && !errors.Is(attachErr, ErrSessionResumable) {
+			return nil, false, nil, attachErr
 		}
 	}
 
@@ -358,22 +384,36 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			m.discardRouting(chatID, data.SessionID)
 			return nil, false, nil, ErrSessionResumable
 		}
-		detach, err := s.attachChecked(sub)
-		if err != nil {
-			m.discardRouting(chatID, data.SessionID)
-			return nil, false, nil, err
-		}
-		s.lifecycleMu.Lock()
-		if recovery != nil {
-			s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
-		}
-		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
-		s.lifecycleMu.Unlock()
+		var detach func()
+		var target *subscription
+		var attachErr error
 		if resumed {
-			s.loadEntries(ctx)
+			initial := make([]Frame, 0, 2)
+			if recovery != nil {
+				initial = append(initial, Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+			}
+			initial = append(initial, Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: true})
+			detach, target, attachErr = s.attachCheckedReplayTarget(sub, initial...)
+		} else {
+			detach, target, attachErr = s.attachCheckedTarget(sub)
+		}
+		if attachErr != nil {
+			m.discardRouting(chatID, data.SessionID)
+			return nil, false, nil, attachErr
+		}
+		if !resumed {
+			s.lifecycleMu.Lock()
+			if recovery != nil {
+				s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+			}
+			s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID()})
+			s.lifecycleMu.Unlock()
 		}
 		if initialize != nil {
 			initialize(s, true, detach)
+		}
+		if resumed {
+			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 		}
 		if err := validate(); err != nil {
 			detach()
@@ -432,8 +472,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		return s, true, nil, ErrSessionResumable
 	}
 
-	detach, err := s.attachChecked(sub)
-	if err != nil {
+	var detach func()
+	var target *subscription
+	var attachErr error
+	if resumed {
+		initial := make([]Frame, 0, 2)
+		if recovery != nil {
+			initial = append(initial, Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		}
+		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: true})
+		detach, target, attachErr = s.attachCheckedReplayTarget(sub, initial...)
+	} else {
+		detach, target, attachErr = s.attachCheckedTarget(sub)
+	}
+	if attachErr != nil {
 		m.mu.Lock()
 		if m.byChat[chatID] == s {
 			delete(m.byChat, chatID)
@@ -442,22 +494,24 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		m.mu.Unlock()
 		m.discardRouting(chatID, data.SessionID)
-		return nil, false, nil, err
+		return nil, false, nil, attachErr
 	}
-	s.lifecycleMu.Lock()
-	if recovery != nil {
-		s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+	if !resumed {
+		s.lifecycleMu.Lock()
+		if recovery != nil {
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.ID(), Data: *recovery})
+		}
+		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID()})
+		s.lifecycleMu.Unlock()
 	}
-	s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
-	s.lifecycleMu.Unlock()
 	if existing != nil {
 		existing.retireReplaced()
 	}
-	if resumed {
-		s.loadEntries(ctx)
-	}
 	if initialize != nil {
 		initialize(s, true, detach)
+	}
+	if resumed {
+		hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 	}
 	return s, true, detach, nil
 }
@@ -862,35 +916,13 @@ func (m *Manager) evict(s *Session) {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	s.closing = true
-	route := s.routingID
+	txn := s.beginCloseLocked(true)
 	s.lifecycleMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
-	_, err = m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	err = s.executeClose(ctx, txn)
 	cancel()
-	if err != nil && !definitiveCloseFailure(err) {
-		s.lifecycleMu.Lock()
-		s.closing = false
-		s.reconcileFailedCloseLocked()
-		s.scheduleIdleLocked()
-		s.lifecycleMu.Unlock()
-		slog.Warn("idle session close failed; retaining session", "chat_id", s.chatID, "error", err)
-		return
+	if err != nil {
+		slog.Warn("idle session close pending or rejected; retaining session", "chat_id", s.chatID, "error", err)
 	}
-
-	s.lifecycleMu.Lock()
-	s.closing = false
-	s.closed = true
-	s.cancelIdleLocked()
-	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
-	m.mu.Lock()
-	if m.byChat[s.chatID] == s {
-		delete(m.byChat, s.chatID)
-		delete(m.byRoute, route)
-		m.bumpSlotGenerationLocked(s.chatID)
-	}
-	m.mu.Unlock()
-	s.lifecycleMu.Unlock()
-	s.broadcast.close(ErrSubscriberSessionEnd)
 }

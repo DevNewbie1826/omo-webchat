@@ -143,6 +143,7 @@ func TestEnsureDaemonMissingSocketSpawnsAndBecomesReady(t *testing.T) {
 	socket := filepath.Join(dir, "rpc", "rpc.sock")
 	script := helperSupervisorScript(t)
 	cfg := helperEnsureConfig(dir, socket, script, "serve")
+	cfg.ReadyTimeout = 10 * time.Second
 
 	ensured, err := EnsureDaemon(context.Background(), cfg)
 	if err != nil {

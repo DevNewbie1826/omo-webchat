@@ -927,11 +927,27 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 		if got := d.OpenCount(); got != cycle+1 {
 			t.Fatalf("cycle %d: open_session count = %d, want %d (one per acquire)", cycle, got, cycle+1)
 		}
-		// History flows after every resume.
-		_, entries := sub.await(t, FrameEntries)
-		data, _ := entries.Data.(EntriesFrame)
-		if !data.Final || len(data.Entries) == 0 {
-			t.Fatalf("cycle %d: resumed history broken: %+v", cycle, data)
+		// Hydration ends either with a validated terminal or an explicit
+		// incomplete result when the restarted daemon rejects its cursor.
+		total := 0
+		for {
+			frame := sub.next(t)
+			if frame.Kind == FrameError {
+				if frame.Data.(ErrorInfo).Code != "incomplete_history" {
+					t.Fatalf("cycle %d: history error = %+v", cycle, frame.Data)
+				}
+				break
+			}
+			if frame.Kind == FrameEntries {
+				entries := frame.Data.(EntriesFrame)
+				total += len(entries.Entries)
+				if entries.Final {
+					break
+				}
+			}
+		}
+		if cycle > 1 && total == 0 {
+			t.Fatalf("cycle %d: resumed disk history was empty", cycle)
 		}
 		// And the session is usable each time.
 		runScript(t, d, sess, fmt.Sprintf("cycle-%d", cycle))

@@ -16,6 +16,7 @@
         "unsupported_provider",
         "persist_failed",
         "decode_failed",
+        "incomplete_history",
         "bad_frame",
         "unknown_type",
         "bad_create",

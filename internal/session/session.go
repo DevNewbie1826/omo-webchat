@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -19,6 +20,12 @@ const (
 )
 
 var activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
+
+type closeTransaction struct {
+	done chan struct{}
+	err  error
+	idle bool
+}
 
 type Session struct {
 	manager                           *Manager
@@ -44,6 +51,7 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
+	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
@@ -127,16 +135,22 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 
-	_, err = s.client.Call(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images})
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completePrompt(seq, msg, callErr)
+	})
+	return err
+}
+
+func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
+	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
 	if s.promptSeq == seq {
-		if err != nil && !s.providerRunActive {
+		if callErr != nil && !s.providerRunActive {
 			s.promptInFlight = false
 			s.localCommandActive = false
 			s.promptResponse = false
 			s.scheduleIdleLocked()
-		} else if err == nil {
+		} else if callErr == nil {
 			s.promptResponse = true
 			if s.localCommandActive && s.localCommandSeq == seq {
 				s.completeLocalCommandLocked(seq)
@@ -144,25 +158,24 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 	}
 	s.lifecycleMu.Unlock()
-	if err == nil {
-		s.applyAutoTitle(ctx, msg)
+	if callErr == nil {
+		s.applyAutoTitle(context.Background(), msg)
 	}
-	return err
 }
 
 func (s *Session) SendSteer(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) (any, error) {
-		return s.client.Call(ctx, omorpc.Steer{SessionID: route, Message: msg})
+	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
+		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
 
 func (s *Session) SendFollowUp(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) (any, error) {
-		return s.client.Call(ctx, omorpc.FollowUp{SessionID: route, Message: msg})
+	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
+		return omorpc.FollowUp{SessionID: route, Message: msg}
 	})
 }
 
-func (s *Session) sendDuringRun(_ context.Context, call func(string) (any, error)) error {
+func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc.Command) error {
 	s.lifecycleMu.Lock()
 	if s.compactionActive {
 		s.lifecycleMu.Unlock()
@@ -177,8 +190,9 @@ func (s *Session) sendDuringRun(_ context.Context, call func(string) (any, error
 	if err != nil {
 		return err
 	}
-	_, err = call(route)
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, command(route), func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.noteTransportError(callErr)
+	})
 	return err
 }
 
@@ -244,7 +258,13 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.publishLocked(Frame{Kind: FrameCompactionStart, SessionID: s.durableID, RequestID: rpcID, Data: CompactionInfo{Phase: "manual"}})
 	s.lifecycleMu.Unlock()
 
-	_, callErr := s.client.Call(ctx, omorpc.Compact{SessionID: route})
+	_, callErr := s.client.CallRetained(ctx, omorpc.Compact{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, completionErr error) {
+		s.completeCompact(seq, rpcID, completionErr)
+	})
+	return callErr
+}
+
+func (s *Session) completeCompact(seq uint64, rpcID string, callErr error) {
 	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
 	if s.compactSeq == seq && s.compactionActive && s.compactRPCID == rpcID {
@@ -267,7 +287,6 @@ func (s *Session) Compact(ctx context.Context) error {
 		s.scheduleIdleLocked()
 	}
 	s.lifecycleMu.Unlock()
-	return callErr
 }
 
 func (s *Session) rememberCompletedCompactionLocked(ids ...string) {
@@ -296,34 +315,37 @@ func (s *Session) rememberCompletedCompactionLocked(ids ...string) {
 }
 
 func (s *Session) SetModel(ctx context.Context, provider, modelID, requestID string) error {
-	return s.control(ctx, "set_model", requestID, func(route string) error {
-		_, err := s.client.Call(ctx, omorpc.SetModel{SessionID: route, Provider: provider, ModelID: modelID})
-		return err
+	return s.control(ctx, "set_model", requestID, func(route string) omorpc.Command {
+		return omorpc.SetModel{SessionID: route, Provider: provider, ModelID: modelID}
 	})
 }
 func (s *Session) SetThinking(ctx context.Context, level, requestID string) error {
-	return s.control(ctx, "set_thinking", requestID, func(route string) error {
-		_, err := s.client.Call(ctx, omorpc.SetThinkingLevel{SessionID: route, Level: level})
-		return err
+	return s.control(ctx, "set_thinking", requestID, func(route string) omorpc.Command {
+		return omorpc.SetThinkingLevel{SessionID: route, Level: level}
 	})
 }
-func (s *Session) control(_ context.Context, command, requestID string, call func(string) error) error {
+func (s *Session) control(ctx context.Context, command, requestID string, build func(string) omorpc.Command) error {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return err
 	}
-	err = call(route)
-	s.noteTransportError(err)
+	_, err = s.client.CallRetained(ctx, build(route), func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completeControl(command, requestID, callErr)
+	})
+	return err
+}
+
+func (s *Session) completeControl(command, requestID string, callErr error) {
+	s.noteTransportError(callErr)
 	s.lifecycleMu.Lock()
-	data := map[string]any{"success": err == nil}
-	if err != nil {
-		data["message"] = err.Error()
+	data := map[string]any{"success": callErr == nil}
+	if callErr != nil {
+		data["message"] = callErr.Error()
 	}
 	s.publishLocked(Frame{Kind: FrameControlResult, SessionID: s.durableID, Command: command, RequestID: requestID, Data: data})
 	s.lifecycleMu.Unlock()
-	return err
 }
 
 func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) {
@@ -593,14 +615,29 @@ func (s *Session) ActivitySnapshot() []Frame {
 }
 
 func (s *Session) attachChecked(sub Subscriber) (func(), error) {
+	detach, _, err := s.attachCheckedTarget(sub)
+	return detach, err
+}
+
+func (s *Session) attachCheckedTarget(sub Subscriber) (func(), *subscription, error) {
+	return s.attachCheckedTargetWithReplay(sub, false, nil)
+}
+
+// attachCheckedReplayTarget publishes the subscription, queues any explicit
+// initial frames, and arms replay while lifecycleMu excludes live publication.
+func (s *Session) attachCheckedReplayTarget(sub Subscriber, initial ...Frame) (func(), *subscription, error) {
+	return s.attachCheckedTargetWithReplay(sub, true, initial)
+}
+
+func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, replayInitial []Frame) (func(), *subscription, error) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
-		return nil, ErrSessionClosed
+		return nil, nil, ErrSessionClosed
 	}
 	if s.resumable {
 		s.lifecycleMu.Unlock()
-		return nil, ErrSessionResumable
+		return nil, nil, ErrSessionResumable
 	}
 	s.cancelIdleLocked()
 	initial := make([]Frame, 0, 3)
@@ -612,7 +649,13 @@ func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
 		}
 	}
-	id, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
+	id, target, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
+	for _, frame := range replayInitial {
+		s.publishLocked(frame)
+	}
+	if replay && target != nil {
+		target.beginReplay()
+	}
 	s.lifecycleMu.Unlock()
 	var once sync.Once
 	return func() {
@@ -624,7 +667,7 @@ func (s *Session) attachChecked(sub Subscriber) (func(), error) {
 				s.lifecycleMu.Unlock()
 			}
 		})
-	}, nil
+	}, target, nil
 }
 
 func (s *Session) Close() error { return s.closeContext(context.Background()) }
@@ -634,46 +677,113 @@ func (s *Session) closeContext(ctx context.Context) error {
 		s.lifecycleMu.Unlock()
 		return nil
 	}
+	txn := s.closeTxn
+	owner := txn == nil
+	if owner {
+		txn = s.beginCloseLocked(false)
+	}
+	s.lifecycleMu.Unlock()
+
+	if !owner {
+		return waitCloseTransaction(ctx, txn)
+	}
+	return s.executeClose(ctx, txn)
+}
+
+func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
+	txn := &closeTransaction{done: make(chan struct{}), idle: idle}
+	s.closeTxn = txn
 	s.closing = true
 	s.cancelIdleLocked()
+	return txn
+}
+
+func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
 	route := s.routingID
-	s.lifecycleMu.Unlock()
+	_, err := s.client.CallRetained(ctx, omorpc.CloseSession{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		s.completeClose(txn, route, callErr)
+	})
+	return closeResult(err)
+}
 
-	_, err := s.client.Call(ctx, omorpc.CloseSession{SessionID: route})
-	s.manager.mu.Lock()
-	managerClosed := s.manager.closed
-	s.manager.mu.Unlock()
-	if !definitiveCloseFailure(err) && !managerClosed {
-		s.lifecycleMu.Lock()
-		s.closing = false
-		// Provider events are otherwise suppressed while close_session owns the
-		// route. Replay a buffered run terminal before reviving the session so a
-		// failed close cannot leave stale in-flight latches or suppress eviction.
-		s.reconcileFailedCloseLocked()
-		s.scheduleIdleLocked()
-		s.lifecycleMu.Unlock()
-		return err
+func waitCloseTransaction(ctx context.Context, txn *closeTransaction) error {
+	select {
+	case <-txn.done:
+		return closeResult(txn.err)
+	default:
 	}
+	select {
+	case <-txn.done:
+		return closeResult(txn.err)
+	case <-ctx.Done():
+		select {
+		case <-txn.done:
+			return closeResult(txn.err)
+		default:
+			return ctx.Err()
+		}
+	}
+}
 
-	s.lifecycleMu.Lock()
-	s.closed = true
-	s.closing = false
-	s.closeRunSettled = false
-	s.closeRunReason = ""
-	s.cancelIdleLocked()
-	s.manager.mu.Lock()
-	if s.manager.byChat[s.chatID] == s {
-		delete(s.manager.byChat, s.chatID)
-		delete(s.manager.byRoute, route)
-		s.manager.bumpSlotGenerationLocked(s.chatID)
-	}
-	s.manager.mu.Unlock()
-	s.lifecycleMu.Unlock()
-	s.broadcast.close(ErrSubscriberSessionEnd)
+func closeResult(err error) error {
 	if definitiveCloseFailure(err) {
 		return nil
 	}
 	return err
+}
+
+func (s *Session) completeClose(txn *closeTransaction, route string, callErr error) {
+	s.noteTransportError(callErr)
+	s.manager.mu.Lock()
+	managerClosed := s.manager.closed
+	s.manager.mu.Unlock()
+	accepted := definitiveCloseFailure(callErr)
+	epochDead := errors.Is(callErr, omorpc.ErrDisconnected)
+
+	s.lifecycleMu.Lock()
+	if !accepted && !managerClosed {
+		if !s.closed {
+			s.closing = false
+			s.closeTxn = nil
+			if !epochDead {
+				// Provider events are otherwise suppressed while close_session owns the
+				// route. Replay a buffered run terminal before reviving the session so a
+				// failed close cannot leave stale in-flight latches or suppress eviction.
+				s.reconcileFailedCloseLocked()
+				s.scheduleIdleLocked()
+			}
+		}
+		txn.err = callErr
+		close(txn.done)
+		s.lifecycleMu.Unlock()
+		return
+	}
+
+	newlyClosed := !s.closed
+	if newlyClosed {
+		s.closed = true
+		s.closing = false
+		s.closeTxn = nil
+		s.closeRunSettled = false
+		s.closeRunReason = ""
+		s.cancelIdleLocked()
+		if txn.idle {
+			s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "session unloaded after idle timeout"}})
+		}
+		s.manager.mu.Lock()
+		if s.manager.byChat[s.chatID] == s {
+			delete(s.manager.byChat, s.chatID)
+			delete(s.manager.byRoute, route)
+			s.manager.bumpSlotGenerationLocked(s.chatID)
+		}
+		s.manager.mu.Unlock()
+	}
+	txn.err = callErr
+	close(txn.done)
+	s.lifecycleMu.Unlock()
+	if newlyClosed {
+		s.broadcast.close(ErrSubscriberSessionEnd)
+	}
 }
 func definitiveCloseFailure(err error) bool {
 	if err == nil {
@@ -786,51 +896,221 @@ func chunkEntries(arr []json.RawMessage) [][]json.RawMessage {
 	flush()
 	return pages
 }
-func (s *Session) publishEntriesLocked(entries []json.RawMessage, leaf string) {
+func (s *Session) publishEntriesPageLocked(entries []json.RawMessage, leaf string, final bool) {
 	pages := chunkEntries(entries)
 	if len(pages) == 0 {
 		pages = [][]json.RawMessage{{}}
 	}
 	for i, page := range pages {
-		final := i == len(pages)-1
-		leafID := ""
-		if final {
-			leafID = leaf
+		pageFinal := final && i == len(pages)-1
+		pageLeaf := ""
+		if pageFinal {
+			pageLeaf = leaf
 		}
-		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: leafID, Final: final}})
+		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: pageLeaf, Final: pageFinal}})
 	}
 }
 
-// LoadEntries streams the provider's paged history through the regular
-// bounded subscriber path. It is used when attaching to an existing session.
-func (s *Session) LoadEntries(ctx context.Context) { s.loadEntries(ctx) }
+// LoadEntries performs a bounded incremental refresh. An empty cursor is
+// deliberately ignored: chat acquisition must never request a full transcript.
+func (s *Session) LoadEntries(ctx context.Context, since string) {
+	if since != "" {
+		s.loadEntries(ctx, since)
+	}
+}
 
-func (s *Session) loadEntries(ctx context.Context) {
+var errIncompleteHistory = errors.New("incomplete history")
+
+// hydrateEntries serves disk pages and the validated live tail only to target.
+// A nil target is retained for direct callers and publishes through the normal
+// broadcaster, but manager-driven attachment always supplies its subscription.
+func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, targets ...*subscription) {
+	var target *subscription
+	if len(targets) != 0 {
+		target = targets[0]
+	}
+	emit := func(frame Frame, terminal bool) error {
+		if target != nil {
+			return target.enqueueReplay(ctx, frame, terminal)
+		}
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		if s.closed || s.resumable {
+			return ErrSessionResumable
+		}
+		s.publishLocked(frame)
+		return nil
+	}
+	publishErr := func(err error) {
+		if target != nil {
+			// A history-context deadline is an expected, user-visible outcome:
+			// the terminal error must still be delivered (non-blocking; the
+			// pump ends replay after delivery) so the socket stays usable for
+			// live frames. Only cancellation or a lost route retires the target,
+			// because there terminal delivery cannot be acknowledged reliably
+			// and retiring tears down replay instead of trapping live frames.
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+				target.retire(err)
+				return
+			}
+		} else if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+			return
+		}
+		info := historyErrorInfo(err)
+		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: info}
+		if target != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if !target.enqueueReplayTerminalNow(frame) {
+				target.retire(ErrSubscriberDetached)
+			}
+			return
+		}
+		if emitErr := emit(frame, true); emitErr != nil && target != nil {
+			target.retire(emitErr)
+		}
+	}
+
+	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
+		PageEntries: entriesPageMaxCount,
+	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		if metadata.Header.ID != s.durableID {
+			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
+		}
+		if metadata.LeafID == "" {
+			return nil
+		}
+		for _, entries := range chunkEntries(page.Entries) {
+			if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries}}, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		publishErr(err)
+		return
+	}
+
+	// A header is a durable identity but not an entry cursor. Probe the live
+	// route so ignored/rejected cursor behavior is observed, then report the
+	// history as incomplete rather than falling back to an unbounded dump.
+	cursor := metadata.LeafID
+	if cursor == "" {
+		cursor = metadata.Header.ID
+		if _, probeErr := s.fetchEntriesAfter(ctx, cursor); probeErr != nil && !errors.Is(probeErr, errIncompleteHistory) {
+			publishErr(probeErr)
+		} else {
+			publishErr(fmt.Errorf("%w: durable session has no entry cursor", errIncompleteHistory))
+		}
+		return
+	}
+	wire, err := s.fetchEntriesAfter(ctx, cursor)
+	if err != nil {
+		publishErr(err)
+		return
+	}
+	pages := chunkEntries(wire.Entries)
+	if len(pages) == 0 {
+		pages = [][]json.RawMessage{{}}
+	}
+	for i, entries := range pages {
+		terminal := i == len(pages)-1
+		leaf := ""
+		if terminal {
+			leaf = wire.LeafID
+		}
+		if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries, LeafID: leaf, Final: terminal}}, terminal); err != nil {
+			if target != nil {
+				target.retire(err)
+			}
+			return
+		}
+	}
+}
+
+type entriesTail struct {
+	Entries []json.RawMessage `json:"entries"`
+	LeafID  string            `json:"leafId"`
+}
+
+func (s *Session) fetchEntriesAfter(ctx context.Context, since string) (entriesTail, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
 	if err != nil {
-		return
+		return entriesTail{}, err
 	}
-	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route})
+	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route, Since: since})
 	if err != nil {
+		s.noteTransportError(err)
+		return entriesTail{}, err
+	}
+	var wire entriesTail
+	if !json.Valid(resp.Data) || json.Unmarshal(resp.Data, &wire) != nil {
+		return entriesTail{}, errors.New("invalid get_entries response")
+	}
+	if len(wire.Entries) == 0 {
+		if wire.LeafID != since {
+			return entriesTail{}, fmt.Errorf("%w: cursor %q was not retained (returned leaf %q)", errIncompleteHistory, since, wire.LeafID)
+		}
+		return wire, nil
+	}
+	parent := since
+	for i, raw := range wire.Entries {
+		var entry struct {
+			ID       string          `json:"id"`
+			ParentID json.RawMessage `json:"parentId"`
+		}
+		if json.Unmarshal(raw, &entry) != nil || entry.ID == "" || len(entry.ParentID) == 0 {
+			return entriesTail{}, fmt.Errorf("%w: invalid tail entry %d", errIncompleteHistory, i)
+		}
+		var parentID string
+		if json.Unmarshal(entry.ParentID, &parentID) != nil || parentID != parent {
+			return entriesTail{}, fmt.Errorf("%w: tail entry %q does not chain from %q", errIncompleteHistory, entry.ID, parent)
+		}
+		parent = entry.ID
+	}
+	if wire.LeafID != parent {
+		return entriesTail{}, fmt.Errorf("%w: declared leaf %q does not match tail leaf %q", errIncompleteHistory, wire.LeafID, parent)
+	}
+	return wire, nil
+}
+
+func (s *Session) loadEntries(ctx context.Context, since string) {
+	if since == "" {
 		return
 	}
-	var wire struct {
-		Entries []json.RawMessage `json:"entries"`
-		LeafID  string            `json:"leafId"`
-	}
-	if !json.Valid(resp.Data) {
+	wire, err := s.fetchEntriesAfter(ctx, since)
+	if err != nil {
+		s.publishHistoryError(err)
 		return
 	}
-	// A valid response with malformed fields still terminates history loading;
-	// json.Unmarshal preserves any entries decoded before the bad field.
-	_ = json.Unmarshal(resp.Data, &wire)
 	s.lifecycleMu.Lock()
 	if !s.closed && !s.resumable {
-		s.publishEntriesLocked(wire.Entries, wire.LeafID)
+		s.publishEntriesPageLocked(wire.Entries, wire.LeafID, true)
 	}
 	s.lifecycleMu.Unlock()
+}
+
+func historyErrorInfo(err error) ErrorInfo {
+	code := "decode_failed"
+	if errors.Is(err, errIncompleteHistory) {
+		code = "incomplete_history"
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		code = "provider_timeout"
+	} else if errors.Is(err, omorpc.ErrDisconnected) {
+		code = "provider_error"
+	}
+	return ErrorInfo{Code: code, Message: "history load failed: " + err.Error()}
+}
+
+func (s *Session) publishHistoryError(err error) {
+	if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+		return
+	}
+	s.publishError(historyErrorInfo(err))
 }
 
 func extensionFrameData(name string, data json.RawMessage, oversized bool) map[string]any {

@@ -41,6 +41,8 @@ type Config struct {
 	ServerVersion string
 	Logger        *slog.Logger
 	WriteTimeout  time.Duration
+	// HistoryTimeout is independent of the 15-second interactive command budget.
+	HistoryTimeout time.Duration
 	// PrepareChat validates workspace/chat metadata immediately before attach.
 	PrepareChat func(context.Context, string, string) error
 	// PrepareChatVersion captures a deletion generation atomically with prepare;
@@ -71,6 +73,9 @@ func New(cfg Config) *Handler {
 	}
 	if cfg.WriteTimeout <= 0 {
 		cfg.WriteTimeout = defaultWriteTimeout
+	}
+	if cfg.HistoryTimeout <= 0 {
+		cfg.HistoryTimeout = session.DefaultHistoryTimeout
 	}
 	h := &Handler{cfg: cfg}
 	h.upgrader = gws.NewUpgrader(h, &gws.ServerOption{
@@ -435,7 +440,9 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 	}
 }
 
-func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) {
+func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
+	ctx, cancel := context.WithTimeout(c.ctx, c.bridge.cfg.HistoryTimeout)
+	defer cancel()
 	c.unbind()
 	c.sub = newSubscriber(c)
 	sub := c.sub
@@ -500,9 +507,6 @@ func (c *connection) create(ctx context.Context, f *wscontract.ChatCreateFrame) 
 		c.queryModels(ctx, acquired)
 		c.queryCommands(ctx, acquired)
 		c.queryStats(ctx, acquired)
-		if !started {
-			acquired.LoadEntries(ctx)
-		}
 	}
 	var sess *session.Session
 	var detach func()

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -363,6 +365,7 @@ func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
 
 	releaseClose := d.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
+	d.FailNext(omorpc.CmdCloseSession, omorpc.ErrCodeMissingSessionID)
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)
 	go func() { stopped <- mgr.StopContext(ctx, s.ChatID()) }()
@@ -374,6 +377,10 @@ func TestMergeGateFailedCloseReplaysSettledRun(t *testing.T) {
 	if err := <-stopped; !errors.Is(err, context.Canceled) {
 		t.Fatalf("failed close = %v, want context.Canceled", err)
 	}
+	if got := counts(sub.drain()); got[FrameRunDone] != 0 {
+		t.Fatalf("uncertain close replayed terminal before rejection: %+v", got)
+	}
+	releaseClose()
 	_, firstDone := sub.await(t, FrameRunDone)
 	if firstDone.Data.(RunInfo).Reason != "end_turn" {
 		t.Fatalf("replayed terminal = %+v", firstDone)
@@ -881,7 +888,7 @@ func TestMergeGateStaleEpochEventCannotReachSuccessor(t *testing.T) {
 	newToken, _ := client.CurrentEpoch()
 	s := &Session{durableID: "successor", routingID: "reused", epoch: newToken, queueSize: 8, activitySnapshots: map[string]json.RawMessage{}, activityOversized: map[string]bool{}}
 	sub := newRecorder(1)
-	_, detach := s.broadcast.attach(sub, 8, nil)
+	_, _, detach := s.broadcast.attach(sub, 8, nil)
 	defer detach()
 	raw := json.RawMessage(`{"type":"state_changed","sessionId":"reused","value":"stale"}`)
 	s.dispatchEpoch(oldToken, &omorpc.Event{Type: "state_changed", SessionID: "reused", Raw: raw})
@@ -969,12 +976,29 @@ func TestMergeGateDelayedCompactionIDDoesNotBindSuccessor(t *testing.T) {
 	}
 }
 
-func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
+func TestMergeGateLoadEntriesSendsSinceCursor(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 16)
+	sub := newRecorder(16)
+	sess, _, detach := acquire(t, mgr, testChat{id: "incremental-history", cwd: t.TempDir()}, sub)
+	defer detach()
+	sub.next(t) // ready
+
+	sess.LoadEntries(context.Background(), "entry-7")
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	if got, _ := request["since"].(string); got != "entry-7" {
+		t.Fatalf("get_entries since = %q, want entry-7; request=%v", got, request)
+	}
+}
+
+func TestMergeGateMalformedIncrementalHistoryPublishesIncompleteError(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
-	chat := testChat{id: "history", cwd: t.TempDir()}
-	cur := Cursor{SessionFile: "/tmp/history.jsonl"}
+	path, leafID := writeHistorySession(t, 1, 0)
+	chat := testChat{id: "history", cwd: filepath.Dir(path)}
+	cur := Cursor{SessionFile: path}
 	_ = store.SaveCursor(context.Background(), chat.id, cur)
 	mgr := testManager(t, client, store, 64)
 	release := d.BlockHandler(omorpc.CmdGetEntries)
@@ -985,10 +1009,18 @@ func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
 		result <- err
 	}()
 	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
-		t.Fatal("get_entries absent")
+		t.Fatal("incremental get_entries absent")
 	}
-	id, _ := d.LastRequest(omorpc.CmdGetEntries)["id"].(string)
-	sid, _ := d.LastRequest(omorpc.CmdGetEntries)["sessionId"].(string)
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	if request["since"] != leafID {
+		t.Fatalf("incremental cursor = %v, want %q", request["since"], leafID)
+	}
+	_, cold := sub.await(t, FrameEntries)
+	if entries := cold.Data.(EntriesFrame); entries.Final || entries.LeafID != "" {
+		t.Fatalf("cold history page must await the live tail: %+v", entries)
+	}
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
 	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[{"x":1}],"leafId":123}}`+"\n", id, sid)))
 	select {
 	case err := <-result:
@@ -996,13 +1028,17 @@ func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(testTimeout):
-		t.Fatal("Acquire blocked on malformed history")
+		t.Fatal("Acquire blocked on malformed incremental history")
 	}
 	release()
-	_, frame := sub.await(t, FrameEntries)
-	entries := frame.Data.(EntriesFrame)
-	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != "" {
-		t.Fatalf("terminal malformed history frame: %+v", entries)
+	prior, frame := sub.awaitError(t, "decode_failed")
+	if !strings.Contains(frame.Data.(ErrorInfo).Message, "invalid get_entries response") {
+		t.Fatalf("history error = %+v", frame.Data)
+	}
+	for _, got := range prior {
+		if got.Kind == FrameEntries && got.Data.(EntriesFrame).Final {
+			t.Fatalf("malformed tail terminalized successfully: %+v", got)
+		}
 	}
 }
 

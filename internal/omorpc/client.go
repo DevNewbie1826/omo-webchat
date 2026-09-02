@@ -13,11 +13,19 @@ import (
 	"time"
 )
 
-// ErrDisconnected is the transport-level failure: the socket died (daemon
-// restart, mid-request disconnect) or every reconnect attempt within the
-// configured budget was exhausted. All pending requests fail with an error
-// matching errors.Is(err, ErrDisconnected); reconnect failures wrap it.
-var ErrDisconnected = errors.New("omorpc: transport disconnected")
+var (
+	// ErrDisconnected is the transport-level failure: the socket died (daemon
+	// restart, mid-request disconnect) or every reconnect attempt within the
+	// configured budget was exhausted. All pending requests fail with an error
+	// matching errors.Is(err, ErrDisconnected); reconnect failures wrap it.
+	ErrDisconnected = errors.New("omorpc: transport disconnected")
+
+	// ErrWrittenUnanswered means the complete request frame was written, but
+	// the caller's response budget expired before a correlated response arrived.
+	// Delivery is uncertain; unlike ErrDisconnected, this does not invalidate
+	// the connection epoch.
+	ErrWrittenUnanswered = errors.New("omorpc: request written but unanswered")
+)
 
 // Config tunes the client. Zero-valued fields are replaced field-wise by
 // the DefaultConfig values, so partial configs keep sane defaults.
@@ -318,7 +326,7 @@ func (c *Client) invalidate(ep *connectionEpoch, cause error) {
 
 	_ = ep.conn.Close()
 	ep.events.close()
-	err := fmt.Errorf("%w: epoch %d: %v", ErrDisconnected, ep.number, cause)
+	err := disconnectedError(ep, cause)
 	for _, request := range pending {
 		request.result <- callResult{err: err}
 	}
@@ -426,6 +434,69 @@ func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, Epoch
 	return c.callOnEpochInEpoch(ctx, ep, cmd)
 }
 
+// CallRetained sends a two-way request while retaining completion ownership
+// after the caller stops waiting. complete runs exactly once: immediately for
+// a request that could not be written, or when the correlated response or
+// connection-epoch death settles a written request.
+func (c *Client) CallRetained(ctx context.Context, cmd Command, complete func(*Response, EpochToken, error)) (*Response, error) {
+	ep, err := c.connection(ctx)
+	if err != nil {
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
+	frame, err := EncodeRequest(id, cmd)
+	if err != nil {
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+	result := make(chan callResult, 1)
+
+	c.mu.Lock()
+	if c.closed || c.current != ep {
+		c.mu.Unlock()
+		complete(nil, EpochToken{}, ErrDisconnected)
+		return nil, ErrDisconnected
+	}
+	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
+	c.mu.Unlock()
+
+	if transportFailure, writeErr := c.writeFrame(ctx, ep, frame); writeErr != nil {
+		c.removePending(id, result)
+		if transportFailure {
+			c.invalidate(ep, writeErr)
+			err = disconnectedError(ep, writeErr)
+		} else {
+			err = writeErr
+		}
+		complete(nil, EpochToken{}, err)
+		return nil, err
+	}
+
+	completed := make(chan callResult, 1)
+	go func() {
+		got := <-result
+		complete(got.response, got.epoch, got.err)
+		completed <- got
+	}()
+	select {
+	case got := <-completed:
+		return got.response, got.err
+	case <-ctx.Done():
+		// A pending correlation proves no response or epoch death has claimed
+		// completion yet. Leave it registered for the callback.
+		c.mu.Lock()
+		pending, stillPending := c.pending[id]
+		stillPending = stillPending && pending.result == result
+		c.mu.Unlock()
+		if stillPending {
+			return nil, writtenUnansweredError(ctx.Err())
+		}
+		got := <-completed
+		return got.response, got.err
+	}
+}
+
 // CallDetached sends a request and transfers completion ownership to complete.
 // Once the frame is written, caller-context cancellation does not remove the
 // correlation: complete runs when a response arrives or the epoch dies.
@@ -449,10 +520,11 @@ func (c *Client) CallDetached(ctx context.Context, cmd Command, complete func(*R
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
 
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
 		c.removePending(id, result)
-		if attempted {
+		if transportFailure {
 			c.invalidate(ep, err)
+			return disconnectedError(ep, err)
 		}
 		return err
 	}
@@ -484,11 +556,13 @@ func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cm
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
 
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
 		c.removePending(id, result)
-		if attempted {
-			// A failed write may be partial, so reconnect before the next call.
+		if transportFailure {
+			// A transport-budget timeout or failed write may be partial, so
+			// reconnect before the next call.
 			c.invalidate(ep, err)
+			return nil, EpochToken{}, disconnectedError(ep, err)
 		}
 		return nil, EpochToken{}, err
 	}
@@ -497,19 +571,32 @@ func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cm
 	case got := <-result:
 		return got.response, got.epoch, got.err
 	case <-ctx.Done():
-		c.removePending(id, result)
-		return nil, EpochToken{}, ctx.Err()
+		// Whichever side removes the correlation owns completion. If a response
+		// or disconnect won the race, consume that result instead of masking it
+		// as caller-budget expiry.
+		if c.removePending(id, result) {
+			return nil, EpochToken{}, writtenUnansweredError(ctx.Err())
+		}
+		got := <-result
+		return got.response, got.epoch, got.err
 	}
 }
 
-func (c *Client) removePending(id string, result chan callResult) {
+func (c *Client) removePending(id string, result chan callResult) bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if pending, ok := c.pending[id]; ok && pending.result == result {
 		delete(c.pending, id)
+		return true
 	}
-	c.mu.Unlock()
+	return false
 }
 
+// writeFrame reports whether an error belongs to the transport. The caller
+// context governs admission to the write, but cannot interrupt an in-progress
+// frame: once writing starts, only the transport-owned WriteTimeout applies.
+// Any partial or failed write is epoch-fatal because a newline-JSON stream
+// cannot safely append another frame after an incomplete one.
 func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []byte) (bool, error) {
 	select {
 	case <-c.writeGate:
@@ -518,37 +605,31 @@ func (c *Client) writeFrame(ctx context.Context, ep *connectionEpoch, frame []by
 	}
 	defer func() { c.writeGate <- struct{}{} }()
 
-	deadline := time.Now().Add(c.cfg.WriteTimeout)
-	contextDeadline := false
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		deadline = ctxDeadline
-		contextDeadline = true
+	// The gate and cancellation can become ready together. Recheck before
+	// touching the transport so a request canceled before its write stays local.
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	if err := ep.conn.SetWriteDeadline(deadline); err != nil {
+	if err := ep.conn.SetWriteDeadline(time.Now().Add(c.cfg.WriteTimeout)); err != nil {
 		return true, err
 	}
-	cancellationDone := make(chan struct{})
-	stopCancellation := context.AfterFunc(ctx, func() {
-		_ = ep.conn.SetWriteDeadline(time.Now())
-		close(cancellationDone)
-	})
 	written, err := ep.conn.Write(frame)
-	if !stopCancellation() {
-		<-cancellationDone
-	}
 	_ = ep.conn.SetWriteDeadline(time.Time{})
-	if err == nil && written != len(frame) {
-		err = io.ErrShortWrite
-	}
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return true, ctxErr
-		}
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() && contextDeadline {
-			return true, context.DeadlineExceeded
-		}
+		return true, err
 	}
-	return true, err
+	if written != len(frame) {
+		return true, io.ErrShortWrite
+	}
+	return false, nil
+}
+
+func writtenUnansweredError(cause error) error {
+	return fmt.Errorf("%w: %w", ErrWrittenUnanswered, cause)
+}
+
+func disconnectedError(ep *connectionEpoch, cause error) error {
+	return fmt.Errorf("%w: epoch %d: %v", ErrDisconnected, ep.number, cause)
 }
 
 // Notify writes a one-way notification without injecting a correlation id
@@ -562,9 +643,10 @@ func (c *Client) Notify(ctx context.Context, notification Notification) error {
 	if err != nil {
 		return err
 	}
-	if attempted, err := c.writeFrame(ctx, ep, frame); err != nil {
-		if attempted {
+	if transportFailure, err := c.writeFrame(ctx, ep, frame); err != nil {
+		if transportFailure {
 			c.invalidate(ep, err)
+			return disconnectedError(ep, err)
 		}
 		return err
 	}

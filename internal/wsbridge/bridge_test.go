@@ -26,9 +26,10 @@ import (
 
 type collector struct {
 	gws.BuiltinEventHandler
-	mu     sync.Mutex
-	frames []json.RawMessage
-	notify chan struct{}
+	mu      sync.Mutex
+	frames  []json.RawMessage
+	notify  chan struct{}
+	timeout time.Duration
 }
 
 func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
@@ -43,8 +44,20 @@ func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
 }
 func (c *collector) next(t *testing.T, typ string) map[string]any {
 	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return c.nextWithin(t, typ, timeout)
+}
+
+func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) map[string]any {
+	t.Helper()
+	if timeout <= 0 {
+		t.Fatalf("deadline elapsed waiting for %s", typ)
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	for {
 		c.mu.Lock()
 		for i, b := range c.frames {
@@ -59,11 +72,12 @@ func (c *collector) next(t *testing.T, typ string) map[string]any {
 		c.mu.Unlock()
 		select {
 		case <-c.notify:
-		case <-deadline.C:
+		case <-timer.C:
 			t.Fatalf("timed out waiting for %s", typ)
 		}
 	}
 }
+
 func TestContextUsageWithPercentFillsProviderOmission(t *testing.T) {
 	got := contextUsageWithPercent(json.RawMessage(`{"used":150,"total":200000}`))
 	var usage map[string]float64
@@ -271,8 +285,11 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if got := c2.next(t, "extensionEvent"); got["name"] != "omo.task.updated" {
 		t.Fatalf("snapshot=%v", got)
 	}
-	if got := c2.next(t, "entries"); got["final"] != true {
-		t.Fatalf("reattach history=%v", got)
+	for {
+		got := c2.next(t, "entries")
+		if got["final"] == true {
+			break
+		}
 	}
 	writeClient(t, conn2, map[string]any{"type": "activity.refresh", "sessionId": "chat-1"})
 	c2.next(t, "extensionEvent")

@@ -55,6 +55,7 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 		{"get_state", GetState{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_state"}`},
 		{"get_available_models", GetAvailableModels{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_available_models"}`},
 		{"get_entries", GetEntries{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_entries"}`},
+		{"get_entries_since", GetEntries{SessionID: "rpc-1", Since: "entry-7"}, `{"id":"r1","sessionId":"rpc-1","since":"entry-7","type":"get_entries"}`},
 		{"get_messages", GetMessages{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_messages"}`},
 		{"get_commands", GetCommands{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_commands"}`},
 		{"get_session_stats", GetSessionStats{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"get_session_stats"}`},

@@ -61,6 +61,7 @@ type daemonSession struct {
 	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
 	live      bool   // false after UnloadSession or daemon Stop/Restart
 	history   []any  // durable transcript returned by get_entries
+	leafID    string
 }
 
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
@@ -68,28 +69,29 @@ type Daemon struct {
 	sockPath   string
 	sessionsDn string
 
-	mu              sync.Mutex
-	ln              net.Listener
-	conns           map[net.Conn]struct{}
-	serverVersion   string
-	protocolVersion int
-	capabilities    []string
-	mode            string
-	handlerGate     map[string]<-chan struct{}
-	failNext        map[string]string
-	pathFailures    map[string]int
-	refuse          bool
-	connections     int
-	handshakes      int
-	refusals        int
-	opens           int
-	closes          int
-	rpcCounter      int
-	registry        map[string]*daemonSession
-	promptScripts   map[string][]map[string]any
-	compactScripts  map[string][]map[string]any
-	promptHolds     map[string]chan struct{}
-	requests        []map[string]any
+	mu                sync.Mutex
+	ln                net.Listener
+	conns             map[net.Conn]struct{}
+	serverVersion     string
+	protocolVersion   int
+	capabilities      []string
+	mode              string
+	handlerGate       map[string]<-chan struct{}
+	handlerGateByPath map[string]map[string]<-chan struct{}
+	failNext          map[string]string
+	pathFailures      map[string]int
+	refuse            bool
+	connections       int
+	handshakes        int
+	refusals          int
+	opens             int
+	closes            int
+	rpcCounter        int
+	registry          map[string]*daemonSession
+	promptScripts     map[string][]map[string]any
+	compactScripts    map[string][]map[string]any
+	promptHolds       map[string]chan struct{}
+	requests          []map[string]any
 
 	writeMu sync.Mutex
 
@@ -104,24 +106,25 @@ type Daemon struct {
 // begin accepting connections.
 func New(dir string) *Daemon {
 	return &Daemon{
-		sockPath:        filepath.Join(dir, "d.sock"),
-		sessionsDn:      filepath.Join(dir, "sessions"),
-		serverVersion:   "1.2.3",
-		protocolVersion: 1,
-		capabilities:    []string{"multi_session", "extension_events", "custom_unsupported"},
-		mode:            "multi",
-		handlerGate:     map[string]<-chan struct{}{},
-		failNext:        map[string]string{},
-		pathFailures:    map[string]int{},
-		conns:           map[net.Conn]struct{}{},
-		registry:        map[string]*daemonSession{},
-		promptScripts:   map[string][]map[string]any{},
-		compactScripts:  map[string][]map[string]any{},
-		promptHolds:     map[string]chan struct{}{},
-		requestFeed:     make(chan map[string]any, 256),
-		handshakeFeed:   make(chan struct{}, 1),
-		refusalFeed:     make(chan struct{}, 1),
-		closeFeed:       make(chan struct{}, 256),
+		sockPath:          filepath.Join(dir, "d.sock"),
+		sessionsDn:        filepath.Join(dir, "sessions"),
+		serverVersion:     "1.2.3",
+		protocolVersion:   1,
+		capabilities:      []string{"multi_session", "extension_events", "custom_unsupported"},
+		mode:              "multi",
+		handlerGate:       map[string]<-chan struct{}{},
+		handlerGateByPath: map[string]map[string]<-chan struct{}{},
+		failNext:          map[string]string{},
+		pathFailures:      map[string]int{},
+		conns:             map[net.Conn]struct{}{},
+		registry:          map[string]*daemonSession{},
+		promptScripts:     map[string][]map[string]any{},
+		compactScripts:    map[string][]map[string]any{},
+		promptHolds:       map[string]chan struct{}{},
+		requestFeed:       make(chan map[string]any, 256),
+		handshakeFeed:     make(chan struct{}, 1),
+		refusalFeed:       make(chan struct{}, 1),
+		closeFeed:         make(chan struct{}, 256),
 	}
 }
 
@@ -248,6 +251,17 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	d.mu.Lock()
 	gate := d.handlerGate[cmd]
+	path, _ := req["sessionPath"].(string)
+	if path == "" {
+		if rec := d.sessionByRPC(sid); rec != nil {
+			path = rec.path
+		}
+	}
+	if pathGates := d.handlerGateByPath[cmd]; pathGates != nil {
+		if pathGate := pathGates[path]; pathGate != nil {
+			gate = pathGate
+		}
+	}
 	code, failing := d.failNext[cmd]
 	if failing {
 		delete(d.failNext, cmd)
@@ -345,7 +359,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		hold = d.promptHolds[recPath]
 		rpcID := rec.rpcID // read under mu: handleOpenSession may reassign it concurrently (resume)
 		if message, _ := req["message"].(string); message != "" {
-			rec.history = append(rec.history, map[string]any{"type": "message", "role": "user", "content": message})
+			d.appendHistoryEntryLocked(rec, map[string]any{"role": "user", "content": message})
 		}
 		for _, event := range script {
 			typ, _ := event["type"].(string)
@@ -358,7 +372,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 				for key, value := range message {
 					entry[key] = value
 				}
-				rec.history = append(rec.history, entry)
+				d.appendHistoryEntryLocked(rec, entry)
 			}
 		}
 		d.mu.Unlock()
@@ -381,11 +395,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetEntries:
 		d.mu.Lock()
 		entries := append([]any(nil), rec.history...)
+		leafID := rec.leafID
 		d.mu.Unlock()
-		if len(entries) == 0 {
-			entries = []any{map[string]any{"type": "message", "role": "user", "content": "hello"}}
+		since, _ := req["since"].(string)
+		if since != "" {
+			entries = entriesAfter(entries, since)
 		}
-		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries}))
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries, "leafId": leafID}))
 		return
 
 	case omorpc.CmdGetState:
@@ -460,6 +476,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		path = filepath.Join(d.sessionsDn, durable+".jsonl")
 		rec = &daemonSession{path: path, durableID: durable}
 		d.registry[path] = rec
+		_ = writeSessionHeader(rec)
 	}
 	d.rpcCounter++
 	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
@@ -485,6 +502,54 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 func durableForPath(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+}
+
+func writeSessionHeader(rec *daemonSession) error {
+	if err := os.MkdirAll(filepath.Dir(rec.path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.Create(rec.path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return json.NewEncoder(file).Encode(map[string]any{
+		"type": "session", "version": 3, "id": rec.durableID,
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "cwd": filepath.Dir(rec.path),
+	})
+}
+
+// appendHistoryEntryLocked updates the mock's RPC transcript and its durable
+// JSONL file together. Callers hold d.mu.
+func (d *Daemon) appendHistoryEntryLocked(rec *daemonSession, payload map[string]any) {
+	id := fmt.Sprintf("entry-%d", len(rec.history)+1)
+	var parent any
+	if rec.leafID != "" {
+		parent = rec.leafID
+	}
+	entry := map[string]any{"type": "message", "id": id, "parentId": parent}
+	for key, value := range payload {
+		if key != "type" && key != "id" && key != "parentId" {
+			entry[key] = value
+		}
+	}
+	rec.history = append(rec.history, entry)
+	rec.leafID = id
+	file, err := os.OpenFile(rec.path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		_ = json.NewEncoder(file).Encode(entry)
+		_ = file.Close()
+	}
+}
+
+func entriesAfter(entries []any, since string) []any {
+	for i, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		if id, _ := entry["id"].(string); id == since {
+			return entries[i+1:]
+		}
+	}
+	return []any{}
 }
 
 func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {
@@ -616,6 +681,31 @@ func (d *Daemon) BlockHandler(cmd string) (release func()) {
 		once.Do(func() {
 			d.mu.Lock()
 			delete(d.handlerGate, cmd)
+			d.mu.Unlock()
+			close(gate)
+		})
+	}
+}
+
+// BlockHandlerForPath holds future requests of cmd for one durable session
+// path. Other sessions and commands continue normally. The returned release
+// function is idempotent and removes the gate.
+func (d *Daemon) BlockHandlerForPath(cmd, sessionPath string) (release func()) {
+	gate := make(chan struct{})
+	var once sync.Once
+	d.mu.Lock()
+	if d.handlerGateByPath[cmd] == nil {
+		d.handlerGateByPath[cmd] = make(map[string]<-chan struct{})
+	}
+	d.handlerGateByPath[cmd][sessionPath] = gate
+	d.mu.Unlock()
+	return func() {
+		once.Do(func() {
+			d.mu.Lock()
+			delete(d.handlerGateByPath[cmd], sessionPath)
+			if len(d.handlerGateByPath[cmd]) == 0 {
+				delete(d.handlerGateByPath, cmd)
+			}
 			d.mu.Unlock()
 			close(gate)
 		})
