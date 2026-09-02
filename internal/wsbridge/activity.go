@@ -12,12 +12,11 @@ import (
 
 const activityQueueSize = 64
 
-// ActivitySource is the narrow manager-cache seam used by the bridge. The
-// bridge subscribes before reading LiveSummaries so an update cannot disappear
-// between the initial cache read and observer registration.
+// ActivitySource is the narrow manager-cache seam used by the bridge.
+// SubscribeActivity registers the filtered observer and returns its initial
+// snapshot in one transaction. overflow reports loss at the source hand-off.
 type ActivitySource interface {
-	LiveSummaries() []session.Summary
-	SubscribeOverview(func(session.Summary)) func()
+	SubscribeActivity(bool, []string, func(session.Summary, bool)) ([]session.Summary, func())
 }
 
 func (c *connection) subscribeActivity(frame *wscontract.SessionsSubscribeFrame) {
@@ -52,26 +51,9 @@ func (c *connection) subscribeActivity(frame *wscontract.SessionsSubscribeFrame)
 		return
 	}
 	pump := newActivityPump(c)
-	selected := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		selected[id] = struct{}{}
-	}
-	matches := func(summary session.Summary) bool {
-		_, explicit := selected[summary.ChatID]
-		return allLive || explicit
-	}
-	unsubscribe := source.SubscribeOverview(func(summary session.Summary) {
-		if matches(summary) {
-			pump.enqueue(summary)
-		}
+	initial, unsubscribe := source.SubscribeActivity(allLive, ids, func(summary session.Summary, overflow bool) {
+		pump.enqueue(summary, overflow)
 	})
-	all := source.LiveSummaries()
-	initial := make([]session.Summary, 0, len(all))
-	for _, summary := range all {
-		if matches(summary) {
-			initial = append(initial, summary)
-		}
-	}
 	activity := &activitySubscription{pump: pump, unsubscribe: unsubscribe}
 	c.activity = activity
 	pump.start(initial)
@@ -160,7 +142,7 @@ func newActivityPump(c *connection) *activityPump {
 	return &activityPump{conn: c, ctx: ctx, cancel: cancel, notify: make(chan struct{}, 1)}
 }
 
-func (p *activityPump) enqueue(summary session.Summary) {
+func (p *activityPump) enqueue(summary session.Summary, upstreamOverflow bool) {
 	if summary.ChatID == "" || p.ctx.Err() != nil {
 		return
 	}
@@ -170,7 +152,7 @@ func (p *activityPump) enqueue(summary session.Summary) {
 		p.mu.Unlock()
 		return
 	}
-	overflow := false
+	overflow := upstreamOverflow
 	if len(p.queue) >= activityQueueSize {
 		p.queue = p.queue[1:]
 		overflow = true
@@ -259,7 +241,7 @@ func (p *activityPump) run() {
 					p.sendMu.Unlock()
 					return
 				}
-				err := p.conn.write(frame)
+				err := p.conn.writeActivity(frame)
 				p.sendMu.Unlock()
 				if err != nil {
 					p.conn.shutdown()

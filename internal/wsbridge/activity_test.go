@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -21,7 +22,9 @@ import (
 )
 
 type testActivitySubscription struct {
-	publish func(session.Summary)
+	publish func(session.Summary, bool)
+	allLive bool
+	ids     map[string]struct{}
 }
 
 type testActivitySource struct {
@@ -29,6 +32,7 @@ type testActivitySource struct {
 	next         int
 	subs         map[int]testActivitySubscription
 	initial      []session.Summary
+	onSubscribe  func(func(session.Summary, bool))
 	subscribed   chan struct{}
 	unsubscribed chan struct{}
 }
@@ -39,21 +43,29 @@ func newTestActivitySource() *testActivitySource {
 	}
 }
 
-func (s *testActivitySource) LiveSummaries() []session.Summary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]session.Summary(nil), s.initial...)
-}
-
-func (s *testActivitySource) SubscribeOverview(publish func(session.Summary)) func() {
+func (s *testActivitySource) SubscribeActivity(allLive bool, sessionIDs []string, publish func(session.Summary, bool)) ([]session.Summary, func()) {
 	s.mu.Lock()
 	id := s.next
 	s.next++
-	s.subs[id] = testActivitySubscription{publish: publish}
+	ids := make(map[string]struct{}, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		ids[sessionID] = struct{}{}
+	}
+	s.subs[id] = testActivitySubscription{publish: publish, allLive: allLive, ids: ids}
+	initial := make([]session.Summary, 0, len(s.initial))
+	for _, summary := range s.initial {
+		if _, selected := ids[summary.ChatID]; allLive || selected {
+			initial = append(initial, summary)
+		}
+	}
+	onSubscribe := s.onSubscribe
 	s.mu.Unlock()
+	if onSubscribe != nil {
+		onSubscribe(publish)
+	}
 	s.subscribed <- struct{}{}
 	var once sync.Once
-	return func() {
+	return initial, func() {
 		once.Do(func() {
 			s.mu.Lock()
 			delete(s.subs, id)
@@ -64,14 +76,20 @@ func (s *testActivitySource) SubscribeOverview(publish func(session.Summary)) fu
 }
 
 func (s *testActivitySource) publish(summary session.Summary) {
+	s.publishOverflow(summary, false)
+}
+
+func (s *testActivitySource) publishOverflow(summary session.Summary, overflow bool) {
 	s.mu.Lock()
-	callbacks := make([]func(session.Summary), 0, len(s.subs))
+	callbacks := make([]func(session.Summary, bool), 0, len(s.subs))
 	for _, sub := range s.subs {
-		callbacks = append(callbacks, sub.publish)
+		if _, selected := sub.ids[summary.ChatID]; sub.allLive || selected {
+			callbacks = append(callbacks, sub.publish)
+		}
 	}
 	s.mu.Unlock()
 	for _, callback := range callbacks {
-		callback(summary)
+		callback(summary, overflow)
 	}
 }
 
@@ -257,13 +275,57 @@ func TestActivitySubscriptionSocketCloseCleansUpAndRESTOnlySocketIsUnaffected(t 
 	}
 }
 
+func TestActivitySubscribeBootstrapPrecedesConcurrentUpdate(t *testing.T) {
+	source := newTestActivitySource()
+	initial := activitySummary("child-1")
+	initial.ActivityPair.Task = json.RawMessage(`{"version":"initial"}`)
+	source.initial = []session.Summary{initial}
+	source.onSubscribe = func(publish func(session.Summary, bool)) {
+		updated := activitySummary("child-1")
+		updated.ActivityPair.Task = json.RawMessage(`{"version":"updated"}`)
+		publish(updated, false)
+	}
+	conn, frames, _ := connectActivityBridge(t, source)
+	writeClient(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{"child-1"}})
+	frames.next(t, "ack")
+
+	first := frames.next(t, "sessions.activity")
+	second := frames.next(t, "sessions.activity")
+	version := func(frame map[string]any) string {
+		snapshots := frame["snapshots"].([]any)
+		return snapshots[0].(map[string]any)["data"].(map[string]any)["version"].(string)
+	}
+	if got := []string{version(first), version(second)}; got[0] != "initial" || got[1] != "updated" {
+		t.Fatalf("bootstrap order = %v, want [initial updated]", got)
+	}
+}
+
+func TestActivityOverflowPropagatesThroughSourceAndBridgeQueues(t *testing.T) {
+	source := newTestActivitySource()
+	source.onSubscribe = func(publish func(session.Summary, bool)) {
+		for i := 0; i <= activityQueueSize; i++ {
+			publish(session.Summary{ChatID: "child-1", Title: fmt.Sprintf("update-%d", i)}, i == activityQueueSize)
+		}
+	}
+	conn, frames, _ := connectActivityBridge(t, source)
+	writeClient(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{"child-1"}})
+	frames.next(t, "ack")
+	for i := 0; i < activityQueueSize; i++ {
+		frame := frames.next(t, "sessions.activity")
+		if frame["overflow"] == true {
+			return
+		}
+	}
+	t.Fatal("source or bridge overflow was not propagated")
+}
+
 func TestActivityPumpDropsOldestAndFlagsOverflow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	pump := newActivityPump(&connection{ctx: ctx})
 	defer pump.cancel()
 	for i := 0; i <= activityQueueSize; i++ {
-		pump.enqueue(session.Summary{ChatID: string(rune('a' + i))})
+		pump.enqueue(session.Summary{ChatID: string(rune('a' + i))}, false)
 	}
 	pump.mu.Lock()
 	defer pump.mu.Unlock()

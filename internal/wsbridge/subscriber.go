@@ -37,8 +37,14 @@ func newSubscriber(c *connection) *subscriber {
 // replay before Acquire returns.
 func (*subscriber) SynchronousAttach() {}
 
-func (s *subscriber) BeginReplay() { s.replaying.Store(true) }
-func (s *subscriber) EndReplay()   { s.replaying.Store(false) }
+func (s *subscriber) BeginReplay() {
+	s.conn.beginReplay()
+	s.replaying.Store(true)
+}
+func (s *subscriber) EndReplay() {
+	s.replaying.Store(false)
+	s.conn.endReplay()
+}
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	return s.detachSignal, s.replaying.Load()
 }
