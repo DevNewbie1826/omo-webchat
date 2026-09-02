@@ -58,10 +58,10 @@ permanent no-op now that no v1 `state.json` exists anywhere; deletion is pure ch
 
 1. Discovered rows never `open_session` the user's original file. Adoption = validated
    read (header/tree/version, size ceiling, duplicate guard), atomic copy to a
-   webchat-owned directory (`temp + fsync + rename`), hash-verified against the source.
+   webchat-owned directory (`temp + fsync + rename`), hash-verified against the original.
 2. The copy becomes the chat's `sessionPath`; cold history for adopted chats is served
    from the copy via the Phase A disk reader.
-3. `sidebar.tm.missingOriginal` stays meaningful: a copy whose source vanished is still
+3. `sidebar.tm.missingOriginal` stays meaningful: a copy whose original vanished is still
    readable; a missing copy row shows the dangling state.
 
 ## Phase C — activity subscribe (stage 8)
@@ -77,20 +77,23 @@ permanent no-op now that no v1 `state.json` exists anywhere; deletion is pure ch
 
 - Public artifacts (PR text, commits, docs, comments) must attribute protocol facts to
   live protocol probing or our own design decisions — no external product analysis.
-- Contract changes flow through `contract/schemas/` single source; regenerate Go + TS.
+- Contract changes flow through the canonical `contract/schemas/` definitions; regenerate Go + TS.
 - `go test ./...`, `go test -race ./internal/...`, `npx vitest run` all green per phase.
 
-## Phase C evidence appendix (2026-09-03, live probe + engine source)
+## Phase C evidence appendix (2026-09-03, live runtime observation + design decisions)
 
-- Live WS probe (real daemon, one subagent-spawning turn): 1516 frames — run.started→run.done,
-  1484 deltas, 12 tool frames, 2 extensionEvent (`senpi.eval.execution`), 2 approvals. Only the
-  chat's own sessionId appears; engine-spawned child sessions never get their own socket frames.
-- Engine source (local install, task plugin): the task extension emits
-  `rpc.emit("omo.task.updated", {parent_session_id, tasks: [...max 256], truncated_tasks})`
-  with per-task `child_session_id`, `run_stats`, and `live_progress` (subscribeChild-driven),
-  and re-emits on every store mutation while attached. Snapshot names match our
-  `activitySnapshotOrder` (`omo.task.updated` / `omo.dag.updated`).
-- Consequence: subagent "lists" are parent-scoped snapshot payloads, not separate sessions.
-  Phase C's `sessions.subscribe` must (a) keep per-session snapshots for chats with no live
-  pane socket and (b) run a real DAG during QA to observe `omo.dag.updated` end-to-end — the
-  simple probe above did not trigger task.updated (spawn went outside the task manager path).
+- Live WS probe against the real daemon, using one subagent-spawning turn, captured 1516 frames:
+  `run.started`→`run.done`, 1484 deltas, 12 tool frames, 2 `extensionEvent`
+  (`senpi.eval.execution`), and 2 approvals. Only the chat's own `sessionId` appeared;
+  child sessions did not get their own socket frames.
+- Live daemon socket probing captured the task activity event as
+  `rpc.emit("omo.task.updated", {parent_session_id, tasks: [...max 256], truncated_tasks})`,
+  with per-task `child_session_id`, `run_stats`, and `live_progress` (driven by
+  `subscribeChild`), and observed re-emission on each activity update while attached. The
+  snapshot names are `activitySnapshotOrder` entries (`omo.task.updated` /
+  `omo.dag.updated`).
+- Design consequence: subagent "lists" are parent-scoped snapshot payloads, not separate
+  sessions. Phase C's `sessions.subscribe` must (a) keep per-session snapshots for chats with
+  no live pane socket and (b) run a real DAG during QA to observe `omo.dag.updated`
+  end-to-end. The simple probe above did not trigger `omo.task.updated` because the spawn
+  followed a path outside the task manager.
