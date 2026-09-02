@@ -91,6 +91,7 @@ func Adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 type copyHooks struct {
 	afterChunk    func(int64)
 	beforePublish func()
+	afterPublish  func()
 	sourceLimit   int64
 }
 
@@ -148,7 +149,7 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	destinationName := DestinationName(result.SessionID)
 
 	if _, err := destination.Lstat(destinationName); err == nil {
-		return verifyExisting(ctx, destination, destinationName, result, sourceHash, limit)
+		return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fail(KindIO, "inspect destination", result.Path, 0, 0, errors.Join(ErrIO, err))
 	}
@@ -196,7 +197,7 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	// process between inspection and publication.
 	if err := destination.Link(tmpName, destinationName); err != nil {
 		if _, statErr := destination.Lstat(destinationName); statErr == nil {
-			return verifyExisting(ctx, destination, destinationName, result, sourceHash, limit)
+			return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
 		}
 		return Result{}, fail(KindIO, "publish copy", result.Path, 0, 0, errors.Join(ErrIO, err))
 	}
@@ -208,10 +209,16 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	if err := syncRoot(destination); err != nil {
 		return Result{}, fail(KindIO, "fsync destination directory", destinationDir, 0, 0, errors.Join(ErrIO, err))
 	}
+	if hooks.afterPublish != nil {
+		hooks.afterPublish()
+	}
 
-	publishedHash, _, err := stableRootHash(ctx, destination, destinationName, nil, "hash published copy", limit)
+	publishedHash, publishedInfo, err := stableRootHash(ctx, destination, destinationName, nil, "hash published copy", limit)
 	if err != nil {
 		return Result{}, err
+	}
+	if os.SameFile(sourceInfo, publishedInfo) {
+		return Result{}, fail(KindCollision, "verify published copy", result.Path, 0, 0, ErrCollision)
 	}
 	finalSourceHash, _, err := stableHash(ctx, sourcePath, hashInfo, "verify source", limit)
 	if err != nil {
@@ -382,12 +389,12 @@ func copyContext(ctx context.Context, destination io.Writer, source io.Reader, h
 	}
 }
 
-func verifyExisting(ctx context.Context, root *os.Root, name string, result Result, sourceHash [sha256.Size]byte, limit int64) (Result, error) {
-	existingHash, _, err := stableRootHash(ctx, root, name, nil, "hash existing copy", limit)
+func verifyExisting(ctx context.Context, root *os.Root, name string, result Result, sourceInfo os.FileInfo, sourceHash [sha256.Size]byte, limit int64) (Result, error) {
+	existingHash, existingInfo, err := stableRootHash(ctx, root, name, nil, "hash existing copy", limit)
 	if err != nil {
 		return Result{}, fail(KindCollision, "verify existing copy", result.Path, 0, 0, errors.Join(ErrCollision, err))
 	}
-	if existingHash != sourceHash {
+	if os.SameFile(sourceInfo, existingInfo) || existingHash != sourceHash {
 		return Result{}, fail(KindCollision, "verify existing copy", result.Path, 0, 0, ErrCollision)
 	}
 	result.SHA256 = existingHash

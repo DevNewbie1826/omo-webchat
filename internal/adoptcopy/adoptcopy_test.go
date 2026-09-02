@@ -38,6 +38,17 @@ func TestAdoptPublishesVerifiedCopyAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedInfo, err := os.Stat(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(sourceInfo, publishedInfo) {
+		t.Fatal("published copy is hard-linked to source")
+	}
 	if !bytes.Equal(published, original) {
 		t.Fatal("published bytes differ from source")
 	}
@@ -293,6 +304,103 @@ func TestAdoptRejectsExpectedIDMismatchBeforePublication(t *testing.T) {
 		t.Fatalf("destination stat error = %v, want not exist", statErr)
 	}
 	assertDirectoryEmpty(t, stateDir)
+}
+
+func TestAdoptRejectsPreExistingSourceHardLink(t *testing.T) {
+	source := writeSession(t, header+"\n"+`{"type":"message","id":"root","parentId":null}`+"\n")
+	destination := filepath.Join(t.TempDir(), "adopted")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	publishedPath := filepath.Join(destination, DestinationName("durable-session-1"))
+	if err := os.Link(source, publishedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Adopt(context.Background(), source, destination, "durable-session-1")
+	assertTypedError(t, err, KindCollision, ErrCollision)
+
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedInfo, err := os.Stat(publishedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(sourceInfo, publishedInfo) {
+		t.Fatal("collision destination no longer links to source")
+	}
+}
+
+func TestAdoptRejectsSourceHardLinkWinningPublicationRace(t *testing.T) {
+	source := writeSession(t, header+"\n"+`{"type":"message","id":"root","parentId":null}`+"\n")
+	destination := filepath.Join(t.TempDir(), "adopted")
+	publishedPath := filepath.Join(destination, DestinationName("durable-session-1"))
+	beforePublish := make(chan struct{})
+	hardLinkReady := make(chan struct{})
+	hooks := copyHooks{beforePublish: func() {
+		close(beforePublish)
+		<-hardLinkReady
+	}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := adopt(context.Background(), source, destination, "durable-session-1", hooks)
+		done <- err
+	}()
+	awaitSignal(t, beforePublish)
+	linkErr := os.Link(source, publishedPath)
+	close(hardLinkReady)
+	if linkErr != nil {
+		t.Fatal(linkErr)
+	}
+
+	assertTypedError(t, awaitValue(t, done), KindCollision, ErrCollision)
+	sourceInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishedInfo, err := os.Stat(publishedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(sourceInfo, publishedInfo) {
+		t.Fatal("race winner is no longer linked to source")
+	}
+}
+
+func TestAdoptRejectsSourceHardLinkInsertedBeforePublishedVerification(t *testing.T) {
+	source := writeSession(t, header+"\n"+`{"type":"message","id":"root","parentId":null}`+"\n")
+	destination := filepath.Join(t.TempDir(), "adopted")
+	publishedPath := filepath.Join(destination, DestinationName("durable-session-1"))
+	published := make(chan struct{})
+	hardLinkReady := make(chan struct{})
+	hooks := copyHooks{afterPublish: func() {
+		close(published)
+		<-hardLinkReady
+	}}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := adopt(context.Background(), source, destination, "durable-session-1", hooks)
+		done <- err
+	}()
+	awaitSignal(t, published)
+	replaceErr := os.Remove(publishedPath)
+	if replaceErr == nil {
+		replaceErr = os.Link(source, publishedPath)
+	}
+	close(hardLinkReady)
+	if replaceErr != nil {
+		t.Fatal(replaceErr)
+	}
+
+	assertTypedError(t, awaitValue(t, done), KindCollision, ErrCollision)
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("source changed during collision cleanup: %v", err)
+	}
+	assertDirectoryEmpty(t, destination)
 }
 
 func TestAdoptRejectsDifferentSourceDestinationCollision(t *testing.T) {
