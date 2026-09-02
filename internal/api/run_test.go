@@ -5,13 +5,34 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
+func useMockEnsure(t *testing.T) {
+	t.Helper()
+	daemon := omorpctest.New(t.TempDir())
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	old := ensureDaemon
+	ensureDaemon = func(ctx context.Context, _ omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		client, err := omorpc.Dial(ctx, daemon.SocketPath())
+		if err != nil {
+			return nil, err
+		}
+		return &omorpc.EnsuredDaemon{Client: client}, nil
+	}
+	t.Cleanup(func() { ensureDaemon = old; daemon.Stop() })
+}
+
 func TestRunSignalsReadyAndShutsDown(t *testing.T) {
+	useMockEnsure(t)
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,7 +68,20 @@ func TestRunSignalsReadyAndShutsDown(t *testing.T) {
 	}
 }
 
+func TestRunDaemonFailureIsFatal(t *testing.T) {
+	old := ensureDaemon
+	ensureDaemon = func(context.Context, omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		return nil, errors.New("offline")
+	}
+	t.Cleanup(func() { ensureDaemon = old })
+	err := Run(t.Context(), &config.Config{Root: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	if err == nil || !strings.Contains(err.Error(), "starting required omo daemon") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
 func TestRunReturnsReadyError(t *testing.T) {
+	useMockEnsure(t)
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

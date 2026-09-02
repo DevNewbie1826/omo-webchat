@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DevNewbie1826/omo-webchat/internal/store"
+	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
 const (
@@ -21,7 +21,7 @@ func daemonPaths(stateDir string) (string, string, string, error) {
 	dir := stateDir
 	if dir == "" {
 		var err error
-		dir, err = store.StateDir()
+		dir, err = cursorstore.StateDir()
 		if err != nil {
 			return "", "", "", err
 		}

@@ -37,8 +37,7 @@ type Config struct {
 	ServerVersion string
 	Logger        *slog.Logger
 	WriteTimeout  time.Duration
-	// PrepareChat lazily mirrors v1 workspace/chat metadata into Store. The v2
-	// cursor file remains independently owned and only resume pointers mutate.
+	// PrepareChat validates workspace/chat metadata immediately before attach.
 	PrepareChat func(context.Context, string, string) error
 	// PrepareChatVersion captures a deletion generation atomically with prepare;
 	// ChatVersion must be a lock-free read because validation runs inside the
@@ -96,20 +95,7 @@ func (h *Handler) CloseConnections() {
 	})
 }
 
-// DefaultHandler is the production mount seam while the v1 Server constructor
-// remains byte-compatible. A v2 bootstrap can install a configured endpoint
-// without making the v1 API own v2 lifecycle dependencies.
-type endpointHolder struct {
-	handler http.Handler
-	id      uint64
-}
-
-var (
-	defaultEndpoint atomic.Value // endpointHolder
-	endpointID      atomic.Uint64
-)
-
-// Unavailable returns a diagnostic endpoint for a v2 stack that could not start.
+// Unavailable returns a diagnostic endpoint for tests and explicit diagnostics.
 func Unavailable(reason string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -120,30 +106,6 @@ func Unavailable(reason string) http.Handler {
 		})
 	})
 }
-
-func init() { defaultEndpoint.Store(endpointHolder{handler: Unavailable("startup not completed")}) }
-
-// InstallDefault atomically installs the endpoint used by the API mount and
-// returns an ownership-safe remover for server shutdown.
-func InstallDefault(h http.Handler) func() {
-	if h == nil {
-		return func() {}
-	}
-	id := endpointID.Add(1)
-	defaultEndpoint.Store(endpointHolder{handler: h, id: id})
-	return func() {
-		current := defaultEndpoint.Load().(endpointHolder)
-		if current.id == id {
-			defaultEndpoint.Store(endpointHolder{handler: Unavailable("server stopped")})
-		}
-	}
-}
-
-// InstallUnavailable publishes a diagnostic 503 endpoint.
-func InstallUnavailable(reason string) func() { return InstallDefault(Unavailable(reason)) }
-
-// DefaultHandler returns the currently installed v2 endpoint.
-func DefaultHandler() http.Handler { return defaultEndpoint.Load().(endpointHolder).handler }
 
 func originAllowed(r *http.Request) bool {
 	origins := r.Header.Values("Origin")

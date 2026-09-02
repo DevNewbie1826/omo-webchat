@@ -2,21 +2,14 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/lxzan/gws"
-
-	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
-	"github.com/DevNewbie1826/omo-webchat/internal/store"
+	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
 const chatStopTimeout = 10 * time.Second
@@ -31,139 +24,150 @@ type createChatRequest struct {
 
 func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 	wsID := r.PathValue("wsId")
-	ws, err := s.store.GetWorkspace(wsID)
+	ws, err := s.cursors.GetWorkspace(wsID)
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
 	var req createChatRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if decodeJSON(r, &req) != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	providerID := strings.TrimSpace(req.Provider)
-	available, err := s.agentAvailable(providerID)
-	if err != nil {
+	provider := strings.TrimSpace(req.Provider)
+	if provider != "" && provider != "omo" && provider != "senpi" {
 		writeError(w, http.StatusBadRequest, "provider must be omo")
-		return
-	}
-	if !available {
-		writeError(w, http.StatusServiceUnavailable, "provider CLI is unavailable")
 		return
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		if name, err = s.store.DefaultChatName(r.Context(), &ws); err != nil {
-			name = "chat"
-		}
+		name = s.defaultChatName(ws)
 	}
-	resumeIdentity := strings.TrimSpace(req.ResumeIdentity)
-	if resumeIdentity != "" {
-		var valid bool
-		resumeIdentity, valid = resolveDiskSessionPath(ws.Path, resumeIdentity)
-		if !valid {
+	identity := strings.TrimSpace(req.ResumeIdentity)
+	if identity != "" {
+		var ok bool
+		identity, ok = resolveDiskSessionPath(ws.Path, identity)
+		if !ok {
 			writeError(w, http.StatusBadRequest, "resume identity does not belong to workspace")
 			return
 		}
 	}
-	var c store.Chat
-	if resumeIdentity == "" {
-		c, err = s.store.NewChat(wsID, name, ws.Path, "", providerID)
-	} else {
-		c, err = s.store.NewChatWithResumeIdentity(wsID, name, ws.Path, "", providerID, resumeIdentity)
-	}
+	id, err := newID("chat-")
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, c)
+	c := cursorstore.Chat{ID: id, WorkspaceID: wsID, CWD: ws.Path, SessionFile: identity, Name: name, NameSource: cursorstore.NameSourceAuto, CreatedAt: time.Now().UnixMilli()}
+	if err = s.cursors.SaveChat(c); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, projectChat(c))
+}
+func (s *Server) defaultChatName(ws cursorstore.Workspace) string {
+	base := filepath.Base(filepath.Clean(ws.Path))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "chat"
+	}
+	taken := map[string]bool{}
+	for _, c := range s.cursors.ListChats(ws.ID) {
+		taken[c.Name] = true
+	}
+	for i := 1; i <= 1000; i++ {
+		n := base + "-" + itoa(i)
+		if !taken[n] {
+			return n
+		}
+	}
+	return "chat"
+}
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	b := [20]byte{}
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}
+
+func (s *Server) prepareChatVersion(_ context.Context, wsID, chatID string) (uint64, error) {
+	s.chatLifecycleMu.Lock()
+	defer s.chatLifecycleMu.Unlock()
+	if s.chatDeleting[chatID] {
+		return 0, wsbridge.ErrChatDeleted
+	}
+	c, err := s.cursors.GetChat(chatID)
+	if err != nil || c.WorkspaceID != wsID {
+		return 0, cursorstore.ErrNotFound
+	}
+	return s.chatLifecycleVersion(chatID), nil
+}
+func (s *Server) chatLifecycleVersion(id string) uint64 {
+	if v, ok := s.chatLifecycleGeneration.Load(id); ok {
+		return v.(uint64)
+	}
+	return 0
+}
+func (s *Server) bumpChatLifecycleVersion(id string) {
+	g := s.chatLifecycleVersion(id) + 1
+	s.chatLifecycleGeneration.Store(id, g)
+	s.chatLifecycleGenerationFIFO = append(s.chatLifecycleGenerationFIFO, chatLifecycleGenerationRecord{id, g})
+	for len(s.chatLifecycleGenerationFIFO) > maxChatLifecycleGenerationRecords {
+		old := s.chatLifecycleGenerationFIFO[0]
+		s.chatLifecycleGenerationFIFO = s.chatLifecycleGenerationFIFO[1:]
+		if v, ok := s.chatLifecycleGeneration.Load(old.chatID); ok && v.(uint64) == old.generation {
+			s.chatLifecycleGeneration.Delete(old.chatID)
+		}
+	}
 }
 
 func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
-	wsID := r.PathValue("wsId")
-	chatID := r.PathValue("chatId")
-	if s.beforeChatDelete != nil {
-		s.beforeChatDelete()
-	}
-
-	manager, cursors := s.v2Stack()
-	// Publish a deletion generation before provider I/O. Prepare captures the
-	// prior generation under this lock; bridge publication validates it without
-	// taking the lock from inside the manager flight.
+	wsID, id := r.PathValue("wsId"), r.PathValue("chatId")
 	s.chatLifecycleMu.Lock()
-	_, legacyErr := s.store.GetChat(wsID, chatID)
-	legacyExists := legacyErr == nil
-	cursorExists := false
-	if cursors != nil {
-		if record, err := cursors.GetChat(chatID); err == nil && record.WorkspaceID == wsID {
-			cursorExists = true
-		}
-	}
-	if !legacyExists && !cursorExists {
+	c, err := s.cursors.GetChat(id)
+	if err != nil || c.WorkspaceID != wsID {
 		s.chatLifecycleMu.Unlock()
-		s.writeStoreError(w, legacyErr)
+		s.writeStoreError(w, cursorstore.ErrNotFound)
 		return
 	}
-	if s.chatDeleting[chatID] {
+	if s.chatDeleting[id] {
 		s.chatLifecycleMu.Unlock()
 		writeError(w, http.StatusConflict, "chat deletion is already in progress")
 		return
 	}
-	s.chatDeleting[chatID] = true
-	s.bumpChatLifecycleVersion(chatID)
+	s.chatDeleting[id] = true
+	s.bumpChatLifecycleVersion(id)
 	s.chatLifecycleMu.Unlock()
-
-	// Stop uses a lifecycle-owned deadline: disconnecting the HTTP client must
-	// not turn a still-live provider session into successfully deleted metadata.
-	if manager != nil {
-		stopCtx, cancelStop := newChatStopContext(context.Background(), chatStopTimeout)
-		err := manager.StopContext(stopCtx, chatID)
-		cancelStop()
-		if err != nil {
-			s.chatLifecycleMu.Lock()
-			delete(s.chatDeleting, chatID)
-			s.chatLifecycleMu.Unlock()
-			s.logger.Error("stopping v2 chat for delete", "err", err, "chatId", chatID)
-			writeError(w, http.StatusInternalServerError, "failed to stop chat")
-			return
-		}
+	ctx, cancel := newChatStopContext(context.Background(), chatStopTimeout)
+	if s.manager != nil {
+		err = s.manager.StopContext(ctx, id)
 	}
-	if s.afterV2ChatStop != nil {
-		s.afterV2ChatStop()
+	cancel()
+	if err != nil {
+		s.chatLifecycleMu.Lock()
+		delete(s.chatDeleting, id)
+		s.chatLifecycleMu.Unlock()
+		writeError(w, http.StatusInternalServerError, "failed to stop chat")
+		return
 	}
-
-	// Deletion exclusion remains active through both metadata stores, but no
-	// API lifecycle lock is held across the provider RPC above.
 	s.chatLifecycleMu.Lock()
-	if legacyExists {
-		if _, err := s.store.RemoveChat(wsID, chatID); err != nil {
-			delete(s.chatDeleting, chatID)
-			s.chatLifecycleMu.Unlock()
-			s.writeStoreError(w, err)
-			return
-		}
-	}
-	if cursors != nil {
-		if err := cursors.DeleteChat(chatID); err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
-			delete(s.chatDeleting, chatID)
-			s.chatLifecycleMu.Unlock()
-			s.logger.Error("deleting v2 chat cursor", "err", err, "chatId", chatID)
-			writeError(w, http.StatusInternalServerError, "failed to delete chat cursor")
-			return
-		}
-	}
-	delete(s.chatDeleting, chatID)
+	err = s.cursors.DeleteChat(id)
+	delete(s.chatDeleting, id)
 	s.chatLifecycleMu.Unlock()
-
-	// Legacy provider shutdown stays outside the lifecycle lock. The v1 record
-	// is already absent, so an in-flight open cannot publish its attachment.
-	s.chats.Stop(chatID)
+	if err != nil && !errors.Is(err, cursorstore.ErrNotFound) {
+		s.writeStoreError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
-
 func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 	var req renameRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if decodeJSON(r, &req) != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -172,293 +176,32 @@ func (s *Server) handleRenameChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	wsID := r.PathValue("wsId")
-	chatID := r.PathValue("chatId")
-	manager, cursors := s.v2Stack()
-	s.chatLifecycleMu.Lock()
-	_, legacyErr := s.store.GetChat(wsID, chatID)
-	cursor, cursorErr := cursorstore.Chat{}, cursorstore.ErrNotFound
-	if cursors != nil {
-		cursor, cursorErr = cursors.GetChat(chatID)
-		if cursorErr == nil && cursor.WorkspaceID != wsID {
-			cursorErr = cursorstore.ErrNotFound
-		}
-	}
-	if legacyErr != nil && cursorErr != nil {
-		s.chatLifecycleMu.Unlock()
-		s.writeStoreError(w, legacyErr)
+	id := r.PathValue("chatId")
+	c, err := s.cursors.GetChat(id)
+	if err != nil || c.WorkspaceID != r.PathValue("wsId") {
+		s.writeStoreError(w, cursorstore.ErrNotFound)
 		return
 	}
-	var c store.Chat
-	if legacyErr == nil {
-		c, legacyErr = s.store.UpdateChat(wsID, chatID, func(c *store.Chat) {
-			c.Name = name
-			c.NameSource = "user"
-		})
-		if legacyErr != nil {
-			s.chatLifecycleMu.Unlock()
-			s.writeStoreError(w, legacyErr)
-			return
-		}
-	} else {
-		c = store.Chat{ID: cursor.ID, Name: name, NameSource: "user", WsID: wsID, Cwd: cursor.CWD, Provider: "omo", CreatedAt: cursor.CreatedAt}
+	c.Name, c.NameSource = name, cursorstore.NameSourceUser
+	if err = s.cursors.UpdateChat(c); err != nil {
+		s.writeStoreError(w, err)
+		return
 	}
-	if cursorErr == nil {
-		cursor.Name, cursor.NameSource = name, cursorstore.NameSourceUser
-		if err := cursors.SaveChat(cursor); err != nil {
-			s.chatLifecycleMu.Unlock()
-			s.logger.Error("renaming v2 chat cursor", "err", err, "chatId", chatID)
-			writeError(w, http.StatusInternalServerError, "failed to rename chat cursor")
-			return
-		}
-	}
-	s.chatLifecycleMu.Unlock()
-	// The user owns the title from here on: push it to the live provider
-	// session best-effort so its own name reporting cannot drift the UI.
-	if sess := s.chats.Get(chatID); sess != nil {
-		_ = sess.SetSessionName(name)
-	}
-	if manager != nil {
-		if sess, active := manager.Get(chatID); active {
+	if s.manager != nil {
+		if sess, ok := s.manager.Get(id); ok {
 			_ = sess.SetSessionName(r.Context(), name)
 		}
 	}
-	writeJSON(w, http.StatusOK, c)
+	writeJSON(w, http.StatusOK, projectChat(c))
 }
 
-type connHandler struct {
-	srv       *Server
-	conn      *gws.Conn
-	wsID      string
-	chatID    string
-	session   *chat.Session
-	detach    func()
-	mu        sync.Mutex
-	cancelled atomic.Bool
-	ctx       context.Context
-	cancel    context.CancelFunc
-}
-
-var _ chat.FrameWriterCanceller = (*connHandler)(nil)
-
-func (h *connHandler) WriteJSON(b []byte) error {
-	if h.conn.NetConn() == nil {
-		return nil
-	}
-	if err := h.conn.WriteMessage(gws.OpcodeText, b); err != nil {
-		// Surface oversized-write failures (gws ErrMessageTooLarge above
-		// WriteMaxPayloadSize) and dead-socket writes instead of discarding
-		// them, so a dropped frame is diagnosable rather than a blank screen.
-		h.srv.logger.Warn("ws write failed", "err", err, "bytes", len(b))
-		return err
-	}
-	return nil
-}
-
-// Close cancels an in-flight WriteJSON without waiting for network shutdown.
-// Closing the underlying connection releases the blocked write; the atomic
-// gate keeps concurrent and repeated cancellation calls non-blocking.
-func (h *connHandler) Close() error {
-	if h.cancelled.CompareAndSwap(false, true) {
-		if conn := h.conn.NetConn(); conn != nil {
-			go func() { _ = conn.Close() }()
-		}
-	}
-	return nil
-}
-
-func (h *connHandler) connectionContext() context.Context {
-	if h.ctx != nil {
-		return h.ctx
-	}
-	if h.srv != nil && h.srv.ctx != nil {
-		return h.srv.ctx
-	}
-	return context.Background()
-}
-
-func (h *connHandler) cancelConnection() {
-	if h.cancel != nil {
-		h.cancel()
-	}
-}
-
-func (h *connHandler) snapshot() (string, *chat.Session) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.chatID, h.session
-}
-
-func (h *connHandler) detachSession() (string, func()) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	chatID := h.chatID
-	detach := h.detach
-	h.wsID = ""
-	h.chatID = ""
-	h.session = nil
-	h.detach = nil
-	return chatID, detach
-}
-
-func (h *connHandler) sendError(code, msg string) {
-	h.sendCommandError(code, msg, "", "")
-}
-
-func (h *connHandler) sendCommandError(code, msg, command, requestID string) {
-	chatID, _ := h.snapshot()
-	frame, _ := json.Marshal(chat.ErrorFrame{Type: "error", SessionID: chatID, Code: code, Message: msg, Command: command, RequestID: requestID})
-	_ = h.WriteJSON(frame)
+type providerStatus struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	Binary    string `json:"binary"`
+	Available bool   `json:"available"`
 }
 
 func (s *Server) handleListProviders(w http.ResponseWriter, _ *http.Request) {
-	providers := chat.Providers()
-	statuses := make([]chat.ProviderStatus, 0, len(providers))
-	for _, provider := range providers {
-		binary, _, err := s.resolveAgent(provider.ID)
-		available := false
-		if err == nil {
-			_, err = exec.LookPath(binary)
-			available = err == nil
-		}
-		statuses = append(statuses, chat.ProviderStatus{
-			ID:        provider.ID,
-			Label:     provider.Label,
-			Binary:    binary,
-			Available: available,
-		})
-	}
-	writeJSON(w, http.StatusOK, statuses)
-}
-
-func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) {
-	summaries := s.chats.LiveSummaries()
-	titles := s.liveChatTitles()
-	sessions := make([]liveSessionResponse, 0, len(summaries))
-	seen := make(map[string]bool, len(summaries))
-	for _, summary := range summaries {
-		title := titles[summary.ID]
-		if title == "" {
-			title = summary.Title
-		}
-		sessions = append(sessions, liveSessionFromSummary(summary, title))
-		seen[summary.ID] = true
-	}
-	if manager, _ := s.v2Stack(); manager != nil {
-		for _, summary := range manager.LiveSummaries() {
-			if seen[summary.ChatID] {
-				continue
-			}
-			title := titles[summary.ChatID]
-			if title == "" {
-				title = summary.Title
-			}
-			row := liveSessionResponse{
-				ID: summary.ChatID, Title: title,
-				Task: rawOrNull(summary.ActivityPair.Task), Dag: rawOrNull(summary.ActivityPair.Dag),
-				TaskOversized: summary.TaskOversized, DagOversized: summary.DagOversized,
-			}
-			if summary.TaskDigest != nil {
-				row.TaskDigest = summary.TaskDigest
-			}
-			if summary.DagDigest != nil {
-				row.DagDigest = summary.DagDigest
-			}
-			sessions = append(sessions, row)
-		}
-	}
-	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: sessions})
-}
-
-func (s *Server) agentAvailable(providerID string) (bool, error) {
-	binary, _, err := s.resolveAgent(providerID)
-	if err != nil {
-		return false, err
-	}
-	_, err = exec.LookPath(binary)
-	return err == nil, nil
-}
-
-func (s *Server) resolveAgent(providerID string) (binary string, args []string, err error) {
-	provider, err := chat.ResolveProvider(providerID)
-	if err != nil {
-		return "", nil, err
-	}
-	if v := os.Getenv("CHAT_PI_BINARY"); v != "" {
-		binary = v
-		if a := os.Getenv("CHAT_PI_ARGS"); a != "" {
-			args = strings.Split(a, ",")
-		}
-		return binary, args, nil
-	}
-	return provider.Binary, provider.Args, nil
-}
-
-func (s *Server) routeMessage(h *connHandler, data []byte) {
-	cf, err := chat.ParseClientFrame(data)
-	if err != nil {
-		h.sendError("bad_frame", "invalid json frame")
-		return
-	}
-	if cf.Type == "ping" {
-		pong, _ := json.Marshal(map[string]string{"type": "pong"})
-		_ = h.WriteJSON(pong)
-		return
-	}
-	if cf.Type == "chat.create" {
-		s.handleChatCreate(h, cf.Raw)
-		return
-	}
-	// Every non-create/ping command must target the chat bound to this socket.
-	// Rejecting a mismatched sessionId keeps a stale or misaddressed frame from
-	// aborting, mutating, or querying another chat sharing the manager.
-	if bound, _ := h.snapshot(); cf.SessionID != bound && !(cf.Type == "activity.refresh" && bound == "") {
-		h.sendError("session_mismatch", "frame sessionId does not match this socket's chat")
-		return
-	}
-	switch cf.Type {
-	case "chat.send":
-		s.handleChatSend(h, cf.Raw)
-	case "chat.abort":
-		if _, session := h.snapshot(); session != nil {
-			session.Abort()
-		}
-	case "chat.set":
-		s.handleChatSet(h, cf.Raw, cf.RequestID)
-	case "approval.respond":
-		s.handleApprovalRespond(h, cf.Raw, cf.RequestID)
-	case "chat.commands":
-		if _, session := h.snapshot(); session != nil {
-			_ = session.QueryCommands()
-		}
-	case "chat.compact":
-		s.handleChatCompact(h, cf.RequestID)
-	case "chat.models":
-		if _, session := h.snapshot(); session != nil {
-			_ = session.QueryModels()
-		}
-	case "chat.stats":
-		if _, session := h.snapshot(); session != nil {
-			_ = session.QueryStats()
-		}
-	case "activity.refresh":
-		s.handleActivityRefresh(h)
-	case "chat.resume":
-		s.handleChatResume(h, cf.Raw)
-	case "chat.close":
-		_, detach := h.detachSession()
-		if detach != nil {
-			detach()
-		}
-	case "chat.disconnect":
-		chatID, detach := h.detachSession()
-		if detach != nil {
-			detach()
-		}
-		if chatID != "" {
-			s.chats.Stop(chatID)
-		}
-	default:
-		h.sendError("unknown_type", "unknown frame type: "+cf.Type)
-	}
+	writeJSON(w, http.StatusOK, []providerStatus{{ID: "omo", Label: "Omo", Binary: "omo", Available: true}})
 }

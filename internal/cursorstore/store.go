@@ -56,7 +56,7 @@ type Chat struct {
 	ID               string `json:"id"`
 	WorkspaceID      string `json:"workspaceId"`
 	CWD              string `json:"cwd"`
-	SessionFile      string `json:"sessionFile"`
+	SessionFile      string `json:"sessionFile,omitempty"`
 	DurableSessionID string `json:"durableSessionId,omitempty"`
 	Name             string `json:"name"`
 	// NameSource is "auto" (generated) or "user" (explicitly named).
@@ -196,6 +196,55 @@ func (s *Store) SaveWorkspace(ws Workspace) error {
 	return s.flushLocked(candidate)
 }
 
+// GetWorkspace returns workspace metadata by ID.
+func (s *Store) GetWorkspace(id string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ws := range s.data.Workspaces {
+		if ws.ID == id {
+			return ws, nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
+// UpdateWorkspace replaces existing workspace metadata.
+func (s *Store) UpdateWorkspace(ws Workspace) (Workspace, error) {
+	if ws.ID == "" {
+		return Workspace{}, ErrNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneState(s.data)
+	for i := range candidate.Workspaces {
+		if candidate.Workspaces[i].ID == ws.ID {
+			candidate.Workspaces[i] = ws
+			if err := s.flushLocked(candidate); err != nil {
+				return Workspace{}, err
+			}
+			return ws, nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
+// RenameWorkspace updates only the workspace's display name.
+func (s *Store) RenameWorkspace(id, name string) (Workspace, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneState(s.data)
+	for i := range candidate.Workspaces {
+		if candidate.Workspaces[i].ID == id {
+			candidate.Workspaces[i].Name = name
+			if err := s.flushLocked(candidate); err != nil {
+				return Workspace{}, err
+			}
+			return candidate.Workspaces[i], nil
+		}
+	}
+	return Workspace{}, ErrNotFound
+}
+
 // ListWorkspaces returns a snapshot of all workspace metadata.
 func (s *Store) ListWorkspaces() []Workspace {
 	s.mu.Lock()
@@ -249,6 +298,27 @@ func (s *Store) SaveChat(c Chat) error {
 	if candidate.Chats == nil {
 		candidate.Chats = map[string]Chat{}
 	}
+	candidate.Chats[c.ID] = c
+	return s.flushLocked(candidate)
+}
+
+// UpdateChat replaces an existing chat cursor record.
+func (s *Store) UpdateChat(c Chat) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.data.Chats[c.ID]
+	if !ok {
+		return ErrNotFound
+	}
+	if c.WorkspaceID != current.WorkspaceID || !s.hasWorkspaceLocked(c.WorkspaceID) {
+		return ErrNotFound
+	}
+	switch c.NameSource {
+	case "", NameSourceAuto, NameSourceUser:
+	default:
+		return fmt.Errorf("%w: %q", ErrInvalidNameSource, c.NameSource)
+	}
+	candidate := cloneState(s.data)
 	candidate.Chats[c.ID] = c
 	return s.flushLocked(candidate)
 }

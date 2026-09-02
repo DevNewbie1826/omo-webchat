@@ -155,7 +155,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = ensureExtensionEventsCapability(cfg.Env)
+	cmd.Env = EnsureExtensionEventsCapability(cfg.Env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -370,7 +370,8 @@ func releaseEnsureLock(file *os.File) {
 	_ = file.Close()
 }
 
-func ensureExtensionEventsCapability(env []string) []string {
+// EnsureExtensionEventsCapability adds extension_events exactly once to the daemon environment.
+func EnsureExtensionEventsCapability(env []string) []string {
 	const key = "SENPI_RPC_CLIENT_CAPABILITIES"
 	out := make([]string, 0, len(env)+1)
 	merged := false

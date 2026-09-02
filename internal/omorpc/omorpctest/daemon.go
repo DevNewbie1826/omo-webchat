@@ -60,6 +60,7 @@ type daemonSession struct {
 	durableID string // durable UUID stored in the session file
 	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
 	live      bool   // false after UnloadSession or daemon Stop/Restart
+	history   []any  // durable transcript returned by get_entries
 }
 
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
@@ -343,6 +344,23 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		script = takeScript(d.promptScripts, recPath)
 		hold = d.promptHolds[recPath]
 		rpcID := rec.rpcID // read under mu: handleOpenSession may reassign it concurrently (resume)
+		if message, _ := req["message"].(string); message != "" {
+			rec.history = append(rec.history, map[string]any{"type": "message", "role": "user", "content": message})
+		}
+		for _, event := range script {
+			typ, _ := event["type"].(string)
+			if typ != EventMessage && typ != "message_end" {
+				continue
+			}
+			if message, ok := event["message"].(map[string]any); ok {
+				entry := make(map[string]any, len(message)+1)
+				entry["type"] = "message"
+				for key, value := range message {
+					entry[key] = value
+				}
+				rec.history = append(rec.history, entry)
+			}
+		}
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"accepted": true}))
 		if hold != nil {
@@ -361,11 +379,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		return
 
 	case omorpc.CmdGetEntries:
-		d.write(conn, d.resp(id, cmd, sid, map[string]any{
-			"entries": []any{
-				map[string]any{"type": "message", "role": "user", "content": "hello"},
-			},
-		}))
+		d.mu.Lock()
+		entries := append([]any(nil), rec.history...)
+		d.mu.Unlock()
+		if len(entries) == 0 {
+			entries = []any{map[string]any{"type": "message", "role": "user", "content": "hello"}}
+		}
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries}))
 		return
 
 	case omorpc.CmdGetState:

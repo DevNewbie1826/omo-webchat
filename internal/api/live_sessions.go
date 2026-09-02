@@ -2,8 +2,7 @@ package api
 
 import (
 	"encoding/json"
-
-	"github.com/DevNewbie1826/omo-webchat/internal/chat"
+	"net/http"
 )
 
 type liveSessionResponse struct {
@@ -16,25 +15,6 @@ type liveSessionResponse struct {
 	TaskDigest    any             `json:"task_digest,omitempty"`
 	DagDigest     any             `json:"dag_digest,omitempty"`
 }
-
-func liveSessionFromSummary(summary chat.LiveSummary, title string) liveSessionResponse {
-	row := liveSessionResponse{
-		ID:            summary.ID,
-		Title:         title,
-		Task:          rawOrNull(summary.Pair.Task),
-		Dag:           rawOrNull(summary.Pair.Dag),
-		TaskOversized: summary.TaskOversized,
-		DagOversized:  summary.DagOversized,
-	}
-	if summary.TaskDigest != nil {
-		row.TaskDigest = summary.TaskDigest
-	}
-	if summary.DagDigest != nil {
-		row.DagDigest = summary.DagDigest
-	}
-	return row
-}
-
 type liveSessionsResponse struct {
 	Sessions []liveSessionResponse `json:"sessions"`
 }
@@ -45,23 +25,36 @@ func rawOrNull(data json.RawMessage) json.RawMessage {
 	}
 	return data
 }
-
 func (s *Server) liveChatTitles() map[string]string {
-	titles := make(map[string]string)
-	if _, cursors := s.v2Stack(); cursors != nil {
-		for _, ws := range cursors.ListWorkspaces() {
-			for _, c := range cursors.ListChats(ws.ID) {
-				titles[c.ID] = c.Name
-			}
+	out := map[string]string{}
+	for _, ws := range s.cursors.ListWorkspaces() {
+		for _, c := range s.cursors.ListChats(ws.ID) {
+			out[c.ID] = c.Name
 		}
 	}
-	if s.store != nil {
-		for _, ws := range s.store.ListWorkspaces() {
-			for _, c := range ws.Chats {
-				// Legacy metadata remains authoritative for overlapping IDs.
-				titles[c.ID] = c.Name
-			}
-		}
+	return out
+}
+func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) {
+	titles := s.liveChatTitles()
+	if s.manager == nil {
+		writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: []liveSessionResponse{}})
+		return
 	}
-	return titles
+	summaries := s.manager.LiveSummaries()
+	rows := make([]liveSessionResponse, 0, len(summaries))
+	for _, x := range summaries {
+		title := titles[x.ChatID]
+		if title == "" {
+			title = x.Title
+		}
+		row := liveSessionResponse{ID: x.ChatID, Title: title, Task: rawOrNull(x.ActivityPair.Task), Dag: rawOrNull(x.ActivityPair.Dag), TaskOversized: x.TaskOversized, DagOversized: x.DagOversized}
+		if x.TaskDigest != nil {
+			row.TaskDigest = x.TaskDigest
+		}
+		if x.DagDigest != nil {
+			row.DagDigest = x.DagDigest
+		}
+		rows = append(rows, row)
+	}
+	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: rows})
 }

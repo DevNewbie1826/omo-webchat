@@ -14,9 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DevNewbie1826/omo-webchat/internal/chat"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
-	"github.com/DevNewbie1826/omo-webchat/internal/store"
+	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
 const (
@@ -178,7 +177,7 @@ func readSessionName(path string) string {
 			if name != "" {
 				return name
 			}
-			return chat.DeriveSessionTitle(firstUserText)
+			return deriveSessionTitle(firstUserText)
 		}
 	}
 }
@@ -239,68 +238,7 @@ func readJSONLLine(r *bufio.Reader) ([]byte, bool, error) {
 	}
 }
 
-// findSessionBranchesByName scans the workspace's per-cwd session directory
-// for in-file branch sessions whose name exactly matches chatName: Omo records
-// branch sessions as session_info lines inside another session's JSONL instead
-// of standalone files, so name is the only join key once the stored path is
-// dangling. Bounded by design: at most sessionBranchScanMaxFiles files are
-// opened, at most sessionBranchScanMaxCandidates candidates are returned, and
-// lines over sessionHistoryMaxJSONLLine are skipped unparsed. A cheap
-// bytes.Contains prefilter avoids unmarshaling non-session_info records.
-func findSessionBranchesByName(cwd, chatName string) []chat.SessionBranchCandidate {
-	if cwd == "" || chatName == "" {
-		return nil
-	}
-	dir := filepath.Join(codingAgentDir(), "sessions", sessionDirNameForCwd(cwd))
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var candidates []chat.SessionBranchCandidate
-	files := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
-			continue
-		}
-		if files >= sessionBranchScanMaxFiles || len(candidates) >= sessionBranchScanMaxCandidates {
-			break
-		}
-		files++
-		path := filepath.Join(dir, entry.Name())
-		f, err := os.Open(path)
-		if err != nil {
-			continue
-		}
-		reader := bufio.NewReader(f)
-		for len(candidates) < sessionBranchScanMaxCandidates {
-			line, tooLong, lineErr := readJSONLLine(reader)
-			if !tooLong && len(line) > 0 && bytes.Contains(line, []byte("session_info")) {
-				var rec struct {
-					Type     string `json:"type"`
-					ID       string `json:"id"`
-					ParentID string `json:"parentId"`
-					Name     string `json:"name"`
-				}
-				if json.Unmarshal(line, &rec) == nil && rec.Type == "session_info" && rec.Name == chatName {
-					candidates = append(candidates, chat.SessionBranchCandidate{
-						ID:       rec.ID,
-						ParentID: rec.ParentID,
-						Name:     rec.Name,
-						HostPath: path,
-					})
-				}
-			}
-			if lineErr != nil {
-				break
-			}
-		}
-		f.Close()
-		if len(candidates) >= sessionBranchScanMaxCandidates {
-			break
-		}
-	}
-	return candidates
-}
+func deriveSessionTitle(prompt string) string { return session.DeriveSessionTitle(prompt) }
 
 func populateSessionHistoryNames(items []sessionHistoryItem) {
 	for i := range items {
@@ -310,8 +248,11 @@ func populateSessionHistoryNames(items []sessionHistoryItem) {
 	}
 }
 
-func sessionMatchesChat(sess diskSession, chat store.Chat) bool {
-	id := strings.TrimSpace(chat.PiSessionID)
+func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
+	id := strings.TrimSpace(chat.SessionFile)
+	if id == "" {
+		id = strings.TrimSpace(chat.DurableSessionID)
+	}
 	if id == "" {
 		return false
 	}
@@ -328,14 +269,14 @@ func sessionMatchesChat(sess diskSession, chat store.Chat) bool {
 // chatRecencyMs is the recency key for a stored chat in MRU orderings: the
 // last-used stamp when the record carries one, else creation time for legacy
 // rows that never recorded a use.
-func chatRecencyMs(ch store.Chat) int64 {
+func chatRecencyMs(ch cursorstore.Chat) int64 {
 	if ch.LastUsedAt > 0 {
 		return ch.LastUsedAt
 	}
 	return ch.CreatedAt
 }
 
-func mergeSessionHistory(chats []store.Chat, disk []diskSession) []sessionHistoryItem {
+func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
 	matched := make([]bool, len(disk))
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	for _, ch := range chats {
@@ -353,7 +294,7 @@ func mergeSessionHistory(chats []store.Chat, disk []diskSession) []sessionHistor
 			RecencyMs: chatRecencyMs(ch),
 			// A cheap Stat per stored row: flags identities whose session file
 			// vanished. Never a branch scan — that is recovery-time work.
-			Dangling: chat.StoredIdentityDangling(ch.PiSessionID),
+			Dangling: storedIdentityDangling(ch.SessionFile),
 		})
 	}
 	for i, sess := range disk {
@@ -458,34 +399,16 @@ func parseSessionHistoryLimit(raw string) (int, error) {
 	return n, nil
 }
 
-func unionWorkspaceChats(stored []store.Chat, cursors []cursorstore.Chat) []store.Chat {
-	out := append([]store.Chat(nil), stored...)
-	seen := make(map[string]struct{}, len(stored))
-	for _, chat := range stored {
-		seen[chat.ID] = struct{}{}
+func storedIdentityDangling(path string) bool {
+	if path == "" || !filepath.IsAbs(path) {
+		return false
 	}
-	for _, cursor := range cursors {
-		if _, exists := seen[cursor.ID]; exists {
-			// Legacy rows keep discovery-aware names and therefore win all ID
-			// conflicts; cursor names are used only for cursor-only sessions.
-			continue
-		}
-		identity := cursor.SessionFile
-		if identity == "" {
-			identity = cursor.DurableSessionID
-		}
-		out = append(out, store.Chat{
-			ID: cursor.ID, Name: cursor.Name, NameSource: cursor.NameSource,
-			PiSessionID: identity, WsID: cursor.WorkspaceID, Cwd: cursor.CWD,
-			CreatedAt: cursor.CreatedAt, LastUsedAt: cursor.LastUsedAt,
-		})
-		seen[cursor.ID] = struct{}{}
-	}
-	return out
+	_, err := os.Stat(path)
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
-	ws, err := s.store.GetWorkspace(r.PathValue("wsId"))
+	ws, err := s.cursors.GetWorkspace(r.PathValue("wsId"))
 	if err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -495,10 +418,7 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid limit")
 		return
 	}
-	chats := ws.Chats
-	if _, cursors := s.v2Stack(); cursors != nil {
-		chats = unionWorkspaceChats(chats, cursors.ListChats(ws.ID))
-	}
+	chats := s.cursors.ListChats(ws.ID)
 	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
