@@ -262,6 +262,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if existing != nil && !existing.Resumable() {
 		detach, err := existing.attachChecked(sub)
 		if err == nil {
+			if existing.sessionFile != "" {
+				existing.hydrateEntries(ctx, existing.sessionFile)
+			}
 			if initialize != nil {
 				initialize(existing, false, detach)
 			}
@@ -370,7 +373,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID(), Resumed: resumed})
 		s.lifecycleMu.Unlock()
 		if resumed {
-			s.loadEntries(ctx, "")
+			s.hydrateEntries(ctx, cur.SessionFile)
 		}
 		if initialize != nil {
 			initialize(s, true, detach)
@@ -454,7 +457,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		existing.retireReplaced()
 	}
 	if resumed {
-		s.loadEntries(ctx, "")
+		s.hydrateEntries(ctx, cur.SessionFile)
 	}
 	if initialize != nil {
 		initialize(s, true, detach)

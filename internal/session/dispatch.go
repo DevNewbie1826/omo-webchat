@@ -247,18 +247,7 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 
 func (s *Session) deliverStreamedEntriesLocked(raw map[string]any) {
 	entries, leaf, final := decodeEntries(raw)
-	pages := chunkEntries(entries)
-	if len(pages) == 0 {
-		pages = [][]json.RawMessage{{}}
-	}
-	for i, page := range pages {
-		pageFinal := final && i == len(pages)-1
-		pageLeaf := ""
-		if pageFinal {
-			pageLeaf = leaf
-		}
-		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: pageLeaf, Final: pageFinal}})
-	}
+	s.publishEntriesPageLocked(entries, leaf, final)
 }
 
 func messageDeltaPayload(raw map[string]any) map[string]any {

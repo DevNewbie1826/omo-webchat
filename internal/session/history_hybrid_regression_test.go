@@ -133,8 +133,12 @@ func TestHistoryHybridLargeResumeHydratesWithoutKillingEpoch(t *testing.T) {
 	if got := d.CloseCount(); got != 0 {
 		t.Fatalf("history failure closed %d provider sessions", got)
 	}
-	if got := awaitHistoryLeaf(t, largeSub, leafID, 2*time.Second); got != entryCount {
+	if got := awaitHistoryLeaf(t, largeSub, leafID, testTimeout); got != entryCount {
 		t.Fatalf("hydrated entries = %d, want %d", got, entryCount)
+	}
+	_, historyErr := largeSub.awaitError(t, "provider_timeout")
+	if info := historyErr.Data.(ErrorInfo); !strings.Contains(info.Message, "history load failed") {
+		t.Fatalf("history deadline error = %+v", info)
 	}
 }
 

@@ -930,7 +930,7 @@ func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 		// History flows after every resume.
 		_, entries := sub.await(t, FrameEntries)
 		data, _ := entries.Data.(EntriesFrame)
-		if !data.Final || len(data.Entries) == 0 {
+		if !data.Final || (cycle > 1 && len(data.Entries) == 0) {
 			t.Fatalf("cycle %d: resumed history broken: %+v", cycle, data)
 		}
 		// And the session is usable each time.

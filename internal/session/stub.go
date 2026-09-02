@@ -25,11 +25,12 @@ var (
 )
 
 const (
-	DefaultQueueSize    = 64
-	DefaultIdleAfter    = 30 * time.Minute
-	DefaultRetryAttempt = 3
-	DefaultRetryBackoff = 500 * time.Millisecond
-	DefaultCloseTimeout = 5 * time.Second
+	DefaultQueueSize      = 64
+	DefaultIdleAfter      = 30 * time.Minute
+	DefaultRetryAttempt   = 3
+	DefaultRetryBackoff   = 500 * time.Millisecond
+	DefaultCloseTimeout   = 5 * time.Second
+	DefaultHistoryTimeout = 2 * time.Minute
 	// DefaultDetachedOpenLimit bounds RPC correlations and cleanup goroutines
 	// retained by cancelled open_session calls across all chat IDs.
 	DefaultDetachedOpenLimit = 32

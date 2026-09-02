@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -786,26 +787,67 @@ func chunkEntries(arr []json.RawMessage) [][]json.RawMessage {
 	flush()
 	return pages
 }
-func (s *Session) publishEntriesLocked(entries []json.RawMessage, leaf string) {
+func (s *Session) publishEntriesPageLocked(entries []json.RawMessage, leaf string, final bool) {
 	pages := chunkEntries(entries)
 	if len(pages) == 0 {
 		pages = [][]json.RawMessage{{}}
 	}
 	for i, page := range pages {
-		final := i == len(pages)-1
-		leafID := ""
-		if final {
-			leafID = leaf
+		pageFinal := final && i == len(pages)-1
+		pageLeaf := ""
+		if pageFinal {
+			pageLeaf = leaf
 		}
-		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: leafID, Final: final}})
+		s.publishLocked(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: page, LeafID: pageLeaf, Final: pageFinal}})
 	}
 }
 
-// LoadEntries streams entries after since through the regular bounded
-// subscriber path. Since is omitted on the wire when empty.
-func (s *Session) LoadEntries(ctx context.Context, since string) { s.loadEntries(ctx, since) }
+// LoadEntries performs a bounded incremental refresh. An empty cursor is
+// deliberately ignored: chat acquisition must never request a full transcript.
+func (s *Session) LoadEntries(ctx context.Context, since string) {
+	if since != "" {
+		s.loadEntries(ctx, since)
+	}
+}
+
+// hydrateEntries serves the active branch from the durable JSONL file, then
+// asks the live route only for entries newer than the disk leaf. Local I/O has
+// the long history budget; the caller bounds the incremental RPC. Failures are
+// visible without changing epoch state.
+func (s *Session) hydrateEntries(ctx context.Context, sessionPath string) {
+	// Disk hydration is isolated from the short acquisition caller budget. The
+	// bridge supplies the longer load budget to the incremental RPC below,
+	// while manager shutdown remains authoritative for local I/O.
+	diskCtx, cancelDisk := context.WithTimeout(s.manager.shutdownCtx, DefaultHistoryTimeout)
+	defer cancelDisk()
+	metadata, err := coldhistory.Stream(diskCtx, sessionPath, coldhistory.Options{
+		PageEntries: entriesPageMaxCount,
+	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		if s.closed || s.resumable {
+			return ErrSessionResumable
+		}
+		leaf := ""
+		if page.Final {
+			leaf = metadata.LeafID
+		}
+		s.publishEntriesPageLocked(page.Entries, leaf, page.Final)
+		return nil
+	})
+	if err != nil {
+		s.publishHistoryError(err)
+		return
+	}
+	if metadata.LeafID != "" {
+		s.loadEntries(ctx, metadata.LeafID)
+	}
+}
 
 func (s *Session) loadEntries(ctx context.Context, since string) {
+	if since == "" {
+		return
+	}
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
@@ -814,6 +856,8 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route, Since: since})
 	if err != nil {
+		s.noteTransportError(err)
+		s.publishHistoryError(err)
 		return
 	}
 	var wire struct {
@@ -821,6 +865,7 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 		LeafID  string            `json:"leafId"`
 	}
 	if !json.Valid(resp.Data) {
+		s.publishHistoryError(errors.New("invalid get_entries response"))
 		return
 	}
 	// A valid response with malformed fields still terminates history loading;
@@ -828,9 +873,22 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 	_ = json.Unmarshal(resp.Data, &wire)
 	s.lifecycleMu.Lock()
 	if !s.closed && !s.resumable {
-		s.publishEntriesLocked(wire.Entries, wire.LeafID)
+		s.publishEntriesPageLocked(wire.Entries, wire.LeafID, true)
 	}
 	s.lifecycleMu.Unlock()
+}
+
+func (s *Session) publishHistoryError(err error) {
+	if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
+		return
+	}
+	code := "decode_failed"
+	if errors.Is(err, context.DeadlineExceeded) {
+		code = "provider_timeout"
+	} else if errors.Is(err, omorpc.ErrDisconnected) {
+		code = "provider_error"
+	}
+	s.publishError(ErrorInfo{Code: code, Message: "history load failed: " + err.Error()})
 }
 
 func extensionFrameData(name string, data json.RawMessage, oversized bool) map[string]any {

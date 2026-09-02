@@ -61,6 +61,7 @@ type daemonSession struct {
 	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
 	live      bool   // false after UnloadSession or daemon Stop/Restart
 	history   []any  // durable transcript returned by get_entries
+	leafID    string
 }
 
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
@@ -358,7 +359,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		hold = d.promptHolds[recPath]
 		rpcID := rec.rpcID // read under mu: handleOpenSession may reassign it concurrently (resume)
 		if message, _ := req["message"].(string); message != "" {
-			rec.history = append(rec.history, map[string]any{"type": "message", "role": "user", "content": message})
+			d.appendHistoryEntryLocked(rec, map[string]any{"role": "user", "content": message})
 		}
 		for _, event := range script {
 			typ, _ := event["type"].(string)
@@ -371,7 +372,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 				for key, value := range message {
 					entry[key] = value
 				}
-				rec.history = append(rec.history, entry)
+				d.appendHistoryEntryLocked(rec, entry)
 			}
 		}
 		d.mu.Unlock()
@@ -394,11 +395,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetEntries:
 		d.mu.Lock()
 		entries := append([]any(nil), rec.history...)
+		leafID := rec.leafID
 		d.mu.Unlock()
-		if len(entries) == 0 {
-			entries = []any{map[string]any{"type": "message", "role": "user", "content": "hello"}}
+		since, _ := req["since"].(string)
+		if since != "" {
+			entries = entriesAfter(entries, since)
 		}
-		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries}))
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries, "leafId": leafID}))
 		return
 
 	case omorpc.CmdGetState:
@@ -473,6 +476,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		path = filepath.Join(d.sessionsDn, durable+".jsonl")
 		rec = &daemonSession{path: path, durableID: durable}
 		d.registry[path] = rec
+		_ = writeSessionHeader(rec)
 	}
 	d.rpcCounter++
 	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
@@ -498,6 +502,54 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 func durableForPath(path string) string {
 	sum := sha256.Sum256([]byte(path))
 	return "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+}
+
+func writeSessionHeader(rec *daemonSession) error {
+	if err := os.MkdirAll(filepath.Dir(rec.path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.Create(rec.path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return json.NewEncoder(file).Encode(map[string]any{
+		"type": "session", "version": 3, "id": rec.durableID,
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "cwd": filepath.Dir(rec.path),
+	})
+}
+
+// appendHistoryEntryLocked updates the mock's RPC transcript and its durable
+// JSONL file together. Callers hold d.mu.
+func (d *Daemon) appendHistoryEntryLocked(rec *daemonSession, payload map[string]any) {
+	id := fmt.Sprintf("entry-%d", len(rec.history)+1)
+	var parent any
+	if rec.leafID != "" {
+		parent = rec.leafID
+	}
+	entry := map[string]any{"type": "message", "id": id, "parentId": parent}
+	for key, value := range payload {
+		if key != "type" && key != "id" && key != "parentId" {
+			entry[key] = value
+		}
+	}
+	rec.history = append(rec.history, entry)
+	rec.leafID = id
+	file, err := os.OpenFile(rec.path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		_ = json.NewEncoder(file).Encode(entry)
+		_ = file.Close()
+	}
+}
+
+func entriesAfter(entries []any, since string) []any {
+	for i, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		if id, _ := entry["id"].(string); id == since {
+			return entries[i+1:]
+		}
+	}
+	return []any{}
 }
 
 func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {

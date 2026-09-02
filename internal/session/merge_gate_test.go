@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -985,12 +986,13 @@ func TestMergeGateLoadEntriesSendsSinceCursor(t *testing.T) {
 	}
 }
 
-func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
+func TestMergeGateMalformedIncrementalHistoryStillPublishesTerminalFrame(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
-	chat := testChat{id: "history", cwd: t.TempDir()}
-	cur := Cursor{SessionFile: "/tmp/history.jsonl"}
+	path, leafID := writeHistorySession(t, 1, 0)
+	chat := testChat{id: "history", cwd: filepath.Dir(path)}
+	cur := Cursor{SessionFile: path}
 	_ = store.SaveCursor(context.Background(), chat.id, cur)
 	mgr := testManager(t, client, store, 64)
 	release := d.BlockHandler(omorpc.CmdGetEntries)
@@ -1001,10 +1003,18 @@ func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
 		result <- err
 	}()
 	if !d.AwaitRequestCount(omorpc.CmdGetEntries, 1, testTimeout) {
-		t.Fatal("get_entries absent")
+		t.Fatal("incremental get_entries absent")
 	}
-	id, _ := d.LastRequest(omorpc.CmdGetEntries)["id"].(string)
-	sid, _ := d.LastRequest(omorpc.CmdGetEntries)["sessionId"].(string)
+	request := d.LastRequest(omorpc.CmdGetEntries)
+	if request["since"] != leafID {
+		t.Fatalf("incremental cursor = %v, want %q", request["since"], leafID)
+	}
+	_, cold := sub.await(t, FrameEntries)
+	if entries := cold.Data.(EntriesFrame); !entries.Final || entries.LeafID != leafID {
+		t.Fatalf("cold history terminal = %+v", entries)
+	}
+	id, _ := request["id"].(string)
+	sid, _ := request["sessionId"].(string)
 	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[{"x":1}],"leafId":123}}`+"\n", id, sid)))
 	select {
 	case err := <-result:
@@ -1012,13 +1022,13 @@ func TestMergeGateMalformedHistoryStillPublishesTerminalFrame(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(testTimeout):
-		t.Fatal("Acquire blocked on malformed history")
+		t.Fatal("Acquire blocked on malformed incremental history")
 	}
 	release()
 	_, frame := sub.await(t, FrameEntries)
 	entries := frame.Data.(EntriesFrame)
 	if !entries.Final || len(entries.Entries) != 1 || entries.LeafID != "" {
-		t.Fatalf("terminal malformed history frame: %+v", entries)
+		t.Fatalf("terminal malformed incremental history frame: %+v", entries)
 	}
 }
 
