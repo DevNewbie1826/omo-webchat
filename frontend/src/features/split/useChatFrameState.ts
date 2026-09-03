@@ -126,12 +126,24 @@ export function useChatFrameState() {
   const externalRecoveryPendingRef = useRef(false);
   const externalRecoveryReadyRef = useRef(false);
   const externalRecoveryHistoryRef = useRef(false);
+  const replayGenerationRef = useRef(0);
+  const connectionGenerationRef = useRef(0);
+  const replayQueueRef = useRef<Array<{
+    readonly generation: number;
+    readonly connectionGeneration: number;
+    ready: boolean;
+    terminal: boolean;
+  }>>([]);
+  const resyncGenerationRef = useRef<number | null>(null);
+  const resyncPendingRef = useRef(false);
+  const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const awaitingReconnectHistoryRef = useRef(false);
   const messageVersionRef = useRef(0);
   const snapshotVersionRef = useRef(0);
+  const snapshotMessagesRef = useRef<readonly UiMessage[]>([]);
   const toolCallsRef = useRef<Readonly<Record<string, ToolEntry>>>({});
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
@@ -195,12 +207,81 @@ export function useChatFrameState() {
     setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
   };
 
+  const beginReplay = (connectionGeneration: number): number => {
+    const generation = ++replayGenerationRef.current;
+    replayQueueRef.current.push({ generation, connectionGeneration, ready: false, terminal: false });
+    return generation;
+  };
+  const claimReadyGeneration = (connectionGeneration: number): number => {
+    const replay = replayQueueRef.current.find((candidate) =>
+      candidate.connectionGeneration === connectionGeneration && !candidate.ready);
+    if (!replay) return connectionGeneration;
+    replay.ready = true;
+    replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
+    return replay.generation;
+  };
+  const claimHistoryGeneration = (connectionGeneration: number, terminal: boolean): number => {
+    const replay = replayQueueRef.current.find((candidate) =>
+      candidate.connectionGeneration === connectionGeneration && !candidate.terminal);
+    if (!replay) return connectionGeneration;
+    if (terminal) {
+      replay.terminal = true;
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
+    }
+    return replay.generation;
+  };
+
+  // Manual re-sync follows the same hydration lifecycle as attach. Its
+  // generation remains active through terminal history even when ready has
+  // already released the action's own busy marker, fencing older page streams
+  // away from the reset buffer.
+  const beginResync = (): void => {
+    const generation = beginReplay(connectionGenerationRef.current);
+    resyncGenerationRef.current = generation;
+    resyncPendingRef.current = true;
+    snapshotVersionRef.current = messageVersionRef.current;
+    snapshotMessagesRef.current = messagesRef.current;
+    historyLoadedRef.current = false;
+    pageBuffer.reset();
+    setHistoryStatus("loading");
+    setError("");
+    setResyncBusy(true);
+  };
+  const endResync = (generation: number, terminal = false): void => {
+    if (resyncGenerationRef.current !== generation) return;
+    if (resyncPendingRef.current) {
+      resyncPendingRef.current = false;
+      setResyncBusy(false);
+    }
+    if (terminal) resyncGenerationRef.current = null;
+  };
+  const failResync = (): void => {
+    const generation = resyncGenerationRef.current;
+    if (generation !== null) {
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) => candidate.generation !== generation);
+    }
+    resyncGenerationRef.current = null;
+    resyncPendingRef.current = false;
+    setResyncBusy(false);
+    setHistoryStatus((current) => current === "loading" ? "failed" : current);
+  };
+
   const armHistoryStall = (refresh: boolean): void => {
     if (historyStatus !== "loading") return;
     if (historyStallTimerRef.current !== null && !refresh) return;
     if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
+    const connectionGeneration = connectionGenerationRef.current;
     historyStallTimerRef.current = window.setTimeout(() => {
       historyStallTimerRef.current = null;
+      const stalled = replayQueueRef.current.filter((candidate) =>
+        candidate.connectionGeneration === connectionGeneration);
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
+        candidate.connectionGeneration !== connectionGeneration);
+      if (stalled.some((candidate) => candidate.generation === resyncGenerationRef.current)) {
+        resyncGenerationRef.current = null;
+        resyncPendingRef.current = false;
+        setResyncBusy(false);
+      }
       setHistoryStatus((current) => current === "loading" ? "failed" : current);
     }, HISTORY_STALL_MS);
   };
@@ -218,6 +299,10 @@ export function useChatFrameState() {
     awaitingReconnectHistoryRef,
     messageVersionRef,
     snapshotVersionRef,
+    snapshotMessagesRef,
+    resyncGenerationRef,
+    claimReadyGeneration,
+    claimHistoryGeneration,
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
@@ -229,6 +314,7 @@ export function useChatFrameState() {
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
     externalRecoveryHistoryRef,
+    endResync,
     replaceMessages,
     replaceToolCalls,
     applyActivities,
@@ -331,16 +417,43 @@ export function useChatFrameState() {
     return sent;
   };
 
-  const markOpen = (): void => {
+  const markOpen = (): number => {
+    const connectionGeneration = ++replayGenerationRef.current;
+    connectionGenerationRef.current = connectionGeneration;
+    replayQueueRef.current.push({
+      generation: connectionGeneration,
+      connectionGeneration,
+      ready: false,
+      terminal: false,
+    });
     snapshotVersionRef.current = messageVersionRef.current;
+    snapshotMessagesRef.current = messagesRef.current;
     awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null;
+    historyLoadedRef.current = false;
+    setHistoryStatus("loading");
     setConnected(true);
     pageBuffer.reset();
+    return connectionGeneration;
   };
   const markClose = (): void => {
     ledger.failAll();
+    if (historyStallTimerRef.current !== null) {
+      window.clearTimeout(historyStallTimerRef.current);
+      historyStallTimerRef.current = null;
+    }
     uncertainRunRef.current = chatState.uncertainRun(activeRunRef.current, pendingRef.current);
     awaitingReconnectHistoryRef.current = false;
+    const closedGeneration = connectionGenerationRef.current;
+    const closedReplays = replayQueueRef.current.filter((candidate) =>
+      candidate.connectionGeneration === closedGeneration);
+    replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
+      candidate.connectionGeneration !== closedGeneration);
+    if (closedReplays.some((candidate) => candidate.generation === resyncGenerationRef.current)) {
+      resyncGenerationRef.current = null;
+      resyncPendingRef.current = false;
+      setResyncBusy(false);
+    }
+    setHistoryStatus((current) => current === "loading" ? "failed" : current);
     setConnected(false);
   };
 
@@ -413,6 +526,11 @@ export function useChatFrameState() {
     reportError: setError,
     beginExternalWriteRecovery,
     failExternalWriteRecovery,
+    beginResync,
+    endResync,
+    failResync,
+    resyncBusy,
+    resyncDisabled: resyncBusy || historyStatus === "loading" || !connected,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

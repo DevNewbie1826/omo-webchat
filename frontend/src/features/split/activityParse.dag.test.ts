@@ -113,6 +113,22 @@ describe("parseDagActivity", () => {
     });
   });
 
+  it("normalizes a valid offset-bearing RFC3339 timestamp", () => {
+    expect(parseDagActivity({
+      runId: "r1",
+      nodeId: "n1",
+      at: "2026-08-19T10:05:00.123+02:30",
+    })?.at).toBe("2026-08-19T07:35:00.123Z");
+  });
+
+  it.each([
+    ["timezone-less", "2026-08-19T10:05:00.000"],
+    ["malformed", "2026-08-19 10:05:00.000Z"],
+    ["invalid calendar date", "2026-02-30T10:05:00.000Z"],
+  ])("rejects a %s timestamp", (_case, at) => {
+    expect(parseDagActivity({ runId: "r1", nodeId: "n1", at })).toBeNull();
+  });
+
   it("returns null when required camelCase ids or at are missing", () => {
     expect(parseDagActivity({ nodeId: "n1", at: "2026-08-19T10:00:00.000Z" })).toBeNull();
     expect(parseDagActivity({ runId: "r1", at: "2026-08-19T10:00:00.000Z" })).toBeNull();

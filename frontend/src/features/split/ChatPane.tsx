@@ -117,6 +117,34 @@ export function ChatPane({
         )}
         <button
           type="button"
+          className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
+          title={t("chat.resync")}
+          aria-label={t("chat.resync")}
+          aria-busy={chat.resyncBusy}
+          disabled={chat.resyncDisabled || chat.running || chat.isCompacting}
+          onClick={() => chat.resync()}
+        >
+          <svg
+            className="th-chat-resync-icon"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path d="M20 11a8 8 0 0 0-14.9-4M4 4v5h5M4 13a8 8 0 0 0 14.9 4M20 20v-5h-5" />
+          </svg>
+          <span className="th-chat-resync-label">
+            {chat.resyncBusy ? t("chat.resyncBusy") : t("chat.resync")}
+          </span>
+        </button>
+        <button
+          type="button"
           className="th-btn-icon th-btn-icon--danger th-disconnect-btn"
           title={t("chat.disconnect")}
           aria-label={t("chat.disconnect")}

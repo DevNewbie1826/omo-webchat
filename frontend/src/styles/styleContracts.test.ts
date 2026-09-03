@@ -295,8 +295,9 @@ describe("visual accessibility contracts", () => {
     expect(allStyles).not.toContain("th-pulse");
   });
 
-  it("keeps provider identity visible and complete at narrow widths", () => {
-    expect(chatPane).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
+  it("keeps provider identity visible outside the compact chat header", () => {
+    const regularChatPane = chatPane.slice(0, chatPane.indexOf("@container"));
+    expect(regularChatPane).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
     expect(newChat).toMatch(/\.th-provider-card-name\s*\{[^}]*white-space:\s*normal/);
     expect(newChat).not.toMatch(/\.th-provider-card-name\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
@@ -324,18 +325,137 @@ describe("visual accessibility contracts", () => {
     expect(mobileRules).toMatch(/\.th-files-dl\s*\{[^}]*opacity:\s*1/);
   });
 
-  it("shows the current model (truncated) with a 44px hitbox on narrow panes", () => {
-    // Wide (outside any container query): the settings icon is hidden, so the
-    // model name + chevron show as today. Anchor before the first @container so
-    // a display:none that leaks into the narrow block cannot satisfy this.
+  it("switches model/provider prose at the 600px expanded boundary while retaining Files", () => {
+    // Above the actual narrow/expanded breakpoint, provider and model prose use
+    // their base display and the settings icon stays hidden.
     const wide = chatPane.slice(0, chatPane.indexOf("@container"));
     expect(wide).toMatch(/\.th-model-picker-icon\s*\{[^}]*display:\s*none/);
-    // Narrow: the icon stays, the model name shows truncated (capped width), and
-    // the button keeps a 44x44 touch target (the 44px header does not stretch it).
+    expect(wide).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
+    expect(wide).not.toMatch(/\.th-model-picker-label\s*\{[^}]*display:\s*none/);
+
+    // At and below 600px, prose yields to the icon-only model control. This is
+    // the same boundary that introduces all other narrow header treatment, so
+    // widths from 341px through 600px cannot fall back to the overflowing form.
+    const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+    );
+    expect(compact).toMatch(/\.th-chat-pane \.th-model-picker-icon\s*\{[^}]*display:\s*inline-flex/);
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*width:\s*44px[^}]*max-width:\s*44px[^}]*min-width:\s*44px[^}]*min-height:\s*44px/,
+    );
+
+    // Files is an independently labelled action, not prose to discard. No
+    // responsive rule may remove its entry point on either compact tier.
+    const hiddenResponsiveFilesRules: string[] = [];
+    postcss.parse(chatPane).walkAtRules("container", (atRule) => {
+      atRule.walkRules((rule) => {
+        if (!rule.selector.includes(".th-files-toggle")) return;
+        rule.walkDecls("display", (declaration) => {
+          if (declaration.value.trim().toLowerCase() === "none") hiddenResponsiveFilesRules.push(rule.selector);
+        });
+      });
+    });
+    expect(hiddenResponsiveFilesRules).toEqual([]);
+    expect(wide).toMatch(/\.th-chat-pane \.th-files-toggle,[\s\S]*?\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+  });
+
+  it("keeps resync compact with a 44px header target on narrow panes", () => {
     const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-icon\s*\{[^}]*display:\s*inline-flex/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*block[^}]*max-width:\s*80px/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-btn\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-icon\s*\{[^}]*display:\s*inline-flex/);
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-label\s*\{[^}]*display:\s*none/);
+  });
+
+  it("makes every prose-bearing chat header item shrink and ellipsize", () => {
+    const proseRules = [
+      [".th-provider-badge", chatPane],
+      [".th-thinking-select", chatPane],
+      [".th-model-picker-label", chatPane],
+      [".th-chat-resync-label", chatPane],
+    ] as const;
+    for (const [selector, css] of proseRules) {
+      const body = ruleBody(css, selector);
+      expect(declarationValue(body, "min-width"), `${selector} min-width`).toBe("0");
+      expect(declarationValue(body, "overflow"), `${selector} overflow`).toBe("hidden");
+      expect(declarationValue(body, "text-overflow"), `${selector} text-overflow`).toBe("ellipsis");
+    }
+    const files = ruleBody(chatPane, ".th-files-toggle");
+    expect(declarationValue(files, "overflow")).toBe("hidden");
+    expect(declarationValue(files, "text-overflow")).toBe("ellipsis");
+
+    for (const selector of [".th-termhead-name", ".th-termhead-path"]) {
+      const body = ruleBody(termhead, selector);
+      expect(declarationValue(body, "overflow"), `${selector} overflow`).toBe("hidden");
+      expect(declarationValue(body, "text-overflow"), `${selector} text-overflow`).toBe("ellipsis");
+    }
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-pane .th-termhead-path"), "min-width")).toBe("0");
+
+    // Ellipsis on the label is effective only when each outer flex item can
+    // shrink. Model prose has no intrinsic minimum; resync retains one 44px
+    // control target while its long copy contributes no unbounded minimum.
+    const provider = ruleBody(chatPane, ".th-provider-badge");
+    const thinking = ruleBody(chatPane, ".th-thinking-select");
+    const modelPicker = ruleBody(chatPane, ".th-model-picker");
+    const modelButton = ruleBody(chatPane, ".th-model-picker-btn");
+    const resync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
+    expect(declarationValue(provider, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(thinking, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(modelPicker, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(modelPicker, "min-width")).toBe("0");
+    expect(declarationValue(modelButton, "min-width")).toBe("0");
+    expect(declarationValue(modelButton, "overflow")).toBe("hidden");
+    expect(declarationValue(resync, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(resync, "min-width")).toBe("44px");
+    expect(declarationValue(resync, "max-width")).toBe("120px");
+  });
+
+  it("fits the header minimum on both sides of the 600px breakpoint", () => {
+    const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+    );
+
+    const header = ruleBody(chatPane, ".th-chat-pane .th-termhead");
+    const title = ruleBody(chatPane, ".th-chat-pane .th-termhead-name");
+    const iconControls = chatPane.match(
+      /\.th-chat-pane \.th-mobile-menu,[\s\S]*?\.th-chat-pane \.th-termhead-actions \.th-btn-icon\s*\{([^}]*)\}/,
+    )?.[1] ?? "";
+    const compactResync = ruleBody(compact, ".th-chat-pane .th-chat-resync-btn");
+    const compactModel = ruleBody(compact, ".th-chat-pane .th-model-picker-btn");
+    const expandedResync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
+    const expandedModel = ruleBody(chatPane, ".th-model-picker");
+    const pixels = (value: string): number => {
+      const token = wholeVarToken(value);
+      return Number.parseFloat((token ? tokenValue(token) : value).replace("px", ""));
+    };
+    const paddingTokens = Array.from(
+      declarationValue(header, "padding").matchAll(/var\(\s*(--th-space-[\w-]+)\s*\)/g),
+      (match) => match[1] ?? "",
+    );
+    const horizontalPadding = paddingTokens.reduce((sum, token) => sum + pixels(`var(${token})`), 0);
+    const gap = pixels(declarationValue(header, "gap"));
+    const titleMinimum = pixels(declarationValue(title, "min-width"));
+    const iconWidth = pixels(declarationValue(iconControls, "width"));
+
+    // Compact has one edge action (the viewport menu or split close), Files,
+    // model, resync, and disconnect. Provider/model prose remains hidden.
+    const compactWidths =
+      titleMinimum + iconWidth * 3 + pixels(declarationValue(compactModel, "width")) +
+      pixels(declarationValue(compactResync, "width"));
+    const compactAggregate = horizontalPadding + compactWidths + gap * 5;
+    for (const paneWidth of [320, 600]) expect(compactAggregate).toBeLessThanOrEqual(paneWidth);
+
+    // Expanded mode may show all three split actions plus the viewport edge
+    // action. Count that conservative combination even though the app normally
+    // makes the mobile menu and desktop split chrome mutually exclusive. Long
+    // provider/path/thinking/model/resync text contributes only its CSS minimum;
+    // ellipsis absorbs the remaining width rather than increasing this sum.
+    const expandedWidths =
+      titleMinimum + iconWidth * 6 + pixels(declarationValue(expandedModel, "min-width")) +
+      pixels(declarationValue(expandedResync, "min-width"));
+    const expandedAggregate = horizontalPadding + expandedWidths + gap * 9;
+    for (const paneWidth of [601, 640, 680]) expect(expandedAggregate).toBeLessThanOrEqual(paneWidth);
   });
 
   it("keeps the mobile empty-state menu below the safe area at 44px", () => {

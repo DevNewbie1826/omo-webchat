@@ -54,6 +54,28 @@
   gap: 0;
 }
 
+.th-chat-pane .th-chat-resync-btn {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 44px;
+  max-width: 120px;
+  height: 34px;
+  padding: 0 var(--th-space-3);
+  overflow: hidden;
+}
+
+.th-chat-resync-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.th-chat-resync-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .th-chat-pane .th-mobile-menu,
 .th-chat-pane .th-files-toggle,
 .th-chat-pane .th-disconnect-btn,
@@ -65,7 +87,8 @@
 }
 
 .th-provider-badge {
-  flex: none;
+  flex: 0 1 72px;
+  min-width: 0;
   max-width: 72px;
   overflow: hidden;
   padding: var(--th-space-0-5) var(--th-space-2);
@@ -156,7 +179,7 @@
 }
 
 .th-thinking-select {
-  flex: none;
+  flex: 0 1 10em;
   /* Scales with its Label tier and leaves room for localized text plus the
      native chevron at the maximum user font size. */
   max-width: 10em;
@@ -169,6 +192,9 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -178,15 +204,19 @@
 
 .th-model-picker {
   position: relative;
-  flex: none;
+  flex: 0 1 160px;
+  min-width: 0;
+  max-width: 160px;
 }
 
 .th-model-picker-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--th-space-1);
-  max-width: 160px;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
   padding: var(--th-space-0-5) var(--th-space-1);
   border: 0;
   background: transparent;
@@ -203,6 +233,8 @@
 }
 
 .th-model-picker-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -210,6 +242,7 @@
 
 .th-model-picker-icon {
   display: none;
+  flex: none;
 }
 
 .th-model-picker-popover {
@@ -303,6 +336,8 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -372,7 +407,10 @@
    Shrink contract: .th-chat-main clips overflow, so this child must be a
    min-height: 0 flex column allowed to shrink (never flex: none) - when
    both shelves expand at a short viewport, the shelf yields height instead
-   of pushing the composer past the pane bottom. */
+   of pushing the composer past the pane bottom. overflow: hidden pairs
+   with that shrink: a shelf squeezed below its content height clips the
+   bar and panel instead of painting them over the status strip and
+   composer that follow later in the column. */
 .th-goal-shelf {
   display: flex;
   flex: 0 1 auto;
@@ -380,12 +418,19 @@
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   margin: var(--th-space-1) auto 0;
 }
 
 /* The bar row never yields its height; only the panel below it shrinks. */
 .th-goal-shelf .th-activity-bar-row {
   flex: none;
+}
+
+/* The shelf clips squeezed content, so keep the global focus outline inside
+   the goal button in both collapsed and expanded states. */
+.th-goal-bar:focus-visible {
+  outline-offset: -2px;
 }
 
 .th-goal-title {
@@ -493,15 +538,35 @@
     display: inline-flex;
   }
 
+  /* SplitView keeps horizontal panes at 320px minimum and this 600px query
+     is the real narrow/expanded boundary. Keep prose hidden throughout that
+     whole range so there is no intermediate overflow window. */
+  .th-chat-pane .th-provider-badge,
   .th-chat-pane .th-model-picker-label {
-    display: block;
-    max-width: 80px;
+    display: none;
   }
 
   .th-chat-pane .th-model-picker-btn {
+    width: 44px;
+    max-width: 44px;
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
+  }
+
+  .th-chat-pane .th-chat-resync-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .th-chat-pane .th-chat-resync-icon {
+    display: inline-flex;
+  }
+
+  .th-chat-pane .th-chat-resync-label {
+    display: none;
   }
 
   .th-chat-pane .th-termhead-name {
@@ -523,9 +588,5 @@
 @container chat-pane (max-width: 340px) {
   .th-chat-main {
     --th-chat-gutter: 8px;
-  }
-
-  .th-files-toggle {
-    padding-inline: var(--th-space-1);
   }
 }

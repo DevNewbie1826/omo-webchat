@@ -9,6 +9,7 @@ import {
   ingestExtensionEvent,
   nextLiveActivitySequence,
   settleLiveBadgePoll,
+  settleLiveBadgePush,
   useLiveBadgeOverrides,
   useMergedLiveSummaries,
 } from "./liveBadgeStore";
@@ -20,6 +21,10 @@ const TASK_RUNNING_1 = {
   parent_session_id: "s1",
   truncated_tasks: false,
   tasks: [{ task_id: "t1", name: "Live", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
+};
+
+const TASK_QUIET_300S = {
+  tasks: [{ task_id: "t-quiet", name: "Quiet", status: "running", updated_at: "2026-08-19T09:55:00.000Z" }],
 };
 
 const DAG_RUNNING_2 = {
@@ -428,6 +433,326 @@ describe("liveBadgeStore", () => {
     });
 
     expect(captured.merged[0]?.runningCount).toBe(1);
+  });
+
+  it("refreshes a quiet running task's freshness from an omo.dag.activity heartbeat", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(0);
+
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "n1",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+    });
+
+    const override = captured.overrides.get("s1");
+    expect(override?.summary.runningCount).toBe(1);
+    // The heartbeat is a freshness stamp, not a dag-side snapshot: it must
+    // not create one.
+    expect(override?.summary.dagRunning).toBe(0);
+  });
+
+  it("renews a matching task payload when a heartbeat arrives just before expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(89_000));
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "n1",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:01:29.000Z",
+      });
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(16_000));
+
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(1);
+  });
+
+  it("renews a near-expiry target task from an alias heartbeat during a delayed poll remap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+    const requestSequence = nextLiveActivitySequence();
+    act(() => {
+      ingestExtensionEvent("attached-chat", "omo.task.updated", TASK_QUIET_300S);
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(89_000));
+    act(() => {
+      ingestExtensionEvent("durable-child", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "alias-node",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:01:29.000Z",
+      });
+      settleLiveBadgePoll([{
+        id: "attached-chat",
+        task: { parent_session_id: "durable-child", tasks: [] },
+      }], requestSequence);
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(16_000));
+
+    expect(captured.overrides.has("durable-child")).toBe(false);
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
+  });
+
+  it("renews a near-expiry target task from an alias heartbeat during a delayed push remap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("attached-chat", "omo.task.updated", TASK_QUIET_300S);
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(89_000));
+    act(() => {
+      ingestExtensionEvent("durable-child", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "alias-node",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:01:29.000Z",
+      });
+      settleLiveBadgePush(
+        "attached-chat",
+        ["durable-child"],
+        false,
+        false,
+        nextLiveActivitySequence(),
+      );
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(16_000));
+
+    expect(captured.overrides.has("durable-child")).toBe(false);
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
+  });
+
+  it("unions activity stamps from both identities during a poll remap", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("durable-child", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "alias-node",
+        taskId: "t-alias",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+    });
+    const requestSequence = nextLiveActivitySequence();
+    act(() => {
+      ingestExtensionEvent("attached-chat", "omo.task.updated", {
+        tasks: [
+          { task_id: "t-alias", name: "Alias", status: "running", updated_at: "2026-08-19T09:55:00.000Z" },
+          { task_id: "t-attached", name: "Attached", status: "running", updated_at: "2026-08-19T09:55:00.000Z" },
+        ],
+      });
+      ingestExtensionEvent("attached-chat", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "attached-node",
+        taskId: "t-attached",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+      settleLiveBadgePoll([{
+        id: "attached-chat",
+        task: { parent_session_id: "durable-child", tasks: [] },
+      }], requestSequence);
+    });
+
+    expect(captured.overrides.has("durable-child")).toBe(false);
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(2);
+  });
+
+  it("unions activity stamps from both identities during a push remap", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("durable-child", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "alias-node",
+        taskId: "t-alias",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+      ingestExtensionEvent("attached-chat", "omo.task.updated", {
+        tasks: [
+          { task_id: "t-alias", name: "Alias", status: "running", updated_at: "2026-08-19T09:55:00.000Z" },
+          { task_id: "t-attached", name: "Attached", status: "running", updated_at: "2026-08-19T09:55:00.000Z" },
+        ],
+      });
+      ingestExtensionEvent("attached-chat", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "attached-node",
+        taskId: "t-attached",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+      settleLiveBadgePush(
+        "attached-chat",
+        ["durable-child"],
+        false,
+        false,
+        nextLiveActivitySequence(),
+      );
+    });
+
+    expect(captured.overrides.has("durable-child")).toBe(false);
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(2);
+  });
+
+  it("orders ingested RFC3339 activity stamps by epoch rather than timezone text", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T09:30:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("s1", "omo.task.updated", {
+        tasks: [{
+          task_id: "t-offset",
+          name: "Offset",
+          status: "running",
+          updated_at: "2026-08-19T09:00:00.000Z",
+        }],
+      });
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "older-node",
+        taskId: "t-offset",
+        at: "2026-08-19T10:00:00.000+02:00",
+      });
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "newer-node",
+        taskId: "t-offset",
+        at: "2026-08-19T08:29:00.000-01:00",
+      });
+    });
+
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(1);
+  });
+
+  it("keeps the chronologically newest offset stamp when identities merge", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T09:30:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("durable-child", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "alias-node",
+        taskId: "t-shared",
+        at: "2026-08-19T10:00:00.000+02:00",
+      });
+      ingestExtensionEvent("attached-chat", "omo.task.updated", {
+        tasks: [{
+          task_id: "t-shared",
+          name: "Shared",
+          status: "running",
+          updated_at: "2026-08-19T09:00:00.000Z",
+        }],
+      });
+      ingestExtensionEvent("attached-chat", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "attached-node",
+        taskId: "t-shared",
+        at: "2026-08-19T09:29:00.000Z",
+      });
+      settleLiveBadgePush(
+        "attached-chat",
+        ["durable-child"],
+        false,
+        false,
+        nextLiveActivitySequence(),
+      );
+    });
+
+    expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
+  });
+
+  it("rejects invalid activity stamps without storing them or renewing their task", async () => {
+    vi.useFakeTimers();
+    const startedAt = new Date("2026-08-19T10:00:00.000Z");
+    vi.setSystemTime(startedAt);
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(89_000));
+    act(() => {
+      for (const at of [
+        "not-a-timestamp",
+        "2026-08-19T10:01:29.000",
+        "2026-02-30T10:01:29.000Z",
+      ]) {
+        ingestExtensionEvent("s1", "omo.dag.activity", {
+          runId: "r1",
+          nodeId: "invalid-node",
+          taskId: "t-quiet",
+          at,
+        });
+      }
+    });
+    expect(captured.overrides.get("s1")?.receivedAt).toBe(startedAt.getTime());
+
+    await act(async () => vi.advanceTimersByTimeAsync(16_000));
+
+    expect(captured.overrides.has("s1")).toBe(false);
+  });
+
+  it("expires heartbeat stamps with the same 90s window as the payload sides", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "n1",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+    });
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(106_000));
+
+    expect(captured.overrides.has("s1")).toBe(false);
+  });
+
+  it("keeps a task override merged while the session stays in the poll list, then prunes it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+    expect(captured.merged.map((summary) => summary.id)).toEqual(["s1"]);
+    expect(captured.merged[0]?.runningCount).toBe(1);
+
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+
+    expect(captured.merged).toEqual([]);
   });
 });
 

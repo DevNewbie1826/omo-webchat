@@ -75,8 +75,12 @@
   background: var(--th-surface);
 }
 
+/* A user-dragged height persists as an inline px value (and can be
+   restored from a taller window), so the sized panel stays bounded by a
+   viewport fraction; the inline height merely sets the target and the
+   panel scrolls inside this ceiling on shorter viewports. */
 .th-activity-panel--sized {
-  max-height: none;
+  max-height: 60vh;
 }
 
 /* Explicit drags must track the pointer 1:1 — no transition on the height mid-drag. */
