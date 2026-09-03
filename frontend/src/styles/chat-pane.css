@@ -55,15 +55,25 @@
 }
 
 .th-chat-pane .th-chat-resync-btn {
-  flex: none;
+  flex: 0 1 auto;
   width: auto;
-  min-width: 0;
+  min-width: 44px;
+  max-width: 120px;
   height: 34px;
   padding: 0 var(--th-space-3);
+  overflow: hidden;
 }
 
 .th-chat-resync-icon {
-  display: none;
+  display: inline-flex;
+  flex: none;
+}
+
+.th-chat-resync-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .th-chat-pane .th-mobile-menu,
@@ -77,7 +87,8 @@
 }
 
 .th-provider-badge {
-  flex: none;
+  flex: 0 1 72px;
+  min-width: 0;
   max-width: 72px;
   overflow: hidden;
   padding: var(--th-space-0-5) var(--th-space-2);
@@ -168,7 +179,7 @@
 }
 
 .th-thinking-select {
-  flex: none;
+  flex: 0 1 10em;
   /* Scales with its Label tier and leaves room for localized text plus the
      native chevron at the maximum user font size. */
   max-width: 10em;
@@ -181,6 +192,9 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -190,15 +204,19 @@
 
 .th-model-picker {
   position: relative;
-  flex: none;
+  flex: 0 1 160px;
+  min-width: 0;
+  max-width: 160px;
 }
 
 .th-model-picker-btn {
   display: inline-flex;
   align-items: center;
   gap: var(--th-space-1);
-  max-width: 160px;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
   padding: var(--th-space-0-5) var(--th-space-1);
   border: 0;
   background: transparent;
@@ -215,6 +233,8 @@
 }
 
 .th-model-picker-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -222,6 +242,7 @@
 
 .th-model-picker-icon {
   display: none;
+  flex: none;
 }
 
 .th-model-picker-popover {
@@ -315,6 +336,8 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
