@@ -35,6 +35,17 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if mode == "die" {
 		os.Exit(7)
 	}
+	if mode == "bind-exit" {
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		_ = os.Remove(socket)
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("bind-exit helper listen: %v", err)
+		}
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		_ = ln.Close()
+		os.Exit(7)
+	}
 	if mode == "descendant-ladder" {
 		runtimeName := os.Getenv("OMO_RUNTIME")
 		pidPath := os.Getenv("OMORPC_ENSURE_DESCENDANT_PID")
@@ -138,7 +149,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "lock held")
 		os.Exit(0) // The kernel, not stale-content recovery, releases the flock.
 	}
-	if mode != "serve" && mode != "serve-ignore-term" {
+	if mode != "serve" && mode != "serve-ignore-term" && mode != "serve-competitor" {
 		t.Fatalf("unknown helper mode %q", mode)
 	}
 	if mode == "serve-ignore-term" {
@@ -153,6 +164,16 @@ func TestEnsureHelperProcess(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	defer ln.Close()
+	if mode == "serve-competitor" {
+		ready := os.NewFile(3, "competitor-ready")
+		if ready == nil {
+			t.Fatal("competitor readiness descriptor is unavailable")
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			t.Fatalf("signal competitor readiness: %v", err)
+		}
+		_ = ready.Close()
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -197,6 +218,12 @@ func serveEnsureHelper(conn net.Conn) {
 			response["error"] = "unknown_command: " + command
 		}
 		frame, err := EncodeFrame(response)
+		if err == nil && command == CmdGetProtocolInfo && os.Getenv("OMORPC_REPLACE_AFTER_NEGOTIATION") == "1" {
+			if err := replaceEnsureSocketWithCompetitor(); err != nil {
+				return
+			}
+			_ = os.Unsetenv("OMORPC_REPLACE_AFTER_NEGOTIATION")
+		}
 		if err == nil {
 			_, _ = conn.Write(frame)
 		}
@@ -204,6 +231,37 @@ func serveEnsureHelper(conn net.Conn) {
 	if scanner.Err() != nil {
 		return
 	}
+}
+
+func replaceEnsureSocketWithCompetitor() error {
+	socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+	if err := os.Remove(socket); err != nil {
+		return err
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnsureHelperProcess$")
+	cmd.Env = setEnv(os.Environ(), ensureHelperModeEnv, "serve-competitor")
+	cmd.Env = setEnv(cmd.Env, "OMORPC_REPLACE_AFTER_NEGOTIATION", "")
+	cmd.ExtraFiles = []*os.File{writer}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	_ = writer.Close()
+	if marker := os.Getenv("OMORPC_COMPETITOR_PID"); marker != "" {
+		if err := os.WriteFile(marker, []byte(fmt.Sprint(cmd.Process.Pid)), 0o600); err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			return err
+		}
+	}
+	var ready [1]byte
+	_, err = io.ReadFull(reader, ready[:])
+	return err
 }
 
 func TestEnsureDaemonExistingCompatibleReused(t *testing.T) {
@@ -282,6 +340,19 @@ func TestEnsureDaemonIncompatibleCapabilities(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonFailedProducerRemovesLaunchSocket(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "bind-exit")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want failed runtime ladder", ensured, err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatal("failed producer left its launch-created socket behind")
+	}
+}
+
 func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "rpc", "rpc.sock")
@@ -343,6 +414,99 @@ func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
 	npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
 	if got := launcherUpdateCommand(npmRoot); got != "npm i -g omo-ai@beta" {
 		t.Fatalf("npm update command = %q", got)
+	}
+}
+
+func TestLauncherNativeContextIgnoresAmbientBrand(t *testing.T) {
+	for _, ambient := range []string{
+		foreignLauncherBrandProfileJSON(),
+		`{malformed`,
+	} {
+		t.Run(ambient, func(t *testing.T) {
+			launcher, root, native := writeRecognizedLauncherInstall(t, "9.8.7")
+			profile, gotNative, err := launcherNativeContext(launcher, []string{"SENPI_BRAND=" + ambient})
+			if err != nil {
+				t.Fatalf("launcherNativeContext: %v", err)
+			}
+			if gotNative != native {
+				t.Fatalf("native command = %q, want %q", gotNative, native)
+			}
+			var got launcherBrandProfile
+			if err := json.Unmarshal([]byte(profile), &got); err != nil {
+				t.Fatalf("decode derived profile: %v", err)
+			}
+			if got.Name != "OmO" || got.DisplayVersion != "9.8.7" || got.Update.Command != launcherUpdateCommand(root) {
+				t.Fatalf("derived installation profile = %+v", got)
+			}
+		})
+	}
+}
+
+func TestEnsureDaemonAmbientBrandNeverBlocksRuntimeAttempt(t *testing.T) {
+	for name, ambient := range map[string]string{
+		"foreign":   foreignLauncherBrandProfileJSON(),
+		"malformed": `{malformed`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := shortEnsureTempDir(t)
+			launcher, root, _ := writeRecognizedLauncherInstall(t, "1.2.3")
+			marker := filepath.Join(dir, "attempted")
+			body := fmt.Sprintf("#!/bin/sh\nprintf attempted > %q\nexit 7\n", marker)
+			entry := filepath.Join(root, "bin", "omo.js")
+			if err := os.WriteFile(launcher, []byte(body+"# entry: "+entry+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := helperEnsureConfig(dir, filepath.Join(dir, "rpc.sock"), launcher, "die")
+			cfg.Env = setEnv(cfg.Env, "SENPI_BRAND", ambient)
+			cfg.Env = setEnv(cfg.Env, "OMO_RUNTIME", "custom")
+			if daemon, err := EnsureDaemon(context.Background(), cfg); err == nil || daemon != nil {
+				t.Fatalf("EnsureDaemon = (%v, %v), want attempted supervisor failure", daemon, err)
+			}
+			if data, err := os.ReadFile(marker); err != nil || string(data) != "attempted" {
+				t.Fatalf("runtime attempt marker = %q, err=%v", data, err)
+			}
+		})
+	}
+}
+
+func foreignLauncherBrandProfileJSON() string {
+	return `{"name":"Foreign","command":"foreign","displayVersion":"99","configDir":".foreign","flatLayout":true,"envPrefix":"FOREIGN","userAgent":"foreign","originator":"foreign","update":{"packageName":"foreign","distTag":"latest","command":"foreign update","changelogUrl":"https://example.test/foreign"}}`
+}
+
+func TestNativeChildAdapterHonorsLauncherRuntime(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "runtime")
+	native := filepath.Join(dir, "native")
+	if err := os.WriteFile(native, []byte("#!/bin/sh\nprintf 'node:%s' \"$SENPI_RUNTIME\" > "+shellQuote(marker)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bunDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bunDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bunDir, "bun"), []byte("#!/bin/sh\nprintf bun > "+shellQuote(marker)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := writeNativeChildWrapper(EnsureConfig{StateDir: dir}, native, testLauncherBrandProfileJSON(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(adapter)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(adapter)
+	cmd.Env = []string{"PATH=" + bunDir + ":/usr/bin:/bin", "SENPI_RUNTIME=node"}
+	cmd.ExtraFiles = []*os.File{reader}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	_ = writer.Close()
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "node:node" {
+		t.Fatalf("adapter runtime = %q, err=%v", data, err)
 	}
 }
 
@@ -548,6 +712,44 @@ func TestRemoveOwnedSocketPreservesReplacementListener(t *testing.T) {
 	if _, exists := currentSocketIdentity(socket); !exists {
 		t.Fatal("replacement listener was unlinked")
 	}
+}
+
+func TestEnsureDaemonNegotiatedReplacementIsUnowned(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	pidPath := filepath.Join(dir, "competitor.pid")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	cfg.Env = append(cfg.Env,
+		"OMORPC_REPLACE_AFTER_NEGOTIATION=1",
+		"OMORPC_COMPETITOR_PID="+pidPath,
+	)
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(pidData), &pid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if ensured.Owned {
+		t.Fatal("post-negotiation replacement was reported as owned")
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop unowned daemon: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	client, err := Dial(ctx, socket)
+	cancel()
+	if err != nil {
+		t.Fatalf("competitor did not survive Stop: %v", err)
+	}
+	_ = client.Close()
 }
 
 func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
@@ -1130,6 +1332,32 @@ func TestSupervisorCommandDefaultUsesNativeHostChild(t *testing.T) {
 	if slices.Contains(args, "--child-command") || slices.Contains(args, "--child-args") {
 		t.Fatalf("native supervisor args redundantly override its child launch: %v", args)
 	}
+}
+
+func writeRecognizedLauncherInstall(t *testing.T, version string) (launcher, root, native string) {
+	t.Helper()
+	root = filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
+	entry := filepath.Join(root, "bin", "omo.js")
+	launcher = filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(root))), "bin", "omo")
+	native = filepath.Join(root, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js")
+	for _, dir := range []string{filepath.Dir(entry), filepath.Join(root, "plugin"), filepath.Dir(native), filepath.Dir(launcher)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(fmt.Sprintf(`{"version":%q}`, version)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\n# entry: "+entry+"\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return launcher, root, native
 }
 
 func helperEnsureConfig(dir, socket, script, mode string) EnsureConfig {

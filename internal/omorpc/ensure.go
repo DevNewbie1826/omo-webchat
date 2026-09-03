@@ -333,17 +333,21 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
 	for {
-		identity, stable, authenticated, authErr := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
-		if stable && authenticated && (!baselineExists || identity != baseline) {
-			ownedSocket = &identity
+		// The raw connection is cleanup evidence only. Ownership is authenticated
+		// independently on the negotiated connection returned to the caller.
+		cleanupIdentity, _, _, _ := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
+		if cleanupIdentity != (socketIdentity{}) && (!baselineExists || cleanupIdentity != baseline) {
+			if current, exists := currentSocketIdentity(cfg.SocketPath); exists && current == cleanupIdentity {
+				ownedSocket = &cleanupIdentity
+			}
 		}
-		var client *Client
-		var dialErr error
-		if authErr == nil && stable {
-			client, dialErr = probeDaemon(readyCtx, cfg)
-		}
+
+		client, identity, stable, authenticated, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
 		if dialErr == nil && client != nil {
-			owned := authenticated && (!baselineExists || identity != baseline)
+			owned := stable && authenticated && (!baselineExists || identity != baseline)
+			if owned {
+				ownedSocket = &identity
+			}
 			result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
 			if checkErr != nil {
 				if cleanupErr := cleanup(); cleanupErr != nil {
@@ -368,6 +372,11 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 
 		select {
 		case waitErr := <-waitCh:
+			// A producer can bind and exit before the first raw probe. Once that
+			// launch has reaped, a new pathname is cleanup evidence only.
+			if identity, exists := currentSocketIdentity(cfg.SocketPath); exists && (!baselineExists || identity != baseline) {
+				ownedSocket = &identity
+			}
 			if waitErr == nil {
 				waitErr = errors.New("supervisor exited successfully before opening the socket")
 			}
@@ -455,7 +464,9 @@ func authenticateSocketPath(ctx context.Context, path string, processGroup int) 
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
-		return socketIdentity{}, false, false, err
+		// Preserve the launch-time pathname observation for stale-socket cleanup.
+		// It is never sufficient to authenticate the negotiated client.
+		return before, false, false, err
 	}
 	defer conn.Close()
 	after, exists := currentSocketIdentity(path)
@@ -861,7 +872,8 @@ func isSpawnableProbeError(err error) bool {
 // launcher's child environment established that SENPI_BRAND is the complete
 // JSON profile below, rather than a plain display name.
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, string, error) {
-	env := EnsureExtensionEventsCapability(setEnv(cfg.Env, "OMO_RUNTIME", "node"))
+	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
+	env = EnsureExtensionEventsCapability(setEnv(env, "SENPI_RUNTIME", "node"))
 	extension, recognized, err := launcherExtension(command, env)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)
@@ -934,17 +946,10 @@ func launcherExtension(command string, env []string) (string, bool, error) {
 }
 
 func launcherNativeContext(command string, env []string) (string, string, error) {
-	if existing, ok := lookupEnv(env, "SENPI_BRAND"); ok {
-		if err := validateLauncherBrandProfile(existing); err != nil {
-			return "", "", fmt.Errorf("invalid SENPI_BRAND: %w", err)
-		}
-		native, err := launcherNativeCommand(command, env)
-		return existing, native, err
-	}
+	// A recognized installation is authoritative. Ambient brand state may have
+	// come from a different launcher and must not override this installation.
 	entry := command
-	if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
-		entry = configured
-	} else if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
+	if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
 		entry = resolved
 	} else if data, err := os.ReadFile(command); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -952,6 +957,11 @@ func launcherNativeContext(command string, env []string) (string, string, error)
 				entry = strings.TrimSpace(value)
 				break
 			}
+		}
+	}
+	if entry == command {
+		if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
+			entry = configured
 		}
 	}
 	root := filepath.Dir(filepath.Dir(entry))
@@ -1014,9 +1024,7 @@ func launcherUpdateCommand(root string) string {
 
 func launcherNativeCommand(command string, env []string) (string, error) {
 	entry := command
-	if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
-		entry = configured
-	} else if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
+	if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
 		entry = resolved
 	} else if data, err := os.ReadFile(command); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -1024,6 +1032,11 @@ func launcherNativeCommand(command string, env []string) (string, error) {
 				entry = strings.TrimSpace(value)
 				break
 			}
+		}
+	}
+	if entry == command {
+		if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
+			entry = configured
 		}
 	}
 	root := filepath.Dir(filepath.Dir(entry))
@@ -1063,9 +1076,8 @@ func writeNativeChildWrapper(cfg EnsureConfig, nativeCommand, profile string, en
 export SENPI_BRAND=%s
 export SENPI_RPC_CLIENT_CAPABILITIES=%s
 export OMO_RPC_CLIENT_CAPABILITIES=%s
-if [ "${OMO_RUNTIME-}" != node ] && runtime=$(command -v bun 2>/dev/null) && [ -x "$runtime" ]; then
-  export SENPI_RUNTIME=bun
-  exec "$runtime" %s "$@" 3>&3
+if [ "${OMO_RUNTIME-}" != node ] && [ "${SENPI_RUNTIME-}" = bun ]; then
+  exec bun %s "$@" 3>&3
 fi
 export SENPI_RUNTIME=node
 exec %s "$@" 3>&3
