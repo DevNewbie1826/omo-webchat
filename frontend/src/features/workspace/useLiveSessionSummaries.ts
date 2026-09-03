@@ -9,7 +9,11 @@ import type { LiveSessionInfo } from "./workspace";
 /** Per-session rollup shown by the sessions overview and the tree badge.
  * Counts tolerate null or malformed payloads: unparseable input counts as
  * "no activity", never as an error. */
-/** Mirrors SEVERED_ACTIVITY_MS: quiet running tasks no longer count as active. */
+/** Quiet-running cutoff for summaries whose session liveness is not already
+ * established by the shared poller (WS-only override summaries); mirrors
+ * OVERRIDE_TTL_MS in liveBadgeStore. A session the poller lists keeps its
+ * running tasks counted no matter how long they have been quiet - zombie
+ * pruning happens when the session leaves the live list. */
 export const STALE_RUNNING_WINDOW_MS = 90_000;
 const FRESHNESS_TICK_MS = 15_000;
 
@@ -83,6 +87,31 @@ function digestReceivedMs(receivedAt: string | undefined): number | null {
   return digestUpdatedMs(receivedAt);
 }
 
+/** Freshness inputs beyond the raw payloads. sessionLive records that the
+ * shared live-session poller currently lists the session: that process-alive
+ * signal is authoritative, so its running tasks keep counting while quiet.
+ * heartbeatStamps maps task id to the latest omo.dag.activity activity stamp
+ * (ISO), mirroring the activity shelf's rule that a task's staleness follows
+ * the heartbeat rather than the last task snapshot. */
+export interface SummaryFreshness {
+  readonly sessionLive?: boolean;
+  readonly heartbeatStamps?: ReadonlyMap<string, string>;
+}
+
+/** Latest known activity of a task: its row stamp, raised by any fresher
+ * heartbeat stamp for the same task id. */
+function stampedActivityMs(
+  task: ActivityTask,
+  heartbeatStamps: ReadonlyMap<string, string> | undefined,
+): number | null {
+  const rowMs = lastActivityMs(task);
+  const at = heartbeatStamps?.get(task.taskId);
+  if (at === undefined) return rowMs;
+  const beatMs = Date.parse(at);
+  if (Number.isNaN(beatMs)) return rowMs;
+  return rowMs === null || beatMs > rowMs ? beatMs : rowMs;
+}
+
 function countDigestTaskRunning(
   entries: readonly TaskDigestEntry[],
   nowMs: number,
@@ -115,7 +144,11 @@ function countDigestDagRunning(runs: readonly DagDigestRun[], taskIds: ReadonlyS
   return running;
 }
 
-export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()): LiveSessionSummary {
+export function summarizeLiveSession(
+  info: LiveSessionInfo,
+  nowMs = Date.now(),
+  freshness?: SummaryFreshness,
+): LiveSessionSummary {
   const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
   const tasks = parsedTask?.tasks ?? [];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
@@ -148,10 +181,15 @@ export function summarizeLiveSession(info: LiveSessionInfo, nowMs = Date.now()):
         ? []
         : taskDigest.tasks.map((entry) => entry.taskId),
   );
+  const sessionLive = freshness?.sessionLive === true;
+  const heartbeatStamps = freshness?.heartbeatStamps;
   const taskRunning = info.taskOversized !== true
     ? tasks.filter((task) => {
       if (task.status !== "running") return false;
-      const lastMs = lastActivityMs(task);
+      // The poller listing the session is the process-alive signal: a quiet
+      // running task keeps counting until the session leaves the live list.
+      if (sessionLive) return true;
+      const lastMs = stampedActivityMs(task, heartbeatStamps);
       return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
         || runningDagTaskIds.has(task.taskId);
     }).length
@@ -209,5 +247,8 @@ export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionS
     return () => window.clearInterval(timer);
   }, [enabled]);
 
-  return useMemo(() => infos.map((info) => summarizeLiveSession(info, clockMs)), [infos, clockMs]);
+  return useMemo(
+    () => infos.map((info) => summarizeLiveSession(info, clockMs, { sessionLive: true })),
+    [infos, clockMs],
+  );
 }

@@ -144,7 +144,7 @@ describe("summarizeLiveSession", () => {
     expect(garbage.dagOversized).toBe(false);
   });
 
-  it("drops stale quiet agents from the running count", () => {
+  it("drops a stale quiet running row when no freshness context establishes liveness", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:02:00.000Z"));
     const summary = summarizeLiveSession({
@@ -159,6 +159,42 @@ describe("summarizeLiveSession", () => {
 
     expect(summary.runningCount).toBe(0);
     expect(summary.doneCount).toBe(0);
+  });
+
+  it("keeps counting a running task quiet past 90s while the session is live in the poller", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:02:00.000Z"));
+    const summary = summarizeLiveSession({
+      id: "stale-live",
+      title: "Quiet but alive",
+      task: {
+        tasks: [{ task_id: "t1", name: "Quiet", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
+      },
+      dag: null,
+      ...NOT_OVERSIZED,
+    }, Date.now(), { sessionLive: true });
+
+    expect(summary.runningCount).toBe(1);
+    expect(summary.doneCount).toBe(0);
+  });
+
+  it("counts a quiet running row refreshed by an omo.dag.activity heartbeat stamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:02:00.000Z"));
+    const info = {
+      id: "heartbeat",
+      title: "Heartbeat",
+      task: {
+        tasks: [{ task_id: "t1", name: "Quiet", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
+      },
+      dag: null,
+      ...NOT_OVERSIZED,
+    };
+
+    expect(summarizeLiveSession(info, Date.now()).runningCount).toBe(0);
+    expect(summarizeLiveSession(info, Date.now(), {
+      heartbeatStamps: new Map([["t1", "2026-08-19T10:01:59.000Z"]]),
+    }).runningCount).toBe(1);
   });
 
   it("keeps counting fresh running agents", () => {
@@ -1098,7 +1134,7 @@ describe("live polling hooks", () => {
     });
   });
 
-  it("expires a quiet running task while identical polls retain session identity", async () => {
+  it("keeps counting a quiet running task while identical polls retain session identity", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     const response = okResponse({
@@ -1131,7 +1167,42 @@ describe("live polling hooks", () => {
 
     expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
     expect(captured.summaries[0]).not.toBe(initialSummary);
-    expect(captured.summaries[0]?.runningCount).toBe(0);
+    expect(captured.summaries[0]?.runningCount).toBe(1);
+  });
+
+  it("prunes a session's running counts when it disappears from the live list", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse({
+        sessions: [
+          {
+            id: "zombie",
+            title: "Died mid-run",
+            task: {
+              tasks: [
+                {
+                  task_id: "t1",
+                  name: "Quiet",
+                  status: "running",
+                  updated_at: "2026-08-19T09:59:59.000Z",
+                },
+              ],
+            },
+            dag: null,
+          },
+        ],
+      }))
+      .mockResolvedValue(okResponse({ sessions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await act(async () => root.render(<Host enabled={true} />));
+    expect(captured.summaries[0]?.runningCount).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(4000));
+
+    expect(captured.summaries).toEqual([]);
+    expect(captured.ids.size).toBe(0);
   });
 
   it("does not let a stopped request apply or start a duplicate chain after resubscribe", async () => {

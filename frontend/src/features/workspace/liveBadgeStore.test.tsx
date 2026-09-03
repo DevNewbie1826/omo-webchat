@@ -22,6 +22,10 @@ const TASK_RUNNING_1 = {
   tasks: [{ task_id: "t1", name: "Live", status: "running", updated_at: "2026-08-19T10:00:00.000Z" }],
 };
 
+const TASK_QUIET_300S = {
+  tasks: [{ task_id: "t-quiet", name: "Quiet", status: "running", updated_at: "2026-08-19T09:55:00.000Z" }],
+};
+
 const DAG_RUNNING_2 = {
   parent_session_id: "s1",
   truncated_runs: false,
@@ -428,6 +432,74 @@ describe("liveBadgeStore", () => {
     });
 
     expect(captured.merged[0]?.runningCount).toBe(1);
+  });
+
+  it("refreshes a quiet running task's freshness from an omo.dag.activity heartbeat", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(0);
+
+    act(() => {
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "n1",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+    });
+
+    const override = captured.overrides.get("s1");
+    expect(override?.summary.runningCount).toBe(1);
+    // The heartbeat is a freshness stamp, not a dag-side snapshot: it must
+    // not create one.
+    expect(override?.summary.dagRunning).toBe(0);
+  });
+
+  it("expires heartbeat stamps with the same 90s window as the payload sides", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+      ingestExtensionEvent("s1", "omo.dag.activity", {
+        runId: "r1",
+        nodeId: "n1",
+        taskId: "t-quiet",
+        at: "2026-08-19T10:00:00.000Z",
+      });
+    });
+    expect(captured.overrides.get("s1")?.summary.runningCount).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(106_000));
+
+    expect(captured.overrides.has("s1")).toBe(false);
+  });
+
+  it("keeps a task override merged while the session stays in the poll list, then prunes it", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
+    act(() => {
+      root.render(<Host pollSummaries={[IDLE_POLL_SUMMARY]} />);
+    });
+    act(() => {
+      ingestExtensionEvent("s1", "omo.task.updated", TASK_QUIET_300S);
+    });
+    expect(captured.merged.map((summary) => summary.id)).toEqual(["s1"]);
+    expect(captured.merged[0]?.runningCount).toBe(1);
+
+    act(() => {
+      root.render(<Host pollSummaries={[]} />);
+    });
+
+    expect(captured.merged).toEqual([]);
   });
 });
 
