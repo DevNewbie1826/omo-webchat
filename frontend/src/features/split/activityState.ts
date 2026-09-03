@@ -292,6 +292,23 @@ function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {
   return { ...state, heartbeats };
 }
 
+/** Replace one activity side from a REST history response. Unlike live
+ * snapshots, authoritative hydration does not retain terminal rows omitted by
+ * the store projection; ordering is decided by the caller per side. */
+export function applyActivityHistorySnapshot(state: ActivityState, name: string, data: unknown): ActivityState {
+  if (name === "omo.task.updated") {
+    const parsed = parseTaskUpdated(data);
+    if (parsed === null) return state;
+    return { ...state, tasks: new Map(parsed.tasks.map((task) => [task.taskId, task])) };
+  }
+  if (name === "omo.dag.updated") {
+    const parsed = parseDagUpdated(data);
+    if (parsed === null) return state;
+    return { ...state, dags: new Map(parsed.runs.map((run) => [run.runId, run])) };
+  }
+  return state;
+}
+
 export function applyActivityEvent(state: ActivityState, name: string, data: unknown): ActivityState {
   switch (name) {
     case "omo.task.updated":

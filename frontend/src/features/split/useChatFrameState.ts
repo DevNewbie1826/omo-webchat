@@ -3,7 +3,7 @@ import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidat
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
-import { emptyActivityState } from "./activityState";
+import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -128,6 +128,11 @@ export function useChatFrameState() {
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
+  const activityHydrationRef = useRef<{
+    readonly token: number;
+    readonly events: { readonly name: string; readonly data: unknown }[];
+  } | null>(null);
+  const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
@@ -208,6 +213,9 @@ export function useChatFrameState() {
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
+    bufferActivityEvent: (name, data) => {
+      activityHydrationRef.current?.events.push({ name, data });
+    },
     retryVersionRef,
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
@@ -236,6 +244,34 @@ export function useChatFrameState() {
     setRetryDraft,
     pushNotice,
   });
+
+  // REST is the historical base, but every activity frame received after the
+  // request began is newer and must be replayed in arrival order. Full
+  // snapshots still suppress REST replacement for their own side.
+  const beginActivityHydration = (): number => {
+    const token = ++activityHydrationTokenRef.current;
+    activityHydrationRef.current = { token, events: [] };
+    return token;
+  };
+  const cancelActivityHydration = (token: number): void => {
+    if (activityHydrationRef.current?.token === token) activityHydrationRef.current = null;
+  };
+  const hydrateActivities = (token: number, task: unknown, dag: unknown): void => {
+    const hydration = activityHydrationRef.current;
+    if (hydration === null || hydration.token !== token) return;
+    activityHydrationRef.current = null;
+    let next = activitiesRef.current;
+    if (!hydration.events.some((event) => event.name === "omo.task.updated")) {
+      next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
+    }
+    if (!hydration.events.some((event) => event.name === "omo.dag.updated")) {
+      next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
+    }
+    for (const event of hydration.events) {
+      next = applyActivityEvent(next, event.name, event.data);
+    }
+    if (next !== activitiesRef.current) applyActivities(next);
+  };
 
   const submit = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
@@ -347,6 +383,9 @@ export function useChatFrameState() {
     activitiesVersion,
     notices,
     handleFrame,
+    beginActivityHydration,
+    cancelActivityHydration,
+    hydrateActivities,
     submit,
     steer,
     markOpen,

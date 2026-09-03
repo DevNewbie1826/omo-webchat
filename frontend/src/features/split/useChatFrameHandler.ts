@@ -33,6 +33,7 @@ interface ChatFrameHandlerBindings {
   readonly toolCallsRef: Current<Readonly<Record<string, ToolEntry>>>;
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
+  readonly bufferActivityEvent: (name: string, data: unknown) => void;
   readonly retryVersionRef: Current<number>;
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
@@ -137,6 +138,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       }
       case "extensionEvent": {
         ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
+        bindings.bufferActivityEvent(frame.name, frame.data);
         const next = applyActivityEvent(bindings.activitiesRef.current, frame.name, frame.data);
         if (next !== bindings.activitiesRef.current) bindings.applyActivities(next);
         return;
