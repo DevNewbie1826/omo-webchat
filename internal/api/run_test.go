@@ -136,12 +136,12 @@ func TestRunStartupFailureStopsOwnedDaemon(t *testing.T) {
 	}
 	t.Cleanup(func() { ensureDaemon = old })
 	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "state.json"), []byte("{"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(stateDir, "state-v2.json"), []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err = Run(context.Background(), &config.Config{Root: t.TempDir(), StateDir: stateDir}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
-	if err == nil || !strings.Contains(err.Error(), "migrating v1 metadata") {
-		t.Fatalf("Run error = %v, want migration failure", err)
+	if err == nil || !strings.Contains(err.Error(), "opening cursor store") {
+		t.Fatalf("Run error = %v, want cursor store failure", err)
 	}
 	pidBytes, err := os.ReadFile(filepath.Join(dir, "pid"))
 	if err != nil {

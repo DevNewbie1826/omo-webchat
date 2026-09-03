@@ -123,6 +123,11 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 
 func (s *Session) completeProviderRunLocked(reason string) {
 	s.reconcileActivityCacheLocked(s.activitySnapshots[activitySnapshotOrder[1]])
+	// Provider-run settlement bounds automatic compaction only. Manual
+	// compaction remains owned by its correlated RPC completion.
+	if s.compactionActive && s.compactRPCID == "" {
+		s.finishCompactionLocked("", "")
+	}
 	s.providerRunActive = false
 	s.promptInFlight = false
 	s.localCommandActive = false
@@ -189,15 +194,27 @@ func (s *Session) endCompactionLocked(raw map[string]any) {
 	if !s.compactionActive {
 		return
 	}
-	if s.compactProviderID != "" && id != s.compactProviderID {
+	// An empty requestId is only a safe fallback for provider-initiated
+	// compaction. It cannot correlate a manual compaction RPC and may belong
+	// to an older transaction.
+	if id == "" && s.compactRPCID != "" {
+		return
+	}
+	if id != "" && s.compactProviderID != "" && id != s.compactProviderID {
 		return
 	}
 	errText, _ := raw["errorMessage"].(string)
-	requestID := id
+	s.finishCompactionLocked(id, errText)
+}
+
+func (s *Session) finishCompactionLocked(requestID, errText string) {
 	if requestID == "" {
 		requestID = s.compactRPCID
 	}
-	s.rememberCompletedCompactionLocked(s.compactRPCID, id)
+	if requestID == "" {
+		requestID = s.compactProviderID
+	}
+	s.rememberCompletedCompactionLocked(s.compactRPCID, s.compactProviderID, requestID)
 	phase := s.compactPhase
 	s.compactionActive = false
 	s.compactRPCID = ""
