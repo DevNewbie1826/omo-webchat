@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,22 @@ type ErrIncompatibleDaemon struct {
 	ProtocolVersion     int
 	MissingCapabilities []string
 }
+
+// ErrDaemonRuntimeFallback reports failure of both automatic runtime
+// selection and the explicit node fallback.
+type ErrDaemonRuntimeFallback struct {
+	Automatic error
+	Node      error
+}
+
+func (e *ErrDaemonRuntimeFallback) Error() string {
+	return fmt.Sprintf("omorpc: daemon runtime fallback failed: automatic: %v; node: %v", e.Automatic, e.Node)
+}
+
+func (e *ErrDaemonRuntimeFallback) Unwrap() []error { return []error{e.Automatic, e.Node} }
+
+// ErrRuntimeFallback is a concise alias for the typed runtime-ladder failure.
+type ErrRuntimeFallback = ErrDaemonRuntimeFallback
 
 func (e *ErrIncompatibleDaemon) Error() string {
 	parts := make([]string, 0, 2)
@@ -55,6 +72,7 @@ type EnsureConfig struct {
 	ChildArgs       []string
 	ExpectedVersion string
 	WorkingDir      string
+	StateDir        string
 	Env             []string
 
 	ReadyTimeout time.Duration
@@ -127,6 +145,10 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 	}
 }
 
+const daemonSpawnLogLimit = 1 << 20
+
+var runtimeWinnerCache sync.Map // resolved supervisor path -> "automatic" or "node"
+
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
 // reachable, it serializes startup with an advisory lock, launches the
 // supervisor, and waits for a negotiated socket within a bounded deadline.
@@ -158,21 +180,61 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0o700); err != nil {
 		return nil, fmt.Errorf("omorpc: create socket directory: %w", err)
 	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return nil, fmt.Errorf("omorpc: create daemon state directory: %w", err)
+	}
 	command, args, err := supervisorCommand(cfg)
 	if err != nil {
 		return nil, err
 	}
+
+	if _, userRuntime := lookupEnv(cfg.Env, "OMO_RUNTIME"); userRuntime {
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env)
+		return result, attemptErr
+	}
+	if winner, ok := runtimeWinnerCache.Load(command); ok && winner == "node" {
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, setEnv(cfg.Env, "OMO_RUNTIME", "node"))
+		return result, attemptErr
+	}
+
+	result, automaticErr, retryable := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env)
+	if automaticErr == nil {
+		runtimeWinnerCache.Store(command, "automatic")
+		return result, nil
+	}
+	if !retryable || ctx.Err() != nil {
+		return nil, automaticErr
+	}
+	result, nodeErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, setEnv(cfg.Env, "OMO_RUNTIME", "node"))
+	if nodeErr == nil {
+		runtimeWinnerCache.Store(command, "node")
+		return result, nil
+	}
+	return nil, &ErrDaemonRuntimeFallback{Automatic: automaticErr, Node: nodeErr}
+}
+
+func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, args, env []string) (*EnsuredDaemon, error, bool) {
+	removeStaleSocket(cfg.SocketPath)
+	stderr, err := newBoundedSpawnLog(filepath.Join(cfg.StateDir, "daemon-spawn.log"), daemonSpawnLogLimit)
+	if err != nil {
+		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
+	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = EnsureExtensionEventsCapability(cfg.Env)
+	cmd.Env = EnsureExtensionEventsCapability(env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("omorpc: start daemon supervisor: %w", err)
+		_ = stderr.Close()
+		return nil, fmt.Errorf("omorpc: start daemon supervisor: %w", err), false
 	}
 	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
+	go func() {
+		waitErr := cmd.Wait()
+		_ = stderr.Close()
+		waitCh <- waitErr
+	}()
 
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
@@ -182,9 +244,10 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 			result, checkErr := checkedDaemon(client, cfg, true, cmd.Process, waitCh)
 			if checkErr != nil {
 				_ = stopOwnedProcess(context.Background(), cmd.Process, waitCh)
-				return nil, checkErr
+				removeStaleSocket(cfg.SocketPath)
+				return nil, checkErr, true
 			}
-			return result, nil
+			return result, nil, false
 		}
 
 		select {
@@ -192,14 +255,77 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 			if waitErr == nil {
 				waitErr = errors.New("supervisor exited successfully before opening the socket")
 			}
-			return nil, fmt.Errorf("omorpc: daemon supervisor exited before readiness: %w", waitErr)
+			removeStaleSocket(cfg.SocketPath)
+			return nil, fmt.Errorf("omorpc: daemon supervisor exited before readiness: %w", waitErr), true
 		case <-readyCtx.Done():
 			_ = stopOwnedProcess(context.Background(), cmd.Process, waitCh)
-			return nil, fmt.Errorf("omorpc: daemon readiness: %w", readyCtx.Err())
+			removeStaleSocket(cfg.SocketPath)
+			return nil, fmt.Errorf("omorpc: daemon readiness: %w", readyCtx.Err()), ctx.Err() == nil
 		case <-time.After(cfg.LockRetry):
 		}
 	}
 }
+
+func removeStaleSocket(path string) {
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeSocket != 0 {
+		_ = os.Remove(path)
+	}
+}
+
+func lookupEnv(env []string, key string) (string, bool) {
+	for i := len(env) - 1; i >= 0; i-- {
+		name, value, found := strings.Cut(env[i], "=")
+		if found && name == key {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func setEnv(env []string, key, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		name, _, found := strings.Cut(entry, "=")
+		if !found || name != key {
+			out = append(out, entry)
+		}
+	}
+	return append(out, key+"="+value)
+}
+
+type boundedSpawnLog struct {
+	file      *os.File
+	remaining int64
+}
+
+func newBoundedSpawnLog(path string, limit int64) (*boundedSpawnLog, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	return &boundedSpawnLog{file: file, remaining: limit}, nil
+}
+
+func (w *boundedSpawnLog) Write(p []byte) (int, error) {
+	originalLen := len(p)
+	if w.remaining == 0 {
+		return originalLen, nil
+	}
+	if int64(len(p)) > w.remaining {
+		p = p[:w.remaining]
+	}
+	n, err := w.file.Write(p)
+	w.remaining -= int64(n)
+	if err != nil {
+		return n, err
+	}
+	return originalLen, nil
+}
+
+func (w *boundedSpawnLog) Close() error { return w.file.Close() }
+
+var _ io.WriteCloser = (*boundedSpawnLog)(nil)
 
 func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 	if cfg.AgentDir == "" {
@@ -223,6 +349,9 @@ func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 	}
 	if cfg.WorkingDir == "" {
 		cfg.WorkingDir = "."
+	}
+	if cfg.StateDir == "" {
+		cfg.StateDir = filepath.Dir(cfg.SocketPath)
 	}
 	if cfg.Env == nil {
 		cfg.Env = os.Environ()
@@ -379,8 +508,14 @@ func releaseEnsureLock(file *os.File) {
 	_ = file.Close()
 }
 
-// EnsureExtensionEventsCapability adds extension_events exactly once to the daemon environment.
+// EnsureExtensionEventsCapability adds extension_events exactly once to the
+// daemon environment. A nil environment must remain nil: in os/exec nil means
+// inherit the parent environment, while a non-nil empty slice means no
+// environment at all. Callers that need the capability must pass os.Environ().
 func EnsureExtensionEventsCapability(env []string) []string {
+	if env == nil {
+		return nil
+	}
 	const key = "SENPI_RPC_CLIENT_CAPABILITIES"
 	out := make([]string, 0, len(env)+1)
 	merged := false

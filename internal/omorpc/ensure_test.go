@@ -33,6 +33,37 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if mode == "die" {
 		os.Exit(7)
 	}
+	if mode == "runtime-ladder" {
+		runtimeName := os.Getenv("OMO_RUNTIME")
+		if runtimeName == "" {
+			runtimeName = "automatic"
+		}
+		marker := os.Getenv("OMORPC_ENSURE_RUNTIME_MARKER")
+		file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("helper open runtime marker: %v", err)
+		}
+		_, _ = fmt.Fprintln(file, runtimeName)
+		_ = file.Close()
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		if runtimeName != "node" {
+			_ = os.Remove(socket)
+			ln, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("helper create stale socket: %v", err)
+			}
+			ln.(*net.UnixListener).SetUnlinkOnClose(false)
+			_ = ln.Close()
+			os.Exit(7)
+		}
+		if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale socket was not removed before node attempt: %v", err)
+		}
+		if err := os.WriteFile(os.Getenv("OMORPC_ENSURE_CLEANUP_MARKER"), []byte("clean"), 0o600); err != nil {
+			t.Fatalf("helper write cleanup marker: %v", err)
+		}
+		mode = "serve"
+	}
 	if mode == "flock-exit" {
 		path := os.Getenv("OMORPC_ENSURE_HELPER_LOCK_PATH")
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -205,6 +236,149 @@ func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= cfg.ReadyTimeout {
 		t.Fatalf("supervisor death was not observed promptly: %v", elapsed)
+	}
+}
+
+func TestEnsureExtensionEventsCapabilityNilInheritsEnvironment(t *testing.T) {
+	if got := EnsureExtensionEventsCapability(nil); got != nil {
+		t.Fatalf("EnsureExtensionEventsCapability(nil) = %#v, want nil for os/exec inheritance", got)
+	}
+}
+
+func TestEnsureDaemonSpawnEnvironmentContainsPATH(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	marker := filepath.Join(dir, "path")
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf '%%s' \"$PATH\" > %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	defer stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+	path, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read spawned PATH: %v", err)
+	}
+	if string(path) == "" {
+		t.Fatal("spawned supervisor PATH is empty")
+	}
+}
+
+func TestEnsureDaemonRuntimeLadderCleanupAndWinnerCache(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	runtimeMarker := filepath.Join(dir, "runtimes")
+	cleanupMarker := filepath.Join(dir, "cleanup")
+	script := helperSupervisorScript(t)
+	cfg := helperEnsureConfig(dir, socket, script, "runtime-ladder")
+	cfg.Env = append(cfg.Env,
+		"OMORPC_ENSURE_RUNTIME_MARKER="+runtimeMarker,
+		"OMORPC_ENSURE_CLEANUP_MARKER="+cleanupMarker,
+	)
+
+	first, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{first})
+	if _, err := os.Stat(cleanupMarker); err != nil {
+		t.Fatalf("node attempt did not observe stale-socket cleanup: %v", err)
+	}
+
+	second, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("second EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{second})
+	data, err := os.ReadFile(runtimeMarker)
+	if err != nil {
+		t.Fatalf("read runtime attempts: %v", err)
+	}
+	if got, want := strings.Fields(string(data)), []string{"automatic", "node", "node"}; !slices.Equal(got, want) {
+		t.Fatalf("runtime attempts = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureDaemonUserRuntimeIsAuthoritative(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	marker := filepath.Join(dir, "runtimes")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo \"${OMO_RUNTIME-unset}\" >> %q\nexit 7", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+	cfg.Env = setEnv(cfg.Env, "OMO_RUNTIME", "custom")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want configured single-attempt failure", ensured, err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read runtime marker: %v", err)
+	}
+	if got := strings.Fields(string(data)); !slices.Equal(got, []string{"custom"}) {
+		t.Fatalf("configured runtime attempts = %v, want [custom]", got)
+	}
+}
+
+func TestEnsureDaemonBothRuntimeAttemptsReturnTypedError(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	marker := filepath.Join(dir, "runtimes")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo \"${OMO_RUNTIME-automatic}\" >> %q\nexit 7", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+
+	_, err := EnsureDaemon(context.Background(), cfg)
+	var fallback *ErrDaemonRuntimeFallback
+	if !errors.As(err, &fallback) {
+		t.Fatalf("EnsureDaemon error = %T (%v), want *ErrDaemonRuntimeFallback", err, err)
+	}
+	if fallback.Automatic == nil || fallback.Node == nil {
+		t.Fatalf("typed fallback error does not name both attempts: %+v", fallback)
+	}
+	data, readErr := os.ReadFile(marker)
+	if readErr != nil {
+		t.Fatalf("read runtime marker: %v", readErr)
+	}
+	if got := strings.Fields(string(data)); !slices.Equal(got, []string{"automatic", "node"}) {
+		t.Fatalf("runtime attempts = %v, want [automatic node]", got)
+	}
+}
+
+func TestEnsureDaemonCapturesBoundedSupervisorStderr(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	stateDir := filepath.Join(dir, "state")
+	socket := filepath.Join(dir, "rpc.sock")
+	script := writeFakeSupervisor(t, "echo signed-supervisor-error >&2\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'")
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+	cfg.StateDir = stateDir
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+	data, err := os.ReadFile(filepath.Join(stateDir, "daemon-spawn.log"))
+	if err != nil {
+		t.Fatalf("read daemon spawn log: %v", err)
+	}
+	if !strings.Contains(string(data), "signed-supervisor-error") {
+		t.Fatalf("daemon spawn log = %q", data)
+	}
+
+	log, err := newBoundedSpawnLog(filepath.Join(stateDir, "bounded.log"), 4)
+	if err != nil {
+		t.Fatalf("newBoundedSpawnLog: %v", err)
+	}
+	if _, err := log.Write([]byte("abcdefgh")); err != nil {
+		t.Fatalf("write bounded log: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close bounded log: %v", err)
+	}
+	bounded, err := os.ReadFile(filepath.Join(stateDir, "bounded.log"))
+	if err != nil || string(bounded) != "abcd" {
+		t.Fatalf("bounded log = %q, err = %v", bounded, err)
 	}
 }
 

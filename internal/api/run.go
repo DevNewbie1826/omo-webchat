@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -27,7 +28,19 @@ var ensureDaemon = omorpc.EnsureDaemon
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady func() error) error {
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
-	ensured, err := ensureDaemon(ctx, omorpc.EnsureConfig{WorkingDir: cfg.Root})
+	stateDir := cfg.StateDir
+	var err error
+	if stateDir == "" {
+		stateDir, err = cursorstore.StateDir()
+		if err != nil {
+			return fmt.Errorf("resolving state directory: %w", err)
+		}
+	}
+	ensured, err := ensureDaemon(ctx, omorpc.EnsureConfig{
+		WorkingDir: cfg.Root,
+		StateDir:   stateDir,
+		Env:        os.Environ(),
+	})
 	if err != nil {
 		return fmt.Errorf("starting required omo daemon: %w", err)
 	}
@@ -42,13 +55,6 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	// Install owned-process teardown immediately: every failure after ensure,
 	// including metadata initialization, must terminate a spawned supervisor.
 	defer stopDaemon()
-	stateDir := cfg.StateDir
-	if stateDir == "" {
-		stateDir, err = cursorstore.StateDir()
-		if err != nil {
-			return fmt.Errorf("resolving state directory: %w", err)
-		}
-	}
 	cursors, err := cursorstore.Open(filepath.Join(stateDir, "state-v2.json"))
 	if err != nil {
 		return fmt.Errorf("opening cursor store: %w", err)
