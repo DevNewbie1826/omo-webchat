@@ -572,20 +572,72 @@ func packTaskSnapshot(parent string, rows []historicalTaskRow, truncated bool) (
 	return json.RawMessage(payload), omitted, err
 }
 
+func prefixDagRun(run activityDagRun, nodeCount int) activityDagRun {
+	retained := make(map[string]bool, nodeCount)
+	for _, node := range run.Nodes[:nodeCount] {
+		retained[node.ID] = true
+	}
+	nodes := make([]activityDagNode, 0, nodeCount)
+	for _, original := range run.Nodes[:nodeCount] {
+		node := original
+		node.DependsOn = make([]string, 0, len(original.DependsOn))
+		for _, dependency := range original.DependsOn {
+			if retained[dependency] {
+				node.DependsOn = append(node.DependsOn, dependency)
+			}
+		}
+		nodes = append(nodes, node)
+	}
+	run.Nodes = nodes
+	run.Counts = dagCounts(nodes)
+	run.Edges = make([]activityDagEdge, 0)
+	for _, node := range nodes {
+		for _, dependency := range node.DependsOn {
+			run.Edges = append(run.Edges, activityDagEdge{From: dependency, To: node.ID})
+		}
+	}
+	run.Waves = dagWaves(nodes)
+	return run
+}
+
 func packDagSnapshot(parent string, rows []historicalDagRow, truncated bool) (json.RawMessage, bool, error) {
-	out := historicalDagSnapshot{ParentSessionID: truncateActivityText(parent), Runs: make([]activityDagRun, 0, len(rows))}
+	out := historicalDagSnapshot{ParentSessionID: truncateActivityText(parent), Truncated: truncated, Runs: make([]activityDagRun, 0, len(rows))}
 	omitted := false
 	for _, row := range rows {
-		out.Runs = append(out.Runs, row.run)
-		candidate, err := json.Marshal(out)
+		candidateOut := out
+		candidateOut.Runs = append(append([]activityDagRun(nil), out.Runs...), row.run)
+		candidate, err := json.Marshal(candidateOut)
 		if err != nil {
 			return nil, false, err
 		}
-		if len(candidate) > maxActivitySnapshotBytes {
-			out.Runs = out.Runs[:len(out.Runs)-1]
-			omitted = true
-			break
+		if len(candidate) <= maxActivitySnapshotBytes {
+			out = candidateOut
+			continue
 		}
+
+		omitted = true
+		low, high, best := 0, len(row.run.Nodes), -1
+		for low <= high {
+			middle := low + (high-low)/2
+			partialOut := out
+			partialOut.Truncated = true
+			partialOut.Runs = append(append([]activityDagRun(nil), out.Runs...), prefixDagRun(row.run, middle))
+			payload, marshalErr := json.Marshal(partialOut)
+			if marshalErr != nil {
+				return nil, false, marshalErr
+			}
+			if len(payload) <= maxActivitySnapshotBytes {
+				best = middle
+				low = middle + 1
+			} else {
+				high = middle - 1
+			}
+		}
+		if best >= 0 {
+			out.Truncated = true
+			out.Runs = append(out.Runs, prefixDagRun(row.run, best))
+		}
+		break
 	}
 	out.Truncated = truncated || omitted
 	payload, err := json.Marshal(out)
@@ -674,6 +726,12 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		}
 		projected, truncated := projectStoredDag(run)
 		runFieldsTruncated = runFieldsTruncated || truncated
+		for _, node := range projected.Nodes {
+			if node.ID == "" || node.State == "" {
+				runFieldsTruncated = true
+				return
+			}
+		}
 		runs = append(runs, historicalDagRow{createdAt: run.CreatedAt, run: projected})
 	})
 	if err != nil {
@@ -687,8 +745,14 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	}
 
 	receivedAt := time.Now().UTC().Format(time.RFC3339)
-	taskDigest, _ := parseTaskDigest(taskPayload)
-	dagDigest, _ := parseDagDigest(dagPayload)
+	taskDigest, taskDigestOK := parseTaskDigest(taskPayload)
+	if !taskDigestOK {
+		taskDigest = &TaskDigest{Truncated: true}
+	}
+	dagDigest, dagDigestOK := parseDagDigest(dagPayload)
+	if !dagDigestOK {
+		dagDigest = &DagDigest{Truncated: true}
+	}
 	taskDigest.ReceivedAt = receivedAt
 	dagDigest.ReceivedAt = receivedAt
 	boundTaskDigest(taskDigest)

@@ -264,6 +264,68 @@ func TestHistoricalActivityDagFieldTruncationMarksSnapshot(t *testing.T) {
 	}
 }
 
+func TestReadHistoricalActivitySkipsDagNodeWithoutState(t *testing.T) {
+	cwd := t.TempDir()
+	writeActivityStoreJSON(t, filepath.Join(cwd, ".omo", "senpi-task", "dag", "runs", "malformed.json"), map[string]any{
+		"runId": "malformed", "runKey": "malformed", "name": "Malformed", "status": "running", "parentSessionId": "parent",
+		"definition": map[string]any{"nodes": []any{map[string]any{
+			"id": "node", "prompt": "work", "dependsOn": []string{},
+		}}},
+		"nodes": []any{map[string]any{"id": "node"}},
+	})
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalDagSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Dag, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 0 || !snapshot.Truncated || activity.DagDigest == nil || !activity.DagDigest.Truncated {
+		t.Fatalf("malformed DAG projection = snapshot=%s digest=%+v", activity.ActivityPair.Dag, activity.DagDigest)
+	}
+}
+
+func TestHistoricalActivityDenseDagKeepsBoundedNodePrefix(t *testing.T) {
+	cwd := t.TempDir()
+	definitions := make([]any, 64)
+	nodes := make([]any, 64)
+	for i := range definitions {
+		dependencies := make([]string, i)
+		for dependency := range dependencies {
+			dependencies[dependency] = fmt.Sprintf("node-%02d", dependency)
+		}
+		definitions[i] = map[string]any{
+			"id": fmt.Sprintf("node-%02d", i), "label": "Dense node",
+			"prompt": strings.Repeat("p", 512), "dependsOn": dependencies,
+		}
+		nodes[i] = map[string]any{"id": fmt.Sprintf("node-%02d", i), "state": "completed"}
+	}
+	writeActivityStoreJSON(t, filepath.Join(cwd, ".omo", "senpi-task", "dag", "runs", "dense.json"), map[string]any{
+		"runId": "dense", "runKey": "dense", "name": "Dense DAG", "status": "completed", "parentSessionId": "parent",
+		"definition": map[string]any{"nodes": definitions}, "nodes": nodes,
+	})
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalDagSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Dag, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 1 {
+		t.Fatalf("dense DAG prefix omitted run metadata: %s", activity.ActivityPair.Dag)
+	}
+	if len(snapshot.Runs[0].Nodes) == 0 || len(snapshot.Runs[0].Nodes) >= len(nodes) || !snapshot.Truncated || !activity.DagOversized {
+		t.Fatalf("dense DAG prefix: bytes=%d nodes=%d truncated=%v oversized=%v", len(activity.ActivityPair.Dag), len(snapshot.Runs[0].Nodes), snapshot.Truncated, activity.DagOversized)
+	}
+	if snapshot.Runs[0].Counts.Total != len(snapshot.Runs[0].Nodes) || len(activity.ActivityPair.Dag) > maxActivitySnapshotBytes {
+		t.Fatalf("dense DAG graph fields: bytes=%d counts=%+v nodes=%d", len(activity.ActivityPair.Dag), snapshot.Runs[0].Counts, len(snapshot.Runs[0].Nodes))
+	}
+}
+
 func TestHistoricalActivityRealisticLargeStoreKeepsTaskAndDagPrefixes(t *testing.T) {
 	cwd := t.TempDir()
 	base := filepath.Join(cwd, ".omo", "senpi-task")

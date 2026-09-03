@@ -306,6 +306,34 @@ describe("useChatSession historical activity hydration", () => {
     )).toBe(true);
   });
 
+  it("keeps REST history when overflowed DAG activity had no live snapshots to mutate", async () => {
+    render();
+
+    act(() => {
+      for (let index = 0; index < 125; index += 1) {
+        deliver({
+          type: "extensionEvent",
+          sessionId: session.id,
+          name: "omo.dag.activity",
+          data: {
+            runId: `missing-run-${index % 2}`,
+            nodeId: `missing-node-${index}`,
+            taskId: `missing-task-${index}`,
+            at: "2026-09-03T12:00:00.000Z",
+            activity: `work-${index}`,
+          },
+        });
+      }
+    });
+
+    await resolveActivity(0, activityBody("rest-task", "rest-dag"));
+
+    expect(current?.activities.tasks.size).toBeGreaterThan(0);
+    expect(current?.activities.dags.size).toBeGreaterThan(0);
+    expect(current?.activities.tasks.has("task-rest-task")).toBe(true);
+    expect(current?.activities.dags.has("dag-rest-dag")).toBe(true);
+  });
+
   it("does not let a malformed snapshot suppress valid REST history", async () => {
     render();
     act(() => deliver({

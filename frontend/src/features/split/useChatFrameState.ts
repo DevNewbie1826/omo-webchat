@@ -271,10 +271,14 @@ export function useChatFrameState() {
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    if (!hydration.buffer.taskSuperseded && !hydration.buffer.taskOverflowed) {
+    const protectLiveTasks = hydration.buffer.taskSuperseded
+      || (hydration.buffer.taskOverflowed && next.tasks.size > 0);
+    const protectLiveDags = hydration.buffer.dagSuperseded
+      || (hydration.buffer.dagOverflowed && next.dags.size > 0);
+    if (!protectLiveTasks) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (!hydration.buffer.dagSuperseded && !hydration.buffer.dagOverflowed) {
+    if (!protectLiveDags) {
       next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
     }
     for (const event of hydration.buffer.events) {

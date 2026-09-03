@@ -69,8 +69,9 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   // The shelf is the transcript's record of agent and DAG work: finished
   // entries stay mounted (sorted behind live ones) instead of vanishing the
   // moment everything turns terminal. It hides only when there is genuinely
-  // nothing to show - no todo, no tasks, no dag runs at all.
-  const hasActivity = activities.todo !== null || tasks.length > 0 || dags.length > 0;
+  // nothing to show, including no marker for omitted historical rows.
+  const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
+  const hasActivity = activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
 
@@ -161,6 +162,12 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                 {segment}
               </span>
             ))}
+            {historyPartial && (
+              <span className="th-activity-bar-seg">
+                {segments.length > 0 && <span className="th-activity-bar-sep">·</span>}
+                <span className="th-activity-partial">{t("activity.partial")}</span>
+              </span>
+            )}
           </span>
           <IconChevron
             size={12}
@@ -191,9 +198,6 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
             style={height === null ? undefined : { height: `${height}px` }}
           >
-            {(activities.truncatedTasks === true || activities.truncatedDags === true) && (
-              <span className="th-activity-partial">{t("activity.partial")}</span>
-            )}
             {tasks.length > 0 && (
               <AgentSection
                 tasks={tasks}

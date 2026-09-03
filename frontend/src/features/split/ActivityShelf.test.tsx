@@ -57,6 +57,13 @@ describe("ActivityShelf", () => {
     expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
   });
 
+  it("renders the partial marker even when no retained rows fit", () => {
+    renderShelf(harness, activityState({ truncatedDags: true }));
+
+    expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
+    expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+  });
+
   it("renders a collapsed summary bar as a live status region while activity exists", () => {
     renderShelf(harness, activityState({ tasks: [makeTask()] }));
     const bar = requireElement(
