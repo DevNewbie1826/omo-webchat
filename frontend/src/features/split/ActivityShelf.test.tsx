@@ -6,6 +6,7 @@ import {
   makeDag,
   makeTask,
   mountActivityShelf,
+  openShelf,
   renderShelf,
   unmountActivityShelf,
   type ActivityShelfHarness,
@@ -40,6 +41,27 @@ describe("ActivityShelf", () => {
       }),
     );
     expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
+  });
+
+  it("renders retained prefix rows and marks truncated history as partial", () => {
+    renderShelf(harness, activityState({
+      tasks: [makeTask({ name: "Retained prefix task" })],
+      dags: [makeDag({ name: "Retained prefix DAG" })],
+      truncatedTasks: true,
+      truncatedDags: true,
+    }));
+    openShelf(harness.container);
+
+    expect(harness.container.querySelector(".th-activity-agent-name")?.textContent).toContain("Retained prefix task");
+    expect(harness.container.querySelector(".th-activity-dag-name")?.textContent).toContain("Retained prefix DAG");
+    expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+  });
+
+  it("renders the partial marker even when no retained rows fit", () => {
+    renderShelf(harness, activityState({ truncatedDags: true }));
+
+    expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
+    expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
   });
 
   it("renders a collapsed summary bar as a live status region while activity exists", () => {

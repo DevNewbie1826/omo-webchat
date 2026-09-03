@@ -269,5 +269,6 @@
   "activity.status.pending": "pending",
   "activity.status.blocked": "blocked",
   "activity.status.scheduled": "scheduled",
-  "activity.status.skipped": "skipped"
+  "activity.status.skipped": "skipped",
+  "activity.partial": "Partial history shown"
 }

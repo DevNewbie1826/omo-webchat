@@ -269,5 +269,6 @@
   "activity.status.pending": "대기 중",
   "activity.status.blocked": "차단됨",
   "activity.status.scheduled": "예약됨",
-  "activity.status.skipped": "건너뜀"
+  "activity.status.skipped": "건너뜀",
+  "activity.partial": "일부만 표시"
 }

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { applyActivityEvent, applyRunFlight, emptyActivityState, lifeSeenThisRunOf } from "./activityState";
+import {
+  ACTIVITY_HYDRATION_SIDE_LIMIT,
+  applyActivityEvent,
+  applyRunFlight,
+  bufferActivityHydrationEvent,
+  createActivityHydrationBuffer,
+  emptyActivityState,
+  lifeSeenThisRunOf,
+  validatedActivityEvent,
+} from "./activityState";
 import { NOW_ISO, dagRun, taskSnapshot } from "./activityState.support";
 
 describe("applyActivityEvent omo.task.updated", () => {
@@ -155,6 +164,102 @@ describe("per-task life latches", () => {
     // latch set keeps its reference (honest version bump).
     const next = applyActivityEvent(seeded, "omo.task.updated", taskSnapshot([inFlightTask()]));
     expect(lifeSeenThisRunOf(next)).toBe(lifeSeenThisRunOf(seeded));
+  });
+});
+
+describe("activity hydration buffer", () => {
+  it("rejects unrelated and malformed activity frames before buffering", () => {
+    expect(validatedActivityEvent("unrelated", { tasks: [] })).toBeNull();
+    expect(validatedActivityEvent("omo.task.updated", { tasks: "nope" })).toBeNull();
+
+    const buffer = createActivityHydrationBuffer();
+    const valid = validatedActivityEvent("omo.task.updated", taskSnapshot([]));
+    expect(valid).not.toBeNull();
+    bufferActivityHydrationEvent(buffer, valid!);
+    expect(buffer.taskSuperseded).toBe(true);
+    expect(buffer.events).toHaveLength(1);
+  });
+
+  it("bounds each side under distinct-event floods and counts oldest-first drops", () => {
+    const buffer = createActivityHydrationBuffer();
+    for (let index = 0; index < ACTIVITY_HYDRATION_SIDE_LIMIT + 25; index += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: `run-${index}`,
+        nodeId: `node-${index}`,
+        at: NOW_ISO,
+      });
+      expect(event).not.toBeNull();
+      bufferActivityHydrationEvent(buffer, event!);
+    }
+
+    expect(buffer.events).toHaveLength(ACTIVITY_HYDRATION_SIDE_LIMIT);
+    expect(buffer.dropped).toBe(25);
+    expect(buffer.taskOverflowed).toBe(true);
+    expect(buffer.dagOverflowed).toBe(true);
+    expect(buffer.events[0]?.key).toContain("run-25:node-25");
+  });
+  it("overflow of no-op dag.activity frames does not fence fresh REST history over stale cache", () => {
+    const buffer = createActivityHydrationBuffer();
+    for (let i = 0; i < 125; i += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: "absent-run", nodeId: "node-" + i, at: "2026-09-04T00:00:00Z", activity: "probe",
+      });
+      expect(event).not.toBeNull();
+      bufferActivityHydrationEvent(buffer, { ...event!, mutatedTask: false, mutatedDag: false });
+    }
+    expect(buffer.dropped).toBe(25);
+    expect(buffer.taskOverflowed).toBe(false);
+    expect(buffer.dagOverflowed).toBe(false);
+  });
+
+  it("DAG-only overflow does not fence task history over stale seeds", () => {
+    const buffer = createActivityHydrationBuffer();
+    for (let index = 0; index < 125; index += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: "run-a", nodeId: "node-" + index, at: "2026-09-04T00:00:00Z",
+      });
+      bufferActivityHydrationEvent(buffer, { ...event!, mutatedTask: false, mutatedDag: true });
+    }
+    expect(buffer.dropped).toBe(25);
+    expect(buffer.taskOverflowed).toBe(false);
+    expect(buffer.dagOverflowed).toBe(true);
+  });
+
+  it("coalesced events OR mixed mutation bits across the merge", () => {
+    const buffer = createActivityHydrationBuffer();
+    const first = validatedActivityEvent("omo.dag.activity", {
+      runId: "run-x", nodeId: "node-1", at: "2026-09-04T00:00:00Z",
+    });
+    const key = "omo.dag.activity:run-x:node-1";
+    bufferActivityHydrationEvent(buffer, { ...first!, key, mutatedTask: false, mutatedDag: true });
+    const second = validatedActivityEvent("omo.dag.activity", {
+      runId: "run-x", nodeId: "node-1", taskId: "task-9", at: "2026-09-04T00:01:00Z", activity: "later",
+    });
+    bufferActivityHydrationEvent(buffer, { ...second!, key, mutatedTask: true, mutatedDag: true });
+    expect(buffer.events).toHaveLength(1);
+    expect(buffer.events[0]?.mutatedTask).toBe(true);
+    expect(buffer.events[0]?.mutatedDag).toBe(true);
+  });
+
+  it("coalesces updates for the same activity id while preserving partial fields", () => {
+    const buffer = createActivityHydrationBuffer();
+    const first = validatedActivityEvent("omo.dag.activity", {
+      runId: "run",
+      nodeId: "node",
+      at: NOW_ISO,
+      currentTool: "bash",
+    });
+    const second = validatedActivityEvent("omo.dag.activity", {
+      runId: "run",
+      nodeId: "node",
+      at: NOW_ISO,
+      activity: "working",
+    });
+    bufferActivityHydrationEvent(buffer, first!);
+    bufferActivityHydrationEvent(buffer, second!);
+
+    expect(buffer.events).toHaveLength(1);
+    expect(buffer.events[0]?.data).toMatchObject({ currentTool: "bash", activity: "working" });
   });
 });
 

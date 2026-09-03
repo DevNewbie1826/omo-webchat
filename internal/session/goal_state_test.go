@@ -157,6 +157,37 @@ func TestReadGoalStateCorruptOversizedSymlinkMiskeyedYieldNil(t *testing.T) {
 	})
 }
 
+func TestGoalStableReadRetryKeepsGoalByteLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goal.json")
+	if err := os.WriteFile(path, []byte(`{"goal":null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the file after the caller's Lstat. The first helper attempt must
+	// consume the identity mismatch, and the retry must reapply the goal
+	// reader's 512 KiB budget rather than the task-store default.
+	replacement := filepath.Join(dir, "replacement.json")
+	oversized := make([]byte, maxGoalStateBytes+1)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+	if err := os.WriteFile(replacement, oversized, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	var target storedGoalState
+	if _, ok := readStableJSONWithLimit(t.Context(), path, expected, maxGoalStateBytes, &target); ok {
+		t.Fatal("oversized replacement passed the goal reader's retry budget")
+	}
+}
+
 func TestReadGoalStateTruncatesLongObjectives(t *testing.T) {
 	agentDir, cwd := t.TempDir(), t.TempDir()
 	long := make([]byte, maxGoalObjectiveBytes+100)
