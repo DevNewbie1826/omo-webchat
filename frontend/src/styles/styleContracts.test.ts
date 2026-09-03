@@ -295,8 +295,9 @@ describe("visual accessibility contracts", () => {
     expect(allStyles).not.toContain("th-pulse");
   });
 
-  it("keeps provider identity visible and complete at narrow widths", () => {
-    expect(chatPane).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
+  it("keeps provider identity visible outside the compact chat header", () => {
+    const regularChatPane = chatPane.slice(0, chatPane.indexOf("@container"));
+    expect(regularChatPane).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
     expect(newChat).toMatch(/\.th-provider-card-name\s*\{[^}]*white-space:\s*normal/);
     expect(newChat).not.toMatch(/\.th-provider-card-name\s*\{[^}]*text-overflow:\s*ellipsis/);
   });
@@ -343,6 +344,42 @@ describe("visual accessibility contracts", () => {
     expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-btn\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
     expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-icon\s*\{[^}]*display:\s*inline-flex/);
     expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-label\s*\{[^}]*display:\s*none/);
+  });
+
+  it("fits the complete compact chat header within the supported 320px pane", () => {
+    const compact = chatPane.match(/@container chat-pane \(max-width: 340px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-files-toggle,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+    );
+
+    const header = ruleBody(chatPane, ".th-chat-pane .th-termhead");
+    const title = ruleBody(chatPane, ".th-chat-pane .th-termhead-name");
+    const iconControls = chatPane.match(
+      /\.th-chat-pane \.th-mobile-menu,[\s\S]*?\.th-chat-pane \.th-termhead-actions \.th-btn-icon\s*\{([^}]*)\}/,
+    )?.[1] ?? "";
+    const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const resync = ruleBody(narrow, ".th-chat-pane .th-chat-resync-btn");
+    const model = ruleBody(compact, ".th-chat-pane .th-model-picker-btn");
+    const pixels = (value: string): number => {
+      const token = wholeVarToken(value);
+      return Number.parseFloat((token ? tokenValue(token) : value).replace("px", ""));
+    };
+    const paddingTokens = Array.from(
+      declarationValue(header, "padding").matchAll(/var\(\s*(--th-space-[\w-]+)\s*\)/g),
+      (match) => match[1] ?? "",
+    );
+    const horizontalPadding = paddingTokens.reduce((sum, token) => sum + pixels(`var(${token})`), 0);
+    const gap = pixels(declarationValue(header, "gap"));
+    const titleMinimum = pixels(declarationValue(title, "min-width"));
+    const iconWidth = pixels(declarationValue(iconControls, "width"));
+    const modelWidth = pixels(declarationValue(model, "width"));
+    const resyncWidth = pixels(declarationValue(resync, "width"));
+
+    // Worst case includes the viewport menu plus title, selected-model control,
+    // resync, disconnect, and close. Provider/files/model prose are hidden above.
+    const visibleWidths = titleMinimum + iconWidth * 3 + modelWidth + resyncWidth;
+    const visibleGaps = gap * 5;
+    expect(horizontalPadding + visibleWidths + visibleGaps).toBeLessThanOrEqual(320);
   });
 
   it("keeps the mobile empty-state menu below the safe area at 44px", () => {

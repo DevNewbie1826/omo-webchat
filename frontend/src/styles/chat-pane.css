@@ -556,7 +556,17 @@
     --th-chat-gutter: 8px;
   }
 
-  .th-files-toggle {
-    padding-inline: var(--th-space-1);
+  /* At the supported 320px pane minimum, retain the title and actionable
+     controls. Their aggregate is 310px: 28px header padding, five 4px gaps,
+     the 42px title minimum, and five 44px controls. */
+  .th-chat-pane .th-provider-badge,
+  .th-chat-pane .th-files-toggle,
+  .th-chat-pane .th-model-picker-label {
+    display: none;
+  }
+
+  .th-chat-pane .th-model-picker-btn {
+    width: 44px;
+    max-width: 44px;
   }
 }
