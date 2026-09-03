@@ -542,6 +542,9 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	if name == "" {
 		return
 	}
+	if err := s.prepareWrite(ctx); err != nil {
+		return
+	}
 	s.nameMu.Lock()
 	defer s.nameMu.Unlock()
 
@@ -1073,6 +1076,11 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		var drift *ExternalWriteError
 		if errors.As(err, &drift) {
 			if !s.quarantineExternalWrite(drift, target) {
+				if target != nil {
+					if barrierErr := target.enqueueReplayBarrier(ctx); barrierErr != nil {
+						target.retire(barrierErr)
+					}
+				}
 				return
 			}
 			if target == nil {

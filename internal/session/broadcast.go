@@ -10,6 +10,7 @@ type errorDeliverer interface{ DeliverFrame(Frame) error }
 type queuedFrame struct {
 	frame     Frame
 	delivered chan struct{}
+	barrier   bool
 }
 
 type subscription struct {
@@ -50,14 +51,16 @@ func (x *subscription) run() {
 		case <-x.stopCh:
 			return
 		case item := <-x.q:
-			if !x.deliver(item.frame) {
-				retireReason = ErrSubscriberDelivery
-				return
-			}
-			if x.initialRemaining > 0 {
-				x.initialRemaining--
-				if x.initialRemaining == 0 {
-					x.initialOnce.Do(func() { close(x.initialDone) })
+			if !item.barrier {
+				if !x.deliver(item.frame) {
+					retireReason = ErrSubscriberDelivery
+					return
+				}
+				if x.initialRemaining > 0 {
+					x.initialRemaining--
+					if x.initialRemaining == 0 {
+						x.initialOnce.Do(func() { close(x.initialDone) })
+					}
 				}
 			}
 			if item.delivered != nil {
@@ -174,6 +177,27 @@ func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool
 	}
 	if item.delivered == nil {
 		return nil
+	}
+	select {
+	case <-item.delivered:
+		return nil
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueueReplayBarrier completes replay without delivering another frame. It
+// is used when the terminal transition is already buffered as a live frame.
+func (x *subscription) enqueueReplayBarrier(ctx context.Context) error {
+	item := queuedFrame{delivered: make(chan struct{}), barrier: true}
+	select {
+	case x.q <- item:
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	select {
 	case <-item.delivered:
