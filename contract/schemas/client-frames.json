@@ -34,7 +34,8 @@
       "properties": {
         "type": { "const": "chat.create" },
         "wsId": { "type": "string" },
-        "chatId": { "type": "string" }
+        "chatId": { "type": "string" },
+        "recovery": { "type": "boolean", "description": "Explicitly authorizes replacement of a quarantined in-place provider route" }
       }
     },
     "ChatSendFrame": {

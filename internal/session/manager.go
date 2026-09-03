@@ -423,14 +423,20 @@ func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, nil, nil)
+	return m.acquire(ctx, chat, sub, nil, nil, false)
 }
 
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
 func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil)
+	return m.acquire(ctx, chat, sub, initialize, nil, false)
+}
+
+// AcquireInitializedWithRecovery is AcquireInitialized with explicit authority
+// to replace a quarantined in-place provider route.
+func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, nil, true)
 }
 
 // AcquireInitializedChecked validates its caller's metadata generation before
@@ -438,10 +444,16 @@ func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subs
 // validate must not acquire a lock that nests outside the manager's per-chat
 // flight.
 func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate)
+	return m.acquire(ctx, chat, sub, initialize, validate, false)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
+// AcquireInitializedCheckedWithRecovery combines checked publication with
+// explicit authority to replace a quarantined in-place provider route.
+func (m *Manager) AcquireInitializedCheckedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, true)
+}
+
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, recoveryAuthorized bool) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -515,9 +527,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		var drift *ExternalWriteError
 		if errors.As(attachErr, &drift) {
-			// A reload is the explicit recovery boundary for a quarantined route.
-			// Stop it before reopening the stored path so the provider never sees
-			// two owners for the same in-place session.
+			if !recoveryAuthorized {
+				return nil, false, nil, drift
+			}
+			// Explicit recovery stops the quarantined route before reopening the
+			// stored path, so the provider never sees two owners for one file.
 			if err := existing.closeContext(ctx); err != nil {
 				return nil, false, nil, err
 			}

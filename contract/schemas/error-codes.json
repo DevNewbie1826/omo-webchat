@@ -18,6 +18,7 @@
         "decode_failed",
         "incomplete_history",
         "external-write-detected",
+        "session-active",
         "adoption_required",
         "bad_frame",
         "unknown_type",

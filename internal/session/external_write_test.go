@@ -154,8 +154,25 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 
 	beforeOpens := daemon.RequestCount(omorpc.CmdOpenSession)
 	beforeCloses := daemon.RequestCount(omorpc.CmdCloseSession)
+	_, _, ordinaryDetach, err := manager.Acquire(context.Background(), chat, newRecorder(32))
+	if ordinaryDetach != nil {
+		ordinaryDetach()
+	}
+	if !errors.As(err, &drift) {
+		t.Fatalf("ordinary reattach error = %T %v, want typed external-write error", err, err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses {
+		t.Fatalf("ordinary reattach closed quarantined route: %d -> %d", beforeCloses, got)
+	}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens {
+		t.Fatalf("ordinary reattach reopened quarantined route: %d -> %d", beforeOpens, got)
+	}
+
 	recoveredSub := newRecorder(32)
-	recovered, started, recoveredDetach := acquire(t, manager, chat, recoveredSub)
+	recovered, started, recoveredDetach, err := manager.AcquireInitializedWithRecovery(context.Background(), chat, recoveredSub, nil)
+	if err != nil {
+		t.Fatalf("explicit recovery: %v", err)
+	}
 	defer recoveredDetach()
 	if !started {
 		t.Fatal("external-write recovery reused the quarantined route")

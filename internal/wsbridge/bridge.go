@@ -19,6 +19,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -625,6 +626,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	}
 	var sess *session.Session
 	var detach func()
+	recovery := f.Recovery != nil && *f.Recovery
 	if guarded {
 		validate := func() error {
 			if c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
@@ -632,12 +634,23 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			}
 			return nil
 		}
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedChecked(ctx, ref, sub, initialize, validate)
+		if recovery {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecovery(ctx, ref, sub, initialize, validate)
+		} else {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedChecked(ctx, ref, sub, initialize, validate)
+		}
+	} else if recovery {
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
 	} else {
 		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, initialize)
 	}
 	if err != nil {
 		c.unbind()
+		var drift *session.ExternalWriteError
+		if errors.As(err, &drift) {
+			c.sendExternalWriteError(drift, "", "")
+			return
+		}
 		code := "start_failed"
 		message := err.Error()
 		switch {
@@ -646,7 +659,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 		case errors.Is(err, cursorstore.ErrAdoptionRequired):
 			code = "adoption_required"
 			message = "session must be adopted before opening"
-		case errors.As(err, new(*SessionActiveError)):
+		case isSessionActiveError(err):
 			code = "session-active"
 			message = "session is active in another process"
 		}
@@ -686,7 +699,32 @@ func (c *connection) sendError(code, message, command, requestID string) {
 	}
 	_ = c.write(m)
 }
+func (c *connection) sendExternalWriteError(drift *session.ExternalWriteError, command, requestID string) {
+	sid, _ := c.binding()
+	frame := map[string]any{
+		"type":         "error",
+		"code":         "external-write-detected",
+		"message":      drift.Error(),
+		"knownLeaf":    drift.KnownLeaf,
+		"observedLeaf": drift.ObservedLeaf,
+	}
+	if sid != "" {
+		frame["sessionId"] = sid
+	}
+	if command != "" {
+		frame["command"] = command
+	}
+	if requestID != "" {
+		frame["requestId"] = requestID
+	}
+	_ = c.write(frame)
+}
 func (c *connection) sendSessionError(err error, command, requestID string) {
+	var drift *session.ExternalWriteError
+	if errors.As(err, &drift) {
+		c.sendExternalWriteError(drift, command, requestID)
+		return
+	}
 	code := "provider_error"
 	if errors.Is(err, session.ErrPromptInFlight) {
 		code = "prompt_in_flight"
@@ -695,6 +733,14 @@ func (c *connection) sendSessionError(err error, command, requestID string) {
 		code = "compaction_in_flight"
 	}
 	c.sendError(code, err.Error(), command, requestID)
+}
+
+func isSessionActiveError(err error) bool {
+	if errors.As(err, new(*SessionActiveError)) {
+		return true
+	}
+	var stable *omorpc.StableError
+	return errors.As(err, &stable) && stable.Code == omorpc.ErrCodeSessionPathInUse
 }
 
 func (c *connection) queryState(ctx context.Context, s *session.Session) {
