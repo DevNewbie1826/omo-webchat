@@ -87,7 +87,9 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     setHeight(px);
     try {
       if (px === null) window.localStorage.removeItem(PANEL_STORAGE_KEY);
-      else window.localStorage.setItem(PANEL_STORAGE_KEY, String(px));
+      // Re-clamp against the live viewport at save time so a height stored
+      // here can never exceed the current window (restore re-clamps too).
+      else window.localStorage.setItem(PANEL_STORAGE_KEY, String(clampPanelHeight(px)));
     } catch {
       // Private modes may throw; the choice simply will not persist.
     }

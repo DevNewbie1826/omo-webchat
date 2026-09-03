@@ -372,7 +372,10 @@
    Shrink contract: .th-chat-main clips overflow, so this child must be a
    min-height: 0 flex column allowed to shrink (never flex: none) - when
    both shelves expand at a short viewport, the shelf yields height instead
-   of pushing the composer past the pane bottom. */
+   of pushing the composer past the pane bottom. overflow: hidden pairs
+   with that shrink: a shelf squeezed below its content height clips the
+   bar and panel instead of painting them over the status strip and
+   composer that follow later in the column. */
 .th-goal-shelf {
   display: flex;
   flex: 0 1 auto;
@@ -380,6 +383,7 @@
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   margin: var(--th-space-1) auto 0;
 }
 
