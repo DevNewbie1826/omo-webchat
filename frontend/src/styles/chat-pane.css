@@ -367,6 +367,50 @@
   color: var(--th-text);
 }
 
+/* Stage-13 goal banner: objective + status chip + blocked reason, rendered
+   with the shared .th-alert family (info tone for live/complete, warning
+   when blocked). The chip reuses the provider-badge sizing conventions. */
+.th-goal-banner {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--th-space-1);
+}
+
+.th-goal-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+}
+
+.th-goal-status {
+  padding: 0 var(--th-space-2);
+  border: 1px solid var(--th-border);
+  border-radius: 999px;
+  color: var(--th-text-dim);
+  white-space: nowrap;
+}
+
+.th-goal-status--active {
+  color: var(--th-send);
+  border-color: var(--th-send);
+}
+
+.th-goal-objective {
+  margin: 0;
+  color: var(--th-text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.th-goal-blocked {
+  margin: 0;
+  color: var(--th-text-dim);
+  overflow-wrap: anywhere;
+}
+
 /* Recoverable session banners stack their copy against one explicit action. */
 .th-unloaded-banner,
 .th-external-write-banner {

@@ -252,6 +252,7 @@ type connection struct {
 	wsID, chatID string
 	sess         *session.Session
 	detach       func()
+	goalCancel   context.CancelFunc
 	activityMu   sync.Mutex
 	activity     *activitySubscription
 	hello        bool
@@ -349,6 +350,7 @@ func (c *connection) shutdown() {
 	}
 }
 func (c *connection) unbind() (string, *session.Session) {
+	c.stopGoalWatch()
 	c.stateMu.Lock()
 	id, s, detach := c.chatID, c.sess, c.detach
 	c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
@@ -671,6 +673,13 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	c.stateMu.Unlock()
 	if !stillBound && detach != nil {
 		detach()
+	}
+	// The watcher needs the durable identity, which a fresh web chat only
+	// carries after the provider route is published — re-read post-acquire.
+	if stillBound {
+		if fresh, err := c.bridge.cfg.Store.GetChat(rec.ID); err == nil {
+			c.startGoalWatch(fresh)
+		}
 	}
 }
 

@@ -14,7 +14,7 @@ import {
   sanitizeJson,
 } from "./chatWsParseFields";
 
-type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries";
+type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries" | "chat.goal";
 
 /**
  * Session-surface frames, built field-by-field into the generated contract
@@ -145,6 +145,34 @@ export function parseSessionFrame(
       const models = mapRecords(msg["models"], parseModelEntry);
       if (models === null) return null;
       return { type: "models", sessionId, models };
+    }
+    case "chat.goal": {
+      if (sessionId === null) return null;
+      const rawGoal = msg["goal"];
+      let goal: import("./contract/types_gen").ChatGoalState | null;
+      if (rawGoal === null || rawGoal === undefined) {
+        goal = null;
+      } else if (isRecord(rawGoal)) {
+        const objective = reqString(rawGoal, "objective");
+        const status = reqString(rawGoal, "status");
+        const blockedReason = optString(rawGoal, "blockedReason");
+        const objectiveTruncated = optBoolean(rawGoal, "objectiveTruncated");
+        const createdAt = optNumber(rawGoal, "createdAt");
+        const updatedAt = optNumber(rawGoal, "updatedAt");
+        const completedAt = optNumber(rawGoal, "completedAt");
+        if (objective === null || status === null || blockedReason === null || objectiveTruncated === null
+          || createdAt === null || updatedAt === null || completedAt === null) return null;
+        goal = {
+          objective,
+          status,
+          ...(blockedReason !== undefined ? { blockedReason } : {}),
+          ...(objectiveTruncated !== undefined ? { objectiveTruncated } : {}),
+          ...(createdAt !== undefined ? { createdAt } : {}),
+          ...(updatedAt !== undefined ? { updatedAt } : {}),
+          ...(completedAt !== undefined ? { completedAt } : {}),
+        };
+      } else return null;
+      return { type: "chat.goal", sessionId, goal };
     }
     case "entries": {
       if (sessionId === null) return null;
