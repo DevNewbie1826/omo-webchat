@@ -278,9 +278,16 @@ func (b *broadcaster) notifyDetach(x *subscription, reason error) {
 }
 
 func (b *broadcaster) publish(f Frame) {
+	b.publishExcept(f, nil)
+}
+
+func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	var retired []*subscription
 	b.mu.Lock()
 	for id, x := range b.subs {
+		if x == except {
+			continue
+		}
 		if !x.enqueue(f) {
 			delete(b.subs, id)
 			retired = append(retired, x)

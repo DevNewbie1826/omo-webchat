@@ -12,28 +12,37 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
-func TestInPlaceHydrationQuarantinesMissingOriginal(t *testing.T) {
+func TestInPlaceMutationFenceQuarantinesDirectFileDrift(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		remove func(*testing.T, string)
+		name       string
+		mutate     func(*testing.T, string)
+		wantCause  error
+		wantReason string
 	}{
-		{name: "unlink", remove: func(t *testing.T, path string) {
+		{name: "unlink", wantCause: os.ErrNotExist, mutate: func(t *testing.T, path string) {
 			t.Helper()
 			if err := os.Remove(path); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{name: "rename", remove: func(t *testing.T, path string) {
+		{name: "rename", wantCause: os.ErrNotExist, mutate: func(t *testing.T, path string) {
 			t.Helper()
 			if err := os.Rename(path, path+".moved"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "chmod-000", wantCause: os.ErrPermission, wantReason: "session file is not readable", mutate: func(t *testing.T, path string) {
+			t.Helper()
+			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+			if err := os.Chmod(path, 0); err != nil {
 				t.Fatal(err)
 			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cwd := t.TempDir()
-			path := filepath.Join(cwd, "durable-missing.jsonl")
-			body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-missing\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
+			path := filepath.Join(cwd, "durable-direct-drift.jsonl")
+			body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-direct-drift\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
 				"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
@@ -43,39 +52,102 @@ func TestInPlaceHydrationQuarantinesMissingOriginal(t *testing.T) {
 				t.Fatal(err)
 			}
 			store := newMemStore()
-			store.cursors["chat-missing"] = Cursor{SessionFile: path, DurableSessionID: "durable-missing", InPlace: true}
+			store.cursors["chat-direct-drift"] = Cursor{SessionFile: path, DurableSessionID: "durable-direct-drift", InPlace: true}
 			manager := testManager(t, dial(t, daemon), store, 32)
-			chat := testChat{id: "chat-missing", cwd: cwd}
+			sub := newRecorder(32)
+			sess, _, detach := acquire(t, manager, testChat{id: "chat-direct-drift", cwd: cwd}, sub)
+			defer detach()
+			sub.await(t, FrameReady)
+			sub.await(t, FrameEntries)
 
-			first := newRecorder(32)
-			stale, _, detach := acquire(t, manager, chat, first)
-			first.await(t, FrameReady)
-			first.await(t, FrameEntries)
-			detach()
-
-			tc.remove(t, path)
-
-			second := newRecorder(32)
-			reattached, started, detachSecond := acquire(t, manager, chat, second)
-			defer detachSecond()
-			if started || reattached != stale {
-				t.Fatal("missing original opened a replacement provider route")
-			}
-			_, frame := second.awaitError(t, "external-write-detected")
-			if info, ok := frame.Data.(ErrorInfo); !ok || info.Code != "external-write-detected" {
-				t.Fatalf("missing-original state = %#v", frame.Data)
-			}
+			tc.mutate(t, path)
 
 			beforePrompts := daemon.RequestCount(omorpc.CmdPrompt)
-			err := stale.SendPrompt(context.Background(), "must not reach missing route", nil)
+			err := sess.SendPrompt(context.Background(), "must not reach stale route", nil)
 			var drift *ExternalWriteError
-			if !errors.As(err, &drift) || !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("post-removal prompt error = %T %v, want typed external-write ENOENT", err, err)
+			if !errors.As(err, &drift) || !errors.Is(err, tc.wantCause) {
+				t.Fatalf("prompt error = %T %v, want typed external-write wrapping %v", err, err, tc.wantCause)
+			}
+			if tc.wantReason != "" && drift.Reason != tc.wantReason {
+				t.Fatalf("drift reason = %q, want %q", drift.Reason, tc.wantReason)
 			}
 			if got := daemon.RequestCount(omorpc.CmdPrompt); got != beforePrompts {
-				t.Fatalf("post-removal prompt reached provider: prompt count %d -> %d", beforePrompts, got)
+				t.Fatalf("prompt reached provider: prompt count %d -> %d", beforePrompts, got)
+			}
+			sess.lifecycleMu.Lock()
+			_, routeErr := sess.routeLocked()
+			latched := sess.quarantineErr
+			sess.lifecycleMu.Unlock()
+			if latched == nil || !errors.As(routeErr, &drift) {
+				t.Fatalf("route was not quarantined: latch=%v route error=%T %v", latched, routeErr, routeErr)
+			}
+			_, frame := sub.awaitError(t, "external-write-detected")
+			if info, ok := frame.Data.(ErrorInfo); !ok || info.Code != "external-write-detected" {
+				t.Fatalf("quarantine transition = %#v", frame.Data)
 			}
 		})
+	}
+}
+
+func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "durable-broadcast.jsonl")
+	body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-broadcast\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
+		"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemon := newDaemon(t)
+	if err := daemon.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemStore()
+	store.cursors["chat-broadcast"] = Cursor{SessionFile: path, DurableSessionID: "durable-broadcast", InPlace: true}
+	manager := testManager(t, dial(t, daemon), store, 32)
+	chat := testChat{id: "chat-broadcast", cwd: cwd}
+
+	a := newRecorder(32)
+	sess, _, detachA := acquire(t, manager, chat, a)
+	defer detachA()
+	a.await(t, FrameReady)
+	a.await(t, FrameEntries)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"type\":\"message\",\"id\":\"external-leaf\",\"parentId\":\"root\",\"message\":{\"role\":\"user\",\"content\":\"external\"}}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	b := newRecorder(32)
+	reused, started, detachB := acquire(t, manager, chat, b)
+	defer detachB()
+	if started || reused != sess {
+		t.Fatal("drift detection replaced the attached route")
+	}
+
+	sess.lifecycleMu.Lock()
+	sess.publishLocked(Frame{Kind: FrameState, SessionID: sess.ID()})
+	sess.lifecycleMu.Unlock()
+	priorA, _ := a.await(t, FrameState)
+	priorB, _ := b.await(t, FrameState)
+	for name, frames := range map[string][]Frame{"existing": priorA, "detecting": priorB} {
+		count := 0
+		for _, frame := range frames {
+			if frame.Kind == FrameError && frame.Data.(ErrorInfo).Code == "external-write-detected" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%s subscriber received %d quarantine transitions, want 1: %+v", name, count, frames)
+		}
+	}
+	if entries, transition := frameIndex(priorB, FrameEntries), frameIndex(priorB, FrameError); entries < 0 || transition <= entries {
+		t.Fatalf("detecting subscriber replay order = %+v", priorB)
 	}
 }
 

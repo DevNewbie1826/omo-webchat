@@ -102,6 +102,14 @@ func (s *Session) prepareWrite(ctx context.Context) error {
 	if routeErr != nil {
 		return routeErr
 	}
+	// Every provider mutation pays one metadata lookup. Lstat verifies the
+	// acquired file identity and read permission without hashing or rereading
+	// the transcript at this latency-sensitive fence.
+	if err := s.verifySessionFileIdentity(s.sessionFile, ""); err != nil {
+		drift := err.(*ExternalWriteError)
+		s.quarantineExternalWrite(drift, nil)
+		return drift
+	}
 	preparer, ok := s.manager.cfg.Store.(WritePreparer)
 	if !ok {
 		return nil
@@ -1019,16 +1027,26 @@ func (s *Session) verifySessionFileIdentity(sessionPath, observedLeaf string) er
 	if !os.SameFile(s.sessionFileIdentity, current) {
 		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file identity changed"}
 	}
+	if current.Mode().Perm()&0o444 == 0 {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file is not readable", cause: os.ErrPermission}
+	}
 	return nil
 }
 
-func (s *Session) quarantineExternalWrite(err *ExternalWriteError) {
+// quarantineExternalWrite latches and publishes the route transition once.
+// A replay target is excluded from the broadcast because hydrateEntries emits
+// the same transition as its terminal frame after all preceding disk pages.
+func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget *subscription) bool {
 	s.lifecycleMu.Lock()
-	if !s.closed && s.quarantineErr == nil {
-		s.quarantineErr = err
-		s.cancelIdleLocked()
+	defer s.lifecycleMu.Unlock()
+	if s.closed || s.quarantineErr != nil {
+		return false
 	}
-	s.lifecycleMu.Unlock()
+	s.quarantineErr = err
+	s.cancelIdleLocked()
+	frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: historyErrorInfo(err)}
+	s.broadcast.publishExcept(frame, replayTarget)
+	return true
 }
 
 // hydrateEntries serves disk pages and the validated live tail only to target.
@@ -1054,7 +1072,12 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 	publishErr := func(err error) {
 		var drift *ExternalWriteError
 		if errors.As(err, &drift) {
-			s.quarantineExternalWrite(drift)
+			if !s.quarantineExternalWrite(drift, target) {
+				return
+			}
+			if target == nil {
+				return
+			}
 		}
 		if target != nil {
 			// A history-context deadline is an expected, user-visible outcome:
@@ -1212,7 +1235,8 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 	if err != nil {
 		var drift *ExternalWriteError
 		if errors.As(err, &drift) {
-			s.quarantineExternalWrite(drift)
+			s.quarantineExternalWrite(drift, nil)
+			return
 		}
 		s.publishHistoryError(err)
 		return
