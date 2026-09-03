@@ -942,18 +942,29 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 		if !forced {
 			activity, err := check(ctx, c.SessionFile, takeoverActivityWindow)
 			if err != nil {
-				return session.Cursor{}, err
+				return session.Cursor{}, inPlaceSourceError(err)
 			}
 			if activity.Changed || activity.SizeDelta != 0 || activity.MtimeDeltaNano != 0 {
 				return session.Cursor{}, &SessionActiveError{SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano}
 			}
 		}
 		if err := s.PrepareWrite(ctx, id); err != nil {
-			return session.Cursor{}, err
+			return session.Cursor{}, inPlaceSourceError(err)
 		}
 		cur.WritePrepared = true
 	}
 	return cur, nil
+}
+
+func inPlaceSourceError(err error) error {
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	reason := "session file identity unavailable"
+	if errors.Is(err, os.ErrNotExist) {
+		reason = "session file disappeared"
+	}
+	return errors.Join(&session.ExternalWriteError{Reason: reason}, err)
 }
 
 func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, error) {

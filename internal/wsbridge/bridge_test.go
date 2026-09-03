@@ -410,6 +410,22 @@ func mustJSON(t *testing.T, value any) []byte {
 	return data
 }
 
+func TestChatCreateMissingInPlaceSourceReportsExternalWrite(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "missing-source")
+	if err := os.Remove(h.path); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "missing-source"})
+	if got := frames.next(t, "error"); got["code"] != "external-write-detected" {
+		t.Fatalf("missing source error = %#v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("missing source issued %d provider opens", got)
+	}
+}
+
 func TestChatCreateSessionActiveConflictsUseContractCode(t *testing.T) {
 	t.Run("activity gate", func(t *testing.T) {
 		h := newInPlaceBridgeHarness(t, "gate-active")
