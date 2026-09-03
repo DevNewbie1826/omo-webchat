@@ -36,11 +36,23 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			return fmt.Errorf("resolving state directory: %w", err)
 		}
 	}
-	ensured, err := ensureDaemon(ctx, omorpc.EnsureConfig{
+	ensureCfg := omorpc.EnsureConfig{
 		WorkingDir: cfg.Root,
 		StateDir:   stateDir,
 		Env:        os.Environ(),
-	})
+	}
+	// The long-lived client re-runs this ensure step when a reconnect dials a
+	// missing socket path, so a vanished socket file recovers without a
+	// server restart.
+	ensureCfg.OnDialNotExist = func(ctx context.Context) error {
+		again, err := ensureDaemon(ctx, ensureCfg)
+		if err != nil {
+			return err
+		}
+		_ = again.Close()
+		return nil
+	}
+	ensured, err := ensureDaemon(ctx, ensureCfg)
 	if err != nil {
 		return fmt.Errorf("starting required omo daemon: %w", err)
 	}
