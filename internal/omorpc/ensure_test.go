@@ -897,21 +897,21 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 		}
 		resultCh <- err
 	}()
-	// Closable handshake: the FIFO is opened O_RDWR|O_NONBLOCK so the
-	// open itself can never block (we hold the write end) and reads that
-	// would block return EAGAIN — matched with errors.Is because Darwin
-	// wraps it in *fs.PathError. On deadline the loop simply exits via
-	// close; no goroutine or fd outlives the test.
-	fifo, err := os.OpenFile(startedFIFO, os.O_RDWR|syscall.O_NONBLOCK, 0)
+	// Closable handshake: the FIFO is opened as a RAW syscall fd with
+	// O_RDWR|O_NONBLOCK. os.File must not wrap it — Go's poller registers
+	// FIFOs with epoll on Linux and would silently block in Read on
+	// EAGAIN (O_RDWR keeps a write end, so no EOF ever arrives), defeating
+	// the deadline. Raw syscall.Read returns EAGAIN straight to this loop.
+	fd, err := syscall.Open(startedFIFO, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		t.Fatalf("open start fifo: %v", err)
 	}
-	defer fifo.Close()
+	defer syscall.Close(fd)
 	deadline := time.Now().Add(10 * time.Second)
 	var started []byte
 	for time.Now().Before(deadline) {
 		buf := make([]byte, 32)
-		n, rerr := fifo.Read(buf)
+		n, rerr := syscall.Read(fd, buf)
 		if n > 0 {
 			started = append(started, buf[:n]...)
 			if strings.Contains(string(started), "started") {
@@ -922,7 +922,7 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 		if rerr == nil {
 			continue
 		}
-		if errors.Is(rerr, syscall.EAGAIN) || errors.Is(rerr, syscall.EWOULDBLOCK) || errors.Is(rerr, io.EOF) {
+		if errors.Is(rerr, syscall.EAGAIN) || errors.Is(rerr, syscall.EWOULDBLOCK) || errors.Is(rerr, syscall.EINTR) {
 			time.Sleep(2 * time.Millisecond)
 			continue
 		}
@@ -932,7 +932,7 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 	// misread as starvation.
 	{
 		buf := make([]byte, 32)
-		if n, _ := fifo.Read(buf); n > 0 {
+		if n, _ := syscall.Read(fd, buf); n > 0 {
 			started = append(started, buf[:n]...)
 		}
 	}
