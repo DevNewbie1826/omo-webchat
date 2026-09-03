@@ -21,6 +21,7 @@ const (
 )
 
 var activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
+var streamSessionHistory = coldhistory.Stream
 
 type closeTransaction struct {
 	done chan struct{}
@@ -60,7 +61,7 @@ type Session struct {
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
 	title, nameSource                                                       string
-	inPlace                                                                 bool
+	inPlace, sessionFileObserved                                            bool
 	sessionFileIdentity                                                     os.FileInfo
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
@@ -1125,7 +1126,7 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		return
 	}
 
-	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
+	metadata, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
 		PageEntries: entriesPageMaxCount,
 	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
 		if metadata.Header.ID != s.durableID {
@@ -1141,11 +1142,41 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		}
 		return nil
 	})
+	// Every stream outcome except an absent path proves the file existed on
+	// disk; only a first-ever absent path stays eligible for root hydration.
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		s.lifecycleMu.Lock()
+		s.sessionFileObserved = true
+		s.lifecycleMu.Unlock()
+	}
 	if err == nil {
 		err = ctx.Err()
 	}
 	if err != nil {
-		publishErr(err)
+		if !errors.Is(err, os.ErrNotExist) {
+			publishErr(err)
+			return
+		}
+		if s.inPlace || s.sessionFileIdentity != nil {
+			publishErr(externalIdentityReadError(err))
+			return
+		}
+		s.lifecycleMu.Lock()
+		rootHydrationAllowed := !s.resumed && !s.sessionFileObserved
+		s.lifecycleMu.Unlock()
+		if !rootHydrationAllowed {
+			publishErr(err)
+			return
+		}
+		// A newly opened session may report a path that is absent on disk.
+		// In that state, get_entries without since returns the entries visible
+		// from the root, and an empty response yields one terminal page.
+		wire, rootErr := s.fetchEntriesAfter(ctx, "")
+		if rootErr != nil {
+			publishErr(rootErr)
+			return
+		}
+		s.emitTailEntries(wire, emit, target)
 		return
 	}
 	if err := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); err != nil {
@@ -1171,6 +1202,12 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		publishErr(err)
 		return
 	}
+	s.emitTailEntries(wire, emit, target)
+}
+
+// emitTailEntries emits bounded pages with exactly one final page, including
+// an empty final page when no entries are returned.
+func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error, target *subscription) {
 	pages := chunkEntries(wire.Entries)
 	if len(pages) == 0 {
 		pages = [][]json.RawMessage{{}}
