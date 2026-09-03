@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -192,7 +194,11 @@ func TestIntegrationInPlacePathInUseNeverFallsBack(t *testing.T) {
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-in-place-active", cwd: t.TempDir()}
-	stored := Cursor{SessionFile: "/tmp/omo-fake/sessions/active.jsonl", DurableSessionID: "durable-active", InPlace: true}
+	path := filepath.Join(chat.cwd, "active.jsonl")
+	if err := os.WriteFile(path, []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stored := Cursor{SessionFile: path, DurableSessionID: "durable-active", InPlace: true}
 	if err := store.SaveCursor(context.Background(), chat.id, stored); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
@@ -210,24 +216,23 @@ func TestIntegrationInPlacePathInUseNeverFallsBack(t *testing.T) {
 	}
 }
 
-func TestIntegrationInPlaceMissingOriginalNeverFallsBack(t *testing.T) {
+func TestIntegrationInPlaceMissingOriginalFailsBeforeOpen(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
 	chat := testChat{id: "chat-in-place-missing", cwd: t.TempDir()}
-	stored := Cursor{SessionFile: "/tmp/omo-fake/sessions/missing.jsonl", DurableSessionID: "durable-missing", InPlace: true}
+	stored := Cursor{SessionFile: filepath.Join(chat.cwd, "missing.jsonl"), DurableSessionID: "durable-missing", InPlace: true}
 	if err := store.SaveCursor(context.Background(), chat.id, stored); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
-	d.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeInvalidPath)
 
 	mgr := testManager(t, client, store, 64)
 	_, _, _, err := mgr.Acquire(context.Background(), chat, newRecorder(64))
-	var stable *omorpc.StableError
-	if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeInvalidPath {
-		t.Fatalf("Acquire error = %T %v, want typed invalid_path", err, err)
+	var drift *ExternalWriteError
+	if !errors.As(err, &drift) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Acquire error = %T %v, want typed external-write ENOENT", err, err)
 	}
-	assertOnlyPathOpens(t, d, stored.SessionFile, 1)
+	assertOnlyPathOpens(t, d, stored.SessionFile, 0)
 	if got := store.stored(chat.id); got != stored {
 		t.Fatalf("stored cursor changed: %+v", got)
 	}

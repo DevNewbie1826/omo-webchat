@@ -539,6 +539,13 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	}
 
 	resumed := cur.SessionFile != ""
+	var sessionFileIdentity os.FileInfo
+	if resumed && cur.InPlace {
+		sessionFileIdentity, err = os.Lstat(cur.SessionFile)
+		if err != nil {
+			return nil, false, nil, externalIdentityReadError(err)
+		}
+	}
 	data, epoch, openErr := m.open(ctx, chatID, chat.CWD(), cur.SessionFile)
 	if openErr == nil {
 		openErr = validateOpen(data, cur, resumed)
@@ -599,9 +606,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
 	s.inPlace = cur.InPlace
 	s.writePrepared = cur.WritePrepared
-	if s.inPlace {
-		s.sessionFileIdentity, _ = os.Lstat(data.State.SessionFile)
-	}
+	s.sessionFileIdentity = sessionFileIdentity
 	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID
 	if m.cfg.Store != nil && !preserveCursor && identityChanged {
 		if err := m.cfg.Store.UpdateIdentity(ctx, chatID, data.State.SessionFile, data.State.SessionID); err != nil {

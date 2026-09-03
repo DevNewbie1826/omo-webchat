@@ -12,6 +12,73 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
+func TestInPlaceHydrationQuarantinesMissingOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(*testing.T, string)
+	}{
+		{name: "unlink", remove: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "rename", remove: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Rename(path, path+".moved"); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			path := filepath.Join(cwd, "durable-missing.jsonl")
+			body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-missing\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
+				"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			daemon := newDaemon(t)
+			if err := daemon.LoadSessionFile(path); err != nil {
+				t.Fatal(err)
+			}
+			store := newMemStore()
+			store.cursors["chat-missing"] = Cursor{SessionFile: path, DurableSessionID: "durable-missing", InPlace: true}
+			manager := testManager(t, dial(t, daemon), store, 32)
+			chat := testChat{id: "chat-missing", cwd: cwd}
+
+			first := newRecorder(32)
+			stale, _, detach := acquire(t, manager, chat, first)
+			first.await(t, FrameReady)
+			first.await(t, FrameEntries)
+			detach()
+
+			tc.remove(t, path)
+
+			second := newRecorder(32)
+			reattached, started, detachSecond := acquire(t, manager, chat, second)
+			defer detachSecond()
+			if started || reattached != stale {
+				t.Fatal("missing original opened a replacement provider route")
+			}
+			_, frame := second.awaitError(t, "external-write-detected")
+			if info, ok := frame.Data.(ErrorInfo); !ok || info.Code != "external-write-detected" {
+				t.Fatalf("missing-original state = %#v", frame.Data)
+			}
+
+			beforePrompts := daemon.RequestCount(omorpc.CmdPrompt)
+			err := stale.SendPrompt(context.Background(), "must not reach missing route", nil)
+			var drift *ExternalWriteError
+			if !errors.As(err, &drift) || !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("post-removal prompt error = %T %v, want typed external-write ENOENT", err, err)
+			}
+			if got := daemon.RequestCount(omorpc.CmdPrompt); got != beforePrompts {
+				t.Fatalf("post-removal prompt reached provider: prompt count %d -> %d", beforePrompts, got)
+			}
+		})
+	}
+}
+
 func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-external.jsonl")

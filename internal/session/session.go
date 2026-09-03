@@ -989,10 +989,37 @@ type ExternalWriteError struct {
 	KnownLeaf    string
 	ObservedLeaf string
 	Reason       string
+	cause        error
 }
 
 func (e *ExternalWriteError) Error() string {
 	return fmt.Sprintf("external write detected: %s (daemon leaf %q, disk leaf %q)", e.Reason, e.KnownLeaf, e.ObservedLeaf)
+}
+
+func (e *ExternalWriteError) Unwrap() error { return e.cause }
+
+func externalIdentityReadError(err error) *ExternalWriteError {
+	reason := "session file identity unavailable"
+	if errors.Is(err, os.ErrNotExist) {
+		reason = "session file disappeared"
+	}
+	return &ExternalWriteError{Reason: reason, cause: err}
+}
+
+func (s *Session) verifySessionFileIdentity(sessionPath, observedLeaf string) error {
+	if !s.inPlace || s.sessionFileIdentity == nil {
+		return nil
+	}
+	current, err := os.Lstat(sessionPath)
+	if err != nil {
+		drift := externalIdentityReadError(err)
+		drift.ObservedLeaf = observedLeaf
+		return drift
+	}
+	if !os.SameFile(s.sessionFileIdentity, current) {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file identity changed"}
+	}
+	return nil
 }
 
 func (s *Session) quarantineExternalWrite(err *ExternalWriteError) {
@@ -1056,6 +1083,11 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		}
 	}
 
+	if err := s.verifySessionFileIdentity(sessionPath, ""); err != nil {
+		publishErr(err)
+		return
+	}
+
 	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
 		PageEntries: entriesPageMaxCount,
 	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
@@ -1079,16 +1111,9 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		publishErr(err)
 		return
 	}
-	if s.inPlace && s.sessionFileIdentity != nil {
-		current, statErr := os.Lstat(sessionPath)
-		if statErr != nil {
-			publishErr(statErr)
-			return
-		}
-		if !os.SameFile(s.sessionFileIdentity, current) {
-			publishErr(&ExternalWriteError{ObservedLeaf: metadata.LeafID, Reason: "session file identity changed"})
-			return
-		}
+	if err := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); err != nil {
+		publishErr(err)
+		return
 	}
 
 	// A header is a durable identity but not an entry cursor. Probe the live
