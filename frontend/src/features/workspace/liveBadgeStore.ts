@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { parseDagActivity } from "../split/activityParse";
+import { parseDagActivity, parseTaskUpdated } from "../split/activityParse";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 import type { LiveSessionInfo } from "./workspace";
@@ -98,12 +98,28 @@ function sweepExpired(nowMs: number): void {
   emit();
 }
 
+function mergeActivityStamps(
+  first: ActivityStamps | undefined,
+  second: ActivityStamps | undefined,
+): ActivityStamps | undefined {
+  if (first === undefined) return second;
+  if (second === undefined) return first;
+  const stamps = new Map(first.stamps);
+  for (const [taskId, at] of second.stamps) {
+    const known = stamps.get(taskId);
+    if (known === undefined || at > known) stamps.set(taskId, at);
+  }
+  return {
+    stamps,
+    sequence: Math.max(first.sequence, second.sequence),
+    receivedAt: Math.max(first.receivedAt, second.receivedAt),
+  };
+}
+
 function mergeOverrides(first: SessionOverride, second: SessionOverride): SessionOverride {
   const task = (first.task?.sequence ?? -1) >= (second.task?.sequence ?? -1) ? first.task : second.task;
   const dag = (first.dag?.sequence ?? -1) >= (second.dag?.sequence ?? -1) ? first.dag : second.dag;
-  const activity = (first.activity?.sequence ?? -1) >= (second.activity?.sequence ?? -1)
-    ? first.activity
-    : second.activity;
+  const activity = mergeActivityStamps(first.activity, second.activity);
   return {
     ...(task === undefined ? {} : { task }),
     ...(dag === undefined ? {} : { dag }),
@@ -200,10 +216,16 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
     const stamps = new Map(previous?.activity?.stamps ?? []);
     const known = stamps.get(parsed.taskId);
     if (known === undefined || parsed.at > known) stamps.set(parsed.taskId, parsed.at);
+    const receivedAt = Date.now();
+    const task = previous?.task !== undefined
+      && parseTaskUpdated(previous.task.payload)?.tasks.some((entry) => entry.taskId === parsed.taskId) === true
+      ? { ...previous.task, receivedAt }
+      : previous?.task;
     const next = new Map(overrides);
     next.set(id, {
       ...previous,
-      activity: { stamps, sequence: nextLiveActivitySequence(), receivedAt: Date.now() },
+      ...(task === undefined ? {} : { task }),
+      activity: { stamps, sequence: nextLiveActivitySequence(), receivedAt },
     });
     overrides = next;
     emit();

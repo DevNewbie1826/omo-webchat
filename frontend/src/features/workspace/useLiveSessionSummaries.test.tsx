@@ -544,6 +544,24 @@ describe("summarizeLiveSession", () => {
       expect(summary.runningCount).toBe(0);
     });
 
+    it("keeps a quiet digest-only running entry while the oversized session is live", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "digest-stale-live",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: STALE_AT }],
+          truncated: false,
+        },
+      }, Date.now(), { sessionLive: true });
+
+      expect(summary.runningCount).toBe(1);
+    });
+
     it("keeps a stale digest running entry when a non-terminal dag digest run lists that task id", () => {
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
@@ -682,6 +700,26 @@ describe("summarizeLiveSession", () => {
           tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_FRESH_AT }],
           truncated: false,
         },
+      });
+
+      expect(summary.runningCount).toBe(1);
+    });
+
+    it("counts a stale digest row refreshed by its task heartbeat", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "heartbeat-digest",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: {
+          tasks: [{ taskId: TASK_ID, status: "running", updatedAt: ROW_300S_AT }],
+          truncated: false,
+        },
+      }, Date.now(), {
+        heartbeatStamps: new Map([[TASK_ID, ROW_FRESH_AT]]),
       });
 
       expect(summary.runningCount).toBe(1);
@@ -1185,7 +1223,7 @@ describe("live polling hooks", () => {
                   task_id: "t1",
                   name: "Quiet",
                   status: "running",
-                  updated_at: "2026-08-19T09:59:59.000Z",
+                  updated_at: "2026-08-19T09:58:00.000Z",
                 },
               ],
             },

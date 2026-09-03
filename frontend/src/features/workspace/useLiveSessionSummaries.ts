@@ -101,11 +101,11 @@ export interface SummaryFreshness {
 /** Latest known activity of a task: its row stamp, raised by any fresher
  * heartbeat stamp for the same task id. */
 function stampedActivityMs(
-  task: ActivityTask,
+  taskId: string,
+  rowMs: number | null,
   heartbeatStamps: ReadonlyMap<string, string> | undefined,
 ): number | null {
-  const rowMs = lastActivityMs(task);
-  const at = heartbeatStamps?.get(task.taskId);
+  const at = heartbeatStamps?.get(taskId);
   if (at === undefined) return rowMs;
   const beatMs = Date.parse(at);
   if (Number.isNaN(beatMs)) return rowMs;
@@ -117,12 +117,21 @@ function countDigestTaskRunning(
   nowMs: number,
   runningDagTaskIds: ReadonlySet<string>,
   receivedAtMs: number | null,
+  freshness: SummaryFreshness | undefined,
 ): number {
   const digestFresh = receivedAtMs !== null && nowMs - receivedAtMs <= STALE_RUNNING_WINDOW_MS;
   let running = 0;
   for (const entry of entries) {
     if (entry.status !== "running") continue;
-    const lastMs = digestUpdatedMs(entry.updatedAt);
+    if (freshness?.sessionLive === true) {
+      running += 1;
+      continue;
+    }
+    const lastMs = stampedActivityMs(
+      entry.taskId,
+      digestUpdatedMs(entry.updatedAt),
+      freshness?.heartbeatStamps,
+    );
     const rowFresh = lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS;
     const dagAuthority = runningDagTaskIds.has(entry.taskId);
     if (digestFresh || dagAuthority || rowFresh) {
@@ -189,7 +198,7 @@ export function summarizeLiveSession(
       // The poller listing the session is the process-alive signal: a quiet
       // running task keeps counting until the session leaves the live list.
       if (sessionLive) return true;
-      const lastMs = stampedActivityMs(task, heartbeatStamps);
+      const lastMs = stampedActivityMs(task.taskId, lastActivityMs(task), heartbeatStamps);
       return lastMs === null || nowMs - lastMs <= STALE_RUNNING_WINDOW_MS
         || runningDagTaskIds.has(task.taskId);
     }).length
@@ -200,6 +209,7 @@ export function summarizeLiveSession(
         nowMs,
         runningDagTaskIds,
         digestReceivedMs(taskDigest.receivedAt),
+        freshness,
       );
   const dagRunning = info.dagOversized !== true
     ? dagRunningOf(runs, taskIds)
