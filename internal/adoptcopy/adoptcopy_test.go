@@ -106,6 +106,50 @@ func TestTakeoverSnapshotReplacesPriorSnapshotWithNewest(t *testing.T) {
 	assertOnlyPublishedFile(t, destination, first.Path)
 }
 
+func TestTakeoverSnapshotRestoresPriorSnapshotWhenSourceChangesAfterPublication(t *testing.T) {
+	source := writeSession(t, header+"\n"+`{"type":"message","id":"root","parentId":null}`+"\n")
+	destination := filepath.Join(t.TempDir(), "takeover-backups")
+	first, err := TakeoverSnapshot(context.Background(), source, destination, "durable-session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, append(prior, []byte(`{"type":"message","id":"new","parentId":"root"}`+"\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var mutationErr error
+	hooks := copyHooks{
+		replaceExisting: true,
+		afterPublish: func() {
+			file, err := os.OpenFile(source, os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				mutationErr = err
+				return
+			}
+			_, writeErr := file.WriteString(`{"type":"message","id":"late","parentId":"new"}` + "\n")
+			mutationErr = errors.Join(writeErr, file.Sync(), file.Close())
+		},
+	}
+	_, err = adopt(context.Background(), source, destination, "durable-session-1", hooks)
+	if mutationErr != nil {
+		t.Fatalf("mutate source after publication: %v", mutationErr)
+	}
+	assertTypedError(t, err, KindHashMismatch, ErrHashMismatch)
+
+	got, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, prior) {
+		t.Fatal("failed replacement did not restore the prior takeover snapshot")
+	}
+	assertOnlyPublishedFile(t, destination, first.Path)
+}
+
 func TestAdoptToleratesTornFinalLine(t *testing.T) {
 	contents := header + "\n" +
 		`{"type":"message","id":"root","parentId":null}` + "\n" +

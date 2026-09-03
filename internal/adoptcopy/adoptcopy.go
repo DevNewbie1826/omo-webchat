@@ -185,8 +185,9 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 		return Result{}, fail(KindIO, "create staging file", destinationDir, 0, 0, errors.Join(ErrIO, err))
 	}
 	published := false
+	rollbackName := ""
 	defer func() {
-		cleanupErr := cleanup(destination, tmpName, destinationName, published)
+		cleanupErr := cleanup(destination, tmpName, destinationName, rollbackName, published)
 		if cleanupErr != nil {
 			if retErr == nil {
 				retErr = fail(KindIO, "cleanup", result.Path, 0, 0, errors.Join(ErrIO, cleanupErr))
@@ -219,6 +220,14 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 		hooks.beforePublish()
 	}
 	if hooks.replaceExisting {
+		if _, err := destination.Lstat(destinationName); err == nil {
+			rollbackName, err = createRollback(destination, destinationName)
+			if err != nil {
+				return Result{}, fail(KindIO, "preserve prior snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Result{}, fail(KindIO, "inspect prior snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
 		if err := destination.Rename(tmpName, destinationName); err != nil {
 			return Result{}, fail(KindIO, "replace snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
 		}
@@ -262,6 +271,12 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 		return Result{}, fail(KindHashMismatch, "verify published copy", sourcePath, 0, 0, ErrHashMismatch)
 	}
 
+	if rollbackName != "" {
+		if err := destination.Remove(rollbackName); err != nil {
+			return Result{}, fail(KindIO, "remove prior snapshot rollback", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
+		rollbackName = ""
+	}
 	published = false
 	result.Created = true
 	return result, nil
@@ -451,7 +466,7 @@ func sameSnapshot(left, right os.FileInfo) bool {
 	return left.Size() == right.Size() && left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
 }
 
-func cleanup(root *os.Root, stagingName, publishedName string, published bool) error {
+func cleanup(root *os.Root, stagingName, publishedName, rollbackName string, published bool) error {
 	var errs []error
 	if stagingName != "" {
 		if err := root.Remove(stagingName); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -459,10 +474,18 @@ func cleanup(root *os.Root, stagingName, publishedName string, published bool) e
 		}
 	}
 	if published {
-		if err := root.Remove(publishedName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if rollbackName != "" {
+			if err := root.Rename(rollbackName, publishedName); err != nil {
+				errs = append(errs, err)
+			}
+		} else if err := root.Remove(publishedName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
 		if err := syncRoot(root); err != nil {
+			errs = append(errs, err)
+		}
+	} else if rollbackName != "" {
+		if err := root.Remove(rollbackName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
 	}
@@ -514,6 +537,22 @@ func openDestination(path string) (*os.Root, error) {
 		return nil, fail(KindIO, "pin destination directory", path, 0, 0, errors.Join(ErrIO, err))
 	}
 	return root, nil
+}
+
+func createRollback(root *os.Root, destinationName string) (string, error) {
+	var random [16]byte
+	for attempts := 0; attempts < 100; attempts++ {
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", err
+		}
+		name := ".adopt-" + hex.EncodeToString(random[:]) + ".rollback"
+		if err := root.Link(destinationName, name); err == nil {
+			return name, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("could not allocate unique rollback name")
 }
 
 func createStage(root *os.Root) (*os.File, string, error) {
