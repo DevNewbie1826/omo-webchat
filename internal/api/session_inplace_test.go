@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,33 +63,141 @@ func TestOpenWorkspaceSessionPersistsValidatedOriginal(t *testing.T) {
 	}
 }
 
-func TestOpenWorkspaceSessionFreshnessGateAndForce(t *testing.T) {
+func TestOpenWorkspaceSessionWriterStartingAfterRegistrationIsGatedAtProviderAcquisition(t *testing.T) {
 	server, store, ws := newChatCreateTestServer(t)
 	agentDir := t.TempDir()
 	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
 	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-active", "")
+	var checks atomic.Int32
+	var writerActive atomic.Bool
 	server.activityCheck = func(context.Context, string, time.Duration) (sessionActivity, error) {
-		return sessionActivity{SizeDelta: 37, MtimeDeltaNano: 9000}, nil
+		checks.Add(1)
+		if writerActive.Load() {
+			return sessionActivity{SizeDelta: 37, MtimeDeltaNano: 9000}, nil
+		}
+		return sessionActivity{}, nil
 	}
 
-	blocked := openWorkspaceSession(t, server, ws.ID, map[string]any{"resumeIdentity": source})
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("status = %d, body = %s", blocked.Code, blocked.Body.String())
+	registered := openWorkspaceSession(t, server, ws.ID, map[string]any{"resumeIdentity": source})
+	if registered.Code != http.StatusCreated {
+		t.Fatalf("registration status = %d, body = %s", registered.Code, registered.Body.String())
 	}
-	var state sessionActiveResponse
-	if err := json.NewDecoder(blocked.Body).Decode(&state); err != nil {
+	if checks.Load() != 1 {
+		t.Fatalf("activity checks during REST registration = %d, want 1", checks.Load())
+	}
+	writerActive.Store(true)
+	var projected chatResponse
+	if err := json.NewDecoder(registered.Body).Decode(&projected); err != nil {
 		t.Fatal(err)
 	}
-	if state.State != "session-active" || state.SizeDelta != 37 || state.MtimeDeltaNano != 9000 {
-		t.Fatalf("active state = %+v", state)
+	cursorStore := (*wsbridge.CursorStore)(store.Store)
+	if _, err := cursorStore.CursorForOpen(t.Context(), projected.ID); !errors.As(err, new(*wsbridge.SessionActiveError)) {
+		t.Fatalf("provider acquisition error = %v, want session-active", err)
 	}
-	if chats := store.ListChats(ws.ID); len(chats) != 0 {
-		t.Fatalf("freshness rejection persisted chats: %+v", chats)
+	if checks.Load() != 2 {
+		t.Fatalf("activity checks after provider acquisition = %d, want 2", checks.Load())
+	}
+	backupPath := filepath.Join(store.StateDir(), "takeover-backups", adoptcopy.DestinationName("durable-active"))
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatalf("blocked acquisition consumed backup: %v", err)
 	}
 
 	forced := openWorkspaceSession(t, server, ws.ID, map[string]any{"resumeIdentity": source, "force": true})
-	if forced.Code != http.StatusCreated || len(store.ListChats(ws.ID)) != 1 {
-		t.Fatalf("forced status = %d, body = %s, chats = %+v", forced.Code, forced.Body.String(), store.ListChats(ws.ID))
+	if forced.Code != http.StatusOK {
+		t.Fatalf("forced registration status = %d, body = %s", forced.Code, forced.Body.String())
+	}
+	if _, err := cursorStore.CursorForOpen(t.Context(), projected.ID); err != nil {
+		t.Fatalf("forced provider acquisition: %v", err)
+	}
+	if checks.Load() != 2 {
+		t.Fatalf("one-shot force ran activity check: checks = %d", checks.Load())
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("forced acquisition did not prepare backup: %v", err)
+	}
+	if _, err := cursorStore.CursorForOpen(t.Context(), projected.ID); !errors.As(err, new(*wsbridge.SessionActiveError)) {
+		t.Fatalf("provider reopen after force error = %v, want session-active", err)
+	}
+	if checks.Load() != 3 {
+		t.Fatalf("force was not consumed once: checks = %d, want 3", checks.Load())
+	}
+}
+
+func TestStoredInPlaceRowReopenWhileActiveDoesNotOpenOrConsumeBackup(t *testing.T) {
+	server, store, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-reopen-active", "Reopen active")
+	chat := cursorstore.Chat{ID: "chat-reopen-active", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "durable-reopen-active", SessionProvenance: cursorstore.SessionProvenanceInPlace, Name: "Reopen active", NameSource: cursorstore.NameSourceAuto}
+	if err := store.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	var active atomic.Bool
+	server.activityCheck = func(context.Context, string, time.Duration) (sessionActivity, error) {
+		if active.Load() {
+			return sessionActivity{SizeDelta: 1}, nil
+		}
+		return sessionActivity{}, nil
+	}
+	response := openWorkspaceSession(t, server, ws.ID, map[string]any{"resumeIdentity": source, "force": true})
+	if response.Code != http.StatusOK {
+		t.Fatalf("force registration status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	daemonDir, err := os.MkdirTemp("", "in-place-reopen-active-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	daemon := omorpctest.New(daemonDir)
+	if err := daemon.LoadSessionFile(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager(session.Config{Client: client, Store: (*wsbridge.CursorStore)(store.Store)})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = manager.CloseAll(ctx)
+		_ = client.Close()
+		daemon.Stop()
+	})
+
+	_, _, detach, err := manager.Acquire(t.Context(), adoptionChatRef{chat: chat}, nil)
+	if err != nil {
+		t.Fatalf("forced first acquisition: %v", err)
+	}
+	detach()
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != 1 {
+		t.Fatalf("first acquisition open_session count = %d, want 1", got)
+	}
+	if err := manager.StopContext(t.Context(), chat.ID); err != nil {
+		t.Fatal(err)
+	}
+	backupDir := filepath.Join(store.StateDir(), "takeover-backups")
+	if err := os.RemoveAll(backupDir); err != nil {
+		t.Fatal(err)
+	}
+	active.Store(true)
+
+	_, _, detach, err = manager.Acquire(t.Context(), adoptionChatRef{chat: chat}, nil)
+	if detach != nil {
+		detach()
+	}
+	if !errors.As(err, new(*wsbridge.SessionActiveError)) {
+		t.Fatalf("stored-row reopen error = %v, want session-active", err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != 1 {
+		t.Fatalf("active reopen open_session count = %d, want 1", got)
+	}
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Fatalf("active stored-row reopen consumed backup: %v", err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
 type adoptWorkspaceSessionRequest struct {
@@ -237,6 +238,7 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 	for _, candidate := range s.cursors.ListChats(ws.ID) {
 		candidate := candidate
 		if cursorstore.IsInPlaceSession(candidate) && candidate.SessionFile == source.Path && candidate.DurableSessionID == source.ID {
+			s.authorizeInPlaceOpen(candidate.ID, req.Force)
 			writeJSON(w, http.StatusOK, projectChat(candidate))
 			return
 		}
@@ -245,7 +247,7 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if existing != nil {
-		chat, transitionErr := s.openExistingChat(r.Context(), *existing, source)
+		chat, transitionErr := s.openExistingChat(r.Context(), *existing, source, req.Force)
 		if transitionErr != nil {
 			s.writeStoreError(w, transitionErr)
 			return
@@ -268,6 +270,7 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	chat := cursorstore.Chat{ID: id, WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source.Path, DurableSessionID: source.ID, SessionProvenance: cursorstore.SessionProvenanceInPlace, Name: name, NameSource: cursorstore.NameSourceAuto, TitleIsPlaceholder: placeholder, CreatedAt: time.Now().UnixMilli()}
+	s.authorizeInPlaceOpen(chat.ID, req.Force)
 	if err := s.cursors.SaveChat(chat); err != nil {
 		s.writeStoreError(w, err)
 		return
@@ -275,7 +278,14 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, projectChat(chat))
 }
 
-func (s *Server) openExistingChat(ctx context.Context, chat cursorstore.Chat, source diskSession) (cursorstore.Chat, error) {
+func (s *Server) authorizeInPlaceOpen(chatID string, force bool) {
+	wsbridge.AuthorizeInPlaceOpen(s.cursors, chatID, force, func(ctx context.Context, path string, window time.Duration) (wsbridge.SessionActivity, error) {
+		activity, err := s.activityCheck(ctx, path, window)
+		return wsbridge.SessionActivity{SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano, Changed: activity.Changed}, err
+	})
+}
+
+func (s *Server) openExistingChat(ctx context.Context, chat cursorstore.Chat, source diskSession, force bool) (cursorstore.Chat, error) {
 	s.chatLifecycleMu.Lock()
 	current, err := s.cursors.GetChat(chat.ID)
 	if err != nil || current.WorkspaceID != chat.WorkspaceID || s.chatDeleting[chat.ID] {
@@ -284,7 +294,10 @@ func (s *Server) openExistingChat(ctx context.Context, chat cursorstore.Chat, so
 	}
 	s.bumpChatLifecycleVersion(chat.ID)
 	s.chatLifecycleMu.Unlock()
-	install := func() error { return s.cursors.UpdateInPlaceIdentity(chat.ID, source.Path, source.ID) }
+	install := func() error {
+		s.authorizeInPlaceOpen(chat.ID, force)
+		return s.cursors.UpdateInPlaceIdentity(chat.ID, source.Path, source.ID)
+	}
 	if s.manager != nil {
 		err = s.manager.StopAndMutateContext(ctx, chat.ID, install)
 	} else {
