@@ -93,6 +93,42 @@ describe("GoalBar", () => {
     expect(container.querySelector(".th-goal-blocked-reason")).toBeNull();
   });
 
+  it("falls back to the active presentation for an unknown status", () => {
+    renderBar({ objective: "wait for review", status: "paused" });
+    const chip = container.querySelector<HTMLElement>(".th-activity-chip");
+    expect(chip?.className).toBe("th-activity-chip th-activity-chip--running");
+    expect(chip?.textContent).toBe("chat.goal.statusActive");
+  });
+
+  it("updates the objective while the panel remains open", () => {
+    renderBar({ objective: "first objective", status: "active" });
+    const bar = container.querySelector<HTMLButtonElement>("button.th-goal-bar");
+    if (!bar) throw new Error("missing goal bar button");
+    act(() => {
+      bar.click();
+    });
+
+    renderBar({ objective: "updated objective", status: "active" });
+
+    expect(bar.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".th-goal-objective-full")?.textContent).toBe("updated objective");
+  });
+
+  it("unmounts the whole bar when the open goal disappears", () => {
+    renderBar({ objective: "goal that disappears", status: "active" });
+    const bar = container.querySelector<HTMLButtonElement>("button.th-goal-bar");
+    if (!bar) throw new Error("missing goal bar button");
+    act(() => {
+      bar.click();
+    });
+    expect(bar.getAttribute("aria-expanded")).toBe("true");
+
+    renderBar(null);
+
+    expect(container.querySelector(".th-goal-shelf")).toBeNull();
+    expect(container.innerHTML).toBe("");
+  });
+
   it("marks a truncated objective with an ellipsis in the collapsed summary", () => {
     renderBar({ objective: "long objective", status: "active", objectiveTruncated: true });
     expect(container.querySelector(".th-goal-summary")?.textContent).toBe("long objective…");
