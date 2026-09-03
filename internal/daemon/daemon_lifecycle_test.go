@@ -20,8 +20,8 @@ import (
 const (
 	daemonHelperScenarioEnv = "TH_TEST_DAEMON_SCENARIO"
 	daemonHelperStateEnv    = "TH_TEST_DAEMON_STATE"
-	daemonHelperPIDFile     = "helper.pid"
-	daemonHelperTimeout     = 15 * time.Second
+	daemonHelperPIDFile  = "helper.pid"
+	daemonProcessTimeout = 15 * time.Second
 )
 
 // TestDaemonLifecycleHelper is re-executed as the daemon child. Keeping the
@@ -76,7 +76,7 @@ func TestDaemonLifecycleHelper(t *testing.T) {
 			if got != syscall.SIGTERM {
 				t.Fatalf("signal = %v, want SIGTERM", got)
 			}
-		case <-time.After(daemonHelperTimeout):
+		case <-time.After(daemonProcessTimeout):
 			t.Fatal("timed out waiting for SIGTERM")
 		}
 		if err := RemoveChildPIDFile(stateDir); err != nil {
@@ -109,10 +109,7 @@ func TestDaemonLifecycleHelper(t *testing.T) {
 
 func waitForForcedTermination(t *testing.T) {
 	t.Helper()
-	select {
-	case <-time.After(daemonHelperTimeout):
-		t.Fatal("parent did not terminate helper")
-	}
+	select {}
 }
 
 type lifecycleProcess struct {
@@ -154,7 +151,7 @@ func (p *lifecycleProcess) wait(t *testing.T, allowSignalExit bool) {
 		if err != nil && !(allowSignalExit && errors.As(err, &exitErr)) {
 			t.Errorf("waiting for helper process: %v", err)
 		}
-	case <-time.After(daemonHelperTimeout):
+	case <-time.After(daemonProcessTimeout):
 		t.Errorf("timed out waiting for helper process %d", p.process.Pid)
 	}
 }
@@ -253,6 +250,8 @@ func TestDaemonChildExitBeforeReadyCleansUp(t *testing.T) {
 }
 
 func TestDaemonReadinessTimeoutCleansUp(t *testing.T) {
+	readinessTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { readinessTimeout = startTimeout })
 	stateDir := t.TempDir()
 	_, _, err := startLifecycleHelper(t, "readiness-timeout", stateDir)
 	if err == nil || !strings.Contains(err.Error(), "failed to start") {

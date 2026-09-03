@@ -25,6 +25,8 @@ const (
 	childReadyPipeFD = 4
 )
 
+var readinessTimeout = startTimeout
+
 func start(cfg *config.Config, args []string) (int, string, error) {
 	pidPath, logPath, lockPath, err := daemonPaths(cfg.StateDir)
 	if err != nil {
@@ -233,7 +235,7 @@ func closeChild(child *Child) error {
 }
 
 func waitForReady(ready *os.File) error {
-	if err := ready.SetReadDeadline(time.Now().Add(startTimeout)); err != nil {
+	if err := ready.SetReadDeadline(time.Now().Add(readinessTimeout)); err != nil {
 		return fmt.Errorf("setting readiness deadline: %w", err)
 	}
 	var signal [1]byte
