@@ -106,7 +106,7 @@ func TestChatActivityLargeShelfReturnsBoundedSingleSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 120; i++ {
-		payload := fmt.Sprintf(`{"task_id":"task-%03d","status":"completed","parent_session_id":"parent","final_response":%q}`, i, strings.Repeat("x", 1024))
+		payload := fmt.Sprintf(`{"task_id":"task-%03d","status":"completed","parent_session_id":"parent","task_summary":%q}`, i, strings.Repeat("x", 1024))
 		if err := os.WriteFile(filepath.Join(taskDir, fmt.Sprintf("%03d.json", i)), []byte(payload), 0o600); err != nil {
 			t.Fatal(err)
 		}

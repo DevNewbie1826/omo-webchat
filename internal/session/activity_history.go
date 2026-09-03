@@ -98,26 +98,18 @@ type storedDagRun struct {
 
 type activityDagCounts struct {
 	Total     int `json:"total"`
-	Pending   int `json:"pending"`
-	Blocked   int `json:"blocked"`
-	Scheduled int `json:"scheduled"`
 	Running   int `json:"running"`
 	Completed int `json:"completed"`
-	Failed    int `json:"failed"`
-	Cancelled int `json:"cancelled"`
-	Skipped   int `json:"skipped"`
 }
 
 type activityDagNode struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label,omitempty"`
-	Prompt      string   `json:"prompt"`
-	DependsOn   []string `json:"depends_on"`
-	State       string   `json:"state"`
-	Attempt     int      `json:"attempt,omitempty"`
-	TaskID      string   `json:"task_id,omitempty"`
-	StartedAt   string   `json:"started_at,omitempty"`
-	CompletedAt string   `json:"completed_at,omitempty"`
+	ID        string   `json:"id"`
+	Label     string   `json:"label,omitempty"`
+	Prompt    string   `json:"prompt"`
+	DependsOn []string `json:"depends_on"`
+	State     string   `json:"state"`
+	TaskID    string   `json:"task_id,omitempty"`
+	StartedAt string   `json:"started_at,omitempty"`
 }
 
 type activityDagEdge struct {
@@ -227,56 +219,59 @@ func truncateActivityText(value string) string {
 	return value
 }
 
-func projectedString(raw json.RawMessage) (json.RawMessage, bool) {
-	var value string
-	if json.Unmarshal(raw, &value) != nil {
-		return nil, false
-	}
-	encoded, _ := json.Marshal(truncateActivityText(value))
-	return encoded, true
+func truncateActivityField(value string) (string, bool) {
+	truncated := truncateActivityText(value)
+	return truncated, truncated != value
 }
 
-func projectLiveProgress(raw json.RawMessage) json.RawMessage {
+func projectedString(raw json.RawMessage) (json.RawMessage, bool, bool) {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false, false
+	}
+	value, truncated := truncateActivityField(value)
+	encoded, _ := json.Marshal(value)
+	return encoded, true, truncated
+}
+
+func projectLiveProgress(raw json.RawMessage) (json.RawMessage, bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
-		return nil
+		return nil, false
 	}
 	projected := make(map[string]json.RawMessage)
-	for _, key := range []string{"activity", "current_tool", "last_assistant_line"} {
-		if value, ok := projectedString(fields[key]); ok {
+	truncated := false
+	for _, key := range []string{"current_tool", "last_assistant_line"} {
+		if value, ok, fieldTruncated := projectedString(fields[key]); ok {
 			projected[key] = value
+			truncated = truncated || fieldTruncated
 		}
 	}
-	if value, ok := projectedString(fields["started_at"]); ok {
-		projected["started_at"] = value
-	} else {
-		var value float64
-		if raw := fields["started_at"]; json.Unmarshal(raw, &value) == nil {
-			projected["started_at"] = raw
-		}
-	}
-	for _, key := range []string{"turns", "tool_calls", "total_tokens", "tokens_per_second"} {
+	for _, key := range []string{"turns", "tool_calls", "tokens_per_second"} {
 		var value float64
 		if raw := fields[key]; json.Unmarshal(raw, &value) == nil {
 			projected[key] = raw
 		}
 	}
 	if len(projected) == 0 {
-		return nil
+		return nil, truncated
 	}
 	encoded, _ := json.Marshal(projected)
-	return encoded
+	return encoded, truncated
 }
 
-func projectStoredTask(task storedTask) map[string]json.RawMessage {
-	projected := make(map[string]json.RawMessage, 12)
-	for _, key := range []string{"task_summary", "agent_type", "category", "model", "created_at", "updated_at", "final_response", "error_message"} {
-		if value, ok := projectedString(task.Fields[key]); ok {
+func projectStoredTask(task storedTask) (map[string]json.RawMessage, bool) {
+	projected := make(map[string]json.RawMessage, 9)
+	truncated := false
+	for _, key := range []string{"task_summary", "agent_type", "category", "created_at", "updated_at"} {
+		if value, ok, fieldTruncated := projectedString(task.Fields[key]); ok {
 			projected[key] = value
+			truncated = truncated || fieldTruncated
 		}
 	}
-	if progress := projectLiveProgress(task.Fields["live_progress"]); progress != nil {
+	if progress, progressTruncated := projectLiveProgress(task.Fields["live_progress"]); progress != nil {
 		projected["live_progress"] = progress
+		truncated = truncated || progressTruncated
 	}
 	for key, value := range map[string]string{
 		"task_id": task.TaskID,
@@ -286,31 +281,21 @@ func projectStoredTask(task storedTask) map[string]json.RawMessage {
 		if key == "name" && value == "" {
 			value = task.TaskID
 		}
-		projected[key], _ = json.Marshal(truncateActivityText(value))
+		value, fieldTruncated := truncateActivityField(value)
+		truncated = truncated || fieldTruncated
+		projected[key], _ = json.Marshal(value)
 	}
-	return projected
+	return projected, truncated
 }
 
 func dagCounts(nodes []activityDagNode) activityDagCounts {
 	counts := activityDagCounts{Total: len(nodes)}
 	for _, node := range nodes {
 		switch node.State {
-		case "pending":
-			counts.Pending++
-		case "blocked":
-			counts.Blocked++
-		case "scheduled":
-			counts.Scheduled++
 		case "running":
 			counts.Running++
 		case "completed":
 			counts.Completed++
-		case "failed", "error":
-			counts.Failed++
-		case "cancelled", "canceled":
-			counts.Cancelled++
-		case "skipped":
-			counts.Skipped++
 		}
 	}
 	return counts
@@ -352,21 +337,25 @@ func dagWaves(nodes []activityDagNode) []activityDagWave {
 	return waves
 }
 
-func truncateActivityStrings(values []string) []string {
+func truncateActivityStrings(values []string) ([]string, bool) {
 	out := make([]string, len(values))
+	truncated := false
 	for i, value := range values {
-		out[i] = truncateActivityText(value)
+		var fieldTruncated bool
+		out[i], fieldTruncated = truncateActivityField(value)
+		truncated = truncated || fieldTruncated
 	}
-	return out
+	return out, truncated
 }
 
-func projectStoredDag(run storedDagRun) activityDagRun {
+func projectStoredDag(run storedDagRun) (activityDagRun, bool) {
 	definitions := make(map[string]storedDagNodeDefinition, len(run.Definition.Nodes))
 	for _, node := range run.Definition.Nodes {
 		definitions[node.ID] = node
 	}
 	nodes := make([]activityDagNode, 0, len(run.Nodes))
 	edges := make([]activityDagEdge, 0)
+	truncated := false
 	for _, stored := range run.Nodes {
 		definition := definitions[stored.ID]
 		label, prompt := stored.Label, stored.Prompt
@@ -376,25 +365,39 @@ func projectStoredDag(run storedDagRun) activityDagRun {
 		if prompt == "" {
 			prompt = definition.Prompt
 		}
-		depends := truncateActivityStrings(definition.DependsOn)
+		depends, dependsTruncated := truncateActivityStrings(definition.DependsOn)
 		if depends == nil {
 			depends = []string{}
 		}
+		id, idTruncated := truncateActivityField(stored.ID)
+		label, labelTruncated := truncateActivityField(label)
+		prompt, promptTruncated := truncateActivityField(prompt)
+		state, stateTruncated := truncateActivityField(stored.State)
+		taskID, taskIDTruncated := truncateActivityField(stored.TaskID)
+		startedAt, startedAtTruncated := truncateActivityField(stored.StartedAt)
+		truncated = truncated || dependsTruncated || idTruncated || labelTruncated || promptTruncated || stateTruncated || taskIDTruncated || startedAtTruncated
 		node := activityDagNode{
-			ID: truncateActivityText(stored.ID), Label: truncateActivityText(label), Prompt: truncateActivityText(prompt),
-			DependsOn: depends, State: truncateActivityText(stored.State), Attempt: stored.Attempt,
-			TaskID: truncateActivityText(stored.TaskID), StartedAt: truncateActivityText(stored.StartedAt), CompletedAt: truncateActivityText(stored.CompletedAt),
+			ID: id, Label: label, Prompt: prompt, DependsOn: depends, State: state,
+			TaskID: taskID, StartedAt: startedAt,
 		}
 		nodes = append(nodes, node)
 		for _, dependency := range depends {
 			edges = append(edges, activityDagEdge{From: dependency, To: node.ID})
 		}
 	}
-	return activityDagRun{
-		RunID: truncateActivityText(run.RunID), RunKey: truncateActivityText(run.RunKey), Name: truncateActivityText(run.Name),
-		Status: truncateActivityText(run.Status), CreatedAt: truncateActivityText(run.CreatedAt), UpdatedAt: truncateActivityText(run.UpdatedAt),
-		Counts: dagCounts(nodes), Nodes: nodes, Edges: edges, Waves: dagWaves(nodes),
+	projected := activityDagRun{Counts: dagCounts(nodes), Nodes: nodes, Edges: edges, Waves: dagWaves(nodes)}
+	for _, field := range []struct {
+		value  string
+		target *string
+	}{
+		{run.RunID, &projected.RunID}, {run.RunKey, &projected.RunKey}, {run.Name, &projected.Name},
+		{run.Status, &projected.Status}, {run.CreatedAt, &projected.CreatedAt}, {run.UpdatedAt, &projected.UpdatedAt},
+	} {
+		var fieldTruncated bool
+		*field.target, fieldTruncated = truncateActivityField(field.value)
+		truncated = truncated || fieldTruncated
 	}
+	return projected, truncated
 }
 
 type historicalTaskRow struct {
@@ -408,12 +411,22 @@ type historicalDagRow struct {
 	run       activityDagRun
 }
 
-type activityCandidateHeap []string
+type activityCandidate struct {
+	name string
+	info os.FileInfo
+}
 
-func (h activityCandidateHeap) Len() int           { return len(h) }
-func (h activityCandidateHeap) Less(i, j int) bool { return h[i] < h[j] }
-func (h activityCandidateHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *activityCandidateHeap) Push(value any)    { *h = append(*h, value.(string)) }
+type activityCandidateHeap []activityCandidate
+
+func (h activityCandidateHeap) Len() int      { return len(h) }
+func (h activityCandidateHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h activityCandidateHeap) Less(i, j int) bool {
+	if h[i].info.ModTime() == h[j].info.ModTime() {
+		return h[i].name < h[j].name
+	}
+	return h[i].info.ModTime().Before(h[j].info.ModTime())
+}
+func (h *activityCandidateHeap) Push(value any) { *h = append(*h, value.(activityCandidate)) }
 func (h *activityCandidateHeap) Pop() any {
 	old := *h
 	value := old[len(old)-1]
@@ -462,7 +475,11 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 			if filepath.Ext(entry.Name()) != ".json" || entry.Type()&os.ModeSymlink != 0 {
 				continue
 			}
-			heap.Push(candidates, entry.Name())
+			info, infoErr := entry.Info()
+			if infoErr != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxTaskStoreRecordBytes {
+				continue
+			}
+			heap.Push(candidates, activityCandidate{name: entry.Name(), info: info})
 			if candidates.Len() > maxActivityHistoryFiles {
 				heap.Pop(candidates)
 				truncated = true
@@ -476,18 +493,17 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 		}
 	}
 
-	names := make([]string, candidates.Len())
-	for i := len(names) - 1; i >= 0; i-- {
-		names[i] = heap.Pop(candidates).(string)
+	selected := make([]activityCandidate, candidates.Len())
+	for i := len(selected) - 1; i >= 0; i-- {
+		selected[i] = heap.Pop(candidates).(activityCandidate)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(names)))
-	for _, name := range names {
+	for _, candidate := range selected {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		path := filepath.Join(dir, name)
+		path := filepath.Join(dir, candidate.name)
 		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxTaskStoreRecordBytes {
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate.info, info) {
 			continue
 		}
 		if !budget.reserve(info.Size()) {
@@ -612,9 +628,11 @@ func boundDagDigest(digest *DagDigest) {
 // and aggregate scan budgets bound work over hostile or damaged stores.
 func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (HistoricalActivity, error) {
 	base := filepath.Join(cwd, ".omo", "senpi-task")
+	_, parentFieldTruncated := truncateActivityField(durableSessionID)
 	taskBudget := &activityHistoryBudget{}
 	tasks := make([]historicalTaskRow, 0)
 	ownedRuns := make(map[string]bool)
+	taskFieldsTruncated := false
 	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
 		var task storedTask
 		if !readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.TaskID == "" || task.Status == "" || task.ParentSessionID != durableSessionID {
@@ -623,15 +641,17 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		if task.Owner.Kind == "dag" && task.Owner.RunID != "" {
 			ownedRuns[task.Owner.RunID] = true
 		}
+		payload, truncated := projectStoredTask(task)
+		taskFieldsTruncated = taskFieldsTruncated || truncated
 		tasks = append(tasks, historicalTaskRow{
-			createdAt: task.CreatedAt, taskID: task.TaskID, payload: projectStoredTask(task),
+			createdAt: task.CreatedAt, taskID: task.TaskID, payload: payload,
 		})
 	})
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
 	tasks, taskRetentionTruncated := newestTaskRows(tasks)
-	truncatedTasks := taskBudgetExhausted || taskRetentionTruncated
+	truncatedTasks := taskBudgetExhausted || taskRetentionTruncated || taskFieldsTruncated || parentFieldTruncated
 	taskPayload, taskOversized, err := packTaskSnapshot(durableSessionID, tasks, truncatedTasks)
 	if err != nil {
 		return HistoricalActivity{}, err
@@ -639,19 +659,28 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 
 	runs := make([]historicalDagRow, 0)
 	runBudget := &activityHistoryBudget{}
+	runFieldsTruncated := false
+	uncertainParentlessRuns := false
 	runBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "dag", "runs"), runBudget, func(path string, info os.FileInfo) {
 		var run storedDagRun
-		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" ||
-			(run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && ownedRuns[run.RunID])) {
+		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
 			return
 		}
-		runs = append(runs, historicalDagRow{createdAt: run.CreatedAt, run: projectStoredDag(run)})
+		if run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && ownedRuns[run.RunID]) {
+			if run.ParentSessionID == "" && taskBudgetExhausted {
+				uncertainParentlessRuns = true
+			}
+			return
+		}
+		projected, truncated := projectStoredDag(run)
+		runFieldsTruncated = runFieldsTruncated || truncated
+		runs = append(runs, historicalDagRow{createdAt: run.CreatedAt, run: projected})
 	})
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
 	runs, runRetentionTruncated := newestDagRows(runs)
-	truncatedRuns := runBudgetExhausted || runRetentionTruncated
+	truncatedRuns := runBudgetExhausted || runRetentionTruncated || runFieldsTruncated || uncertainParentlessRuns || parentFieldTruncated
 	dagPayload, dagOversized, err := packDagSnapshot(durableSessionID, runs, truncatedRuns)
 	if err != nil {
 		return HistoricalActivity{}, err

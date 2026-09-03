@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeActivityStoreJSON(t *testing.T, path string, value any) {
@@ -73,8 +74,10 @@ func TestReadHistoricalActivityFiltersParentAndReusesStageEightDigests(t *testin
 	if taskSnapshot.Parent != "durable-parent" || len(taskSnapshot.Tasks) != 1 {
 		t.Fatalf("task snapshot = %s", activity.ActivityPair.Task)
 	}
-	if _, leaked := taskSnapshot.Tasks[0]["spawn_spec"]; leaked {
-		t.Fatalf("task snapshot leaked store-only fields: %s", activity.ActivityPair.Task)
+	for _, field := range []string{"spawn_spec", "model", "final_response", "error_message"} {
+		if _, leaked := taskSnapshot.Tasks[0][field]; leaked {
+			t.Fatalf("task snapshot leaked %s: %s", field, activity.ActivityPair.Task)
+		}
 	}
 	if activity.TaskDigest == nil || len(activity.TaskDigest.Tasks) != 1 || activity.TaskDigest.Tasks[0].TaskID != "st-match" || activity.TaskDigest.Tasks[0].Status != "completed" {
 		t.Fatalf("task digest = %+v", activity.TaskDigest)
@@ -167,8 +170,8 @@ func TestHistoricalActivitySnapshotCapKeepsNewestPrefix(t *testing.T) {
 	for i := 0; i < 120; i++ {
 		writeActivityStoreJSON(t, filepath.Join(dir, fmt.Sprintf("%03d.json", i)), map[string]any{
 			"task_id": fmt.Sprintf("task-%03d", i), "status": "completed", "parent_session_id": "parent",
-			"created_at":     fmt.Sprintf("2026-09-03T12:%02d:%02dZ", i/60, i%60),
-			"final_response": strings.Repeat("x", 1024),
+			"created_at":   fmt.Sprintf("2026-09-03T12:%02d:%02dZ", i/60, i%60),
+			"task_summary": strings.Repeat("x", 1024),
 		})
 	}
 	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
@@ -191,6 +194,73 @@ func TestHistoricalActivitySnapshotCapKeepsNewestPrefix(t *testing.T) {
 	digest, err := json.Marshal(activity.TaskDigest)
 	if err != nil || len(digest) > maxActivitySnapshotBytes {
 		t.Fatalf("task digest bytes=%d err=%v", len(digest), err)
+	}
+}
+
+func TestHistoricalActivityShelfProjectionFitsMotivatingTaskScale(t *testing.T) {
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".omo", "senpi-task", "tasks")
+	for i := 0; i < 111; i++ {
+		writeActivityStoreJSON(t, filepath.Join(dir, fmt.Sprintf("task-%03d.json", i)), map[string]any{
+			"task_id": fmt.Sprintf("task-%03d", i), "status": "completed", "parent_session_id": "parent",
+			"name": "Audit task", "task_summary": "Inspect the implementation", "agent_type": "explore",
+			"created_at": fmt.Sprintf("2026-09-03T%02d:%02d:00Z", i/60, i%60), "updated_at": "2026-09-03T23:59:00Z",
+			"model": strings.Repeat("model", 200), "final_response": strings.Repeat("result ", 180),
+			"error_message": strings.Repeat("error ", 180),
+			"live_progress": map[string]any{
+				"activity": strings.Repeat("unused ", 200), "started_at": strings.Repeat("unused ", 200),
+				"total_tokens": 10_000, "current_tool": "read", "turns": 3,
+			},
+		})
+	}
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalTaskSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Task, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Tasks) != 111 || snapshot.Truncated || activity.TaskOversized {
+		t.Fatalf("motivating projection: rows=%d bytes=%d truncated=%v oversized=%v", len(snapshot.Tasks), len(activity.ActivityPair.Task), snapshot.Truncated, activity.TaskOversized)
+	}
+	for _, field := range []string{"model", "final_response", "error_message"} {
+		if _, present := snapshot.Tasks[0][field]; present {
+			t.Fatalf("unused field %q retained in %s", field, activity.ActivityPair.Task)
+		}
+	}
+	var progress map[string]json.RawMessage
+	if err := json.Unmarshal(snapshot.Tasks[0]["live_progress"], &progress); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"activity", "started_at", "total_tokens"} {
+		if _, present := progress[field]; present {
+			t.Fatalf("unused progress field %q retained", field)
+		}
+	}
+}
+
+func TestHistoricalActivityDagFieldTruncationMarksSnapshot(t *testing.T) {
+	cwd := t.TempDir()
+	writeActivityStoreJSON(t, filepath.Join(cwd, ".omo", "senpi-task", "dag", "runs", "run.json"), map[string]any{
+		"runId": "run", "runKey": "run", "name": "Run", "status": "running", "parentSessionId": "parent",
+		"definition": map[string]any{"nodes": []any{map[string]any{
+			"id": "node", "prompt": strings.Repeat("prompt ", 200), "dependsOn": []string{},
+		}}},
+		"nodes": []any{map[string]any{"id": "node", "state": "running"}},
+	})
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalDagSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Dag, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 1 || !snapshot.Truncated || len(snapshot.Runs[0].Nodes[0].Prompt) != maxActivityTextBytes {
+		t.Fatalf("DAG field truncation: %s", activity.ActivityPair.Dag)
 	}
 }
 
@@ -315,6 +385,81 @@ func TestReadHistoricalActivityNewestCandidateAndIndependentDagBudget(t *testing
 	}
 	if len(dags.Runs) != 1 || dags.Runs[0].RunID != "run" {
 		t.Fatalf("DAG was starved by task budget: %s", activity.ActivityPair.Dag)
+	}
+}
+
+func TestReadHistoricalActivityDagCandidatesUseMtimeNotUUIDOrder(t *testing.T) {
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".omo", "senpi-task", "dag", "runs")
+	oldTime := time.Unix(1_700_000_000, 0)
+	for i := 0; i < maxActivityHistoryFiles; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("ffffffff-ffff-ffff-ffff-%012x.json", i))
+		writeActivityStoreJSON(t, path, map[string]any{
+			"runId": fmt.Sprintf("foreign-%04d", i), "runKey": "foreign", "name": "Foreign",
+			"status": "completed", "parentSessionId": "foreign",
+		})
+		if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	matchingPath := filepath.Join(dir, "00000000-0000-0000-0000-000000000000.json")
+	writeActivityStoreJSON(t, matchingPath, map[string]any{
+		"runId": "matching", "runKey": "matching", "name": "Matching", "status": "running", "parentSessionId": "parent",
+	})
+	newTime := oldTime.Add(time.Hour)
+	if err := os.Chtimes(matchingPath, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalDagSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Dag, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 1 || snapshot.Runs[0].RunID != "matching" || !snapshot.Truncated {
+		t.Fatalf("mtime-selected DAG prefix = %s", activity.ActivityPair.Dag)
+	}
+}
+
+func TestReadHistoricalActivityMarksParentlessRunUncertainAfterTaskBudget(t *testing.T) {
+	cwd := t.TempDir()
+	base := filepath.Join(cwd, ".omo", "senpi-task")
+	oldTime := time.Unix(1_700_000_000, 0)
+	ownerPath := filepath.Join(base, "tasks", "owner.json")
+	writeActivityStoreJSON(t, ownerPath, map[string]any{
+		"task_id": "owner", "status": "completed", "parent_session_id": "parent",
+		"owner": map[string]any{"kind": "dag", "runId": "legacy-run"},
+	})
+	if err := os.Chtimes(ownerPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxActivityHistoryFiles; i++ {
+		path := filepath.Join(base, "tasks", fmt.Sprintf("foreign-%04d.json", i))
+		writeActivityStoreJSON(t, path, map[string]any{
+			"task_id": fmt.Sprintf("foreign-%04d", i), "status": "completed", "parent_session_id": "foreign",
+		})
+		newTime := oldTime.Add(time.Duration(i+1) * time.Second)
+		if err := os.Chtimes(path, newTime, newTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeActivityStoreJSON(t, filepath.Join(base, "dag", "runs", "legacy.json"), map[string]any{
+		"runId": "legacy-run", "runKey": "legacy", "name": "Legacy", "status": "completed",
+	})
+
+	activity, err := ReadHistoricalActivity(t.Context(), cwd, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot historicalDagSnapshot
+	if err := json.Unmarshal(activity.ActivityPair.Dag, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 0 || !snapshot.Truncated {
+		t.Fatalf("uncertain parentless DAG exclusion = %s", activity.ActivityPair.Dag)
 	}
 }
 
