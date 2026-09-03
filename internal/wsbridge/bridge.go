@@ -564,7 +564,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			message := err.Error()
 			switch {
 			case errors.Is(err, ErrChatDeleted):
-				code = "chat_deleted"
+				code = "no_chat"
 			case errors.Is(err, ErrUnsupportedProvider):
 				code = "unsupported_provider"
 			case errors.Is(err, cursorstore.ErrAdoptionRequired):
@@ -655,7 +655,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 		message := err.Error()
 		switch {
 		case errors.Is(err, ErrChatDeleted):
-			code = "chat_deleted"
+			code = "no_chat"
 		case errors.Is(err, cursorstore.ErrAdoptionRequired):
 			code = "adoption_required"
 			message = "session must be adopted before opening"

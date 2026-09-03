@@ -160,8 +160,13 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	}
 	h := sessions.Middleware(New(Config{
 		Manager: mgr, Store: store, ServerVersion: client.ServerVersion(), Logger: logger,
-		PrepareChatVersion: func(context.Context, string, string) (uint64, error) { return 0, nil },
-		ChatVersion:        func(string) uint64 { return 0 },
+		PrepareChatVersion: func(_ context.Context, _ string, chatID string) (uint64, error) {
+			if chatID == "deleted" {
+				return 0, ErrChatDeleted
+			}
+			return 0, nil
+		},
+		ChatVersion: func(string) uint64 { return 0 },
 	}))
 	ts := httptest.NewServer(h)
 	defer ts.Close()
@@ -206,6 +211,10 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	_ = preHello.WriteClose(1000, nil)
 
 	conn, c := connect()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "deleted"})
+	if got := c.next(t, "error"); got["code"] != "no_chat" {
+		t.Fatalf("deleted chat create = %v", got)
+	}
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "unsupported"})
 	if got := c.next(t, "error"); got["code"] != "unsupported_provider" {
 		t.Fatalf("unsupported provider create = %v", got)
