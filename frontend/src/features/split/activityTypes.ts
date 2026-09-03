@@ -106,6 +106,9 @@ export interface ActivityState {
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
+  /** The retained task/DAG rows are a bounded prefix of a larger history. */
+  readonly truncatedTasks?: boolean;
+  readonly truncatedDags?: boolean;
   /** True between chat run.started and run.done; gates shelf staleness. */
   readonly runInFlight?: boolean;
 }

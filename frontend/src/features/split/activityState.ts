@@ -28,6 +28,87 @@ import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from ".
 // longer gates any alarm (kept only for external reference).
 export const STALE_ACTIVITY_MS = 30_000;
 export const SEVERED_ACTIVITY_MS = 90_000;
+export const ACTIVITY_HYDRATION_SIDE_LIMIT = 100;
+
+export type ActivityEventName =
+  | "omo.task.updated"
+  | "omo.dag.updated"
+  | "omo.dag.activity"
+  | "omo.dag.heartbeat";
+
+export interface BufferedActivityEvent {
+  readonly name: ActivityEventName;
+  readonly data: unknown;
+  readonly side: "task" | "dag";
+  readonly key: string;
+  readonly snapshot: boolean;
+}
+
+export interface ActivityHydrationBuffer {
+  readonly events: BufferedActivityEvent[];
+  dropped: number;
+  taskSuperseded: boolean;
+  dagSuperseded: boolean;
+}
+
+export function createActivityHydrationBuffer(): ActivityHydrationBuffer {
+  return { events: [], dropped: 0, taskSuperseded: false, dagSuperseded: false };
+}
+
+/** Validate and classify activity extension payloads before retaining them. */
+export function validatedActivityEvent(name: string, data: unknown): BufferedActivityEvent | null {
+  switch (name) {
+    case "omo.task.updated":
+      return parseTaskUpdated(data) === null
+        ? null
+        : { name, data, side: "task", key: name, snapshot: true };
+    case "omo.dag.updated":
+      return parseDagUpdated(data) === null
+        ? null
+        : { name, data, side: "dag", key: name, snapshot: true };
+    case "omo.dag.activity": {
+      const parsed = parseDagActivity(data);
+      return parsed === null
+        ? null
+        : { name, data, side: "dag", key: `${name}:${parsed.runId}:${parsed.nodeId}`, snapshot: false };
+    }
+    case "omo.dag.heartbeat":
+      return parseDagHeartbeat(data) === null
+        ? null
+        : { name, data, side: "dag", key: name, snapshot: false };
+    default:
+      return null;
+  }
+}
+
+/** Retain only recent, relevant activity while REST hydration is pending. */
+export function bufferActivityHydrationEvent(
+  buffer: ActivityHydrationBuffer,
+  event: BufferedActivityEvent,
+): void {
+  if (event.snapshot) {
+    if (event.side === "task") buffer.taskSuperseded = true;
+    else buffer.dagSuperseded = true;
+  }
+  const previousIndex = buffer.events.findIndex((item) => item.key === event.key);
+  let nextEvent = event;
+  if (previousIndex >= 0) {
+    const previous = buffer.events[previousIndex]!;
+    buffer.events.splice(previousIndex, 1);
+    if (!event.snapshot && typeof previous.data === "object" && previous.data !== null
+      && typeof event.data === "object" && event.data !== null) {
+      nextEvent = { ...event, data: { ...previous.data, ...event.data } };
+    }
+  }
+  buffer.events.push(nextEvent);
+  const sideCount = buffer.events.reduce((count, item) => count + (item.side === event.side ? 1 : 0), 0);
+  if (sideCount <= ACTIVITY_HYDRATION_SIDE_LIMIT) return;
+  const oldest = buffer.events.findIndex((item) => item.side === event.side);
+  if (oldest >= 0) {
+    buffer.events.splice(oldest, 1);
+    buffer.dropped += 1;
+  }
+}
 
 /**
  * ActivityState extended with the per-run life latches this module manages.
@@ -201,10 +282,15 @@ function applyTaskSnapshot(state: ActivityState, data: unknown): ActivityState {
     keepPrevious: isTerminalTask,
     merge: (_prev, next) => next,
   });
-  if (state.runInFlight !== true) return { ...state, tasks };
+  const snapshot = {
+    ...state,
+    tasks,
+    ...(parsed.truncatedTasks === undefined ? {} : { truncatedTasks: parsed.truncatedTasks }),
+  };
+  if (state.runInFlight !== true) return snapshot;
   const lifeSeenThisRun = latchedTaskLife(state, parsed.tasks);
-  if (lifeSeenThisRun === null) return { ...state, tasks };
-  const next: LifeLatchedActivityState = { ...state, tasks, lifeSeenThisRun };
+  if (lifeSeenThisRun === null) return snapshot;
+  const next: LifeLatchedActivityState = { ...snapshot, lifeSeenThisRun };
   return next;
 }
 
@@ -218,6 +304,7 @@ function applyDagSnapshot(state: ActivityState, data: unknown): ActivityState {
       keepPrevious: isTerminalDag,
       merge: mergeDagRun,
     }),
+    ...(parsed.truncatedRuns === undefined ? {} : { truncatedDags: parsed.truncatedRuns }),
   };
 }
 
@@ -299,12 +386,20 @@ export function applyActivityHistorySnapshot(state: ActivityState, name: string,
   if (name === "omo.task.updated") {
     const parsed = parseTaskUpdated(data);
     if (parsed === null) return state;
-    return { ...state, tasks: new Map(parsed.tasks.map((task) => [task.taskId, task])) };
+    return {
+      ...state,
+      tasks: new Map(parsed.tasks.map((task) => [task.taskId, task])),
+      ...(parsed.truncatedTasks === undefined ? {} : { truncatedTasks: parsed.truncatedTasks }),
+    };
   }
   if (name === "omo.dag.updated") {
     const parsed = parseDagUpdated(data);
     if (parsed === null) return state;
-    return { ...state, dags: new Map(parsed.runs.map((run) => [run.runId, run])) };
+    return {
+      ...state,
+      dags: new Map(parsed.runs.map((run) => [run.runId, run])),
+      ...(parsed.truncatedRuns === undefined ? {} : { truncatedDags: parsed.truncatedRuns }),
+    };
   }
   return state;
 }

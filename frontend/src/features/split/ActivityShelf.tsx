@@ -191,6 +191,9 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
             style={height === null ? undefined : { height: `${height}px` }}
           >
+            {(activities.truncatedTasks === true || activities.truncatedDags === true) && (
+              <span className="th-activity-partial">{t("activity.partial")}</span>
+            )}
             {tasks.length > 0 && (
               <AgentSection
                 tasks={tasks}

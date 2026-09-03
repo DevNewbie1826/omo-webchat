@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { applyActivityEvent, applyRunFlight, emptyActivityState, lifeSeenThisRunOf } from "./activityState";
+import {
+  ACTIVITY_HYDRATION_SIDE_LIMIT,
+  applyActivityEvent,
+  applyRunFlight,
+  bufferActivityHydrationEvent,
+  createActivityHydrationBuffer,
+  emptyActivityState,
+  lifeSeenThisRunOf,
+  validatedActivityEvent,
+} from "./activityState";
 import { NOW_ISO, dagRun, taskSnapshot } from "./activityState.support";
 
 describe("applyActivityEvent omo.task.updated", () => {
@@ -155,6 +164,58 @@ describe("per-task life latches", () => {
     // latch set keeps its reference (honest version bump).
     const next = applyActivityEvent(seeded, "omo.task.updated", taskSnapshot([inFlightTask()]));
     expect(lifeSeenThisRunOf(next)).toBe(lifeSeenThisRunOf(seeded));
+  });
+});
+
+describe("activity hydration buffer", () => {
+  it("rejects unrelated and malformed activity frames before buffering", () => {
+    expect(validatedActivityEvent("unrelated", { tasks: [] })).toBeNull();
+    expect(validatedActivityEvent("omo.task.updated", { tasks: "nope" })).toBeNull();
+
+    const buffer = createActivityHydrationBuffer();
+    const valid = validatedActivityEvent("omo.task.updated", taskSnapshot([]));
+    expect(valid).not.toBeNull();
+    bufferActivityHydrationEvent(buffer, valid!);
+    expect(buffer.taskSuperseded).toBe(true);
+    expect(buffer.events).toHaveLength(1);
+  });
+
+  it("bounds each side under distinct-event floods and counts oldest-first drops", () => {
+    const buffer = createActivityHydrationBuffer();
+    for (let index = 0; index < ACTIVITY_HYDRATION_SIDE_LIMIT + 25; index += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: `run-${index}`,
+        nodeId: `node-${index}`,
+        at: NOW_ISO,
+      });
+      expect(event).not.toBeNull();
+      bufferActivityHydrationEvent(buffer, event!);
+    }
+
+    expect(buffer.events).toHaveLength(ACTIVITY_HYDRATION_SIDE_LIMIT);
+    expect(buffer.dropped).toBe(25);
+    expect(buffer.events[0]?.key).toContain("run-25:node-25");
+  });
+
+  it("coalesces updates for the same activity id while preserving partial fields", () => {
+    const buffer = createActivityHydrationBuffer();
+    const first = validatedActivityEvent("omo.dag.activity", {
+      runId: "run",
+      nodeId: "node",
+      at: NOW_ISO,
+      currentTool: "bash",
+    });
+    const second = validatedActivityEvent("omo.dag.activity", {
+      runId: "run",
+      nodeId: "node",
+      at: NOW_ISO,
+      activity: "working",
+    });
+    bufferActivityHydrationEvent(buffer, first!);
+    bufferActivityHydrationEvent(buffer, second!);
+
+    expect(buffer.events).toHaveLength(1);
+    expect(buffer.events[0]?.data).toMatchObject({ currentTool: "bash", activity: "working" });
   });
 });
 

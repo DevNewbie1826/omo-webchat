@@ -1,7 +1,7 @@
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
-import { applyActivityEvent, applyRunFlight, applyTodoToolDetails } from "./activityState";
+import { applyActivityEvent, applyRunFlight, applyTodoToolDetails, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import type { UiMessage } from "./chatEntries";
@@ -33,7 +33,7 @@ interface ChatFrameHandlerBindings {
   readonly toolCallsRef: Current<Readonly<Record<string, ToolEntry>>>;
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
-  readonly bufferActivityEvent: (name: string, data: unknown) => void;
+  readonly bufferActivityEvent: (event: NonNullable<ReturnType<typeof validatedActivityEvent>>) => void;
   readonly retryVersionRef: Current<number>;
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
@@ -138,7 +138,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       }
       case "extensionEvent": {
         ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
-        bindings.bufferActivityEvent(frame.name, frame.data);
+        const activityEvent = validatedActivityEvent(frame.name, frame.data);
+        if (activityEvent !== null) bindings.bufferActivityEvent(activityEvent);
         const next = applyActivityEvent(bindings.activitiesRef.current, frame.name, frame.data);
         if (next !== bindings.activitiesRef.current) bindings.applyActivities(next);
         return;

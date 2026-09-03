@@ -3,7 +3,15 @@ import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidat
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
-import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
+import {
+  applyActivityEvent,
+  applyActivityHistorySnapshot,
+  bufferActivityHydrationEvent,
+  createActivityHydrationBuffer,
+  emptyActivityState,
+  type ActivityHydrationBuffer,
+  type BufferedActivityEvent,
+} from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -130,7 +138,7 @@ export function useChatFrameState() {
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
   const activityHydrationRef = useRef<{
     readonly token: number;
-    readonly events: { readonly name: string; readonly data: unknown }[];
+    readonly buffer: ActivityHydrationBuffer;
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
@@ -213,8 +221,9 @@ export function useChatFrameState() {
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
-    bufferActivityEvent: (name, data) => {
-      activityHydrationRef.current?.events.push({ name, data });
+    bufferActivityEvent: (event: BufferedActivityEvent) => {
+      const hydration = activityHydrationRef.current;
+      if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
     },
     retryVersionRef,
     externalRecoveryPendingRef,
@@ -250,7 +259,7 @@ export function useChatFrameState() {
   // snapshots still suppress REST replacement for their own side.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, events: [] };
+    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer() };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
@@ -261,13 +270,13 @@ export function useChatFrameState() {
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    if (!hydration.events.some((event) => event.name === "omo.task.updated")) {
+    if (!hydration.buffer.taskSuperseded) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (!hydration.events.some((event) => event.name === "omo.dag.updated")) {
+    if (!hydration.buffer.dagSuperseded) {
       next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
     }
-    for (const event of hydration.events) {
+    for (const event of hydration.buffer.events) {
       next = applyActivityEvent(next, event.name, event.data);
     }
     if (next !== activitiesRef.current) applyActivities(next);
