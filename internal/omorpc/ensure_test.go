@@ -2,6 +2,7 @@ package omorpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,36 @@ func TestEnsureHelperProcess(t *testing.T) {
 		return
 	}
 	if mode == "die" {
+		os.Exit(7)
+	}
+	if mode == "descendant-ladder" {
+		runtimeName := os.Getenv("OMO_RUNTIME")
+		pidPath := os.Getenv("OMORPC_ENSURE_DESCENDANT_PID")
+		if runtimeName != "node" {
+			child := exec.Command("sleep", "60")
+			if err := child.Start(); err != nil {
+				t.Fatalf("helper start descendant: %v", err)
+			}
+			if err := os.WriteFile(pidPath, []byte(fmt.Sprint(child.Process.Pid)), 0o600); err != nil {
+				t.Fatalf("helper write descendant pid: %v", err)
+			}
+			os.Exit(7)
+		}
+		pidData, err := os.ReadFile(pidPath)
+		if err != nil {
+			t.Fatalf("helper read descendant pid: %v", err)
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(pidData), &pid); err != nil {
+			t.Fatalf("helper parse descendant pid: %v", err)
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("automatic-attempt descendant %d survived into node attempt: %v", pid, err)
+		}
+		mode = "serve"
+	}
+	if mode == "saturate-log" {
+		_, _ = os.Stderr.Write(bytes.Repeat([]byte("x"), daemonSpawnLogLimit+1024))
 		os.Exit(7)
 	}
 	if mode == "runtime-ladder" {
@@ -349,6 +380,91 @@ func TestEnsureDaemonBothRuntimeAttemptsReturnTypedError(t *testing.T) {
 	}
 	if got := strings.Fields(string(data)); !slices.Equal(got, []string{"automatic", "node"}) {
 		t.Fatalf("runtime attempts = %v, want [automatic node]", got)
+	}
+}
+
+func TestEnsureDaemonReapsAttemptDescendantsBeforeFallback(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	pidPath := filepath.Join(dir, "descendant.pid")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "descendant-ladder")
+	cfg.Env = append(cfg.Env, "OMORPC_ENSURE_DESCENDANT_PID="+pidPath)
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+}
+
+func TestRemoveOwnedSocketPreservesReplacementListener(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	first, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.(*net.UnixListener).SetUnlinkOnClose(false)
+	identity, exists := currentSocketIdentity(socket)
+	if !exists {
+		t.Fatal("first listener has no socket identity")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+
+	cfg := EnsureConfig{AgentDir: dir, SocketPath: socket, LockTimeout: testAwaitTimeout, LockRetry: time.Millisecond}
+	lock, err := acquireEnsureLock(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeOwnedSocket(socket, &identity); err != nil {
+		t.Fatal(err)
+	}
+	releaseEnsureLock(lock)
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("replacement listener was unlinked")
+	}
+}
+
+func TestEnsureDaemonSpawnLogReservesBothAttemptPartitions(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "saturate-log")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want fallback failure", ensured, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "daemon-spawn.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > daemonSpawnLogLimit {
+		t.Fatalf("spawn log size = %d, limit = %d", len(data), daemonSpawnLogLimit)
+	}
+	for _, attempt := range []string{"automatic", "node"} {
+		if !bytes.Contains(data, []byte("spawn attempt: "+attempt+"\n")) {
+			t.Fatalf("saturated spawn log omitted %s header", attempt)
+		}
+	}
+}
+
+func TestDefaultEnsureLockBudgetCoversRuntimeLadder(t *testing.T) {
+	cfg, err := normalizeEnsureConfig(EnsureConfig{AgentDir: t.TempDir(), ReadyTimeout: 125 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullLadder := 2 * (cfg.ReadyTimeout + daemonStopGrace + daemonKillWait)
+	if cfg.LockTimeout < fullLadder {
+		t.Fatalf("default lock timeout = %v, full runtime ladder = %v", cfg.LockTimeout, fullLadder)
 	}
 }
 

@@ -145,9 +145,21 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 	}
 }
 
-const daemonSpawnLogLimit = 1 << 20
+const (
+	daemonSpawnLogLimit = 1 << 20
+	daemonStopGrace     = 3 * time.Second
+	daemonKillWait      = time.Second
+)
 
-var runtimeWinnerCache sync.Map // resolved supervisor path -> "automatic" or "node"
+var (
+	runtimeWinnerCache  sync.Map // resolved supervisor path -> "automatic" or "node"
+	ownedProcessSockets sync.Map // supervisor pid -> ownedProcessSocket
+)
+
+type ownedProcessSocket struct {
+	cfg      EnsureConfig
+	identity socketIdentity
+}
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
 // reachable, it serializes startup with an advisory lock, launches the
@@ -227,42 +239,60 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 }
 
 func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, args, env []string, attempt string, appendLog bool) (*EnsuredDaemon, error, bool) {
-	removeStaleSocket(cfg.SocketPath)
-	stderr, err := openBoundedSpawnLog(filepath.Join(cfg.StateDir, "daemon-spawn.log"), daemonSpawnLogLimit, appendLog)
+	logPath := filepath.Join(cfg.StateDir, "daemon-spawn.log")
+	stderr, finishLog, err := openSpawnAttemptLog(logPath, attempt, appendLog)
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
 	}
-	if _, err := fmt.Fprintf(stderr, "omo-webchat daemon spawn attempt: %s\n", attempt); err != nil {
-		_ = stderr.Close()
-		return nil, fmt.Errorf("omorpc: sign daemon spawn log: %w", err), false
-	}
+	baseline, baselineExists := currentSocketIdentity(cfg.SocketPath)
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
 	cmd.Env = EnsureExtensionEventsCapability(env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = daemonKillWait
 	if err := cmd.Start(); err != nil {
-		_ = stderr.Close()
-		return nil, fmt.Errorf("omorpc: start daemon supervisor: %w", err), false
+		return nil, errors.Join(fmt.Errorf("omorpc: start daemon supervisor: %w", err), finishLog()), false
 	}
 	waitCh := make(chan error, 1)
 	go func() {
 		waitErr := cmd.Wait()
-		_ = stderr.Close()
-		waitCh <- waitErr
+		waitCh <- errors.Join(waitErr, finishLog())
+		close(waitCh)
 	}()
+
+	var ownedSocket *socketIdentity
+	observeOwnedSocket := func() {
+		identity, exists := currentSocketIdentity(cfg.SocketPath)
+		if exists && (!baselineExists || identity != baseline) {
+			ownedSocket = &identity
+		}
+	}
+	cleanup := func() error {
+		observeOwnedSocket()
+		if err := stopOwnedProcess(context.Background(), cmd.Process, waitCh); err != nil {
+			return err
+		}
+		return removeOwnedSocket(cfg.SocketPath, ownedSocket)
+	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
 	for {
+		observeOwnedSocket()
 		client, dialErr := probeDaemon(readyCtx, cfg)
 		if dialErr == nil {
 			result, checkErr := checkedDaemon(client, cfg, true, cmd.Process, waitCh)
 			if checkErr != nil {
-				_ = stopOwnedProcess(context.Background(), cmd.Process, waitCh)
-				removeStaleSocket(cfg.SocketPath)
+				if cleanupErr := cleanup(); cleanupErr != nil {
+					return nil, errors.Join(checkErr, cleanupErr), false
+				}
 				return nil, checkErr, true
+			}
+			if ownedSocket != nil {
+				ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, identity: *ownedSocket})
 			}
 			return result, nil, false
 		}
@@ -272,22 +302,54 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 			if waitErr == nil {
 				waitErr = errors.New("supervisor exited successfully before opening the socket")
 			}
-			removeStaleSocket(cfg.SocketPath)
-			return nil, fmt.Errorf("omorpc: daemon supervisor exited before readiness: %w", waitErr), true
+			attemptErr := fmt.Errorf("omorpc: daemon supervisor exited before readiness: %w", waitErr)
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				return nil, errors.Join(attemptErr, cleanupErr), false
+			}
+			return nil, attemptErr, true
 		case <-readyCtx.Done():
-			_ = stopOwnedProcess(context.Background(), cmd.Process, waitCh)
-			removeStaleSocket(cfg.SocketPath)
-			return nil, fmt.Errorf("omorpc: daemon readiness: %w", readyCtx.Err()), ctx.Err() == nil
+			attemptErr := fmt.Errorf("omorpc: daemon readiness: %w", readyCtx.Err())
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				return nil, errors.Join(attemptErr, cleanupErr), false
+			}
+			return nil, attemptErr, ctx.Err() == nil
 		case <-time.After(cfg.LockRetry):
 		}
 	}
 }
 
-func removeStaleSocket(path string) {
+type socketIdentity struct {
+	device uint64
+	inode  uint64
+}
+
+func currentSocketIdentity(path string) (socketIdentity, bool) {
 	info, err := os.Lstat(path)
-	if err == nil && info.Mode()&os.ModeSocket != 0 {
-		_ = os.Remove(path)
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return socketIdentity{}, false
 	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return socketIdentity{}, false
+	}
+	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
+}
+
+// removeOwnedSocket runs while EnsureDaemon holds the endpoint lock. The
+// identity comparison prevents cleanup from unlinking an endpoint that
+// replaced the one observed during this attempt.
+func removeOwnedSocket(path string, owned *socketIdentity) error {
+	if owned == nil {
+		return nil
+	}
+	current, exists := currentSocketIdentity(path)
+	if !exists || current != *owned {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("omorpc: remove failed daemon socket: %w", err)
+	}
+	return nil
 }
 
 func lookupEnv(env []string, key string) (string, bool) {
@@ -309,6 +371,44 @@ func setEnv(env []string, key, value string) []string {
 		}
 	}
 	return append(out, key+"="+value)
+}
+
+func openSpawnAttemptLog(path, attempt string, appendLog bool) (*os.File, func() error, error) {
+	file, err := os.CreateTemp(filepath.Dir(path), ".daemon-spawn-*.log")
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, nil, err
+	}
+	if _, err := fmt.Fprintf(file, "omo-webchat daemon spawn attempt: %s\n", attempt); err != nil {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+		return nil, nil, err
+	}
+	tempPath := file.Name()
+	finish := func() error {
+		closeErr := file.Close()
+		defer os.Remove(tempPath)
+		source, err := os.Open(tempPath)
+		if err != nil {
+			return errors.Join(closeErr, err)
+		}
+		defer source.Close()
+		flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+		if appendLog {
+			flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		}
+		destination, err := os.OpenFile(path, flags, 0o600)
+		if err != nil {
+			return errors.Join(closeErr, err)
+		}
+		_, copyErr := io.Copy(destination, io.LimitReader(source, daemonSpawnLogLimit/2))
+		return errors.Join(closeErr, copyErr, destination.Close())
+	}
+	return file, finish, nil
 }
 
 type boundedSpawnLog struct {
@@ -394,7 +494,7 @@ func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 		cfg.ProbeTimeout = time.Second
 	}
 	if cfg.LockTimeout == 0 {
-		cfg.LockTimeout = 10 * time.Second
+		cfg.LockTimeout = 2 * (cfg.ReadyTimeout + daemonStopGrace + daemonKillWait)
 	}
 	if cfg.LockRetry == 0 {
 		cfg.LockRetry = 20 * time.Millisecond
@@ -630,31 +730,85 @@ func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
 	return binary, args, nil
 }
 
-func stopOwnedProcess(ctx context.Context, process *os.Process, waitCh <-chan error) error {
+func stopOwnedProcess(ctx context.Context, process *os.Process, waitCh <-chan error) (resultErr error) {
 	if process == nil {
 		return nil
 	}
-	if err := process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("omorpc: terminate daemon supervisor: %w", err)
+	defer func() {
+		if resultErr == nil {
+			resultErr = cleanupStoppedProcessEndpoint(ctx, process.Pid)
+		}
+	}()
+	if err := signalProcessGroup(process.Pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("omorpc: terminate daemon process group: %w", err)
 	}
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-waitCh:
+	grace := time.NewTimer(daemonStopGrace)
+	defer grace.Stop()
+	leaderReaped := false
+	for !leaderReaped || processGroupAlive(process.Pid) {
+		select {
+		case <-waitCh:
+			leaderReaped = true
+			waitCh = nil
+			if !processGroupAlive(process.Pid) {
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-grace.C:
+			goto kill
+		}
+	}
+	return nil
+
+kill:
+	if err := signalProcessGroup(process.Pid, syscall.SIGKILL); err != nil {
+		return fmt.Errorf("omorpc: kill daemon process group: %w", err)
+	}
+	deadline := time.NewTimer(daemonKillWait)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for {
+		if leaderReaped && !processGroupAlive(process.Pid) {
+			return nil
+		}
+		select {
+		case <-waitCh:
+			leaderReaped = true
+			waitCh = nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("omorpc: daemon process group did not exit after SIGKILL")
+		case <-retry.C:
+		}
+	}
+}
+
+func cleanupStoppedProcessEndpoint(ctx context.Context, pid int) error {
+	value, ok := ownedProcessSockets.LoadAndDelete(pid)
+	if !ok {
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
 	}
-	if err := process.Signal(syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("omorpc: kill daemon supervisor: %w", err)
+	owned := value.(ownedProcessSocket)
+	lock, err := acquireEnsureLock(ctx, owned.cfg)
+	if err != nil {
+		return fmt.Errorf("omorpc: lock stopped daemon socket cleanup: %w", err)
 	}
-	select {
-	case <-waitCh:
+	defer releaseEnsureLock(lock)
+	return removeOwnedSocket(owned.cfg.SocketPath, &owned.identity)
+}
+
+func signalProcessGroup(pid int, signal syscall.Signal) error {
+	err := syscall.Kill(-pid, signal)
+	if err == nil || errors.Is(err, syscall.ESRCH) {
 		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(time.Second):
-		return errors.New("omorpc: daemon supervisor did not exit after SIGKILL")
 	}
+	return err
+}
+
+func processGroupAlive(pid int) bool {
+	err := syscall.Kill(-pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
