@@ -513,7 +513,19 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return existing, false, detach, nil
 		}
-		if !errors.Is(attachErr, ErrSessionClosed) && !errors.Is(attachErr, ErrSessionResumable) {
+		var drift *ExternalWriteError
+		if errors.As(attachErr, &drift) {
+			// A reload is the explicit recovery boundary for a quarantined route.
+			// Stop it before reopening the stored path so the provider never sees
+			// two owners for the same in-place session.
+			if err := existing.closeContext(ctx); err != nil {
+				return nil, false, nil, err
+			}
+			m.mu.Lock()
+			slotGeneration = m.slotGeneration[chatID]
+			existing = m.byChat[chatID]
+			m.mu.Unlock()
+		} else if !errors.Is(attachErr, ErrSessionClosed) && !errors.Is(attachErr, ErrSessionResumable) {
 			return nil, false, nil, attachErr
 		}
 	}
@@ -542,6 +554,16 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if openErr != nil && resumed {
 		info := ErrorInfo{Code: "resume_failed", Message: openErr.Error(), StoredIdentity: cur, Dangling: danglingResume(openErr)}
 		recovery = &info
+		if cur.InPlace {
+			// An in-place cursor names the user's original file. Opening without
+			// that path would create launch debris and then mislabel it in-place.
+			// Preserve the typed provider error (notably session_path_in_use) and
+			// leave the cursor untouched for a later explicit recovery.
+			if existing != nil {
+				existing.publishError(info)
+			}
+			return nil, false, nil, openErr
+		}
 		if !definitiveResumeFailure(openErr) {
 			if existing != nil {
 				existing.publishError(info)
@@ -763,6 +785,9 @@ func validateOpen(data omorpc.OpenSessionData, cur Cursor, resumed bool) error {
 	}
 	if resumed && cur.DurableSessionID != "" && data.State.SessionID != cur.DurableSessionID {
 		return fmt.Errorf("durable session id mismatch: provider %q, stored %q", data.State.SessionID, cur.DurableSessionID)
+	}
+	if resumed && cur.InPlace && data.State.SessionFile != cur.SessionFile {
+		return fmt.Errorf("in-place session path mismatch: provider %q, stored %q", data.State.SessionFile, cur.SessionFile)
 	}
 	return nil
 }

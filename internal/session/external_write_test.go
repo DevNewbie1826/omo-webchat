@@ -2,10 +2,14 @@ package session
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
 func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
@@ -26,7 +30,7 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	chat := testChat{id: "chat-external", cwd: cwd}
 
 	first := newRecorder(32)
-	_, _, detach := acquire(t, manager, chat, first)
+	stale, _, detach := acquire(t, manager, chat, first)
 	first.await(t, FrameReady)
 	first.await(t, FrameEntries)
 	detach()
@@ -69,5 +73,37 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	}
 	if !foundExternal {
 		t.Fatalf("cold re-hydration did not emit external disk entry before state: %+v", prior)
+	}
+
+	beforePrompts := daemon.RequestCount(omorpc.CmdPrompt)
+	err = stale.SendPrompt(context.Background(), "must not reach stale route", nil)
+	var drift *ExternalWriteError
+	if !errors.As(err, &drift) {
+		t.Fatalf("post-drift prompt error = %T %v, want typed external-write error", err, err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdPrompt); got != beforePrompts {
+		t.Fatalf("post-drift prompt reached provider: prompt count %d -> %d", beforePrompts, got)
+	}
+
+	beforeOpens := daemon.RequestCount(omorpc.CmdOpenSession)
+	beforeCloses := daemon.RequestCount(omorpc.CmdCloseSession)
+	recoveredSub := newRecorder(32)
+	recovered, started, recoveredDetach := acquire(t, manager, chat, recoveredSub)
+	defer recoveredDetach()
+	if !started {
+		t.Fatal("external-write recovery reused the quarantined route")
+	}
+	if recovered.RoutingID() == stale.RoutingID() {
+		t.Fatalf("external-write recovery retained stale route %q", stale.RoutingID())
+	}
+	if got := daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses+1 {
+		t.Fatalf("external-write recovery close count = %d, want %d", got, beforeCloses+1)
+	}
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens+1 {
+		t.Fatalf("external-write recovery open count = %d, want %d", got, beforeOpens+1)
+	}
+	open := daemon.LastRequest(omorpc.CmdOpenSession)
+	if got, _ := open["sessionPath"].(string); got != path {
+		t.Fatalf("external-write recovery opened %q, want original %q", got, path)
 	}
 }
