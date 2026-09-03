@@ -100,9 +100,8 @@ function sweepExpired(nowMs: number): void {
   emit();
 }
 
-function activityStampMs(at: string): number | null {
-  const epochMs = Date.parse(at);
-  return Number.isNaN(epochMs) ? null : epochMs;
+function activityStampMs(at: string): number {
+  return Date.parse(at);
 }
 
 function mergeActivityStamps(
@@ -116,12 +115,9 @@ function mergeActivityStamps(
   for (const activity of [first, second]) {
     for (const [taskId, at] of activity.stamps) {
       const epochMs = activityStampMs(at);
-      if (epochMs === null) continue;
       const known = stamps.get(taskId);
-      const knownMs = known === undefined ? null : activityStampMs(known);
-      // Equal instants retain the first representation, making merge order the
-      // stable tie-breaker while chronology alone decides which instant wins.
-      if (knownMs === null || epochMs > knownMs) stamps.set(taskId, at);
+      const knownMs = known === undefined ? undefined : activityStampMs(known);
+      if (knownMs === undefined || epochMs > knownMs) stamps.set(taskId, at);
       const receivedAt = activity.receivedAtByTask.get(taskId);
       if (receivedAt !== undefined) {
         receivedAtByTask.set(taskId, Math.max(receivedAtByTask.get(taskId) ?? 0, receivedAt));
@@ -249,13 +245,11 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
     const parsed = parseDagActivity(data);
     if (parsed === null || parsed.taskId === undefined) return;
     const epochMs = activityStampMs(parsed.at);
-    if (epochMs === null) return;
     const previous = overrides.get(id);
     const stamps = new Map(previous?.activity?.stamps ?? []);
     const known = stamps.get(parsed.taskId);
-    const knownMs = known === undefined ? null : activityStampMs(known);
-    // Equal epochs keep the first-seen wire representation.
-    if (knownMs === null || epochMs > knownMs) stamps.set(parsed.taskId, parsed.at);
+    const knownMs = known === undefined ? undefined : activityStampMs(known);
+    if (knownMs === undefined || epochMs > knownMs) stamps.set(parsed.taskId, parsed.at);
     const receivedAt = Date.now();
     const receivedAtByTask = new Map(previous?.activity?.receivedAtByTask ?? []);
     receivedAtByTask.set(parsed.taskId, receivedAt);

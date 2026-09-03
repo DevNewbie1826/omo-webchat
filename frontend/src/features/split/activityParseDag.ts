@@ -141,12 +141,41 @@ export function parseDagUpdated(data: unknown): ParsedDagUpdated | null {
   };
 }
 
+const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
+
+function parseRfc3339DateTime(value: string): string | null {
+  const match = RFC3339_DATE_TIME.exec(value);
+  if (match === null) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = month === 2 ? (leapYear ? 29 : 28) : ([4, 6, 9, 11].includes(month) ? 30 : 31);
+  if (
+    month < 1 || month > 12 ||
+    day < 1 || day > daysInMonth ||
+    hour > 23 || minute > 59 || second > 59 ||
+    (offsetHourText !== undefined && Number(offsetHourText) > 23) ||
+    (offsetMinuteText !== undefined && Number(offsetMinuteText) > 59)
+  ) {
+    return null;
+  }
+  const epochMs = Date.parse(value);
+  return Number.isNaN(epochMs) ? null : new Date(epochMs).toISOString();
+}
+
 export function parseDagActivity(data: unknown): ParsedDagActivity | null {
   if (!isRecord(data)) return null;
   const runId = reqString(data, "runId");
   const nodeId = reqString(data, "nodeId");
-  const at = reqString(data, "at");
-  if (runId === null || nodeId === null || at === null) return null;
+  const rawAt = reqString(data, "at");
+  if (runId === null || nodeId === null || rawAt === null) return null;
+  const at = parseRfc3339DateTime(rawAt);
+  if (at === null) return null;
   const schemaVersion = optSchemaVersion(data);
   const taskId = optString(data, "taskId");
   const activity = optString(data, "activity");

@@ -639,7 +639,7 @@ describe("liveBadgeStore", () => {
         runId: "r1",
         nodeId: "newer-node",
         taskId: "t-offset",
-        at: "2026-08-19T09:29:00.000Z",
+        at: "2026-08-19T08:29:00.000-01:00",
       });
     });
 
@@ -683,7 +683,7 @@ describe("liveBadgeStore", () => {
     expect(captured.overrides.get("attached-chat")?.summary.runningCount).toBe(1);
   });
 
-  it("rejects an invalid activity stamp without storing it or renewing its task", async () => {
+  it("rejects invalid activity stamps without storing them or renewing their task", async () => {
     vi.useFakeTimers();
     const startedAt = new Date("2026-08-19T10:00:00.000Z");
     vi.setSystemTime(startedAt);
@@ -694,12 +694,18 @@ describe("liveBadgeStore", () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(89_000));
     act(() => {
-      ingestExtensionEvent("s1", "omo.dag.activity", {
-        runId: "r1",
-        nodeId: "invalid-node",
-        taskId: "t-quiet",
-        at: "not-a-timestamp",
-      });
+      for (const at of [
+        "not-a-timestamp",
+        "2026-08-19T10:01:29.000",
+        "2026-02-30T10:01:29.000Z",
+      ]) {
+        ingestExtensionEvent("s1", "omo.dag.activity", {
+          runId: "r1",
+          nodeId: "invalid-node",
+          taskId: "t-quiet",
+          at,
+        });
+      }
     });
     expect(captured.overrides.get("s1")?.receivedAt).toBe(startedAt.getTime());
 
