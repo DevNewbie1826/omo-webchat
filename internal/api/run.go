@@ -23,6 +23,55 @@ import (
 
 var ensureDaemon = omorpc.EnsureDaemon
 
+const daemonStopTimeout = 5 * time.Second
+
+type recoveryDaemonLifecycle struct {
+	mu       sync.Mutex
+	owned    []*omorpc.EnsuredDaemon
+	stopping bool
+	logger   *slog.Logger
+}
+
+func (l *recoveryDaemonLifecycle) retain(daemon *omorpc.EnsuredDaemon) {
+	if daemon == nil {
+		return
+	}
+	if !daemon.Owned {
+		_ = daemon.Close()
+		return
+	}
+
+	// The ensure client is only a readiness probe. Retain the ownership handle
+	// after closing it so teardown can still stop the process it spawned.
+	_ = daemon.Close()
+	l.mu.Lock()
+	if !l.stopping {
+		l.owned = append(l.owned, daemon)
+		l.mu.Unlock()
+		return
+	}
+	l.mu.Unlock()
+	l.stopDaemon(daemon)
+}
+
+func (l *recoveryDaemonLifecycle) stop() {
+	l.mu.Lock()
+	l.stopping = true
+	owned := l.owned
+	l.owned = nil
+	l.mu.Unlock()
+
+	for _, daemon := range owned {
+		l.stopDaemon(daemon)
+	}
+}
+
+func (l *recoveryDaemonLifecycle) stopDaemon(daemon *omorpc.EnsuredDaemon) {
+	if err := daemon.StopBounded(daemonStopTimeout); err != nil {
+		l.logger.Error("stopping recovery daemon", "err", err)
+	}
+}
+
 // Run requires the omo daemon, opens the cursor metadata store, performs the
 // read-only v1 import, and serves the sole v2 stack until ctx is cancelled.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady func() error) error {
@@ -36,18 +85,31 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			return fmt.Errorf("resolving state directory: %w", err)
 		}
 	}
-	ensured, err := ensureDaemon(ctx, omorpc.EnsureConfig{
+	recoveryDaemons := recoveryDaemonLifecycle{logger: logger}
+	ensureCfg := omorpc.EnsureConfig{
 		WorkingDir: cfg.Root,
 		StateDir:   stateDir,
 		Env:        os.Environ(),
-	})
+	}
+	// The long-lived client re-runs this ensure step when a reconnect dials a
+	// missing socket path, so a vanished socket file recovers without a
+	// server restart.
+	ensureCfg.OnDialNotExist = func(ctx context.Context) error {
+		again, err := ensureDaemon(ctx, ensureCfg)
+		if err != nil {
+			return err
+		}
+		recoveryDaemons.retain(again)
+		return nil
+	}
+	ensured, err := ensureDaemon(ctx, ensureCfg)
 	if err != nil {
 		return fmt.Errorf("starting required omo daemon: %w", err)
 	}
 	var stopDaemonOnce sync.Once
 	stopDaemon := func() {
 		stopDaemonOnce.Do(func() {
-			if e := ensured.StopBounded(5 * time.Second); e != nil {
+			if e := ensured.StopBounded(daemonStopTimeout); e != nil {
 				logger.Error("closing provider client", "err", e)
 			}
 		})
@@ -55,6 +117,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	// Install owned-process teardown immediately: every failure after ensure,
 	// including metadata initialization, must terminate a spawned supervisor.
 	defer stopDaemon()
+	defer recoveryDaemons.stop()
 	cursors, err := cursorstore.Open(filepath.Join(stateDir, "state-v2.json"))
 	if err != nil {
 		return fmt.Errorf("opening cursor store: %w", err)
@@ -84,6 +147,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 				logger.Error("closing sessions", "err", e)
 			}
 			cancelManager()
+			recoveryDaemons.stop()
 			stopDaemon()
 		})
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -157,6 +158,212 @@ func TestRunStartupFailureStopsOwnedDaemon(t *testing.T) {
 	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("owned supervisor process %d remains after startup failure: %v", pid, err)
 	}
+}
+
+func ownedRecoveryEnsureConfig(t *testing.T) (omorpc.EnsureConfig, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "api-run-recovery-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pidPath := filepath.Join(dir, "pid")
+	t.Cleanup(func() {
+		if pidBytes, err := os.ReadFile(pidPath); err == nil {
+			var pid int
+			if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err == nil {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+			}
+		}
+		_ = os.RemoveAll(dir)
+	})
+	script := filepath.Join(dir, "supervisor.sh")
+	contents := "#!/bin/sh\nexec \"$OMO_API_RUN_TEST_BINARY\" -test.run='^TestRunOwnedDaemonHelper$'\n"
+	if err := os.WriteFile(script, []byte(contents), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return omorpc.EnsureConfig{
+		AgentDir: dir, SocketPath: filepath.Join(dir, "d.sock"), BinaryPath: script,
+		ReadyTimeout: 5 * time.Second, ProbeTimeout: 100 * time.Millisecond,
+		Env: append(os.Environ(), "OMO_API_RUN_HELPER_DIR="+dir, "OMO_API_RUN_TEST_BINARY="+os.Args[0]),
+	}, pidPath
+}
+
+func assertOwnedRecoveryStopped(t *testing.T, pidPath string) {
+	t.Helper()
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read recovery helper pid: %v", err)
+	}
+	var pid int
+	if _, err := fmt.Sscanf(string(pidBytes), "%d", &pid); err != nil {
+		t.Fatalf("parse recovery helper pid: %v", err)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("owned recovery process %d remains after shutdown: %v", pid, err)
+	}
+}
+
+func newRunTestDaemon(t *testing.T) *omorpctest.Daemon {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "api-run-daemon-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	daemon := omorpctest.New(dir)
+	if err := daemon.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(daemon.Stop)
+	return daemon
+}
+
+func TestRunStopsOwnedRecoveryDaemon(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	startup := newRunTestDaemon(t)
+	recoveryCfg, pidPath := ownedRecoveryEnsureConfig(t)
+
+	old := ensureDaemon
+	var calls atomic.Int32
+	configured := make(chan omorpc.EnsureConfig, 1)
+	ensureDaemon = func(ctx context.Context, cfg omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		if calls.Add(1) == 1 {
+			configured <- cfg
+			client, err := omorpc.Dial(ctx, startup.SocketPath())
+			return &omorpc.EnsuredDaemon{Client: client}, err
+		}
+		daemon, err := omorpc.EnsureDaemon(ctx, recoveryCfg)
+		if err == nil && !daemon.Owned {
+			return nil, errors.New("recovery ensure did not own spawned daemon")
+		}
+		return daemon, err
+	}
+	t.Cleanup(func() { ensureDaemon = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, &config.Config{Host: "127.0.0.1", Port: 0, Root: t.TempDir(), StateDir: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), func() error {
+			close(ready)
+			return nil
+		})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not become ready")
+	}
+	ensureCfg := <-configured
+	if ensureCfg.OnDialNotExist == nil {
+		t.Fatal("Run() did not configure reconnect recovery")
+	}
+	if err := ensureCfg.OnDialNotExist(t.Context()); err != nil {
+		t.Fatalf("recovery ensure: %v", err)
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not stop")
+	}
+	assertOwnedRecoveryStopped(t, pidPath)
+}
+
+func TestRunStopsOwnedRecoveryThatCompletesDuringTeardown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	startup := newRunTestDaemon(t)
+	recoveryCfg, pidPath := ownedRecoveryEnsureConfig(t)
+
+	old := ensureDaemon
+	var calls atomic.Int32
+	configured := make(chan omorpc.EnsureConfig, 1)
+	recoverySpawned := make(chan struct{})
+	releaseRecovery := make(chan struct{})
+	ensureDaemon = func(ctx context.Context, cfg omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		if calls.Add(1) == 1 {
+			configured <- cfg
+			client, err := omorpc.Dial(ctx, startup.SocketPath())
+			return &omorpc.EnsuredDaemon{Client: client}, err
+		}
+		daemon, err := omorpc.EnsureDaemon(ctx, recoveryCfg)
+		if err != nil {
+			return nil, err
+		}
+		if !daemon.Owned {
+			return nil, errors.New("recovery ensure did not own spawned daemon")
+		}
+		close(recoverySpawned)
+		<-releaseRecovery
+		return daemon, nil
+	}
+	t.Cleanup(func() { ensureDaemon = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- Run(ctx, &config.Config{Host: "127.0.0.1", Port: 0, Root: t.TempDir(), StateDir: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), func() error {
+			close(ready)
+			return nil
+		})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not become ready")
+	}
+	ensureCfg := <-configured
+	hookResult := make(chan error, 1)
+	go func() { hookResult <- ensureCfg.OnDialNotExist(t.Context()) }()
+	select {
+	case <-recoverySpawned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery daemon was not spawned")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run() did not stop while recovery ensure was in flight")
+	}
+	close(releaseRecovery)
+	select {
+	case err := <-hookResult:
+		if err != nil {
+			t.Fatalf("late recovery ensure: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late recovery ensure did not finish")
+	}
+	assertOwnedRecoveryStopped(t, pidPath)
+}
+
+func TestRecoveryDaemonLifecycleDoesNotStopAdoptedDaemon(t *testing.T) {
+	daemon := newRunTestDaemon(t)
+	client, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycle := recoveryDaemonLifecycle{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	lifecycle.retain(&omorpc.EnsuredDaemon{Client: client})
+	lifecycle.stop()
+
+	probe, err := omorpc.Dial(t.Context(), daemon.SocketPath())
+	if err != nil {
+		t.Fatalf("adopted recovery daemon was stopped: %v", err)
+	}
+	_ = probe.Close()
 }
 
 func TestRunReturnsReadyError(t *testing.T) {

@@ -414,7 +414,7 @@ func DecodeLine(data []byte) (*Inbound, error) {
 		Type      string          `json:"type"`
 		ID        string          `json:"id"`
 		SessionID string          `json:"sessionId"`
-		Command   string          `json:"command"`
+		Command   json.RawMessage `json:"command"`
 		Success   bool            `json:"success"`
 		Data      json.RawMessage `json:"data"`
 		Error     string          `json:"error"`
@@ -424,10 +424,16 @@ func DecodeLine(data []byte) (*Inbound, error) {
 	}
 	raw := json.RawMessage(append([]byte(nil), data...))
 	if probe.Type == "response" {
+		var command string
+		if len(probe.Command) > 0 {
+			if err := json.Unmarshal(probe.Command, &command); err != nil {
+				return nil, fmt.Errorf("omorpc: decode frame: %w", err)
+			}
+		}
 		return &Inbound{Response: &Response{
 			ID:        probe.ID,
 			SessionID: probe.SessionID,
-			Command:   probe.Command,
+			Command:   command,
 			Success:   probe.Success,
 			Data:      probe.Data,
 			Error:     probe.Error,

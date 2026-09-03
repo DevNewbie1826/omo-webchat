@@ -77,6 +77,7 @@ type EnsureConfig struct {
 	WorkingDir      string
 	StateDir        string
 	Env             []string
+	OnDialNotExist  func(ctx context.Context) error
 
 	ReadyTimeout time.Duration
 	ProbeTimeout time.Duration
@@ -774,7 +775,7 @@ func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 func probeDaemon(ctx context.Context, cfg EnsureConfig) (*Client, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, cfg.ProbeTimeout)
 	defer cancel()
-	return Dial(probeCtx, cfg.SocketPath)
+	return DialWithConfig(probeCtx, cfg.SocketPath, Config{OnDialNotExist: cfg.OnDialNotExist})
 }
 
 func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, process *os.Process, waitCh <-chan error) (*EnsuredDaemon, error) {

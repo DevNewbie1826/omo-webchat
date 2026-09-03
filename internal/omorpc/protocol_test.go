@@ -217,6 +217,61 @@ func TestProtocolDecodeClassify(t *testing.T) {
 	}
 }
 
+// TestProtocolDecodeCommandFieldShapes pins inbound command-field typing:
+// event frames accept any JSON shape for "command"; response frames require
+// a JSON string (missing/null stay empty).
+func TestProtocolDecodeCommandFieldShapes(t *testing.T) {
+	t.Run("event_command_object", func(t *testing.T) {
+		line := `{"type":"command_invocation","sessionId":"rpc-1","command":{"name":"wish","source":"prompt"}}`
+		in, err := DecodeLine([]byte(line))
+		if err != nil {
+			t.Fatalf("DecodeLine: %v", err)
+		}
+		if in.Event == nil || in.Response != nil {
+			t.Fatalf("want Event, got %+v", in)
+		}
+		if in.Event.Type != "command_invocation" {
+			t.Fatalf("type: %q", in.Event.Type)
+		}
+		if !bytes.Equal(in.Event.Raw, []byte(line)) {
+			t.Fatalf("raw not preserved: %s", in.Event.Raw)
+		}
+	})
+	t.Run("response_command_string", func(t *testing.T) {
+		line := `{"id":"r1","type":"response","command":"prompt","success":true}`
+		in, err := DecodeLine([]byte(line))
+		if err != nil {
+			t.Fatalf("DecodeLine: %v", err)
+		}
+		if in.Response == nil || in.Event != nil {
+			t.Fatalf("want Response, got %+v", in)
+		}
+		if in.Response.Command != "prompt" {
+			t.Fatalf("command: %q", in.Response.Command)
+		}
+	})
+	t.Run("event_command_number", func(t *testing.T) {
+		line := `{"type":"command_invocation","sessionId":"rpc-1","command":7}`
+		in, err := DecodeLine([]byte(line))
+		if err != nil {
+			t.Fatalf("DecodeLine: %v", err)
+		}
+		if in.Event == nil || in.Event.Type != "command_invocation" {
+			t.Fatalf("want Event, got %+v", in)
+		}
+	})
+	t.Run("response_command_object", func(t *testing.T) {
+		line := `{"id":"r1","type":"response","command":{"name":"wish"},"success":true}`
+		in, err := DecodeLine([]byte(line))
+		if err == nil {
+			t.Fatalf("want error, got %+v", in)
+		}
+		if !strings.HasPrefix(err.Error(), "omorpc: decode frame:") {
+			t.Fatalf("error prefix: %v", err)
+		}
+	})
+}
+
 // TestProtocolUnknownEventEnvelope pins the forward-compat envelope wire form.
 func TestProtocolUnknownEventEnvelope(t *testing.T) {
 	ue := &UnknownEvent{Type: UnknownEventType, EventType: "hologram_event", Payload: json.RawMessage(`{"x":1}`)}

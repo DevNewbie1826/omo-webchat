@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -36,6 +37,14 @@ type Config struct {
 	ReconnectInitial     time.Duration
 	ReconnectMax         time.Duration
 	ReconnectMaxAttempts int
+
+	// OnDialNotExist, when non-nil, runs at most once per reconnect flight
+	// after a dial attempt failed because the socket path does not exist.
+	// It gives the embedder one chance to restore the endpoint (for example
+	// by re-running daemon startup) before the next retry. Hook errors and
+	// panics never influence the retry loop; a nil hook keeps the plain
+	// retry behavior.
+	OnDialNotExist func(ctx context.Context) error
 }
 
 // DefaultConfig is the zero-argument configuration.
@@ -383,6 +392,7 @@ func (c *Client) finishReconnect(flight *connectFlight) {
 func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
 	backoff := c.cfg.ReconnectInitial
 	var lastErr error
+	hookRan := false
 	for attempt := 0; attempt < c.cfg.ReconnectMaxAttempts; attempt++ {
 		if attempt > 0 {
 			timer := time.NewTimer(backoff)
@@ -414,8 +424,20 @@ func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
 		if ep != nil {
 			c.invalidate(ep, err)
 		}
+		if !hookRan && c.cfg.OnDialNotExist != nil && errors.Is(err, os.ErrNotExist) {
+			hookRan = true
+			c.runDialNotExistHook(ctx)
+		}
 	}
 	return nil, fmt.Errorf("%w: reconnect exhausted after %d attempts: %v", ErrDisconnected, c.cfg.ReconnectMaxAttempts, lastErr)
+}
+
+// runDialNotExistHook invokes the embedder's endpoint-restore hook. A hook
+// failure or panic is swallowed: the dial budget alone decides the flight's
+// outcome, and the next attempt reports the ordinary reconnect error.
+func (c *Client) runDialNotExistHook(ctx context.Context) {
+	defer func() { _ = recover() }()
+	_ = c.cfg.OnDialNotExist(ctx)
 }
 
 // Call sends a two-way request and waits for its correlated response.
