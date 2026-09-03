@@ -64,14 +64,11 @@ func (x *subscription) run() {
 				}
 			}
 			if item.delivered != nil {
-				pending := x.finishReplay()
-				close(item.delivered)
-				for _, frame := range pending {
-					if !x.deliver(frame) {
-						retireReason = ErrSubscriberDelivery
-						return
-					}
+				if !x.finishReplay() {
+					retireReason = ErrSubscriberDelivery
+					return
 				}
+				close(item.delivered)
 			}
 		}
 	}
@@ -105,23 +102,44 @@ func (x *subscription) beginReplay() {
 	x.replayMu.Unlock()
 }
 
-func (x *subscription) finishReplay() []Frame {
-	x.replayMu.Lock()
-	if !x.replaying {
+func (x *subscription) finishReplay() bool {
+	for {
+		x.replayMu.Lock()
+		if !x.replaying {
+			x.replayMu.Unlock()
+			return true
+		}
+		if len(x.pendingLive) == 0 {
+			x.replaying = false
+			if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+				replay.EndReplay()
+			}
+			x.replayMu.Unlock()
+			return true
+		}
+		pending := x.pendingLive
+		x.pendingLive = nil
 		x.replayMu.Unlock()
-		return nil
+
+		for _, frame := range pending {
+			if !x.deliver(frame) {
+				return false
+			}
+		}
 	}
-	x.replaying = false
-	pending := x.pendingLive
-	x.pendingLive = nil
-	if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
-		replay.EndReplay()
-	}
-	x.replayMu.Unlock()
-	return pending
 }
 
-func (x *subscription) endReplay() { _ = x.finishReplay() }
+func (x *subscription) endReplay() {
+	x.replayMu.Lock()
+	if x.replaying {
+		x.replaying = false
+		x.pendingLive = nil
+		if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+			replay.EndReplay()
+		}
+	}
+	x.replayMu.Unlock()
+}
 
 func (x *subscription) stop(cancel bool) {
 	x.stopOnce.Do(func() {

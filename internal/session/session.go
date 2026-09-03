@@ -560,19 +560,25 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	route := s.routingID
 	s.lifecycleMu.Unlock()
 
 	if err := s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, NameSourceAuto); err != nil {
 		return
 	}
+	if err := s.prepareWrite(ctx); err != nil {
+		return
+	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title == "" && s.nameSource != NameSourceUser {
+	route, err := s.routeLocked()
+	committed := err == nil && s.title == "" && s.nameSource != NameSourceUser
+	if committed {
 		s.title, s.nameSource = name, NameSourceAuto
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceAuto}})
 	}
 	s.lifecycleMu.Unlock()
-	_, _ = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+	if committed {
+		_, _ = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+	}
 }
 
 func (s *Session) applyProviderName(name string) {

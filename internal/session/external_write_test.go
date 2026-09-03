@@ -92,6 +92,73 @@ func TestInPlaceMutationFenceQuarantinesDirectFileDrift(t *testing.T) {
 	}
 }
 
+type blockingNameStore struct {
+	*memCursorStore
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+}
+
+func (s *blockingNameStore) UpdateName(ctx context.Context, chatID, name, source string) error {
+	s.enteredOnce.Do(func() { close(s.entered) })
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.memCursorStore.UpdateName(ctx, chatID, name, source)
+}
+
+func TestAutoTitleQuarantineDuringNamePersistenceSkipsProviderRename(t *testing.T) {
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "durable-blocked-auto-title.jsonl")
+	body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-blocked-auto-title\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
+		"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemon := newDaemon(t)
+	if err := daemon.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	base := newMemStore()
+	base.cursors["chat-blocked-auto-title"] = Cursor{SessionFile: path, DurableSessionID: "durable-blocked-auto-title", InPlace: true}
+	store := &blockingNameStore{memCursorStore: base, entered: make(chan struct{}), release: make(chan struct{})}
+	manager := testManager(t, dial(t, daemon), store, 32)
+	sub := newRecorder(32)
+	sess, _, detach := acquire(t, manager, testChat{id: "chat-blocked-auto-title", cwd: cwd}, sub)
+	defer detach()
+	sub.await(t, FrameReady)
+	sub.await(t, FrameEntries)
+
+	done := make(chan struct{})
+	go func() {
+		sess.applyAutoTitle(context.Background(), "Must not rename stale route")
+		close(done)
+	}()
+	select {
+	case <-store.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("automatic title did not enter UpdateName")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	var drift *ExternalWriteError
+	if err := sess.prepareWrite(context.Background()); !errors.As(err, &drift) {
+		t.Fatalf("mutation fence error = %T %v, want external-write error", err, err)
+	}
+	close(store.release)
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("automatic title did not return after UpdateName")
+	}
+	if got := daemon.RequestCount(omorpc.CmdSetSessionName); got != 0 {
+		t.Fatalf("quarantined automatic title reached stale route: set_session_name requests = %d", got)
+	}
+}
+
 func TestAutoTitleFenceRejectsUnlinkedInPlaceSession(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-auto-title.jsonl")
@@ -134,10 +201,14 @@ func TestAutoTitleFenceRejectsUnlinkedInPlaceSession(t *testing.T) {
 }
 
 type blockingHistoryRecorder struct {
-	frames      chan Frame
-	entered     chan struct{}
-	release     chan struct{}
-	enteredOnce sync.Once
+	frames            chan Frame
+	entered           chan struct{}
+	release           chan struct{}
+	transitionEntered chan struct{}
+	transitionRelease chan struct{}
+	replayEvents      chan string
+	enteredOnce       sync.Once
+	transitionOnce    sync.Once
 }
 
 func (s *blockingHistoryRecorder) Deliver(frame Frame) {
@@ -148,8 +219,22 @@ func (s *blockingHistoryRecorder) Deliver(frame Frame) {
 			<-s.release
 		})
 	}
+	if frame.Kind == FrameError {
+		if info, ok := frame.Data.(ErrorInfo); ok && info.Code == "external-write-detected" {
+			s.replayEvents <- "transition"
+			s.transitionOnce.Do(func() {
+				close(s.transitionEntered)
+				<-s.transitionRelease
+			})
+		}
+	}
+	if frame.Kind == FrameExtensionEvent {
+		s.replayEvents <- "activity"
+	}
 }
 
+func (s *blockingHistoryRecorder) BeginReplay()  {}
+func (s *blockingHistoryRecorder) EndReplay()    { s.replayEvents <- "end" }
 func (s *blockingHistoryRecorder) Cancel() error { return nil }
 
 func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *testing.T) {
@@ -195,7 +280,14 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 		t.Fatal(err)
 	}
 	defer detachObserver()
-	blocked := &blockingHistoryRecorder{frames: make(chan Frame, 16), entered: make(chan struct{}), release: make(chan struct{})}
+	blocked := &blockingHistoryRecorder{
+		frames:            make(chan Frame, 16),
+		entered:           make(chan struct{}),
+		release:           make(chan struct{}),
+		transitionEntered: make(chan struct{}),
+		transitionRelease: make(chan struct{}),
+		replayEvents:      make(chan string, 3),
+	}
 	detachReplay, target, err := sess.attachCheckedReplayTarget(blocked)
 	if err != nil {
 		t.Fatal(err)
@@ -225,12 +317,32 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 	}
 	close(blocked.release)
 	select {
+	case <-blocked.transitionEntered:
+	case <-time.After(testTimeout):
+		t.Fatal("buffered quarantine transition was not delivered")
+	}
+	activity := Frame{Kind: FrameExtensionEvent, SessionID: sess.ID(), Data: map[string]any{"name": "omo.task.updated"}}
+	sess.lifecycleMu.Lock()
+	sess.publishLocked(activity)
+	sess.lifecycleMu.Unlock()
+	close(blocked.transitionRelease)
+	select {
 	case <-hydrated:
 	case <-time.After(testTimeout):
 		t.Fatal("hydration did not complete after quarantine race")
 	}
 	if active, pending := replayState(target); active || pending != 0 {
 		t.Fatalf("replay did not complete: active=%v pending=%d", active, pending)
+	}
+	for i, want := range []string{"transition", "activity", "end"} {
+		select {
+		case got := <-blocked.replayEvents:
+			if got != want {
+				t.Fatalf("replay event %d = %q, want %q", i, got, want)
+			}
+		case <-time.After(testTimeout):
+			t.Fatalf("timed out waiting for replay event %q", want)
+		}
 	}
 
 	sess.lifecycleMu.Lock()
