@@ -8,8 +8,8 @@ import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
 
 const PANEL_MIN = 120;
-/** 70dvh against the jsdom viewport — same budget the CSS clamp uses. */
-const PANEL_MAX = Math.round(window.innerHeight * 0.7);
+/** 60vh against the jsdom viewport — the same ceiling as the sized-panel CSS. */
+const PANEL_MAX = Math.round(window.innerHeight * 0.6);
 const STORAGE_KEY = "th-activity-panel-height";
 
 const now = Date.now();
@@ -150,7 +150,7 @@ describe("ActivityShelf resize", () => {
     expect(rule).not.toMatch(/position:\s*absolute/);
   });
 
-  it("resizes by pointer drag, clamped to [120px, 70dvh], and persists the height", () => {
+  it("resizes by pointer drag, clamped to [120px, 60vh], and persists the height", () => {
     renderShelf();
     openShelf();
     mockPanelRect(240);
@@ -159,6 +159,7 @@ describe("ActivityShelf resize", () => {
     expect(panelOf().style.height).toBe("440px");
     pointerMove(-5000);
     expect(panelOf().style.height).toBe(`${PANEL_MAX}px`);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(String(PANEL_MAX));
     pointerMove(5000);
     expect(panelOf().style.height).toBe("120px");
     pointerUp();
@@ -176,6 +177,8 @@ describe("ActivityShelf resize", () => {
     expect(panelOf().style.height).toBe("240px");
     keyDown("End");
     expect(panelOf().style.height).toBe(`${PANEL_MAX}px`);
+    expect(handleOf().getAttribute("aria-valuenow")).toBe(String(PANEL_MAX));
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(String(PANEL_MAX));
     keyDown("Home");
     expect(panelOf().style.height).toBe("120px");
     keyDown("ArrowDown");

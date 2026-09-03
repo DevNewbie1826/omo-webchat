@@ -29,7 +29,7 @@ const PANEL_KEY_STEP = 24;
 const PANEL_STORAGE_KEY = "th-activity-panel-height";
 
 function maxPanelHeight(): number {
-  return Math.round(window.innerHeight * 0.7);
+  return Math.round(window.innerHeight * 0.6);
 }
 
 function clampPanelHeight(px: number): number {

@@ -127,11 +127,10 @@ describe("goal shelf shrink contract", () => {
     // stay a viewport fraction so a stored height from a taller window can
     // never dominate a shorter one (the panel scrolls inside the ceiling).
     const sizedMax = declarationValue(sized, "max-height").toLowerCase();
-    if (!/^\d+vh$/.test(sizedMax)) {
+    if (sizedMax !== "60vh") {
       violations.push(
         `activity-shelf.css .th-activity-panel--sized max-height is ` +
-          `"${sizedMax || "missing"}"; ` +
-          "it must be a viewport fraction (e.g. 60vh), never none or a bare px value",
+          `"${sizedMax || "missing"}"; expected exactly 60vh`,
       );
     }
     // The content-sized default stays a fixed 280px cap.
