@@ -367,48 +367,68 @@
   color: var(--th-text);
 }
 
-/* Stage-13 goal banner: objective + status chip + blocked reason, rendered
-   with the shared .th-alert family (info tone for live/complete, warning
-   when blocked). The chip reuses the provider-badge sizing conventions. */
-.th-goal-banner {
-  flex-direction: column;
-  align-items: stretch;
-  gap: var(--th-space-1);
-}
-
-.th-goal-headline {
+/* Live-goal bar: the chat's collapsible one-line goal summary in the
+   activity-shelf visual language, stacked flush directly above the shelf.
+   Shrink contract: .th-chat-main clips overflow, so this child must be a
+   min-height: 0 flex column allowed to shrink (never flex: none) - when
+   both shelves expand at a short viewport, the shelf yields height instead
+   of pushing the composer past the pane bottom. */
+.th-goal-shelf {
   display: flex;
-  align-items: center;
-  gap: var(--th-space-2);
+  flex: 0 1 auto;
+  flex-direction: column;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  min-height: 0;
+  margin: var(--th-space-1) auto 0;
 }
 
-.th-goal-status {
-  padding: 0 var(--th-space-2);
-  border: 1px solid var(--th-border);
-  border-radius: 999px;
+/* The bar row never yields its height; only the panel below it shrinks. */
+.th-goal-shelf .th-activity-bar-row {
+  flex: none;
+}
+
+.th-goal-title {
+  flex: none;
   color: var(--th-text-dim);
-  white-space: nowrap;
 }
 
-.th-goal-status--active {
-  color: var(--th-send);
-  border-color: var(--th-send);
+/* Expanded panel hangs off the bar as one continuous surface: no top
+   border, square top corners, rounded bottom ones. Shrink contract:
+   min-height: 0 lets the shelf column squeeze it (it scrolls via
+   overflow-y) while max-height still caps its unconstrained size at 40vh. */
+.th-goal-panel {
+  min-height: 0;
+  max-height: 40vh;
+  padding: var(--th-space-2) var(--th-space-3);
+  overflow-y: auto;
+  border: 1px solid var(--th-border);
+  border-top: 0;
+  border-radius: 0 0 var(--th-radius-sm) var(--th-radius-sm);
+  background: var(--th-surface);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
 }
 
-.th-goal-objective {
+/* Open state: the bar's bottom corners square off so the panel's side
+   borders meet the bar without a rounded-corner notch. */
+.th-goal-bar[aria-expanded="true"] {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.th-goal-objective-full {
   margin: 0;
   color: var(--th-text);
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
 }
 
-.th-goal-blocked {
-  margin: 0;
+.th-goal-blocked-reason {
+  margin: var(--th-space-1) 0 0;
   color: var(--th-text-dim);
-  overflow-wrap: anywhere;
 }
 
 /* Recoverable session banners stack their copy against one explicit action. */

@@ -184,6 +184,8 @@
   "chat.goal.statusComplete": "완료",
   "chat.goal.statusBlocked": "중단됨",
   "chat.goal.blockedReason": "중단 사유",
+  "chat.goal.expand": "골 펼쳐 보기",
+  "chat.goal.collapse": "골 접기",
   "chat.placeholder": "{provider}에게 메시지…",
   "chat.send": "전송",
   "chat.steer": "스티어",

@@ -8,9 +8,11 @@ const KEYS = [
   "chat.goal.statusComplete",
   "chat.goal.statusBlocked",
   "chat.goal.blockedReason",
+  "chat.goal.expand",
+  "chat.goal.collapse",
 ] as const;
 
-describe("goal banner i18n keys", () => {
+describe("goal bar i18n keys", () => {
   it("en.json contains each goal key as a non-empty string", () => {
     const table = en as Record<string, string>;
     for (const key of KEYS) {
