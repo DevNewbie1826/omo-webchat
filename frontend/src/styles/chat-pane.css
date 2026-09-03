@@ -376,12 +376,6 @@
   margin: var(--th-space-1) auto 0;
 }
 
-/* Deltas over .th-activity-bar: the status chip must not flex so the
-   objective takes all the remaining lane. */
-.th-goal-bar .th-activity-chip {
-  flex: none;
-}
-
 .th-goal-title {
   flex: none;
   color: var(--th-text-dim);
@@ -401,6 +395,13 @@
   font-size: var(--th-type-secondary-size);
   line-height: var(--th-type-secondary-line);
   letter-spacing: var(--th-type-secondary-tracking);
+}
+
+/* Open state: the bar's bottom corners square off so the panel's side
+   borders meet the bar without a rounded-corner notch. */
+.th-goal-bar[aria-expanded="true"] {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 .th-goal-objective-full {
