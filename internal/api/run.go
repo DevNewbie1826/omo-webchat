@@ -72,8 +72,8 @@ func (l *recoveryDaemonLifecycle) stopDaemon(daemon *omorpc.EnsuredDaemon) {
 	}
 }
 
-// Run requires the omo daemon, opens the cursor metadata store, performs the
-// read-only v1 import, and serves the sole v2 stack until ctx is cancelled.
+// Run requires the omo daemon, opens the cursor metadata store, and serves
+// the sole v2 stack until ctx is cancelled.
 func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady func() error) error {
 	ctx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
@@ -122,11 +122,6 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	if err != nil {
 		return fmt.Errorf("opening cursor store: %w", err)
 	}
-	summary, err := cursorstore.MigrateV1FromStateDir(stateDir, cfg.StateDir == "", cursors)
-	if err != nil {
-		return fmt.Errorf("migrating v1 metadata: %w", err)
-	}
-	logger.Info("v1 metadata migration complete", "workspaces", summary.Workspaces, "chats", summary.Chats, "skipped", summary.Skipped)
 	manager := session.NewManager(session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
 	var apiServer *Server
 	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, ServerVersion: ensured.Client.ServerVersion(), Logger: logger,
