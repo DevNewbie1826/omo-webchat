@@ -6,6 +6,7 @@ const addedErrorCodes = [
   "set_thinking_failed",
   "approval_failed",
   "incomplete_history",
+  "external-write-detected",
   "adoption_required",
 ] as const;
 

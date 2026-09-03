@@ -149,6 +149,12 @@ export function useChatSession(
       && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id });
   };
 
+  const reloadExternalWrite = (): boolean => {
+    const sent = resume();
+    if (sent) frameState.clearExternalWriteDetected();
+    return sent;
+  };
+
   const changeThinkingLevel = (level: string): boolean => {
     const restore = frameState.confirmedThinkingLevel();
     const requestId = nextRequestId();
@@ -224,6 +230,7 @@ export function useChatSession(
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
     sessionUnloaded: frameState.sessionUnloaded,
+    externalWriteDetected: frameState.externalWriteDetected,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,
@@ -246,6 +253,7 @@ export function useChatSession(
     stop,
     disconnect,
     resume,
+    reloadExternalWrite,
     changeThinkingLevel,
     changeModel,
     respondApproval,

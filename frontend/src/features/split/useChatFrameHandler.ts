@@ -46,6 +46,7 @@ interface ChatFrameHandlerBindings {
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
   readonly setSessionUnloaded: StateSetter<boolean>;
+  readonly setExternalWriteDetected: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -184,6 +185,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // resumable banner instead of the raw error, and stop any in-flight
         // run indicator so the pane does not look busy. Only the provider-backed
         // state frame of the next open sequence clears the state.
+        if (frame.code === "external-write-detected") {
+          bindings.setExternalWriteDetected(true);
+          bindings.setError("");
+          return;
+        }
         if (frame.code === "session_unloaded") {
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);

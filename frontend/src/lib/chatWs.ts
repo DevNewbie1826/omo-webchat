@@ -102,6 +102,9 @@ interface ErrorFrameSeam {
   readonly dangling?: boolean;
   /** resume_failed only: scanned sibling branch candidates */
   readonly candidates?: readonly ResumeCandidate[];
+  /** external-write-detected only: provider and disk leaves */
+  readonly knownLeaf?: string;
+  readonly observedLeaf?: string;
   readonly message: string;
 }
 

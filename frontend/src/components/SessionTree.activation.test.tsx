@@ -75,7 +75,7 @@ describe("SessionTree session-row activation target", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onAdopt: SessionTreeProps["onAdopt"] = async () => undefined): void {
+  function render(onOpen: SessionTreeProps["onOpen"] = async () => undefined): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
@@ -90,7 +90,7 @@ describe("SessionTree session-row activation target", () => {
             onToggle={() => undefined}
             onLoadMoreSessions={() => undefined}
             onSelect={() => undefined}
-            onAdopt={onAdopt}
+            onOpen={onOpen}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -123,26 +123,22 @@ describe("SessionTree session-row activation target", () => {
     expect(activation?.getAttribute("aria-label") ?? "").not.toBe("");
   });
 
-  it("puts the metadata badge inside the activation control for discovered and dangling rows", () => {
+  it("keeps missing-original metadata but removes discovered-session source badges", () => {
     render();
     const discovered = row("Discovered session");
-    const discoveredActivation = discovered.querySelector(".th-tree-activation");
-    expect(discoveredActivation?.querySelector(".th-tree-source")).not.toBeNull();
+    expect(discovered.querySelector(".th-tree-source")).toBeNull();
 
     const dangling = row("Stored dangling");
-    const danglingActivation = dangling.querySelector(".th-tree-activation");
-    expect(danglingActivation?.querySelector(".th-tree-source")).not.toBeNull();
+    expect(dangling.querySelector(".th-tree-source")).not.toBeNull();
   });
 
-  it("adopts a discovered session when its metadata badge is clicked", () => {
-    const onAdopt = vi.fn(async () => undefined);
-    render(onAdopt);
-    const badge = row("Discovered session").querySelector(".th-tree-activation .th-tree-source");
-    expect(badge).not.toBeNull();
-    act(() => {
-      badge?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(onAdopt).toHaveBeenCalledTimes(1);
-    expect(onAdopt).toHaveBeenCalledWith(workspace, discoveredSession);
+  it("opens a discovered session when its primary row action is clicked", () => {
+    const onOpen = vi.fn(async () => undefined);
+    render(onOpen);
+    const activation = row("Discovered session").querySelector<HTMLButtonElement>(".th-tree-activation");
+    expect(activation).not.toBeNull();
+    act(() => activation?.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSession, false);
   });
 });

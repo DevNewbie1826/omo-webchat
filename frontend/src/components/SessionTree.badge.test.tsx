@@ -78,7 +78,7 @@ describe("SessionTree session-row hierarchy", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onAdopt={async () => undefined}
+            onOpen={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -98,7 +98,7 @@ describe("SessionTree session-row hierarchy", () => {
     return match!;
   }
 
-  it("keeps the session name as the row's accessible name while the import badge is demoted", () => {
+  it("keeps the session name as the direct-open row's accessible name without an import badge", () => {
     render();
     const discovered = row("Discovered session");
 
@@ -107,11 +107,7 @@ describe("SessionTree session-row hierarchy", () => {
     expect(activation?.getAttribute("aria-label")).toBe(
       "sidebar.tm.discoveredHint Discovered session",
     );
-    // ...while the demoted badge is hidden from the accessibility tree so
-    // secondary metadata can never outrank the primary content.
-    const badge = discovered.querySelector(".th-tree-source");
-    expect(badge?.textContent).toBe("sidebar.tm.discovered");
-    expect(badge?.getAttribute("aria-hidden")).toBe("true");
+    expect(discovered.querySelector(".th-tree-source")).toBeNull();
     // The primary label stays exposed.
     const label = discovered.querySelector(".th-tree-label");
     expect(label?.textContent).toBe("Discovered session");

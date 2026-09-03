@@ -95,6 +95,7 @@ export function useChatFrameState() {
   // cleared by the state frame proving get_state completed against a live
   // provider route, never by transcript traffic alone.
   const [sessionUnloaded, setSessionUnloaded] = useState(false);
+  const [externalWriteDetected, setExternalWriteDetected] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -217,6 +218,7 @@ export function useChatFrameState() {
     setError,
     setMissingOriginal,
     setSessionUnloaded,
+    setExternalWriteDetected,
     setContextUsage,
     setCacheHitRate,
     setIsCompacting,
@@ -306,6 +308,7 @@ export function useChatFrameState() {
     error,
     missingOriginal,
     sessionUnloaded,
+    externalWriteDetected,
     contextUsage,
     cacheHitRate,
     isCompacting,
@@ -331,6 +334,7 @@ export function useChatFrameState() {
     setCurrentModelKey: controls.setCurrentModelKey,
     setPendingApproval,
     reportError: setError,
+    clearExternalWriteDetected: () => setExternalWriteDetected(false),
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

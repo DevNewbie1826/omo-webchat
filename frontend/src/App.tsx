@@ -15,7 +15,7 @@ import type { SplitActions } from "./features/split/SplitView";
 import { useLayout } from "./features/split/useLayout";
 import { findLeaf } from "./features/split/paneTree";
 import { createTerminal } from "./features/terminal/terminal";
-import { adoptWorkspaceSession } from "./features/workspace/workspace";
+import { openWorkspaceSession } from "./features/workspace/workspace";
 import type {
   ProviderDiscoveryState,
   Terminal,
@@ -135,12 +135,15 @@ export function App() {
     }
   };
 
-  const adoptDiscoveredSession = async (
+  const openDiscoveredSession = async (
     ws: Workspace,
     session: WorkspaceSession,
-  ): Promise<void> => {
+    force = false,
+  ): Promise<"opened" | "session-active"> => {
     try {
-      const tm = await adoptWorkspaceSession(ws.id, session);
+      const result = await openWorkspaceSession(ws.id, session, force);
+      if (result.state === "session-active") return result.state;
+      const tm = result.chat;
       setWorkspaces((prev) =>
         prev.map((workspace) =>
           workspace.id === ws.id
@@ -155,6 +158,7 @@ export function App() {
       );
       addCreatedSession(ws.id, tm, session.id);
       selectTerminal(ws, tm);
+      return "opened";
     } catch (error) {
       notify(t("toast.error"), "error");
       throw error;
@@ -246,7 +250,7 @@ export function App() {
             onToggleExpanded={toggleExpanded}
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
-            onAdoptSession={adoptDiscoveredSession}
+            onOpenSession={openDiscoveredSession}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}

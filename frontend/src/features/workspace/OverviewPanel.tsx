@@ -11,12 +11,12 @@ export interface OverviewPanelProps {
   readonly workspaces: readonly Workspace[];
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
-  readonly onAdopt: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+  readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
 }
 
 /** Sessions overview: one alive card per live session. Card clicks reuse the
- * SessionTree row activation flow — stored chats open through onSelect,
- * discovered sessions adopt an owned copy through the same handler the tree uses. */
+ * SessionTree row activation flow: stored chats select directly and discovered
+ * sessions bind their original file through the same open handler as the tree. */
 export function OverviewPanel({
   open,
   onClose,
@@ -24,7 +24,7 @@ export function OverviewPanel({
   workspaces,
   sessionLists,
   onSelect,
-  onAdopt,
+  onOpen,
 }: OverviewPanelProps) {
   const { t } = useT();
 
@@ -43,7 +43,7 @@ export function OverviewPanel({
         (session) => session.id === summary.id && session.source === "discovered",
       );
       if (discovered !== undefined) {
-        void onAdopt(workspace, discovered).catch(() => undefined);
+        void onOpen(workspace, discovered).catch(() => undefined);
         onClose();
         return;
       }

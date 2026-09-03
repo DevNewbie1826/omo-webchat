@@ -138,11 +138,13 @@ export function parseLifecycleFrame(
       const command = optString(msg, "command");
       const requestId = optString(msg, "requestId");
       const dangling = optBoolean(msg, "dangling");
+      const knownLeaf = optString(msg, "knownLeaf");
+      const observedLeaf = optString(msg, "observedLeaf");
       // Optional resume branch candidates; any malformed entry rejects the
       // whole frame so a half-parsed list never reaches the UI.
       const rawCandidates = msg["candidates"] ?? msg["branchCandidates"];
       const candidates = rawCandidates === undefined ? undefined : mapRecords(rawCandidates, parseResumeCandidate);
-      if (code === null || command === null || requestId === null || dangling === null || candidates === null) return null;
+      if (code === null || command === null || requestId === null || dangling === null || knownLeaf === null || observedLeaf === null || candidates === null) return null;
       return {
         type: "error",
         ...(sessionId !== null ? { sessionId } : {}),
@@ -151,6 +153,8 @@ export function parseLifecycleFrame(
         ...(requestId !== undefined ? { requestId } : {}),
         ...(dangling !== undefined ? { dangling } : {}),
         ...(candidates !== undefined ? { candidates } : {}),
+        ...(knownLeaf !== undefined ? { knownLeaf } : {}),
+        ...(observedLeaf !== undefined ? { observedLeaf } : {}),
         message,
       };
     }

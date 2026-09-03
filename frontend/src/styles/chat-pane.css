@@ -367,28 +367,32 @@
   color: var(--th-text);
 }
 
-/* The session_unloaded banner reuses the calm info tone and stacks its copy
-   against a single resume action; the action keeps the shared .th-btn fill. */
-.th-unloaded-banner {
+/* Recoverable session banners stack their copy against one explicit action. */
+.th-unloaded-banner,
+.th-external-write-banner {
   gap: var(--th-space-3);
 }
 
-.th-unloaded-banner-body {
+.th-unloaded-banner-body,
+.th-external-write-banner-body {
   display: flex;
   flex-direction: column;
   gap: var(--th-space-1);
   min-width: 0;
 }
 
-.th-unloaded-banner-title {
+.th-unloaded-banner-title,
+.th-external-write-banner-title {
   font-weight: var(--th-weight-announce);
 }
 
-.th-unloaded-banner-detail {
+.th-unloaded-banner-detail,
+.th-external-write-banner-detail {
   color: var(--th-text-dim);
 }
 
-.th-unloaded-banner-actions {
+.th-unloaded-banner-actions,
+.th-external-write-banner-actions {
   flex: none;
   align-self: center;
 }

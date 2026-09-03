@@ -30,7 +30,7 @@ export interface SidebarProps {
   readonly onToggleExpanded: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelectTerminal: (ws: Workspace, tm: Terminal) => void;
-  readonly onAdoptSession: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+  readonly onOpenSession: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
   readonly onAddWorkspace: () => void;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
@@ -57,7 +57,7 @@ export function Sidebar({
   onToggleExpanded,
   onLoadMoreSessions,
   onSelectTerminal,
-  onAdoptSession,
+  onOpenSession,
   onAddWorkspace,
   onAddTerminal,
   onDeleteWorkspace,
@@ -274,7 +274,7 @@ export function Sidebar({
                 onToggle={onToggleExpanded}
                 onLoadMoreSessions={onLoadMoreSessions}
                 onSelect={onSelectTerminal}
-                onAdopt={onAdoptSession}
+                onOpen={onOpenSession}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}
                 onDeleteTerminal={onDeleteTerminal}
@@ -317,7 +317,7 @@ export function Sidebar({
         workspaces={workspaces}
         sessionLists={sessionLists}
         onSelect={onSelectTerminal}
-        onAdopt={onAdoptSession}
+        onOpen={onOpenSession}
       />
     </>
   );

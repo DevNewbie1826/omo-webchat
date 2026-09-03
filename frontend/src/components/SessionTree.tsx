@@ -28,7 +28,7 @@ export interface SessionTreeProps {
   readonly onToggle: (wsId: string) => void;
   readonly onLoadMoreSessions: (wsId: string) => void;
   readonly onSelect: (ws: Workspace, tm: Terminal) => void;
-  readonly onAdopt: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+  readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
   readonly onAddTerminal: (ws: Workspace) => void;
   readonly onDeleteWorkspace: (ws: Workspace) => void;
   readonly onDeleteTerminal: (ws: Workspace, tm: Terminal) => void;
@@ -57,7 +57,7 @@ export function SessionTree({
   onToggle,
   onLoadMoreSessions,
   onSelect,
-  onAdopt,
+  onOpen,
   onAddTerminal,
   onDeleteWorkspace,
   onDeleteTerminal,
@@ -67,19 +67,28 @@ export function SessionTree({
 }: SessionTreeProps) {
   const { t } = useT();
   const [rename, setRename] = useState<RenameTarget | null>(null);
-  const [adopting, setAdopting] = useState<ReadonlySet<string>>(new Set());
-  const adoptingRef = useRef(new Set<string>());
+  const [opening, setOpening] = useState<ReadonlySet<string>>(new Set());
+  const [sessionActive, setSessionActive] = useState<ReadonlySet<string>>(new Set());
+  const openingRef = useRef(new Set<string>());
 
-  const adoptDiscovered = (ws: Workspace, session: WorkspaceSession): void => {
+  const openDiscovered = (ws: Workspace, session: WorkspaceSession, force = false): void => {
     const key = `${ws.id}:${session.id}`;
-    if (adoptingRef.current.has(key)) return;
-    adoptingRef.current.add(key);
-    setAdopting((current) => new Set(current).add(key));
-    void onAdopt(ws, session)
+    if (openingRef.current.has(key)) return;
+    openingRef.current.add(key);
+    setOpening((current) => new Set(current).add(key));
+    void onOpen(ws, session, force)
+      .then((result) => {
+        setSessionActive((current) => {
+          const next = new Set(current);
+          if (result === "session-active") next.add(key);
+          else next.delete(key);
+          return next;
+        });
+      })
       .catch(() => undefined)
       .finally(() => {
-        adoptingRef.current.delete(key);
-        setAdopting((current) => {
+        openingRef.current.delete(key);
+        setOpening((current) => {
           const next = new Set(current);
           next.delete(key);
           return next;
@@ -210,11 +219,11 @@ export function SessionTree({
                   ? { id: item.id, name: item.name, provider: "omo" as const }
                   : undefined);
                 const discovered = item.source === "discovered";
-                const adopted = item.source === "alreadyAdopted";
-                const adoptionKey = `${ws.id}:${item.id}`;
-                const adoptionInFlight = discovered && adopting.has(adoptionKey);
+                const openKey = `${ws.id}:${item.id}`;
+                const openInFlight = discovered && opening.has(openKey);
+                const activeElsewhere = discovered && sessionActive.has(openKey);
                 const interactive = tm !== undefined || discovered;
-                const rowDisabled = !interactive || adoptionInFlight;
+                const rowDisabled = !interactive || openInFlight || activeElsewhere;
                 const active = tm !== undefined && item.id === activeTerminalId;
                 const live = tm !== undefined && liveSessions.has(item.id);
                 const renamingTm = tm !== undefined && rename?.kind === "terminal" && rename.tmId === item.id
@@ -227,18 +236,16 @@ export function SessionTree({
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: displayName })
                   : undefined;
-                const adoptedLabel = adopted ? t("sidebar.tm.adopted") : undefined;
                 const dangling = item.source === "stored" && item.dangling === true;
                 const danglingHint = dangling
                   ? t("sidebar.tm.missingOriginalHint", { name: displayName })
                   : undefined;
                 const title = danglingHint
-                  ?? (adoptionInFlight ? t("sidebar.tm.adopting") : discoveredLabel)
-                  ?? adoptedLabel
+                  ?? (openInFlight ? t("sidebar.tm.opening") : discoveredLabel)
                   ?? (live ? t("sidebar.tm.liveProcess") : undefined);
                 const activate = (): void => {
                   if (tm !== undefined) onSelect(ws, tm);
-                  else if (discovered) adoptDiscovered(ws, item);
+                  else if (discovered) openDiscovered(ws, item);
                 };
                 return (
                   <div
@@ -262,21 +269,29 @@ export function SessionTree({
                         title={title}
                         aria-label={discoveredLabel}
                         aria-current={active ? "true" : undefined}
-                        aria-busy={adoptionInFlight || undefined}
+                        aria-busy={openInFlight || undefined}
                         disabled={rowDisabled}
                         onClick={activate}
                       >
                         <span className="th-tree-label">{displayName}</span>
-                        {discovered ? (
-                          <span className="th-tree-source" aria-hidden="true">
-                            {t(adoptionInFlight ? "sidebar.tm.adopting" : "sidebar.tm.discovered")}
-                          </span>
-                        ) : adopted ? (
-                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.adopted")}</span>
+                        {openInFlight ? (
+                          <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.opening")}</span>
                         ) : dangling ? (
                           <span className="th-tree-source" aria-hidden="true">{t("sidebar.tm.missingOriginal")}</span>
                         ) : null}
                       </button>
+                    )}
+                    {activeElsewhere && (
+                      <span className="th-tree-session-active" role="status">
+                        {t("sidebar.tm.sessionActive")}
+                        <button
+                          type="button"
+                          className="th-btn th-btn--ghost th-tree-force-open"
+                          onClick={() => openDiscovered(ws, item, true)}
+                        >
+                          {t("sidebar.tm.forceOpen")}
+                        </button>
+                      </span>
                     )}
                     {(running > 0 || runningUnknown) && (
                       <span

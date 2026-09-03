@@ -88,7 +88,7 @@ describe("SessionTree dangling stored-row badge", () => {
             onToggle={onToggle}
             onLoadMoreSessions={() => undefined}
             onSelect={onSelect}
-            onAdopt={async () => undefined}
+            onOpen={async () => undefined}
             onAddTerminal={() => undefined}
             onDeleteWorkspace={() => undefined}
             onDeleteTerminal={() => undefined}
@@ -132,20 +132,18 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
   });
 
-  it("renders an already-adopted source as inert adopted metadata", () => {
+  it("renders an already-open source as inert without legacy adoption metadata", () => {
     render();
-    const adopted = row("Adopted source");
-    const badge = adopted.querySelector(".th-tree-source");
-    expect(badge?.textContent).toBe("sidebar.tm.adopted");
-    expect(adopted.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
+    const opened = row("Adopted source");
+    expect(opened.querySelector(".th-tree-source")).toBeNull();
+    expect(opened.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
   });
 
-  it("leaves a discovered session row on the import badge", () => {
+  it("renders a discovered session as a direct primary action without an import badge", () => {
     render();
     const discovered = row("Discovered session");
-    const badge = discovered.querySelector(".th-tree-source");
-    expect(badge?.textContent).toBe("sidebar.tm.discovered");
-    expect(badge?.getAttribute("aria-hidden")).toBe("true");
+    expect(discovered.querySelector(".th-tree-source")).toBeNull();
+    expect(discovered.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(false);
     expect(discovered.textContent).not.toContain("sidebar.tm.missingOriginal");
   });
 });
