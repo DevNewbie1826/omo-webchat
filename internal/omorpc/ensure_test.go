@@ -897,22 +897,19 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 		}
 		resultCh <- err
 	}()
-	// Deadline-aware, closable handshake: a blocking open would wait
-	// forever when both attempts are reaped before the fake supervisor
-	// schedules (no future writer exists). Poll the FIFO non-blocking; on
-	// deadline, close and SKIP — binding the listener after cleanup ran
-	// would only prove a fresh listener works, not preservation.
-	fifo, err := os.OpenFile(startedFIFO, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// Closable handshake: the FIFO is opened O_RDWR|O_NONBLOCK so the
+	// open itself can never block (we hold the write end) and reads that
+	// would block return EAGAIN — matched with errors.Is because Darwin
+	// wraps it in *fs.PathError. On deadline the loop simply exits via
+	// close; no goroutine or fd outlives the test.
+	fifo, err := os.OpenFile(startedFIFO, os.O_RDWR|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("open start fifo: %v", err)
 	}
 	defer fifo.Close()
 	deadline := time.Now().Add(10 * time.Second)
 	var started []byte
-	for {
-		if time.Now().After(deadline) {
-			t.Skip("supervisor never scheduled under load; preservation interleaving unobservable")
-		}
+	for time.Now().Before(deadline) {
 		buf := make([]byte, 32)
 		n, rerr := fifo.Read(buf)
 		if n > 0 {
@@ -920,11 +917,27 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 			if strings.Contains(string(started), "started") {
 				break
 			}
-		} else if rerr != nil && rerr != syscall.EAGAIN && rerr != io.EOF {
-			t.Fatalf("read start fifo: %v", rerr)
-		} else {
-			time.Sleep(5 * time.Millisecond)
+			continue
 		}
+		if rerr == nil {
+			continue
+		}
+		if errors.Is(rerr, syscall.EAGAIN) || errors.Is(rerr, syscall.EWOULDBLOCK) || errors.Is(rerr, io.EOF) {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		t.Fatalf("read start fifo: %v", rerr)
+	}
+	// Final drain: a signal that landed during the last sleep must not be
+	// misread as starvation.
+	{
+		buf := make([]byte, 32)
+		if n, _ := fifo.Read(buf); n > 0 {
+			started = append(started, buf[:n]...)
+		}
+	}
+	if !strings.Contains(string(started), "started") {
+		t.Skip("supervisor never scheduled under load; preservation interleaving unobservable")
 	}
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
