@@ -55,12 +55,14 @@ V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecyc
 7. **Resume safety — prove before clear**: a failed resume NEVER overwrites the stored
    identity. Transient `session_path_in_use` rejections are retried on the identical request
    (3 attempts total, 500 ms backoff) and keep the identity; permanent rejection surfaces one
-   `resume_failed` error frame and falls back to a fresh cwd-backed session while the stored
-   binding stays verbatim; a dangling stored path gets exactly one doomed open attempt (the
-   provider alone owns resume validity) with `dangling` + `storedIdentity` (+ scanned
-   `branchCandidates`) on the error frame. Only a resume the provider actually rejects during
-   Initialize clears the stale identity everywhere and re-initializes fresh — the chat must
-   never brick, but never silently rebind either.
+   `resume_failed` error frame. An in-place acquisition never falls back to a fresh session:
+   it remains bound to the exact original, and recovery requires an explicit user-authorized
+   stop-and-reopen of that original. Only non-in-place acquisition may fall back to a fresh
+   cwd-backed session while the stored binding stays verbatim. A dangling stored path gets
+   exactly one doomed open attempt (the provider alone owns resume validity) with `dangling` +
+   `storedIdentity` (+ scanned `branchCandidates`) on the error frame. Only a resume the
+   provider actually rejects during Initialize clears the stale identity everywhere and
+   re-initializes fresh — the chat must never brick, but never silently rebind either.
    Sources: `manager.go:21-25,74-77` (attempts/backoff/transientOpenError); `manager_resume_safety_test.go:TestAcquireAttachRetriesTransientSessionPathInUseAndKeepsIdentity,TestAcquireAttachPermanentFailureKeepsStoredIdentityAndSurfacesError,TestAcquireAttachDanglingStoredPathSurfacesErrorAndKeepsIdentity`; `manager_resume_failure_signal_test.go:TestAcquireAttachDanglingFailureSignalsRecoveryInfoAndKeepsIdentity,TestAcquireAttachMissingPathFailureKeepsDanglingFalseWhenFileExists`; `resume_recovery_test.go:TestSessionFailedResumeClearsIdentityAndInitializesFresh,TestSessionCancelledResumeClearsIdentity`; `api:ws_contracts_test.go:TestWebSocketPersistedResumeFailureInitializesFreshWithoutRebinding`.
 
 8. **Resume-before-queries ordering on (re)connect**: the first provider RPC is
@@ -273,13 +275,15 @@ Server -> SPA (engine/manager to client):
 - `ack` — API-level acceptance ack `{command, requestId}` (set_model, set_thinking, approval respond, extension_ui_response).
 - `extensionEvent` — capability-gated passthrough `{name, data?}`; cached snapshots (`omo.task.updated`, `omo.dag.updated`) replay on attach before live frames; `omo.dag.activity`/`omo.dag.heartbeat` never cached (invariant 17).
 - `notice` — advisory `{kind, payload, at, nid?}`; durable kinds replay + persist, transient kinds fire once (invariants 14-15).
-- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `persist_failed`, `decode_failed`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`, `initialize_failed`, `provider_overflow`, `provider_timeout`, `bad_approval`, `bad_resume`, `bad_send`, `bad_set`, `no_session`, `send_failed`, `compact_failed`.
+- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `persist_failed`, `decode_failed`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`, `initialize_failed`, `provider_overflow`, `provider_timeout`, `session-active`, `external-write-detected`,
+  `bad_approval`, `bad_resume`, `bad_send`, `bad_set`, `no_session`, `send_failed`,
+  `compact_failed`.
 - `pong` — reply to `ping`.
 
 Client -> SPA server (decoded ONLY through `ParseClientFrame` — keep this chokepoint in v2):
 
 - `ping` — liveness; answered by `pong` without a session.
-- `chat.create` — `{wsId, chatId}`: bind socket to a chat (the only frame that may run before a session is bound).
+- `chat.create` — `{wsId, chatId, recovery?}`: bind socket to a chat (the only frame that may run before a session is bound). For an in-place acquisition, `recovery` is an optional explicit user authorization to stop and reopen the exact original session after a conflict; it never authorizes a fresh fallback.
 - `chat.send` — user prompt (+ optional `images`); refused while run/compaction active (invariant 16).
 - `chat.abort` — abort current run (fire-and-forget `abort` to provider).
 - `chat.set` — set model / thinking level; acks with `requestId` then `control.result`.
