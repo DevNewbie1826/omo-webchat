@@ -61,6 +61,24 @@ func TestEnsureHelperProcess(t *testing.T) {
 		}
 		mode = "serve"
 	}
+	if mode == "supervised-drop" {
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		_ = os.Remove(socket)
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("supervised helper listen: %v", err)
+		}
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		conn, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("supervised helper accept: %v", err)
+		}
+		scanner := bufio.NewScanner(conn)
+		_ = scanner.Scan()
+		_ = conn.Close()
+		_ = ln.Close()
+		os.Exit(7)
+	}
 	if mode == "saturate-log" {
 		_, _ = os.Stderr.Write(bytes.Repeat([]byte("x"), daemonSpawnLogLimit+1024))
 		os.Exit(7)
@@ -122,6 +140,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper listen: %v", err)
 	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	writeEnsureHelperOwnershipProof(t, socket)
 	defer ln.Close()
 	for {
@@ -291,6 +310,21 @@ func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 func TestEnsureExtensionEventsCapabilityNilInheritsEnvironment(t *testing.T) {
 	if got := EnsureExtensionEventsCapability(nil); got != nil {
 		t.Fatalf("EnsureExtensionEventsCapability(nil) = %#v, want nil for os/exec inheritance", got)
+	}
+}
+
+func TestEnsureExtensionEventsCapabilityMergesActiveBrandedValue(t *testing.T) {
+	env := EnsureExtensionEventsCapability([]string{
+		"SENPI_RPC_CLIENT_CAPABILITIES=native_only",
+		"OMO_RPC_CLIENT_CAPABILITIES=custom_only",
+	})
+	for key, want := range map[string]string{
+		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events",
+	} {
+		if got, _ := lookupEnv(env, key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -528,6 +562,55 @@ func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
 		t.Fatalf("competing producer is not live after Stop: %v", err)
 	}
 	_ = client.Close()
+}
+
+func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+
+	connectedBeforeReplacement, err := probeDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("connect owned endpoint before replacement: %v", err)
+	}
+	defer connectedBeforeReplacement.Close()
+	if err := os.Remove(socket); err != nil {
+		t.Fatalf("unlink owned endpoint: %v", err)
+	}
+	t.Setenv("SENPI_RPC_CLIENT_CAPABILITIES", capExtensionEvents)
+	competitor, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen competitor: %v", err)
+	}
+	defer competitor.Close()
+	go func() {
+		for {
+			conn, err := competitor.Accept()
+			if err != nil {
+				return
+			}
+			go serveEnsureHelper(conn)
+		}
+	}()
+
+	client, identity, stable, authenticated, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.process.Pid)
+	if err != nil {
+		t.Fatalf("authenticate replacement: %v", err)
+	}
+	_ = client.Close()
+	if !stable || authenticated {
+		t.Fatalf("replacement authentication = stable:%v authenticated:%v identity:%+v", stable, authenticated, identity)
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if current, exists := currentSocketIdentity(socket); !exists || current != identity {
+		t.Fatalf("Stop removed competitor: exists=%v identity=%+v want=%+v", exists, current, identity)
+	}
 }
 
 func TestEnsureDaemonSpawnLogReservesBothAttemptPartitions(t *testing.T) {
