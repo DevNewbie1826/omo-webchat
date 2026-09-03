@@ -198,6 +198,25 @@ describe("activity hydration buffer", () => {
     expect(buffer.dagOverflowed).toBe(true);
     expect(buffer.events[0]?.key).toContain("run-25:node-25");
   });
+it("overflow of no-op events does not fence fresh REST history over stale cache", () => {
+  const buffer = createActivityHydrationBuffer();
+  for (let i = 0; i < 125; i += 1) {
+    bufferActivityHydrationEvent(buffer, {
+      name: "omo.dag.heartbeat",
+      data: { runId: "absent-run", nodeId: `node-${i}` },
+      side: "dag",
+      key: `omo.dag.heartbeat:absent-run:node-${i}`,
+      snapshot: false,
+    });
+  }
+  expect(buffer.dropped).toBeGreaterThan(0);
+  // heartbeats on an absent run never mutate task state; task overflow must
+  // stay unset so a stale cached task map cannot suppress the REST base.
+  expect(buffer.taskOverflowed).toBe(false);
+  // dag side WAS touched by the heartbeat stream, so its fence stays armed.
+  expect(buffer.dagOverflowed).toBe(true);
+});
+
 
   it("coalesces updates for the same activity id while preserving partial fields", () => {
     const buffer = createActivityHydrationBuffer();

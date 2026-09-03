@@ -51,6 +51,10 @@ export interface ActivityHydrationBuffer {
   dagSuperseded: boolean;
   taskOverflowed: boolean;
   dagOverflowed: boolean;
+  /** Whether any buffered event actually carried a task-domain mutation. */
+  taskTouched: boolean;
+  /** Whether any buffered event actually carried a DAG-domain mutation. */
+  dagTouched: boolean;
 }
 
 export function createActivityHydrationBuffer(): ActivityHydrationBuffer {
@@ -61,6 +65,8 @@ export function createActivityHydrationBuffer(): ActivityHydrationBuffer {
     dagSuperseded: false,
     taskOverflowed: false,
     dagOverflowed: false,
+    taskTouched: false,
+    dagTouched: false,
   };
 }
 
@@ -101,6 +107,8 @@ export function bufferActivityHydrationEvent(
   }
   const previousIndex = buffer.events.findIndex((item) => item.key === event.key);
   let nextEvent = event;
+  let mutatedTask = event.side === "task" || event.name === "omo.dag.activity";
+  let mutatedDag = event.side === "dag" || event.name === "omo.dag.activity";
   if (previousIndex >= 0) {
     const previous = buffer.events[previousIndex]!;
     buffer.events.splice(previousIndex, 1);
@@ -110,16 +118,21 @@ export function bufferActivityHydrationEvent(
     }
   }
   buffer.events.push(nextEvent);
+  buffer.taskTouched = buffer.taskTouched || mutatedTask;
+  buffer.dagTouched = buffer.dagTouched || mutatedDag;
   const sideCount = buffer.events.reduce((count, item) => count + (item.side === event.side ? 1 : 0), 0);
   if (sideCount <= ACTIVITY_HYDRATION_SIDE_LIMIT) return;
   const oldest = buffer.events.findIndex((item) => item.side === event.side);
   if (oldest >= 0) {
     const [dropped] = buffer.events.splice(oldest, 1);
     buffer.dropped += 1;
-    if (dropped?.side === "task" || dropped?.name === "omo.dag.activity") {
+    // Overflow protection only guards domains the dropped event actually
+    // mutated — stale cached rows from before the fetch must not fence a
+    // fresh REST base when every buffered event was a no-op for them.
+    if ((dropped?.side === "task" || dropped?.name === "omo.dag.activity") && buffer.taskTouched) {
       buffer.taskOverflowed = true;
     }
-    if (dropped?.side === "dag") buffer.dagOverflowed = true;
+    if (dropped?.side === "dag" && buffer.dagTouched) buffer.dagOverflowed = true;
   }
 }
 
