@@ -121,7 +121,7 @@ export function ChatPane({
           title={t("chat.resync")}
           aria-label={t("chat.resync")}
           aria-busy={chat.resyncBusy}
-          disabled={chat.resyncBusy || chat.running || chat.isCompacting}
+          disabled={chat.resyncDisabled || chat.running || chat.isCompacting}
           onClick={() => chat.resync()}
         >
           <svg

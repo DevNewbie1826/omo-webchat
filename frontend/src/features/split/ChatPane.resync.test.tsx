@@ -1,9 +1,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import { I18nContext } from "../../i18n";
-import { ChatPane } from "./ChatPane";
 import { messageText } from "./chatEntries";
 import { useChatSession } from "./useChatSession";
 import {
@@ -21,8 +20,8 @@ function resyncButton(root: { container: HTMLElement }): HTMLButtonElement {
 	);
 }
 
-function ready(): ChatServerFrame {
-	return { type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true };
+function ready(resumed = true): ChatServerFrame {
+	return { type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed };
 }
 
 function terminalEntries(content = "from server"): ChatServerFrame {
@@ -43,20 +42,37 @@ function settleInitial(deliver: (frame: ChatServerFrame) => void): void {
 	});
 }
 
+interface SessionProbeState {
+	readonly connected: boolean;
+	readonly historyStatus: "loading" | "loaded" | "failed";
+	readonly resyncBusy: boolean;
+	readonly resyncDisabled: boolean;
+}
+
 function renderSessionProbe(root: Root): {
 	readonly deliver: (frame: ChatServerFrame) => void;
+	readonly reconnect: () => void;
+	readonly disconnect: () => void;
 	readonly resync: () => boolean;
+	readonly state: () => SessionProbeState;
 } {
-	let deliver: ((frame: ChatServerFrame) => void) | undefined;
+	let handlers: Parameters<ChatConnector>[0] | undefined;
 	let resync = (): boolean => false;
-	const connect: ChatConnector = (handlers) => {
-		deliver = handlers.onFrame;
-		handlers.onOpen?.();
+	let state: SessionProbeState | undefined;
+	const connect: ChatConnector = (nextHandlers) => {
+		handlers = nextHandlers;
+		nextHandlers.onOpen?.();
 		return { send: vi.fn(() => true), close: vi.fn() };
 	};
 	function Probe() {
 		const chat = useChatSession(chatSession, connect);
 		resync = chat.resync;
+		state = {
+			connected: chat.connected,
+			historyStatus: chat.historyStatus,
+			resyncBusy: chat.resyncBusy,
+			resyncDisabled: chat.resyncDisabled,
+		};
 		return <div data-testid="messages">{chat.messages.map(messageText).join("|")}</div>;
 	}
 	act(() => {
@@ -66,50 +82,15 @@ function renderSessionProbe(root: Root): {
 			</I18nContext.Provider>,
 		);
 	});
-	return { deliver: (frame) => deliver?.(frame), resync: () => resync() };
-}
-
-function renderReconnectable(root: Root): {
-	readonly deliver: (frame: ChatServerFrame) => void;
-	readonly reconnect: () => void;
-	readonly disconnect: () => void;
-	readonly sent: ChatClientFrame[];
-} {
-	let handlers: Parameters<ChatConnector>[0] | undefined;
-	const sent: ChatClientFrame[] = [];
-	const connect: ChatConnector = (nextHandlers) => {
-		handlers = nextHandlers;
-		nextHandlers.onOpen?.();
-		return {
-			send: vi.fn((frame: ChatClientFrame) => {
-				sent.push(frame);
-				return true;
-			}),
-			close: vi.fn(),
-		};
-	};
-	act(() => {
-		root.render(
-			<I18nContext.Provider value={i18n}>
-				<ChatPane
-					chatSession={chatSession}
-					focused
-					splitEnabled={false}
-					onFocus={() => undefined}
-					onSplit={() => undefined}
-					onClose={() => undefined}
-					onOpenSidebar={() => undefined}
-					connect={connect}
-					notify={() => undefined}
-				/>
-			</I18nContext.Provider>,
-		);
-	});
 	return {
 		deliver: (frame) => handlers?.onFrame(frame),
 		reconnect: () => handlers?.onOpen?.(),
 		disconnect: () => handlers?.onClose?.(1006),
-		sent,
+		resync: () => resync(),
+		state: () => {
+			if (!state) throw new Error("session probe did not render");
+			return state;
+		},
 	};
 }
 
@@ -152,20 +133,82 @@ describe("ChatPane resync", () => {
 		expect(resyncButton({ container }).disabled).toBe(false);
 	});
 
-	it("does not let reconnect hydration complete an in-flight resync", () => {
-		const { deliver, disconnect, reconnect } = renderReconnectable(root);
-		settleInitial(deliver);
+	it("retires an in-flight resync on disconnect and converges on reconnect history", () => {
+		const probe = renderSessionProbe(root);
+		settleInitial(probe.deliver);
 
-		act(() => resyncButton({ container }).click());
 		act(() => {
-			disconnect();
-			reconnect();
-			deliver(ready());
-			deliver(terminalEntries("reconnect branch"));
+			expect(probe.resync()).toBe(true);
+		});
+		act(() => probe.disconnect());
+		expect(probe.state()).toMatchObject({
+			connected: false,
+			resyncBusy: false,
+			resyncDisabled: true,
 		});
 
-		expect(resyncButton({ container }).disabled).toBe(true);
-		expect(resyncButton({ container }).getAttribute("aria-busy")).toBe("true");
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready());
+			probe.deliver(terminalEntries("reconnect branch"));
+		});
+
+		expect(probe.state()).toMatchObject({
+			connected: true,
+			historyStatus: "loaded",
+			resyncBusy: false,
+			resyncDisabled: false,
+		});
+		const transcript = requireElement(container.querySelector('[data-testid="messages"]'), "message probe");
+		expect(transcript.textContent).toContain("reconnect branch");
+	});
+
+	it("closes a ready-only fresh attach before claiming a later resync terminal", () => {
+		const probe = renderSessionProbe(root);
+
+		act(() => probe.deliver(ready(false)));
+		expect(probe.state().historyStatus).toBe("loaded");
+		expect(probe.state().resyncDisabled).toBe(false);
+
+		act(() => {
+			expect(probe.resync()).toBe(true);
+			probe.deliver(terminalEntries("resynced after fresh attach"));
+		});
+
+		expect(probe.state().historyStatus).toBe("loaded");
+		expect(probe.state().resyncBusy).toBe(false);
+		const transcript = requireElement(container.querySelector('[data-testid="messages"]'), "message probe");
+		expect(transcript.textContent).toContain("resynced after fresh attach");
+	});
+
+	it("exposes manual resync busy separately from disabled state", () => {
+		const probe = renderSessionProbe(root);
+
+		expect(probe.state()).toMatchObject({
+			connected: true,
+			historyStatus: "loading",
+			resyncBusy: false,
+			resyncDisabled: true,
+		});
+
+		act(() => probe.deliver(ready(false)));
+		expect(probe.state().resyncDisabled).toBe(false);
+
+		act(() => probe.disconnect());
+		expect(probe.state()).toMatchObject({
+			connected: false,
+			resyncBusy: false,
+			resyncDisabled: true,
+		});
+
+		act(() => {
+			probe.reconnect();
+			probe.deliver(ready(false));
+		});
+		act(() => {
+			expect(probe.resync()).toBe(true);
+		});
+		expect(probe.state()).toMatchObject({ resyncBusy: true, resyncDisabled: true });
 	});
 
 	it("gates a repeated click while the first replay is pending", () => {
@@ -243,6 +286,31 @@ describe("ChatPane resync", () => {
 		expect(container.textContent).not.toContain("chat.resyncBusy");
 		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced resync failure");
 		expect(error.textContent).toBe("resync failed");
+	});
+
+	it.each([
+		"no_chat",
+		"unsupported_provider",
+		"adoption_required",
+		"bad_create",
+		"start_failed",
+		"session-active",
+	] as const)("treats chat.create error %s as a resync terminal", (code) => {
+		const { deliver } = renderChatPane(root);
+		settleInitial(deliver);
+		act(() => resyncButton({ container }).click());
+
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code,
+			message: `${code} failure`,
+		}));
+
+		expect(resyncButton({ container }).disabled).toBe(false);
+		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
+		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
+		expect(error.textContent).toBe(`${code} failure`);
 	});
 
 	it("clears the busy state on the matching terminal entries frame", () => {

@@ -256,6 +256,10 @@ export function useChatFrameState() {
     if (terminal) resyncGenerationRef.current = null;
   };
   const failResync = (): void => {
+    const generation = resyncGenerationRef.current;
+    if (generation !== null) {
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) => candidate.generation !== generation);
+    }
     resyncGenerationRef.current = null;
     resyncPendingRef.current = false;
     setResyncBusy(false);
@@ -266,8 +270,18 @@ export function useChatFrameState() {
     if (historyStatus !== "loading") return;
     if (historyStallTimerRef.current !== null && !refresh) return;
     if (historyStallTimerRef.current !== null) window.clearTimeout(historyStallTimerRef.current);
+    const connectionGeneration = connectionGenerationRef.current;
     historyStallTimerRef.current = window.setTimeout(() => {
       historyStallTimerRef.current = null;
+      const stalled = replayQueueRef.current.filter((candidate) =>
+        candidate.connectionGeneration === connectionGeneration);
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
+        candidate.connectionGeneration !== connectionGeneration);
+      if (stalled.some((candidate) => candidate.generation === resyncGenerationRef.current)) {
+        resyncGenerationRef.current = null;
+        resyncPendingRef.current = false;
+        setResyncBusy(false);
+      }
       setHistoryStatus((current) => current === "loading" ? "failed" : current);
     }, HISTORY_STALL_MS);
   };
@@ -423,8 +437,23 @@ export function useChatFrameState() {
   };
   const markClose = (): void => {
     ledger.failAll();
+    if (historyStallTimerRef.current !== null) {
+      window.clearTimeout(historyStallTimerRef.current);
+      historyStallTimerRef.current = null;
+    }
     uncertainRunRef.current = chatState.uncertainRun(activeRunRef.current, pendingRef.current);
     awaitingReconnectHistoryRef.current = false;
+    const closedGeneration = connectionGenerationRef.current;
+    const closedReplays = replayQueueRef.current.filter((candidate) =>
+      candidate.connectionGeneration === closedGeneration);
+    replayQueueRef.current = replayQueueRef.current.filter((candidate) =>
+      candidate.connectionGeneration !== closedGeneration);
+    if (closedReplays.some((candidate) => candidate.generation === resyncGenerationRef.current)) {
+      resyncGenerationRef.current = null;
+      resyncPendingRef.current = false;
+      setResyncBusy(false);
+    }
+    setHistoryStatus((current) => current === "loading" ? "failed" : current);
     setConnected(false);
   };
 
@@ -501,6 +530,7 @@ export function useChatFrameState() {
     endResync,
     failResync,
     resyncBusy,
+    resyncDisabled: resyncBusy || historyStatus === "loading" || !connected,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

@@ -220,7 +220,7 @@ export function useChatSession(
   // down a live turn — and the busy marker ends at the ready or terminal
   // entries frame, or on a terminal history error.
   const resync = (): boolean => {
-    if (frameState.resyncBusy || frameState.historyStatus === "loading") return false;
+    if (frameState.resyncDisabled) return false;
     if (frameState.running) {
       frameState.reportError(t("chat.resyncBusyResponding"));
       return false;
@@ -342,7 +342,8 @@ export function useChatSession(
     resume,
     reloadExternalWrite,
     resync,
-    resyncBusy: frameState.resyncBusy || frameState.historyStatus === "loading",
+    resyncBusy: frameState.resyncBusy,
+    resyncDisabled: frameState.resyncDisabled,
     changeThinkingLevel,
     changeModel,
     respondApproval,

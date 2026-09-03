@@ -77,10 +77,14 @@ interface ChatFrameHandlerBindings {
  * design: treating those as history failure would re-expose the notice-only
  * transcript this gate exists to prevent.
  */
+const CREATE_TERMINAL_ERROR_CODES: readonly string[] = [
+  "no_chat", "unsupported_provider", "adoption_required", "bad_create", "start_failed", "session-active",
+];
+
 const HISTORY_TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
-  "resume_failed", "initialize_failed", "start_failed", "no_chat",
-  "bad_create", "no_workspace", "bad_provider",
-  "decode_failed", "incomplete_history", "adoption_required", "provider_overflow", "provider_timeout", "pi_eof",
+  "resume_failed", "initialize_failed", ...CREATE_TERMINAL_ERROR_CODES,
+  "no_workspace", "bad_provider", "decode_failed", "incomplete_history",
+  "provider_overflow", "provider_timeout", "pi_eof",
 ]);
 
 function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
@@ -130,11 +134,24 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     switch (frame.type) {
       case "ready": {
         const generation = bindings.claimReadyGeneration(connectionGeneration);
-        bindings.armHistoryStall(false);
         if (bindings.externalRecoveryPendingRef.current) {
           bindings.externalRecoveryReadyRef.current = true;
-          completeExternalRecovery();
         }
+        if (!frame.resumed && frame.piSessionId !== null) {
+          // A fresh provider route has no entries stream. Route an authoritative
+          // empty terminal through normal reconciliation so this generation
+          // closes and cannot consume a later replay's terminal frame. A null
+          // provider identity is not proof that initialization finished.
+          handleFrame({
+            type: "entries",
+            sessionId: frame.sessionId,
+            entries: [],
+            final: true,
+          }, connectionGeneration);
+          return;
+        }
+        bindings.armHistoryStall(false);
+        completeExternalRecovery();
         // A manual re-sync ends at ready only for the binding created by that
         // action. Older attach/reconnect acknowledgements cannot release it.
         bindings.endResync(generation);
