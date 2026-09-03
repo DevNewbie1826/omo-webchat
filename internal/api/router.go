@@ -67,6 +67,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats", s.handleCreateChat)
 	protected.HandleFunc("DELETE /api/workspaces/{wsId}/chats/{chatId}", s.handleDeleteChat)
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}/chats/{chatId}", s.handleRenameChat)
+	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/activity", s.handleGetChatActivity)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats/{chatId}/upload", s.handleUpload)
 	protected.HandleFunc("GET /api/providers", s.handleListProviders)
 	protected.HandleFunc("GET /api/sessions/live", s.handleListLiveSessions)

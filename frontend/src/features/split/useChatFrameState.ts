@@ -3,7 +3,7 @@ import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidat
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
-import { emptyActivityState } from "./activityState";
+import { applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -128,6 +128,7 @@ export function useChatFrameState() {
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
+  const activitySideVersionsRef = useRef({ task: 0, dag: 0 });
   const noticeIdRef = useRef(0);
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
@@ -208,6 +209,7 @@ export function useChatFrameState() {
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
+    activitySideVersionsRef,
     retryVersionRef,
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
@@ -236,6 +238,24 @@ export function useChatFrameState() {
     setRetryDraft,
     pushNotice,
   });
+
+  const beginActivityHydration = (): { readonly task: number; readonly dag: number } => ({
+    ...activitySideVersionsRef.current,
+  });
+  const hydrateActivities = (
+    token: { readonly task: number; readonly dag: number },
+    task: unknown,
+    dag: unknown,
+  ): void => {
+    let next = activitiesRef.current;
+    if (activitySideVersionsRef.current.task <= token.task) {
+      next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
+    }
+    if (activitySideVersionsRef.current.dag <= token.dag) {
+      next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
+    }
+    if (next !== activitiesRef.current) applyActivities(next);
+  };
 
   const submit = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
@@ -347,6 +367,8 @@ export function useChatFrameState() {
     activitiesVersion,
     notices,
     handleFrame,
+    beginActivityHydration,
+    hydrateActivities,
     submit,
     steer,
     markOpen,

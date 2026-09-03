@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import type { ChatDraft } from "./chatSessionTypes";
+import { getChatActivity } from "./activityHistory";
 import { COMPACT_COMMAND, isCuratedCompact } from "./curatedCommands";
 import { useChatFrameState } from "./useChatFrameState";
 
@@ -69,6 +70,16 @@ export function useChatSession(
       clientRef.current = null;
     };
   }, [connect, session.id, session.wsId]);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const token = frameState.beginActivityHydration();
+    void getChatActivity(session.wsId, session.id, ctrl.signal).then(
+      (activity) => frameState.hydrateActivities(token, activity.history.task, activity.history.dag),
+      () => undefined,
+    );
+    return () => ctrl.abort();
+  }, [session.id, session.wsId]);
 
   useEffect(() => {
     if (frameState.doneReason === null) return;
