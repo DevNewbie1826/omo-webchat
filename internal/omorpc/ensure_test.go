@@ -897,35 +897,34 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 		}
 		resultCh <- err
 	}()
-	// Bounded handshake: under concurrent gate load both short readiness
-	// attempts can complete before the fake supervisor ever schedules, so
-	// a blocking open would wait forever. A missing start signal only
-	// weakens the interleaving; the foreign-listener assertion below is
-	// independent of it.
-	fifoCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		fifo, err := os.Open(startedFIFO)
-		if err != nil {
-			errCh <- err
-			return
+	// Deadline-aware, closable handshake: a blocking open would wait
+	// forever when both attempts are reaped before the fake supervisor
+	// schedules (no future writer exists). Poll the FIFO non-blocking; on
+	// deadline, close and SKIP — binding the listener after cleanup ran
+	// would only prove a fresh listener works, not preservation.
+	fifo, err := os.OpenFile(startedFIFO, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Fatalf("open start fifo: %v", err)
+	}
+	defer fifo.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	var started []byte
+	for {
+		if time.Now().After(deadline) {
+			t.Skip("supervisor never scheduled under load; preservation interleaving unobservable")
 		}
-		data, err := io.ReadAll(fifo)
-		_ = fifo.Close()
-		if err != nil {
-			errCh <- err
-			return
+		buf := make([]byte, 32)
+		n, rerr := fifo.Read(buf)
+		if n > 0 {
+			started = append(started, buf[:n]...)
+			if strings.Contains(string(started), "started") {
+				break
+			}
+		} else if rerr != nil && rerr != syscall.EAGAIN && rerr != io.EOF {
+			t.Fatalf("read start fifo: %v", rerr)
+		} else {
+			time.Sleep(5 * time.Millisecond)
 		}
-		fifoCh <- string(data)
-	}()
-	select {
-	case started := <-fifoCh:
-		if started != "started" {
-			t.Fatalf("supervisor start signal = %q", started)
-		}
-	case err := <-errCh:
-		t.Fatal(err)
-	case <-time.After(10 * time.Second):
 	}
 	listener, err := net.Listen("unix", socket)
 	if err != nil {

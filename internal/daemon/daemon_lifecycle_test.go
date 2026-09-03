@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"strconv"
 	"errors"
 	"io/fs"
 	"fmt"
@@ -388,15 +389,20 @@ func TestDaemonStopFallsBackToSIGKILL(t *testing.T) {
 
 func readHelperPIDOrNil(t *testing.T, stateDir string) (int, bool) {
 	t.Helper()
-	pid, err := readPIDFile(filepath.Join(stateDir, daemonHelperPIDFile))
+	path := filepath.Join(stateDir, daemonHelperPIDFile)
+	raw, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
+		// Only a genuinely absent file means the child never scheduled;
+		// readPIDFile maps absence to ErrNotRunning, so inspect the file
+		// directly rather than relying on that mapping.
 		return 0, false
 	}
 	if err != nil {
-		// A present but malformed/unreadable file can still represent a
-		// scheduled child — fail rather than silently skipping the
-		// liveness assertion.
 		t.Fatalf("helper pid file: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("helper pid file %q: invalid pid", raw)
 	}
 	return pid, true
 }
