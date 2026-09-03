@@ -26,6 +26,8 @@ interface SideOverride {
  * so they age out only through the TTL sweep, never through settling. */
 interface ActivityStamps {
   readonly stamps: ReadonlyMap<string, string>;
+  /** Receipt time contributed by the latest valid heartbeat for each task. */
+  readonly receivedAtByTask: ReadonlyMap<string, number>;
   readonly sequence: number;
   readonly receivedAt: number;
 }
@@ -98,28 +100,62 @@ function sweepExpired(nowMs: number): void {
   emit();
 }
 
+function activityStampMs(at: string): number | null {
+  const epochMs = Date.parse(at);
+  return Number.isNaN(epochMs) ? null : epochMs;
+}
+
 function mergeActivityStamps(
   first: ActivityStamps | undefined,
   second: ActivityStamps | undefined,
 ): ActivityStamps | undefined {
   if (first === undefined) return second;
   if (second === undefined) return first;
-  const stamps = new Map(first.stamps);
-  for (const [taskId, at] of second.stamps) {
-    const known = stamps.get(taskId);
-    if (known === undefined || at > known) stamps.set(taskId, at);
+  const stamps = new Map<string, string>();
+  const receivedAtByTask = new Map<string, number>();
+  for (const activity of [first, second]) {
+    for (const [taskId, at] of activity.stamps) {
+      const epochMs = activityStampMs(at);
+      if (epochMs === null) continue;
+      const known = stamps.get(taskId);
+      const knownMs = known === undefined ? null : activityStampMs(known);
+      // Equal instants retain the first representation, making merge order the
+      // stable tie-breaker while chronology alone decides which instant wins.
+      if (knownMs === null || epochMs > knownMs) stamps.set(taskId, at);
+      const receivedAt = activity.receivedAtByTask.get(taskId);
+      if (receivedAt !== undefined) {
+        receivedAtByTask.set(taskId, Math.max(receivedAtByTask.get(taskId) ?? 0, receivedAt));
+      }
+    }
   }
   return {
     stamps,
+    receivedAtByTask,
     sequence: Math.max(first.sequence, second.sequence),
     receivedAt: Math.max(first.receivedAt, second.receivedAt),
   };
 }
 
+function renewTaskFromActivity(
+  task: SideOverride | undefined,
+  activity: ActivityStamps | undefined,
+): SideOverride | undefined {
+  if (task === undefined || activity === undefined) return task;
+  const parsed = parseTaskUpdated(task.payload);
+  if (parsed === null) return task;
+  let receivedAt = task.receivedAt;
+  for (const entry of parsed.tasks) {
+    if (!activity.stamps.has(entry.taskId)) continue;
+    receivedAt = Math.max(receivedAt, activity.receivedAtByTask.get(entry.taskId) ?? receivedAt);
+  }
+  return receivedAt === task.receivedAt ? task : { ...task, receivedAt };
+}
+
 function mergeOverrides(first: SessionOverride, second: SessionOverride): SessionOverride {
-  const task = (first.task?.sequence ?? -1) >= (second.task?.sequence ?? -1) ? first.task : second.task;
+  const selectedTask = (first.task?.sequence ?? -1) >= (second.task?.sequence ?? -1) ? first.task : second.task;
   const dag = (first.dag?.sequence ?? -1) >= (second.dag?.sequence ?? -1) ? first.dag : second.dag;
   const activity = mergeActivityStamps(first.activity, second.activity);
+  const task = renewTaskFromActivity(selectedTask, activity);
   return {
     ...(task === undefined ? {} : { task }),
     ...(dag === undefined ? {} : { dag }),
@@ -212,11 +248,17 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
   if (frameName === ACTIVITY_FRAME) {
     const parsed = parseDagActivity(data);
     if (parsed === null || parsed.taskId === undefined) return;
+    const epochMs = activityStampMs(parsed.at);
+    if (epochMs === null) return;
     const previous = overrides.get(id);
     const stamps = new Map(previous?.activity?.stamps ?? []);
     const known = stamps.get(parsed.taskId);
-    if (known === undefined || parsed.at > known) stamps.set(parsed.taskId, parsed.at);
+    const knownMs = known === undefined ? null : activityStampMs(known);
+    // Equal epochs keep the first-seen wire representation.
+    if (knownMs === null || epochMs > knownMs) stamps.set(parsed.taskId, parsed.at);
     const receivedAt = Date.now();
+    const receivedAtByTask = new Map(previous?.activity?.receivedAtByTask ?? []);
+    receivedAtByTask.set(parsed.taskId, receivedAt);
     const task = previous?.task !== undefined
       && parseTaskUpdated(previous.task.payload)?.tasks.some((entry) => entry.taskId === parsed.taskId) === true
       ? { ...previous.task, receivedAt }
@@ -225,7 +267,7 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
     next.set(id, {
       ...previous,
       ...(task === undefined ? {} : { task }),
-      activity: { stamps, sequence: nextLiveActivitySequence(), receivedAt },
+      activity: { stamps, receivedAtByTask, sequence: nextLiveActivitySequence(), receivedAt },
     });
     overrides = next;
     emit();
