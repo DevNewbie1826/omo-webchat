@@ -183,21 +183,34 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("omorpc: create daemon state directory: %w", err)
 	}
-	command, args, err := supervisorCommand(cfg)
+	command, nativeArgs, err := supervisorCommand(cfg)
 	if err != nil {
 		return nil, err
 	}
+	automaticArgs := nativeArgs
+	if cfg.ArgsTemplate == nil && cfg.ChildCommand == "" {
+		automaticCfg := cfg
+		automaticCfg.ChildCommand = command
+		_, automaticArgs, err = supervisorCommand(automaticCfg)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	if _, userRuntime := lookupEnv(cfg.Env, "OMO_RUNTIME"); userRuntime {
-		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env)
+	if runtimeName, userRuntime := lookupEnv(cfg.Env, "OMO_RUNTIME"); userRuntime {
+		args := automaticArgs
+		if runtimeName == "node" {
+			args = nativeArgs
+		}
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env, "configured", false)
 		return result, attemptErr
 	}
 	if winner, ok := runtimeWinnerCache.Load(command); ok && winner == "node" {
-		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, setEnv(cfg.Env, "OMO_RUNTIME", "node"))
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, nativeArgs, setEnv(cfg.Env, "OMO_RUNTIME", "node"), "node", false)
 		return result, attemptErr
 	}
 
-	result, automaticErr, retryable := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env)
+	result, automaticErr, retryable := spawnDaemonAttempt(ctx, cfg, command, automaticArgs, cfg.Env, "automatic", false)
 	if automaticErr == nil {
 		runtimeWinnerCache.Store(command, "automatic")
 		return result, nil
@@ -205,7 +218,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if !retryable || ctx.Err() != nil {
 		return nil, automaticErr
 	}
-	result, nodeErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, setEnv(cfg.Env, "OMO_RUNTIME", "node"))
+	result, nodeErr, _ := spawnDaemonAttempt(ctx, cfg, command, nativeArgs, setEnv(cfg.Env, "OMO_RUNTIME", "node"), "node", true)
 	if nodeErr == nil {
 		runtimeWinnerCache.Store(command, "node")
 		return result, nil
@@ -213,11 +226,15 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	return nil, &ErrDaemonRuntimeFallback{Automatic: automaticErr, Node: nodeErr}
 }
 
-func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, args, env []string) (*EnsuredDaemon, error, bool) {
+func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, args, env []string, attempt string, appendLog bool) (*EnsuredDaemon, error, bool) {
 	removeStaleSocket(cfg.SocketPath)
-	stderr, err := newBoundedSpawnLog(filepath.Join(cfg.StateDir, "daemon-spawn.log"), daemonSpawnLogLimit)
+	stderr, err := openBoundedSpawnLog(filepath.Join(cfg.StateDir, "daemon-spawn.log"), daemonSpawnLogLimit, appendLog)
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
+	}
+	if _, err := fmt.Fprintf(stderr, "omo-webchat daemon spawn attempt: %s\n", attempt); err != nil {
+		_ = stderr.Close()
+		return nil, fmt.Errorf("omorpc: sign daemon spawn log: %w", err), false
 	}
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
@@ -300,11 +317,25 @@ type boundedSpawnLog struct {
 }
 
 func newBoundedSpawnLog(path string, limit int64) (*boundedSpawnLog, error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	return openBoundedSpawnLog(path, limit, false)
+}
+
+func openBoundedSpawnLog(path string, limit int64, appendLog bool) (*boundedSpawnLog, error) {
+	flags := os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	remaining := limit
+	if appendLog {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
+		if info, err := os.Stat(path); err == nil {
+			remaining -= min(info.Size(), limit)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
+	file, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	return &boundedSpawnLog{file: file, remaining: limit}, nil
+	return &boundedSpawnLog{file: file, remaining: remaining}, nil
 }
 
 func (w *boundedSpawnLog) Write(p []byte) (int, error) {
@@ -561,9 +592,7 @@ func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("omorpc: resolve supervisor %q: %w", cfg.BinaryPath, err)
 	}
-	if cfg.ChildCommand == "" {
-		cfg.ChildCommand = binary
-	} else {
+	if cfg.ChildCommand != "" {
 		cfg.ChildCommand, err = exec.LookPath(cfg.ChildCommand)
 		if err != nil {
 			return "", nil, fmt.Errorf("omorpc: resolve child command %q: %w", cfg.ChildCommand, err)
@@ -579,8 +608,12 @@ func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
 			"--internal-rpc-host-supervisor",
 			"--socket", "{socket}",
 			"--agent-dir", "{agent-dir}",
-			"--child-command", "{child-command}",
-			"--child-args", "{child-args}",
+		}
+		if cfg.ChildCommand != "" {
+			template = append(template,
+				"--child-command", "{child-command}",
+				"--child-args", "{child-args}",
+			)
 		}
 	}
 	replacements := map[string]string{

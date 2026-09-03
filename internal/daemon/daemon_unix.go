@@ -16,7 +16,9 @@ import (
 )
 
 const (
-	startTimeout     = 3 * time.Second
+	// Startup may include two 10-second provider readiness attempts plus
+	// teardown between them before the HTTP listener can report ready.
+	startTimeout     = 30 * time.Second
 	stopTimeout      = 5 * time.Second
 	killTimeout      = 2 * time.Second
 	childLockFD      = 3

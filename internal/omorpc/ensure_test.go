@@ -286,6 +286,13 @@ func TestEnsureDaemonRuntimeLadderCleanupAndWinnerCache(t *testing.T) {
 	if _, err := os.Stat(cleanupMarker); err != nil {
 		t.Fatalf("node attempt did not observe stale-socket cleanup: %v", err)
 	}
+	spawnLog, err := os.ReadFile(filepath.Join(filepath.Dir(socket), "daemon-spawn.log"))
+	if err != nil {
+		t.Fatalf("read spawn log: %v", err)
+	}
+	if got := string(spawnLog); !strings.Contains(got, "attempt: automatic") || !strings.Contains(got, "attempt: node") {
+		t.Fatalf("spawn log does not preserve both attempt signatures: %q", got)
+	}
 
 	second, err := EnsureDaemon(context.Background(), cfg)
 	if err != nil {
@@ -728,6 +735,21 @@ func TestEnsuredDaemonStopEscalatesAfterCanceledWait(t *testing.T) {
 	}
 	if err := ensured.process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("SIGTERM-ignoring supervisor remains alive after Stop: %v", err)
+	}
+}
+
+func TestSupervisorCommandDefaultUsesNativeHostChild(t *testing.T) {
+	script := writeFakeSupervisor(t, "exit 0")
+	_, args, err := supervisorCommand(EnsureConfig{
+		AgentDir:   t.TempDir(),
+		SocketPath: filepath.Join(t.TempDir(), "rpc.sock"),
+		BinaryPath: script,
+	})
+	if err != nil {
+		t.Fatalf("supervisorCommand: %v", err)
+	}
+	if slices.Contains(args, "--child-command") || slices.Contains(args, "--child-args") {
+		t.Fatalf("native supervisor args redundantly override its child launch: %v", args)
 	}
 }
 
