@@ -10,10 +10,13 @@ import { describe, expect, it } from "vitest";
  * the composer entirely below the container edge at 1280x720. The shelf
  * must therefore yield height (the panel scrolls) while the bar never
  * shrinks. A squeezed shelf must additionally clip itself (overflow:
- * hidden) so its content cannot paint over the status strip and composer,
- * and the user-sized activity panel must stay viewport-bounded (max-height
- * as a vh fraction, never none) so a stale stored height from a taller
- * window cannot dominate a short one. Rules are read straight from disk
+ * hidden) so its content cannot paint over the status strip and composer.
+ * Because that clipping also cuts off the global outside focus outline, the
+ * goal button must pull its focus treatment inside its own bounds in both
+ * collapsed and expanded states. The user-sized activity panel must stay
+ * viewport-bounded (max-height as a vh fraction, never none) so a stale
+ * stored height from a taller window cannot dominate a short one. Rules are
+ * read straight from disk
  * (same readFileSync+regex approach as styleContracts.test.ts) so removing
  * or weakening any of them fails here.
  */
@@ -115,6 +118,24 @@ describe("goal shelf shrink contract", () => {
           `"${declarationValue(shelf, "overflow") || "missing"}"; ` +
           "a squeezed shelf must clip (overflow: hidden) instead of painting over the status strip and composer",
       );
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("draws the goal button focus outline inside the clipped shelf in either aria-expanded state", () => {
+    const focus = ruleBody(chatPane, ".th-goal-bar:focus-visible");
+    const violations: string[] = [];
+    if (declarationValue(focus, "outline-offset") !== "-2px") {
+      violations.push(
+        `chat-pane.css .th-goal-bar:focus-visible outline-offset is ` +
+          `"${declarationValue(focus, "outline-offset") || "missing"}"; expected -2px`,
+      );
+    }
+    // The selector must not depend on aria-expanded, otherwise one shelf state
+    // can silently lose its visible keyboard focus treatment.
+    if (chatPane.includes('.th-goal-bar[aria-expanded="true"]:focus-visible') ||
+        chatPane.includes('.th-goal-bar[aria-expanded="false"]:focus-visible')) {
+      violations.push("goal focus treatment must apply regardless of aria-expanded state");
     }
     expect(violations).toEqual([]);
   });

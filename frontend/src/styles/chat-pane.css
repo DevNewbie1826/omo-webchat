@@ -404,6 +404,12 @@
   flex: none;
 }
 
+/* The shelf clips squeezed content, so keep the global focus outline inside
+   the goal button in both collapsed and expanded states. */
+.th-goal-bar:focus-visible {
+  outline-offset: -2px;
+}
+
 .th-goal-title {
   flex: none;
   color: var(--th-text-dim);
@@ -509,12 +515,17 @@
     display: inline-flex;
   }
 
+  /* SplitView keeps horizontal panes at 320px minimum and this 600px query
+     is the real narrow/expanded boundary. Keep prose hidden throughout that
+     whole range so there is no intermediate overflow window. */
+  .th-chat-pane .th-provider-badge,
   .th-chat-pane .th-model-picker-label {
-    display: block;
-    max-width: 80px;
+    display: none;
   }
 
   .th-chat-pane .th-model-picker-btn {
+    width: 44px;
+    max-width: 44px;
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
@@ -554,19 +565,5 @@
 @container chat-pane (max-width: 340px) {
   .th-chat-main {
     --th-chat-gutter: 8px;
-  }
-
-  /* At the supported 320px pane minimum, retain the title and actionable
-     controls. Their aggregate is 310px: 28px header padding, five 4px gaps,
-     the 42px title minimum, and five 44px controls. */
-  .th-chat-pane .th-provider-badge,
-  .th-chat-pane .th-files-toggle,
-  .th-chat-pane .th-model-picker-label {
-    display: none;
-  }
-
-  .th-chat-pane .th-model-picker-btn {
-    width: 44px;
-    max-width: 44px;
   }
 }

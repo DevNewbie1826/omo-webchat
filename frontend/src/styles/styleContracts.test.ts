@@ -325,18 +325,39 @@ describe("visual accessibility contracts", () => {
     expect(mobileRules).toMatch(/\.th-files-dl\s*\{[^}]*opacity:\s*1/);
   });
 
-  it("shows the current model (truncated) with a 44px hitbox on narrow panes", () => {
-    // Wide (outside any container query): the settings icon is hidden, so the
-    // model name + chevron show as today. Anchor before the first @container so
-    // a display:none that leaks into the narrow block cannot satisfy this.
+  it("switches model/provider prose at the 600px expanded boundary while retaining Files", () => {
+    // Above the actual narrow/expanded breakpoint, provider and model prose use
+    // their base display and the settings icon stays hidden.
     const wide = chatPane.slice(0, chatPane.indexOf("@container"));
     expect(wide).toMatch(/\.th-model-picker-icon\s*\{[^}]*display:\s*none/);
-    // Narrow: the icon stays, the model name shows truncated (capped width), and
-    // the button keeps a 44x44 touch target (the 44px header does not stretch it).
-    const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-icon\s*\{[^}]*display:\s*inline-flex/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*block[^}]*max-width:\s*80px/);
-    expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
+    expect(wide).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
+    expect(wide).not.toMatch(/\.th-model-picker-label\s*\{[^}]*display:\s*none/);
+
+    // At and below 600px, prose yields to the icon-only model control. This is
+    // the same boundary that introduces all other narrow header treatment, so
+    // widths from 341px through 600px cannot fall back to the overflowing form.
+    const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+    );
+    expect(compact).toMatch(/\.th-chat-pane \.th-model-picker-icon\s*\{[^}]*display:\s*inline-flex/);
+    expect(compact).toMatch(
+      /\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*width:\s*44px[^}]*max-width:\s*44px[^}]*min-width:\s*44px[^}]*min-height:\s*44px/,
+    );
+
+    // Files is an independently labelled action, not prose to discard. No
+    // responsive rule may remove its entry point on either compact tier.
+    const hiddenResponsiveFilesRules: string[] = [];
+    postcss.parse(chatPane).walkAtRules("container", (atRule) => {
+      atRule.walkRules((rule) => {
+        if (!rule.selector.includes(".th-files-toggle")) return;
+        rule.walkDecls("display", (declaration) => {
+          if (declaration.value.trim().toLowerCase() === "none") hiddenResponsiveFilesRules.push(rule.selector);
+        });
+      });
+    });
+    expect(hiddenResponsiveFilesRules).toEqual([]);
+    expect(wide).toMatch(/\.th-chat-pane \.th-files-toggle,[\s\S]*?\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {
@@ -346,10 +367,10 @@ describe("visual accessibility contracts", () => {
     expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-label\s*\{[^}]*display:\s*none/);
   });
 
-  it("fits the complete compact chat header within the supported 320px pane", () => {
-    const compact = chatPane.match(/@container chat-pane \(max-width: 340px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+  it("fits retained compact actions from the 320px pane minimum through the 600px breakpoint", () => {
+    const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(compact).toMatch(
-      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-files-toggle,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
     );
 
     const header = ruleBody(chatPane, ".th-chat-pane .th-termhead");
@@ -357,8 +378,7 @@ describe("visual accessibility contracts", () => {
     const iconControls = chatPane.match(
       /\.th-chat-pane \.th-mobile-menu,[\s\S]*?\.th-chat-pane \.th-termhead-actions \.th-btn-icon\s*\{([^}]*)\}/,
     )?.[1] ?? "";
-    const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    const resync = ruleBody(narrow, ".th-chat-pane .th-chat-resync-btn");
+    const resync = ruleBody(compact, ".th-chat-pane .th-chat-resync-btn");
     const model = ruleBody(compact, ".th-chat-pane .th-model-picker-btn");
     const pixels = (value: string): number => {
       const token = wholeVarToken(value);
@@ -375,11 +395,14 @@ describe("visual accessibility contracts", () => {
     const modelWidth = pixels(declarationValue(model, "width"));
     const resyncWidth = pixels(declarationValue(resync, "width"));
 
-    // Worst case includes the viewport menu plus title, selected-model control,
-    // resync, disconnect, and close. Provider/files/model prose are hidden above.
+    // The viewport menu and split close are mutually exclusive at the supported
+    // minimum. The five fixed actions are one of those edge actions plus Files,
+    // model, resync, and disconnect; provider/model prose alone is hidden.
     const visibleWidths = titleMinimum + iconWidth * 3 + modelWidth + resyncWidth;
     const visibleGaps = gap * 5;
-    expect(horizontalPadding + visibleWidths + visibleGaps).toBeLessThanOrEqual(320);
+    const compactAggregate = horizontalPadding + visibleWidths + visibleGaps;
+    expect(compactAggregate).toBeLessThanOrEqual(320);
+    expect(compactAggregate).toBeLessThanOrEqual(600);
   });
 
   it("keeps the mobile empty-state menu below the safe area at 44px", () => {
