@@ -271,10 +271,13 @@ export function useChatFrameState() {
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
+    // Overflow flags are mutation-aware (per-event bits): an armed flag means
+    // a dropped event actually changed that domain's live state, so fencing
+    // applies unconditionally — stale cached rows can no longer widen it.
     const protectLiveTasks = hydration.buffer.taskSuperseded
-      || (hydration.buffer.taskOverflowed && next.tasks.size > 0);
+      || hydration.buffer.taskOverflowed;
     const protectLiveDags = hydration.buffer.dagSuperseded
-      || (hydration.buffer.dagOverflowed && next.dags.size > 0);
+      || hydration.buffer.dagOverflowed;
     if (!protectLiveTasks) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }

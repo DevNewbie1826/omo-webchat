@@ -139,12 +139,13 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "extensionEvent": {
         ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
         const activityEvent = validatedActivityEvent(frame.name, frame.data);
-        const next = applyActivityEvent(bindings.activitiesRef.current, frame.name, frame.data);
-        if (next !== bindings.activitiesRef.current) bindings.applyActivities(next);
+        const before = bindings.activitiesRef.current;
+        const next = applyActivityEvent(before, frame.name, frame.data);
+        if (next !== before) bindings.applyActivities(next);
         if (activityEvent !== null) {
           // Record which domains the reducer actually mutated so hydration
           // overflow fencing reflects real changes, not mere event presence.
-          const mutated = next !== bindings.activitiesRef.current;
+          const mutated = next !== before;
           bindings.bufferActivityEvent({
             ...activityEvent,
             mutatedTask: mutated && (activityEvent.side === "task" || activityEvent.name === "omo.dag.activity"),
