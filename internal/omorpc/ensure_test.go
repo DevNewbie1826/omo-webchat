@@ -149,7 +149,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "lock held")
 		os.Exit(0) // The kernel, not stale-content recovery, releases the flock.
 	}
-	if mode != "serve" && mode != "serve-ignore-term" && mode != "serve-competitor" {
+	if mode != "serve" && mode != "serve-ignore-term" && mode != "serve-competitor" && mode != "serve-bind-on-term" {
 		t.Fatalf("unknown helper mode %q", mode)
 	}
 	if mode == "serve-ignore-term" {
@@ -164,6 +164,20 @@ func TestEnsureHelperProcess(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	defer ln.Close()
+	if mode == "serve-bind-on-term" {
+		terminated := make(chan os.Signal, 1)
+		signal.Notify(terminated, syscall.SIGTERM)
+		go func() {
+			<-terminated
+			signal.Stop(terminated)
+			_ = ln.Close()
+			_ = os.Remove(socket)
+			child := exec.Command(os.Args[0], "-test.run=^TestEnsureHelperProcess$")
+			child.Env = setEnv(os.Environ(), ensureHelperModeEnv, "bind-exit")
+			_ = child.Run()
+			os.Exit(0)
+		}()
+	}
 	if mode == "serve-competitor" {
 		ready := os.NewFile(3, "competitor-ready")
 		if ready == nil {
@@ -414,6 +428,56 @@ func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
 	npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
 	if got := launcherUpdateCommand(npmRoot); got != "npm i -g omo-ai@beta" {
 		t.Fatalf("npm update command = %q", got)
+	}
+}
+
+func TestLauncherSymlinkRootOverridesAmbientInstallations(t *testing.T) {
+	launcher, root, _ := writeRecognizedLauncherInstall(t, "4.5.6")
+	entry := filepath.Join(root, "bin", "omo.js")
+	if err := os.Remove(launcher); err != nil {
+		t.Fatal(err)
+	}
+	relativeEntry, err := filepath.Rel(filepath.Dir(launcher), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relativeEntry, launcher); err != nil {
+		t.Fatal(err)
+	}
+	_, foreignRoot, _ := writeRecognizedLauncherInstall(t, "99.0.0")
+	env := []string{
+		"OMO_AGENT_TOOLKIT_BIN=" + filepath.Join(foreignRoot, "bin", "omo-agent-toolkit.js"),
+		"OMO_BIN=" + filepath.Join(foreignRoot, "bin", "omo.js"),
+	}
+	installation, recognized, err := resolveLauncherInstallation(launcher, env)
+	if err != nil || !recognized {
+		t.Fatalf("resolveLauncherInstallation: recognized=%v err=%v", recognized, err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installation.root != resolvedRoot {
+		t.Fatalf("authoritative root = %q, want %q", installation.root, resolvedRoot)
+	}
+	extension, recognized, err := launcherExtension(launcher, env)
+	if err != nil || !recognized || extension != filepath.Join(resolvedRoot, "plugin") {
+		t.Fatalf("extension = %q recognized=%v err=%v", extension, recognized, err)
+	}
+	profile, gotNative, err := launcherNativeContext(launcher, env)
+	if err != nil {
+		t.Fatalf("launcherNativeContext: %v", err)
+	}
+	resolvedNative := filepath.Join(resolvedRoot, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js")
+	if gotNative != resolvedNative {
+		t.Fatalf("native command = %q, want %q", gotNative, resolvedNative)
+	}
+	var brand launcherBrandProfile
+	if err := json.Unmarshal([]byte(profile), &brand); err != nil {
+		t.Fatal(err)
+	}
+	if brand.DisplayVersion != "4.5.6" {
+		t.Fatalf("profile version = %q, want local installation version", brand.DisplayVersion)
 	}
 }
 
@@ -740,6 +804,12 @@ func TestEnsureDaemonNegotiatedReplacementIsUnowned(t *testing.T) {
 	if ensured.Owned {
 		t.Fatal("post-negotiation replacement was reported as owned")
 	}
+	callCtx, cancelCall := context.WithTimeout(context.Background(), testAwaitTimeout)
+	response, callErr := ensured.Client.Call(callCtx, ListSessions{})
+	cancelCall()
+	if callErr != nil || response == nil || !response.Success {
+		t.Fatalf("returned negotiated client is dead: response=%+v err=%v", response, callErr)
+	}
 	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
 		t.Fatalf("Stop unowned daemon: %v", err)
 	}
@@ -750,6 +820,70 @@ func TestEnsureDaemonNegotiatedReplacementIsUnowned(t *testing.T) {
 		t.Fatalf("competitor did not survive Stop: %v", err)
 	}
 	_ = client.Close()
+}
+
+func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "foreign.sock")
+	startedFIFO := filepath.Join(dir, "supervisor-started")
+	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+	cfg.ReadyTimeout = 300 * time.Millisecond
+	cfg.ProbeTimeout = 50 * time.Millisecond
+
+	resultCh := make(chan error, 1)
+	go func() {
+		daemon, err := EnsureDaemon(context.Background(), cfg)
+		if daemon != nil {
+			_ = daemon.Close()
+		}
+		resultCh <- err
+	}()
+	fifo, err := os.Open(startedFIFO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := io.ReadAll(fifo)
+	_ = fifo.Close()
+	if err != nil || string(started) != "started" {
+		t.Fatalf("supervisor start signal = %q, err=%v", started, err)
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	select {
+	case err := <-resultCh:
+		if err == nil {
+			t.Fatal("failed attempt unexpectedly succeeded")
+		}
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("failed attempt did not finish")
+	}
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("failed cleanup unlinked the live foreign listener")
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatalf("foreign listener is no longer reachable: %v", err)
+	}
+	_ = conn.Close()
 }
 
 func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
@@ -875,6 +1009,25 @@ func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) 
 	}
 	if current, exists := currentSocketIdentity(socket); !exists || current != identity {
 		t.Fatalf("Stop removed competitor: exists=%v identity=%+v want=%+v", exists, current, identity)
+	}
+}
+
+func TestEnsuredDaemonCleansDescendantSocketAfterGroupReap(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "post-reap.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve-bind-on-term")
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	if !ensured.Owned {
+		t.Fatal("spawned daemon was not owned")
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatal("post-reap descendant socket was not cleaned")
 	}
 }
 

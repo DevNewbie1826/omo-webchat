@@ -166,8 +166,8 @@ var (
 )
 
 type ownedProcessSocket struct {
-	cfg      EnsureConfig
-	identity socketIdentity
+	cfg        EnsureConfig
+	provenance *endpointProvenance
 }
 
 type launcherBrandProfile struct {
@@ -303,7 +303,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
 	}
-	baseline, baselineExists := currentSocketIdentity(cfg.SocketPath)
+	provenance := newEndpointProvenance(cfg.SocketPath)
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
 	cmd.Env = EnsureExtensionEventsCapability(env)
@@ -322,61 +322,58 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 		close(waitCh)
 	}()
 
-	var ownedSocket *socketIdentity
 	cleanup := func() error {
 		if err := stopOwnedProcess(context.Background(), cmd.Process, waitCh); err != nil {
 			return err
 		}
-		return removeOwnedSocket(cfg.SocketPath, ownedSocket)
+		return provenance.cleanupAfterReap(cfg.ProbeTimeout)
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
 	for {
-		// The raw connection is cleanup evidence only. Ownership is authenticated
-		// independently on the negotiated connection returned to the caller.
-		cleanupIdentity, _, _, _ := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
-		if cleanupIdentity != (socketIdentity{}) && (!baselineExists || cleanupIdentity != baseline) {
-			if current, exists := currentSocketIdentity(cfg.SocketPath); exists && current == cleanupIdentity {
-				ownedSocket = &cleanupIdentity
-			}
-		}
+		// A raw peer check can acknowledge a launch-owned endpoint even when
+		// protocol negotiation fails. It can also permanently protect a live
+		// foreign endpoint from this attempt's cleanup.
+		identity, stable, authenticated, authErr := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
+		provenance.observe(identity, stable, authenticated, authErr == nil || !isSpawnableProbeError(authErr))
 
 		client, identity, stable, authenticated, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
 		if dialErr == nil && client != nil {
-			owned := stable && authenticated && (!baselineExists || identity != baseline)
-			if owned {
-				ownedSocket = &identity
-			}
-			result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
-			if checkErr != nil {
-				if cleanupErr := cleanup(); cleanupErr != nil {
-					return nil, errors.Join(checkErr, cleanupErr), false
+			provenance.observe(identity, stable, authenticated, true)
+			if !stable {
+				_ = client.Close()
+			} else {
+				owned := provenance.owns(identity)
+				result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
+				if checkErr != nil {
+					if cleanupErr := cleanup(); cleanupErr != nil {
+						return nil, errors.Join(checkErr, cleanupErr), false
+					}
+					return nil, checkErr, true
 				}
-				return nil, checkErr, true
-			}
-			if !owned {
-				if stopErr := stopOwnedProcess(context.Background(), cmd.Process, waitCh); stopErr != nil {
-					_ = client.Close()
-					return nil, stopErr, false
+				if !owned {
+					if stopErr := stopOwnedProcess(context.Background(), cmd.Process, waitCh); stopErr != nil {
+						_ = client.Close()
+						return nil, stopErr, false
+					}
+					if cleanupErr := provenance.cleanupAfterReap(cfg.ProbeTimeout); cleanupErr != nil {
+						_ = client.Close()
+						return nil, cleanupErr, false
+					}
+					result.process = nil
+					result.waitCh = nil
+					return result, nil, false
 				}
-				result.process = nil
-				result.waitCh = nil
+				ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, provenance: provenance})
 				return result, nil, false
 			}
-			ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, identity: *ownedSocket})
-			return result, nil, false
 		} else if client != nil {
 			_ = client.Close()
 		}
 
 		select {
 		case waitErr := <-waitCh:
-			// A producer can bind and exit before the first raw probe. Once that
-			// launch has reaped, a new pathname is cleanup evidence only.
-			if identity, exists := currentSocketIdentity(cfg.SocketPath); exists && (!baselineExists || identity != baseline) {
-				ownedSocket = &identity
-			}
 			if waitErr == nil {
 				waitErr = errors.New("supervisor exited successfully before opening the socket")
 			}
@@ -411,6 +408,69 @@ func currentSocketIdentity(path string) (socketIdentity, bool) {
 		return socketIdentity{}, false
 	}
 	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
+}
+
+type endpointProvenance struct {
+	path           string
+	baseline       socketIdentity
+	baselineExists bool
+	owned          map[socketIdentity]struct{}
+	foreign        map[socketIdentity]struct{}
+}
+
+func newEndpointProvenance(path string) *endpointProvenance {
+	baseline, exists := currentSocketIdentity(path)
+	return &endpointProvenance{
+		path: path, baseline: baseline, baselineExists: exists,
+		owned: make(map[socketIdentity]struct{}), foreign: make(map[socketIdentity]struct{}),
+	}
+}
+
+func (p *endpointProvenance) observe(identity socketIdentity, stable, authenticated, live bool) {
+	if identity == (socketIdentity{}) || !stable {
+		return
+	}
+	if live && !authenticated {
+		p.foreign[identity] = struct{}{}
+		delete(p.owned, identity)
+		return
+	}
+	if authenticated && (!p.baselineExists || identity != p.baseline) {
+		if _, protected := p.foreign[identity]; !protected {
+			p.owned[identity] = struct{}{}
+		}
+	}
+}
+
+func (p *endpointProvenance) owns(identity socketIdentity) bool {
+	_, owned := p.owned[identity]
+	return owned
+}
+
+// cleanupAfterReap is the only path that promotes an unacknowledged endpoint
+// to owned. Once the complete launch process group is gone, a stable refusal
+// proves that a novel pathname is launch debris rather than a live peer.
+func (p *endpointProvenance) cleanupAfterReap(timeout time.Duration) error {
+	identity, exists := currentSocketIdentity(p.path)
+	if !exists {
+		return nil
+	}
+	if _, protected := p.foreign[identity]; !protected && (!p.baselineExists || identity != p.baseline) {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		var dialer net.Dialer
+		conn, err := dialer.DialContext(ctx, "unix", p.path)
+		if conn != nil {
+			_ = conn.Close()
+			p.foreign[identity] = struct{}{}
+		} else if after, stable := currentSocketIdentity(p.path); stable && after == identity && isSpawnableProbeError(err) {
+			p.owned[identity] = struct{}{}
+		}
+	}
+	if !p.owns(identity) {
+		return nil
+	}
+	return removeOwnedSocket(p.path, &identity)
 }
 
 // probeAuthenticatedDaemon binds peer authentication to the pathname inode:
@@ -464,9 +524,8 @@ func authenticateSocketPath(ctx context.Context, path string, processGroup int) 
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
-		// Preserve the launch-time pathname observation for stale-socket cleanup.
-		// It is never sufficient to authenticate the negotiated client.
-		return before, false, false, err
+		after, stillExists := currentSocketIdentity(path)
+		return before, stillExists && before == after, false, err
 	}
 	defer conn.Close()
 	after, exists := currentSocketIdentity(path)
@@ -874,14 +933,18 @@ func isSpawnableProbeError(err error) bool {
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, string, error) {
 	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
 	env = EnsureExtensionEventsCapability(setEnv(env, "SENPI_RUNTIME", "node"))
-	extension, recognized, err := launcherExtension(command, env)
+	installation, recognized, err := resolveLauncherInstallation(command, env)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)
 	}
 	if !recognized {
 		return nativeArgs, env, "", nil
 	}
-	profile, nativeCommand, err := launcherNativeContext(command, env)
+	extension, err := launcherExtensionFromRoot(installation.root)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)
+	}
+	profile, nativeCommand, err := launcherNativeContextFromRoot(installation.root)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback native context: %w", err)
 	}
@@ -900,11 +963,18 @@ func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) 
 	return args, env, wrapper, nil
 }
 
-func launcherExtension(command string, env []string) (string, bool, error) {
-	var entry string
-	resolved, err := filepath.EvalSymlinks(command)
-	recognized := filepath.Base(command) == "omo" || (err == nil && filepath.Base(resolved) == "omo.js")
-	if data, readErr := os.ReadFile(command); readErr == nil {
+type launcherInstallation struct {
+	entry string
+	root  string
+}
+
+// resolveLauncherInstallation selects one authoritative entry before any
+// installation artifacts are derived. Command markers and resolved npm-style
+// symlinks outrank ambient paths, which are only compatibility fallbacks.
+func resolveLauncherInstallation(command string, env []string) (launcherInstallation, bool, error) {
+	recognized := filepath.Base(command) == "omo"
+	entry := ""
+	if data, err := os.ReadFile(command); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
 			if value, ok := strings.CutPrefix(line, "# entry: "); ok {
 				entry = strings.TrimSpace(value)
@@ -913,8 +983,14 @@ func launcherExtension(command string, env []string) (string, bool, error) {
 			}
 		}
 	}
+	if entry == "" {
+		if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
+			entry = resolved
+			recognized = true
+		}
+	}
 	if !recognized {
-		return "", false, nil
+		return launcherInstallation{}, false, nil
 	}
 	if entry == "" {
 		for _, key := range []string{"OMO_AGENT_TOOLKIT_BIN", "OMO_BIN"} {
@@ -924,47 +1000,48 @@ func launcherExtension(command string, env []string) (string, bool, error) {
 			}
 		}
 	}
-	if entry == "" && err == nil && filepath.Base(resolved) == "omo.js" {
-		entry = resolved
-	}
 	if entry == "" {
-		return "", true, errors.New("launcher entry is unavailable")
+		return launcherInstallation{}, true, errors.New("launcher entry is unavailable")
 	}
 	if filepath.Base(entry) == "omo-agent-toolkit.js" {
 		entry = filepath.Join(filepath.Dir(entry), "omo.js")
 	}
-	root := filepath.Dir(filepath.Dir(entry))
+	return launcherInstallation{entry: entry, root: filepath.Dir(filepath.Dir(entry))}, true, nil
+}
+
+func launcherExtension(command string, env []string) (string, bool, error) {
+	installation, recognized, err := resolveLauncherInstallation(command, env)
+	if err != nil || !recognized {
+		return "", recognized, err
+	}
+	extension, err := launcherExtensionFromRoot(installation.root)
+	return extension, true, err
+}
+
+func launcherExtensionFromRoot(root string) (string, error) {
 	extension := filepath.Join(root, "plugin")
 	info, err := os.Stat(extension)
 	if err != nil {
-		return "", true, err
+		return "", err
 	}
 	if !info.IsDir() {
-		return "", true, fmt.Errorf("%s is not a directory", extension)
+		return "", fmt.Errorf("%s is not a directory", extension)
 	}
-	return extension, true, nil
+	return extension, nil
 }
 
 func launcherNativeContext(command string, env []string) (string, string, error) {
-	// A recognized installation is authoritative. Ambient brand state may have
-	// come from a different launcher and must not override this installation.
-	entry := command
-	if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
-		entry = resolved
-	} else if data, err := os.ReadFile(command); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if value, ok := strings.CutPrefix(line, "# entry: "); ok {
-				entry = strings.TrimSpace(value)
-				break
-			}
-		}
+	installation, recognized, err := resolveLauncherInstallation(command, env)
+	if err != nil {
+		return "", "", err
 	}
-	if entry == command {
-		if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
-			entry = configured
-		}
+	if !recognized {
+		return "", "", errors.New("launcher installation is unavailable")
 	}
-	root := filepath.Dir(filepath.Dir(entry))
+	return launcherNativeContextFromRoot(installation.root)
+}
+
+func launcherNativeContextFromRoot(root string) (string, string, error) {
 	var manifest struct {
 		Version string `json:"version"`
 	}
@@ -993,7 +1070,7 @@ func launcherNativeContext(command string, env []string) (string, string, error)
 	if err := validateLauncherBrandProfile(profileJSON); err != nil {
 		return "", "", err
 	}
-	native, err := launcherNativeCommand(command, env)
+	native, err := launcherNativeCommandFromRoot(root)
 	return profileJSON, native, err
 }
 
@@ -1023,23 +1100,17 @@ func launcherUpdateCommand(root string) string {
 }
 
 func launcherNativeCommand(command string, env []string) (string, error) {
-	entry := command
-	if resolved, err := filepath.EvalSymlinks(command); err == nil && filepath.Base(resolved) == "omo.js" {
-		entry = resolved
-	} else if data, err := os.ReadFile(command); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if value, ok := strings.CutPrefix(line, "# entry: "); ok {
-				entry = strings.TrimSpace(value)
-				break
-			}
-		}
+	installation, recognized, err := resolveLauncherInstallation(command, env)
+	if err != nil {
+		return "", err
 	}
-	if entry == command {
-		if configured, ok := lookupEnv(env, "OMO_BIN"); ok && configured != "" {
-			entry = configured
-		}
+	if !recognized {
+		return "", errors.New("launcher installation is unavailable")
 	}
-	root := filepath.Dir(filepath.Dir(entry))
+	return launcherNativeCommandFromRoot(installation.root)
+}
+
+func launcherNativeCommandFromRoot(root string) (string, error) {
 	for dir := root; ; dir = filepath.Dir(dir) {
 		candidate := filepath.Join(dir, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
@@ -1209,7 +1280,7 @@ func cleanupStoppedProcessEndpoint(ctx context.Context, pid int) error {
 		return fmt.Errorf("omorpc: lock stopped daemon socket cleanup: %w", err)
 	}
 	defer releaseEnsureLock(lock)
-	return removeOwnedSocket(owned.cfg.SocketPath, &owned.identity)
+	return owned.provenance.cleanupAfterReap(owned.cfg.ProbeTimeout)
 }
 
 func signalProcessGroup(pid int, signal syscall.Signal) error {
