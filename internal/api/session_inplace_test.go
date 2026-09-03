@@ -150,19 +150,26 @@ func TestInPlaceOpenUsesOriginalOnWireAndSnapshotsBeforeFirstWrite(t *testing.T)
 	if openedPath != source || live.SessionFile() != source {
 		t.Fatalf("open_session path = %q, live path = %q, want original %q", openedPath, live.SessionFile(), source)
 	}
-
-	daemon.SetPromptScript(source, map[string]any{"type": omorpctest.EventAgentStart}, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
-	if err := live.SendPrompt(t.Context(), "first web write", nil); err != nil {
-		t.Fatal(err)
-	}
-	sub.await(t, session.FrameRunDone)
 	backupPath := filepath.Join(store.StateDir(), "takeover-backups", adoptcopy.DestinationName("durable-wire-original"))
 	backup, err := os.ReadFile(backupPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(backup, before) {
-		t.Fatal("takeover backup does not contain the pre-write original")
+		t.Fatal("takeover backup was not captured before open_session")
+	}
+
+	daemon.SetPromptScript(source, map[string]any{"type": omorpctest.EventAgentStart}, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
+	if err := live.SendPrompt(t.Context(), "first web write", nil); err != nil {
+		t.Fatal(err)
+	}
+	sub.await(t, session.FrameRunDone)
+	backup, err = os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(backup, before) {
+		t.Fatal("first web write rewrote the pre-takeover backup")
 	}
 
 	daemon.SetPromptScript(source, map[string]any{"type": omorpctest.EventAgentStart}, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})

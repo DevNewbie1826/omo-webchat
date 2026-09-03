@@ -834,7 +834,16 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return sessionCursor(c), nil
+	// Provider initialization can append extension startup records while opening
+	// an existing session, so preserve the pre-takeover file before open_session.
+	cur := sessionCursor(c)
+	if cursorstore.IsInPlaceSession(c) {
+		if err := s.PrepareWrite(ctx, id); err != nil {
+			return session.Cursor{}, err
+		}
+		cur.WritePrepared = true
+	}
+	return cur, nil
 }
 
 func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, error) {
