@@ -338,6 +338,13 @@ describe("visual accessibility contracts", () => {
     expect(narrow).toMatch(/\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*min-width:\s*44px[^}]*min-height:\s*44px/);
   });
 
+  it("keeps resync compact with a 44px header target on narrow panes", () => {
+    const narrow = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-btn\s*\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-icon\s*\{[^}]*display:\s*inline-flex/);
+    expect(narrow).toMatch(/\.th-chat-pane \.th-chat-resync-label\s*\{[^}]*display:\s*none/);
+  });
+
   it("keeps the mobile empty-state menu below the safe area at 44px", () => {
     // Two contracts for the empty-session hamburger, the only way to open the
     // sidebar drawer on mobile. (1) .th-empty must establish a positioning

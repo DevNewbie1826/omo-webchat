@@ -54,6 +54,18 @@
   gap: 0;
 }
 
+.th-chat-pane .th-chat-resync-btn {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  height: 34px;
+  padding: 0 var(--th-space-3);
+}
+
+.th-chat-resync-icon {
+  display: none;
+}
+
 .th-chat-pane .th-mobile-menu,
 .th-chat-pane .th-files-toggle,
 .th-chat-pane .th-disconnect-btn,
@@ -506,6 +518,21 @@
     min-width: 44px;
     min-height: 44px;
     justify-content: center;
+  }
+
+  .th-chat-pane .th-chat-resync-btn {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+
+  .th-chat-pane .th-chat-resync-icon {
+    display: inline-flex;
+  }
+
+  .th-chat-pane .th-chat-resync-label {
+    display: none;
   }
 
   .th-chat-pane .th-termhead-name {

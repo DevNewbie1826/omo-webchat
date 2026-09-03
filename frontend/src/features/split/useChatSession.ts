@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
+import { useT } from "../../i18n";
 import type { ChatDraft } from "./chatSessionTypes";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
@@ -13,14 +14,16 @@ export function useChatSession(
   onChatName?: (name: string, origin: "auto" | "user" | "provider") => void,
 ) {
   const frameState = useChatFrameState();
+  const { t } = useT();
   const [goal, setGoal] = useState<ChatGoal | null>(null);
   const bindingKey = `${session.wsId}\u0000${session.id}`;
   const [activityBinding, setActivityBinding] = useState({ key: "", generation: 0 });
   const goalPushedRef = useRef(false);
   const clientRef = useRef<ChatClient | null>(null);
-  const frameHandlerRef = useRef<(frame: ChatServerFrame) => void>(() => undefined);
+  const connectionGenerationRef = useRef(0);
+  const frameHandlerRef = useRef<(frame: ChatServerFrame, connectionGeneration: number) => void>(() => undefined);
   const onChatNameRef = useRef(onChatName);
-  const markOpenRef = useRef<() => void>(() => undefined);
+  const markOpenRef = useRef<() => number>(() => 0);
   const markCloseRef = useRef<() => void>(() => undefined);
   const requestSeqRef = useRef(0);
   frameHandlerRef.current = frameState.handleFrame;
@@ -44,7 +47,7 @@ export function useChatSession(
       onOpen: () => {
         const reconnected = opened;
         opened = true;
-        markOpenRef.current();
+        connectionGenerationRef.current = markOpenRef.current();
         if (clientRef.current) {
           sendInitialFrames(clientRef.current);
           // Reconnects replay the activity cache: the server answers with the
@@ -75,7 +78,7 @@ export function useChatSession(
           onChatNameRef.current?.(frame.name, frame.origin);
           return;
         }
-        frameHandlerRef.current(frame);
+        frameHandlerRef.current(frame, connectionGenerationRef.current);
       },
       onParseError: () => frameState.reportError("Received a malformed server frame."),
       onClose: () => markCloseRef.current(),
@@ -217,20 +220,21 @@ export function useChatSession(
   // down a live turn — and the busy marker ends at the ready or terminal
   // entries frame, or on a terminal history error.
   const resync = (): boolean => {
+    if (frameState.resyncBusy || frameState.historyStatus === "loading") return false;
     if (frameState.running) {
-      frameState.reportError("Cannot resync while the assistant is responding.");
+      frameState.reportError(t("chat.resyncBusyResponding"));
       return false;
     }
     if (frameState.isCompacting) {
-      frameState.reportError("Cannot resync while the conversation is compacting.");
+      frameState.reportError(t("chat.resyncBusyCompacting"));
       return false;
     }
     frameState.beginResync();
-    if (!sendControl({ type: "chat.close", sessionId: session.id }, "Failed to resync the session.")) {
+    if (!sendControl({ type: "chat.close", sessionId: session.id }, t("chat.resyncError"))) {
       frameState.failResync();
       return false;
     }
-    if (!sendControl({ type: "chat.create", wsId: session.wsId, chatId: session.id }, "Failed to resync the session.")) {
+    if (!sendControl({ type: "chat.create", wsId: session.wsId, chatId: session.id }, t("chat.resyncError"))) {
       frameState.failResync();
       return false;
     }
@@ -338,7 +342,7 @@ export function useChatSession(
     resume,
     reloadExternalWrite,
     resync,
-    resyncBusy: frameState.resyncBusy,
+    resyncBusy: frameState.resyncBusy || frameState.historyStatus === "loading",
     changeThinkingLevel,
     changeModel,
     respondApproval,

@@ -30,6 +30,10 @@ interface ChatFrameHandlerBindings {
   readonly awaitingReconnectHistoryRef: Current<boolean>;
   readonly messageVersionRef: Current<number>;
   readonly snapshotVersionRef: Current<number>;
+  readonly snapshotMessagesRef: Current<readonly UiMessage[]>;
+  readonly resyncGenerationRef: Current<number | null>;
+  readonly claimReadyGeneration: (connectionGeneration: number) => number;
+  readonly claimHistoryGeneration: (connectionGeneration: number, terminal: boolean) => number;
   readonly toolCallsRef: Current<Readonly<Record<string, ToolEntry>>>;
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
@@ -38,7 +42,7 @@ interface ChatFrameHandlerBindings {
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
   readonly externalRecoveryHistoryRef: Current<boolean>;
-  readonly endResync: () => void;
+  readonly endResync: (generation: number, terminal?: boolean) => void;
   readonly replaceMessages: (next: readonly UiMessage[]) => void;
   readonly replaceToolCalls: (next: Readonly<Record<string, ToolEntry>>) => void;
   readonly applyActivities: (next: ActivityState) => void;
@@ -96,7 +100,21 @@ function cacheHitRateOf(tokens: unknown): number | null {
   return denominator > 0 ? cacheRead / denominator : null;
 }
 
-export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (frame: ChatServerFrame) => void {
+function messagesSinceSnapshot(
+  current: readonly UiMessage[],
+  snapshot: readonly UiMessage[],
+): readonly UiMessage[] {
+  const baseline = new Map<UiMessage, number>();
+  for (const message of snapshot) baseline.set(message, (baseline.get(message) ?? 0) + 1);
+  return current.filter((message) => {
+    const remaining = baseline.get(message) ?? 0;
+    if (remaining === 0) return true;
+    baseline.set(message, remaining - 1);
+    return false;
+  });
+}
+
+export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (frame: ChatServerFrame, connectionGeneration?: number) => void {
   const clearLiveSurfaces = (): void => {
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
@@ -108,18 +126,20 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.externalRecoveryPendingRef.current = false;
     bindings.setExternalWriteDetected(false);
   };
-  const handleFrame = (frame: ChatServerFrame): void => {
+  const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): void => {
     switch (frame.type) {
-      case "ready":
+      case "ready": {
+        const generation = bindings.claimReadyGeneration(connectionGeneration);
         bindings.armHistoryStall(false);
         if (bindings.externalRecoveryPendingRef.current) {
           bindings.externalRecoveryReadyRef.current = true;
           completeExternalRecovery();
         }
-        // A manual re-sync ends at ready: the server re-emitted its binding
-        // and will replay history from scratch.
-        bindings.endResync();
+        // A manual re-sync ends at ready only for the binding created by that
+        // action. Older attach/reconnect acknowledgements cannot release it.
+        bindings.endResync(generation);
         return;
+      }
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
           bindings.setError("");
@@ -227,7 +247,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             sessionId: frame.sessionId ?? "",
             entries: [],
             final: true,
-          });
+          }, connectionGeneration);
           bindings.setExternalWriteDetected(true);
           bindings.setError("");
           return;
@@ -241,9 +261,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         if (isHistoryTerminalError(frame)) {
+          const generation = bindings.claimHistoryGeneration(connectionGeneration, true);
+          if (bindings.resyncGenerationRef.current !== null
+            && bindings.resyncGenerationRef.current !== generation) return;
           bindings.externalRecoveryPendingRef.current = false;
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
-          bindings.endResync();
+          bindings.endResync(generation, true);
         }
         // A dangling stored identity surfaces its branch candidates instead
         // of the raw failure. The state is never cleared by live frames.
@@ -310,7 +333,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.setModels(frame.models);
         return;
       case "entries": {
-        if (frame.final === false) {
+        const terminal = frame.final !== false;
+        const generation = bindings.claimHistoryGeneration(connectionGeneration, terminal);
+        if (bindings.resyncGenerationRef.current !== null
+          && bindings.resyncGenerationRef.current !== generation) return;
+        if (!terminal) {
           bindings.pageBuffer.push(frame.entries);
           bindings.armHistoryStall(true);
           return;
@@ -322,17 +349,21 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           completeExternalRecovery();
         }
         // Fallback for the re-sync busy marker: ready normally ends it, but
-        // the terminal entries page is the other proof of a landed replay.
-        bindings.endResync();
+        // the matching terminal page also proves the replay landed and closes
+        // its page-buffer fence.
+        bindings.endResync(generation, true);
         const entries = bindings.pageBuffer.consume(frame.entries);
+        const preserveCurrent = bindings.messageVersionRef.current > bindings.snapshotVersionRef.current;
         const reconciliation = reconcileFrameHistory({
           entries,
-          current: bindings.messagesRef.current,
+          current: preserveCurrent
+            ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
+            : bindings.messagesRef.current,
           pending: bindings.pendingRef.current,
           active: bindings.activeRunRef.current,
           uncertain: bindings.uncertainRunRef.current,
           awaitingReconnectHistory: bindings.awaitingReconnectHistoryRef.current,
-          preserveCurrent: bindings.messageVersionRef.current > bindings.snapshotVersionRef.current,
+          preserveCurrent,
           serverStreaming: bindings.runningRef.current,
           hasLiveTodo: bindings.activitiesRef.current.todo !== null,
         });

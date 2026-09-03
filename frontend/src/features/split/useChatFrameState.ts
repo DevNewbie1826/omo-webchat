@@ -126,6 +126,15 @@ export function useChatFrameState() {
   const externalRecoveryPendingRef = useRef(false);
   const externalRecoveryReadyRef = useRef(false);
   const externalRecoveryHistoryRef = useRef(false);
+  const replayGenerationRef = useRef(0);
+  const connectionGenerationRef = useRef(0);
+  const replayQueueRef = useRef<Array<{
+    readonly generation: number;
+    readonly connectionGeneration: number;
+    ready: boolean;
+    terminal: boolean;
+  }>>([]);
+  const resyncGenerationRef = useRef<number | null>(null);
   const resyncPendingRef = useRef(false);
   const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
@@ -134,6 +143,7 @@ export function useChatFrameState() {
   const awaitingReconnectHistoryRef = useRef(false);
   const messageVersionRef = useRef(0);
   const snapshotVersionRef = useRef(0);
+  const snapshotMessagesRef = useRef<readonly UiMessage[]>([]);
   const toolCallsRef = useRef<Readonly<Record<string, ToolEntry>>>({});
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
@@ -197,24 +207,56 @@ export function useChatFrameState() {
     setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
   };
 
-  // Manual re-sync follows the same hydration lifecycle as attach: the page
-  // buffer is dropped, notices stay gated, and the busy marker survives until
-  // the ready or terminal entries frame proves the replay landed (or a
-  // terminal history error proves it never will).
+  const beginReplay = (connectionGeneration: number): number => {
+    const generation = ++replayGenerationRef.current;
+    replayQueueRef.current.push({ generation, connectionGeneration, ready: false, terminal: false });
+    return generation;
+  };
+  const claimReadyGeneration = (connectionGeneration: number): number => {
+    const replay = replayQueueRef.current.find((candidate) =>
+      candidate.connectionGeneration === connectionGeneration && !candidate.ready);
+    if (!replay) return connectionGeneration;
+    replay.ready = true;
+    replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
+    return replay.generation;
+  };
+  const claimHistoryGeneration = (connectionGeneration: number, terminal: boolean): number => {
+    const replay = replayQueueRef.current.find((candidate) =>
+      candidate.connectionGeneration === connectionGeneration && !candidate.terminal);
+    if (!replay) return connectionGeneration;
+    if (terminal) {
+      replay.terminal = true;
+      replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
+    }
+    return replay.generation;
+  };
+
+  // Manual re-sync follows the same hydration lifecycle as attach. Its
+  // generation remains active through terminal history even when ready has
+  // already released the action's own busy marker, fencing older page streams
+  // away from the reset buffer.
   const beginResync = (): void => {
+    const generation = beginReplay(connectionGenerationRef.current);
+    resyncGenerationRef.current = generation;
     resyncPendingRef.current = true;
+    snapshotVersionRef.current = messageVersionRef.current;
+    snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
     pageBuffer.reset();
     setHistoryStatus("loading");
     setError("");
     setResyncBusy(true);
   };
-  const endResync = (): void => {
-    if (!resyncPendingRef.current) return;
-    resyncPendingRef.current = false;
-    setResyncBusy(false);
+  const endResync = (generation: number, terminal = false): void => {
+    if (resyncGenerationRef.current !== generation) return;
+    if (resyncPendingRef.current) {
+      resyncPendingRef.current = false;
+      setResyncBusy(false);
+    }
+    if (terminal) resyncGenerationRef.current = null;
   };
   const failResync = (): void => {
+    resyncGenerationRef.current = null;
     resyncPendingRef.current = false;
     setResyncBusy(false);
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
@@ -243,6 +285,10 @@ export function useChatFrameState() {
     awaitingReconnectHistoryRef,
     messageVersionRef,
     snapshotVersionRef,
+    snapshotMessagesRef,
+    resyncGenerationRef,
+    claimReadyGeneration,
+    claimHistoryGeneration,
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
@@ -357,11 +403,23 @@ export function useChatFrameState() {
     return sent;
   };
 
-  const markOpen = (): void => {
+  const markOpen = (): number => {
+    const connectionGeneration = ++replayGenerationRef.current;
+    connectionGenerationRef.current = connectionGeneration;
+    replayQueueRef.current.push({
+      generation: connectionGeneration,
+      connectionGeneration,
+      ready: false,
+      terminal: false,
+    });
     snapshotVersionRef.current = messageVersionRef.current;
+    snapshotMessagesRef.current = messagesRef.current;
     awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null;
+    historyLoadedRef.current = false;
+    setHistoryStatus("loading");
     setConnected(true);
     pageBuffer.reset();
+    return connectionGeneration;
   };
   const markClose = (): void => {
     ledger.failAll();
