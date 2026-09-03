@@ -6,6 +6,7 @@ import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons"
 import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
+import { useSessionOpenAttempts } from "../features/workspace/useSessionOpenAttempts";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
@@ -72,6 +73,8 @@ export function Sidebar({
   const showTreeActions = useMediaQuery("(hover: none)");
   const [statsOpen, setStatsOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const [overviewSessionId, setOverviewSessionId] = useState<string | null>(null);
+  const sessionOpen = useSessionOpenAttempts(onOpenSession);
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the overview panel.
   // WS frames from the attached chat pane override the poll snapshot when they
@@ -274,7 +277,12 @@ export function Sidebar({
                 onToggle={onToggleExpanded}
                 onLoadMoreSessions={onLoadMoreSessions}
                 onSelect={onSelectTerminal}
-                onOpen={onOpenSession}
+                onOpen={sessionOpen.open}
+                openAttempts={sessionOpen.attempts}
+                onViewLive={(sessionId) => {
+                  setOverviewSessionId(sessionId);
+                  setOverviewOpen(true);
+                }}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}
                 onDeleteTerminal={onDeleteTerminal}
@@ -312,12 +320,17 @@ export function Sidebar({
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
       <OverviewPanel
         open={overviewOpen}
-        onClose={() => setOverviewOpen(false)}
+        onClose={() => {
+          setOverviewOpen(false);
+          setOverviewSessionId(null);
+        }}
+        focusedSessionId={overviewSessionId}
         summaries={summaries}
         workspaces={workspaces}
         sessionLists={sessionLists}
         onSelect={onSelectTerminal}
-        onOpen={onOpenSession}
+        onOpen={sessionOpen.open}
+        openAttempts={sessionOpen.attempts}
       />
     </>
   );

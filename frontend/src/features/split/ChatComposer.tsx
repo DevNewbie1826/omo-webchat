@@ -18,6 +18,7 @@ interface ChatComposerProps {
   readonly commands: readonly CommandEntry[];
   readonly running: boolean;
   readonly isCompacting: boolean;
+  readonly disabled?: boolean;
   readonly retryDraft: (ChatDraft & { readonly version: number }) | null;
   readonly onSubmit: (draft: ChatDraft) => boolean;
   readonly onSteer: (text: string) => void;
@@ -27,7 +28,7 @@ interface ChatComposerProps {
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ commands, running, isCompacting, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ commands, running, isCompacting, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
   const [input, setInput] = useState("");
   const [draftCommand, setDraftCommand] = useState<CommandEntry | null>(null);
@@ -76,11 +77,11 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
   }, [retryDraft, setPendingImage]);
 
   useEffect(() => {
-    if (running || isCompacting || !queuedDraft) return;
+    if (running || isCompacting || disabled || !queuedDraft) return;
     const draft = queuedDraft;
     setQueuedDraft(null);
     onSubmitRef.current(draft);
-  }, [running, isCompacting, queuedDraft]);
+  }, [running, isCompacting, disabled, queuedDraft]);
 
   useEffect(() => {
     if (!imageSupported && pendingImage) clearImage();
@@ -161,7 +162,7 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
   };
 
   const submit = (): void => {
-    if (isCompacting || (!input.trim() && !pendingImage)) return;
+    if (isCompacting || disabled || (!input.trim() && !pendingImage)) return;
     const draft: ChatDraft = {
       text: input,
       image: pendingImage,
@@ -178,7 +179,7 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
 
   const steer = (): void => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || disabled) return;
     onSteer(text);
     setInput("");
     setPaletteHidden(false);
@@ -188,6 +189,7 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
   return (
     <form
       className={`th-chat-input${isDragOver ? " th-chat-input--dragover" : ""}`}
+      aria-disabled={disabled || undefined}
       onDragOver={dragHandlers.onDragOver}
       onDragLeave={dragHandlers.onDragLeave}
       onDrop={dragHandlers.onDrop}
@@ -225,6 +227,7 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
         />
         <ChatComposerAttachment
           imageSupported={imageSupported}
+          disabled={disabled}
           attachLabel={imageSupported ? t("chat.attach") : t("chat.attachUnsupported")}
           fileInputRef={fileInputRef}
           onPick={pickImage}
@@ -237,6 +240,7 @@ export function ChatComposer({ commands, running, isCompacting, retryDraft, onSu
           activeDescendant={paletteOpen && selectedIndex >= 0 ? `${paletteOptionIdPrefix}-${selectedIndex}` : fileOpen && fileMention.activeIndex >= 0 ? `${fileOptionIdPrefix}-${fileMention.activeIndex}` : undefined}
           input={input}
           isCompacting={isCompacting}
+          disabled={disabled}
           running={running}
           sendLabel={t(running ? "chat.stop" : "chat.send")}
           onCaret={setCaret}

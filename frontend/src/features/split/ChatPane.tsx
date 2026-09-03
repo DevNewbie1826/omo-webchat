@@ -177,6 +177,7 @@ export function ChatPane({
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}
+          disabled={chat.externalWriteDetected}
           retryDraft={chat.retryDraft}
           onSubmit={chat.submit}
           onSteer={chat.steer}

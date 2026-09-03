@@ -120,7 +120,7 @@ describe("Sidebar sessions overview entry", () => {
     expect(cards[0]?.textContent).toContain("Refactor auth");
 
     act(() => {
-      cards[0]?.click();
+      cards[0]?.querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
     });
 
     expect(onSelect).toHaveBeenCalledTimes(1);

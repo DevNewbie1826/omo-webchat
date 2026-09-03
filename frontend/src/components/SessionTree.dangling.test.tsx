@@ -38,13 +38,6 @@ const sessions: readonly WorkspaceSession[] = [
   } as WorkspaceSession,
   { id: "tm-2", name: "Stored session", source: "stored", recencyMs: 2 },
   {
-    id: "durable-adopted",
-    name: "Adopted source",
-    source: "alreadyAdopted",
-    recencyMs: 1,
-    resumeIdentity: "/sessions/adopted-source.jsonl",
-  },
-  {
     id: "disk-1",
     name: "Discovered session",
     source: "discovered",
@@ -130,13 +123,6 @@ describe("SessionTree dangling stored-row badge", () => {
     expect(activation?.disabled).toBe(false);
     act(() => activation?.click());
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[1]);
-  });
-
-  it("renders an already-open source as inert without legacy adoption metadata", () => {
-    render();
-    const opened = row("Adopted source");
-    expect(opened.querySelector(".th-tree-source")).toBeNull();
-    expect(opened.querySelector<HTMLButtonElement>(".th-tree-activation")?.disabled).toBe(true);
   });
 
   it("renders a discovered session as a direct primary action without an import badge", () => {

@@ -7,6 +7,7 @@ import type { I18nValue } from "../../i18n";
 import { OverviewPanel } from "./OverviewPanel";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 import type { Terminal, Workspace, WorkspaceSession } from "./workspace";
+import { sessionOpenAttemptKey, type SessionOpenAttemptStatus } from "./useSessionOpenAttempts";
 
 const i18n: I18nValue = {
   lang: "en",
@@ -89,7 +90,8 @@ describe("OverviewPanel", () => {
   interface PanelHandlers {
     onClose?: () => void;
     onSelect?: (ws: Workspace, tm: Terminal) => void;
-    onOpen?: (ws: Workspace, session: WorkspaceSession) => Promise<void>;
+    onOpen?: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | "failed" | void>;
+    openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
   }
 
   function renderPanel(
@@ -107,6 +109,7 @@ describe("OverviewPanel", () => {
             sessionLists={new Map([["ws-1", discoveredSessions]])}
             onSelect={handlers.onSelect ?? (() => undefined)}
             onOpen={handlers.onOpen ?? (async () => undefined)}
+            {...(handlers.openAttempts ? { openAttempts: handlers.openAttempts } : {})}
           />
         </I18nContext.Provider>,
       );
@@ -158,7 +161,8 @@ describe("OverviewPanel", () => {
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done 1");
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.dag 2/3");
     expect(first.querySelector(".th-overview-card-line")?.textContent).toBe("ls -la /work");
-    expect(first.tagName).toBe("BUTTON");
+    expect(first.tagName).toBe("DIV");
+    expect(first.querySelector(".th-overview-card-open")?.tagName).toBe("BUTTON");
 
     const second = card(1);
     // No running agents, no dag, no line: the card degrades to title + done only,
@@ -175,7 +179,7 @@ describe("OverviewPanel", () => {
     renderPanel({}, { onClose, onSelect });
 
     act(() => {
-      card(0).click();
+      card(0).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
     });
 
     expect(onSelect).toHaveBeenCalledTimes(1);
@@ -183,20 +187,40 @@ describe("OverviewPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("imports a discovered session that has no stored chat yet", () => {
+  it("awaits a discovered open before closing", async () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
-    const onOpen = vi.fn(async () => undefined);
+    let resolve!: (result: "opened") => void;
+    const pending = new Promise<"opened">((done) => { resolve = done; });
+    const onOpen = vi.fn(() => pending);
     renderPanel({}, { onClose, onSelect, onOpen });
 
     act(() => {
-      card(1).click();
+      card(1).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
     });
 
-    expect(onOpen).toHaveBeenCalledTimes(1);
-    expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSessions[1]);
+    expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSessions[1], false);
     expect(onSelect).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    await act(async () => { resolve("opened"); await pending; });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders read-only active and failure retry states with a force path", () => {
+    const onOpen = vi.fn(async () => "opened" as const);
+    const key = sessionOpenAttemptKey(workspace.id, discoveredSessions[1]!.id);
+    renderPanel({}, { onOpen, openAttempts: new Map([[key, "session-active"]]) });
+
+    const active = card(1);
+    expect(active.textContent).toContain("overview.readOnlyLive");
+    act(() => active.querySelector<HTMLButtonElement>(".th-overview-force-open")?.click());
+    expect(onOpen).toHaveBeenLastCalledWith(workspace, discoveredSessions[1], true);
+
+    renderPanel({}, { onOpen, openAttempts: new Map([[key, "failed"]]) });
+    const failed = card(1);
+    expect(failed.textContent).toContain("sidebar.tm.openFailed");
+    act(() => failed.querySelector<HTMLButtonElement>(".th-overview-retry-open")?.click());
+    expect(onOpen).toHaveBeenLastCalledWith(workspace, discoveredSessions[1], false);
   });
 
   it("shows the empty state when nothing is running", () => {

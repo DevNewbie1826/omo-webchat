@@ -115,6 +115,9 @@ export function useChatFrameState() {
   const submitLatchRef = useRef(false);
   const optimisticIdRef = useRef(0);
   const retryVersionRef = useRef(0);
+  const externalRecoveryPendingRef = useRef(false);
+  const externalRecoveryReadyRef = useRef(false);
+  const externalRecoveryHistoryRef = useRef(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
@@ -206,6 +209,9 @@ export function useChatFrameState() {
     historyLoadedRef,
     activitiesRef,
     retryVersionRef,
+    externalRecoveryPendingRef,
+    externalRecoveryReadyRef,
+    externalRecoveryHistoryRef,
     replaceMessages,
     replaceToolCalls,
     applyActivities,
@@ -285,6 +291,21 @@ export function useChatFrameState() {
     setConnected(false);
   };
 
+  const beginExternalWriteRecovery = (): void => {
+    externalRecoveryPendingRef.current = true;
+    externalRecoveryReadyRef.current = false;
+    externalRecoveryHistoryRef.current = false;
+    historyLoadedRef.current = false;
+    pageBuffer.reset();
+    setHistoryStatus("loading");
+    setError("");
+  };
+
+  const failExternalWriteRecovery = (): void => {
+    externalRecoveryPendingRef.current = false;
+    setHistoryStatus((current) => current === "loading" ? "failed" : current);
+  };
+
   useEffect(() => {
     if (historyStatus !== "loading" && historyStallTimerRef.current !== null) {
       window.clearTimeout(historyStallTimerRef.current);
@@ -334,7 +355,8 @@ export function useChatFrameState() {
     setCurrentModelKey: controls.setCurrentModelKey,
     setPendingApproval,
     reportError: setError,
-    clearExternalWriteDetected: () => setExternalWriteDetected(false),
+    beginExternalWriteRecovery,
+    failExternalWriteRecovery,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

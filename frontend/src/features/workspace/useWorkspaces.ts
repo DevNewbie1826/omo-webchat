@@ -38,7 +38,7 @@ export interface UseWorkspacesResult {
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
   readonly sessionPages: ReadonlyMap<string, WorkspaceSessionPaging>;
   readonly load: () => Promise<void>;
-  readonly addCreatedSession: (wsId: string, tm: Terminal, adoptedSourceId?: string) => void;
+  readonly addCreatedSession: (wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession) => void;
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
@@ -105,6 +105,18 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // Creations can race an older first-page snapshot. Keep them separate until
   // that snapshot is applied so they remain ahead of its continuation cursor.
   const pendingCreatedSessionsRef = useRef<Map<string, readonly WorkspaceSession[]>>(new Map());
+  // The catalog's stored row has a web chat id while its discovered source has
+  // the durable id/path. Retain that binding across canonical page refreshes
+  // so a stale server page cannot briefly project both rows.
+  const inPlaceBindingsRef = useRef<Map<string, Map<string, { readonly chatId: string; readonly path: string }>>>(new Map());
+
+  const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
+    const bindings = inPlaceBindingsRef.current.get(wsId);
+    if (!bindings) return items;
+    return items.filter((item) => item.source !== "discovered"
+      || !bindings.has(item.id)
+      && (item.resumeIdentity === undefined || ![...bindings.values()].some((binding) => binding.path === item.resumeIdentity)));
+  };
 
   const removePendingCreatedSession = (wsId: string, chatId: string): void => {
     const pending = pendingCreatedSessionsRef.current.get(wsId);
@@ -157,12 +169,13 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       });
       try {
         const page = await listWorkspaceSessions(wsId, cursor);
+        const canonicalItems = suppressBoundSources(wsId, page.items);
         const previousItems = sessionListsRef.current.get(wsId) ?? [];
         const pendingCreated = append ? [] : (pendingCreatedSessionsRef.current.get(wsId) ?? []);
         const leadingItems = append ? previousItems : pendingCreated;
         const items = [
           ...leadingItems,
-          ...page.items.filter((item) => !leadingItems.some((listed) => listed.id === item.id)),
+          ...canonicalItems.filter((item) => !leadingItems.some((listed) => listed.id === item.id)),
         ];
         const nextLists = new Map(sessionListsRef.current);
         nextLists.set(wsId, items);
@@ -211,15 +224,16 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     }
   }, [expanded, fetchSessionPage, workspaces]);
 
-  const addCreatedSession = useCallback((wsId: string, tm: Terminal, adoptedSourceId?: string): void => {
+  const addCreatedSession = useCallback((wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession): void => {
+    if (inPlaceSource !== undefined) {
+      const bindings = new Map(inPlaceBindingsRef.current.get(wsId));
+      bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
+      inPlaceBindingsRef.current.set(wsId, bindings);
+    }
     const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: Date.now() };
     const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => [
       created,
-      ...items
-        .filter((item) => item.id !== tm.id)
-        .map((item) => item.id === adoptedSourceId && item.source !== "stored"
-          ? { ...item, source: "alreadyAdopted" as const }
-          : item),
+      ...suppressBoundSources(wsId, items).filter((item) => item.id !== tm.id),
     ];
     if (!sessionPagesRef.current.get(wsId)?.ready) {
       const pending = pendingCreatedSessionsRef.current.get(wsId) ?? [];
@@ -331,6 +345,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         replaceSessionPages(next);
       }
       pendingCreatedSessionsRef.current.delete(ws.id);
+      inPlaceBindingsRef.current.delete(ws.id);
       notify(t("toast.workspaceDeleted"), "success");
     } catch {
       notify(t("toast.error"), "error");
@@ -359,6 +374,13 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         replaceSessionLists(next);
       }
       removePendingCreatedSession(ws.id, tm.id);
+      const bindings = inPlaceBindingsRef.current.get(ws.id);
+      if (bindings) {
+        for (const [durableId, binding] of bindings) {
+          if (binding.chatId === tm.id) bindings.delete(durableId);
+        }
+        if (bindings.size === 0) inPlaceBindingsRef.current.delete(ws.id);
+      }
       layout.unplaceSession(tm.id);
       notify(t("toast.terminalDeleted"), "success");
     } catch {

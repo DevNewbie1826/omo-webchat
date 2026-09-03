@@ -156,7 +156,7 @@ export function App() {
             : workspace,
         ),
       );
-      addCreatedSession(ws.id, tm, session.id);
+      addCreatedSession(ws.id, tm, session);
       selectTerminal(ws, tm);
       return "opened";
     } catch (error) {

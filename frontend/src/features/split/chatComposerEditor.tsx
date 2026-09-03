@@ -9,6 +9,7 @@ interface ChatComposerEditorProps {
   readonly activeDescendant: string | undefined;
   readonly input: string;
   readonly isCompacting: boolean;
+  readonly disabled: boolean;
   readonly running: boolean;
   readonly sendLabel: string;
   readonly onCaret: (caret: number) => void;
@@ -25,6 +26,7 @@ export function ChatComposerEditor({
   activeDescendant,
   input,
   isCompacting,
+  disabled,
   running,
   sendLabel,
   onCaret,
@@ -45,7 +47,7 @@ export function ChatComposerEditor({
         aria-activedescendant={activeDescendant}
         placeholder={label}
         value={input}
-        disabled={isCompacting}
+        disabled={isCompacting || disabled}
         onClick={(event) => onCaret(event.currentTarget.selectionStart ?? 0)}
         onKeyUp={(event) => {
           if (!event.nativeEvent.isComposing) onCaret(event.currentTarget.selectionStart ?? 0);
@@ -56,7 +58,7 @@ export function ChatComposerEditor({
       <button
         type={running ? "button" : "submit"}
         className={`th-btn th-chat-send-btn${running ? " th-btn--danger" : ""}`}
-        disabled={!running && isCompacting}
+        disabled={disabled || (!running && isCompacting)}
         onClick={running ? onStop : undefined}
       >
         {running ? <IconX size={18} /> : <IconArrowUp size={18} />}

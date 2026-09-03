@@ -82,7 +82,7 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
 
 /** Where a session-history entry came from: a stored chat row or an omo
  * session file discovered on disk. */
-export type WorkspaceSessionSource = "stored" | "discovered" | "alreadyAdopted";
+export type WorkspaceSessionSource = "stored" | "discovered";
 
 /** One entry of GET /api/workspaces/{wsId}/sessions (newest first). */
 export interface WorkspaceSession {
@@ -113,10 +113,15 @@ export async function listWorkspaceSessions(
   signal?: AbortSignal,
 ): Promise<WorkspaceSessionPage> {
   const query = qs({ limit: String(WORKSPACE_SESSION_PAGE_SIZE), cursor: cursor || undefined });
-  return apiJson<WorkspaceSessionPage>(
+  const page = await apiJson<{ readonly items: readonly (Omit<WorkspaceSession, "source"> & { readonly source: string })[]; readonly nextCursor: string }>(
     `/api/workspaces/${encodeURIComponent(wsId)}/sessions${query}`,
     signal ? { signal } : {},
   );
+  return {
+    ...page,
+    // Legacy fork-adoption provenance is backend metadata, not a UI row.
+    items: page.items.filter((item): item is WorkspaceSession => item.source === "stored" || item.source === "discovered"),
+  };
 }
 
 export type OpenWorkspaceSessionResult =

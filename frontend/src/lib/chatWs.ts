@@ -47,6 +47,10 @@ export type FailedRpcCommand = string;
  */
 type ChatNameFrameSeam = Omit<ct.ChatNameFrame, "origin"> & { readonly origin: "auto" | "user" | "provider" };
 
+/** Recovery reuses chat.create so the bridge can stop the stale in-place route
+ * before reopening it from the externally updated original. */
+type ChatCreateFrameSeam = ct.ChatCreateFrame & { readonly recovery?: boolean };
+
 /**
  * Seam adapter: notice carries epoch milliseconds at the client boundary (the
  * parse boundary converts the wire's RFC3339Nano `at` string, invariant 14)
@@ -133,7 +137,7 @@ export type ChatServerFrame =
 
 export type ChatClientFrame =
   | ct.PingFrame
-  | ct.ChatCreateFrame
+  | ChatCreateFrameSeam
   | ct.ChatSendFrame
   | ct.ChatAbortFrame
   | ct.ChatCloseFrame

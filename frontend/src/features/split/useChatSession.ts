@@ -150,9 +150,17 @@ export function useChatSession(
   };
 
   const reloadExternalWrite = (): boolean => {
-    const sent = resume();
-    if (sent) frameState.clearExternalWriteDetected();
-    return sent;
+    frameState.beginExternalWriteRecovery();
+    const client = clientRef.current;
+    try {
+      const sent = client !== null
+        && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id, recovery: true });
+      if (!sent) frameState.failExternalWriteRecovery();
+      return sent;
+    } catch {
+      frameState.failExternalWriteRecovery();
+      return false;
+    }
   };
 
   const changeThinkingLevel = (level: string): boolean => {

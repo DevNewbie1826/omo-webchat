@@ -180,6 +180,10 @@ describe("discovered-session in-place open wiring", () => {
     });
 
     expect(container.querySelector(".th-tree-session-active")?.textContent).toContain("In use elsewhere");
+    const viewLive = container.querySelector<HTMLButtonElement>(".th-tree-view-live");
+    expect(viewLive?.textContent).toBe("View live");
+    act(() => viewLive?.click());
+    expect(document.body.querySelector(".th-overview")).not.toBeNull();
     const forceButton = container.querySelector<HTMLButtonElement>(".th-tree-force-open");
     expect(forceButton?.textContent).toBe("Open anyway");
     act(() => forceButton?.click());
@@ -196,6 +200,22 @@ describe("discovered-session in-place open wiring", () => {
     });
     expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", openedChat.id);
     expect(container.querySelector(".th-tree-session-active")).toBeNull();
+  });
+
+  it("renders a failed attempt and retries it", async () => {
+    const failed = deferred<Response>();
+    openResponses.push(failed.promise, deferred<Response>().promise);
+    await renderLoadedTree();
+
+    act(() => sourceActivation().click());
+    await act(async () => {
+      failed.resolve(jsonResponse({ error: "open failed" }, 500));
+      await failed.promise;
+    });
+
+    expect(container.querySelector(".th-tree-session-active")?.textContent).toContain("Open failed");
+    act(() => container.querySelector<HTMLButtonElement>(".th-tree-retry-open")?.click());
+    expect(openCalls()).toHaveLength(2);
   });
 
   it("issues only one request while an open is pending", async () => {

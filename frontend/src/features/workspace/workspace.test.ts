@@ -47,6 +47,19 @@ describe("listWorkspaceSessions", () => {
     expect(page.nextCursor).toBe("");
   });
 
+  it("removes legacy already-adopted provenance rows from UI state", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse({
+      items: [
+        { id: "chat-1", name: "Stored", source: "stored", recencyMs: 2 },
+        { id: "durable-1", name: "Source", source: "alreadyAdopted", recencyMs: 1 },
+      ],
+      nextCursor: "",
+    })));
+
+    const page = await listWorkspaceSessions("ws-1");
+    expect(page.items.map((item) => item.id)).toEqual(["chat-1"]);
+  });
+
   it("resolves running membership beyond page one without populating the visible list", async () => {
     const workspace: Workspace = { id: "ws-1", name: "Workspace", path: "/work", chats: [] };
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
