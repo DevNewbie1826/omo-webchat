@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -39,13 +40,16 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	env = EnsureExtensionEventsCapability(env)
 
 	automaticSocket := filepath.Join(shortEnsureTempDir(t), "automatic.sock")
-	automatic := startLauncherHost(t, binary, automaticSocket, workDir, env)
+	automaticBaseline := brandedChildProcesses(t)
+	automatic, _ := startLauncherHost(t, binary, automaticSocket, workDir, env)
 	automaticCommands := extensionCommandNames(t, automatic, workDir)
+	automaticBrand := newActiveChildBrand(t, automaticBaseline)
 	if err := automatic.Close(); err != nil {
 		t.Errorf("close launcher client: %v", err)
 	}
 
 	fallbackSocket := filepath.Join(shortEnsureTempDir(t), "fallback.sock")
+	fallbackBaseline := brandedChildProcesses(t)
 	fallback, err := EnsureDaemon(context.Background(), EnsureConfig{
 		AgentDir:     agentDir,
 		SocketPath:   fallbackSocket,
@@ -66,6 +70,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 		}
 	}()
 	fallbackCommands := extensionCommandNames(t, fallback.Client, workDir)
+	fallbackBrand := newActiveChildBrand(t, fallbackBaseline)
 
 	if len(automaticCommands) == 0 {
 		t.Fatal("launcher session exposed no packaged extension commands")
@@ -73,9 +78,12 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	if !slices.Equal(fallbackCommands, automaticCommands) {
 		t.Fatalf("node fallback extension commands = %v, launcher = %v", fallbackCommands, automaticCommands)
 	}
+	if fallbackBrand != automaticBrand {
+		t.Fatalf("node fallback active child brand = %q, launcher = %q", fallbackBrand, automaticBrand)
+	}
 }
 
-func startLauncherHost(t *testing.T, binary, socket, workDir string, env []string) *Client {
+func startLauncherHost(t *testing.T, binary, socket, workDir string, env []string) (*Client, int) {
 	t.Helper()
 	cmd := exec.Command(binary, "--mode", "rpc", "--multi-session", "--listen", "unix://"+socket)
 	cmd.Dir = workDir
@@ -131,7 +139,40 @@ func startLauncherHost(t *testing.T, binary, socket, workDir string, env []strin
 	if err != nil {
 		t.Fatalf("dial launcher host: %v", err)
 	}
-	return client
+	return client, cmd.Process.Pid
+}
+
+func brandedChildProcesses(t *testing.T) map[int]string {
+	t.Helper()
+	output, err := exec.Command("ps", "-axo", "pid=,command=").Output()
+	if err != nil {
+		t.Fatalf("list active launcher children: %v", err)
+	}
+	processes := make(map[int]string)
+	for _, command := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(command)
+		if len(fields) != 2 || (strings.ToLower(fields[1]) != "omo" && strings.ToLower(fields[1]) != "senpi") {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscan(fields[0], &pid); err != nil {
+			continue
+		}
+		processes[pid] = fields[1]
+	}
+	return processes
+}
+
+func newActiveChildBrand(t *testing.T, baseline map[int]string) string {
+	t.Helper()
+	current := brandedChildProcesses(t)
+	for pid, brand := range current {
+		if _, existed := baseline[pid]; !existed {
+			return brand
+		}
+	}
+	t.Fatalf("opening the live session did not leave a branded child process: before=%v current=%v", baseline, current)
+	return ""
 }
 
 func extensionCommandNames(t *testing.T, client *Client, cwd string) []string {

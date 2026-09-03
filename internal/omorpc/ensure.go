@@ -2,6 +2,8 @@ package omorpc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,11 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -248,9 +252,16 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
 	}
+	proofPath, proofToken, err := newSocketOwnershipProof(cfg.StateDir)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("omorpc: prepare socket ownership proof: %w", err), finishLog()), false
+	}
+	defer os.Remove(proofPath)
 	baseline, baselineExists := currentSocketIdentity(cfg.SocketPath)
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
+	env = setEnv(env, socketOwnershipProofPathEnv, proofPath)
+	env = setEnv(env, socketOwnershipProofTokenEnv, proofToken)
 	cmd.Env = EnsureExtensionEventsCapability(env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -268,14 +279,14 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	}()
 
 	var ownedSocket *socketIdentity
-	observeOwnedSocket := func() {
+	observeProvenSocket := func() {
 		identity, exists := currentSocketIdentity(cfg.SocketPath)
-		if exists && (!baselineExists || identity != baseline) {
+		if exists && (!baselineExists || identity != baseline) && socketOwnershipProven(proofPath, proofToken, identity) {
 			ownedSocket = &identity
 		}
 	}
 	cleanup := func() error {
-		observeOwnedSocket()
+		observeProvenSocket()
 		if err := stopOwnedProcess(context.Background(), cmd.Process, waitCh); err != nil {
 			return err
 		}
@@ -285,19 +296,31 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
 	for {
-		observeOwnedSocket()
+		observeProvenSocket()
 		client, dialErr := probeDaemon(readyCtx, cfg)
 		if dialErr == nil {
-			result, checkErr := checkedDaemon(client, cfg, true, cmd.Process, waitCh)
+			identity, exists := currentSocketIdentity(cfg.SocketPath)
+			owned := exists && (!baselineExists || identity != baseline) && clientPeerInProcessGroup(client, cmd.Process.Pid)
+			if owned {
+				ownedSocket = &identity
+			}
+			result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
 			if checkErr != nil {
 				if cleanupErr := cleanup(); cleanupErr != nil {
 					return nil, errors.Join(checkErr, cleanupErr), false
 				}
 				return nil, checkErr, true
 			}
-			if ownedSocket != nil {
-				ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, identity: *ownedSocket})
+			if !owned {
+				if stopErr := stopOwnedProcess(context.Background(), cmd.Process, waitCh); stopErr != nil {
+					_ = client.Close()
+					return nil, stopErr, false
+				}
+				result.process = nil
+				result.waitCh = nil
+				return result, nil, false
 			}
+			ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, identity: *ownedSocket})
 			return result, nil, false
 		}
 
@@ -339,6 +362,99 @@ func currentSocketIdentity(path string) (socketIdentity, bool) {
 	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
 }
 
+const (
+	socketOwnershipProofPathEnv  = "OMORPC_SOCKET_OWNERSHIP_PROOF"
+	socketOwnershipProofTokenEnv = "OMORPC_SOCKET_OWNERSHIP_TOKEN"
+)
+
+func newSocketOwnershipProof(dir string) (string, string, error) {
+	file, err := os.CreateTemp(dir, ".daemon-owner-*.proof")
+	if err != nil {
+		return "", "", err
+	}
+	path := file.Name()
+	if closeErr := file.Close(); closeErr != nil {
+		_ = os.Remove(path)
+		return "", "", closeErr
+	}
+	if err := os.Remove(path); err != nil {
+		return "", "", err
+	}
+	var nonce [32]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", "", err
+	}
+	return path, hex.EncodeToString(nonce[:]), nil
+}
+
+func writeSocketOwnershipProof(path, token string, identity socketIdentity) error {
+	return os.WriteFile(path, []byte(fmt.Sprintf("%s %d %d\n", token, identity.device, identity.inode)), 0o600)
+}
+
+func socketOwnershipProven(path, token string, identity socketIdentity) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == fmt.Sprintf("%s %d %d", token, identity.device, identity.inode)
+}
+
+func clientPeerInProcessGroup(client *Client, processGroup int) bool {
+	pid, err := clientPeerPID(client)
+	if err != nil {
+		return false
+	}
+	pgid, err := syscall.Getpgid(pid)
+	return err == nil && pgid == processGroup
+}
+
+func clientPeerPID(client *Client) (int, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.current == nil {
+		return 0, errors.New("client has no current connection")
+	}
+	syscallConn, ok := client.current.conn.(syscall.Conn)
+	if !ok {
+		return 0, errors.New("connection does not expose a file descriptor")
+	}
+	raw, err := syscallConn.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var pid int32
+	var socketErr error
+	err = raw.Control(func(fd uintptr) {
+		length := uint32(unsafe.Sizeof(pid))
+		level, option := uintptr(0), uintptr(2) // SOL_LOCAL, LOCAL_PEERPID on Darwin.
+		var credentials [3]int32
+		value := unsafe.Pointer(&pid)
+		if runtime.GOOS == "linux" {
+			level, option = 1, 17 // SOL_SOCKET, SO_PEERCRED.
+			length = uint32(unsafe.Sizeof(credentials))
+			value = unsafe.Pointer(&credentials[0])
+		}
+		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, level, option, uintptr(value), uintptr(unsafe.Pointer(&length)), 0)
+		if errno != 0 {
+			socketErr = errno
+			return
+		}
+		if runtime.GOOS == "linux" {
+			pid = credentials[0]
+		}
+	})
+	if err != nil {
+		return 0, err
+	}
+	if socketErr != nil {
+		return 0, socketErr
+	}
+	if pid <= 0 {
+		return 0, fmt.Errorf("invalid peer pid %d", pid)
+	}
+	return int(pid), nil
+}
+
 // removeOwnedSocket runs while EnsureDaemon holds the endpoint lock. The
 // identity comparison prevents cleanup from unlinking an endpoint that
 // replaced the one observed during this attempt.
@@ -377,7 +493,7 @@ func setEnv(env []string, key, value string) []string {
 	return append(out, key+"="+value)
 }
 
-func openSpawnAttemptLog(path, attempt string, appendLog bool) (*os.File, func() error, error) {
+func openSpawnAttemptLog(path, attempt string, appendLog bool) (io.WriteCloser, func() error, error) {
 	file, err := os.CreateTemp(filepath.Dir(path), ".daemon-spawn-*.log")
 	if err != nil {
 		return nil, nil, err
@@ -387,14 +503,15 @@ func openSpawnAttemptLog(path, attempt string, appendLog bool) (*os.File, func()
 		_ = os.Remove(file.Name())
 		return nil, nil, err
 	}
-	if _, err := fmt.Fprintf(file, "omo-webchat daemon spawn attempt: %s\n", attempt); err != nil {
-		_ = file.Close()
+	capture := &boundedSpawnLog{file: file, remaining: daemonSpawnLogLimit / 2}
+	if _, err := fmt.Fprintf(capture, "omo-webchat daemon spawn attempt: %s\n", attempt); err != nil {
+		_ = capture.Close()
 		_ = os.Remove(file.Name())
 		return nil, nil, err
 	}
 	tempPath := file.Name()
 	finish := func() error {
-		closeErr := file.Close()
+		closeErr := capture.Close()
 		defer os.Remove(tempPath)
 		source, err := os.Open(tempPath)
 		if err != nil {
@@ -409,10 +526,10 @@ func openSpawnAttemptLog(path, attempt string, appendLog bool) (*os.File, func()
 		if err != nil {
 			return errors.Join(closeErr, err)
 		}
-		_, copyErr := io.Copy(destination, io.LimitReader(source, daemonSpawnLogLimit/2))
+		_, copyErr := io.Copy(destination, source)
 		return errors.Join(closeErr, copyErr, destination.Close())
 	}
-	return file, finish, nil
+	return capture, finish, nil
 }
 
 type boundedSpawnLog struct {
@@ -691,11 +808,10 @@ func isSpawnableProbeError(err error) bool {
 		errors.Is(err, syscall.ECONNREFUSED)
 }
 
-// nodeFallbackContext preserves the launcher's direct-host contract. Live
-// protocol probing shows that launcher sessions receive the packaged plugin
-// through --extension while the supervisor's native child inherits the brand
-// environment; the internal supervisor deliberately strips its injected
-// prefix, so the extension must also be forwarded after the sentinel.
+// nodeFallbackContext preserves the supervisor's direct-parent lifetime
+// contract. Live probing shows that launcher sessions receive both the OmO
+// brand and packaged plugin context; native fallback must forward both after
+// the supervisor sentinel because launcher-as-child closes the live session.
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, error) {
 	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
 	extension, recognized, err := launcherExtension(command, env)
@@ -705,6 +821,7 @@ func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) 
 	if !recognized {
 		return nativeArgs, env, nil
 	}
+	env = setEnv(env, "SENPI_BRAND", "OmO")
 	return append(slices.Clone(nativeArgs), "--extension", extension), env, nil
 }
 

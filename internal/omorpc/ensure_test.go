@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -84,6 +85,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 				t.Fatalf("helper create stale socket: %v", err)
 			}
 			ln.(*net.UnixListener).SetUnlinkOnClose(false)
+			writeEnsureHelperOwnershipProof(t, socket)
 			_ = ln.Close()
 			os.Exit(7)
 		}
@@ -120,6 +122,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper listen: %v", err)
 	}
+	writeEnsureHelperOwnershipProof(t, socket)
 	defer ln.Close()
 	for {
 		conn, err := ln.Accept()
@@ -127,6 +130,21 @@ func TestEnsureHelperProcess(t *testing.T) {
 			return
 		}
 		go serveEnsureHelper(conn)
+	}
+}
+
+func writeEnsureHelperOwnershipProof(t *testing.T, socket string) {
+	t.Helper()
+	path, token := os.Getenv(socketOwnershipProofPathEnv), os.Getenv(socketOwnershipProofTokenEnv)
+	if path == "" || token == "" {
+		return
+	}
+	identity, exists := currentSocketIdentity(socket)
+	if !exists {
+		t.Fatalf("helper ownership proof: socket identity unavailable")
+	}
+	if err := writeSocketOwnershipProof(path, token, identity); err != nil {
+		t.Fatalf("helper ownership proof: %v", err)
 	}
 }
 
@@ -435,6 +453,83 @@ func TestRemoveOwnedSocketPreservesReplacementListener(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "competitor.sock")
+	startedFIFO := filepath.Join(dir, "supervisor-started")
+	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+
+	resultCh := make(chan struct {
+		daemon *EnsuredDaemon
+		err    error
+	}, 1)
+	go func() {
+		daemon, err := EnsureDaemon(context.Background(), cfg)
+		resultCh <- struct {
+			daemon *EnsuredDaemon
+			err    error
+		}{daemon, err}
+	}()
+	fifo, err := os.Open(startedFIFO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := io.ReadAll(fifo)
+	_ = fifo.Close()
+	if err != nil || string(started) != "started" {
+		t.Fatalf("supervisor start signal = %q, err = %v", started, err)
+	}
+
+	t.Setenv("SENPI_RPC_CLIENT_CAPABILITIES", capExtensionEvents)
+	competitor, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer competitor.Close()
+	go func() {
+		for {
+			conn, err := competitor.Accept()
+			if err != nil {
+				return
+			}
+			go serveEnsureHelper(conn)
+		}
+	}()
+
+	var result struct {
+		daemon *EnsuredDaemon
+		err    error
+	}
+	select {
+	case result = <-resultCh:
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("EnsureDaemon did not accept competing producer")
+	}
+	if result.err != nil {
+		t.Fatalf("EnsureDaemon: %v", result.err)
+	}
+	if result.daemon.Owned {
+		t.Fatal("competing producer was reported as owned")
+	}
+	if err := result.daemon.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop unowned daemon: %v", err)
+	}
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("Stop unlinked the competing producer socket")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	defer cancel()
+	client, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatalf("competing producer is not live after Stop: %v", err)
+	}
+	_ = client.Close()
+}
+
 func TestEnsureDaemonSpawnLogReservesBothAttemptPartitions(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "rpc.sock")
@@ -454,6 +549,28 @@ func TestEnsureDaemonSpawnLogReservesBothAttemptPartitions(t *testing.T) {
 		if !bytes.Contains(data, []byte("spawn attempt: "+attempt+"\n")) {
 			t.Fatalf("saturated spawn log omitted %s header", attempt)
 		}
+	}
+}
+
+func TestSpawnAttemptTemporaryLogIsBoundedDuringCapture(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	capture, finish, err := openSpawnAttemptLog(filepath.Join(dir, "daemon-spawn.log"), "noisy", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded := capture.(*boundedSpawnLog)
+	if _, err := capture.Write(bytes.Repeat([]byte("x"), daemonSpawnLogLimit*8)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(bounded.file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > daemonSpawnLogLimit/2 {
+		t.Fatalf("temporary spawn log size = %d, half-budget = %d", info.Size(), daemonSpawnLogLimit/2)
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
 	}
 }
 
