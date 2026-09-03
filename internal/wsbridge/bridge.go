@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,14 +17,17 @@ import (
 
 	"github.com/lxzan/gws"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
 const (
-	ContractVersion     = 2
-	defaultWriteTimeout = 10 * time.Second
+	ContractVersion        = 2
+	defaultWriteTimeout    = 10 * time.Second
+	takeoverActivityWindow = 250 * time.Millisecond
 )
 
 var (
@@ -31,7 +36,46 @@ var (
 	ErrChatDeleted = errors.New("chat was deleted while opening")
 	// ErrUnsupportedProvider reports metadata that this bridge cannot launch.
 	ErrUnsupportedProvider = errors.New("chat provider is not supported")
+	inPlaceAuthorizations  sync.Map
 )
+
+// SessionActivity describes source-file changes observed during the takeover
+// freshness window.
+type SessionActivity struct {
+	SizeDelta      int64
+	MtimeDeltaNano int64
+	Changed        bool
+}
+
+// SessionActiveError rejects an in-place provider acquisition while another
+// process appears to be writing the same session.
+type SessionActiveError struct {
+	SizeDelta      int64
+	MtimeDeltaNano int64
+}
+
+func (e *SessionActiveError) Error() string { return "session-active" }
+
+type SessionActivityCheck func(context.Context, string, time.Duration) (SessionActivity, error)
+
+type inPlaceAuthorizationKey struct {
+	store  *cursorstore.Store
+	chatID string
+}
+
+type inPlaceAuthorization struct {
+	force atomic.Bool
+	check SessionActivityCheck
+}
+
+// AuthorizeInPlaceOpen carries a REST force choice to the next provider
+// acquisition. The activity checker remains attached for later reopens, but
+// force is consumed once at the CursorForOpen boundary.
+func AuthorizeInPlaceOpen(store *cursorstore.Store, chatID string, force bool, check SessionActivityCheck) {
+	authorization := &inPlaceAuthorization{check: check}
+	authorization.force.Store(force)
+	inPlaceAuthorizations.Store(inPlaceAuthorizationKey{store: store, chatID: chatID}, authorization)
+}
 
 // Config supplies the independently-owned v2 session stack.
 type Config struct {
@@ -520,7 +564,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			message := err.Error()
 			switch {
 			case errors.Is(err, ErrChatDeleted):
-				code = "chat_deleted"
+				code = "no_chat"
 			case errors.Is(err, ErrUnsupportedProvider):
 				code = "unsupported_provider"
 			case errors.Is(err, cursorstore.ErrAdoptionRequired):
@@ -582,6 +626,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	}
 	var sess *session.Session
 	var detach func()
+	recovery := f.Recovery != nil && *f.Recovery
 	if guarded {
 		validate := func() error {
 			if c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
@@ -589,20 +634,34 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			}
 			return nil
 		}
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedChecked(ctx, ref, sub, initialize, validate)
+		if recovery {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecovery(ctx, ref, sub, initialize, validate)
+		} else {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedChecked(ctx, ref, sub, initialize, validate)
+		}
+	} else if recovery {
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
 	} else {
 		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, initialize)
 	}
 	if err != nil {
 		c.unbind()
+		var drift *session.ExternalWriteError
+		if errors.As(err, &drift) {
+			c.sendExternalWriteError(drift, "", "")
+			return
+		}
 		code := "start_failed"
 		message := err.Error()
 		switch {
 		case errors.Is(err, ErrChatDeleted):
-			code = "chat_deleted"
+			code = "no_chat"
 		case errors.Is(err, cursorstore.ErrAdoptionRequired):
 			code = "adoption_required"
 			message = "session must be adopted before opening"
+		case isSessionActiveError(err):
+			code = "session-active"
+			message = "session is active in another process"
 		}
 		c.sendError(code, message, "", "")
 		return
@@ -640,7 +699,32 @@ func (c *connection) sendError(code, message, command, requestID string) {
 	}
 	_ = c.write(m)
 }
+func (c *connection) sendExternalWriteError(drift *session.ExternalWriteError, command, requestID string) {
+	sid, _ := c.binding()
+	frame := map[string]any{
+		"type":         "error",
+		"code":         "external-write-detected",
+		"message":      drift.Error(),
+		"knownLeaf":    drift.KnownLeaf,
+		"observedLeaf": drift.ObservedLeaf,
+	}
+	if sid != "" {
+		frame["sessionId"] = sid
+	}
+	if command != "" {
+		frame["command"] = command
+	}
+	if requestID != "" {
+		frame["requestId"] = requestID
+	}
+	_ = c.write(frame)
+}
 func (c *connection) sendSessionError(err error, command, requestID string) {
+	var drift *session.ExternalWriteError
+	if errors.As(err, &drift) {
+		c.sendExternalWriteError(drift, command, requestID)
+		return
+	}
 	code := "provider_error"
 	if errors.Is(err, session.ErrPromptInFlight) {
 		code = "prompt_in_flight"
@@ -649,6 +733,14 @@ func (c *connection) sendSessionError(err error, command, requestID string) {
 		code = "compaction_in_flight"
 	}
 	c.sendError(code, err.Error(), command, requestID)
+}
+
+func isSessionActiveError(err error) bool {
+	if errors.As(err, new(*SessionActiveError)) {
+		return true
+	}
+	var stable *omorpc.StableError
+	return errors.As(err, &stable) && stable.Code == omorpc.ErrCodeSessionPathInUse
 }
 
 func (c *connection) queryState(ctx context.Context, s *session.Session) {
@@ -824,7 +916,7 @@ func (c chatRef) CWD() string    { return c.cwd }
 type CursorStore cursorstore.Store
 
 func sessionCursor(c cursorstore.Chat) session.Cursor {
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder, InPlace: cursorstore.IsInPlaceSession(c)}
 }
 
 func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
@@ -832,7 +924,47 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 	if err != nil {
 		return session.Cursor{}, err
 	}
-	return sessionCursor(c), nil
+	// Provider initialization can append extension startup records while opening
+	// an existing session. Gate and preserve the source inside the per-chat
+	// flight, immediately before open_session can mutate it.
+	cur := sessionCursor(c)
+	if cursorstore.IsInPlaceSession(c) {
+		store := (*cursorstore.Store)(s)
+		forced := false
+		check := SessionActivityCheck(observeSessionActivity)
+		if value, ok := inPlaceAuthorizations.Load(inPlaceAuthorizationKey{store: store, chatID: id}); ok {
+			authorization := value.(*inPlaceAuthorization)
+			forced = authorization.force.CompareAndSwap(true, false)
+			if authorization.check != nil {
+				check = authorization.check
+			}
+		}
+		if !forced {
+			activity, err := check(ctx, c.SessionFile, takeoverActivityWindow)
+			if err != nil {
+				return session.Cursor{}, inPlaceSourceError(err)
+			}
+			if activity.Changed || activity.SizeDelta != 0 || activity.MtimeDeltaNano != 0 {
+				return session.Cursor{}, &SessionActiveError{SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano}
+			}
+		}
+		if err := s.PrepareWrite(ctx, id); err != nil {
+			return session.Cursor{}, inPlaceSourceError(err)
+		}
+		cur.WritePrepared = true
+	}
+	return cur, nil
+}
+
+func inPlaceSourceError(err error) error {
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	reason := "session file identity unavailable"
+	if errors.Is(err, os.ErrNotExist) {
+		reason = "session file disappeared"
+	}
+	return errors.Join(&session.ExternalWriteError{Reason: reason}, err)
 }
 
 func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, error) {
@@ -856,6 +988,35 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
 	return (*cursorstore.Store)(s).UpdateIdentity(id, sessionFile, durableID)
 }
+func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
+	store := (*cursorstore.Store)(s)
+	chat, err := store.GetChat(id)
+	if err != nil || !cursorstore.IsInPlaceSession(chat) {
+		return err
+	}
+	_, err = adoptcopy.TakeoverSnapshot(ctx, chat.SessionFile, filepath.Join(store.StateDir(), "takeover-backups"), chat.DurableSessionID)
+	return err
+}
+
+func observeSessionActivity(ctx context.Context, path string, window time.Duration) (SessionActivity, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return SessionActivity{}, &adoptcopy.Error{Kind: adoptcopy.KindIO, Op: "stat activity source", Path: path, Err: errors.Join(adoptcopy.ErrIO, err)}
+	}
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return SessionActivity{}, ctx.Err()
+	case <-timer.C:
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return SessionActivity{}, &adoptcopy.Error{Kind: adoptcopy.KindIO, Op: "restat activity source", Path: path, Err: errors.Join(adoptcopy.ErrIO, err)}
+	}
+	return SessionActivity{SizeDelta: after.Size() - before.Size(), MtimeDeltaNano: after.ModTime().Sub(before.ModTime()).Nanoseconds(), Changed: !os.SameFile(before, after)}, nil
+}
+
 func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) error {
 	return (*cursorstore.Store)(s).UpdateName(id, name, source)
 }

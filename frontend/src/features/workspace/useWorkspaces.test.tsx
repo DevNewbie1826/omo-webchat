@@ -234,8 +234,15 @@ describe("useWorkspaces paginated session history", () => {
     });
   });
 
-  it("marks an adopted source and preserves it beside the stored copy through pagination", async () => {
+  it("suppresses an in-place source locally and after a stale canonical refresh", async () => {
     let latest: ReturnType<typeof useWorkspaces> | undefined;
+    const source = {
+      id: "disk-session",
+      name: "Disk session",
+      source: "discovered" as const,
+      recencyMs: 5,
+      resumeIdentity: "/sessions/disk-session.jsonl",
+    };
     vi.mocked(listWorkspaceSessions)
       .mockResolvedValueOnce({
         items: [
@@ -245,13 +252,15 @@ describe("useWorkspaces paginated session history", () => {
             source: "stored" as const,
             recencyMs: 10 - index,
           })),
-          { id: "disk-session", name: "Disk session", source: "discovered", recencyMs: 5 },
+          source,
         ],
         nextCursor: "next-page",
       })
       .mockResolvedValueOnce({
+        // Simulate a stale canonical page that still contains the source.
         items: [
           { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
+          source,
           { id: "chat-6", name: "Chat 6", source: "stored", recencyMs: 4 },
         ],
         nextCursor: "",
@@ -276,25 +285,23 @@ describe("useWorkspaces paginated session history", () => {
       id: "chat-new",
       name: "New chat",
       provider: "omo",
-    }, "disk-session"));
+    }, source));
 
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session",
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4",
     ]);
-    expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "disk-session")?.source)
-      .toBe("alreadyAdopted");
     expect(latest?.sessionPages.get("ws-1")?.nextCursor).toBe("next-page");
 
     await act(async () => latest?.loadMoreSessions("ws-1"));
 
     expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "next-page");
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session", "chat-6",
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "chat-6",
     ]);
     expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-new"))
       .toHaveLength(1);
-    expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "disk-session")?.source)
-      .toBe("alreadyAdopted");
+    expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "disk-session"))
+      .toHaveLength(0);
     expect(latest?.sessionPages.get("ws-1")).toMatchObject({
       ready: true,
       loading: false,

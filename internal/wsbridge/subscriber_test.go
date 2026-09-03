@@ -4,7 +4,20 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
+
+func TestExternalWriteErrorPreservesTypedLeafState(t *testing.T) {
+	mapped, err := mapError("error", "chat-1", session.Frame{Kind: session.FrameError, Data: session.ErrorInfo{Code: "external-write-detected", Message: "drift", KnownLeaf: "daemon-leaf", ObservedLeaf: "disk-leaf"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, ok := mapped.(map[string]any)
+	if !ok || frame["code"] != "external-write-detected" || frame["knownLeaf"] != "daemon-leaf" || frame["observedLeaf"] != "disk-leaf" {
+		t.Fatalf("mapped external-write frame = %#v", mapped)
+	}
+}
 
 func TestSubscriberDetachBeforeReadyReleasesInitializationFlight(t *testing.T) {
 	s := newSubscriber(nil)

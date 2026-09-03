@@ -38,6 +38,7 @@ export function ChatComposerAttachmentPreview({
 
 interface ChatComposerAttachmentProps {
   readonly imageSupported: boolean;
+  readonly disabled?: boolean;
   readonly attachLabel: string;
   readonly fileInputRef: RefObject<HTMLInputElement>;
   readonly onPick: (file: File | null) => void;
@@ -45,6 +46,7 @@ interface ChatComposerAttachmentProps {
 
 export function ChatComposerAttachment({
   imageSupported,
+  disabled = false,
   attachLabel,
   fileInputRef,
   onPick,
@@ -56,7 +58,7 @@ export function ChatComposerAttachment({
           type="button"
           className="th-btn-icon th-chat-attach-btn"
           aria-label={attachLabel}
-          disabled={!imageSupported}
+          disabled={!imageSupported || disabled}
           onClick={() => fileInputRef.current?.click()}
         >
           <IconPlus size={18} />
@@ -67,6 +69,7 @@ export function ChatComposerAttachment({
         type="file"
         accept="image/*"
         hidden
+        disabled={disabled}
         onChange={(event) => onPick(event.target.files?.[0] ?? null)}
       />
     </>

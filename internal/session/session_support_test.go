@@ -217,7 +217,7 @@ func dial(t *testing.T, d *omorpctest.Daemon) *omorpc.Client {
 	return c
 }
 
-func testManager(t *testing.T, client *omorpc.Client, store *memCursorStore, queueSize int) *Manager {
+func testManager(t *testing.T, client *omorpc.Client, store CursorStore, queueSize int) *Manager {
 	t.Helper()
 	m := NewManager(Config{
 		Client:        client,

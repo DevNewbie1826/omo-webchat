@@ -50,7 +50,7 @@ func (s *Store) MigrateLegacySession(ctx context.Context, id string) (Chat, erro
 	if err != nil {
 		return Chat{}, err
 	}
-	if chat.SessionFile == "" || IsOwnedSession(chat, s.OwnedSessionDir()) {
+	if chat.SessionFile == "" || IsOwnedSession(chat, s.OwnedSessionDir()) || IsInPlaceSession(chat) {
 		return chat, nil
 	}
 

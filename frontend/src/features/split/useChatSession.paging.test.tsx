@@ -69,6 +69,21 @@ describe("useChatSession paged entries", () => {
 		expect(current?.messages.map(messageText)).toEqual(["one", "two", "three"]);
 	});
 
+	it("consumes buffered cold pages when external-write is their terminal marker", () => {
+		act(() => {
+			deliver({ type: "entries", sessionId: "chat-1", entries: [entry("disk", "user", "from disk")], final: false });
+			deliver({
+				type: "error",
+				sessionId: "chat-1",
+				code: "external-write-detected",
+				message: "external write detected",
+			});
+		});
+		expect(current?.messages.map(messageText)).toEqual(["from disk"]);
+		expect(current?.historyStatus).toBe("loaded");
+		expect(current?.externalWriteDetected).toBe(true);
+	});
+
 	it("reconciles immediately for a single final frame (backward compatible)", () => {
 		act(() => {
 			deliver({ type: "entries", sessionId: "chat-1", entries: [entry("e-1", "user", "solo")] });

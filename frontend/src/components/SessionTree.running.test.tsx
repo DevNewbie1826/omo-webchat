@@ -66,7 +66,7 @@ function tree(
           onToggle={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelect={() => undefined}
-          onAdopt={async () => undefined}
+          onOpen={async () => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
           onDeleteTerminal={() => undefined}

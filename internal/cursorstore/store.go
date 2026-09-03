@@ -49,6 +49,9 @@ const (
 	// SessionProvenanceAdopted is persisted only after a session has been
 	// copied into the store's owned session directory and verified.
 	SessionProvenanceAdopted = "adopted-copy"
+	// SessionProvenanceInPlace marks an original session selected from the
+	// workspace-scoped disk catalog and validated before it was persisted.
+	SessionProvenanceInPlace = "in-place"
 )
 
 // Workspace is UI metadata for a workspace directory.
@@ -131,6 +134,13 @@ func IsOwnedSession(chat Chat, ownedDir string) bool {
 	}
 	sessionFile, err := filepath.Abs(filepath.Clean(chat.SessionFile))
 	return err == nil && filepath.Dir(sessionFile) == ownedDir
+}
+
+// IsInPlaceSession reports whether chat carries the marker installed by the
+// workspace-scoped in-place-open endpoint. Absolute paths are required so a
+// later process working-directory change cannot redirect provider writes.
+func IsInPlaceSession(chat Chat) bool {
+	return chat.SessionProvenance == SessionProvenanceInPlace && filepath.IsAbs(chat.SessionFile)
 }
 
 // OpenWithClock is Open with an injected clock for deterministic LastUsedAt.
@@ -394,6 +404,21 @@ func (s *Store) UpdateOwnedIdentity(id, sessionFile, durableID string) error {
 	})
 }
 
+// UpdateInPlaceIdentity persists an identity already resolved and validated by
+// the workspace catalog boundary. It cannot be used with a relative path.
+func (s *Store) UpdateInPlaceIdentity(id, sessionFile, durableID string) error {
+	candidate := Chat{SessionFile: sessionFile, SessionProvenance: SessionProvenanceInPlace}
+	if !IsInPlaceSession(candidate) || durableID == "" {
+		return fmt.Errorf("%w: invalid in-place session identity", ErrAdoptionRequired)
+	}
+	return s.updateChatFields(id, func(c *Chat) error {
+		c.SessionFile = sessionFile
+		c.DurableSessionID = durableID
+		c.SessionProvenance = SessionProvenanceInPlace
+		return nil
+	})
+}
+
 // UpdateName updates only the display-name fields atomically with respect to
 // every other store mutation.
 func (s *Store) UpdateName(id, name, source string) error {
@@ -446,7 +471,7 @@ func (s *Store) GetChatForOpen(id string) (Chat, error) {
 	if err != nil {
 		return Chat{}, err
 	}
-	if c.SessionFile != "" && !IsOwnedSession(c, s.OwnedSessionDir()) {
+	if c.SessionFile != "" && !IsOwnedSession(c, s.OwnedSessionDir()) && !IsInPlaceSession(c) {
 		return Chat{}, fmt.Errorf("%w: chat %q", ErrAdoptionRequired, id)
 	}
 	return c, nil

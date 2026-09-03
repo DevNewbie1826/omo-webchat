@@ -53,14 +53,18 @@ V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecyc
    Sources: `open_delivery_uncertain_test.go:TestResumedOpenSendTimeoutDoesNotIssueFallbackOpen,TestResumedOpenCancellationDoesNotIssueFallbackOpen,TestOpenProviderDeathWriteWaitHonorsCallerCancellation`; `shared_provider_mass_kill_pin_test.go:TestManagerAcquireContextDoesNotOwnProvider,TestManagerRequiresProviderContextToStart`.
 
 7. **Resume safety — prove before clear**: a failed resume NEVER overwrites the stored
-   identity. Transient `session_path_in_use` rejections are retried on the identical request
-   (3 attempts total, 500 ms backoff) and keep the identity; permanent rejection surfaces one
-   `resume_failed` error frame and falls back to a fresh cwd-backed session while the stored
-   binding stays verbatim; a dangling stored path gets exactly one doomed open attempt (the
-   provider alone owns resume validity) with `dangling` + `storedIdentity` (+ scanned
-   `branchCandidates`) on the error frame. Only a resume the provider actually rejects during
-   Initialize clears the stale identity everywhere and re-initializes fresh — the chat must
-   never brick, but never silently rebind either.
+   identity. For non-in-place acquisition, transient `session_path_in_use` rejections are
+   retried on the identical request (3 attempts total, 500 ms backoff) and keep the identity;
+   permanent rejection surfaces one `resume_failed` error frame. An in-place acquisition
+   never falls back to a fresh session: `session_path_in_use` surfaces `session-active`, and
+   recovery requires an explicit user-authorized stop-and-reopen of that exact original.
+   Only non-in-place acquisition may fall back to a fresh cwd-backed session while the stored
+   binding stays verbatim. A missing in-place original performs zero provider opens and
+   surfaces `external-write-detected`; only non-in-place dangling paths get exactly one
+   doomed open attempt (the provider alone owns resume validity), with `dangling` +
+   `storedIdentity` (+ scanned `branchCandidates`) on the error frame. Only a non-in-place
+   resume the provider actually rejects during Initialize clears the stale identity everywhere
+   and re-initializes fresh — the chat must never brick, but never silently rebind either.
    Sources: `manager.go:21-25,74-77` (attempts/backoff/transientOpenError); `manager_resume_safety_test.go:TestAcquireAttachRetriesTransientSessionPathInUseAndKeepsIdentity,TestAcquireAttachPermanentFailureKeepsStoredIdentityAndSurfacesError,TestAcquireAttachDanglingStoredPathSurfacesErrorAndKeepsIdentity`; `manager_resume_failure_signal_test.go:TestAcquireAttachDanglingFailureSignalsRecoveryInfoAndKeepsIdentity,TestAcquireAttachMissingPathFailureKeepsDanglingFalseWhenFileExists`; `resume_recovery_test.go:TestSessionFailedResumeClearsIdentityAndInitializesFresh,TestSessionCancelledResumeClearsIdentity`; `api:ws_contracts_test.go:TestWebSocketPersistedResumeFailureInitializesFreshWithoutRebinding`.
 
 8. **Resume-before-queries ordering on (re)connect**: the first provider RPC is
@@ -194,11 +198,12 @@ V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecyc
     payload is `{name, provider}` — NO model selection at create — provider must resolve to
     `omo` (legacy empty/`senpi` records launch as omo without persisting the alias; unsupported
     records are rejected verbatim); availability is checked via the configured runner; a
-    chat creation rejects `resumeIdentity`; discovered sessions activate exclusively through the
-    verified-copy adoption endpoint; legacy unprovenanced cursors are migrated at the manager
-    flight before first open. Sessions detach-process-alive across manager reuse;
+    chat creation rejects `resumeIdentity`; discovered sessions open in place from the workspace
+    session catalog, while the verified-copy adoption endpoint remains available as the scripted
+    fork endpoint. Legacy unprovenanced cursors are migrated at the manager flight before first
+    open. Sessions detach-process-alive across manager reuse;
     `LiveSummaries` returns process-alive sessions sorted by ID.
-    Sources: `api:chat_name_api_test.go:TestAutoTitleTitlesChat_whenFirstPlainPromptSent,TestAutoTitleSkipsSlashPrompt_thenTitlesNextPlainPrompt,TestAutoTitleNeverOverridesUserRename`; `api:chat_rename_api_test.go:TestRenameChatMarksUserSource_andForwardsToLiveProvider,TestProviderNameEventReplacesAutoTitle,TestProviderNameEventKeepsUserRename`; `session_name_test.go:Test_session_info_changed_emits_name_frame_and_callback,Test_set_session_name_failure_emits_no_error_frame`; `title_test.go:Test_DeriveSessionTitle`; `api:v2_control_plane_test.go:TestCreateChatRejectsResumeIdentity`; `api:chat_create_test.go:TestCreateChatPersistsExplicitProviderWithoutModel,TestCreateChatRequiresSupportedProvider,TestCreateChatRejectsUnavailableProvider`; `api:session_adoption_test.go:TestAdoptWorkspaceSessionCreatesOwnedChatWithoutTouchingOriginal,TestAdoptWorkspaceSessionIsIdempotentAndCatalogMarksSource`; `api:session_adoption_test.go:TestAdoptionHTTPToBridgePreservesOriginalThroughCompletedTurn`; `api:chat_launch_provider_test.go:TestChatCreateRejectsUnsupportedPersistedProvider,TestChatCreateLaunchesLegacyProviderChatsAsOmo`; `provider_test.go:TestNormalizePersistedProvider,TestNormalizePersistedProviderResultIsLaunchable`; `AGENTS.md` (anti-pattern: no model selection at create, no multiplexer); `manager_live_test.go:TestManagerLiveIDsReturnsSortedAliveSessions`.
+    Sources: `api:chat_name_api_test.go:TestAutoTitleTitlesChat_whenFirstPlainPromptSent,TestAutoTitleSkipsSlashPrompt_thenTitlesNextPlainPrompt,TestAutoTitleNeverOverridesUserRename`; `api:chat_rename_api_test.go:TestRenameChatMarksUserSource_andForwardsToLiveProvider,TestProviderNameEventReplacesAutoTitle,TestProviderNameEventKeepsUserRename`; `session_name_test.go:Test_session_info_changed_emits_name_frame_and_callback,Test_set_session_name_failure_emits_no_error_frame`; `title_test.go:Test_DeriveSessionTitle`; `api:v2_control_plane_test.go:TestCreateChatRejectsResumeIdentity`; `api:chat_create_test.go:TestCreateChatPersistsExplicitProviderWithoutModel,TestCreateChatRequiresSupportedProvider,TestCreateChatRejectsUnavailableProvider`; `api:session_inplace_test.go:TestOpenWorkspaceSessionPersistsValidatedOriginal,TestInPlaceOpenUsesOriginalOnWireAndSnapshotsBeforeFirstWrite`; `api:session_adoption_test.go:TestAdoptWorkspaceSessionCreatesOwnedChatWithoutTouchingOriginal,TestAdoptWorkspaceSessionIsIdempotentAndCatalogMarksSource`; `api:session_adoption_test.go:TestAdoptionHTTPToBridgePreservesOriginalThroughCompletedTurn`; `api:chat_launch_provider_test.go:TestChatCreateRejectsUnsupportedPersistedProvider,TestChatCreateLaunchesLegacyProviderChatsAsOmo`; `provider_test.go:TestNormalizePersistedProvider,TestNormalizePersistedProviderResultIsLaunchable`; `manager_live_test.go:TestManagerLiveIDsReturnsSortedAliveSessions`.
 
 22. **Process group and stderr discipline**: on close or context cancel the ENTIRE process
     group is killed (no orphaned descendants); stderr is captured to a bounded rotating file
@@ -222,7 +227,7 @@ either engine-independent (fs/layout/system/auth) or is the only chat-control su
 | 6 | `DELETE /api/workspaces/{wsId}` | Delete workspace; serializes with chat create and stops every active chat (invariant 20) | KEEP |
 | 7 | `PATCH /api/workspaces/{wsId}` | Rename workspace | KEEP |
 | 8 | `GET /api/workspaces/{wsId}/sessions` | List sessions discoverable in workspace history scan (incl. dangling/branch handling) | KEEP |
-| 9 | `POST /api/workspaces/{wsId}/chats` | Create chat `{name, provider}`; `resumeIdentity` is rejected; provider normalized to omo (invariant 21) | KEEP; discovered sessions activate only through the verified-copy adoption endpoint, with legacy unprovenanced cursors migrated at the manager flight before first open |
+| 9 | `POST /api/workspaces/{wsId}/chats` | Create chat `{name, provider}`; `resumeIdentity` is rejected; provider normalized to omo (invariant 21) | KEEP; discovered sessions open in place from the workspace session catalog; the verified-copy adoption endpoint remains the scripted fork endpoint |
 | 10 | `DELETE /api/workspaces/{wsId}/chats/{chatId}` | Remove chat record; `Stop`s the session; provider I/O outside `chatLifecycleMu` (invariants 20, 22) | KEEP |
 | 11 | `PATCH /api/workspaces/{wsId}/chats/{chatId}` | Rename chat; marks `NameSource:"user"`; forwards best-effort to live provider (invariant 21) | KEEP |
 | 12 | `POST /api/workspaces/{wsId}/chats/{chatId}/upload` | Upload file into workspace cwd | KEEP |
@@ -272,13 +277,13 @@ Server -> SPA (engine/manager to client):
 - `ack` — API-level acceptance ack `{command, requestId}` (set_model, set_thinking, approval respond, extension_ui_response).
 - `extensionEvent` — capability-gated passthrough `{name, data?}`; cached snapshots (`omo.task.updated`, `omo.dag.updated`) replay on attach before live frames; `omo.dag.activity`/`omo.dag.heartbeat` never cached (invariant 17).
 - `notice` — advisory `{kind, payload, at, nid?}`; durable kinds replay + persist, transient kinds fire once (invariants 14-15).
-- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `persist_failed`, `decode_failed`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`, `initialize_failed`, `provider_overflow`, `provider_timeout`, `bad_approval`, `bad_resume`, `bad_send`, `bad_set`, `no_session`, `send_failed`, `compact_failed`.
+- `error` — typed errors `{code, message, command?, requestId?}` with codes including: `pi_eof` (carries exit summary), `resume_failed` (+`dangling`, `storedIdentity`, `branchCandidates`), `session_unloaded`, `session_mismatch`, `prompt_in_flight`, `compaction_in_flight`, `provider_error`, `unsupported_provider`, `persist_failed`, `decode_failed`, `incomplete_history`, `external-write-detected`, `session-active`, `adoption_required`, `bad_frame`, `unknown_type`, `bad_create`, `bad_provider`, `no_workspace`, `no_chat`, `start_failed`, `initialize_failed`, `provider_overflow`, `provider_timeout`, `bad_approval`, `bad_resume`, `bad_send`, `bad_set`, `set_model_failed`, `set_thinking_failed`, `approval_failed`, `no_session`, `send_failed`, `compact_failed`.
 - `pong` — reply to `ping`.
 
 Client -> SPA server (decoded ONLY through `ParseClientFrame` — keep this chokepoint in v2):
 
 - `ping` — liveness; answered by `pong` without a session.
-- `chat.create` — `{wsId, chatId}`: bind socket to a chat (the only frame that may run before a session is bound).
+- `chat.create` — `{wsId, chatId, recovery?}`: bind socket to a chat (the only frame that may run before a session is bound). For an in-place acquisition, `recovery` is an optional explicit user authorization to stop and reopen the exact original session after a conflict; it never authorizes a fresh fallback.
 - `chat.send` — user prompt (+ optional `images`); refused while run/compaction active (invariant 16).
 - `chat.abort` — abort current run (fire-and-forget `abort` to provider).
 - `chat.set` — set model / thinking level; acks with `requestId` then `control.result`.

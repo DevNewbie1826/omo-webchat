@@ -262,6 +262,22 @@
   cursor: default;
 }
 
+.th-tree-session-active {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--th-space-1);
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-tree-force-open {
+  min-height: 24px;
+  padding: 0 var(--th-space-1);
+  font-size: var(--th-type-micro-size);
+}
+
 .th-tree-rename {
   flex: 1;
   min-width: 0;

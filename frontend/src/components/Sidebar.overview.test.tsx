@@ -82,7 +82,7 @@ describe("Sidebar sessions overview entry", () => {
           onToggleExpanded={() => undefined}
           onLoadMoreSessions={() => undefined}
           onSelectTerminal={onSelect}
-          onAdoptSession={async () => undefined}
+          onOpenSession={async () => undefined}
           onAddWorkspace={() => undefined}
           onAddTerminal={() => undefined}
           onDeleteWorkspace={() => undefined}
@@ -120,7 +120,7 @@ describe("Sidebar sessions overview entry", () => {
     expect(cards[0]?.textContent).toContain("Refactor auth");
 
     act(() => {
-      cards[0]?.click();
+      cards[0]?.querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
     });
 
     expect(onSelect).toHaveBeenCalledTimes(1);

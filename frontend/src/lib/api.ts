@@ -1,17 +1,20 @@
 export class ApiError extends Error {
   readonly status: number;
+  readonly body: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
 }
 
 async function parseError(res: Response): Promise<ApiError> {
   let message = `${res.status} ${res.statusText}`;
+  let body: unknown;
   try {
-    const body: unknown = await res.json();
+    body = await res.json();
     if (
       typeof body === "object" &&
       body !== null &&
@@ -24,7 +27,7 @@ async function parseError(res: Response): Promise<ApiError> {
   } catch {
     /* non-JSON error body — keep status line */
   }
-  return new ApiError(res.status, message);
+  return new ApiError(res.status, message, body);
 }
 
 // Fired whenever any API call is answered with 401 (expired session). App.tsx

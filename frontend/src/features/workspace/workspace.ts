@@ -1,4 +1,4 @@
-import { apiJson, apiVoid, qs } from "../../lib/api";
+import { ApiError, apiJson, apiVoid, qs } from "../../lib/api";
 import { parseDagDigest, parseTaskDigest, type DagDigest, type TaskDigest } from "./activityDigest";
 
 export type ChatProvider = "omo";
@@ -82,7 +82,7 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
 
 /** Where a session-history entry came from: a stored chat row or an omo
  * session file discovered on disk. */
-export type WorkspaceSessionSource = "stored" | "discovered" | "alreadyAdopted";
+export type WorkspaceSessionSource = "stored" | "discovered";
 
 /** One entry of GET /api/workspaces/{wsId}/sessions (newest first). */
 export interface WorkspaceSession {
@@ -113,28 +113,53 @@ export async function listWorkspaceSessions(
   signal?: AbortSignal,
 ): Promise<WorkspaceSessionPage> {
   const query = qs({ limit: String(WORKSPACE_SESSION_PAGE_SIZE), cursor: cursor || undefined });
-  return apiJson<WorkspaceSessionPage>(
+  const page = await apiJson<{ readonly items: readonly (Omit<WorkspaceSession, "source"> & { readonly source: string })[]; readonly nextCursor: string }>(
     `/api/workspaces/${encodeURIComponent(wsId)}/sessions${query}`,
     signal ? { signal } : {},
   );
+  return {
+    ...page,
+    // Legacy fork-adoption provenance is backend metadata, not a UI row.
+    items: page.items.filter((item): item is WorkspaceSession => item.source === "stored" || item.source === "discovered"),
+  };
 }
 
-/** Adopt a discovered source into a verified, webchat-owned session copy. */
-export async function adoptWorkspaceSession(
+export type OpenWorkspaceSessionResult =
+  | { readonly state: "opened"; readonly chat: Terminal }
+  | { readonly state: "session-active" };
+
+function isSessionActiveBody(value: unknown): boolean {
+  return typeof value === "object"
+    && value !== null
+    && "state" in value
+    && value.state === "session-active";
+}
+
+/** Validate and bind a catalog-discovered session to its original file. */
+export async function openWorkspaceSession(
   wsId: string,
   session: WorkspaceSession,
-): Promise<Terminal> {
-  return apiJson<Terminal>(
-    `/api/workspaces/${encodeURIComponent(wsId)}/sessions/adopt`,
-    {
-      method: "POST",
-      body: {
-        id: session.id,
-        name: session.name,
-        resumeIdentity: session.resumeIdentity,
+  force = false,
+): Promise<OpenWorkspaceSessionResult> {
+  try {
+    const chat = await apiJson<Terminal>(
+      `/api/workspaces/${encodeURIComponent(wsId)}/sessions/open`,
+      {
+        method: "POST",
+        body: {
+          id: session.id,
+          resumeIdentity: session.resumeIdentity,
+          ...(force ? { force: true } : {}),
+        },
       },
-    },
-  );
+    );
+    return { state: "opened", chat };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409 && isSessionActiveBody(error.body)) {
+      return { state: "session-active" };
+    }
+    throw error;
+  }
 }
 
 /** Resolve otherwise-unknown live IDs through the complete union independently

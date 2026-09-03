@@ -130,7 +130,7 @@ function sidebarProps(workspaces: readonly Workspace[], rows: readonly Workspace
     onToggleExpanded: () => undefined,
     onLoadMoreSessions: () => undefined,
     onSelectTerminal: () => undefined,
-    onAdoptSession: async () => undefined,
+    onOpenSession: async () => undefined,
     onAddWorkspace: () => undefined,
     onAddTerminal: () => undefined,
     onDeleteWorkspace: () => undefined,

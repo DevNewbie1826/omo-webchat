@@ -49,6 +49,16 @@ type Cursor struct {
 	// TitleIsPlaceholder is true only for the pre-identity default name that
 	// the first successful plain prompt may replace with a derived title.
 	TitleIsPlaceholder bool
+	InPlace            bool
+	// WritePrepared reports that CursorForOpen completed the one-time work
+	// required before provider initialization can mutate this session.
+	WritePrepared bool
+}
+
+// WritePreparer is an optional cursor-store capability used for durable work
+// that must complete before the first provider-side mutation of a chat.
+type WritePreparer interface {
+	PrepareWrite(context.Context, string) error
 }
 
 type CursorStore interface {
@@ -112,6 +122,8 @@ type ErrorInfo struct {
 	Dangling         bool
 	StoredIdentity   Cursor
 	BranchCandidates []string
+	KnownLeaf        string
+	ObservedLeaf     string
 }
 
 type EntriesFrame struct {

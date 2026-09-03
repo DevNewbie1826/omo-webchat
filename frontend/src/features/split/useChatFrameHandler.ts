@@ -34,6 +34,9 @@ interface ChatFrameHandlerBindings {
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
   readonly retryVersionRef: Current<number>;
+  readonly externalRecoveryPendingRef: Current<boolean>;
+  readonly externalRecoveryReadyRef: Current<boolean>;
+  readonly externalRecoveryHistoryRef: Current<boolean>;
   readonly replaceMessages: (next: readonly UiMessage[]) => void;
   readonly replaceToolCalls: (next: Readonly<Record<string, ToolEntry>>) => void;
   readonly applyActivities: (next: ActivityState) => void;
@@ -46,6 +49,7 @@ interface ChatFrameHandlerBindings {
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
   readonly setSessionUnloaded: StateSetter<boolean>;
+  readonly setExternalWriteDetected: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -95,10 +99,21 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
   };
-  return (frame): void => {
+  const completeExternalRecovery = (): void => {
+    if (!bindings.externalRecoveryPendingRef.current
+      || !bindings.externalRecoveryReadyRef.current
+      || !bindings.externalRecoveryHistoryRef.current) return;
+    bindings.externalRecoveryPendingRef.current = false;
+    bindings.setExternalWriteDetected(false);
+  };
+  const handleFrame = (frame: ChatServerFrame): void => {
     switch (frame.type) {
       case "ready":
         bindings.armHistoryStall(false);
+        if (bindings.externalRecoveryPendingRef.current) {
+          bindings.externalRecoveryReadyRef.current = true;
+          completeExternalRecovery();
+        }
         return;
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
@@ -184,6 +199,21 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // resumable banner instead of the raw error, and stop any in-flight
         // run indicator so the pane does not look busy. Only the provider-backed
         // state frame of the next open sequence clears the state.
+        if (frame.code === "external-write-detected") {
+          // Cold rehydration pages deliberately remain non-final because the
+          // live tail could not be trusted. The drift error is their terminal
+          // marker: consume the snapshot before surfacing persistent recovery.
+          bindings.externalRecoveryPendingRef.current = false;
+          handleFrame({
+            type: "entries",
+            sessionId: frame.sessionId ?? "",
+            entries: [],
+            final: true,
+          });
+          bindings.setExternalWriteDetected(true);
+          bindings.setError("");
+          return;
+        }
         if (frame.code === "session_unloaded") {
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
@@ -193,6 +223,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         if (isHistoryTerminalError(frame)) {
+          bindings.externalRecoveryPendingRef.current = false;
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
         }
         // A dangling stored identity surfaces its branch candidates instead
@@ -267,6 +298,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         bindings.historyLoadedRef.current = true;
         bindings.setHistoryStatus("loaded");
+        if (bindings.externalRecoveryPendingRef.current) {
+          bindings.externalRecoveryHistoryRef.current = true;
+          completeExternalRecovery();
+        }
         const entries = bindings.pageBuffer.consume(frame.entries);
         const reconciliation = reconcileFrameHistory({
           entries,
@@ -306,4 +341,5 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
     }
   };
+  return handleFrame;
 }

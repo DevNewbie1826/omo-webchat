@@ -88,11 +88,35 @@ func Adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	return adopt(ctx, sourcePath, destinationDir, expectedSessionID, copyHooks{})
 }
 
+// Validate checks the same bounded header, active-tree, and size invariants as
+// Adopt without creating a destination or copying the session into web state.
+func Validate(ctx context.Context, sourcePath, expectedSessionID string) (Result, error) {
+	if ctx == nil || sourcePath == "" || expectedSessionID == "" {
+		return Result{}, fail(KindInvalidSource, "validate", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("context, source, and expected session id are required")))
+	}
+	metadata, _, err := validateSource(ctx, sourcePath, MaxSourceBytes)
+	if err != nil {
+		return Result{}, err
+	}
+	if metadata.Header.ID != expectedSessionID {
+		return Result{}, fail(KindInvalidSource, "validate expected session id", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("session header id differs from expected durable session id")))
+	}
+	return Result{SessionID: metadata.Header.ID, Path: sourcePath}, nil
+}
+
+// TakeoverSnapshot atomically records the newest verified, bounded takeover
+// backup. The deterministic destination keeps one file per durable session;
+// Session calls this only before its first provider-side mutation.
+func TakeoverSnapshot(ctx context.Context, sourcePath, destinationDir, expectedSessionID string) (Result, error) {
+	return adopt(ctx, sourcePath, destinationDir, expectedSessionID, copyHooks{replaceExisting: true})
+}
+
 type copyHooks struct {
-	afterChunk    func(int64)
-	beforePublish func()
-	afterPublish  func()
-	sourceLimit   int64
+	afterChunk      func(int64)
+	beforePublish   func()
+	afterPublish    func()
+	sourceLimit     int64
+	replaceExisting bool
 }
 
 func (h copyHooks) limit() int64 {
@@ -149,7 +173,9 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	destinationName := DestinationName(result.SessionID)
 
 	if _, err := destination.Lstat(destinationName); err == nil {
-		return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+		if !hooks.replaceExisting {
+			return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fail(KindIO, "inspect destination", result.Path, 0, 0, errors.Join(ErrIO, err))
 	}
@@ -159,8 +185,9 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 		return Result{}, fail(KindIO, "create staging file", destinationDir, 0, 0, errors.Join(ErrIO, err))
 	}
 	published := false
+	rollbackName := ""
 	defer func() {
-		cleanupErr := cleanup(destination, tmpName, destinationName, published)
+		cleanupErr := cleanup(destination, tmpName, destinationName, rollbackName, published)
 		if cleanupErr != nil {
 			if retErr == nil {
 				retErr = fail(KindIO, "cleanup", result.Path, 0, 0, errors.Join(ErrIO, cleanupErr))
@@ -192,20 +219,36 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	if hooks.beforePublish != nil {
 		hooks.beforePublish()
 	}
-	// A hard link is an atomic no-replace publication on both Darwin and Linux.
-	// Unlike Rename, it cannot clobber a destination introduced by another
-	// process between inspection and publication.
-	if err := destination.Link(tmpName, destinationName); err != nil {
-		if _, statErr := destination.Lstat(destinationName); statErr == nil {
-			return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+	if hooks.replaceExisting {
+		if _, err := destination.Lstat(destinationName); err == nil {
+			rollbackName, err = createRollback(destination, destinationName)
+			if err != nil {
+				return Result{}, fail(KindIO, "preserve prior snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Result{}, fail(KindIO, "inspect prior snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
 		}
-		return Result{}, fail(KindIO, "publish copy", result.Path, 0, 0, errors.Join(ErrIO, err))
+		if err := destination.Rename(tmpName, destinationName); err != nil {
+			return Result{}, fail(KindIO, "replace snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
+		published = true
+		tmpName = ""
+	} else {
+		// A hard link is an atomic no-replace publication on both Darwin and
+		// Linux. Unlike Rename, it cannot clobber a destination introduced by
+		// another process between inspection and publication.
+		if err := destination.Link(tmpName, destinationName); err != nil {
+			if _, statErr := destination.Lstat(destinationName); statErr == nil {
+				return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+			}
+			return Result{}, fail(KindIO, "publish copy", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
+		published = true
+		if err := destination.Remove(tmpName); err != nil {
+			return Result{}, fail(KindIO, "remove staging link", tmpName, 0, 0, errors.Join(ErrIO, err))
+		}
+		tmpName = ""
 	}
-	published = true
-	if err := destination.Remove(tmpName); err != nil {
-		return Result{}, fail(KindIO, "remove staging link", tmpName, 0, 0, errors.Join(ErrIO, err))
-	}
-	tmpName = ""
 	if err := syncRoot(destination); err != nil {
 		return Result{}, fail(KindIO, "fsync destination directory", destinationDir, 0, 0, errors.Join(ErrIO, err))
 	}
@@ -228,6 +271,12 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 		return Result{}, fail(KindHashMismatch, "verify published copy", sourcePath, 0, 0, ErrHashMismatch)
 	}
 
+	if rollbackName != "" {
+		if err := destination.Remove(rollbackName); err != nil {
+			return Result{}, fail(KindIO, "remove prior snapshot rollback", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
+		rollbackName = ""
+	}
 	published = false
 	result.Created = true
 	return result, nil
@@ -417,7 +466,7 @@ func sameSnapshot(left, right os.FileInfo) bool {
 	return left.Size() == right.Size() && left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
 }
 
-func cleanup(root *os.Root, stagingName, publishedName string, published bool) error {
+func cleanup(root *os.Root, stagingName, publishedName, rollbackName string, published bool) error {
 	var errs []error
 	if stagingName != "" {
 		if err := root.Remove(stagingName); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -425,10 +474,18 @@ func cleanup(root *os.Root, stagingName, publishedName string, published bool) e
 		}
 	}
 	if published {
-		if err := root.Remove(publishedName); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if rollbackName != "" {
+			if err := root.Rename(rollbackName, publishedName); err != nil {
+				errs = append(errs, err)
+			}
+		} else if err := root.Remove(publishedName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
 		if err := syncRoot(root); err != nil {
+			errs = append(errs, err)
+		}
+	} else if rollbackName != "" {
+		if err := root.Remove(rollbackName); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
 		}
 	}
@@ -480,6 +537,22 @@ func openDestination(path string) (*os.Root, error) {
 		return nil, fail(KindIO, "pin destination directory", path, 0, 0, errors.Join(ErrIO, err))
 	}
 	return root, nil
+}
+
+func createRollback(root *os.Root, destinationName string) (string, error) {
+	var random [16]byte
+	for attempts := 0; attempts < 100; attempts++ {
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", err
+		}
+		name := ".adopt-" + hex.EncodeToString(random[:]) + ".rollback"
+		if err := root.Link(destinationName, name); err == nil {
+			return name, nil
+		} else if !errors.Is(err, os.ErrExist) {
+			return "", err
+		}
+	}
+	return "", errors.New("could not allocate unique rollback name")
 }
 
 func createStage(root *os.Root) (*os.File, string, error) {

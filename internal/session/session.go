@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -39,7 +40,10 @@ type Session struct {
 
 	lifecycleMu                                                             sync.Mutex
 	nameMu                                                                  sync.Mutex
+	writePrepareMu                                                          sync.Mutex
+	writePrepared                                                           bool
 	closed, closing, resumable, invalidated                                 bool
+	quarantineErr                                                           *ExternalWriteError
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
 	promptResponse                                                          bool
@@ -56,6 +60,8 @@ type Session struct {
 	activitySnapshots                                                       map[string]json.RawMessage
 	activityOversized                                                       map[string]bool
 	title, nameSource                                                       string
+	inPlace                                                                 bool
+	sessionFileIdentity                                                     os.FileInfo
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 
@@ -86,6 +92,40 @@ func (s *Session) ChatID() string      { return s.chatID }
 func (s *Session) ID() string          { return s.durableID }
 func (s *Session) RoutingID() string   { return s.routingID }
 func (s *Session) SessionFile() string { return s.sessionFile }
+
+func (s *Session) prepareWrite(ctx context.Context) error {
+	// Cursor preparation may mutate durable state, so it is inside the route's
+	// write fence rather than preceding the quarantine check.
+	s.lifecycleMu.Lock()
+	_, routeErr := s.routeLocked()
+	s.lifecycleMu.Unlock()
+	if routeErr != nil {
+		return routeErr
+	}
+	// Every provider mutation pays one metadata lookup. Lstat verifies the
+	// acquired file identity and read permission without hashing or rereading
+	// the transcript at this latency-sensitive fence.
+	if err := s.verifySessionFileIdentity(s.sessionFile, ""); err != nil {
+		drift := err.(*ExternalWriteError)
+		s.quarantineExternalWrite(drift, nil)
+		return drift
+	}
+	preparer, ok := s.manager.cfg.Store.(WritePreparer)
+	if !ok {
+		return nil
+	}
+	s.writePrepareMu.Lock()
+	defer s.writePrepareMu.Unlock()
+	if s.writePrepared {
+		return nil
+	}
+	if err := preparer.PrepareWrite(ctx, s.chatID); err != nil {
+		return err
+	}
+	s.writePrepared = true
+	return nil
+}
+
 func (s *Session) Resumable() bool {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -95,6 +135,9 @@ func (s *Session) Resumable() bool {
 func (s *Session) routeLocked() (string, error) {
 	if s.closed || s.closing {
 		return "", ErrSessionClosed
+	}
+	if s.quarantineErr != nil {
+		return "", s.quarantineErr
 	}
 	if s.resumable {
 		return "", ErrSessionResumable
@@ -113,6 +156,9 @@ func (s *Session) RunSnapshot() RunSnapshot {
 }
 
 func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[string]string) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	if s.compactionActive {
 		s.lifecycleMu.Unlock()
@@ -176,6 +222,9 @@ func (s *Session) SendFollowUp(ctx context.Context, msg string) error {
 }
 
 func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc.Command) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	if s.compactionActive {
 		s.lifecycleMu.Unlock()
@@ -209,6 +258,9 @@ func (s *Session) completeLocalCommandLocked(seq uint64) {
 }
 
 func (s *Session) Abort(ctx context.Context) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	if err != nil {
@@ -237,6 +289,9 @@ func (s *Session) Abort(ctx context.Context) error {
 }
 
 func (s *Session) Compact(ctx context.Context) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	if s.promptInFlight || s.providerRunActive || s.compactionActive || s.localCommandActive {
 		s.lifecycleMu.Unlock()
@@ -325,6 +380,9 @@ func (s *Session) SetThinking(ctx context.Context, level, requestID string) erro
 	})
 }
 func (s *Session) control(ctx context.Context, command, requestID string, build func(string) omorpc.Command) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	s.lifecycleMu.Unlock()
@@ -450,6 +508,9 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 	return &out, nil
 }
 func (s *Session) SetSessionName(ctx context.Context, name string) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.nameMu.Lock()
 	defer s.nameMu.Unlock()
 
@@ -481,6 +542,9 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	if name == "" {
 		return
 	}
+	if err := s.prepareWrite(ctx); err != nil {
+		return
+	}
 	s.nameMu.Lock()
 	defer s.nameMu.Unlock()
 
@@ -492,23 +556,29 @@ func (s *Session) applyAutoTitle(ctx context.Context, prompt string) {
 	if cur.NameSource == NameSourceUser {
 		s.title, s.nameSource = cur.Name, NameSourceUser
 	}
-	if s.closed || s.closing || s.resumable || s.title != "" || s.nameSource == NameSourceUser {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title != "" || s.nameSource == NameSourceUser {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	route := s.routingID
 	s.lifecycleMu.Unlock()
 
 	if err := s.manager.cfg.Store.UpdateName(ctx, s.chatID, name, NameSourceAuto); err != nil {
 		return
 	}
+	if err := s.prepareWrite(ctx); err != nil {
+		return
+	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.title == "" && s.nameSource != NameSourceUser {
+	route, err := s.routeLocked()
+	committed := err == nil && s.title == "" && s.nameSource != NameSourceUser
+	if committed {
 		s.title, s.nameSource = name, NameSourceAuto
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": NameSourceAuto}})
 	}
 	s.lifecycleMu.Unlock()
-	_, _ = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+	if committed {
+		_, _ = s.client.Call(ctx, omorpc.SetSessionName{SessionID: route, Name: name})
+	}
 }
 
 func (s *Session) applyProviderName(name string) {
@@ -527,7 +597,7 @@ func (s *Session) applyProviderName(name string) {
 	if cur.NameSource == NameSourceUser {
 		s.title, s.nameSource = cur.Name, NameSourceUser
 	}
-	if s.closed || s.closing || s.resumable || s.nameSource == NameSourceUser {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.nameSource == NameSourceUser {
 		s.lifecycleMu.Unlock()
 		return
 	}
@@ -537,7 +607,7 @@ func (s *Session) applyProviderName(name string) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.nameSource != NameSourceUser {
+	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.nameSource != NameSourceUser {
 		s.title, s.nameSource = name, NameSourceAuto
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
 	}
@@ -580,6 +650,9 @@ func (s *Session) respondApproval(id, requestID string, value json.RawMessage, c
 }
 
 func (s *Session) respondApprovalContext(ctx context.Context, id, requestID string, value json.RawMessage, confirmed *bool, cancelled bool) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
 	if err == nil {
@@ -634,6 +707,11 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
 		return nil, nil, ErrSessionClosed
+	}
+	if s.quarantineErr != nil {
+		err := s.quarantineErr
+		s.lifecycleMu.Unlock()
+		return nil, nil, err
 	}
 	if s.resumable {
 		s.lifecycleMu.Unlock()
@@ -865,7 +943,7 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 {
 		return
 	}
 	s.cancelIdleLocked()
@@ -921,6 +999,65 @@ func (s *Session) LoadEntries(ctx context.Context, since string) {
 
 var errIncompleteHistory = errors.New("incomplete history")
 
+// ExternalWriteError is the typed route state applied when an in-place file
+// diverges from the provider route that opened it. While present, every
+// provider mutation is rejected until recovery closes the stale route.
+type ExternalWriteError struct {
+	KnownLeaf    string
+	ObservedLeaf string
+	Reason       string
+	cause        error
+}
+
+func (e *ExternalWriteError) Error() string {
+	return fmt.Sprintf("external write detected: %s (daemon leaf %q, disk leaf %q)", e.Reason, e.KnownLeaf, e.ObservedLeaf)
+}
+
+func (e *ExternalWriteError) Unwrap() error { return e.cause }
+
+func externalIdentityReadError(err error) *ExternalWriteError {
+	reason := "session file identity unavailable"
+	if errors.Is(err, os.ErrNotExist) {
+		reason = "session file disappeared"
+	}
+	return &ExternalWriteError{Reason: reason, cause: err}
+}
+
+func (s *Session) verifySessionFileIdentity(sessionPath, observedLeaf string) error {
+	if !s.inPlace || s.sessionFileIdentity == nil {
+		return nil
+	}
+	current, err := os.Lstat(sessionPath)
+	if err != nil {
+		drift := externalIdentityReadError(err)
+		drift.ObservedLeaf = observedLeaf
+		return drift
+	}
+	if !os.SameFile(s.sessionFileIdentity, current) {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file identity changed"}
+	}
+	if current.Mode().Perm()&0o444 == 0 {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file is not readable", cause: os.ErrPermission}
+	}
+	return nil
+}
+
+// quarantineExternalWrite latches and publishes the route transition once.
+// A replay target is excluded from the broadcast because hydrateEntries emits
+// the same transition as its terminal frame after all preceding disk pages.
+func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget *subscription) bool {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.closed || s.quarantineErr != nil {
+		return false
+	}
+	s.quarantineErr = err
+	s.cancelIdleLocked()
+	frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: historyErrorInfo(err)}
+	s.broadcast.publishExcept(frame, replayTarget)
+	return true
+}
+
 // hydrateEntries serves disk pages and the validated live tail only to target.
 // A nil target is retained for direct callers and publishes through the normal
 // broadcaster, but manager-driven attachment always supplies its subscription.
@@ -942,6 +1079,20 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		return nil
 	}
 	publishErr := func(err error) {
+		var drift *ExternalWriteError
+		if errors.As(err, &drift) {
+			if !s.quarantineExternalWrite(drift, target) {
+				if target != nil {
+					if barrierErr := target.enqueueReplayBarrier(ctx); barrierErr != nil {
+						target.retire(barrierErr)
+					}
+				}
+				return
+			}
+			if target == nil {
+				return
+			}
+		}
 		if target != nil {
 			// A history-context deadline is an expected, user-visible outcome:
 			// the terminal error must still be delivered (non-blocking; the
@@ -969,6 +1120,11 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		}
 	}
 
+	if err := s.verifySessionFileIdentity(sessionPath, ""); err != nil {
+		publishErr(err)
+		return
+	}
+
 	metadata, err := coldhistory.Stream(ctx, sessionPath, coldhistory.Options{
 		PageEntries: entriesPageMaxCount,
 	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
@@ -989,6 +1145,10 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 		err = ctx.Err()
 	}
 	if err != nil {
+		publishErr(err)
+		return
+	}
+	if err := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); err != nil {
 		publishErr(err)
 		return
 	}
@@ -1053,6 +1213,9 @@ func (s *Session) fetchEntriesAfter(ctx context.Context, since string) (entriesT
 	}
 	if len(wire.Entries) == 0 {
 		if wire.LeafID != since {
+			if s.inPlace {
+				return entriesTail{}, &ExternalWriteError{KnownLeaf: wire.LeafID, ObservedLeaf: since, Reason: "disk leaf is not the daemon session leaf"}
+			}
 			return entriesTail{}, fmt.Errorf("%w: cursor %q was not retained (returned leaf %q)", errIncompleteHistory, since, wire.LeafID)
 		}
 		return wire, nil
@@ -1084,6 +1247,11 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 	}
 	wire, err := s.fetchEntriesAfter(ctx, since)
 	if err != nil {
+		var drift *ExternalWriteError
+		if errors.As(err, &drift) {
+			s.quarantineExternalWrite(drift, nil)
+			return
+		}
 		s.publishHistoryError(err)
 		return
 	}
@@ -1095,6 +1263,10 @@ func (s *Session) loadEntries(ctx context.Context, since string) {
 }
 
 func historyErrorInfo(err error) ErrorInfo {
+	var drift *ExternalWriteError
+	if errors.As(err, &drift) {
+		return ErrorInfo{Code: "external-write-detected", Message: err.Error(), KnownLeaf: drift.KnownLeaf, ObservedLeaf: drift.ObservedLeaf}
+	}
 	code := "decode_failed"
 	if errors.Is(err, errIncompleteHistory) {
 		code = "incomplete_history"

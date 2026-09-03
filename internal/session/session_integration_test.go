@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -184,6 +186,83 @@ func TestIntegrationTransientPathInUseRetriedUnchanged(t *testing.T) {
 	_, ready := sub.await(t, FrameReady)
 	if !ready.Resumed {
 		t.Fatalf("resume must report resumed=true")
+	}
+}
+
+func TestIntegrationInPlacePathInUseNeverFallsBack(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	chat := testChat{id: "chat-in-place-active", cwd: t.TempDir()}
+	path := filepath.Join(chat.cwd, "active.jsonl")
+	if err := os.WriteFile(path, []byte("identity"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stored := Cursor{SessionFile: path, DurableSessionID: "durable-active", InPlace: true}
+	if err := store.SaveCursor(context.Background(), chat.id, stored); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+	d.FailOpenPath(stored.SessionFile, omorpctest.CodeSessionPathInUse, 3)
+
+	mgr := testManager(t, client, store, 64)
+	_, _, _, err := mgr.Acquire(context.Background(), chat, newRecorder(64))
+	var stable *omorpc.StableError
+	if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeSessionPathInUse {
+		t.Fatalf("Acquire error = %T %v, want typed session_path_in_use", err, err)
+	}
+	assertOnlyPathOpens(t, d, stored.SessionFile, 3)
+	if got := store.stored(chat.id); got != stored {
+		t.Fatalf("stored cursor changed: %+v", got)
+	}
+}
+
+func TestIntegrationInPlaceMissingOriginalFailsBeforeOpen(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	store := newMemStore()
+	chat := testChat{id: "chat-in-place-missing", cwd: t.TempDir()}
+	stored := Cursor{SessionFile: filepath.Join(chat.cwd, "missing.jsonl"), DurableSessionID: "durable-missing", InPlace: true}
+	if err := store.SaveCursor(context.Background(), chat.id, stored); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+
+	mgr := testManager(t, client, store, 64)
+	_, _, _, err := mgr.Acquire(context.Background(), chat, newRecorder(64))
+	var drift *ExternalWriteError
+	if !errors.As(err, &drift) || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Acquire error = %T %v, want typed external-write ENOENT", err, err)
+	}
+	assertOnlyPathOpens(t, d, stored.SessionFile, 0)
+	if got := store.stored(chat.id); got != stored {
+		t.Fatalf("stored cursor changed: %+v", got)
+	}
+}
+
+func TestValidateOpenInPlaceRequiresOriginalPath(t *testing.T) {
+	cur := Cursor{SessionFile: "/tmp/original.jsonl", DurableSessionID: "durable", InPlace: true}
+	data := omorpc.OpenSessionData{
+		SessionID: "route",
+		State:     omorpc.SessionState{SessionFile: "/tmp/launch-debris.jsonl", SessionID: "durable"},
+	}
+	if err := validateOpen(data, cur, true); err == nil {
+		t.Fatal("in-place open accepted a different provider session path")
+	}
+}
+
+func assertOnlyPathOpens(t *testing.T, d *omorpctest.Daemon, path string, want int) {
+	t.Helper()
+	got := 0
+	for _, request := range d.Requests() {
+		if typ, _ := request["type"].(string); typ != omorpc.CmdOpenSession {
+			continue
+		}
+		got++
+		if requestPath, _ := request["sessionPath"].(string); requestPath != path {
+			t.Fatalf("open_session %d was pathless or changed path: %+v", got, request)
+		}
+	}
+	if got != want {
+		t.Fatalf("open_session count = %d, want %d", got, want)
 	}
 }
 

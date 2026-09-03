@@ -9,6 +9,7 @@ import type { ChatSessionRef } from "../workspace/workspace";
 import { ApprovalModal } from "./ApprovalModal";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
+import { ExternalWriteBanner } from "./ExternalWriteBanner";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
 import { ModelPicker } from "./ModelPicker";
@@ -133,6 +134,7 @@ export function ChatPane({
       <div className="th-chat-main">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
+        {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}
@@ -175,6 +177,7 @@ export function ChatPane({
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}
+          disabled={chat.externalWriteDetected}
           retryDraft={chat.retryDraft}
           onSubmit={chat.submit}
           onSteer={chat.steer}

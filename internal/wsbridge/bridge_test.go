@@ -160,8 +160,13 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	}
 	h := sessions.Middleware(New(Config{
 		Manager: mgr, Store: store, ServerVersion: client.ServerVersion(), Logger: logger,
-		PrepareChatVersion: func(context.Context, string, string) (uint64, error) { return 0, nil },
-		ChatVersion:        func(string) uint64 { return 0 },
+		PrepareChatVersion: func(_ context.Context, _ string, chatID string) (uint64, error) {
+			if chatID == "deleted" {
+				return 0, ErrChatDeleted
+			}
+			return 0, nil
+		},
+		ChatVersion: func(string) uint64 { return 0 },
 	}))
 	ts := httptest.NewServer(h)
 	defer ts.Close()
@@ -206,6 +211,10 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	_ = preHello.WriteClose(1000, nil)
 
 	conn, c := connect()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "deleted"})
+	if got := c.next(t, "error"); got["code"] != "no_chat" {
+		t.Fatalf("deleted chat create = %v", got)
+	}
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "unsupported"})
 	if got := c.next(t, "error"); got["code"] != "unsupported_provider" {
 		t.Fatalf("unsupported provider create = %v", got)
@@ -326,6 +335,205 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	}
 	if got := c2.next(t, "error"); got["code"] != "bad_frame" {
 		t.Fatalf("bad error=%v", got)
+	}
+}
+
+type inPlaceBridgeHarness struct {
+	daemon  *omorpctest.Daemon
+	store   *cursorstore.Store
+	manager *session.Manager
+	server  *httptest.Server
+	path    string
+}
+
+func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, chatID+".jsonl")
+	body := "{\"type\":\"session\",\"id\":\"durable-" + chatID + "\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":" + string(mustJSON(t, dir)) + "}\n" +
+		"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemonDir, err := os.MkdirTemp("", "wsbridge-inplace-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(daemonDir) })
+	d := omorpctest.New(daemonDir)
+	if err := d.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	client, err := omorpc.Dial(t.Context(), d.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := cursorstore.Open(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkspace(cursorstore.Workspace{ID: "ws-1", Name: "work", Path: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveChat(cursorstore.Chat{
+		ID: chatID, WorkspaceID: "ws-1", CWD: dir, Name: chatID,
+		SessionFile: path, DurableSessionID: "durable-" + chatID,
+		SessionProvenance: cursorstore.SessionProvenanceInPlace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store), RetryBackoff: time.Millisecond})
+	server := httptest.NewServer(New(Config{Manager: manager, Store: store}))
+	t.Cleanup(func() {
+		server.Close()
+		_ = manager.CloseAll(context.Background())
+		_ = client.Close()
+		d.Stop()
+	})
+	return &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, server: server, path: path}
+}
+
+func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
+	t.Helper()
+	frames := &collector{notify: make(chan struct{}, 64)}
+	conn, _, err := gws.NewClient(frames, &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(h.server.URL, "http")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go conn.ReadLoop()
+	frames.next(t, "hello")
+	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
+	t.Cleanup(func() { _ = conn.WriteClose(1000, nil) })
+	return conn, frames
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestChatCreateMissingInPlaceSourceReportsExternalWrite(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "missing-source")
+	if err := os.Remove(h.path); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "missing-source"})
+	if got := frames.next(t, "error"); got["code"] != "external-write-detected" {
+		t.Fatalf("missing source error = %#v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("missing source issued %d provider opens", got)
+	}
+}
+
+func TestChatCreateSessionActiveConflictsUseContractCode(t *testing.T) {
+	t.Run("activity gate", func(t *testing.T) {
+		h := newInPlaceBridgeHarness(t, "gate-active")
+		AuthorizeInPlaceOpen(h.store, "gate-active", false, func(context.Context, string, time.Duration) (SessionActivity, error) {
+			return SessionActivity{SizeDelta: 1}, nil
+		})
+		conn, frames := h.connect(t)
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "gate-active"})
+		if got := frames.next(t, "error"); got["code"] != "session-active" {
+			t.Fatalf("activity gate error = %#v", got)
+		}
+		if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+			t.Fatalf("activity gate issued %d provider opens", got)
+		}
+	})
+
+	t.Run("provider path in use", func(t *testing.T) {
+		h := newInPlaceBridgeHarness(t, "provider-active")
+		AuthorizeInPlaceOpen(h.store, "provider-active", true, nil)
+		h.daemon.FailOpenPath(h.path, omorpc.ErrCodeSessionPathInUse, 3)
+		conn, frames := h.connect(t)
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "provider-active"})
+		if got := frames.next(t, "error"); got["code"] != "session-active" {
+			t.Fatalf("provider path-in-use error = %#v", got)
+		}
+		if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 3 {
+			t.Fatalf("provider path-in-use attempts = %d, want 3", got)
+		}
+	})
+}
+
+func TestChatCreateExternalWriteRequiresExplicitRecovery(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "external-recovery")
+	AuthorizeInPlaceOpen(h.store, "external-recovery", true, func(context.Context, string, time.Duration) (SessionActivity, error) {
+		return SessionActivity{}, nil
+	})
+	firstConn, firstFrames := h.connect(t)
+	writeClient(t, firstConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "external-recovery"})
+	firstFrames.next(t, "ready")
+	for {
+		if got := firstFrames.next(t, "entries"); got["final"] == true {
+			break
+		}
+	}
+
+	file, err := os.OpenFile(h.path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := file.WriteString("{\"type\":\"message\",\"id\":\"external-leaf\",\"parentId\":\"root\",\"message\":{\"role\":\"user\",\"content\":\"external\"}}\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("append external entry: write=%v close=%v", writeErr, closeErr)
+	}
+
+	secondConn, secondFrames := h.connect(t)
+	writeClient(t, secondConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "external-recovery"})
+	if got := secondFrames.next(t, "error"); got["code"] != "external-write-detected" || got["knownLeaf"] != "root" || got["observedLeaf"] != "external-leaf" {
+		t.Fatalf("quarantine frame = %#v", got)
+	}
+	beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	beforeCloses := h.daemon.RequestCount(omorpc.CmdCloseSession)
+
+	ordinaryConn, ordinaryFrames := h.connect(t)
+	writeClient(t, ordinaryConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "external-recovery"})
+	if got := ordinaryFrames.next(t, "error"); got["code"] != "external-write-detected" || got["knownLeaf"] != "root" || got["observedLeaf"] != "external-leaf" {
+		t.Fatalf("ordinary quarantined create = %#v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens {
+		t.Fatalf("ordinary create opened provider route: %d -> %d", beforeOpens, got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses {
+		t.Fatalf("ordinary create closed quarantined route: %d -> %d", beforeCloses, got)
+	}
+
+	// The quarantine transition is now published to every attached subscriber
+	// exactly once (unsolicited); drain it before the command-bound error.
+	if got := firstFrames.next(t, "error"); got["code"] != "external-write-detected" || got["command"] != nil {
+		t.Fatalf("unsolicited quarantine transition = %#v", got)
+	}
+
+	writeClient(t, firstConn, map[string]any{"type": "chat.send", "sessionId": "external-recovery", "run": map[string]any{"kind": "prompt", "message": "stale"}})
+	if got := firstFrames.next(t, "error"); got["code"] != "external-write-detected" || got["knownLeaf"] != "root" || got["observedLeaf"] != "external-leaf" || got["command"] != "chat.send" {
+		t.Fatalf("stale prompt error = %#v", got)
+	}
+
+	recoveryConn, recoveryFrames := h.connect(t)
+	writeClient(t, recoveryConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "external-recovery", "recovery": true})
+	if got := recoveryFrames.next(t, "ready"); got["resumed"] != true {
+		t.Fatalf("recovery ready = %#v", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses+1 {
+		t.Fatalf("recovery closes = %d, want %d", got, beforeCloses+1)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens+1 {
+		t.Fatalf("recovery opens = %d, want %d", got, beforeOpens+1)
+	}
+	if got, _ := h.daemon.LastRequest(omorpc.CmdOpenSession)["sessionPath"].(string); got != h.path {
+		t.Fatalf("recovery opened %q, want exact original %q", got, h.path)
 	}
 }
 

@@ -10,6 +10,7 @@ type errorDeliverer interface{ DeliverFrame(Frame) error }
 type queuedFrame struct {
 	frame     Frame
 	delivered chan struct{}
+	barrier   bool
 }
 
 type subscription struct {
@@ -50,25 +51,24 @@ func (x *subscription) run() {
 		case <-x.stopCh:
 			return
 		case item := <-x.q:
-			if !x.deliver(item.frame) {
-				retireReason = ErrSubscriberDelivery
-				return
-			}
-			if x.initialRemaining > 0 {
-				x.initialRemaining--
-				if x.initialRemaining == 0 {
-					x.initialOnce.Do(func() { close(x.initialDone) })
+			if !item.barrier {
+				if !x.deliver(item.frame) {
+					retireReason = ErrSubscriberDelivery
+					return
+				}
+				if x.initialRemaining > 0 {
+					x.initialRemaining--
+					if x.initialRemaining == 0 {
+						x.initialOnce.Do(func() { close(x.initialDone) })
+					}
 				}
 			}
 			if item.delivered != nil {
-				pending := x.finishReplay()
-				close(item.delivered)
-				for _, frame := range pending {
-					if !x.deliver(frame) {
-						retireReason = ErrSubscriberDelivery
-						return
-					}
+				if !x.finishReplay() {
+					retireReason = ErrSubscriberDelivery
+					return
 				}
+				close(item.delivered)
 			}
 		}
 	}
@@ -102,23 +102,44 @@ func (x *subscription) beginReplay() {
 	x.replayMu.Unlock()
 }
 
-func (x *subscription) finishReplay() []Frame {
-	x.replayMu.Lock()
-	if !x.replaying {
+func (x *subscription) finishReplay() bool {
+	for {
+		x.replayMu.Lock()
+		if !x.replaying {
+			x.replayMu.Unlock()
+			return true
+		}
+		if len(x.pendingLive) == 0 {
+			x.replaying = false
+			if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+				replay.EndReplay()
+			}
+			x.replayMu.Unlock()
+			return true
+		}
+		pending := x.pendingLive
+		x.pendingLive = nil
 		x.replayMu.Unlock()
-		return nil
+
+		for _, frame := range pending {
+			if !x.deliver(frame) {
+				return false
+			}
+		}
 	}
-	x.replaying = false
-	pending := x.pendingLive
-	x.pendingLive = nil
-	if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
-		replay.EndReplay()
-	}
-	x.replayMu.Unlock()
-	return pending
 }
 
-func (x *subscription) endReplay() { _ = x.finishReplay() }
+func (x *subscription) endReplay() {
+	x.replayMu.Lock()
+	if x.replaying {
+		x.replaying = false
+		x.pendingLive = nil
+		if replay, ok := x.sub.(ReplayBackpressureSubscriber); ok {
+			replay.EndReplay()
+		}
+	}
+	x.replayMu.Unlock()
+}
 
 func (x *subscription) stop(cancel bool) {
 	x.stopOnce.Do(func() {
@@ -174,6 +195,27 @@ func (x *subscription) enqueueReplay(ctx context.Context, f Frame, terminal bool
 	}
 	if item.delivered == nil {
 		return nil
+	}
+	select {
+	case <-item.delivered:
+		return nil
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// enqueueReplayBarrier completes replay without delivering another frame. It
+// is used when the terminal transition is already buffered as a live frame.
+func (x *subscription) enqueueReplayBarrier(ctx context.Context) error {
+	item := queuedFrame{delivered: make(chan struct{}), barrier: true}
+	select {
+	case x.q <- item:
+	case <-x.stopCh:
+		return ErrSubscriberDetached
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	select {
 	case <-item.delivered:
@@ -278,9 +320,16 @@ func (b *broadcaster) notifyDetach(x *subscription, reason error) {
 }
 
 func (b *broadcaster) publish(f Frame) {
+	b.publishExcept(f, nil)
+}
+
+func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 	var retired []*subscription
 	b.mu.Lock()
 	for id, x := range b.subs {
+		if x == except {
+			continue
+		}
 		if !x.enqueue(f) {
 			delete(b.subs, id)
 			retired = append(retired, x)

@@ -149,6 +149,20 @@ export function useChatSession(
       && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id });
   };
 
+  const reloadExternalWrite = (): boolean => {
+    frameState.beginExternalWriteRecovery();
+    const client = clientRef.current;
+    try {
+      const sent = client !== null
+        && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id, recovery: true });
+      if (!sent) frameState.failExternalWriteRecovery();
+      return sent;
+    } catch {
+      frameState.failExternalWriteRecovery();
+      return false;
+    }
+  };
+
   const changeThinkingLevel = (level: string): boolean => {
     const restore = frameState.confirmedThinkingLevel();
     const requestId = nextRequestId();
@@ -224,6 +238,7 @@ export function useChatSession(
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
     sessionUnloaded: frameState.sessionUnloaded,
+    externalWriteDetected: frameState.externalWriteDetected,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,
@@ -246,6 +261,7 @@ export function useChatSession(
     stop,
     disconnect,
     resume,
+    reloadExternalWrite,
     changeThinkingLevel,
     changeModel,
     respondApproval,

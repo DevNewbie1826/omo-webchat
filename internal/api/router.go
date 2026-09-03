@@ -39,6 +39,7 @@ type Server struct {
 
 	chatLifecycleMu             sync.Mutex
 	adoptionMu                  sync.Mutex
+	activityCheck               sessionActivityCheck
 	chatLifecycleGeneration     sync.Map
 	chatLifecycleGenerationFIFO []chatLifecycleGenerationRecord
 	chatDeleting                map[string]bool
@@ -46,7 +47,7 @@ type Server struct {
 
 // New creates the API server around the required v2 stack.
 func New(ctx context.Context, cfg *config.Config, cursors *cursorstore.Store, sessions *auth.SessionStore, manager *session.Manager, bridge http.Handler, logger *slog.Logger) *Server {
-	return &Server{ctx: ctx, cfg: cfg, cursors: cursors, sessions: sessions, manager: manager, bridge: bridge, logger: logger, chatDeleting: make(map[string]bool)}
+	return &Server{ctx: ctx, cfg: cfg, cursors: cursors, sessions: sessions, manager: manager, bridge: bridge, logger: logger, activityCheck: observeSessionActivity, chatDeleting: make(map[string]bool)}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -62,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}", s.handleRenameWorkspace)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/sessions", s.handleListWorkspaceSessions)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/sessions/adopt", s.handleAdoptWorkspaceSession)
+	protected.HandleFunc("POST /api/workspaces/{wsId}/sessions/open", s.handleOpenWorkspaceSession)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats", s.handleCreateChat)
 	protected.HandleFunc("DELETE /api/workspaces/{wsId}/chats/{chatId}", s.handleDeleteChat)
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}/chats/{chatId}", s.handleRenameChat)

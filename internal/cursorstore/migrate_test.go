@@ -44,6 +44,28 @@ func TestLegacySessionCannotOpenInPlaceBeforeMigration(t *testing.T) {
 	}
 }
 
+func TestValidatedInPlaceIdentityBypassesLegacyCopyMigration(t *testing.T) {
+	dir := t.TempDir()
+	store := mustOpen(t, filepath.Join(dir, "state-v2.json"))
+	if err := store.SaveWorkspace(Workspace{ID: "ws"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveChat(Chat{ID: "chat", WorkspaceID: "ws"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "original.jsonl")
+	if err := store.UpdateInPlaceIdentity("chat", path, "durable"); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.MigrateLegacySession(context.Background(), "chat")
+	if err != nil || !IsInPlaceSession(opened) || opened.SessionFile != path {
+		t.Fatalf("in-place identity migrated or rejected: %+v, %v", opened, err)
+	}
+	if _, err := os.Stat(store.OwnedSessionDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("in-place identity created owned copy directory: %v", err)
+	}
+}
+
 func TestOwnedIdentityRejectsExternalDestination(t *testing.T) {
 	dir := t.TempDir()
 	store := mustOpen(t, filepath.Join(dir, "state", "state-v2.json"))
