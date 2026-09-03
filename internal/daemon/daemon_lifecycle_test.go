@@ -253,11 +253,13 @@ func TestDaemonReadinessTimeoutCleansUp(t *testing.T) {
 	readinessTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { readinessTimeout = startTimeout })
 	stateDir := t.TempDir()
-	_, _, err := startLifecycleHelper(t, "readiness-timeout", stateDir)
+	// Parent-side PID: under heavy parallelism (race builds) the parent can
+	// time out and reap the child before the child ever schedules, so the
+	// helper PID file may never exist. start() returns the PID it spawned.
+	pid, _, err := startLifecycleHelper(t, "readiness-timeout", stateDir)
 	if err == nil || !strings.Contains(err.Error(), "failed to start") {
 		t.Fatalf("start() error = %v, want failed-start error", err)
 	}
-	pid := readHelperPID(t, stateDir)
 	requirePIDFileAbsent(t, stateDir)
 	requireProcessGone(t, pid)
 	lockFile, held, lockErr := lockAcquire(filepath.Join(stateDir, lockFileName))
