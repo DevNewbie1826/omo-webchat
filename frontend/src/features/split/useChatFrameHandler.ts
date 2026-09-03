@@ -38,6 +38,7 @@ interface ChatFrameHandlerBindings {
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
   readonly externalRecoveryHistoryRef: Current<boolean>;
+  readonly endResync: () => void;
   readonly replaceMessages: (next: readonly UiMessage[]) => void;
   readonly replaceToolCalls: (next: Readonly<Record<string, ToolEntry>>) => void;
   readonly applyActivities: (next: ActivityState) => void;
@@ -115,6 +116,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.externalRecoveryReadyRef.current = true;
           completeExternalRecovery();
         }
+        // A manual re-sync ends at ready: the server re-emitted its binding
+        // and will replay history from scratch.
+        bindings.endResync();
         return;
       case "messageDelta":
         if (frame.delta.kind === "text_delta" && frame.delta.delta) {
@@ -239,6 +243,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (isHistoryTerminalError(frame)) {
           bindings.externalRecoveryPendingRef.current = false;
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
+          bindings.endResync();
         }
         // A dangling stored identity surfaces its branch candidates instead
         // of the raw failure. The state is never cleared by live frames.
@@ -316,6 +321,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.externalRecoveryHistoryRef.current = true;
           completeExternalRecovery();
         }
+        // Fallback for the re-sync busy marker: ready normally ends it, but
+        // the terminal entries page is the other proof of a landed replay.
+        bindings.endResync();
         const entries = bindings.pageBuffer.consume(frame.entries);
         const reconciliation = reconcileFrameHistory({
           entries,

@@ -117,6 +117,17 @@ export function ChatPane({
         )}
         <button
           type="button"
+          className="th-btn th-btn--ghost th-chat-resync-btn"
+          title={t("chat.resync")}
+          aria-label={t("chat.resync")}
+          aria-busy={chat.resyncBusy}
+          disabled={chat.resyncBusy || chat.running || chat.isCompacting}
+          onClick={() => chat.resync()}
+        >
+          {chat.resyncBusy ? t("chat.resyncBusy") : t("chat.resync")}
+        </button>
+        <button
+          type="button"
           className="th-btn-icon th-btn-icon--danger th-disconnect-btn"
           title={t("chat.disconnect")}
           aria-label={t("chat.disconnect")}

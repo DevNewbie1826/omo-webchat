@@ -126,6 +126,8 @@ export function useChatFrameState() {
   const externalRecoveryPendingRef = useRef(false);
   const externalRecoveryReadyRef = useRef(false);
   const externalRecoveryHistoryRef = useRef(false);
+  const resyncPendingRef = useRef(false);
+  const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
@@ -195,6 +197,29 @@ export function useChatFrameState() {
     setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
   };
 
+  // Manual re-sync follows the same hydration lifecycle as attach: the page
+  // buffer is dropped, notices stay gated, and the busy marker survives until
+  // the ready or terminal entries frame proves the replay landed (or a
+  // terminal history error proves it never will).
+  const beginResync = (): void => {
+    resyncPendingRef.current = true;
+    historyLoadedRef.current = false;
+    pageBuffer.reset();
+    setHistoryStatus("loading");
+    setError("");
+    setResyncBusy(true);
+  };
+  const endResync = (): void => {
+    if (!resyncPendingRef.current) return;
+    resyncPendingRef.current = false;
+    setResyncBusy(false);
+  };
+  const failResync = (): void => {
+    resyncPendingRef.current = false;
+    setResyncBusy(false);
+    setHistoryStatus((current) => current === "loading" ? "failed" : current);
+  };
+
   const armHistoryStall = (refresh: boolean): void => {
     if (historyStatus !== "loading") return;
     if (historyStallTimerRef.current !== null && !refresh) return;
@@ -229,6 +254,7 @@ export function useChatFrameState() {
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
     externalRecoveryHistoryRef,
+    endResync,
     replaceMessages,
     replaceToolCalls,
     applyActivities,
@@ -413,6 +439,10 @@ export function useChatFrameState() {
     reportError: setError,
     beginExternalWriteRecovery,
     failExternalWriteRecovery,
+    beginResync,
+    endResync,
+    failResync,
+    resyncBusy,
     armControl: ledger.arm,
     rejectControl: ledger.reject,
     confirmedModelKey: controls.confirmedModelKey,

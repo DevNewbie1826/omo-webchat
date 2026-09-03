@@ -211,6 +211,32 @@ export function useChatSession(
     }
   };
 
+  // Manual history refresh for a session advanced by another client: close
+  // and immediately re-create the same binding so the server replays its
+  // attach-time history hydration. Never mid-run — the rebind would tear
+  // down a live turn — and the busy marker ends at the ready or terminal
+  // entries frame, or on a terminal history error.
+  const resync = (): boolean => {
+    if (frameState.running) {
+      frameState.reportError("Cannot resync while the assistant is responding.");
+      return false;
+    }
+    if (frameState.isCompacting) {
+      frameState.reportError("Cannot resync while the conversation is compacting.");
+      return false;
+    }
+    frameState.beginResync();
+    if (!sendControl({ type: "chat.close", sessionId: session.id }, "Failed to resync the session.")) {
+      frameState.failResync();
+      return false;
+    }
+    if (!sendControl({ type: "chat.create", wsId: session.wsId, chatId: session.id }, "Failed to resync the session.")) {
+      frameState.failResync();
+      return false;
+    }
+    return true;
+  };
+
   const changeThinkingLevel = (level: string): boolean => {
     const restore = frameState.confirmedThinkingLevel();
     const requestId = nextRequestId();
@@ -311,6 +337,8 @@ export function useChatSession(
     disconnect,
     resume,
     reloadExternalWrite,
+    resync,
+    resyncBusy: frameState.resyncBusy,
     changeThinkingLevel,
     changeModel,
     respondApproval,

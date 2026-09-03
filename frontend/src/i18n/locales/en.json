@@ -170,6 +170,8 @@
   "chat.contextUsage": "Context",
   "chat.cacheHit": "Cache",
   "chat.compacting": "Compacting…",
+  "chat.resync": "Resync",
+  "chat.resyncBusy": "Resyncing…",
   "chat.missingOriginal": "Original session not found",
   "chat.missingOriginalElsewhere": "The original conversation lives inside another session file",
   "chat.missingOriginalNone": "No related session branches were found for this chat.",
