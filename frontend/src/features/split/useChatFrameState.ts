@@ -3,7 +3,7 @@ import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidat
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
-import { applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
+import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -128,7 +128,11 @@ export function useChatFrameState() {
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
-  const activitySideVersionsRef = useRef({ task: 0, dag: 0 });
+  const activityHydrationRef = useRef<{
+    readonly token: number;
+    readonly events: { readonly name: string; readonly data: unknown }[];
+  } | null>(null);
+  const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
@@ -209,7 +213,9 @@ export function useChatFrameState() {
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
-    activitySideVersionsRef,
+    bufferActivityEvent: (name, data) => {
+      activityHydrationRef.current?.events.push({ name, data });
+    },
     retryVersionRef,
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
@@ -239,20 +245,30 @@ export function useChatFrameState() {
     pushNotice,
   });
 
-  const beginActivityHydration = (): { readonly task: number; readonly dag: number } => ({
-    ...activitySideVersionsRef.current,
-  });
-  const hydrateActivities = (
-    token: { readonly task: number; readonly dag: number },
-    task: unknown,
-    dag: unknown,
-  ): void => {
+  // REST is the historical base, but every activity frame received after the
+  // request began is newer and must be replayed in arrival order. Full
+  // snapshots still suppress REST replacement for their own side.
+  const beginActivityHydration = (): number => {
+    const token = ++activityHydrationTokenRef.current;
+    activityHydrationRef.current = { token, events: [] };
+    return token;
+  };
+  const cancelActivityHydration = (token: number): void => {
+    if (activityHydrationRef.current?.token === token) activityHydrationRef.current = null;
+  };
+  const hydrateActivities = (token: number, task: unknown, dag: unknown): void => {
+    const hydration = activityHydrationRef.current;
+    if (hydration === null || hydration.token !== token) return;
+    activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    if (activitySideVersionsRef.current.task <= token.task) {
+    if (!hydration.events.some((event) => event.name === "omo.task.updated")) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (activitySideVersionsRef.current.dag <= token.dag) {
+    if (!hydration.events.some((event) => event.name === "omo.dag.updated")) {
       next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
+    }
+    for (const event of hydration.events) {
+      next = applyActivityEvent(next, event.name, event.data);
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };
@@ -368,6 +384,7 @@ export function useChatFrameState() {
     notices,
     handleFrame,
     beginActivityHydration,
+    cancelActivityHydration,
     hydrateActivities,
     submit,
     steer,

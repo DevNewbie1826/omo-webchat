@@ -126,4 +126,75 @@ describe("useChatSession historical activity hydration", () => {
     expect(current?.activities.tasks.has("task-old-history-task")).toBe(false);
     expect(current?.activities.dags.has("dag-history-dag")).toBe(true);
   });
+
+  it("replays dag activity that arrives while REST hydration is pending", async () => {
+    render([
+      {
+        type: "extensionEvent",
+        sessionId: session.id,
+        name: "omo.task.updated",
+        data: { tasks: [{ task_id: "task-live", name: "Live task", status: "running" }] },
+      },
+      {
+        type: "extensionEvent",
+        sessionId: session.id,
+        name: "omo.dag.updated",
+        data: {
+          runs: [{
+            run_id: "dag-live",
+            run_key: "live",
+            name: "Live DAG",
+            status: "running",
+            nodes: [{ id: "node-live", prompt: "work", depends_on: [], state: "running", task_id: "task-live" }],
+          }],
+        },
+      },
+    ]);
+
+    act(() => deliver({
+      type: "extensionEvent",
+      sessionId: session.id,
+      name: "omo.dag.activity",
+      data: {
+        runId: "dag-live",
+        nodeId: "node-live",
+        taskId: "task-live",
+        at: "2026-09-03T12:00:00.000Z",
+        activity: "tool",
+        currentTool: "bash",
+        lastAssistantLine: "still running",
+      },
+    }));
+
+    await act(async () => {
+      resolveFetch(new Response(JSON.stringify({
+        history: {
+          task: { tasks: [{ task_id: "task-live", name: "Live task", status: "running" }] },
+          dag: {
+            runs: [{
+              run_id: "dag-live",
+              run_key: "history",
+              name: "Live DAG",
+              status: "running",
+              nodes: [{ id: "node-live", prompt: "work", depends_on: [], state: "running", task_id: "task-live" }],
+            }],
+          },
+        },
+      }), { status: 200 }));
+      await Promise.resolve();
+    });
+
+    expect(current?.activities.tasks.get("task-live")?.liveProgress).toMatchObject({
+      activity: "tool",
+      currentTool: "bash",
+      lastAssistantLine: "still running",
+    });
+    expect(current?.activities.dags.has("dag-live")).toBe(true);
+    expect(current?.activities.dags.get("dag-live")?.nodes[0]).toMatchObject({
+      activity: "tool",
+      currentTool: "bash",
+      lastAssistantLine: "still running",
+      lastActivityAt: "2026-09-03T12:00:00.000Z",
+    });
+  });
 });

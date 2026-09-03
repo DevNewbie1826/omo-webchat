@@ -76,9 +76,12 @@ export function useChatSession(
     const token = frameState.beginActivityHydration();
     void getChatActivity(session.wsId, session.id, ctrl.signal).then(
       (activity) => frameState.hydrateActivities(token, activity.history.task, activity.history.dag),
-      () => undefined,
+      () => frameState.cancelActivityHydration(token),
     );
-    return () => ctrl.abort();
+    return () => {
+      ctrl.abort();
+      frameState.cancelActivityHydration(token);
+    };
   }, [session.id, session.wsId]);
 
   useEffect(() => {
