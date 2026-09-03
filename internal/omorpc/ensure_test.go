@@ -106,6 +106,14 @@ func TestEnsureHelperProcess(t *testing.T) {
 		}
 		_, _ = fmt.Fprintln(file, runtimeName)
 		_ = file.Close()
+		if envMarker := os.Getenv("OMORPC_ENSURE_ENV_MARKER"); envMarker != "" {
+			envFile, err := os.OpenFile(envMarker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatalf("helper open environment marker: %v", err)
+			}
+			_, _ = fmt.Fprintf(envFile, "%s\t%s\n", runtimeName, os.Getenv("OMO_MEMORY_HOME"))
+			_ = envFile.Close()
+		}
 		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
 		if runtimeName != "node" {
 			_ = os.Remove(socket)
@@ -679,6 +687,35 @@ func TestEnsureDaemonRuntimeLadderCleanupAndWinnerCache(t *testing.T) {
 	}
 	if got, want := strings.Fields(string(data)), []string{"automatic", "node", "node"}; !slices.Equal(got, want) {
 		t.Fatalf("runtime attempts = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureDaemonMemoryEnvironmentSurvivesRuntimeLadder(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	runtimeMarker := filepath.Join(dir, "runtimes")
+	envMarker := filepath.Join(dir, "environment")
+	memoryHome := filepath.Join(dir, "memory")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "runtime-ladder")
+	cfg.Env = append(cfg.Env,
+		"OMORPC_ENSURE_RUNTIME_MARKER="+runtimeMarker,
+		"OMORPC_ENSURE_CLEANUP_MARKER="+filepath.Join(dir, "cleanup"),
+		"OMORPC_ENSURE_ENV_MARKER="+envMarker,
+		"OMO_MEMORY_HOME="+memoryHome,
+	)
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+	data, err := os.ReadFile(envMarker)
+	if err != nil {
+		t.Fatalf("read environment attempts: %v", err)
+	}
+	want := "automatic\t" + memoryHome + "\nnode\t" + memoryHome + "\n"
+	if string(data) != want {
+		t.Fatalf("runtime memory environments = %q, want %q", data, want)
 	}
 }
 
