@@ -253,15 +253,19 @@ func TestDaemonReadinessTimeoutCleansUp(t *testing.T) {
 	readinessTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { readinessTimeout = startTimeout })
 	stateDir := t.TempDir()
-	// Parent-side PID: under heavy parallelism (race builds) the parent can
-	// time out and reap the child before the child ever schedules, so the
-	// helper PID file may never exist. start() returns the PID it spawned.
-	pid, _, err := startLifecycleHelper(t, "readiness-timeout", stateDir)
+	// Under heavy parallelism the parent can time out and reap the child
+	// before the child ever schedules, so the helper PID file may never
+	// exist; then the child is gone by construction (the parent reaped
+	// it) and the liveness assertion only applies when the file was
+	// written in time.
+	_, _, err := startLifecycleHelper(t, "readiness-timeout", stateDir)
 	if err == nil || !strings.Contains(err.Error(), "failed to start") {
 		t.Fatalf("start() error = %v, want failed-start error", err)
 	}
 	requirePIDFileAbsent(t, stateDir)
-	requireProcessGone(t, pid)
+	if pid, ok := readHelperPIDOrNil(t, stateDir); ok {
+		requireProcessGone(t, pid)
+	}
 	lockFile, held, lockErr := lockAcquire(filepath.Join(stateDir, lockFileName))
 	if lockErr != nil {
 		t.Fatalf("lockAcquire() after readiness timeout error = %v", lockErr)
@@ -379,4 +383,13 @@ func TestDaemonStopFallsBackToSIGKILL(t *testing.T) {
 	process.wait(t, true)
 	requirePIDFileAbsent(t, stateDir)
 	requireProcessGone(t, pid)
+}
+
+func readHelperPIDOrNil(t *testing.T, stateDir string) (int, bool) {
+	t.Helper()
+	pid, err := readPIDFile(filepath.Join(stateDir, daemonHelperPIDFile))
+	if err != nil {
+		return 0, false
+	}
+	return pid, true
 }
