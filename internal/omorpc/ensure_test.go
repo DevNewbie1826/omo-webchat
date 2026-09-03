@@ -740,6 +740,61 @@ func TestEnsureDaemonReapsAttemptDescendantsBeforeFallback(t *testing.T) {
 	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
 }
 
+func TestCloseBeforeCredentialRemainsUnknownUntilPostReapCleanup(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "closed-peer.sock")
+	provenance := newEndpointProvenance(socket)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
+	acceptedAndClosed := make(chan struct{}, 2)
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+			acceptedAndClosed <- struct{}{}
+		}
+	}()
+
+	credentialAfterClose := func(net.Conn) (int, error) {
+		select {
+		case <-acceptedAndClosed:
+			return 0, syscall.ENOTCONN
+		case <-time.After(testAwaitTimeout):
+			t.Fatal("peer did not close before credential lookup")
+			return 0, context.DeadlineExceeded
+		}
+	}
+	var identity socketIdentity
+	for attempt := 0; attempt < 2; attempt++ {
+		observed, stable, peer, authErr := authenticateSocketPathWithPeerPID(
+			context.Background(), socket, syscall.Getpgrp(), credentialAfterClose,
+		)
+		if !errors.Is(authErr, syscall.ENOTCONN) || !stable || peer != peerUnknown {
+			t.Fatalf("attempt %d authentication = stable:%v peer:%v err:%v, want stable unknown ENOTCONN", attempt+1, stable, peer, authErr)
+		}
+		provenance.observe(observed, stable, peer)
+		if got := provenance.provenance(observed); got != peerUnknown {
+			t.Fatalf("attempt %d provenance = %v, want unknown", attempt+1, got)
+		}
+		identity = observed
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := provenance.cleanupAfterReap(testAwaitTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatalf("unknown launch debris %+v survived identity-stable post-reap refusal", identity)
+	}
+}
+
 func TestRemoveOwnedSocketPreservesReplacementListener(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "replacement.sock")
@@ -996,13 +1051,13 @@ func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) 
 		}
 	}()
 
-	client, identity, stable, authenticated, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.process.Pid)
+	client, identity, stable, peer, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.process.Pid)
 	if err != nil {
 		t.Fatalf("authenticate replacement: %v", err)
 	}
 	_ = client.Close()
-	if !stable || authenticated {
-		t.Fatalf("replacement authentication = stable:%v authenticated:%v identity:%+v", stable, authenticated, identity)
+	if !stable || peer != peerForeign {
+		t.Fatalf("replacement authentication = stable:%v peer:%v identity:%+v", stable, peer, identity)
 	}
 	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
 		t.Fatalf("Stop: %v", err)

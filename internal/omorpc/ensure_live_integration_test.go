@@ -283,10 +283,16 @@ func directChildProcess(t *testing.T, supervisorPID int) (int, string) {
 		t.Fatalf("list supervisor children: %v", err)
 	}
 	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
 		var pid, ppid int
-		var command string
-		if _, err := fmt.Sscanf(strings.TrimSpace(line), "%d %d %s", &pid, &ppid, &command); err == nil && ppid == supervisorPID {
-			return pid, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fmt.Sprintf("%d %d", pid, ppid)))
+		if _, err := fmt.Sscan(fields[0], &pid); err != nil {
+			continue
+		}
+		if _, err := fmt.Sscan(fields[1], &ppid); err == nil && ppid == supervisorPID {
+			return pid, strings.Join(fields[2:], " ")
 		}
 	}
 	t.Fatalf("supervisor %d has no direct child: %s", supervisorPID, output)

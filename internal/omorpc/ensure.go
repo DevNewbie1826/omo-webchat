@@ -333,15 +333,15 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	defer cancel()
 	for {
 		// A raw peer check can acknowledge a launch-owned endpoint even when
-		// protocol negotiation fails. It can also permanently protect a live
-		// foreign endpoint from this attempt's cleanup.
-		identity, stable, authenticated, authErr := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
-		provenance.observe(identity, stable, authenticated, authErr == nil || !isSpawnableProbeError(authErr))
+		// protocol negotiation fails. Only a positively identified out-of-group
+		// peer can permanently protect an endpoint from this attempt's cleanup.
+		identity, stable, peer, _ := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
+		provenance.observe(identity, stable, peer)
 
-		client, identity, stable, authenticated, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
+		client, identity, stable, peer, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
 		if dialErr == nil && client != nil {
-			provenance.observe(identity, stable, authenticated, true)
-			if !stable {
+			provenance.observe(identity, stable, peer)
+			if !stable || peer == peerUnknown {
 				_ = client.Close()
 			} else {
 				owned := provenance.owns(identity)
@@ -410,41 +410,48 @@ func currentSocketIdentity(path string) (socketIdentity, bool) {
 	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
 }
 
+type peerProvenance uint8
+
+const (
+	peerUnknown peerProvenance = iota
+	peerOwned
+	peerForeign
+)
+
 type endpointProvenance struct {
 	path           string
 	baseline       socketIdentity
 	baselineExists bool
-	owned          map[socketIdentity]struct{}
-	foreign        map[socketIdentity]struct{}
+	peers          map[socketIdentity]peerProvenance
 }
 
 func newEndpointProvenance(path string) *endpointProvenance {
 	baseline, exists := currentSocketIdentity(path)
 	return &endpointProvenance{
 		path: path, baseline: baseline, baselineExists: exists,
-		owned: make(map[socketIdentity]struct{}), foreign: make(map[socketIdentity]struct{}),
+		peers: make(map[socketIdentity]peerProvenance),
 	}
 }
 
-func (p *endpointProvenance) observe(identity socketIdentity, stable, authenticated, live bool) {
-	if identity == (socketIdentity{}) || !stable {
+func (p *endpointProvenance) observe(identity socketIdentity, stable bool, peer peerProvenance) {
+	if identity == (socketIdentity{}) || !stable || peer == peerUnknown {
 		return
 	}
-	if live && !authenticated {
-		p.foreign[identity] = struct{}{}
-		delete(p.owned, identity)
+	if peer == peerForeign {
+		p.peers[identity] = peerForeign
 		return
 	}
-	if authenticated && (!p.baselineExists || identity != p.baseline) {
-		if _, protected := p.foreign[identity]; !protected {
-			p.owned[identity] = struct{}{}
-		}
+	if (!p.baselineExists || identity != p.baseline) && p.peers[identity] != peerForeign {
+		p.peers[identity] = peerOwned
 	}
+}
+
+func (p *endpointProvenance) provenance(identity socketIdentity) peerProvenance {
+	return p.peers[identity]
 }
 
 func (p *endpointProvenance) owns(identity socketIdentity) bool {
-	_, owned := p.owned[identity]
-	return owned
+	return p.provenance(identity) == peerOwned
 }
 
 // cleanupAfterReap is the only path that promotes an unacknowledged endpoint
@@ -455,16 +462,16 @@ func (p *endpointProvenance) cleanupAfterReap(timeout time.Duration) error {
 	if !exists {
 		return nil
 	}
-	if _, protected := p.foreign[identity]; !protected && (!p.baselineExists || identity != p.baseline) {
+	if p.provenance(identity) != peerForeign && (!p.baselineExists || identity != p.baseline) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		var dialer net.Dialer
 		conn, err := dialer.DialContext(ctx, "unix", p.path)
 		if conn != nil {
 			_ = conn.Close()
-			p.foreign[identity] = struct{}{}
+			p.peers[identity] = peerForeign
 		} else if after, stable := currentSocketIdentity(p.path); stable && after == identity && isSpawnableProbeError(err) {
-			p.owned[identity] = struct{}{}
+			p.peers[identity] = peerOwned
 		}
 	}
 	if !p.owns(identity) {
@@ -477,71 +484,81 @@ func (p *endpointProvenance) cleanupAfterReap(timeout time.Duration) error {
 // the path must name the same socket immediately before and after the dial.
 // A replacement after the first readiness handshake therefore cannot lend its
 // inode to the old authenticated connection.
-func probeAuthenticatedDaemon(ctx context.Context, cfg EnsureConfig, processGroup int) (*Client, socketIdentity, bool, bool, error) {
+func probeAuthenticatedDaemon(ctx context.Context, cfg EnsureConfig, processGroup int) (*Client, socketIdentity, bool, peerProvenance, error) {
 	before, exists := currentSocketIdentity(cfg.SocketPath)
 	if !exists {
-		return nil, socketIdentity{}, false, false, os.ErrNotExist
+		return nil, socketIdentity{}, false, peerUnknown, os.ErrNotExist
 	}
 	client, err := probeDaemon(ctx, cfg)
 	if err != nil {
-		return nil, socketIdentity{}, false, false, err
+		return nil, socketIdentity{}, false, peerUnknown, err
 	}
 	after, exists := currentSocketIdentity(cfg.SocketPath)
 	stable := exists && before == after
-	return client, before, stable, stable && clientPeerInProcessGroup(client, processGroup), nil
+	if !stable {
+		return client, before, false, peerUnknown, nil
+	}
+	return client, before, true, clientPeerProvenance(client, processGroup), nil
 }
 
-func clientPeerInProcessGroup(client *Client, processGroup int) bool {
-	pid, err := clientPeerPID(client)
-	if err != nil {
-		return false
-	}
-	if pid == processGroup {
-		return true
-	}
-	pgid, err := syscall.Getpgid(pid)
-	return err == nil && pgid == processGroup
-}
-
-func clientPeerPID(client *Client) (int, error) {
+func clientPeerProvenance(client *Client, processGroup int) peerProvenance {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if client.current == nil {
-		return 0, errors.New("client has no current connection")
+		return peerUnknown
 	}
-	return connectionPeerPID(client.current.conn)
+	return connectionPeerProvenance(client.current.conn, processGroup)
 }
 
 // authenticateSocketPath binds process-group authentication to one pathname
 // inode. Ownership is recorded only when the connected peer and both pathname
 // observations agree; an unrelated listener can never lend its inode to a
 // producer from our supervisor's process group.
-func authenticateSocketPath(ctx context.Context, path string, processGroup int) (socketIdentity, bool, bool, error) {
+func authenticateSocketPath(ctx context.Context, path string, processGroup int) (socketIdentity, bool, peerProvenance, error) {
+	return authenticateSocketPathWithPeerPID(ctx, path, processGroup, connectionPeerPID)
+}
+
+func authenticateSocketPathWithPeerPID(ctx context.Context, path string, processGroup int, peerPID func(net.Conn) (int, error)) (socketIdentity, bool, peerProvenance, error) {
 	before, exists := currentSocketIdentity(path)
 	if !exists {
-		return socketIdentity{}, false, false, os.ErrNotExist
+		return socketIdentity{}, false, peerUnknown, os.ErrNotExist
 	}
 	var dialer net.Dialer
 	conn, err := dialer.DialContext(ctx, "unix", path)
 	if err != nil {
 		after, stillExists := currentSocketIdentity(path)
-		return before, stillExists && before == after, false, err
+		return before, stillExists && before == after, peerUnknown, err
 	}
 	defer conn.Close()
 	after, exists := currentSocketIdentity(path)
 	stable := exists && before == after
 	if !stable {
-		return before, false, false, nil
+		return before, false, peerUnknown, nil
 	}
+	peer, peerErr := peerPID(conn)
+	return before, true, classifyPeerProvenance(peer, peerErr, processGroup), peerErr
+}
+
+func connectionPeerProvenance(conn net.Conn, processGroup int) peerProvenance {
 	pid, err := connectionPeerPID(conn)
-	if err != nil {
-		return before, true, false, err
+	return classifyPeerProvenance(pid, err, processGroup)
+}
+
+func classifyPeerProvenance(pid int, credentialErr error, processGroup int) peerProvenance {
+	if credentialErr != nil || pid <= 0 {
+		return peerUnknown
 	}
 	if pid == processGroup {
-		return before, true, true, nil
+		return peerOwned
 	}
 	pgid, err := syscall.Getpgid(pid)
-	return before, true, err == nil && pgid == processGroup, err
+	if err != nil {
+		return peerUnknown
+	}
+	if pgid == processGroup {
+		return peerOwned
+	}
+	return peerForeign
 }
 
 func connectionPeerPID(conn net.Conn) (int, error) {
