@@ -296,11 +296,25 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir 
 	}
 	for _, sess := range disk {
 		source := sessionHistorySourceDiscovered
+		suppress := false
 		for _, chat := range chats {
-			if cursorstore.IsOwnedSession(chat, ownedDir) && sessionMatchesChat(sess, chat) {
+			if !sessionMatchesChat(sess, chat) {
+				continue
+			}
+			if cursorstore.IsOwnedSession(chat, ownedDir) {
 				source = sessionHistorySourceAlreadyAdopted
 				break
 			}
+			// An in-place chat already represents the catalog's original row;
+			// do not emit a duplicate discovered item. sessionMatchesChat
+			// accepts either its durable identity or original path.
+			if cursorstore.IsInPlaceSession(chat) {
+				suppress = true
+				break
+			}
+		}
+		if suppress {
+			continue
 		}
 		items = append(items, sessionHistoryItem{
 			ID:             sess.ID,

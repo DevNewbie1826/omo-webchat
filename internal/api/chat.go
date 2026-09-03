@@ -36,7 +36,7 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.RejectedResumeIdentity != nil {
-		writeError(w, http.StatusBadRequest, "discovered sessions must be adopted")
+		writeError(w, http.StatusBadRequest, "resumeIdentity is opened from the workspace session catalog")
 		return
 	}
 	provider := strings.TrimSpace(req.Provider)
