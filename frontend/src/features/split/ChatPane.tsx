@@ -10,7 +10,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
-import { GoalBanner } from "./GoalBanner";
+import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
 import { ModelPicker } from "./ModelPicker";
@@ -136,7 +136,6 @@ export function ChatPane({
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
-        {chat.goal && <GoalBanner goal={chat.goal} />}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}
@@ -148,6 +147,7 @@ export function ChatPane({
           restoreVersion={chat.restoreVersion}
           focused={focused}
         />
+        <GoalBar goal={chat.goal} />
         <ActivityShelf activities={chat.activities} />
         <div className="th-chat-status" role="status" aria-live="polite">
           {chat.running && (

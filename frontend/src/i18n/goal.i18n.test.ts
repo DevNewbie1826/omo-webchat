@@ -8,6 +8,8 @@ const KEYS = [
   "chat.goal.statusComplete",
   "chat.goal.statusBlocked",
   "chat.goal.blockedReason",
+  "chat.goal.expand",
+  "chat.goal.collapse",
 ] as const;
 
 describe("goal banner i18n keys", () => {

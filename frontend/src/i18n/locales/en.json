@@ -184,6 +184,8 @@
   "chat.goal.statusComplete": "Complete",
   "chat.goal.statusBlocked": "Blocked",
   "chat.goal.blockedReason": "Blocked reason",
+  "chat.goal.expand": "Expand goal",
+  "chat.goal.collapse": "Collapse goal",
   "chat.placeholder": "Message {provider}…",
   "chat.send": "Send",
   "chat.steer": "Steer",
