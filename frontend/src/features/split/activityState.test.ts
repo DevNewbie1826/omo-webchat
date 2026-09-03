@@ -198,24 +198,26 @@ describe("activity hydration buffer", () => {
     expect(buffer.dagOverflowed).toBe(true);
     expect(buffer.events[0]?.key).toContain("run-25:node-25");
   });
-it("overflow of no-op events does not fence fresh REST history over stale cache", () => {
-  const buffer = createActivityHydrationBuffer();
-  for (let i = 0; i < 125; i += 1) {
-    bufferActivityHydrationEvent(buffer, {
-      name: "omo.dag.heartbeat",
-      data: { runId: "absent-run", nodeId: `node-${i}` },
-      side: "dag",
-      key: `omo.dag.heartbeat:absent-run:node-${i}`,
-      snapshot: false,
-    });
-  }
-  expect(buffer.dropped).toBeGreaterThan(0);
-  // heartbeats on an absent run never mutate task state; task overflow must
-  // stay unset so a stale cached task map cannot suppress the REST base.
-  expect(buffer.taskOverflowed).toBe(false);
-  // dag side WAS touched by the heartbeat stream, so its fence stays armed.
-  expect(buffer.dagOverflowed).toBe(true);
-});
+it("overflow of no-op dag.activity frames does not fence fresh REST history over stale cache", () => {
+    const buffer = createActivityHydrationBuffer();
+    // 125 valid omo.dag.activity frames targeting ABSENT runs: the reducer
+    // is a no-op for every one of them, so neither domain was mutated and
+    // overflow fencing must stay disarmed even over stale cached rows.
+    for (let i = 0; i < 125; i += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: "absent-run", nodeId: "node", at: "2026-09-04T00:00:00Z", activity: "probe",
+      });
+      expect(event).not.toBeNull();
+      bufferActivityHydrationEvent(buffer, {
+        ...event!,
+        mutatedTask: false,
+        mutatedDag: false,
+      });
+    }
+    expect(buffer.dropped).toBe(0); // same key coalesces — see R5 heartbeat probe
+    expect(buffer.taskOverflowed).toBe(false);
+    expect(buffer.dagOverflowed).toBe(false);
+  });
 
 
   it("coalesces updates for the same activity id while preserving partial fields", () => {

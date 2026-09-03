@@ -42,6 +42,9 @@ export interface BufferedActivityEvent {
   readonly side: "task" | "dag";
   readonly key: string;
   readonly snapshot: boolean;
+  /** Actual reducer mutation bits (post-apply), set by the buffering caller. */
+  mutatedTask?: boolean;
+  mutatedDag?: boolean;
 }
 
 export interface ActivityHydrationBuffer {
@@ -107,14 +110,19 @@ export function bufferActivityHydrationEvent(
   }
   const previousIndex = buffer.events.findIndex((item) => item.key === event.key);
   let nextEvent = event;
-  let mutatedTask = event.side === "task" || event.name === "omo.dag.activity";
-  let mutatedDag = event.side === "dag" || event.name === "omo.dag.activity";
+  const mutatedTask = event.mutatedTask ?? (event.side === "task" || event.name === "omo.dag.activity");
+  const mutatedDag = event.mutatedDag ?? (event.side === "dag" || event.name === "omo.dag.activity");
   if (previousIndex >= 0) {
     const previous = buffer.events[previousIndex]!;
     buffer.events.splice(previousIndex, 1);
     if (!event.snapshot && typeof previous.data === "object" && previous.data !== null
       && typeof event.data === "object" && event.data !== null) {
-      nextEvent = { ...event, data: { ...previous.data, ...event.data } };
+      nextEvent = {
+        ...event,
+        data: { ...previous.data, ...event.data },
+        mutatedTask: (event.mutatedTask ?? mutatedTask) || (previous.mutatedTask ?? false),
+        mutatedDag: (event.mutatedDag ?? mutatedDag) || (previous.mutatedDag ?? false),
+      };
     }
   }
   buffer.events.push(nextEvent);
@@ -129,10 +137,13 @@ export function bufferActivityHydrationEvent(
     // Overflow protection only guards domains the dropped event actually
     // mutated — stale cached rows from before the fetch must not fence a
     // fresh REST base when every buffered event was a no-op for them.
-    if ((dropped?.side === "task" || dropped?.name === "omo.dag.activity") && buffer.taskTouched) {
+    if ((dropped?.side === "task" || dropped?.name === "omo.dag.activity")
+      && (dropped?.mutatedTask ?? buffer.taskTouched)) {
       buffer.taskOverflowed = true;
     }
-    if (dropped?.side === "dag" && buffer.dagTouched) buffer.dagOverflowed = true;
+    if (dropped?.side === "dag" && (dropped?.mutatedDag ?? buffer.dagTouched)) {
+      buffer.dagOverflowed = true;
+    }
   }
 }
 
