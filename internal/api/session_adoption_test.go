@@ -885,6 +885,42 @@ func TestAdoptWorkspaceSessionIsIdempotentAndCatalogMarksSource(t *testing.T) {
 	}
 }
 
+func TestAdoptExistingChatReturnsProvenanceDestinationAfterTurnAppend(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	sourcePath := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-existing-drift", "")
+	source, ok := findDiskSession(ws.Path, "durable-existing-drift", sourcePath)
+	if !ok {
+		t.Fatal("source missing from disk catalog")
+	}
+	result, err := adoptcopy.Adopt(t.Context(), sourcePath, st.OwnedSessionDir(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := cursorstore.Chat{ID: "chat-existing-drift", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: result.Path, DurableSessionID: source.ID, SessionProvenance: cursorstore.SessionProvenanceAdopted, Name: "existing", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(result.Path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"type\":\"message\",\"id\":\"web-turn\",\"parentId\":null}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/workspaces/"+ws.ID+"/sessions/adopt", nil)
+	got, err := s.adoptExistingChat(request, chat, source, st.OwnedSessionDir())
+	if err != nil || got.ID != chat.ID || got.SessionFile != result.Path {
+		t.Fatalf("re-adopt existing drifted destination = %+v, %v", got, err)
+	}
+}
+
 func TestConcurrentWorkspaceSessionAdoptionsCreateOneChat(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	agentDir := t.TempDir()

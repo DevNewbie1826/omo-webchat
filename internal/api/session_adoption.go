@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -17,6 +18,29 @@ type adoptWorkspaceSessionRequest struct {
 	Name           string `json:"name"`
 	ResumeIdentity string `json:"resumeIdentity"`
 }
+
+type openWorkspaceSessionRequest struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	ResumeIdentity string `json:"resumeIdentity"`
+	Force          bool   `json:"force"`
+}
+
+type sessionActivity struct {
+	SizeDelta      int64
+	MtimeDeltaNano int64
+	Changed        bool
+}
+
+type sessionActiveResponse struct {
+	State          string `json:"state"`
+	SizeDelta      int64  `json:"sizeDelta"`
+	MtimeDeltaNano int64  `json:"mtimeDeltaNano"`
+}
+
+type sessionActivityCheck func(context.Context, string, time.Duration) (sessionActivity, error)
+
+const takeoverActivityWindow = 250 * time.Millisecond
 
 type adoptionErrorResponse struct {
 	Error string         `json:"error"`
@@ -130,6 +154,17 @@ func (s *Server) adoptExistingChat(r *http.Request, chat cursorstore.Chat, sourc
 		s.chatLifecycleMu.Unlock()
 		return cursorstore.Chat{}, cursorstore.ErrNotFound
 	}
+	// Once provenance binds this chat to the deterministic owned destination,
+	// later web turns are expected to change its hash. That is idempotent
+	// re-adoption, not an untracked destination collision.
+	destination := filepath.Join(ownedDir, adoptcopy.DestinationName(source.ID))
+	if current.SessionFile == destination && cursorstore.IsOwnedSession(current, ownedDir) {
+		info, statErr := os.Lstat(destination)
+		if statErr == nil && info.Mode().IsRegular() {
+			s.chatLifecycleMu.Unlock()
+			return current, nil
+		}
+	}
 	s.bumpChatLifecycleVersion(chat.ID)
 	s.chatLifecycleMu.Unlock()
 	afterAdoptionInvalidated(chat.ID)
@@ -159,6 +194,125 @@ func (s *Server) writeAdoptionTransitionError(w http.ResponseWriter, err error) 
 		return
 	}
 	s.writeStoreError(w, err)
+}
+
+// handleOpenWorkspaceSession binds a catalog-discovered session directly to
+// its original file. Validation is read-only; the provider is opened later by
+// the normal chat.create bridge flow.
+func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Request) {
+	ws, err := s.cursors.GetWorkspace(r.PathValue("wsId"))
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	var req openWorkspaceSessionRequest
+	if decodeJSON(r, &req) != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	source, ok := findDiskSession(ws.Path, strings.TrimSpace(req.ID), strings.TrimSpace(req.ResumeIdentity))
+	if !ok {
+		writeError(w, http.StatusBadRequest, "session does not belong to workspace catalog")
+		return
+	}
+	if !req.Force {
+		activity, activityErr := s.activityCheck(r.Context(), source.Path, takeoverActivityWindow)
+		if activityErr != nil {
+			s.writeAdoptionError(w, activityErr)
+			return
+		}
+		if activity.Changed || activity.SizeDelta != 0 || activity.MtimeDeltaNano != 0 {
+			writeJSON(w, http.StatusConflict, sessionActiveResponse{State: "session-active", SizeDelta: activity.SizeDelta, MtimeDeltaNano: activity.MtimeDeltaNano})
+			return
+		}
+	}
+	if _, err := adoptcopy.Validate(r.Context(), source.Path, source.ID); err != nil {
+		s.writeAdoptionError(w, err)
+		return
+	}
+
+	s.adoptionMu.Lock()
+	defer s.adoptionMu.Unlock()
+	var existing *cursorstore.Chat
+	for _, candidate := range s.cursors.ListChats(ws.ID) {
+		candidate := candidate
+		if cursorstore.IsInPlaceSession(candidate) && candidate.SessionFile == source.Path && candidate.DurableSessionID == source.ID {
+			writeJSON(w, http.StatusOK, projectChat(candidate))
+			return
+		}
+		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+			existing = &candidate
+		}
+	}
+	if existing != nil {
+		chat, transitionErr := s.openExistingChat(r.Context(), *existing, source)
+		if transitionErr != nil {
+			s.writeStoreError(w, transitionErr)
+			return
+		}
+		writeJSON(w, http.StatusOK, projectChat(chat))
+		return
+	}
+
+	name := strings.TrimSpace(req.Name)
+	placeholder := name == ""
+	if placeholder {
+		name = readSessionName(source.Path)
+	}
+	if name == "" {
+		name = s.defaultChatName(ws)
+	}
+	id, err := newID("chat-")
+	if err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	chat := cursorstore.Chat{ID: id, WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source.Path, DurableSessionID: source.ID, SessionProvenance: cursorstore.SessionProvenanceInPlace, Name: name, NameSource: cursorstore.NameSourceAuto, TitleIsPlaceholder: placeholder, CreatedAt: time.Now().UnixMilli()}
+	if err := s.cursors.SaveChat(chat); err != nil {
+		s.writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, projectChat(chat))
+}
+
+func (s *Server) openExistingChat(ctx context.Context, chat cursorstore.Chat, source diskSession) (cursorstore.Chat, error) {
+	s.chatLifecycleMu.Lock()
+	current, err := s.cursors.GetChat(chat.ID)
+	if err != nil || current.WorkspaceID != chat.WorkspaceID || s.chatDeleting[chat.ID] {
+		s.chatLifecycleMu.Unlock()
+		return cursorstore.Chat{}, cursorstore.ErrNotFound
+	}
+	s.bumpChatLifecycleVersion(chat.ID)
+	s.chatLifecycleMu.Unlock()
+	install := func() error { return s.cursors.UpdateInPlaceIdentity(chat.ID, source.Path, source.ID) }
+	if s.manager != nil {
+		err = s.manager.StopAndMutateContext(ctx, chat.ID, install)
+	} else {
+		err = install()
+	}
+	if err != nil {
+		return cursorstore.Chat{}, err
+	}
+	return s.cursors.GetChat(chat.ID)
+}
+
+func observeSessionActivity(ctx context.Context, path string, window time.Duration) (sessionActivity, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return sessionActivity{}, &adoptcopy.Error{Kind: adoptcopy.KindIO, Op: "stat activity source", Path: path, Err: errors.Join(adoptcopy.ErrIO, err)}
+	}
+	timer := time.NewTimer(window)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return sessionActivity{}, ctx.Err()
+	case <-timer.C:
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return sessionActivity{}, &adoptcopy.Error{Kind: adoptcopy.KindIO, Op: "restat activity source", Path: path, Err: errors.Join(adoptcopy.ErrIO, err)}
+	}
+	return sessionActivity{SizeDelta: after.Size() - before.Size(), MtimeDeltaNano: after.ModTime().Sub(before.ModTime()).Nanoseconds(), Changed: !os.SameFile(before, after)}, nil
 }
 
 func findDiskSession(cwd, id, path string) (diskSession, bool) {

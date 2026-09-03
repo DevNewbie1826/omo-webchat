@@ -256,11 +256,15 @@ type ErrorFrame struct {
 	// FailedRpcCommand — provider command string, open on purpose
 	Command *string `json:"command,omitempty"`
 	// resume_failed only: stored identity path no longer exists
-	Dangling  *bool   `json:"dangling,omitempty"`
+	Dangling *bool `json:"dangling,omitempty"`
+	// external-write-detected only: daemon session leaf
+	KnownLeaf *string `json:"knownLeaf,omitempty"`
 	Message   string  `json:"message"`
-	RequestID *string `json:"requestId,omitempty"`
-	SessionID *string `json:"sessionId,omitempty"`
-	Type      string  `json:"type"`
+	// external-write-detected only: disk session leaf
+	ObservedLeaf *string `json:"observedLeaf,omitempty"`
+	RequestID    *string `json:"requestId,omitempty"`
+	SessionID    *string `json:"sessionId,omitempty"`
+	Type         string  `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1053,7 +1057,7 @@ func (v *ErrorFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"candidates", "code", "command", "dangling", "message", "requestId", "sessionId", "type"}, []string{}, []string{"candidates"})
+	extra, err := captureExtraFields(data, []string{"candidates", "code", "command", "dangling", "knownLeaf", "message", "observedLeaf", "requestId", "sessionId", "type"}, []string{}, []string{"candidates"})
 	if err != nil {
 		return err
 	}
@@ -1807,38 +1811,39 @@ func (u UnknownFrame) clientFrame()         {}
 type ErrorCode = string
 
 const (
-	ErrorCodePIEof               ErrorCode = "pi_eof"
-	ErrorCodeResumeFailed        ErrorCode = "resume_failed"
-	ErrorCodeSessionUnloaded     ErrorCode = "session_unloaded"
-	ErrorCodeSessionMismatch     ErrorCode = "session_mismatch"
-	ErrorCodePromptInFlight      ErrorCode = "prompt_in_flight"
-	ErrorCodeCompactionInFlight  ErrorCode = "compaction_in_flight"
-	ErrorCodeProviderError       ErrorCode = "provider_error"
-	ErrorCodeUnsupportedProvider ErrorCode = "unsupported_provider"
-	ErrorCodePersistFailed       ErrorCode = "persist_failed"
-	ErrorCodeDecodeFailed        ErrorCode = "decode_failed"
-	ErrorCodeIncompleteHistory   ErrorCode = "incomplete_history"
-	ErrorCodeAdoptionRequired    ErrorCode = "adoption_required"
-	ErrorCodeBadFrame            ErrorCode = "bad_frame"
-	ErrorCodeUnknownType         ErrorCode = "unknown_type"
-	ErrorCodeBadCreate           ErrorCode = "bad_create"
-	ErrorCodeBadProvider         ErrorCode = "bad_provider"
-	ErrorCodeNoWorkspace         ErrorCode = "no_workspace"
-	ErrorCodeNoChat              ErrorCode = "no_chat"
-	ErrorCodeStartFailed         ErrorCode = "start_failed"
-	ErrorCodeInitializeFailed    ErrorCode = "initialize_failed"
-	ErrorCodeProviderOverflow    ErrorCode = "provider_overflow"
-	ErrorCodeProviderTimeout     ErrorCode = "provider_timeout"
-	ErrorCodeBadApproval         ErrorCode = "bad_approval"
-	ErrorCodeBadResume           ErrorCode = "bad_resume"
-	ErrorCodeBadSend             ErrorCode = "bad_send"
-	ErrorCodeBadSet              ErrorCode = "bad_set"
-	ErrorCodeSetModelFailed      ErrorCode = "set_model_failed"
-	ErrorCodeSetThinkingFailed   ErrorCode = "set_thinking_failed"
-	ErrorCodeApprovalFailed      ErrorCode = "approval_failed"
-	ErrorCodeNoSession           ErrorCode = "no_session"
-	ErrorCodeSendFailed          ErrorCode = "send_failed"
-	ErrorCodeCompactFailed       ErrorCode = "compact_failed"
+	ErrorCodePIEof                 ErrorCode = "pi_eof"
+	ErrorCodeResumeFailed          ErrorCode = "resume_failed"
+	ErrorCodeSessionUnloaded       ErrorCode = "session_unloaded"
+	ErrorCodeSessionMismatch       ErrorCode = "session_mismatch"
+	ErrorCodePromptInFlight        ErrorCode = "prompt_in_flight"
+	ErrorCodeCompactionInFlight    ErrorCode = "compaction_in_flight"
+	ErrorCodeProviderError         ErrorCode = "provider_error"
+	ErrorCodeUnsupportedProvider   ErrorCode = "unsupported_provider"
+	ErrorCodePersistFailed         ErrorCode = "persist_failed"
+	ErrorCodeDecodeFailed          ErrorCode = "decode_failed"
+	ErrorCodeIncompleteHistory     ErrorCode = "incomplete_history"
+	ErrorCodeExternalWriteDetected ErrorCode = "external-write-detected"
+	ErrorCodeAdoptionRequired      ErrorCode = "adoption_required"
+	ErrorCodeBadFrame              ErrorCode = "bad_frame"
+	ErrorCodeUnknownType           ErrorCode = "unknown_type"
+	ErrorCodeBadCreate             ErrorCode = "bad_create"
+	ErrorCodeBadProvider           ErrorCode = "bad_provider"
+	ErrorCodeNoWorkspace           ErrorCode = "no_workspace"
+	ErrorCodeNoChat                ErrorCode = "no_chat"
+	ErrorCodeStartFailed           ErrorCode = "start_failed"
+	ErrorCodeInitializeFailed      ErrorCode = "initialize_failed"
+	ErrorCodeProviderOverflow      ErrorCode = "provider_overflow"
+	ErrorCodeProviderTimeout       ErrorCode = "provider_timeout"
+	ErrorCodeBadApproval           ErrorCode = "bad_approval"
+	ErrorCodeBadResume             ErrorCode = "bad_resume"
+	ErrorCodeBadSend               ErrorCode = "bad_send"
+	ErrorCodeBadSet                ErrorCode = "bad_set"
+	ErrorCodeSetModelFailed        ErrorCode = "set_model_failed"
+	ErrorCodeSetThinkingFailed     ErrorCode = "set_thinking_failed"
+	ErrorCodeApprovalFailed        ErrorCode = "approval_failed"
+	ErrorCodeNoSession             ErrorCode = "no_session"
+	ErrorCodeSendFailed            ErrorCode = "send_failed"
+	ErrorCodeCompactFailed         ErrorCode = "compact_failed"
 )
 
 // DurableNoticeKind values, from notice-kinds.json.
@@ -2071,7 +2076,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "error":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "message": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "knownLeaf": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "observedLeaf": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
 				return nil, err
 			}
 		case "notice":

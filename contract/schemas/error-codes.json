@@ -17,6 +17,7 @@
         "persist_failed",
         "decode_failed",
         "incomplete_history",
+        "external-write-detected",
         "adoption_required",
         "bad_frame",
         "unknown_type",

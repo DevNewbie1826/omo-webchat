@@ -88,11 +88,35 @@ func Adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	return adopt(ctx, sourcePath, destinationDir, expectedSessionID, copyHooks{})
 }
 
+// Validate checks the same bounded header, active-tree, and size invariants as
+// Adopt without creating a destination or copying the session into web state.
+func Validate(ctx context.Context, sourcePath, expectedSessionID string) (Result, error) {
+	if ctx == nil || sourcePath == "" || expectedSessionID == "" {
+		return Result{}, fail(KindInvalidSource, "validate", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("context, source, and expected session id are required")))
+	}
+	metadata, _, err := validateSource(ctx, sourcePath, MaxSourceBytes)
+	if err != nil {
+		return Result{}, err
+	}
+	if metadata.Header.ID != expectedSessionID {
+		return Result{}, fail(KindInvalidSource, "validate expected session id", sourcePath, 0, 0, errors.Join(ErrInvalidSource, errors.New("session header id differs from expected durable session id")))
+	}
+	return Result{SessionID: metadata.Header.ID, Path: sourcePath}, nil
+}
+
+// TakeoverSnapshot atomically records the newest verified, bounded takeover
+// backup. The deterministic destination keeps one file per durable session;
+// Session calls this only before its first provider-side mutation.
+func TakeoverSnapshot(ctx context.Context, sourcePath, destinationDir, expectedSessionID string) (Result, error) {
+	return adopt(ctx, sourcePath, destinationDir, expectedSessionID, copyHooks{replaceExisting: true})
+}
+
 type copyHooks struct {
-	afterChunk    func(int64)
-	beforePublish func()
-	afterPublish  func()
-	sourceLimit   int64
+	afterChunk      func(int64)
+	beforePublish   func()
+	afterPublish    func()
+	sourceLimit     int64
+	replaceExisting bool
 }
 
 func (h copyHooks) limit() int64 {
@@ -149,7 +173,9 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	destinationName := DestinationName(result.SessionID)
 
 	if _, err := destination.Lstat(destinationName); err == nil {
-		return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+		if !hooks.replaceExisting {
+			return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Result{}, fail(KindIO, "inspect destination", result.Path, 0, 0, errors.Join(ErrIO, err))
 	}
@@ -192,20 +218,28 @@ func adopt(ctx context.Context, sourcePath, destinationDir, expectedSessionID st
 	if hooks.beforePublish != nil {
 		hooks.beforePublish()
 	}
-	// A hard link is an atomic no-replace publication on both Darwin and Linux.
-	// Unlike Rename, it cannot clobber a destination introduced by another
-	// process between inspection and publication.
-	if err := destination.Link(tmpName, destinationName); err != nil {
-		if _, statErr := destination.Lstat(destinationName); statErr == nil {
-			return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+	if hooks.replaceExisting {
+		if err := destination.Rename(tmpName, destinationName); err != nil {
+			return Result{}, fail(KindIO, "replace snapshot", result.Path, 0, 0, errors.Join(ErrIO, err))
 		}
-		return Result{}, fail(KindIO, "publish copy", result.Path, 0, 0, errors.Join(ErrIO, err))
+		published = true
+		tmpName = ""
+	} else {
+		// A hard link is an atomic no-replace publication on both Darwin and
+		// Linux. Unlike Rename, it cannot clobber a destination introduced by
+		// another process between inspection and publication.
+		if err := destination.Link(tmpName, destinationName); err != nil {
+			if _, statErr := destination.Lstat(destinationName); statErr == nil {
+				return verifyExisting(ctx, destination, destinationName, result, sourceInfo, sourceHash, limit)
+			}
+			return Result{}, fail(KindIO, "publish copy", result.Path, 0, 0, errors.Join(ErrIO, err))
+		}
+		published = true
+		if err := destination.Remove(tmpName); err != nil {
+			return Result{}, fail(KindIO, "remove staging link", tmpName, 0, 0, errors.Join(ErrIO, err))
+		}
+		tmpName = ""
 	}
-	published = true
-	if err := destination.Remove(tmpName); err != nil {
-		return Result{}, fail(KindIO, "remove staging link", tmpName, 0, 0, errors.Join(ErrIO, err))
-	}
-	tmpName = ""
 	if err := syncRoot(destination); err != nil {
 		return Result{}, fail(KindIO, "fsync destination directory", destinationDir, 0, 0, errors.Join(ErrIO, err))
 	}

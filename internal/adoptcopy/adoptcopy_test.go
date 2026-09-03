@@ -66,6 +66,46 @@ func TestAdoptPublishesVerifiedCopyAndIsIdempotent(t *testing.T) {
 	assertOnlyPublishedFile(t, destination, first.Path)
 }
 
+func TestTakeoverSnapshotReplacesPriorSnapshotWithNewest(t *testing.T) {
+	source := writeSession(t, header+"\n"+`{"type":"message","id":"root","parentId":null}`+"\n")
+	destination := filepath.Join(t.TempDir(), "takeover-backups")
+	before, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := TakeoverSnapshot(context.Background(), source, destination, "durable-session-1")
+	if err != nil || !first.Created {
+		t.Fatalf("first snapshot = %+v, %v", first, err)
+	}
+	file, err := os.OpenFile(source, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"type":"message","id":"new","parentId":"root"}` + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := TakeoverSnapshot(context.Background(), source, destination, "durable-session-1")
+	if err != nil || !second.Created || second.Path != first.Path {
+		t.Fatalf("second snapshot = %+v, %v", second, err)
+	}
+	backup, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(backup, before) || !bytes.Equal(backup, latest) {
+		t.Fatal("takeover snapshot did not retain only the newest restore point")
+	}
+	assertOnlyPublishedFile(t, destination, first.Path)
+}
+
 func TestAdoptToleratesTornFinalLine(t *testing.T) {
 	contents := header + "\n" +
 		`{"type":"message","id":"root","parentId":null}` + "\n" +

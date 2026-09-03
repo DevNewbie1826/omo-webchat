@@ -321,6 +321,8 @@
           "type": "boolean",
           "description": "resume_failed only: stored identity path no longer exists"
         },
+        "knownLeaf": { "type": "string", "description": "external-write-detected only: daemon session leaf" },
+        "observedLeaf": { "type": "string", "description": "external-write-detected only: disk session leaf" },
         "candidates": {
           "type": "array",
           "items": { "$ref": "shared-types.json#/$defs/ResumeCandidate" },

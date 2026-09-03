@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/lxzan/gws"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
@@ -824,7 +826,7 @@ func (c chatRef) CWD() string    { return c.cwd }
 type CursorStore cursorstore.Store
 
 func sessionCursor(c cursorstore.Chat) session.Cursor {
-	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder}
+	return session.Cursor{SessionFile: c.SessionFile, DurableSessionID: c.DurableSessionID, Name: c.Name, NameSource: c.NameSource, TitleIsPlaceholder: c.TitleIsPlaceholder, InPlace: cursorstore.IsInPlaceSession(c)}
 }
 
 func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cursor, error) {
@@ -855,6 +857,15 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 }
 func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
 	return (*cursorstore.Store)(s).UpdateIdentity(id, sessionFile, durableID)
+}
+func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
+	store := (*cursorstore.Store)(s)
+	chat, err := store.GetChat(id)
+	if err != nil || !cursorstore.IsInPlaceSession(chat) {
+		return err
+	}
+	_, err = adoptcopy.TakeoverSnapshot(ctx, chat.SessionFile, filepath.Join(store.StateDir(), "takeover-backups"), chat.DurableSessionID)
+	return err
 }
 func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) error {
 	return (*cursorstore.Store)(s).UpdateName(id, name, source)
