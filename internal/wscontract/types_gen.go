@@ -185,6 +185,28 @@ type ApprovalFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+// ChatGoalFrame — Live goal state for the bound chat, pushed when the underlying goal document changes while the session is attached. goal is null when the chat has no readable goal.
+type ChatGoalFrame struct {
+	Goal      *ChatGoalState `json:"goal"`
+	SessionID string         `json:"sessionId"`
+	Type      string         `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// ChatGoalState — Projected goal state: bounded objective text, live status (active, complete, blocked as observed by live protocol probing), blocked reason when present, and unix-second timestamps.
+type ChatGoalState struct {
+	BlockedReason      *string `json:"blockedReason,omitempty"`
+	CompletedAt        *int64  `json:"completedAt,omitempty"`
+	CreatedAt          *int64  `json:"createdAt,omitempty"`
+	Objective          string  `json:"objective"`
+	ObjectiveTruncated *bool   `json:"objectiveTruncated,omitempty"`
+	Status             string  `json:"status"`
+	UpdatedAt          *int64  `json:"updatedAt,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type ChatNameFrame struct {
 	Name      string     `json:"name"`
 	Origin    NameOrigin `json:"origin"`
@@ -925,6 +947,42 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 
 func (v ApprovalFrame) MarshalJSON() ([]byte, error) {
 	type plain ApprovalFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatGoalFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatGoalFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"goal", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatGoalFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatGoalFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatGoalState) UnmarshalJSON(data []byte) error {
+	type plain ChatGoalState
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"blockedReason", "completedAt", "createdAt", "objective", "objectiveTruncated", "status", "updatedAt"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatGoalState) MarshalJSON() ([]byte, error) {
+	type plain ChatGoalState
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -1789,6 +1847,7 @@ func (ErrorFrame) serverFrame()             {}
 func (NoticeFrame) serverFrame()            {}
 func (PongFrame) serverFrame()              {}
 func (HelloFrame) serverFrame()             {}
+func (ChatGoalFrame) serverFrame()          {}
 func (u UnknownFrame) serverFrame()         {}
 
 func (PingFrame) clientFrame()              {}
@@ -1983,6 +2042,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(PongFrame)
 	case "hello":
 		return new(HelloFrame)
+	case "chat.goal":
+		return new(ChatGoalFrame)
 	}
 	return nil
 }
@@ -2094,6 +2155,10 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"serverVersion": validationSchema{Type: "string"}, "type": validationSchema{Const: "hello"}, "version": validationSchema{Type: "integer"}}, Required: []string{"type", "version", "serverVersion"}}); err != nil {
 				return nil, err
 			}
+		case "chat.goal":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"goal": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "object", Properties: map[string]validationSchema{"blockedReason": validationSchema{Type: "string"}, "completedAt": validationSchema{Type: "integer"}, "createdAt": validationSchema{Type: "integer"}, "objective": validationSchema{Type: "string"}, "objectiveTruncated": validationSchema{Type: "boolean"}, "status": validationSchema{Type: "string"}, "updatedAt": validationSchema{Type: "integer"}}, Required: []string{"objective", "status"}}, validationSchema{Type: "null"}}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.goal"}}, Required: []string{"type", "sessionId", "goal"}}); err != nil {
+				return nil, err
+			}
 		}
 		if err := json.Unmarshal(data, target); err != nil {
 			return nil, err
@@ -2133,6 +2198,7 @@ func ServerFrameTypes() []string {
 		"notice",
 		"pong",
 		"hello",
+		"chat.goal",
 	}
 }
 

@@ -46,6 +46,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
       return parseConversationFrame(type, validated, sessionId);
     case "state":
     case "stats":
+    case "chat.goal":
     case "extensionEvent":
     case "sessions.activity":
     case "approval":

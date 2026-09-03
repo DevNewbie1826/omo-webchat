@@ -26,6 +26,23 @@ func pathWithin(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 }
 
+// validatedChatCWD validates that a chat's cwd is absolute, resolvable, and
+// inside the workspace, returning the canonical path.
+func validatedChatCWD(workspacePath, cwd string) (string, error) {
+	if !filepath.IsAbs(workspacePath) || !filepath.IsAbs(cwd) {
+		return "", errors.New("chat paths must be absolute")
+	}
+	workspace, err := filepath.EvalSymlinks(filepath.Clean(workspacePath))
+	if err != nil {
+		return "", err
+	}
+	canonicalCWD, err := filepath.EvalSymlinks(filepath.Clean(cwd))
+	if err != nil || !pathWithin(workspace, canonicalCWD) {
+		return "", errors.New("chat cwd is outside workspace")
+	}
+	return canonicalCWD, nil
+}
+
 // canonicalPathAllowMissing resolves every existing path component, retaining
 // only a missing suffix. This catches a symlinked .omo or senpi-task even when
 // the final store directories have not been created yet.
@@ -53,19 +70,19 @@ func canonicalPathAllowMissing(path string) (string, error) {
 }
 
 func validatedActivityCWD(workspacePath, cwd string) (string, error) {
-	if !filepath.IsAbs(workspacePath) || !filepath.IsAbs(cwd) {
-		return "", errors.New("activity paths must be absolute")
+	canonicalCWD, err := validatedChatCWD(workspacePath, cwd)
+	if err != nil {
+		return "", err
+	}
+	store, err := canonicalPathAllowMissing(filepath.Join(canonicalCWD, ".omo", "senpi-task"))
+	if err != nil {
+		return "", err
 	}
 	workspace, err := filepath.EvalSymlinks(filepath.Clean(workspacePath))
 	if err != nil {
 		return "", err
 	}
-	canonicalCWD, err := filepath.EvalSymlinks(filepath.Clean(cwd))
-	if err != nil || !pathWithin(workspace, canonicalCWD) {
-		return "", errors.New("chat cwd is outside workspace")
-	}
-	store, err := canonicalPathAllowMissing(filepath.Join(canonicalCWD, ".omo", "senpi-task"))
-	if err != nil || !pathWithin(workspace, store) {
+	if !pathWithin(workspace, store) {
 		return "", errors.New("activity store is outside workspace")
 	}
 	return canonicalCWD, nil

@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import type { ChatDraft } from "./chatSessionTypes";
 import { getChatActivity } from "./activityHistory";
+import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact } from "./curatedCommands";
 import { useChatFrameState } from "./useChatFrameState";
 
@@ -12,6 +13,8 @@ export function useChatSession(
   onChatName?: (name: string, origin: "auto" | "user" | "provider") => void,
 ) {
   const frameState = useChatFrameState();
+  const [goal, setGoal] = useState<ChatGoal | null>(null);
+  const goalPushedRef = useRef(false);
   const clientRef = useRef<ChatClient | null>(null);
   const frameHandlerRef = useRef<(frame: ChatServerFrame) => void>(() => undefined);
   const onChatNameRef = useRef(onChatName);
@@ -54,6 +57,13 @@ export function useChatSession(
           initialStatsSent = true;
           clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
         }
+        if (frame.type === "chat.goal") {
+          // Live goal push while attached: a push always outranks the
+          // attach-time REST fetch that may still be in flight.
+          goalPushedRef.current = true;
+          setGoal(frame.goal);
+          return;
+        }
         if (frame.type === "chat.name") {
           onChatNameRef.current?.(frame.name, frame.origin);
           return;
@@ -70,6 +80,22 @@ export function useChatSession(
       clientRef.current = null;
     };
   }, [connect, session.id, session.wsId]);
+
+  // Attach-time goal hydration (stage-13): the REST fetch establishes the
+  // initial state; a chat.goal push that arrives while the request is in
+  // flight is newer, so the response is dropped in that case.
+  useEffect(() => {
+    const ctrl = new AbortController();
+    goalPushedRef.current = false;
+    setGoal(null);
+    void getChatGoal(session.wsId, session.id, ctrl.signal).then(
+      (next) => {
+        if (!goalPushedRef.current) setGoal(next);
+      },
+      () => undefined,
+    );
+    return () => ctrl.abort();
+  }, [session.id, session.wsId]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -268,6 +294,7 @@ export function useChatSession(
     retryDraft: frameState.retryDraft,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
+    goal,
     notices: frameState.notices,
     submit,
     compact,

@@ -60,29 +60,11 @@ type sessionHistoryCursor struct {
 	ID        string `json:"i"`
 }
 
-func codingAgentDir() string {
-	if v := os.Getenv("OMO_CODING_AGENT_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("SENPI_CODING_AGENT_DIR"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".omo", "agent")
-}
+func codingAgentDir() string { return session.CodingAgentDir() }
 
-// sessionDirNameForCwd encodes an absolute working directory the way omo
-// names per-cwd folders under <agentDir>/sessions/: strip surrounding slashes,
-// replace every remaining "/" with "-", then wrap with "--" on both ends.
-// Example: /Volumes/storage/workspace/omo-webchat becomes
-// --Volumes-storage-workspace-omo-webchat--.
-func sessionDirNameForCwd(cwd string) string {
-	trimmed := strings.Trim(filepath.Clean(cwd), "/")
-	return "--" + strings.ReplaceAll(trimmed, "/", "-") + "--"
-}
+// sessionDirNameForCwd delegates to the shared session-package encoder so the
+// disk-session lister and the goal-state reader agree on one layout.
+func sessionDirNameForCwd(cwd string) string { return session.SessionDirNameForCwd(cwd) }
 
 func listDiskSessions(cwd string) []diskSession {
 	agentDir := codingAgentDir()
