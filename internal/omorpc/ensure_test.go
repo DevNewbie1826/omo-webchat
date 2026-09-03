@@ -2,10 +2,12 @@ package omorpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -33,6 +35,108 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if mode == "die" {
 		os.Exit(7)
 	}
+	if mode == "bind-exit" {
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		_ = os.Remove(socket)
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("bind-exit helper listen: %v", err)
+		}
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		_ = ln.Close()
+		os.Exit(7)
+	}
+	if mode == "descendant-ladder" {
+		runtimeName := os.Getenv("OMO_RUNTIME")
+		pidPath := os.Getenv("OMORPC_ENSURE_DESCENDANT_PID")
+		if runtimeName != "node" {
+			child := exec.Command("sleep", "60")
+			if err := child.Start(); err != nil {
+				t.Fatalf("helper start descendant: %v", err)
+			}
+			if err := os.WriteFile(pidPath, []byte(fmt.Sprint(child.Process.Pid)), 0o600); err != nil {
+				t.Fatalf("helper write descendant pid: %v", err)
+			}
+			os.Exit(7)
+		}
+		pidData, err := os.ReadFile(pidPath)
+		if err != nil {
+			t.Fatalf("helper read descendant pid: %v", err)
+		}
+		var pid int
+		if _, err := fmt.Sscan(string(pidData), &pid); err != nil {
+			t.Fatalf("helper parse descendant pid: %v", err)
+		}
+		if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+			t.Fatalf("automatic-attempt descendant %d survived into node attempt: %v", pid, err)
+		}
+		mode = "serve"
+	}
+	if mode == "supervised-drop" {
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		_ = os.Remove(socket)
+		ln, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Fatalf("supervised helper listen: %v", err)
+		}
+		ln.(*net.UnixListener).SetUnlinkOnClose(false)
+		conn, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("supervised helper accept: %v", err)
+		}
+		scanner := bufio.NewScanner(conn)
+		_ = scanner.Scan()
+		_ = conn.Close()
+		_ = ln.Close()
+		os.Exit(7)
+	}
+	if mode == "saturate-log" {
+		_, _ = os.Stderr.Write(bytes.Repeat([]byte("x"), daemonSpawnLogLimit+1024))
+		os.Exit(7)
+	}
+	if mode == "runtime-ladder" {
+		runtimeName := os.Getenv("OMO_RUNTIME")
+		if runtimeName == "" {
+			runtimeName = "automatic"
+		}
+		marker := os.Getenv("OMORPC_ENSURE_RUNTIME_MARKER")
+		file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("helper open runtime marker: %v", err)
+		}
+		_, _ = fmt.Fprintln(file, runtimeName)
+		_ = file.Close()
+		socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+		if runtimeName != "node" {
+			_ = os.Remove(socket)
+			ln, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("helper create stale socket: %v", err)
+			}
+			ln.(*net.UnixListener).SetUnlinkOnClose(false)
+			ownershipConn, err := ln.Accept()
+			if err != nil {
+				t.Fatalf("helper accept ownership probe: %v", err)
+			}
+			_ = ownershipConn.Close()
+			probeConn, err := ln.Accept()
+			if err != nil {
+				t.Fatalf("helper accept readiness probe: %v", err)
+			}
+			scanner := bufio.NewScanner(probeConn)
+			_ = scanner.Scan()
+			_ = probeConn.Close()
+			_ = ln.Close()
+			os.Exit(7)
+		}
+		if _, err := os.Lstat(socket); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale socket was not removed before node attempt: %v", err)
+		}
+		if err := os.WriteFile(os.Getenv("OMORPC_ENSURE_CLEANUP_MARKER"), []byte("clean"), 0o600); err != nil {
+			t.Fatalf("helper write cleanup marker: %v", err)
+		}
+		mode = "serve"
+	}
 	if mode == "flock-exit" {
 		path := os.Getenv("OMORPC_ENSURE_HELPER_LOCK_PATH")
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
@@ -45,7 +149,7 @@ func TestEnsureHelperProcess(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "lock held")
 		os.Exit(0) // The kernel, not stale-content recovery, releases the flock.
 	}
-	if mode != "serve" && mode != "serve-ignore-term" {
+	if mode != "serve" && mode != "serve-ignore-term" && mode != "serve-competitor" && mode != "serve-bind-on-term" {
 		t.Fatalf("unknown helper mode %q", mode)
 	}
 	if mode == "serve-ignore-term" {
@@ -58,7 +162,32 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper listen: %v", err)
 	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	defer ln.Close()
+	if mode == "serve-bind-on-term" {
+		terminated := make(chan os.Signal, 1)
+		signal.Notify(terminated, syscall.SIGTERM)
+		go func() {
+			<-terminated
+			signal.Stop(terminated)
+			_ = ln.Close()
+			_ = os.Remove(socket)
+			child := exec.Command(os.Args[0], "-test.run=^TestEnsureHelperProcess$")
+			child.Env = setEnv(os.Environ(), ensureHelperModeEnv, "bind-exit")
+			_ = child.Run()
+			os.Exit(0)
+		}()
+	}
+	if mode == "serve-competitor" {
+		ready := os.NewFile(3, "competitor-ready")
+		if ready == nil {
+			t.Fatal("competitor readiness descriptor is unavailable")
+		}
+		if _, err := ready.Write([]byte{1}); err != nil {
+			t.Fatalf("signal competitor readiness: %v", err)
+		}
+		_ = ready.Close()
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -103,6 +232,12 @@ func serveEnsureHelper(conn net.Conn) {
 			response["error"] = "unknown_command: " + command
 		}
 		frame, err := EncodeFrame(response)
+		if err == nil && command == CmdGetProtocolInfo && os.Getenv("OMORPC_REPLACE_AFTER_NEGOTIATION") == "1" {
+			if err := replaceEnsureSocketWithCompetitor(); err != nil {
+				return
+			}
+			_ = os.Unsetenv("OMORPC_REPLACE_AFTER_NEGOTIATION")
+		}
 		if err == nil {
 			_, _ = conn.Write(frame)
 		}
@@ -110,6 +245,37 @@ func serveEnsureHelper(conn net.Conn) {
 	if scanner.Err() != nil {
 		return
 	}
+}
+
+func replaceEnsureSocketWithCompetitor() error {
+	socket := os.Getenv("OMORPC_ENSURE_HELPER_SOCKET")
+	if err := os.Remove(socket); err != nil {
+		return err
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnsureHelperProcess$")
+	cmd.Env = setEnv(os.Environ(), ensureHelperModeEnv, "serve-competitor")
+	cmd.Env = setEnv(cmd.Env, "OMORPC_REPLACE_AFTER_NEGOTIATION", "")
+	cmd.ExtraFiles = []*os.File{writer}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	_ = writer.Close()
+	if marker := os.Getenv("OMORPC_COMPETITOR_PID"); marker != "" {
+		if err := os.WriteFile(marker, []byte(fmt.Sprint(cmd.Process.Pid)), 0o600); err != nil {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			return err
+		}
+	}
+	var ready [1]byte
+	_, err = io.ReadFull(reader, ready[:])
+	return err
 }
 
 func TestEnsureDaemonExistingCompatibleReused(t *testing.T) {
@@ -188,6 +354,19 @@ func TestEnsureDaemonIncompatibleCapabilities(t *testing.T) {
 	}
 }
 
+func TestEnsureDaemonFailedProducerRemovesLaunchSocket(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "bind-exit")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want failed runtime ladder", ensured, err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatal("failed producer left its launch-created socket behind")
+	}
+}
+
 func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "rpc", "rpc.sock")
@@ -205,6 +384,830 @@ func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed >= cfg.ReadyTimeout {
 		t.Fatalf("supervisor death was not observed promptly: %v", elapsed)
+	}
+}
+
+func TestEnsureExtensionEventsCapabilityNilInheritsEnvironment(t *testing.T) {
+	if got := EnsureExtensionEventsCapability(nil); got != nil {
+		t.Fatalf("EnsureExtensionEventsCapability(nil) = %#v, want nil for os/exec inheritance", got)
+	}
+}
+
+func TestEnsureExtensionEventsCapabilityNormalizesValues(t *testing.T) {
+	env := EnsureExtensionEventsCapability([]string{
+		"SENPI_RPC_CLIENT_CAPABILITIES= native_only, ,native_only, extension_events,",
+		"OMO_RPC_CLIENT_CAPABILITIES=custom_only,, custom_only ",
+	})
+	for key, want := range map[string]string{
+		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events",
+	} {
+		if got, _ := lookupEnv(env, key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestLauncherBrandProfileValidation(t *testing.T) {
+	valid := `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"}}`
+	if err := validateLauncherBrandProfile(valid); err != nil {
+		t.Fatalf("valid profile: %v", err)
+	}
+	for _, invalid := range []string{"null", `{}`, `{"name":"OmO"}`, `[]`} {
+		if err := validateLauncherBrandProfile(invalid); err == nil {
+			t.Fatalf("profile %s accepted", invalid)
+		}
+	}
+}
+
+func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
+	bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
+	if got, want := launcherUpdateCommand(bunRoot), "bun add --cwd "+shellQuote(bunRoot)+" -g omo-ai@beta"; got != want {
+		t.Fatalf("bun update command = %q, want %q", got, want)
+	}
+	npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
+	if got := launcherUpdateCommand(npmRoot); got != "npm i -g omo-ai@beta" {
+		t.Fatalf("npm update command = %q", got)
+	}
+}
+
+func TestLauncherSymlinkRootOverridesAmbientInstallations(t *testing.T) {
+	launcher, root, _ := writeRecognizedLauncherInstall(t, "4.5.6")
+	entry := filepath.Join(root, "bin", "omo.js")
+	if err := os.Remove(launcher); err != nil {
+		t.Fatal(err)
+	}
+	relativeEntry, err := filepath.Rel(filepath.Dir(launcher), entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relativeEntry, launcher); err != nil {
+		t.Fatal(err)
+	}
+	_, foreignRoot, _ := writeRecognizedLauncherInstall(t, "99.0.0")
+	env := []string{
+		"OMO_AGENT_TOOLKIT_BIN=" + filepath.Join(foreignRoot, "bin", "omo-agent-toolkit.js"),
+		"OMO_BIN=" + filepath.Join(foreignRoot, "bin", "omo.js"),
+	}
+	installation, recognized, err := resolveLauncherInstallation(launcher, env)
+	if err != nil || !recognized {
+		t.Fatalf("resolveLauncherInstallation: recognized=%v err=%v", recognized, err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installation.root != resolvedRoot {
+		t.Fatalf("authoritative root = %q, want %q", installation.root, resolvedRoot)
+	}
+	extension, recognized, err := launcherExtension(launcher, env)
+	if err != nil || !recognized || extension != filepath.Join(resolvedRoot, "plugin") {
+		t.Fatalf("extension = %q recognized=%v err=%v", extension, recognized, err)
+	}
+	profile, gotNative, err := launcherNativeContext(launcher, env)
+	if err != nil {
+		t.Fatalf("launcherNativeContext: %v", err)
+	}
+	resolvedNative := filepath.Join(resolvedRoot, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js")
+	if gotNative != resolvedNative {
+		t.Fatalf("native command = %q, want %q", gotNative, resolvedNative)
+	}
+	var brand launcherBrandProfile
+	if err := json.Unmarshal([]byte(profile), &brand); err != nil {
+		t.Fatal(err)
+	}
+	if brand.DisplayVersion != "4.5.6" {
+		t.Fatalf("profile version = %q, want local installation version", brand.DisplayVersion)
+	}
+}
+
+func TestLauncherNativeContextIgnoresAmbientBrand(t *testing.T) {
+	for _, ambient := range []string{
+		foreignLauncherBrandProfileJSON(),
+		`{malformed`,
+	} {
+		t.Run(ambient, func(t *testing.T) {
+			launcher, root, native := writeRecognizedLauncherInstall(t, "9.8.7")
+			profile, gotNative, err := launcherNativeContext(launcher, []string{"SENPI_BRAND=" + ambient})
+			if err != nil {
+				t.Fatalf("launcherNativeContext: %v", err)
+			}
+			if gotNative != native {
+				t.Fatalf("native command = %q, want %q", gotNative, native)
+			}
+			var got launcherBrandProfile
+			if err := json.Unmarshal([]byte(profile), &got); err != nil {
+				t.Fatalf("decode derived profile: %v", err)
+			}
+			if got.Name != "OmO" || got.DisplayVersion != "9.8.7" || got.Update.Command != launcherUpdateCommand(root) {
+				t.Fatalf("derived installation profile = %+v", got)
+			}
+		})
+	}
+}
+
+func TestEnsureDaemonAmbientBrandNeverBlocksRuntimeAttempt(t *testing.T) {
+	for name, ambient := range map[string]string{
+		"foreign":   foreignLauncherBrandProfileJSON(),
+		"malformed": `{malformed`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := shortEnsureTempDir(t)
+			launcher, root, _ := writeRecognizedLauncherInstall(t, "1.2.3")
+			marker := filepath.Join(dir, "attempted")
+			body := fmt.Sprintf("#!/bin/sh\nprintf attempted > %q\nexit 7\n", marker)
+			entry := filepath.Join(root, "bin", "omo.js")
+			if err := os.WriteFile(launcher, []byte(body+"# entry: "+entry+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := helperEnsureConfig(dir, filepath.Join(dir, "rpc.sock"), launcher, "die")
+			cfg.Env = setEnv(cfg.Env, "SENPI_BRAND", ambient)
+			cfg.Env = setEnv(cfg.Env, "OMO_RUNTIME", "custom")
+			if daemon, err := EnsureDaemon(context.Background(), cfg); err == nil || daemon != nil {
+				t.Fatalf("EnsureDaemon = (%v, %v), want attempted supervisor failure", daemon, err)
+			}
+			if data, err := os.ReadFile(marker); err != nil || string(data) != "attempted" {
+				t.Fatalf("runtime attempt marker = %q, err=%v", data, err)
+			}
+		})
+	}
+}
+
+func foreignLauncherBrandProfileJSON() string {
+	return `{"name":"Foreign","command":"foreign","displayVersion":"99","configDir":".foreign","flatLayout":true,"envPrefix":"FOREIGN","userAgent":"foreign","originator":"foreign","update":{"packageName":"foreign","distTag":"latest","command":"foreign update","changelogUrl":"https://example.test/foreign"}}`
+}
+
+func TestNativeChildAdapterHonorsLauncherRuntime(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "runtime")
+	native := filepath.Join(dir, "native")
+	if err := os.WriteFile(native, []byte("#!/bin/sh\nprintf 'node:%s' \"$SENPI_RUNTIME\" > "+shellQuote(marker)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bunDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bunDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bunDir, "bun"), []byte("#!/bin/sh\nprintf bun > "+shellQuote(marker)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := writeNativeChildWrapper(EnsureConfig{StateDir: dir}, native, testLauncherBrandProfileJSON(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(adapter)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(adapter)
+	cmd.Env = []string{"PATH=" + bunDir + ":/usr/bin:/bin", "SENPI_RUNTIME=node"}
+	cmd.ExtraFiles = []*os.File{reader}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	_ = writer.Close()
+	data, err := os.ReadFile(marker)
+	if err != nil || string(data) != "node:node" {
+		t.Fatalf("adapter runtime = %q, err=%v", data, err)
+	}
+}
+
+func TestNativeChildAdapterExecsWithSupervisorDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "adapter")
+	native := writeFakeSupervisor(t, fmt.Sprintf(`
+read value <&3
+printf '%%s %%s' "$$" "$value" > %q
+`, marker))
+	cfg := EnsureConfig{StateDir: dir}
+	adapter, err := writeNativeChildWrapper(cfg, native, testLauncherBrandProfileJSON(), []string{
+		"SENPI_RPC_CLIENT_CAPABILITIES=custom",
+		"OMO_RPC_CLIENT_CAPABILITIES=custom",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(adapter)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(adapter)
+	cmd.Env = setEnv(os.Environ(), "OMO_RUNTIME", "node")
+	cmd.ExtraFiles = []*os.File{reader}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	if _, err := io.WriteString(writer, "descriptor\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(data)), []string{fmt.Sprint(cmd.Process.Pid), "descriptor"}; !slices.Equal(got, want) {
+		t.Fatalf("adapter result = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureDaemonSpawnEnvironmentContainsPATH(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	marker := filepath.Join(dir, "path")
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf '%%s' \"$PATH\" > %q\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	defer stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+	path, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read spawned PATH: %v", err)
+	}
+	if string(path) == "" {
+		t.Fatal("spawned supervisor PATH is empty")
+	}
+}
+
+func TestEnsureDaemonRuntimeLadderCleanupAndWinnerCache(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	runtimeMarker := filepath.Join(dir, "runtimes")
+	cleanupMarker := filepath.Join(dir, "cleanup")
+	script := helperSupervisorScript(t)
+	cfg := helperEnsureConfig(dir, socket, script, "runtime-ladder")
+	cfg.Env = append(cfg.Env,
+		"OMORPC_ENSURE_RUNTIME_MARKER="+runtimeMarker,
+		"OMORPC_ENSURE_CLEANUP_MARKER="+cleanupMarker,
+	)
+
+	first, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		log, _ := os.ReadFile(filepath.Join(filepath.Dir(socket), "daemon-spawn.log"))
+		identity, exists := currentSocketIdentity(socket)
+		t.Fatalf("first EnsureDaemon: %v socket=%v/%+v\n%s", err, exists, identity, log)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{first})
+	if _, err := os.Stat(cleanupMarker); err != nil {
+		t.Fatalf("node attempt did not observe stale-socket cleanup: %v", err)
+	}
+	spawnLog, err := os.ReadFile(filepath.Join(filepath.Dir(socket), "daemon-spawn.log"))
+	if err != nil {
+		t.Fatalf("read spawn log: %v", err)
+	}
+	if got := string(spawnLog); !strings.Contains(got, "attempt: automatic") || !strings.Contains(got, "attempt: node") {
+		t.Fatalf("spawn log does not preserve both attempt signatures: %q", got)
+	}
+
+	second, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("second EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{second})
+	data, err := os.ReadFile(runtimeMarker)
+	if err != nil {
+		t.Fatalf("read runtime attempts: %v", err)
+	}
+	if got, want := strings.Fields(string(data)), []string{"automatic", "node", "node"}; !slices.Equal(got, want) {
+		t.Fatalf("runtime attempts = %v, want %v", got, want)
+	}
+}
+
+func TestEnsureDaemonUserRuntimeIsAuthoritative(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	marker := filepath.Join(dir, "runtimes")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo \"${OMO_RUNTIME-unset}\" >> %q\nexit 7", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+	cfg.Env = setEnv(cfg.Env, "OMO_RUNTIME", "custom")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want configured single-attempt failure", ensured, err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read runtime marker: %v", err)
+	}
+	if got := strings.Fields(string(data)); !slices.Equal(got, []string{"custom"}) {
+		t.Fatalf("configured runtime attempts = %v, want [custom]", got)
+	}
+}
+
+func TestEnsureDaemonBothRuntimeAttemptsReturnTypedError(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	marker := filepath.Join(dir, "runtimes")
+	script := writeFakeSupervisor(t, fmt.Sprintf("echo \"${OMO_RUNTIME-automatic}\" >> %q\nexit 7", marker))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+
+	_, err := EnsureDaemon(context.Background(), cfg)
+	var fallback *ErrDaemonRuntimeFallback
+	if !errors.As(err, &fallback) {
+		t.Fatalf("EnsureDaemon error = %T (%v), want *ErrDaemonRuntimeFallback", err, err)
+	}
+	if fallback.Automatic == nil || fallback.Node == nil {
+		t.Fatalf("typed fallback error does not name both attempts: %+v", fallback)
+	}
+	data, readErr := os.ReadFile(marker)
+	if readErr != nil {
+		t.Fatalf("read runtime marker: %v", readErr)
+	}
+	if got := strings.Fields(string(data)); !slices.Equal(got, []string{"automatic", "node"}) {
+		t.Fatalf("runtime attempts = %v, want [automatic node]", got)
+	}
+}
+
+func TestEnsureDaemonReapsAttemptDescendantsBeforeFallback(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	pidPath := filepath.Join(dir, "descendant.pid")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "descendant-ladder")
+	cfg.Env = append(cfg.Env, "OMORPC_ENSURE_DESCENDANT_PID="+pidPath)
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+}
+
+func TestCloseBeforeCredentialRemainsUnknownUntilPostReapCleanup(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "closed-peer.sock")
+	provenance := newEndpointProvenance(socket)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener.(*net.UnixListener).SetUnlinkOnClose(false)
+	acceptedAndClosed := make(chan struct{}, 2)
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+			acceptedAndClosed <- struct{}{}
+		}
+	}()
+
+	credentialAfterClose := func(net.Conn) (int, error) {
+		select {
+		case <-acceptedAndClosed:
+			return 0, syscall.ENOTCONN
+		case <-time.After(testAwaitTimeout):
+			t.Fatal("peer did not close before credential lookup")
+			return 0, context.DeadlineExceeded
+		}
+	}
+	var identity socketIdentity
+	for attempt := 0; attempt < 2; attempt++ {
+		observed, stable, peer, authErr := authenticateSocketPathWithPeerPID(
+			context.Background(), socket, syscall.Getpgrp(), credentialAfterClose,
+		)
+		if !errors.Is(authErr, syscall.ENOTCONN) || !stable || peer != peerUnknown {
+			t.Fatalf("attempt %d authentication = stable:%v peer:%v err:%v, want stable unknown ENOTCONN", attempt+1, stable, peer, authErr)
+		}
+		provenance.observe(observed, stable, peer)
+		if got := provenance.provenance(observed); got != peerUnknown {
+			t.Fatalf("attempt %d provenance = %v, want unknown", attempt+1, got)
+		}
+		identity = observed
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := provenance.cleanupAfterReap(testAwaitTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatalf("unknown launch debris %+v survived identity-stable post-reap refusal", identity)
+	}
+}
+
+func TestRemoveOwnedSocketPreservesReplacementListener(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	first, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.(*net.UnixListener).SetUnlinkOnClose(false)
+	identity, exists := currentSocketIdentity(socket)
+	if !exists {
+		t.Fatal("first listener has no socket identity")
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+
+	cfg := EnsureConfig{AgentDir: dir, SocketPath: socket, LockTimeout: testAwaitTimeout, LockRetry: time.Millisecond}
+	lock, err := acquireEnsureLock(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeOwnedSocket(socket, &identity); err != nil {
+		t.Fatal(err)
+	}
+	releaseEnsureLock(lock)
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("replacement listener was unlinked")
+	}
+}
+
+func TestEnsureDaemonNegotiatedReplacementIsUnowned(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	pidPath := filepath.Join(dir, "competitor.pid")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	cfg.Env = append(cfg.Env,
+		"OMORPC_REPLACE_AFTER_NEGOTIATION=1",
+		"OMORPC_COMPETITOR_PID="+pidPath,
+	)
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	pidData, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if _, err := fmt.Sscan(string(pidData), &pid); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+	if ensured.Owned {
+		t.Fatal("post-negotiation replacement was reported as owned")
+	}
+	callCtx, cancelCall := context.WithTimeout(context.Background(), testAwaitTimeout)
+	response, callErr := ensured.Client.Call(callCtx, ListSessions{})
+	cancelCall()
+	if callErr != nil || response == nil || !response.Success {
+		t.Fatalf("returned negotiated client is dead: response=%+v err=%v", response, callErr)
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop unowned daemon: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	client, err := Dial(ctx, socket)
+	cancel()
+	if err != nil {
+		t.Fatalf("competitor did not survive Stop: %v", err)
+	}
+	_ = client.Close()
+}
+
+func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "foreign.sock")
+	startedFIFO := filepath.Join(dir, "supervisor-started")
+	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
+	cfg := helperEnsureConfig(dir, socket, script, "die")
+	cfg.ReadyTimeout = 300 * time.Millisecond
+	cfg.ProbeTimeout = 50 * time.Millisecond
+
+	resultCh := make(chan error, 1)
+	go func() {
+		daemon, err := EnsureDaemon(context.Background(), cfg)
+		if daemon != nil {
+			_ = daemon.Close()
+		}
+		resultCh <- err
+	}()
+	// Closable handshake: the FIFO is opened as a RAW syscall fd with
+	// O_RDWR|O_NONBLOCK. os.File must not wrap it — Go's poller registers
+	// FIFOs with epoll on Linux and would silently block in Read on
+	// EAGAIN (O_RDWR keeps a write end, so no EOF ever arrives), defeating
+	// the deadline. Raw syscall.Read returns EAGAIN straight to this loop.
+	fd, err := syscall.Open(startedFIFO, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("open start fifo: %v", err)
+	}
+	defer syscall.Close(fd)
+	deadline := time.Now().Add(10 * time.Second)
+	var started []byte
+	for time.Now().Before(deadline) {
+		buf := make([]byte, 32)
+		n, rerr := syscall.Read(fd, buf)
+		if n > 0 {
+			started = append(started, buf[:n]...)
+			if strings.Contains(string(started), "started") {
+				break
+			}
+			continue
+		}
+		if rerr == nil {
+			continue
+		}
+		if errors.Is(rerr, syscall.EAGAIN) || errors.Is(rerr, syscall.EWOULDBLOCK) || errors.Is(rerr, syscall.EINTR) {
+			time.Sleep(2 * time.Millisecond)
+			continue
+		}
+		t.Fatalf("read start fifo: %v", rerr)
+	}
+	// Final drain: a signal that landed during the last sleep must not be
+	// misread as starvation.
+	{
+		buf := make([]byte, 32)
+		if n, _ := syscall.Read(fd, buf); n > 0 {
+			started = append(started, buf[:n]...)
+		}
+	}
+	if !strings.Contains(string(started), "started") {
+		t.Skip("supervisor never scheduled under load; preservation interleaving unobservable")
+	}
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+		}
+	}()
+	select {
+	case err := <-resultCh:
+		if err == nil {
+			t.Fatal("failed attempt unexpectedly succeeded")
+		}
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("failed attempt did not finish")
+	}
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("failed cleanup unlinked the live foreign listener")
+	}
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatalf("foreign listener is no longer reachable: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "competitor.sock")
+	startedFIFO := filepath.Join(dir, "supervisor-started")
+	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+
+	resultCh := make(chan struct {
+		daemon *EnsuredDaemon
+		err    error
+	}, 1)
+	go func() {
+		daemon, err := EnsureDaemon(context.Background(), cfg)
+		resultCh <- struct {
+			daemon *EnsuredDaemon
+			err    error
+		}{daemon, err}
+	}()
+	fifo, err := os.Open(startedFIFO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := io.ReadAll(fifo)
+	_ = fifo.Close()
+	if err != nil || string(started) != "started" {
+		t.Fatalf("supervisor start signal = %q, err = %v", started, err)
+	}
+
+	t.Setenv("SENPI_RPC_CLIENT_CAPABILITIES", capExtensionEvents)
+	competitor, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer competitor.Close()
+	go func() {
+		for {
+			conn, err := competitor.Accept()
+			if err != nil {
+				return
+			}
+			go serveEnsureHelper(conn)
+		}
+	}()
+
+	var result struct {
+		daemon *EnsuredDaemon
+		err    error
+	}
+	select {
+	case result = <-resultCh:
+	case <-time.After(testAwaitTimeout):
+		t.Fatal("EnsureDaemon did not accept competing producer")
+	}
+	if result.err != nil {
+		t.Fatalf("EnsureDaemon: %v", result.err)
+	}
+	if result.daemon.Owned {
+		t.Fatal("competing producer was reported as owned")
+	}
+	if err := result.daemon.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop unowned daemon: %v", err)
+	}
+	if _, exists := currentSocketIdentity(socket); !exists {
+		t.Fatal("Stop unlinked the competing producer socket")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	defer cancel()
+	client, err := Dial(ctx, socket)
+	if err != nil {
+		t.Fatalf("competing producer is not live after Stop: %v", err)
+	}
+	_ = client.Close()
+}
+
+func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "replacement.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+
+	connectedBeforeReplacement, err := probeDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("connect owned endpoint before replacement: %v", err)
+	}
+	defer connectedBeforeReplacement.Close()
+	if err := os.Remove(socket); err != nil {
+		t.Fatalf("unlink owned endpoint: %v", err)
+	}
+	t.Setenv("SENPI_RPC_CLIENT_CAPABILITIES", capExtensionEvents)
+	competitor, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen competitor: %v", err)
+	}
+	defer competitor.Close()
+	go func() {
+		for {
+			conn, err := competitor.Accept()
+			if err != nil {
+				return
+			}
+			go serveEnsureHelper(conn)
+		}
+	}()
+
+	client, identity, stable, peer, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.process.Pid)
+	if err != nil {
+		t.Fatalf("authenticate replacement: %v", err)
+	}
+	_ = client.Close()
+	if !stable || peer != peerForeign {
+		t.Fatalf("replacement authentication = stable:%v peer:%v identity:%+v", stable, peer, identity)
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if current, exists := currentSocketIdentity(socket); !exists || current != identity {
+		t.Fatalf("Stop removed competitor: exists=%v identity=%+v want=%+v", exists, current, identity)
+	}
+}
+
+func TestEnsuredDaemonCleansDescendantSocketAfterGroupReap(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "post-reap.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve-bind-on-term")
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	if !ensured.Owned {
+		t.Fatal("spawned daemon was not owned")
+	}
+	if err := ensured.StopBounded(testAwaitTimeout); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, exists := currentSocketIdentity(socket); exists {
+		t.Fatal("post-reap descendant socket was not cleaned")
+	}
+}
+
+func TestEnsureDaemonSpawnLogReservesBothAttemptPartitions(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "saturate-log")
+
+	if ensured, err := EnsureDaemon(context.Background(), cfg); err == nil || ensured != nil {
+		t.Fatalf("EnsureDaemon = (%v, %v), want fallback failure", ensured, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "daemon-spawn.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > daemonSpawnLogLimit {
+		t.Fatalf("spawn log size = %d, limit = %d", len(data), daemonSpawnLogLimit)
+	}
+	for _, attempt := range []string{"automatic", "node"} {
+		if !bytes.Contains(data, []byte("spawn attempt: "+attempt+"\n")) {
+			t.Fatalf("saturated spawn log omitted %s header", attempt)
+		}
+	}
+}
+
+func TestSpawnAttemptTemporaryLogIsBoundedDuringCapture(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	capture, finish, err := openSpawnAttemptLog(filepath.Join(dir, "daemon-spawn.log"), "noisy", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bounded := capture.(*boundedSpawnLog)
+	if _, err := capture.Write(bytes.Repeat([]byte("x"), daemonSpawnLogLimit*8)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(bounded.file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > daemonSpawnLogLimit/2 {
+		t.Fatalf("temporary spawn log size = %d, half-budget = %d", info.Size(), daemonSpawnLogLimit/2)
+	}
+	if err := finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDefaultEnsureLockBudgetCoversRuntimeLadder(t *testing.T) {
+	cfg, err := normalizeEnsureConfig(EnsureConfig{AgentDir: t.TempDir(), ReadyTimeout: 125 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullLadder := 2 * (cfg.ReadyTimeout + daemonStopGrace + daemonKillWait)
+	if cfg.LockTimeout < fullLadder {
+		t.Fatalf("default lock timeout = %v, full runtime ladder = %v", cfg.LockTimeout, fullLadder)
+	}
+}
+
+func TestEnsureDaemonCapturesBoundedSupervisorStderr(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	stateDir := filepath.Join(dir, "state")
+	socket := filepath.Join(dir, "rpc.sock")
+	script := writeFakeSupervisor(t, "echo signed-supervisor-error >&2\nexec \"$OMORPC_ENSURE_TEST_BINARY\" -test.run='^TestEnsureHelperProcess$'")
+	cfg := helperEnsureConfig(dir, socket, script, "serve")
+	cfg.StateDir = stateDir
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	stopEnsuredDaemons(t, []*EnsuredDaemon{ensured})
+	data, err := os.ReadFile(filepath.Join(stateDir, "daemon-spawn.log"))
+	if err != nil {
+		t.Fatalf("read daemon spawn log: %v", err)
+	}
+	if !strings.Contains(string(data), "signed-supervisor-error") {
+		t.Fatalf("daemon spawn log = %q", data)
+	}
+
+	log, err := newBoundedSpawnLog(filepath.Join(stateDir, "bounded.log"), 4)
+	if err != nil {
+		t.Fatalf("newBoundedSpawnLog: %v", err)
+	}
+	if _, err := log.Write([]byte("abcdefgh")); err != nil {
+		t.Fatalf("write bounded log: %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("close bounded log: %v", err)
+	}
+	bounded, err := os.ReadFile(filepath.Join(stateDir, "bounded.log"))
+	if err != nil || string(bounded) != "abcd" {
+		t.Fatalf("bounded log = %q, err = %v", bounded, err)
 	}
 }
 
@@ -555,6 +1558,47 @@ func TestEnsuredDaemonStopEscalatesAfterCanceledWait(t *testing.T) {
 	if err := ensured.process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("SIGTERM-ignoring supervisor remains alive after Stop: %v", err)
 	}
+}
+
+func TestSupervisorCommandDefaultUsesNativeHostChild(t *testing.T) {
+	script := writeFakeSupervisor(t, "exit 0")
+	_, args, err := supervisorCommand(EnsureConfig{
+		AgentDir:   t.TempDir(),
+		SocketPath: filepath.Join(t.TempDir(), "rpc.sock"),
+		BinaryPath: script,
+	})
+	if err != nil {
+		t.Fatalf("supervisorCommand: %v", err)
+	}
+	if slices.Contains(args, "--child-command") || slices.Contains(args, "--child-args") {
+		t.Fatalf("native supervisor args redundantly override its child launch: %v", args)
+	}
+}
+
+func writeRecognizedLauncherInstall(t *testing.T, version string) (launcher, root, native string) {
+	t.Helper()
+	root = filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
+	entry := filepath.Join(root, "bin", "omo.js")
+	launcher = filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(root))), "bin", "omo")
+	native = filepath.Join(root, "node_modules", "@code-yeongyu", "senpi", "dist", "cli.js")
+	for _, dir := range []string{filepath.Dir(entry), filepath.Join(root, "plugin"), filepath.Dir(native), filepath.Dir(launcher)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(fmt.Sprintf(`{"version":%q}`, version)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entry, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\n# entry: "+entry+"\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return launcher, root, native
 }
 
 func helperEnsureConfig(dir, socket, script, mode string) EnsureConfig {

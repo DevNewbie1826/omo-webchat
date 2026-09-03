@@ -16,12 +16,16 @@ import (
 )
 
 const (
-	startTimeout     = 3 * time.Second
+	// Startup may include two 10-second provider readiness attempts plus
+	// teardown between them before the HTTP listener can report ready.
+	startTimeout     = 30 * time.Second
 	stopTimeout      = 5 * time.Second
 	killTimeout      = 2 * time.Second
 	childLockFD      = 3
 	childReadyPipeFD = 4
 )
+
+var readinessTimeout = startTimeout
 
 func start(cfg *config.Config, args []string) (int, string, error) {
 	pidPath, logPath, lockPath, err := daemonPaths(cfg.StateDir)
@@ -231,7 +235,7 @@ func closeChild(child *Child) error {
 }
 
 func waitForReady(ready *os.File) error {
-	if err := ready.SetReadDeadline(time.Now().Add(startTimeout)); err != nil {
+	if err := ready.SetReadDeadline(time.Now().Add(readinessTimeout)); err != nil {
 		return fmt.Errorf("setting readiness deadline: %w", err)
 	}
 	var signal [1]byte

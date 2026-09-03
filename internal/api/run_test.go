@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -73,14 +74,20 @@ func TestRunSignalsReadyAndShutsDown(t *testing.T) {
 }
 
 func TestRunDaemonFailureIsFatal(t *testing.T) {
+	t.Setenv("PATH", "/run-test-path")
 	old := ensureDaemon
-	ensureDaemon = func(context.Context, omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+	var ensureCfg omorpc.EnsureConfig
+	ensureDaemon = func(_ context.Context, cfg omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
+		ensureCfg = cfg
 		return nil, errors.New("offline")
 	}
 	t.Cleanup(func() { ensureDaemon = old })
 	err := Run(t.Context(), &config.Config{Root: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil || !strings.Contains(err.Error(), "starting required omo daemon") {
 		t.Fatalf("Run error = %v", err)
+	}
+	if !slices.Contains(ensureCfg.Env, "PATH=/run-test-path") {
+		t.Fatalf("daemon environment does not inherit PATH: %v", ensureCfg.Env)
 	}
 }
 
