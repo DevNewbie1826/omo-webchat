@@ -239,6 +239,73 @@ describe("useChatSession historical activity hydration", () => {
     });
   });
 
+  it("keeps every live task and DAG-node update when hydration replay overflows", async () => {
+    const tasks = Array.from({ length: 125 }, (_, index) => ({
+      task_id: `task-${index}`,
+      name: `Task ${index}`,
+      status: "running",
+    }));
+    const nodes = Array.from({ length: 125 }, (_, index) => ({
+      id: `node-${index}`,
+      prompt: `Work ${index}`,
+      depends_on: [],
+      state: "running",
+      task_id: `task-${index}`,
+    }));
+    const run = {
+      run_id: "dag-overflow",
+      run_key: "overflow",
+      name: "Overflow DAG",
+      status: "running",
+      nodes,
+    };
+    render([
+      {
+        type: "extensionEvent",
+        sessionId: session.id,
+        name: "omo.task.updated",
+        data: { tasks },
+      },
+      {
+        type: "extensionEvent",
+        sessionId: session.id,
+        name: "omo.dag.updated",
+        data: { runs: [run] },
+      },
+    ]);
+
+    act(() => {
+      for (let index = 0; index < 125; index += 1) {
+        deliver({
+          type: "extensionEvent",
+          sessionId: session.id,
+          name: "omo.dag.activity",
+          data: {
+            runId: "dag-overflow",
+            nodeId: `node-${index}`,
+            taskId: `task-${index}`,
+            at: "2026-09-03T12:00:00.000Z",
+            activity: `work-${index}`,
+          },
+        });
+      }
+    });
+
+    await resolveActivity(0, {
+      history: {
+        task: { tasks },
+        dag: { runs: [run] },
+      },
+    });
+
+    expect(Array.from(current?.activities.tasks.values() ?? []).every(
+      (task, index) => task.liveProgress?.activity === `work-${index}`,
+    )).toBe(true);
+    expect(current?.activities.dags.get("dag-overflow")?.nodes.every(
+      (node, index) => node.activity === `work-${index}`,
+    )).toBe(true);
+  });
+
   it("does not let a malformed snapshot suppress valid REST history", async () => {
     render();
     act(() => deliver({

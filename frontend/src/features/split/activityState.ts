@@ -49,10 +49,19 @@ export interface ActivityHydrationBuffer {
   dropped: number;
   taskSuperseded: boolean;
   dagSuperseded: boolean;
+  taskOverflowed: boolean;
+  dagOverflowed: boolean;
 }
 
 export function createActivityHydrationBuffer(): ActivityHydrationBuffer {
-  return { events: [], dropped: 0, taskSuperseded: false, dagSuperseded: false };
+  return {
+    events: [],
+    dropped: 0,
+    taskSuperseded: false,
+    dagSuperseded: false,
+    taskOverflowed: false,
+    dagOverflowed: false,
+  };
 }
 
 /** Validate and classify activity extension payloads before retaining them. */
@@ -105,8 +114,12 @@ export function bufferActivityHydrationEvent(
   if (sideCount <= ACTIVITY_HYDRATION_SIDE_LIMIT) return;
   const oldest = buffer.events.findIndex((item) => item.side === event.side);
   if (oldest >= 0) {
-    buffer.events.splice(oldest, 1);
+    const [dropped] = buffer.events.splice(oldest, 1);
     buffer.dropped += 1;
+    if (dropped?.side === "task" || dropped?.name === "omo.dag.activity") {
+      buffer.taskOverflowed = true;
+    }
+    if (dropped?.side === "dag") buffer.dagOverflowed = true;
   }
 }
 

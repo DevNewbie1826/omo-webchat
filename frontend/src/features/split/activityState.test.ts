@@ -194,6 +194,8 @@ describe("activity hydration buffer", () => {
 
     expect(buffer.events).toHaveLength(ACTIVITY_HYDRATION_SIDE_LIMIT);
     expect(buffer.dropped).toBe(25);
+    expect(buffer.taskOverflowed).toBe(true);
+    expect(buffer.dagOverflowed).toBe(true);
     expect(buffer.events[0]?.key).toContain("run-25:node-25");
   });
 

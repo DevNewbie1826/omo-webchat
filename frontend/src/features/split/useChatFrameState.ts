@@ -256,7 +256,8 @@ export function useChatFrameState() {
 
   // REST is the historical base, but every activity frame received after the
   // request began is newer and must be replayed in arrival order. Full
-  // snapshots still suppress REST replacement for their own side.
+  // snapshots and buffer overflow suppress REST replacement for every domain
+  // whose live mutations can no longer be replayed completely.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
     activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer() };
@@ -270,10 +271,10 @@ export function useChatFrameState() {
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    if (!hydration.buffer.taskSuperseded) {
+    if (!hydration.buffer.taskSuperseded && !hydration.buffer.taskOverflowed) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (!hydration.buffer.dagSuperseded) {
+    if (!hydration.buffer.dagSuperseded && !hydration.buffer.dagOverflowed) {
       next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
     }
     for (const event of hydration.buffer.events) {
