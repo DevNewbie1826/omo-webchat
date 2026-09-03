@@ -501,6 +501,12 @@ func TestChatCreateExternalWriteRequiresExplicitRecovery(t *testing.T) {
 		t.Fatalf("ordinary create closed quarantined route: %d -> %d", beforeCloses, got)
 	}
 
+	// The quarantine transition is now published to every attached subscriber
+	// exactly once (unsolicited); drain it before the command-bound error.
+	if got := firstFrames.next(t, "error"); got["code"] != "external-write-detected" || got["command"] != nil {
+		t.Fatalf("unsolicited quarantine transition = %#v", got)
+	}
+
 	writeClient(t, firstConn, map[string]any{"type": "chat.send", "sessionId": "external-recovery", "run": map[string]any{"kind": "prompt", "message": "stale"}})
 	if got := firstFrames.next(t, "error"); got["code"] != "external-write-detected" || got["knownLeaf"] != "root" || got["observedLeaf"] != "external-leaf" || got["command"] != "chat.send" {
 		t.Fatalf("stale prompt error = %#v", got)
