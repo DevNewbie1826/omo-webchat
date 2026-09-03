@@ -75,6 +75,7 @@ func TestRunSignalsReadyAndShutsDown(t *testing.T) {
 
 func TestRunDaemonFailureIsFatal(t *testing.T) {
 	t.Setenv("PATH", "/run-test-path")
+	t.Setenv("OMO_MEMORY_HOME", "/run-test-memory")
 	old := ensureDaemon
 	var ensureCfg omorpc.EnsureConfig
 	ensureDaemon = func(_ context.Context, cfg omorpc.EnsureConfig) (*omorpc.EnsuredDaemon, error) {
@@ -82,12 +83,19 @@ func TestRunDaemonFailureIsFatal(t *testing.T) {
 		return nil, errors.New("offline")
 	}
 	t.Cleanup(func() { ensureDaemon = old })
-	err := Run(t.Context(), &config.Config{Root: t.TempDir()}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	root := t.TempDir()
+	err := Run(t.Context(), &config.Config{Root: root}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	if err == nil || !strings.Contains(err.Error(), "starting required omo daemon") {
 		t.Fatalf("Run error = %v", err)
 	}
 	if !slices.Contains(ensureCfg.Env, "PATH=/run-test-path") {
 		t.Fatalf("daemon environment does not inherit PATH: %v", ensureCfg.Env)
+	}
+	if !slices.Contains(ensureCfg.Env, "OMO_MEMORY_HOME=/run-test-memory") {
+		t.Fatalf("daemon environment does not inherit OMO_MEMORY_HOME: %v", ensureCfg.Env)
+	}
+	if ensureCfg.WorkingDir != root {
+		t.Fatalf("daemon working directory = %q, want project root %q", ensureCfg.WorkingDir, root)
 	}
 }
 
