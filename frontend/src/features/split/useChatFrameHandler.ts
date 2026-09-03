@@ -145,11 +145,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (activityEvent !== null) {
           // Record which domains the reducer actually mutated so hydration
           // overflow fencing reflects real changes, not mere event presence.
-          const mutated = next !== before;
+          // Compare the domain maps directly: a dag.activity without a
+          // usable taskId changes only dags, and a heartbeat changes neither.
           bindings.bufferActivityEvent({
             ...activityEvent,
-            mutatedTask: mutated && (activityEvent.side === "task" || activityEvent.name === "omo.dag.activity"),
-            mutatedDag: mutated && (activityEvent.side === "dag" || activityEvent.name === "omo.dag.activity"),
+            mutatedTask: next.tasks !== before.tasks,
+            mutatedDag: next.dags !== before.dags,
           });
         }
         return;

@@ -198,27 +198,48 @@ describe("activity hydration buffer", () => {
     expect(buffer.dagOverflowed).toBe(true);
     expect(buffer.events[0]?.key).toContain("run-25:node-25");
   });
-it("overflow of no-op dag.activity frames does not fence fresh REST history over stale cache", () => {
+  it("overflow of no-op dag.activity frames does not fence fresh REST history over stale cache", () => {
     const buffer = createActivityHydrationBuffer();
-    // 125 valid omo.dag.activity frames targeting ABSENT runs: the reducer
-    // is a no-op for every one of them, so neither domain was mutated and
-    // overflow fencing must stay disarmed even over stale cached rows.
     for (let i = 0; i < 125; i += 1) {
       const event = validatedActivityEvent("omo.dag.activity", {
-        runId: "absent-run", nodeId: "node", at: "2026-09-04T00:00:00Z", activity: "probe",
+        runId: "absent-run", nodeId: "node-" + i, at: "2026-09-04T00:00:00Z", activity: "probe",
       });
       expect(event).not.toBeNull();
-      bufferActivityHydrationEvent(buffer, {
-        ...event!,
-        mutatedTask: false,
-        mutatedDag: false,
-      });
+      bufferActivityHydrationEvent(buffer, { ...event!, mutatedTask: false, mutatedDag: false });
     }
-    expect(buffer.dropped).toBe(0); // same key coalesces — see R5 heartbeat probe
+    expect(buffer.dropped).toBe(25);
     expect(buffer.taskOverflowed).toBe(false);
     expect(buffer.dagOverflowed).toBe(false);
   });
 
+  it("DAG-only overflow does not fence task history over stale seeds", () => {
+    const buffer = createActivityHydrationBuffer();
+    for (let index = 0; index < 125; index += 1) {
+      const event = validatedActivityEvent("omo.dag.activity", {
+        runId: "run-a", nodeId: "node-" + index, at: "2026-09-04T00:00:00Z",
+      });
+      bufferActivityHydrationEvent(buffer, { ...event!, mutatedTask: false, mutatedDag: true });
+    }
+    expect(buffer.dropped).toBe(25);
+    expect(buffer.taskOverflowed).toBe(false);
+    expect(buffer.dagOverflowed).toBe(true);
+  });
+
+  it("coalesced events OR mixed mutation bits across the merge", () => {
+    const buffer = createActivityHydrationBuffer();
+    const first = validatedActivityEvent("omo.dag.activity", {
+      runId: "run-x", nodeId: "node-1", at: "2026-09-04T00:00:00Z",
+    });
+    const key = "omo.dag.activity:run-x:node-1";
+    bufferActivityHydrationEvent(buffer, { ...first!, key, mutatedTask: false, mutatedDag: true });
+    const second = validatedActivityEvent("omo.dag.activity", {
+      runId: "run-x", nodeId: "node-1", taskId: "task-9", at: "2026-09-04T00:01:00Z", activity: "later",
+    });
+    bufferActivityHydrationEvent(buffer, { ...second!, key, mutatedTask: true, mutatedDag: true });
+    expect(buffer.events).toHaveLength(1);
+    expect(buffer.events[0]?.mutatedTask).toBe(true);
+    expect(buffer.events[0]?.mutatedDag).toBe(true);
+  });
 
   it("coalesces updates for the same activity id while preserving partial fields", () => {
     const buffer = createActivityHydrationBuffer();
