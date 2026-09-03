@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -41,7 +42,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	env = EnsureExtensionEventsCapability(env)
 
 	automaticSocket := filepath.Join(shortEnsureTempDir(t), "automatic.sock")
-	automatic, automaticSupervisorPID := startLauncherHost(t, binary, automaticSocket, workDir, env)
+	automatic, automaticSupervisorPID, automaticProfile := startLauncherHost(t, binary, automaticSocket, workDir, env)
 	automaticCommands := extensionCommandNames(t, automatic, workDir)
 	automaticBrand := nativeDescendantBrand(t, automaticSupervisorPID)
 	if err := automatic.Close(); err != nil {
@@ -70,6 +71,10 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	}()
 	fallbackCommands := extensionCommandNames(t, fallback.Client, workDir)
 	fallbackBrand := nativeDescendantBrand(t, fallback.process.Pid)
+	derivedProfile, _, err := launcherNativeContext(binary, env)
+	if err != nil {
+		t.Fatalf("derive launcher profile: %v", err)
+	}
 
 	if len(automaticCommands) == 0 {
 		t.Fatal("launcher session exposed no packaged extension commands")
@@ -79,6 +84,11 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	}
 	if fallbackBrand != automaticBrand || fallbackBrand != "OmO" {
 		t.Fatalf("node fallback native child brand = %q, launcher native child = %q, want OmO", fallbackBrand, automaticBrand)
+	}
+	assertJSONEqual(t, "direct-native profile versus launcher", derivedProfile, automaticProfile)
+	nativePID, nativeCommand := directChildProcess(t, fallback.process.Pid)
+	if !strings.EqualFold(nativeCommand, "omo") && !strings.EqualFold(nativeCommand, "senpi") {
+		t.Fatalf("supervisor child %d is not the branded native host: %s", nativePID, nativeCommand)
 	}
 }
 
@@ -114,7 +124,7 @@ exec "$OMORPC_ENSURE_TEST_BINARY" -test.run='^TestEnsureHelperProcess$'
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrapper, err := writeNativeChildWrapper(cfg, child, `{"name":"OmO"}`, EnsureExtensionEventsCapability(cfg.Env))
+	wrapper, err := writeNativeChildWrapper(cfg, child, testLauncherBrandProfileJSON(), EnsureExtensionEventsCapability(cfg.Env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,11 +144,31 @@ exec "$OMORPC_ENSURE_TEST_BINARY" -test.run='^TestEnsureHelperProcess$'
 	}
 }
 
-func startLauncherHost(t *testing.T, binary, socket, workDir string, env []string) (*Client, int) {
+func startLauncherHost(t *testing.T, binary, socket, workDir string, env []string) (*Client, int, string) {
 	t.Helper()
+	probeDir := t.TempDir()
+	profilePath := filepath.Join(probeDir, "brand.json")
+	preloadPath := filepath.Join(probeDir, "capture-brand.cjs")
+	preload := fmt.Sprintf(`
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const { syncBuiltinESMExports } = require("node:module");
+const spawn = childProcess.spawn;
+childProcess.spawn = function (...args) {
+  const brand = args[2]?.env?.SENPI_BRAND;
+  if (typeof brand === "string") fs.writeFileSync(%q, brand);
+  return spawn.apply(this, args);
+};
+syncBuiltinESMExports();
+`, profilePath)
+	if err := os.WriteFile(preloadPath, []byte(preload), 0o600); err != nil {
+		t.Fatalf("write brand profile probe: %v", err)
+	}
+	nodeOptions, _ := lookupEnv(env, "NODE_OPTIONS")
+	nodeOptions = strings.TrimSpace(nodeOptions + " --require=" + preloadPath)
 	cmd := exec.Command(binary, "--mode", "rpc", "--multi-session", "--listen", "unix://"+socket)
 	cmd.Dir = workDir
-	cmd.Env = env
+	cmd.Env = setEnv(env, "NODE_OPTIONS", nodeOptions)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatalf("launcher stderr pipe: %v", err)
@@ -184,34 +214,40 @@ func startLauncherHost(t *testing.T, binary, socket, workDir string, env []strin
 		t.Fatal("launcher host readiness timed out")
 	}
 
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read live brand profile: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	client, err := Dial(ctx, socket)
 	if err != nil {
 		t.Fatalf("dial launcher host: %v", err)
 	}
-	return client, cmd.Process.Pid
+	return client, cmd.Process.Pid, string(profile)
 }
 
-func nativeDescendantBrand(t *testing.T, supervisorPID int) string {
+type nativeProcess struct {
+	pid, ppid int
+	brand     string
+}
+
+func nativeDescendantProcess(t *testing.T, supervisorPID int) nativeProcess {
 	t.Helper()
 	output, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		t.Fatalf("list supervisor descendants: %v", err)
 	}
-	type process struct {
-		pid, ppid int
-		brand     string
-	}
-	var processes []process
+	var processes []nativeProcess
 	for _, line := range strings.Split(string(output), "\n") {
-		var current process
+		var current nativeProcess
 		if _, err := fmt.Sscan(line, &current.pid, &current.ppid, &current.brand); err == nil {
 			processes = append(processes, current)
 		}
 	}
 	descendants := map[int]int{supervisorPID: 0}
-	brand, brandDepth := "", -1
+	var native nativeProcess
+	nativeDepth := -1
 	for changed := true; changed; {
 		changed = false
 		for _, current := range processes {
@@ -225,15 +261,54 @@ func nativeDescendantBrand(t *testing.T, supervisorPID int) string {
 			}
 			descendants[current.pid] = depth
 			changed = true
-			if (strings.EqualFold(current.brand, "omo") || strings.EqualFold(current.brand, "senpi")) && depth > brandDepth {
-				brand, brandDepth = current.brand, depth
+			if (strings.EqualFold(current.brand, "omo") || strings.EqualFold(current.brand, "senpi")) && depth > nativeDepth {
+				native, nativeDepth = current, depth
 			}
 		}
 	}
-	if brand == "" {
+	if nativeDepth < 0 {
 		t.Fatalf("supervisor %d has no branded native descendant: %s", supervisorPID, output)
 	}
-	return brand
+	return native
+}
+
+func nativeDescendantBrand(t *testing.T, supervisorPID int) string {
+	return nativeDescendantProcess(t, supervisorPID).brand
+}
+
+func directChildProcess(t *testing.T, supervisorPID int) (int, string) {
+	t.Helper()
+	output, err := exec.Command("ps", "-axo", "pid=,ppid=,command=").Output()
+	if err != nil {
+		t.Fatalf("list supervisor children: %v", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		var pid, ppid int
+		var command string
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "%d %d %s", &pid, &ppid, &command); err == nil && ppid == supervisorPID {
+			return pid, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fmt.Sprintf("%d %d", pid, ppid)))
+		}
+	}
+	t.Fatalf("supervisor %d has no direct child: %s", supervisorPID, output)
+	return 0, ""
+}
+
+func assertJSONEqual(t *testing.T, label, got, want string) {
+	t.Helper()
+	var gotValue, wantValue any
+	if err := json.Unmarshal([]byte(got), &gotValue); err != nil {
+		t.Fatalf("%s: decode got: %v", label, err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("%s: decode want: %v", label, err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("%s mismatch:\n got %s\nwant %s", label, got, want)
+	}
+}
+
+func testLauncherBrandProfileJSON() string {
+	return `{"name":"OmO","command":"omo","displayVersion":"test","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"}}`
 }
 
 func extensionCommandNames(t *testing.T, client *Client, cwd string) []string {

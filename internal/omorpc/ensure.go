@@ -2,12 +2,11 @@ package omorpc
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -228,36 +227,29 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if err != nil {
 		return nil, err
 	}
-	nodeArgs, nodeEnv, nodeWrapper, err := nodeFallbackContext(cfg, command, nativeArgs)
+	nodeArgs, nodeEnv, childAdapter, err := nodeFallbackContext(cfg, command, nativeArgs)
 	if err != nil {
 		return nil, err
 	}
 	automaticArgs := nativeArgs
-	automaticWrapper := ""
 	if cfg.ArgsTemplate == nil && cfg.ChildCommand == "" {
-		automaticCfg := cfg
-		automaticCfg.ChildCommand = command
-		if nodeWrapper != "" {
-			automaticWrapper, err = writeNativeChildWrapper(cfg, command, "", EnsureExtensionEventsCapability(cfg.Env))
+		if childAdapter != "" {
+			// Both runtime attempts use the same direct-native adapter and child
+			// arguments. Only the attempt environment selects the runtime.
+			automaticArgs = nodeArgs
+		} else {
+			automaticCfg := cfg
+			automaticCfg.ChildCommand = command
+			_, automaticArgs, err = supervisorCommand(automaticCfg)
 			if err != nil {
-				_ = os.Remove(nodeWrapper)
-				return nil, fmt.Errorf("omorpc: write automatic child wrapper: %w", err)
+				return nil, err
 			}
-			automaticCfg.ChildCommand = automaticWrapper
-		}
-		_, automaticArgs, err = supervisorCommand(automaticCfg)
-		if err != nil {
-			_ = os.Remove(nodeWrapper)
-			_ = os.Remove(automaticWrapper)
-			return nil, err
 		}
 	}
-	keptWrapper := ""
+	keptAdapter := ""
 	defer func() {
-		for _, wrapper := range []string{nodeWrapper, automaticWrapper} {
-			if wrapper != "" && wrapper != keptWrapper {
-				_ = os.Remove(wrapper)
-			}
+		if childAdapter != "" && childAdapter != keptAdapter {
+			_ = os.Remove(childAdapter)
 		}
 	}()
 	if runtimeName, userRuntime := lookupEnv(cfg.Env, "OMO_RUNTIME"); userRuntime {
@@ -267,20 +259,16 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 		}
 		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, env, "configured", false)
 		if attemptErr == nil && result.Owned {
-			if runtimeName == "node" {
-				keptWrapper = nodeWrapper
-			} else {
-				keptWrapper = automaticWrapper
-			}
-			result.childWrapper = keptWrapper
+			keptAdapter = childAdapter
+			result.childWrapper = childAdapter
 		}
 		return result, attemptErr
 	}
 	if winner, ok := runtimeWinnerCache.Load(command); ok && winner == "node" {
 		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, nodeArgs, nodeEnv, "node", false)
 		if attemptErr == nil && result.Owned {
-			keptWrapper = nodeWrapper
-			result.childWrapper = nodeWrapper
+			keptAdapter = childAdapter
+			result.childWrapper = childAdapter
 		}
 		return result, attemptErr
 	}
@@ -289,8 +277,8 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if automaticErr == nil {
 		runtimeWinnerCache.Store(command, "automatic")
 		if result.Owned {
-			keptWrapper = automaticWrapper
-			result.childWrapper = automaticWrapper
+			keptAdapter = childAdapter
+			result.childWrapper = childAdapter
 		}
 		return result, nil
 	}
@@ -301,8 +289,8 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if nodeErr == nil {
 		runtimeWinnerCache.Store(command, "node")
 		if result.Owned {
-			keptWrapper = nodeWrapper
-			result.childWrapper = nodeWrapper
+			keptAdapter = childAdapter
+			result.childWrapper = childAdapter
 		}
 		return result, nil
 	}
@@ -315,16 +303,9 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
 	}
-	proofPath, proofToken, err := newSocketOwnershipProof(cfg.StateDir)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("omorpc: prepare socket ownership proof: %w", err), finishLog()), false
-	}
-	defer os.Remove(proofPath)
 	baseline, baselineExists := currentSocketIdentity(cfg.SocketPath)
 	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
-	env = setEnv(env, socketOwnershipProofPathEnv, proofPath)
-	env = setEnv(env, socketOwnershipProofTokenEnv, proofToken)
 	cmd.Env = EnsureExtensionEventsCapability(env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -342,41 +323,27 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	}()
 
 	var ownedSocket *socketIdentity
-	observeProvenSocket := func() {
-		identity, exists := currentSocketIdentity(cfg.SocketPath)
-		if exists && (!baselineExists || identity != baseline) && socketOwnershipProven(proofPath, proofToken, identity) {
-			ownedSocket = &identity
-		}
-	}
 	cleanup := func() error {
-		observeProvenSocket()
 		if err := stopOwnedProcess(context.Background(), cmd.Process, waitCh); err != nil {
 			return err
 		}
-		// The child-side watcher can complete its atomic acknowledgment while
-		// shutdown is in progress, so authenticate the inode again after reap.
-		observeProvenSocket()
 		return removeOwnedSocket(cfg.SocketPath, ownedSocket)
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, cfg.ReadyTimeout)
 	defer cancel()
 	for {
-		observeProvenSocket()
-		client, dialErr := probeDaemon(readyCtx, cfg)
-		if dialErr == nil {
-			_ = client.Close()
-			client, identity, stable, authenticated, authErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
-			if authErr != nil || !stable {
-				if client != nil {
-					_ = client.Close()
-				}
-				continue
-			}
+		identity, stable, authenticated, authErr := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
+		if stable && authenticated && (!baselineExists || identity != baseline) {
+			ownedSocket = &identity
+		}
+		var client *Client
+		var dialErr error
+		if authErr == nil && stable {
+			client, dialErr = probeDaemon(readyCtx, cfg)
+		}
+		if dialErr == nil && client != nil {
 			owned := authenticated && (!baselineExists || identity != baseline)
-			if owned {
-				ownedSocket = &identity
-			}
 			result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
 			if checkErr != nil {
 				if cleanupErr := cleanup(); cleanupErr != nil {
@@ -395,6 +362,8 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 			}
 			ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, identity: *ownedSocket})
 			return result, nil, false
+		} else if client != nil {
+			_ = client.Close()
 		}
 
 		select {
@@ -435,43 +404,6 @@ func currentSocketIdentity(path string) (socketIdentity, bool) {
 	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
 }
 
-const (
-	socketOwnershipProofPathEnv  = "OMORPC_SOCKET_OWNERSHIP_PROOF"
-	socketOwnershipProofTokenEnv = "OMORPC_SOCKET_OWNERSHIP_TOKEN"
-)
-
-func newSocketOwnershipProof(dir string) (string, string, error) {
-	file, err := os.CreateTemp(dir, ".daemon-owner-*.proof")
-	if err != nil {
-		return "", "", err
-	}
-	path := file.Name()
-	if closeErr := file.Close(); closeErr != nil {
-		_ = os.Remove(path)
-		return "", "", closeErr
-	}
-	if err := os.Remove(path); err != nil {
-		return "", "", err
-	}
-	var nonce [32]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", "", err
-	}
-	return path, hex.EncodeToString(nonce[:]), nil
-}
-
-func writeSocketOwnershipProof(path, token string, identity socketIdentity) error {
-	return os.WriteFile(path, []byte(fmt.Sprintf("%s %d %d\n", token, identity.device, identity.inode)), 0o600)
-}
-
-func socketOwnershipProven(path, token string, identity socketIdentity) bool {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(data)) == fmt.Sprintf("%s %d %d", token, identity.device, identity.inode)
-}
-
 // probeAuthenticatedDaemon binds peer authentication to the pathname inode:
 // the path must name the same socket immediately before and after the dial.
 // A replacement after the first readiness handshake therefore cannot lend its
@@ -495,6 +427,9 @@ func clientPeerInProcessGroup(client *Client, processGroup int) bool {
 	if err != nil {
 		return false
 	}
+	if pid == processGroup {
+		return true
+	}
 	pgid, err := syscall.Getpgid(pid)
 	return err == nil && pgid == processGroup
 }
@@ -505,7 +440,42 @@ func clientPeerPID(client *Client) (int, error) {
 	if client.current == nil {
 		return 0, errors.New("client has no current connection")
 	}
-	syscallConn, ok := client.current.conn.(syscall.Conn)
+	return connectionPeerPID(client.current.conn)
+}
+
+// authenticateSocketPath binds process-group authentication to one pathname
+// inode. Ownership is recorded only when the connected peer and both pathname
+// observations agree; an unrelated listener can never lend its inode to a
+// producer from our supervisor's process group.
+func authenticateSocketPath(ctx context.Context, path string, processGroup int) (socketIdentity, bool, bool, error) {
+	before, exists := currentSocketIdentity(path)
+	if !exists {
+		return socketIdentity{}, false, false, os.ErrNotExist
+	}
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "unix", path)
+	if err != nil {
+		return socketIdentity{}, false, false, err
+	}
+	defer conn.Close()
+	after, exists := currentSocketIdentity(path)
+	stable := exists && before == after
+	if !stable {
+		return before, false, false, nil
+	}
+	pid, err := connectionPeerPID(conn)
+	if err != nil {
+		return before, true, false, err
+	}
+	if pid == processGroup {
+		return before, true, true, nil
+	}
+	pgid, err := syscall.Getpgid(pid)
+	return before, true, err == nil && pgid == processGroup, err
+}
+
+func connectionPeerPID(conn net.Conn) (int, error) {
+	syscallConn, ok := conn.(syscall.Conn)
 	if !ok {
 		return 0, errors.New("connection does not expose a file descriptor")
 	}
@@ -859,20 +829,24 @@ func EnsureExtensionEventsCapability(env []string) []string {
 		return nil
 	}
 	for _, key := range []string{"SENPI_RPC_CLIENT_CAPABILITIES", "OMO_RPC_CLIENT_CAPABILITIES"} {
-		value, exists := lookupEnv(env, key)
-		if !exists {
-			value = ""
-		}
-		has := slices.ContainsFunc(strings.Split(value, ","), func(value string) bool {
-			return strings.TrimSpace(value) == capExtensionEvents
-		})
-		if !has {
-			if strings.TrimSpace(value) != "" {
-				value += ","
+		value, _ := lookupEnv(env, key)
+		seen := make(map[string]struct{})
+		capabilities := make([]string, 0, len(strings.Split(value, ","))+1)
+		for _, capability := range strings.Split(value, ",") {
+			capability = strings.TrimSpace(capability)
+			if capability == "" {
+				continue
 			}
-			value += capExtensionEvents
+			if _, exists := seen[capability]; exists {
+				continue
+			}
+			seen[capability] = struct{}{}
+			capabilities = append(capabilities, capability)
 		}
-		env = setEnv(env, key, value)
+		if _, exists := seen[capExtensionEvents]; !exists {
+			capabilities = append(capabilities, capExtensionEvents)
+		}
+		env = setEnv(env, key, strings.Join(capabilities, ","))
 	}
 	return env
 }
@@ -960,7 +934,10 @@ func launcherExtension(command string, env []string) (string, bool, error) {
 }
 
 func launcherNativeContext(command string, env []string) (string, string, error) {
-	if existing, ok := lookupEnv(env, "SENPI_BRAND"); ok && json.Valid([]byte(existing)) {
+	if existing, ok := lookupEnv(env, "SENPI_BRAND"); ok {
+		if err := validateLauncherBrandProfile(existing); err != nil {
+			return "", "", fmt.Errorf("invalid SENPI_BRAND: %w", err)
+		}
 		native, err := launcherNativeCommand(command, env)
 		return existing, native, err
 	}
@@ -994,7 +971,7 @@ func launcherNativeContext(command string, env []string) (string, string, error)
 		UserAgent: "omo", Originator: "omo",
 		Update: launcherBrandUpdate{
 			PackageName: "omo-ai", DistTag: "beta",
-			Command:      fmt.Sprintf("bun add --cwd %s -g omo-ai@beta", shellQuote(root)),
+			Command:      launcherUpdateCommand(root),
 			ChangelogURL: "https://github.com/code-yeongyu/oh-my-openagent/releases",
 		},
 	}
@@ -1002,8 +979,37 @@ func launcherNativeContext(command string, env []string) (string, string, error)
 	if err != nil {
 		return "", "", err
 	}
+	profileJSON := string(encoded)
+	if err := validateLauncherBrandProfile(profileJSON); err != nil {
+		return "", "", err
+	}
 	native, err := launcherNativeCommand(command, env)
-	return string(encoded), native, err
+	return profileJSON, native, err
+}
+
+func validateLauncherBrandProfile(encoded string) error {
+	var profile launcherBrandProfile
+	if err := json.Unmarshal([]byte(encoded), &profile); err != nil {
+		return err
+	}
+	values := []string{
+		profile.Name, profile.Command, profile.DisplayVersion, profile.ConfigDir,
+		profile.EnvPrefix, profile.UserAgent, profile.Originator,
+		profile.Update.PackageName, profile.Update.DistTag,
+		profile.Update.Command, profile.Update.ChangelogURL,
+	}
+	if slices.Contains(values, "") {
+		return errors.New("brand profile is incomplete")
+	}
+	return nil
+}
+
+func launcherUpdateCommand(root string) string {
+	normalized := filepath.ToSlash(filepath.Clean(root))
+	if strings.HasSuffix(normalized, "/install/global/node_modules/omo-ai") {
+		return fmt.Sprintf("bun add --cwd %s -g omo-ai@beta", shellQuote(root))
+	}
+	return "npm i -g omo-ai@beta"
 }
 
 func launcherNativeCommand(command string, env []string) (string, error) {
@@ -1047,27 +1053,23 @@ func writeNativeChildWrapper(cfg EnsureConfig, nativeCommand, profile string, en
 	}
 	senpiCapabilities, _ := lookupEnv(env, "SENPI_RPC_CLIENT_CAPABILITIES")
 	omoCapabilities, _ := lookupEnv(env, "OMO_RPC_CLIENT_CAPABILITIES")
+	if err := validateLauncherBrandProfile(profile); err != nil {
+		return cleanup(fmt.Errorf("validate child brand profile: %w", err))
+	}
+	// The adapter must remain transparent to the supervisor: exec preserves
+	// direct-parent watchdog semantics, and the explicit redirection carries
+	// the supervisor-owned descriptor into the native host as fd 3.
 	script := fmt.Sprintf(`#!/bin/sh
 export SENPI_BRAND=%s
 export SENPI_RPC_CLIENT_CAPABILITIES=%s
 export OMO_RPC_CLIENT_CAPABILITIES=%s
-native_pid=$$
-(
-  while kill -0 "$native_pid" 2>/dev/null; do
-    if [ -S %s ]; then
-      identity=$(stat -f '%%d %%i' %s 2>/dev/null || stat -c '%%d %%i' %s 2>/dev/null) || identity=
-      if [ -n "$identity" ] && [ -n "$OMORPC_SOCKET_OWNERSHIP_PROOF" ] && [ -n "$OMORPC_SOCKET_OWNERSHIP_TOKEN" ]; then
-        proof_tmp="$OMORPC_SOCKET_OWNERSHIP_PROOF.$native_pid"
-        umask 077
-        printf '%%s %%s\n' "$OMORPC_SOCKET_OWNERSHIP_TOKEN" "$identity" > "$proof_tmp" && mv -f "$proof_tmp" "$OMORPC_SOCKET_OWNERSHIP_PROOF"
-      fi
-      exit 0
-    fi
-    sleep 0.01
-  done
-) &
-exec %s "$@"
-`, shellQuote(profile), shellQuote(senpiCapabilities), shellQuote(omoCapabilities), shellQuote(cfg.SocketPath), shellQuote(cfg.SocketPath), shellQuote(cfg.SocketPath), shellQuote(nativeCommand))
+if [ "${OMO_RUNTIME-}" != node ] && runtime=$(command -v bun 2>/dev/null) && [ -x "$runtime" ]; then
+  export SENPI_RUNTIME=bun
+  exec "$runtime" %s "$@" 3>&3
+fi
+export SENPI_RUNTIME=node
+exec %s "$@" 3>&3
+`, shellQuote(profile), shellQuote(senpiCapabilities), shellQuote(omoCapabilities), shellQuote(nativeCommand), shellQuote(nativeCommand))
 	if _, err := io.WriteString(file, script); err != nil {
 		return cleanup(err)
 	}

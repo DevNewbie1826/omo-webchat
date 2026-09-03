@@ -103,7 +103,18 @@ func TestEnsureHelperProcess(t *testing.T) {
 				t.Fatalf("helper create stale socket: %v", err)
 			}
 			ln.(*net.UnixListener).SetUnlinkOnClose(false)
-			writeEnsureHelperOwnershipProof(t, socket)
+			ownershipConn, err := ln.Accept()
+			if err != nil {
+				t.Fatalf("helper accept ownership probe: %v", err)
+			}
+			_ = ownershipConn.Close()
+			probeConn, err := ln.Accept()
+			if err != nil {
+				t.Fatalf("helper accept readiness probe: %v", err)
+			}
+			scanner := bufio.NewScanner(probeConn)
+			_ = scanner.Scan()
+			_ = probeConn.Close()
 			_ = ln.Close()
 			os.Exit(7)
 		}
@@ -141,7 +152,6 @@ func TestEnsureHelperProcess(t *testing.T) {
 		t.Fatalf("helper listen: %v", err)
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
-	writeEnsureHelperOwnershipProof(t, socket)
 	defer ln.Close()
 	for {
 		conn, err := ln.Accept()
@@ -149,21 +159,6 @@ func TestEnsureHelperProcess(t *testing.T) {
 			return
 		}
 		go serveEnsureHelper(conn)
-	}
-}
-
-func writeEnsureHelperOwnershipProof(t *testing.T, socket string) {
-	t.Helper()
-	path, token := os.Getenv(socketOwnershipProofPathEnv), os.Getenv(socketOwnershipProofTokenEnv)
-	if path == "" || token == "" {
-		return
-	}
-	identity, exists := currentSocketIdentity(socket)
-	if !exists {
-		t.Fatalf("helper ownership proof: socket identity unavailable")
-	}
-	if err := writeSocketOwnershipProof(path, token, identity); err != nil {
-		t.Fatalf("helper ownership proof: %v", err)
 	}
 }
 
@@ -313,10 +308,10 @@ func TestEnsureExtensionEventsCapabilityNilInheritsEnvironment(t *testing.T) {
 	}
 }
 
-func TestEnsureExtensionEventsCapabilityMergesActiveBrandedValue(t *testing.T) {
+func TestEnsureExtensionEventsCapabilityNormalizesValues(t *testing.T) {
 	env := EnsureExtensionEventsCapability([]string{
-		"SENPI_RPC_CLIENT_CAPABILITIES=native_only",
-		"OMO_RPC_CLIENT_CAPABILITIES=custom_only",
+		"SENPI_RPC_CLIENT_CAPABILITIES= native_only, ,native_only, extension_events,",
+		"OMO_RPC_CLIENT_CAPABILITIES=custom_only,, custom_only ",
 	})
 	for key, want := range map[string]string{
 		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events",
@@ -325,6 +320,72 @@ func TestEnsureExtensionEventsCapabilityMergesActiveBrandedValue(t *testing.T) {
 		if got, _ := lookupEnv(env, key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestLauncherBrandProfileValidation(t *testing.T) {
+	valid := `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"}}`
+	if err := validateLauncherBrandProfile(valid); err != nil {
+		t.Fatalf("valid profile: %v", err)
+	}
+	for _, invalid := range []string{"null", `{}`, `{"name":"OmO"}`, `[]`} {
+		if err := validateLauncherBrandProfile(invalid); err == nil {
+			t.Fatalf("profile %s accepted", invalid)
+		}
+	}
+}
+
+func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
+	bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
+	if got, want := launcherUpdateCommand(bunRoot), "bun add --cwd "+shellQuote(bunRoot)+" -g omo-ai@beta"; got != want {
+		t.Fatalf("bun update command = %q, want %q", got, want)
+	}
+	npmRoot := filepath.Join(t.TempDir(), "lib", "node_modules", "omo-ai")
+	if got := launcherUpdateCommand(npmRoot); got != "npm i -g omo-ai@beta" {
+		t.Fatalf("npm update command = %q", got)
+	}
+}
+
+func TestNativeChildAdapterExecsWithSupervisorDescriptor(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "adapter")
+	native := writeFakeSupervisor(t, fmt.Sprintf(`
+read value <&3
+printf '%%s %%s' "$$" "$value" > %q
+`, marker))
+	cfg := EnsureConfig{StateDir: dir}
+	adapter, err := writeNativeChildWrapper(cfg, native, testLauncherBrandProfileJSON(), []string{
+		"SENPI_RPC_CLIENT_CAPABILITIES=custom",
+		"OMO_RPC_CLIENT_CAPABILITIES=custom",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(adapter)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(adapter)
+	cmd.Env = setEnv(os.Environ(), "OMO_RUNTIME", "node")
+	cmd.ExtraFiles = []*os.File{reader}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = reader.Close()
+	if _, err := io.WriteString(writer, "descriptor\n"); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(data)), []string{fmt.Sprint(cmd.Process.Pid), "descriptor"}; !slices.Equal(got, want) {
+		t.Fatalf("adapter result = %v, want %v", got, want)
 	}
 }
 
@@ -363,7 +424,9 @@ func TestEnsureDaemonRuntimeLadderCleanupAndWinnerCache(t *testing.T) {
 
 	first, err := EnsureDaemon(context.Background(), cfg)
 	if err != nil {
-		t.Fatalf("first EnsureDaemon: %v", err)
+		log, _ := os.ReadFile(filepath.Join(filepath.Dir(socket), "daemon-spawn.log"))
+		identity, exists := currentSocketIdentity(socket)
+		t.Fatalf("first EnsureDaemon: %v socket=%v/%+v\n%s", err, exists, identity, log)
 	}
 	stopEnsuredDaemons(t, []*EnsuredDaemon{first})
 	if _, err := os.Stat(cleanupMarker); err != nil {
