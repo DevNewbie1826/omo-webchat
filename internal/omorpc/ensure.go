@@ -209,16 +209,20 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 		}
 	}
 
+	nodeArgs, nodeEnv, err := nodeFallbackContext(cfg, command, nativeArgs)
+	if err != nil {
+		return nil, err
+	}
 	if runtimeName, userRuntime := lookupEnv(cfg.Env, "OMO_RUNTIME"); userRuntime {
-		args := automaticArgs
+		args, env := automaticArgs, cfg.Env
 		if runtimeName == "node" {
-			args = nativeArgs
+			args, env = nodeArgs, nodeEnv
 		}
-		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, cfg.Env, "configured", false)
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, args, env, "configured", false)
 		return result, attemptErr
 	}
 	if winner, ok := runtimeWinnerCache.Load(command); ok && winner == "node" {
-		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, nativeArgs, setEnv(cfg.Env, "OMO_RUNTIME", "node"), "node", false)
+		result, attemptErr, _ := spawnDaemonAttempt(ctx, cfg, command, nodeArgs, nodeEnv, "node", false)
 		return result, attemptErr
 	}
 
@@ -230,7 +234,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	if !retryable || ctx.Err() != nil {
 		return nil, automaticErr
 	}
-	result, nodeErr, _ := spawnDaemonAttempt(ctx, cfg, command, nativeArgs, setEnv(cfg.Env, "OMO_RUNTIME", "node"), "node", true)
+	result, nodeErr, _ := spawnDaemonAttempt(ctx, cfg, command, nodeArgs, nodeEnv, "node", true)
 	if nodeErr == nil {
 		runtimeWinnerCache.Store(command, "node")
 		return result, nil
@@ -685,6 +689,68 @@ func EnsureExtensionEventsCapability(env []string) []string {
 func isSpawnableProbeError(err error) bool {
 	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) ||
 		errors.Is(err, syscall.ECONNREFUSED)
+}
+
+// nodeFallbackContext preserves the launcher's direct-host contract. Live
+// protocol probing shows that launcher sessions receive the packaged plugin
+// through --extension while the supervisor's native child inherits the brand
+// environment; the internal supervisor deliberately strips its injected
+// prefix, so the extension must also be forwarded after the sentinel.
+func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, error) {
+	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
+	extension, recognized, err := launcherExtension(command, env)
+	if err != nil {
+		return nil, nil, fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)
+	}
+	if !recognized {
+		return nativeArgs, env, nil
+	}
+	return append(slices.Clone(nativeArgs), "--extension", extension), env, nil
+}
+
+func launcherExtension(command string, env []string) (string, bool, error) {
+	var entry string
+	resolved, err := filepath.EvalSymlinks(command)
+	recognized := filepath.Base(command) == "omo" || (err == nil && filepath.Base(resolved) == "omo.js")
+	if data, readErr := os.ReadFile(command); readErr == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if value, ok := strings.CutPrefix(line, "# entry: "); ok {
+				entry = strings.TrimSpace(value)
+				recognized = true
+				break
+			}
+		}
+	}
+	if !recognized {
+		return "", false, nil
+	}
+	if entry == "" {
+		for _, key := range []string{"OMO_AGENT_TOOLKIT_BIN", "OMO_BIN"} {
+			if value, ok := lookupEnv(env, key); ok && value != "" {
+				entry = value
+				break
+			}
+		}
+	}
+	if entry == "" && err == nil && filepath.Base(resolved) == "omo.js" {
+		entry = resolved
+	}
+	if entry == "" {
+		return "", true, errors.New("launcher entry is unavailable")
+	}
+	if filepath.Base(entry) == "omo-agent-toolkit.js" {
+		entry = filepath.Join(filepath.Dir(entry), "omo.js")
+	}
+	root := filepath.Dir(filepath.Dir(entry))
+	extension := filepath.Join(root, "plugin")
+	info, err := os.Stat(extension)
+	if err != nil {
+		return "", true, err
+	}
+	if !info.IsDir() {
+		return "", true, fmt.Errorf("%s is not a directory", extension)
+	}
+	return extension, true, nil
 }
 
 func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
