@@ -2,7 +2,9 @@ package wsbridge
 
 import (
 	"context"
+	"errors"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
@@ -10,23 +12,50 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-// goalWatchInterval bounds the goal-file mtime watch. Every tick is one
-// cheap Stat; the bounded read and the chat.goal push happen only when the
-// file's size or mtime actually changed. No filesystem-event dependency is
-// available, so an mtime stat ticker is the change signal — push-on-change,
-// never a full-state poll on the wire.
+// goalWatchInterval bounds the goal-file metadata watch. Every tick is one
+// cheap Lstat; the bounded read happens only when existence, identity, size,
+// or mtime changes. No filesystem-event dependency is available, so the
+// metadata ticker is the change signal - never a full-state poll on the wire.
 const goalWatchInterval = 2 * time.Second
 
 type goalFileStamp struct {
-	size int64
-	mod  time.Time
+	device uint64
+	inode  uint64
+	size   int64
+	mod    time.Time
+}
+
+type goalWatchState struct {
+	last         *session.GoalState
+	lastStamp    goalFileStamp
+	hadStamp     bool
+	acknowledged bool
+}
+
+func (s *goalWatchState) needsRead(stamp goalFileStamp, present bool) bool {
+	return !s.acknowledged || present != s.hadStamp || (present && stamp != s.lastStamp)
+}
+
+func (s *goalWatchState) accept(goal *session.GoalState, info os.FileInfo) bool {
+	changed := !s.acknowledged || !session.EqualGoalState(goal, s.last)
+	s.last = goal
+	s.lastStamp, s.hadStamp = goalStampFromInfo(info)
+	s.acknowledged = true
+	return changed
+}
+
+func (s *goalWatchState) refresh(read func() (*session.GoalState, os.FileInfo, error)) (*session.GoalState, bool) {
+	goal, info, err := read()
+	if err != nil {
+		return nil, false
+	}
+	return goal, s.accept(goal, info)
 }
 
 // startGoalWatch pushes chat.goal frames while this socket's chat is bound.
-// The watcher reads the projected state once at bind (pushing only when a
-// goal exists — the attach-time REST fetch already carries the initial
-// state) and again whenever the goal document changes, until the socket
-// unbinds or shuts down.
+// The watcher sends an explicit initial snapshot (including goal:null) and
+// then reads again whenever the goal document's existence or identity changes,
+// until the socket unbinds or shuts down.
 func (c *connection) startGoalWatch(chat cursorstore.Chat) {
 	agentDir := session.CodingAgentDir()
 	if _, ok := session.GoalStatePath(agentDir, chat.CWD, chat.DurableSessionID); !ok {
@@ -57,23 +86,14 @@ func (c *connection) stopGoalWatch() {
 func (c *connection) runGoalWatch(ctx context.Context, chatID, agentDir, cwd, durableSessionID string) {
 	ticker := time.NewTicker(goalWatchInterval)
 	defer ticker.Stop()
-	var last *session.GoalState
-	pushed := false
-	push := func() {
-		goal, err := session.ReadGoalState(ctx, agentDir, cwd, durableSessionID)
-		if err != nil {
-			return
+	var state goalWatchState
+	readAndPush := func() {
+		goal, push := state.refresh(func() (*session.GoalState, os.FileInfo, error) {
+			return session.ReadGoalStateSnapshot(ctx, agentDir, cwd, durableSessionID)
+		})
+		if !push {
+			return // transient reads are retried without clearing or acknowledging
 		}
-		if pushed && session.EqualGoalState(goal, last) {
-			return
-		}
-		if !pushed && goal == nil {
-			// Bind-time no-goal state is already reported by the attach-time
-			// REST fetch; stay silent until the document actually appears.
-			return
-		}
-		last = goal
-		pushed = true
 		frame := wscontract.ChatGoalFrame{Type: "chat.goal", SessionID: chatID}
 		if goal != nil {
 			frame.Goal = goalToWire(goal)
@@ -83,47 +103,57 @@ func (c *connection) runGoalWatch(ctx context.Context, chatID, agentDir, cwd, du
 			c.stopGoalWatch()
 		}
 	}
-	// Bind-time read: silently skip the no-goal case (the attach-time REST
-	// fetch already reported it) so a goal-less chat costs one stat per tick
-	// and nothing on the wire.
-	push()
-	var lastStamp goalFileStamp
-	hadStamp := false
+	readAndPush()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			stamp, ok := goalStamp(ctx, agentDir, cwd, durableSessionID)
-			if !ok && !hadStamp && !pushed {
-				continue // goal-less chat: one stat per tick, nothing else
+			stamp, present, err := goalStamp(ctx, agentDir, cwd, durableSessionID)
+			if err == nil && state.needsRead(stamp, present) {
+				readAndPush()
 			}
-			// Appear, disappear, and mtime/size changes all count as changes;
-			// equal stamps reduce the tick to the Stat itself.
-			if !ok != !hadStamp || (ok && hadStamp && stamp != lastStamp) {
-				push()
-			}
-			lastStamp, hadStamp = stamp, ok
 		}
 	}
 }
 
-// goalStamp reports the goal document's current size/mtime signature, or
-// ok=false when no readable regular file exists. The watcher treats a
-// transition between "absent" and "present" as a change either way.
-func goalStamp(ctx context.Context, agentDir, cwd, durableSessionID string) (goalFileStamp, bool) {
+// goalStamp reports the goal document's current identity/size/mtime signature.
+// Absence is distinct from a transient stat or file-type error.
+func goalStamp(ctx context.Context, agentDir, cwd, durableSessionID string) (goalFileStamp, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return goalFileStamp{}, false
+		return goalFileStamp{}, false, err
 	}
 	path, ok := session.GoalStatePath(agentDir, cwd, durableSessionID)
 	if !ok {
+		return goalFileStamp{}, false, nil
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return goalFileStamp{}, false, nil
+	}
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return goalFileStamp{}, false, errGoalStampTransient
+	}
+	stamp, _ := goalStampFromInfo(info)
+	return stamp, true, nil
+}
+
+var errGoalStampTransient = errors.New("goal file identity unavailable")
+
+func goalStampFromInfo(info os.FileInfo) (goalFileStamp, bool) {
+	if info == nil {
 		return goalFileStamp{}, false
 	}
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
 		return goalFileStamp{}, false
 	}
-	return goalFileStamp{size: info.Size(), mod: info.ModTime()}, true
+	return goalFileStamp{
+		device: uint64(stat.Dev),
+		inode:  uint64(stat.Ino),
+		size:   info.Size(),
+		mod:    info.ModTime(),
+	}, true
 }
 
 func goalToWire(goal *session.GoalState) *wscontract.ChatGoalState {
