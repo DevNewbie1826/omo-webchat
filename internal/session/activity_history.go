@@ -1,7 +1,7 @@
 package session
 
 import (
-	"bytes"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,17 +9,20 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	maxTaskStoreRecordBytes    = 4 << 20
-	maxActivityHistoryBytes    = 32 << 20
-	maxActivityHistoryFiles    = 2048
-	activityHistoryReadRetries = 2
+	maxTaskStoreRecordBytes     = 4 << 20
+	maxActivityHistoryBytes     = 32 << 20
+	maxActivityHistoryFiles     = 2048
+	maxActivityDirectoryEntries = maxActivityHistoryFiles * 4
+	activityDirectoryBatchSize  = 128
+	maxActivityTextBytes        = 512
+	activityHistoryReadRetries  = 2
 )
-
-var errActivitySnapshotOversized = errors.New("activity snapshot exceeds replay limit")
 
 // HistoricalActivity is the on-disk counterpart of the stage-8 live activity
 // projection. ActivityPair carries only snapshots within the replay cap;
@@ -140,15 +143,18 @@ type activityDagRun struct {
 	Waves     []activityDagWave `json:"waves"`
 }
 
-var taskSnapshotFields = [...]string{
-	"task_id", "child_session_id", "status", "task_summary", "name", "agent_type",
-	"category", "execution_mode", "model", "residency_state", "depth", "created_at",
-	"updated_at", "run_stats", "live_progress", "final_response", "error_message",
+type activityHistoryBudget struct {
+	entries int
+	files   int
+	bytes   int64
 }
 
-type activityHistoryBudget struct {
-	files int
-	bytes int64
+func (b *activityHistoryBudget) examine() bool {
+	if b.entries == maxActivityDirectoryEntries {
+		return false
+	}
+	b.entries++
+	return true
 }
 
 func (b *activityHistoryBudget) reserve(size int64) bool {
@@ -210,43 +216,77 @@ func readStableJSON(ctx context.Context, path string, expected os.FileInfo, targ
 	return false
 }
 
-func boundedActivitySnapshot(value any) (json.RawMessage, bool, error) {
-	var out bytes.Buffer
-	writer := &activitySnapshotWriter{buffer: &out}
-	if err := json.NewEncoder(writer).Encode(value); err != nil {
-		if errors.Is(err, errActivitySnapshotOversized) {
-			return nil, true, nil
-		}
-		return nil, false, err
+func truncateActivityText(value string) string {
+	if len(value) <= maxActivityTextBytes {
+		return value
 	}
-	payload := bytes.TrimSuffix(out.Bytes(), []byte{'\n'})
-	if len(payload) > maxActivitySnapshotBytes {
-		return nil, true, nil
+	value = value[:maxActivityTextBytes]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
 	}
-	return json.RawMessage(payload), false, nil
+	return value
 }
 
-type activitySnapshotWriter struct {
-	buffer *bytes.Buffer
-}
-
-func (w *activitySnapshotWriter) Write(p []byte) (int, error) {
-	// Encoder appends one newline outside the JSON value.
-	if len(p) > maxActivitySnapshotBytes+1-w.buffer.Len() {
-		return 0, errActivitySnapshotOversized
+func projectedString(raw json.RawMessage) (json.RawMessage, bool) {
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return nil, false
 	}
-	return w.buffer.Write(p)
+	encoded, _ := json.Marshal(truncateActivityText(value))
+	return encoded, true
 }
 
-func projectStoredTask(task storedTask) map[string]json.RawMessage {
-	projected := make(map[string]json.RawMessage, len(taskSnapshotFields))
-	for _, key := range taskSnapshotFields {
-		if value := task.Fields[key]; len(bytes.TrimSpace(value)) > 0 {
+func projectLiveProgress(raw json.RawMessage) json.RawMessage {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	projected := make(map[string]json.RawMessage)
+	for _, key := range []string{"activity", "current_tool", "last_assistant_line"} {
+		if value, ok := projectedString(fields[key]); ok {
 			projected[key] = value
 		}
 	}
-	if _, ok := projected["name"]; !ok {
-		projected["name"], _ = json.Marshal(task.TaskID)
+	if value, ok := projectedString(fields["started_at"]); ok {
+		projected["started_at"] = value
+	} else {
+		var value float64
+		if raw := fields["started_at"]; json.Unmarshal(raw, &value) == nil {
+			projected["started_at"] = raw
+		}
+	}
+	for _, key := range []string{"turns", "tool_calls", "total_tokens", "tokens_per_second"} {
+		var value float64
+		if raw := fields[key]; json.Unmarshal(raw, &value) == nil {
+			projected[key] = raw
+		}
+	}
+	if len(projected) == 0 {
+		return nil
+	}
+	encoded, _ := json.Marshal(projected)
+	return encoded
+}
+
+func projectStoredTask(task storedTask) map[string]json.RawMessage {
+	projected := make(map[string]json.RawMessage, 12)
+	for _, key := range []string{"task_summary", "agent_type", "category", "model", "created_at", "updated_at", "final_response", "error_message"} {
+		if value, ok := projectedString(task.Fields[key]); ok {
+			projected[key] = value
+		}
+	}
+	if progress := projectLiveProgress(task.Fields["live_progress"]); progress != nil {
+		projected["live_progress"] = progress
+	}
+	for key, value := range map[string]string{
+		"task_id": task.TaskID,
+		"status":  task.Status,
+		"name":    rawString(task.Fields["name"]),
+	} {
+		if key == "name" && value == "" {
+			value = task.TaskID
+		}
+		projected[key], _ = json.Marshal(truncateActivityText(value))
 	}
 	return projected
 }
@@ -312,6 +352,14 @@ func dagWaves(nodes []activityDagNode) []activityDagWave {
 	return waves
 }
 
+func truncateActivityStrings(values []string) []string {
+	out := make([]string, len(values))
+	for i, value := range values {
+		out[i] = truncateActivityText(value)
+	}
+	return out
+}
+
 func projectStoredDag(run storedDagRun) activityDagRun {
 	definitions := make(map[string]storedDagNodeDefinition, len(run.Definition.Nodes))
 	for _, node := range run.Definition.Nodes {
@@ -328,24 +376,30 @@ func projectStoredDag(run storedDagRun) activityDagRun {
 		if prompt == "" {
 			prompt = definition.Prompt
 		}
-		depends := append([]string(nil), definition.DependsOn...)
+		depends := truncateActivityStrings(definition.DependsOn)
 		if depends == nil {
 			depends = []string{}
 		}
-		node := activityDagNode{ID: stored.ID, Label: label, Prompt: prompt, DependsOn: depends, State: stored.State, Attempt: stored.Attempt, TaskID: stored.TaskID, StartedAt: stored.StartedAt, CompletedAt: stored.CompletedAt}
+		node := activityDagNode{
+			ID: truncateActivityText(stored.ID), Label: truncateActivityText(label), Prompt: truncateActivityText(prompt),
+			DependsOn: depends, State: truncateActivityText(stored.State), Attempt: stored.Attempt,
+			TaskID: truncateActivityText(stored.TaskID), StartedAt: truncateActivityText(stored.StartedAt), CompletedAt: truncateActivityText(stored.CompletedAt),
+		}
 		nodes = append(nodes, node)
 		for _, dependency := range depends {
-			edges = append(edges, activityDagEdge{From: dependency, To: stored.ID})
+			edges = append(edges, activityDagEdge{From: dependency, To: node.ID})
 		}
 	}
-	return activityDagRun{RunID: run.RunID, RunKey: run.RunKey, Name: run.Name, Status: run.Status, CreatedAt: run.CreatedAt, UpdatedAt: run.UpdatedAt, Counts: dagCounts(nodes), Nodes: nodes, Edges: edges, Waves: dagWaves(nodes)}
+	return activityDagRun{
+		RunID: truncateActivityText(run.RunID), RunKey: truncateActivityText(run.RunKey), Name: truncateActivityText(run.Name),
+		Status: truncateActivityText(run.Status), CreatedAt: truncateActivityText(run.CreatedAt), UpdatedAt: truncateActivityText(run.UpdatedAt),
+		Counts: dagCounts(nodes), Nodes: nodes, Edges: edges, Waves: dagWaves(nodes),
+	}
 }
 
 type historicalTaskRow struct {
 	createdAt string
 	taskID    string
-	status    string
-	updatedAt string
 	payload   map[string]json.RawMessage
 }
 
@@ -354,37 +408,94 @@ type historicalDagRow struct {
 	run       activityDagRun
 }
 
+type activityCandidateHeap []string
+
+func (h activityCandidateHeap) Len() int           { return len(h) }
+func (h activityCandidateHeap) Less(i, j int) bool { return h[i] < h[j] }
+func (h activityCandidateHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *activityCandidateHeap) Push(value any)    { *h = append(*h, value.(string)) }
+func (h *activityCandidateHeap) Pop() any {
+	old := *h
+	value := old[len(old)-1]
+	*h = old[:len(old)-1]
+	return value
+}
+
 func readActivityDirectory(ctx context.Context, dir string, budget *activityHistoryBudget, visit func(string, os.FileInfo)) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || (err == nil && !info.IsDir()) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	for _, entry := range entries {
+	f, err := os.Open(dir)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	candidates := &activityCandidateHeap{}
+	heap.Init(candidates)
+	truncated := false
+	for {
+		remaining := maxActivityDirectoryEntries - budget.entries
+		if remaining == 0 {
+			truncated = true
+			break
+		}
+		batchSize := min(activityDirectoryBatchSize, remaining)
+		entries, readErr := f.ReadDir(batchSize)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			if !budget.examine() {
+				return true, nil
+			}
+			if filepath.Ext(entry.Name()) != ".json" || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			heap.Push(candidates, entry.Name())
+			if candidates.Len() > maxActivityHistoryFiles {
+				heap.Pop(candidates)
+				truncated = true
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return false, readErr
+		}
+	}
+
+	names := make([]string, candidates.Len())
+	for i := len(names) - 1; i >= 0; i-- {
+		names[i] = heap.Pop(candidates).(string)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(names)))
+	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		if filepath.Ext(entry.Name()) != ".json" || entry.Type()&os.ModeSymlink != 0 {
-			continue
-		}
-		info, err := entry.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxTaskStoreRecordBytes {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxTaskStoreRecordBytes {
 			continue
 		}
 		if !budget.reserve(info.Size()) {
 			return true, nil
 		}
-		visit(filepath.Join(dir, entry.Name()), info)
+		visit(path, info)
 	}
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	return false, nil
+	return truncated, nil
 }
 
 func newestTaskRows(rows []historicalTaskRow) ([]historicalTaskRow, bool) {
@@ -413,16 +524,98 @@ func newestDagRows(rows []historicalDagRow) ([]historicalDagRow, bool) {
 	return rows[:maxActivityDigestEntries], true
 }
 
+type historicalTaskSnapshot struct {
+	ParentSessionID string                       `json:"parent_session_id"`
+	Truncated       bool                         `json:"truncated_tasks"`
+	Tasks           []map[string]json.RawMessage `json:"tasks"`
+}
+
+type historicalDagSnapshot struct {
+	ParentSessionID string           `json:"parent_session_id"`
+	Truncated       bool             `json:"truncated_runs"`
+	Runs            []activityDagRun `json:"runs"`
+}
+
+func packTaskSnapshot(parent string, rows []historicalTaskRow, truncated bool) (json.RawMessage, bool, error) {
+	out := historicalTaskSnapshot{ParentSessionID: truncateActivityText(parent), Tasks: make([]map[string]json.RawMessage, 0, len(rows))}
+	omitted := false
+	for _, row := range rows {
+		out.Tasks = append(out.Tasks, row.payload)
+		candidate, err := json.Marshal(out)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(candidate) > maxActivitySnapshotBytes {
+			out.Tasks = out.Tasks[:len(out.Tasks)-1]
+			omitted = true
+			break
+		}
+	}
+	out.Truncated = truncated || omitted
+	payload, err := json.Marshal(out)
+	return json.RawMessage(payload), omitted, err
+}
+
+func packDagSnapshot(parent string, rows []historicalDagRow, truncated bool) (json.RawMessage, bool, error) {
+	out := historicalDagSnapshot{ParentSessionID: truncateActivityText(parent), Runs: make([]activityDagRun, 0, len(rows))}
+	omitted := false
+	for _, row := range rows {
+		out.Runs = append(out.Runs, row.run)
+		candidate, err := json.Marshal(out)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(candidate) > maxActivitySnapshotBytes {
+			out.Runs = out.Runs[:len(out.Runs)-1]
+			omitted = true
+			break
+		}
+	}
+	out.Truncated = truncated || omitted
+	payload, err := json.Marshal(out)
+	return json.RawMessage(payload), omitted, err
+}
+
+func boundTaskDigest(digest *TaskDigest) {
+	for len(digest.Tasks) > 0 {
+		payload, err := json.Marshal(digest)
+		if err == nil && len(payload) <= maxActivitySnapshotBytes {
+			return
+		}
+		digest.Tasks = digest.Tasks[:len(digest.Tasks)-1]
+		digest.Truncated = true
+	}
+}
+
+func boundDagDigest(digest *DagDigest) {
+	for {
+		payload, err := json.Marshal(digest)
+		if err == nil && len(payload) <= maxActivitySnapshotBytes {
+			return
+		}
+		digest.Truncated = true
+		if len(digest.Runs) == 0 {
+			return
+		}
+		last := &digest.Runs[len(digest.Runs)-1]
+		if len(last.RunningTaskIDs) > 0 {
+			last.RunningTaskIDs = last.RunningTaskIDs[:len(last.RunningTaskIDs)-1]
+		} else {
+			digest.Runs = digest.Runs[:len(digest.Runs)-1]
+		}
+	}
+}
+
 // ReadHistoricalActivity reads the exact task-store directories observed under
 // a validated chat cwd and returns only records linked to durableSessionID.
 // Malformed or concurrently replaced records are skipped, while cancellation
 // and aggregate scan budgets bound work over hostile or damaged stores.
 func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (HistoricalActivity, error) {
 	base := filepath.Join(cwd, ".omo", "senpi-task")
-	budget := &activityHistoryBudget{}
+	taskBudget := &activityHistoryBudget{}
 	tasks := make([]historicalTaskRow, 0)
 	ownedRuns := make(map[string]bool)
-	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), budget, func(path string, info os.FileInfo) {
+	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
 		var task storedTask
 		if !readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.TaskID == "" || task.Status == "" || task.ParentSessionID != durableSessionID {
 			return
@@ -431,8 +624,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 			ownedRuns[task.Owner.RunID] = true
 		}
 		tasks = append(tasks, historicalTaskRow{
-			createdAt: task.CreatedAt, taskID: task.TaskID, status: task.Status,
-			updatedAt: rawString(task.Fields["updated_at"]), payload: projectStoredTask(task),
+			createdAt: task.CreatedAt, taskID: task.TaskID, payload: projectStoredTask(task),
 		})
 	})
 	if err != nil {
@@ -440,54 +632,38 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	}
 	tasks, taskRetentionTruncated := newestTaskRows(tasks)
 	truncatedTasks := taskBudgetExhausted || taskRetentionTruncated
-	taskRows := make([]map[string]json.RawMessage, len(tasks))
-	taskDigestRows := make([]TaskDigestEntry, len(tasks))
-	for i, task := range tasks {
-		taskRows[i] = task.payload
-		taskDigestRows[i] = TaskDigestEntry{TaskID: task.taskID, Status: task.status, UpdatedAt: task.updatedAt}
-	}
-	taskPayload, taskOversized, err := boundedActivitySnapshot(struct {
-		ParentSessionID string                       `json:"parent_session_id"`
-		Truncated       bool                         `json:"truncated_tasks"`
-		Tasks           []map[string]json.RawMessage `json:"tasks"`
-	}{durableSessionID, truncatedTasks, taskRows})
+	taskPayload, taskOversized, err := packTaskSnapshot(durableSessionID, tasks, truncatedTasks)
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
 
 	runs := make([]historicalDagRow, 0)
-	runBudgetExhausted := taskBudgetExhausted
-	if !runBudgetExhausted {
-		runBudgetExhausted, err = readActivityDirectory(ctx, filepath.Join(base, "dag", "runs"), budget, func(path string, info os.FileInfo) {
-			var run storedDagRun
-			if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" ||
-				(run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && ownedRuns[run.RunID])) {
-				return
-			}
-			runs = append(runs, historicalDagRow{createdAt: run.CreatedAt, run: projectStoredDag(run)})
-		})
-		if err != nil {
-			return HistoricalActivity{}, err
+	runBudget := &activityHistoryBudget{}
+	runBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "dag", "runs"), runBudget, func(path string, info os.FileInfo) {
+		var run storedDagRun
+		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" ||
+			(run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && ownedRuns[run.RunID])) {
+			return
 		}
+		runs = append(runs, historicalDagRow{createdAt: run.CreatedAt, run: projectStoredDag(run)})
+	})
+	if err != nil {
+		return HistoricalActivity{}, err
 	}
 	runs, runRetentionTruncated := newestDagRows(runs)
 	truncatedRuns := runBudgetExhausted || runRetentionTruncated
-	dagRows := make([]activityDagRun, len(runs))
-	for i, run := range runs {
-		dagRows[i] = run.run
-	}
-	dagPayload, dagOversized, err := boundedActivitySnapshot(struct {
-		ParentSessionID string           `json:"parent_session_id"`
-		Truncated       bool             `json:"truncated_runs"`
-		Runs            []activityDagRun `json:"runs"`
-	}{durableSessionID, truncatedRuns, dagRows})
+	dagPayload, dagOversized, err := packDagSnapshot(durableSessionID, runs, truncatedRuns)
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
 
 	receivedAt := time.Now().UTC().Format(time.RFC3339)
-	taskDigest := &TaskDigest{Tasks: taskDigestRows, Truncated: truncatedTasks, ReceivedAt: receivedAt}
-	dagDigest := historicalDagDigest(dagRows, truncatedRuns, receivedAt)
+	taskDigest, _ := parseTaskDigest(taskPayload)
+	dagDigest, _ := parseDagDigest(dagPayload)
+	taskDigest.ReceivedAt = receivedAt
+	dagDigest.ReceivedAt = receivedAt
+	boundTaskDigest(taskDigest)
+	boundDagDigest(dagDigest)
 	return HistoricalActivity{
 		ActivityPair: ActivityPair{Task: taskPayload, Dag: dagPayload},
 		TaskDigest:   taskDigest, DagDigest: dagDigest,
@@ -501,28 +677,4 @@ func rawString(raw json.RawMessage) string {
 		return ""
 	}
 	return value
-}
-
-func historicalDagDigest(rows []activityDagRun, truncated bool, receivedAt string) *DagDigest {
-	digest := &DagDigest{Runs: make([]RunDigestEntry, 0, len(rows)), Truncated: truncated, ReceivedAt: receivedAt}
-	retainedTaskIDs := 0
-	for _, run := range rows {
-		if terminalDagStatuses[run.Status] {
-			continue
-		}
-		entry := RunDigestEntry{RunID: run.RunID, Status: run.Status, RunningTaskIDs: []string{}}
-		for _, node := range run.Nodes {
-			if node.State != "running" || node.TaskID == "" {
-				continue
-			}
-			if retainedTaskIDs == maxActivityDigestEntries {
-				digest.Truncated = true
-				continue
-			}
-			entry.RunningTaskIDs = append(entry.RunningTaskIDs, node.TaskID)
-			retainedTaskIDs++
-		}
-		digest.Runs = append(digest.Runs, entry)
-	}
-	return digest
 }
