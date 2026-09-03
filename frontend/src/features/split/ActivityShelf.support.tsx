@@ -57,6 +57,8 @@ export function activityState(
     readonly tasks?: readonly ActivityTask[];
     readonly dags?: readonly ActivityDagRun[];
     readonly todo?: readonly TodoPhase[];
+    readonly truncatedTasks?: boolean;
+    readonly truncatedDags?: boolean;
   } = {},
 ): ActivityState {
   return {
@@ -64,6 +66,8 @@ export function activityState(
     dags: new Map((parts.dags ?? []).map((run): readonly [string, ActivityDagRun] => [run.runId, run])),
     todo: parts.todo ?? null,
     heartbeats: new Map(),
+    ...(parts.truncatedTasks === undefined ? {} : { truncatedTasks: parts.truncatedTasks }),
+    ...(parts.truncatedDags === undefined ? {} : { truncatedDags: parts.truncatedDags }),
   };
 }
 

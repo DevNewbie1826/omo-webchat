@@ -3,7 +3,15 @@ import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidat
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
-import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
+import {
+  applyActivityEvent,
+  applyActivityHistorySnapshot,
+  bufferActivityHydrationEvent,
+  createActivityHydrationBuffer,
+  emptyActivityState,
+  type ActivityHydrationBuffer,
+  type BufferedActivityEvent,
+} from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -130,7 +138,7 @@ export function useChatFrameState() {
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
   const activityHydrationRef = useRef<{
     readonly token: number;
-    readonly events: { readonly name: string; readonly data: unknown }[];
+    readonly buffer: ActivityHydrationBuffer;
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
@@ -213,8 +221,9 @@ export function useChatFrameState() {
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
-    bufferActivityEvent: (name, data) => {
-      activityHydrationRef.current?.events.push({ name, data });
+    bufferActivityEvent: (event: BufferedActivityEvent) => {
+      const hydration = activityHydrationRef.current;
+      if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
     },
     retryVersionRef,
     externalRecoveryPendingRef,
@@ -247,10 +256,11 @@ export function useChatFrameState() {
 
   // REST is the historical base, but every activity frame received after the
   // request began is newer and must be replayed in arrival order. Full
-  // snapshots still suppress REST replacement for their own side.
+  // snapshots and buffer overflow suppress REST replacement for every domain
+  // whose live mutations can no longer be replayed completely.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, events: [] };
+    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer() };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
@@ -261,13 +271,20 @@ export function useChatFrameState() {
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    if (!hydration.events.some((event) => event.name === "omo.task.updated")) {
+    // Overflow flags are mutation-aware (per-event bits): an armed flag means
+    // a dropped event actually changed that domain's live state, so fencing
+    // applies unconditionally — stale cached rows can no longer widen it.
+    const protectLiveTasks = hydration.buffer.taskSuperseded
+      || hydration.buffer.taskOverflowed;
+    const protectLiveDags = hydration.buffer.dagSuperseded
+      || hydration.buffer.dagOverflowed;
+    if (!protectLiveTasks) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (!hydration.events.some((event) => event.name === "omo.dag.updated")) {
+    if (!protectLiveDags) {
       next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
     }
-    for (const event of hydration.events) {
+    for (const event of hydration.buffer.events) {
       next = applyActivityEvent(next, event.name, event.data);
     }
     if (next !== activitiesRef.current) applyActivities(next);

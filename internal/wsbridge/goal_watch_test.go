@@ -23,8 +23,8 @@ import (
 )
 
 // TestGoalWatchPushesOnChange drives a bound socket against a goal document
-// that appears, updates, and disappears while attached: the watcher pushes
-// chat.goal on each transition and stays silent while the file is absent.
+// that appears, updates, and disappears while attached. The bind snapshot is
+// explicit even when absent, and every later transition is pushed.
 func TestGoalWatchPushesOnChange(t *testing.T) {
 	dir, err := os.MkdirTemp("", "wsbridge-goal-")
 	if err != nil {
@@ -79,6 +79,10 @@ func TestGoalWatchPushesOnChange(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-goal", "chatId": "chat-goal"})
 	c.next(t, "ready")
+	initial := c.nextWithin(t, "chat.goal", 5*time.Second)
+	if goal, exists := initial["goal"]; !exists || goal != nil {
+		t.Fatalf("bind-time frame = %v, want explicit goal:null", initial)
+	}
 
 	chat, err := store.GetChat("chat-goal")
 	if err != nil || chat.DurableSessionID == "" {
@@ -135,6 +139,108 @@ func TestGoalWatchPushesOnChange(t *testing.T) {
 	frame := c.nextWithin(t, "chat.goal", 5*time.Second)
 	if goal, exists := frame["goal"]; !exists || goal != nil {
 		t.Fatalf("disappearance frame = %v", frame)
+	}
+}
+
+func TestGoalWatchStateRetriesTransientReadAndDetectsPostBindDeletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "goal.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initialInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &session.GoalState{Objective: "old", Status: "active"}
+	var state goalWatchState
+	if !state.accept(old, initialInfo) {
+		t.Fatal("bind-time goal was not selected for push")
+	}
+
+	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedStamp, _ := goalStampFromInfo(changedInfo)
+	if !state.needsRead(changedStamp, true) {
+		t.Fatal("changed goal did not request a read")
+	}
+	// A transient read error does not call accept, so the same observed stamp
+	// must remain pending on every subsequent watch pass.
+	transientReads := 0
+	transient := func() (*session.GoalState, os.FileInfo, error) {
+		transientReads++
+		return nil, nil, errGoalStampTransient
+	}
+	for range 2 {
+		if _, push := state.refresh(transient); push {
+			t.Fatal("transient read selected a null push")
+		}
+		if !state.needsRead(changedStamp, true) || !session.EqualGoalState(state.last, old) {
+			t.Fatal("transient read acknowledged the stamp or cleared the last goal")
+		}
+	}
+	if transientReads != 2 {
+		t.Fatalf("transient read attempts = %d, want 2", transientReads)
+	}
+
+	// Deletion before any stamp pass after bind is visible because accept
+	// seeded both existence and identity from the bind-time stable read.
+	if !state.needsRead(goalFileStamp{}, false) {
+		t.Fatal("post-bind deletion was not detected")
+	}
+	if !state.accept(nil, nil) || state.last != nil || state.hadStamp {
+		t.Fatal("post-bind deletion did not select an explicit null push")
+	}
+}
+
+func TestGoalWatchStampDetectsEqualSizeMtimeReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "goal.json")
+	fixed := time.Unix(1_700_000_000, 1234)
+	write := func(path, body string) os.FileInfo {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, fixed, fixed); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info
+	}
+	oldInfo := write(path, "old")
+	var state goalWatchState
+	state.accept(&session.GoalState{Objective: "old", Status: "active"}, oldInfo)
+
+	replacement := filepath.Join(dir, "replacement.json")
+	write(replacement, "new")
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	newInfo, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStamp, _ := goalStampFromInfo(oldInfo)
+	newStamp, _ := goalStampFromInfo(newInfo)
+	if oldStamp.size != newStamp.size || oldStamp.mod != newStamp.mod {
+		t.Fatalf("fixture stamps differ by size/mtime: old=%+v new=%+v", oldStamp, newStamp)
+	}
+	if oldStamp.device == newStamp.device && oldStamp.inode == newStamp.inode {
+		t.Fatal("fixture replacement reused file identity")
+	}
+	if !state.needsRead(newStamp, true) {
+		t.Fatal("inode replacement was invisible to watcher")
+	}
+	if !state.accept(&session.GoalState{Objective: "new", Status: "active"}, newInfo) {
+		t.Fatal("inode replacement did not select changed goal for push")
 	}
 }
 

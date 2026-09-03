@@ -14,6 +14,8 @@ export function useChatSession(
 ) {
   const frameState = useChatFrameState();
   const [goal, setGoal] = useState<ChatGoal | null>(null);
+  const bindingKey = `${session.wsId}\u0000${session.id}`;
+  const [activityBinding, setActivityBinding] = useState({ key: "", generation: 0 });
   const goalPushedRef = useRef(false);
   const clientRef = useRef<ChatClient | null>(null);
   const frameHandlerRef = useRef<(frame: ChatServerFrame) => void>(() => undefined);
@@ -53,9 +55,14 @@ export function useChatSession(
       },
       onFrame: (frame) => {
         if (frame.sessionId !== undefined && frame.sessionId !== session.id) return;
-        if (frame.type === "ready" && !initialStatsSent) {
-          initialStatsSent = true;
-          clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
+        if (frame.type === "ready") {
+          setActivityBinding((current) => current.key === bindingKey
+            ? { key: bindingKey, generation: current.generation + 1 }
+            : { key: bindingKey, generation: 1 });
+          if (!initialStatsSent) {
+            initialStatsSent = true;
+            clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
+          }
         }
         if (frame.type === "chat.goal") {
           // Live goal push while attached: a push always outranks the
@@ -98,6 +105,7 @@ export function useChatSession(
   }, [session.id, session.wsId]);
 
   useEffect(() => {
+    if (activityBinding.key !== bindingKey || activityBinding.generation === 0) return undefined;
     const ctrl = new AbortController();
     const token = frameState.beginActivityHydration();
     void getChatActivity(session.wsId, session.id, ctrl.signal).then(
@@ -108,7 +116,7 @@ export function useChatSession(
       ctrl.abort();
       frameState.cancelActivityHydration(token);
     };
-  }, [session.id, session.wsId]);
+  }, [activityBinding, bindingKey, session.id, session.wsId]);
 
   useEffect(() => {
     if (frameState.doneReason === null) return;

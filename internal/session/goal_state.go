@@ -2,6 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,25 +96,47 @@ func GoalStatePath(agentDir, cwd, sessionID string) (string, bool) {
 // (nil, nil): the goal is optional chrome, never an error surface. Only
 // context cancellation is reported as an error.
 func ReadGoalState(ctx context.Context, agentDir, cwd, sessionID string) (*GoalState, error) {
+	goal, _, err := ReadGoalStateSnapshot(ctx, agentDir, cwd, sessionID)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, nil
+	}
+	return goal, nil
+}
+
+var errGoalStateTransient = errors.New("goal state changed while being read")
+
+// ReadGoalStateSnapshot distinguishes an absent goal document from a present
+// document that could not be read stably. On success, info identifies the
+// exact file version that produced goal; info is nil only when the path is
+// absent. A valid document with no projectable goal returns (nil, info, nil).
+func ReadGoalStateSnapshot(ctx context.Context, agentDir, cwd, sessionID string) (*GoalState, os.FileInfo, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	path, ok := GoalStatePath(agentDir, cwd, sessionID)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
 	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxGoalStateBytes {
-		return nil, nil
+		return nil, nil, errGoalStateTransient
 	}
 	var stored storedGoalState
-	if !readStableJSON(ctx, path, info, &stored) || stored.Goal == nil {
-		return nil, nil
+	stableInfo, ok := readStableJSONWithLimit(ctx, path, info, maxGoalStateBytes, &stored)
+	if !ok {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errGoalStateTransient
 	}
-	// The document carries its own session identity; a mismatch means the
-	// file is not this chat's goal, so it renders nothing.
-	if stored.Goal.ThreadID != sessionID || stored.Goal.Objective == "" {
-		return nil, nil
+	if stored.Goal == nil || stored.Goal.ThreadID != sessionID || stored.Goal.Objective == "" {
+		return nil, stableInfo, nil
 	}
 	objective, truncated := truncateObjective(stored.Goal.Objective)
 	return &GoalState{
@@ -122,7 +147,51 @@ func ReadGoalState(ctx context.Context, agentDir, cwd, sessionID string) (*GoalS
 		CreatedAt:          stored.Goal.CreatedAt,
 		UpdatedAt:          stored.Goal.UpdatedAt,
 		CompletedAt:        stored.Goal.CompletedAt,
-	}, nil
+	}, stableInfo, nil
+}
+
+// readStableJSONWithLimit is the caller-budgeted stable-read seam used by the
+// goal path. Every attempt revalidates identity, size, and type; an atomic
+// replacement before the first attempt consumes that attempt rather than
+// bypassing the retry.
+func readStableJSONWithLimit(ctx context.Context, path string, expected os.FileInfo, limit int64, target any) (os.FileInfo, bool) {
+	for attempt := 0; attempt < activityHistoryReadRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, false
+		}
+		before, err := os.Lstat(path)
+		if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() > limit {
+			return nil, false
+		}
+		if !sameFileState(expected, before) {
+			expected = before
+			continue
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return nil, false
+		}
+		opened, statErr := f.Stat()
+		data, readErr := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, limit+1))
+		afterOpen, afterOpenErr := f.Stat()
+		closeErr := f.Close()
+		afterPath, pathErr := os.Lstat(path)
+		stable := statErr == nil && afterOpenErr == nil && pathErr == nil && afterPath.Mode()&os.ModeSymlink == 0 &&
+			afterPath.Mode().IsRegular() && afterPath.Size() <= limit && sameFileState(before, opened) &&
+			sameFileState(opened, afterOpen) && sameFileState(afterOpen, afterPath)
+		if readErr == nil && closeErr == nil && stable && len(data) <= int(limit) {
+			if json.Unmarshal(data, target) == nil {
+				return afterPath, true
+			}
+			return nil, false
+		}
+		if ctx.Err() != nil || afterPath == nil || afterPath.Mode()&os.ModeSymlink != 0 ||
+			!afterPath.Mode().IsRegular() || afterPath.Size() > limit {
+			return nil, false
+		}
+		expected = afterPath
+	}
+	return nil, false
 }
 
 // truncateObjective caps the objective at maxGoalObjectiveBytes without

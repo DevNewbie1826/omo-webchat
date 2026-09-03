@@ -106,7 +106,7 @@ func TestChatActivityLargeShelfReturnsBoundedSingleSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 120; i++ {
-		payload := fmt.Sprintf(`{"task_id":"task-%03d","status":"completed","parent_session_id":"parent","final_response":%q}`, i, strings.Repeat("x", 1024))
+		payload := fmt.Sprintf(`{"task_id":"task-%03d","status":"completed","parent_session_id":"parent","task_summary":%q}`, i, strings.Repeat("x", 1024))
 		if err := os.WriteFile(filepath.Join(taskDir, fmt.Sprintf("%03d.json", i)), []byte(payload), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -119,9 +119,6 @@ func TestChatActivityLargeShelfReturnsBoundedSingleSnapshots(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if response.Body.Len() >= 64<<10 {
-		t.Fatalf("bounded history response = %d bytes", response.Body.Len())
-	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
@@ -133,11 +130,47 @@ func TestChatActivityLargeShelfReturnsBoundedSingleSnapshots(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.TaskOversized || len(body.Task) != 4 || string(body.Task) != "null" {
-		t.Fatalf("task snapshot = %s oversized=%v", body.Task, body.TaskOversized)
+	if !body.TaskOversized || len(body.Task) == 0 || string(body.Task) == "null" || len(body.Task) > 64<<10 {
+		t.Fatalf("task snapshot bytes=%d oversized=%v", len(body.Task), body.TaskOversized)
 	}
-	if body.TaskDigest == nil || len(body.TaskDigest.Tasks) != 120 {
+	var snapshot struct {
+		Truncated bool                     `json:"truncated_tasks"`
+		Tasks     []map[string]interface{} `json:"tasks"`
+	}
+	if err := json.Unmarshal(body.Task, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Truncated || len(snapshot.Tasks) == 0 {
+		t.Fatalf("task prefix = %s", body.Task)
+	}
+	if body.TaskDigest == nil || len(body.TaskDigest.Tasks) != len(snapshot.Tasks) || !body.TaskDigest.Truncated {
 		t.Fatalf("task digest = %+v", body.TaskDigest)
+	}
+}
+
+func TestChatActivityTreatsOptionalStoreFilesAsAbsent(t *testing.T) {
+	server, store, ws := newChatCreateTestServer(t)
+	base := filepath.Join(ws.Path, ".omo", "senpi-task")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "tasks"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "dag"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chat := cursorstore.Chat{ID: "optional-files", WorkspaceID: ws.ID, CWD: ws.Path, DurableSessionID: "parent", Name: "files"}
+	if err := store.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	token, err := server.sessions.Create(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := authenticatedActivityRequest(t, server, token, ws.ID, chat.ID)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
 
