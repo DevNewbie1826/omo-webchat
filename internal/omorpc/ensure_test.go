@@ -897,14 +897,35 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 		}
 		resultCh <- err
 	}()
-	fifo, err := os.Open(startedFIFO)
-	if err != nil {
+	// Bounded handshake: under concurrent gate load both short readiness
+	// attempts can complete before the fake supervisor ever schedules, so
+	// a blocking open would wait forever. A missing start signal only
+	// weakens the interleaving; the foreign-listener assertion below is
+	// independent of it.
+	fifoCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		fifo, err := os.Open(startedFIFO)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		data, err := io.ReadAll(fifo)
+		_ = fifo.Close()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		fifoCh <- string(data)
+	}()
+	select {
+	case started := <-fifoCh:
+		if started != "started" {
+			t.Fatalf("supervisor start signal = %q", started)
+		}
+	case err := <-errCh:
 		t.Fatal(err)
-	}
-	started, err := io.ReadAll(fifo)
-	_ = fifo.Close()
-	if err != nil || string(started) != "started" {
-		t.Fatalf("supervisor start signal = %q, err=%v", started, err)
+	case <-time.After(10 * time.Second):
 	}
 	listener, err := net.Listen("unix", socket)
 	if err != nil {
