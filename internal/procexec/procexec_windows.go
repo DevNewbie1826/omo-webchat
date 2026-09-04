@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -39,6 +41,119 @@ func processTerminated(handle windows.Handle) (bool, error) {
 	default:
 		return false, fmt.Errorf("procexec: unexpected WaitForSingleObject event 0x%x", event)
 	}
+}
+
+// TrackedProcess is a handle to a child started under Job Object tracking.
+// The job is the kernel-owned domain: membership is inherited by every
+// descendant the child spawns, and KILL_ON_JOB_CLOSE ties the lifetime of the
+// whole tree to this process's handle table. The mutex guards the job handle
+// across TerminateTree and Close, which teardown paths may call concurrently.
+type TrackedProcess struct {
+	pid int
+	mu  sync.Mutex
+	job windows.Handle // zero once Close has released it
+}
+
+// StartTracked starts cmd and assigns the child to a fresh Job Object with
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, so the kernel terminates the whole tree
+// when the last job handle closes — including when this process dies without
+// ever reaching TerminateTree or Close. The caller composes SetupCommand(cmd)
+// first to keep spawn-time settings on one side of the seam.
+//
+// The assignment happens immediately after Start: descendants the child
+// spawns inside the sub-millisecond window before AssignProcessToJobObject
+// would be born outside the job, a race inherent to assigning an already
+// running process rather than creating it suspended (Go's exec does not
+// expose the main-thread handle needed to resume a suspended child).
+func StartTracked(cmd *exec.Cmd) (*TrackedProcess, error) {
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("procexec: start child: %w", err)
+	}
+	pid := cmd.Process.Pid
+	// The child is running but not yet tracked: terminate it so StartTracked
+	// hands back a fully tracked child or none at all. Nothing is in the job
+	// on any of these paths (assignment is the final step), so the job handle
+	// is closed directly and the child via plain TerminateProcess.
+	abort := func(err error) (*TrackedProcess, error) {
+		_ = cmd.Process.Kill()
+		return nil, err
+	}
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return abort(fmt.Errorf("procexec: create job object: %w", err))
+	}
+	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE makes the final CloseHandle of the
+	// job terminate every process still in it, so the OS — not this process —
+	// reaps the tree even on crash. The extended limit structure is the basic
+	// one plus an I/O counter payload; it carries the same LimitFlags field.
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+		},
+	}
+	if _, err := windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		_ = windows.CloseHandle(job)
+		return abort(fmt.Errorf("procexec: set job limits: %w", err))
+	}
+	// AssignProcessToJobObject requires PROCESS_SET_QUOTA and
+	// PROCESS_TERMINATE access on the target per the Microsoft docs. A child
+	// that already exited resolves to success like every already-dead domain:
+	// the job stays empty and Close releases it harmlessly, matching the
+	// SignalGroup tolerance for ESRCH.
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_NOT_FOUND) || errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return &TrackedProcess{pid: pid, job: job}, nil
+		}
+		_ = windows.CloseHandle(job)
+		return abort(fmt.Errorf("procexec: open child %d for job assignment: %w", pid, err))
+	}
+	defer windows.CloseHandle(proc)
+	if err := windows.AssignProcessToJobObject(job, proc); err != nil {
+		_ = windows.CloseHandle(job)
+		return abort(fmt.Errorf("procexec: assign child %d to job: %w", pid, err))
+	}
+	return &TrackedProcess{pid: pid, job: job}, nil
+}
+
+// Pid exposes the leader pid of the tracked domain.
+func (t *TrackedProcess) Pid() int { return t.pid }
+
+// TerminateTree tears down the tracked child and its descendants with
+// TerminateJobObject. Job membership is inherited at CreateProcess time, so
+// every descendant the tree spawned was born into the job and the single
+// terminate call reaches the whole domain. The job object itself stays valid
+// and Close still releases it afterwards; on an already-released handle
+// (Close ran first) the tree is already dead, which is teardown success.
+func (t *TrackedProcess) TerminateTree() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.job == 0 {
+		return nil
+	}
+	if err := windows.TerminateJobObject(t.job, 1); err != nil {
+		return fmt.Errorf("procexec: terminate job tree of child %d: %w", t.pid, err)
+	}
+	return nil
+}
+
+// Close releases the job handle. Under JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE the
+// final CloseHandle is the kernel's tree reaper: every process still in the
+// job terminates, so a supervisor that loses interest cannot orphan the tree.
+// Calls after the first release find no handle and return nil.
+func (t *TrackedProcess) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.job == 0 {
+		return nil
+	}
+	job := t.job
+	t.job = 0
+	if err := windows.CloseHandle(job); err != nil {
+		return fmt.Errorf("procexec: close job of child %d: %w", t.pid, err)
+	}
+	return nil
 }
 
 // SignalGroup best-effort terminates the process tree rooted at pid using the
