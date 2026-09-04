@@ -390,6 +390,15 @@ func (c *connection) bindingSnapshot() (string, string, uint64, *session.Session
 	return c.wsID, c.chatID, c.bindingGeneration, c.sess
 }
 
+func (c *connection) sessionForBinding(chatID string, generation uint64) (*session.Session, bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.closed.Load() || c.chatID != chatID || c.bindingGeneration != generation || c.sess == nil {
+		return nil, false
+	}
+	return c.sess, true
+}
+
 func (c *connection) run() {
 	for {
 		select {
@@ -496,7 +505,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 		return
 	}
 
-	bound, sess := c.binding()
+	workspaceID, bound, bindingGeneration, sess := c.bindingSnapshot()
 	target := clientSessionID(frame)
 	if target != bound && !(typ == "activity.refresh" && bound == "") {
 		c.sendError("session_mismatch", "frame sessionId does not match this socket's chat", "", requestID(frame))
@@ -516,11 +525,16 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			return
 		}
 		defer release()
+		var current bool
+		sess, current = c.sessionForBinding(bound, bindingGeneration)
+		if !current {
+			return
+		}
 	}
 
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
-		c.handleChatSend(ctx, bound, sess, f)
+		c.handleChatSend(ctx, workspaceID, bound, bindingGeneration, f)
 	case *wscontract.ChatAbortFrame:
 		if err := sess.Abort(ctx); err != nil {
 			c.sendSessionError(err, "chat.abort", "")
@@ -577,17 +591,12 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 	}
 }
 
-func (c *connection) handleChatSend(ctx context.Context, bound string, sess *session.Session, f *wscontract.ChatSendFrame) {
-	workspaceID, chatID, generation, current := c.bindingSnapshot()
+func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID string, generation uint64, f *wscontract.ChatSendFrame) {
 	op := &chatSendOperation{bridge: c.bridge, conn: c, workspaceID: workspaceID, chatID: chatID,
 		bindingGeneration: generation, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID)}
 	op.images = make([]map[string]string, len(f.Run.Images))
 	for i, image := range f.Run.Images {
 		op.images[i] = map[string]string{"data": image.Data, "mimeType": image.MimeType}
-	}
-	if current != sess || chatID != bound {
-		c.sendError("session_mismatch", "session binding changed before send admission", "chat.send", op.requestID)
-		return
 	}
 	if op.kind != "prompt" && op.kind != "steer" && op.kind != "follow_up" && op.kind != "followUp" {
 		c.sendError("bad_frame", "unknown run kind", "chat.send", op.requestID)
@@ -601,15 +610,13 @@ func (c *connection) handleChatSend(ctx context.Context, bound string, sess *ses
 		}
 		return
 	}
-	if !op.bindingCurrent() {
+	// A recovery ahead of this send in the per-chat FIFO may have replaced the
+	// provider route without changing the logical socket binding. Refresh the
+	// route while revalidating the captured binding generation.
+	sess, current := c.sessionForBinding(op.chatID, op.bindingGeneration)
+	if !current {
 		release()
 		return
-	}
-	// A recovery ahead of this send in the per-chat FIFO may have replaced the
-	// provider route without changing the logical socket binding. Route the send
-	// to that replacement rather than silently abandoning its correlation.
-	if live, ok := c.bridge.cfg.Manager.Get(op.chatID); ok {
-		sess = live
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
 		if isResumableSendError(completionErr) {
@@ -656,7 +663,7 @@ type operationSubscriber struct {
 
 func (s *operationSubscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *operationSubscriber) DeliverFrame(f session.Frame) error {
-	if !s.retryStarted.Load() && f.RequestID == s.op.requestID && f.Command == "chat.send" {
+	if s.op.requestID != "" && !s.retryStarted.Load() && f.RequestID == s.op.requestID && f.Command == "chat.send" {
 		return nil
 	}
 	return s.subscriber.DeliverFrame(f)
@@ -725,7 +732,7 @@ func (op *chatSendOperation) enqueueRecovery(stale *session.Session, admitted bo
 func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted bool, originalErr error) {
 	ctx, cancel := context.WithTimeout(op.bridge.cfg.Context, op.bridge.cfg.HistoryTimeout)
 	defer cancel()
-	if !stale.PrepareDetachedSendRetry(op.requestID, op.kind != "prompt") {
+	if !stale.PrepareDetachedSendRetry(op.requestID, admitted && op.kind != "prompt") {
 		return
 	}
 
@@ -799,6 +806,9 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		return
 	}
 	if err != nil {
+		if sub != nil && outcomeOwner != nil {
+			sub.retryStarted.Store(true)
+		}
 		if callbackRan && outcomeOwner != nil {
 			outcomeOwner.CompleteDetachedSend(op.requestID, err)
 		} else {

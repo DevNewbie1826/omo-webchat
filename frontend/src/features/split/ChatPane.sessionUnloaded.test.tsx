@@ -17,8 +17,7 @@ function parsedFrame(raw: Record<string, unknown>): ChatServerFrame {
 	return frame;
 }
 
-// Observed wire shape for an idle unload: one unsolicited error frame tagged
-// with the chat id and the resumable session_unloaded code.
+// The observed unload error includes the session id and session_unloaded code.
 function sessionUnloadedFrame(): ChatServerFrame {
 	return parsedFrame({
 		type: "error",
@@ -38,8 +37,8 @@ function chatSends(sent: readonly ChatClientFrame[]) {
 	return sent.filter(isChatSend);
 }
 
-// Unloads are invisible: the frame is quiet internal state, the next send
-// transparently resumes, and no unloaded-specific i18n copy exists.
+// The unload error stays hidden, and the pane remains usable without
+// unload-specific copy.
 describe("ChatPane session_unloaded quiet handling", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -90,18 +89,30 @@ describe("ChatPane session_unloaded quiet handling", () => {
 		expect(container.querySelector(".th-chat-input")).not.toBeNull();
 	});
 
-	it("retires a stale in-flight run indicator when the unload frame lands", () => {
+	it("clears active run and compaction UI so the next submission is a prompt", () => {
 		act(() => {
 			deliver({ type: "run.started", sessionId: "chat-1" });
+			deliver({ type: "compaction.started", sessionId: "chat-1" });
 		});
 		expect(container.textContent).toContain("chat.responding");
+		expect(container.textContent).toContain("chat.compacting");
 
 		act(() => {
 			deliver(sessionUnloadedFrame());
 		});
 
 		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.textContent).not.toContain("chat.compacting");
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
+
+		act(() => setTextareaValue(textarea(), "after active unload"));
+		act(() => pressKey(textarea(), "Enter"));
+
+		expect(chatSends(sent)).toHaveLength(1);
+		expect(chatSends(sent)[0]).toMatchObject({
+			type: "chat.send",
+			run: { kind: "prompt", message: "after active unload" },
+		});
 	});
 
 	it("settles a transparently resumed send through admission and completed replay", () => {
@@ -123,8 +134,7 @@ describe("ChatPane session_unloaded quiet handling", () => {
 		});
 		expect(container.textContent).toContain("chat.responding");
 
-		// Admission belongs to the first attempt. The resumed retry emits the
-		// provider lifecycle and its terminal outcome is replayed to this pane.
+		// The observed response frames clear the visible running state.
 		act(() => {
 			deliver({ type: "ack", sessionId: "chat-1", command: "chat.send", requestId });
 			deliver({ type: "run.started", sessionId: "chat-1" });

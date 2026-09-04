@@ -202,6 +202,27 @@ func TestConcurrentCompletionAndAdmissionPublishAndRetainTerminalSnapshots(t *te
 	}
 }
 
+func TestUncorrelatedDetachedFailurePublishesExactlyOnce(t *testing.T) {
+	s := &Session{durableID: "durable-uncorrelated", queueSize: DefaultQueueSize}
+	s.operationOwner()
+	sub := &synchronousLedgerRecorder{recorder: newRecorder(2)}
+	if _, err := s.attachChecked(sub); err != nil {
+		t.Fatal(err)
+	}
+	defer s.broadcast.close(ErrSubscriberSessionEnd)
+
+	s.publishDetachedOutcome(errors.New("abort failed"), "chat.abort", "")
+	if frame := sub.next(t); frame.Kind != FrameError || frame.Command != "chat.abort" || frame.RequestID != "" {
+		t.Fatalf("uncorrelated failure = %+v", frame)
+	}
+	s.lifecycleMu.Lock()
+	s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID})
+	s.lifecycleMu.Unlock()
+	if frame := sub.next(t); frame.Kind != FrameName {
+		t.Fatalf("uncorrelated failure was published more than once: %+v", frame)
+	}
+}
+
 func TestReplacementSharesSendOwnerAndTerminalPublicationHasOneWinner(t *testing.T) {
 	prior := &Session{durableID: "durable-shared", queueSize: DefaultQueueSize, readyPublished: true}
 	prior.operationOwner()
@@ -259,6 +280,48 @@ func TestReplacementSharesSendOwnerAndTerminalPublicationHasOneWinner(t *testing
 		if frame := sub.next(t); frame.Kind != FrameName {
 			t.Fatalf("%s received republished terminal before sentinel: %+v", name, frame)
 		}
+	}
+}
+
+func TestDetachedCompletionGuardsEvictionUntilOutcomeAndRearmsIdle(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 8, IdleAfter: time.Hour})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "completion-eviction-guard", cwd: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var guarded bool
+	err = s.callDetachedMutation(context.Background(), omorpc.Abort{SessionID: s.RoutingID()}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		if callErr != nil {
+			t.Errorf("detached completion: %v", callErr)
+		}
+		s.lifecycleMu.Lock()
+		s.idleAfter = time.Nanosecond
+		s.lifecycleMu.Unlock()
+		mgr.evict(s)
+		_, guarded = mgr.Get(s.ChatID())
+		close(entered)
+		<-release
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(testTimeout):
+		t.Fatal("detached completion did not run")
+	}
+	if !guarded || d.RequestCount(omorpc.CmdCloseSession) != 0 {
+		t.Fatal("idle eviction crossed detached completion handling")
+	}
+	close(release)
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("idle handling was not re-armed after detached completion")
 	}
 }
 

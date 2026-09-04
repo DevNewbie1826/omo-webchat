@@ -601,6 +601,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	managerGeneration := m.generation
 	slotGeneration := m.slotGeneration[chatID]
 	existing := m.byChat[chatID]
+	replaced := existing
 	m.mu.Unlock()
 	revalidateMutation := func(s *Session) error {
 		if validate != nil {
@@ -730,14 +731,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			// that path would create launch debris and then mislabel it in-place.
 			// Preserve the typed provider error (notably session_path_in_use) and
 			// leave the cursor untouched for a later explicit recovery.
-			if existing != nil {
-				existing.publishError(info)
+			if replaced != nil {
+				replaced.publishError(info)
 			}
 			return nil, false, nil, openErr
 		}
 		if !definitiveResumeFailure(openErr) {
-			if existing != nil {
-				existing.publishError(info)
+			if replaced != nil {
+				replaced.publishError(info)
 			}
 			return nil, false, nil, openErr
 		}
@@ -768,7 +769,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		name = ""
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
-	s.inheritSendOperations(existing)
+	s.inheritSendOperations(replaced)
 	sendOwnerAdopted := false
 	defer func() {
 		if !sendOwnerAdopted {
@@ -868,8 +869,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		if after != nil {
 			if err := after(s); err != nil {
-				if existing != nil {
-					existing.retireReplaced()
+				if replaced != nil {
+					replaced.retireReplaced()
 				}
 				return s, true, detach, err
 			}
@@ -879,20 +880,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		if afterHydration != nil {
 			if err := revalidateMutation(s); err != nil {
-				if existing != nil {
-					existing.retireReplaced()
+				if replaced != nil {
+					replaced.retireReplaced()
 				}
 				return s, true, detach, err
 			}
 			if err := afterHydration(s); err != nil {
-				if existing != nil {
-					existing.retireReplaced()
+				if replaced != nil {
+					replaced.retireReplaced()
 				}
 				return s, true, detach, err
 			}
 		}
-		if existing != nil {
-			existing.retireReplaced()
+		if replaced != nil {
+			replaced.retireReplaced()
 		}
 		return s, true, detach, nil
 	}
@@ -961,8 +962,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		s.publishLocked(Frame{Kind: FrameReady, SessionID: s.ID()})
 		s.lifecycleMu.Unlock()
 	}
-	if existing != nil {
-		existing.retireReplaced()
+	if replaced != nil {
+		replaced.retireReplaced()
 	}
 	if initialize != nil {
 		initialize(s, true, detach)

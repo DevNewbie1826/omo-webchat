@@ -95,6 +95,24 @@ func TestAbortBypassesFullDetachedMutationLimit(t *testing.T) {
 	}
 }
 
+func TestAbortAsynchronousFailurePublishesWithoutRequestID(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sub := newRecorder(8)
+	s, _, _ := acquire(t, mgr, testChat{id: "abort-async-failure", cwd: t.TempDir()}, sub)
+	sub.next(t)
+
+	d.FailNext(omorpc.CmdAbort, omorpc.ErrCodeUnknownSession)
+	if err := s.Abort(context.Background()); err != nil {
+		t.Fatalf("abort admission: %v", err)
+	}
+	_, frame := sub.awaitError(t, "provider_error")
+	if frame.Command != "chat.abort" || frame.RequestID != "" {
+		t.Fatalf("uncorrelated abort failure = %+v", frame)
+	}
+}
+
 func TestDetachedMutationLimitReturnsBackpressure(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)

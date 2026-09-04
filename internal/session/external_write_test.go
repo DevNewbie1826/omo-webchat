@@ -466,6 +466,10 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	first.await(t, FrameReady)
 	first.await(t, FrameEntries)
 	detach()
+	if err, duplicate := stale.beginSendOperation("survives-quarantine-recovery"); err != nil || duplicate {
+		t.Fatalf("begin retained operation = (%v, %v)", err, duplicate)
+	}
+	stale.recordSendOperation("survives-quarantine-recovery", nil)
 
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -544,6 +548,24 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	}
 	if recovered.RoutingID() == stale.RoutingID() {
 		t.Fatalf("external-write recovery retained stale route %q", stale.RoutingID())
+	}
+	if recovered.operationOwner() != stale.operationOwner() {
+		t.Fatal("external-write recovery lost the retained operation owner")
+	}
+	beforeFollowUps := daemon.RequestCount(omorpc.CmdFollowUp)
+	if err := recovered.SendFollowUpDetachedWithRequestID(context.Background(), "duplicate", nil, "survives-quarantine-recovery"); err != nil {
+		t.Fatalf("duplicate retained operation: %v", err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdFollowUp); got != beforeFollowUps {
+		t.Fatalf("duplicate retained operation reached provider: %d -> %d", beforeFollowUps, got)
+	}
+	stale.CompleteDetachedSend("survives-quarantine-recovery", nil)
+	owner := recovered.operationOwner()
+	owner.mu.Lock()
+	retained := owner.operations["survives-quarantine-recovery"]
+	owner.mu.Unlock()
+	if retained.phase != sendOperationTerminal || retained.outcome.Kind != FrameAck || retained.outcome.Phase != "completed" {
+		t.Fatalf("late retained outcome = %+v", retained)
 	}
 	if got := daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses+1 {
 		t.Fatalf("external-write recovery close count = %d, want %d", got, beforeCloses+1)

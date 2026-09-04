@@ -502,8 +502,8 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 		owner.mu.Lock()
 		owner.detachedMutations--
 		owner.mu.Unlock()
-		owner.activeDetached.Add(-1)
 		complete(resp, epoch, callErr)
+		owner.activeDetached.Add(-1)
 		owner.rearmIdle()
 	})
 	if err != nil {
@@ -590,15 +590,14 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	}
 	owner := s.operationOwner()
 	owner.mu.Lock()
-	frame, won := s.completeSendOperationLocked(requestID, err)
 	if requestID == "" {
-		if won {
-			frame.Command = command
-			owner.publishLocked(frame)
-		}
+		frame := s.sendOperationFrameLocked("", err)
+		frame.Command = command
+		owner.publishLocked(frame)
 		owner.mu.Unlock()
 		return
 	}
+	_, _ = s.completeSendOperationLocked(requestID, err)
 	operation, ok := owner.operations[requestID]
 	if ok && operation.phase == sendOperationTerminal && !operation.published {
 		operation.outcome.Command = command
