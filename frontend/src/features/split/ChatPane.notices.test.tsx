@@ -1,8 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { translate, type I18nValue } from "../../i18n";
 import { parseChatServerFrame, type ChatServerFrame } from "../../lib/chatWs";
-import { renderChatPane } from "./chatPaneTestHarness";
+import { chatSession, i18n as identityI18n, renderChatPane } from "./chatPaneTestHarness";
+
+function realI18n(lang: "en" | "ko"): I18nValue {
+	return { ...identityI18n, lang, t: (key) => translate(lang, key) };
+}
 
 function wireNoticeFrame(seq: number, sessionId = "chat-1"): Record<string, unknown> {
   return {
@@ -74,8 +79,8 @@ describe("ChatPane notice frames", () => {
     expect(container.textContent).toContain("n2");
   });
 
-  it("keeps notices mounted while later lifecycle frames arrive", () => {
-    const { deliver } = renderChatPane(root);
+  it("keeps notices mounted while later lifecycle frames arrive, showing the translated label", () => {
+    const { deliver } = renderChatPane(root, chatSession, realI18n("en"));
 
     act(() => {
       loadHistory(deliver);
@@ -85,6 +90,22 @@ describe("ChatPane notice frames", () => {
     });
 
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("notice.autoRetryStarted");
+    expect(container.textContent).toContain("Auto retry started");
+    expect(container.textContent).not.toContain("auto_retry_start");
+    expect(container.textContent).not.toContain("notice.autoRetryStarted");
+  });
+
+  it("renders the auto-retry notice with the ko locale's translated label", () => {
+    const { deliver } = renderChatPane(root, chatSession, realI18n("ko"));
+
+    act(() => {
+      loadHistory(deliver);
+      deliverWire(deliver, wireNoticeFrame(1));
+    });
+
+    expect(container.textContent).toContain("n1");
+    expect(container.textContent).toContain("자동 재시도 시작");
+    expect(container.textContent).not.toContain("auto_retry_start");
+    expect(container.textContent).not.toContain("notice.autoRetryStarted");
   });
 });
