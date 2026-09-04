@@ -60,6 +60,9 @@ const (
 	CmdSetAutoCompaction  = "set_auto_compaction"
 	CmdExtensionRequest   = "extension_request"
 
+	CmdGetFollowUpMessages = "get_follow_up_messages"
+	CmdClearQueue          = "clear_queue"
+
 	CmdExtensionUIResponse = "extension_ui_response"
 )
 
@@ -69,6 +72,10 @@ const (
 	StreamingSteer    = "steer"
 	StreamingFollowUp = "followUp"
 )
+
+// EventQueueUpdate is emitted by the engine whenever the session queue
+// changes; its payload is a QueueUpdate carrying the pending arrays.
+const EventQueueUpdate = "queue_update"
 
 // UnknownEventType is the normalized type of an unrecognized inbound event,
 // with the original wire type preserved in UnknownEvent.EventType.
@@ -320,6 +327,22 @@ type ExtensionUIResponse struct {
 func (ExtensionUIResponse) commandName() string { return CmdExtensionUIResponse }
 func (ExtensionUIResponse) notification()       {}
 
+// GetFollowUpMessages snapshots the session's follow-up queue: the queued
+// texts in queue order.
+type GetFollowUpMessages struct {
+	SessionID string `json:"sessionId"`
+}
+
+func (GetFollowUpMessages) commandName() string { return CmdGetFollowUpMessages }
+
+// ClearQueue empties the session's pending queues. The reply's data payload
+// is a ClearQueueData with the cleared texts.
+type ClearQueue struct {
+	SessionID string `json:"sessionId"`
+}
+
+func (ClearQueue) commandName() string { return CmdClearQueue }
+
 // ---- Typed data payloads ----
 
 // ProtocolInfo is the data payload of the get_protocol_info response.
@@ -341,6 +364,56 @@ type SessionState struct {
 	SessionName   string          `json:"sessionName,omitempty"`
 	Entries       json.RawMessage `json:"entries,omitempty"`
 	MessageCount  int             `json:"messageCount,omitempty"`
+
+	// Pending queue, as observed engine behavior: the follow-up texts in
+	// queue order, every pending entry (steer and followUp) in enqueue
+	// order, and the total pending count. An idle queue omits all three.
+	FollowUp            []string        `json:"followUp,omitempty"`
+	Ordered             []QueuedMessage `json:"ordered,omitempty"`
+	PendingMessageCount int             `json:"pendingMessageCount,omitempty"`
+}
+
+// QueuedMessage is one pending queue entry: the message text, its delivery
+// mode (steer or followUp), and the order in which it was enqueued.
+type QueuedMessage struct {
+	Text         string `json:"text"`
+	Mode         string `json:"mode"`
+	EnqueueOrder int    `json:"enqueueOrder"`
+}
+
+// GetFollowUpMessagesData is the data payload of the get_follow_up_messages
+// response: the follow-up queue's texts in queue order.
+type GetFollowUpMessagesData struct {
+	Messages []string `json:"messages"`
+}
+
+// ClearQueueData is the data payload of the clear_queue response: the texts
+// cleared from each queue, in queue order.
+type ClearQueueData struct {
+	Steering []string `json:"steering"`
+	FollowUp []string `json:"followUp"`
+}
+
+// QueueUpdate is the typed payload of the queue_update event, sent whenever
+// the session queue changes. An empty queue carries empty arrays and a zero
+// count.
+type QueueUpdate struct {
+	FollowUp            []string        `json:"followUp,omitempty"`
+	Ordered             []QueuedMessage `json:"ordered,omitempty"`
+	PendingMessageCount int             `json:"pendingMessageCount,omitempty"`
+}
+
+// ParseQueueUpdate decodes the typed payload of a queue_update event. The
+// event's raw record carries the pending arrays verbatim.
+func ParseQueueUpdate(ev *Event) (*QueueUpdate, error) {
+	if ev == nil || len(ev.Raw) == 0 {
+		return nil, errors.New("omorpc: parse queue_update: no event payload")
+	}
+	var qu QueueUpdate
+	if err := json.Unmarshal(ev.Raw, &qu); err != nil {
+		return nil, fmt.Errorf("omorpc: parse queue_update: %w", err)
+	}
+	return &qu, nil
 }
 
 // OpenSessionData is the data payload of the open_session response.

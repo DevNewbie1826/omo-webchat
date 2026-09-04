@@ -51,9 +51,18 @@ const (
 	EventTool            = "tool"
 	EventSessionUnloaded = "session_unloaded"
 
+	EventQueueUpdate = omorpc.EventQueueUpdate
+
 	CodeSessionPathInUse = omorpc.ErrCodeSessionPathInUse
 	CodeUnknownSession   = omorpc.ErrCodeUnknownSession
 )
+
+// queuedItem is one pending queue entry held by the mock.
+type queuedItem struct {
+	text  string
+	mode  string
+	order int
+}
 
 // daemonSession is one provider-side session known to the daemon.
 type daemonSession struct {
@@ -65,6 +74,53 @@ type daemonSession struct {
 	history   []any  // durable transcript returned by get_entries
 	leafID    string
 	name      string
+
+	// Pending queue model (observed engine behavior): steer during an
+	// active run parks the message in the steering queue; follow_up parks
+	// it in the follow-up queue. abort leaves both intact. After a run's
+	// agent_end exactly one head follow-up item is consumed as the next
+	// run. enqueueSeq assigns each entry its enqueueOrder.
+	steering   []queuedItem
+	followUp   []queuedItem
+	enqueueSeq int
+	runActive  bool
+}
+
+// queueSnapshotLocked is the session's queue as the wire sees it: the
+// follow-up texts, every pending entry in enqueue order, and the total.
+// Callers hold d.mu.
+func queueSnapshotLocked(rec *daemonSession) (followUp []string, ordered []any, pending int) {
+	followUp = []string{}
+	for _, it := range rec.followUp {
+		followUp = append(followUp, it.text)
+	}
+	ordered = []any{}
+	pending = len(rec.steering) + len(rec.followUp)
+	for _, it := range append(append([]queuedItem(nil), rec.steering...), rec.followUp...) {
+		ordered = append(ordered, map[string]any{
+			"text": it.text, "mode": it.mode, "enqueueOrder": it.order,
+		})
+	}
+	return followUp, ordered, pending
+}
+
+// queueUpdateEventLocked builds the queue_update event payload for the
+// session. Callers hold d.mu.
+func queueUpdateEventLocked(rec *daemonSession) map[string]any {
+	followUp, ordered, pending := queueSnapshotLocked(rec)
+	return map[string]any{
+		"type":                EventQueueUpdate,
+		"sessionId":           rec.rpcID,
+		"followUp":            followUp,
+		"ordered":             ordered,
+		"pendingMessageCount": pending,
+	}
+}
+
+// enqueueLocked parks text in the named queue. Callers hold d.mu.
+func enqueueLocked(rec *daemonSession, queue *[]queuedItem, mode, text string) {
+	rec.enqueueSeq++
+	*queue = append(*queue, queuedItem{text: text, mode: mode, order: rec.enqueueSeq})
 }
 
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
@@ -382,6 +438,10 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		if message, _ := req["message"].(string); message != "" {
 			d.appendHistoryEntryLocked(rec, map[string]any{"role": "user", "content": message})
 		}
+		// The run is observably active from the accepted response until its
+		// agent_end, so steers issued while the scripted stream is held
+		// behind its gate still queue.
+		rec.runActive = true
 		for _, event := range script {
 			typ, _ := event["type"].(string)
 			if typ != EventMessage && typ != "message_end" {
@@ -401,7 +461,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		if hold != nil {
 			<-hold
 		}
-		d.emitScript(conn, rpcID, script)
+		d.emitScript(conn, rpcID, rec, script)
 		return
 
 	case omorpc.CmdCompact:
@@ -410,7 +470,7 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		rpcID := rec.rpcID // same lock discipline as CmdPrompt
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"started": true}))
-		d.emitScript(conn, rpcID, script)
+		d.emitScript(conn, rpcID, rec, script)
 		return
 
 	case omorpc.CmdGetEntries:
@@ -425,12 +485,81 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries, "leafId": leafID}))
 		return
 
+	case omorpc.CmdFollowUp:
+		message, _ := req["message"].(string)
+		d.mu.Lock()
+		var update map[string]any
+		if message != "" {
+			enqueueLocked(rec, &rec.followUp, omorpc.StreamingFollowUp, message)
+			update = queueUpdateEventLocked(rec)
+		}
+		d.mu.Unlock()
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
+		if update != nil {
+			d.write(conn, update)
+		}
+		return
+
+	case omorpc.CmdSteer:
+		message, _ := req["message"].(string)
+		d.mu.Lock()
+		var update map[string]any
+		// Observed engine behavior: a steer only queues while a run is
+		// active; otherwise there is nothing to inject into.
+		if rec.runActive && message != "" {
+			enqueueLocked(rec, &rec.steering, omorpc.StreamingSteer, message)
+			update = queueUpdateEventLocked(rec)
+		}
+		d.mu.Unlock()
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
+		if update != nil {
+			d.write(conn, update)
+		}
+		return
+
+	case omorpc.CmdAbort:
+		// Observed engine behavior: abort cancels the run but leaves the
+		// queued messages intact.
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
+		return
+
+	case omorpc.CmdGetFollowUpMessages:
+		d.mu.Lock()
+		followUp, _, _ := queueSnapshotLocked(rec)
+		d.mu.Unlock()
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{"messages": followUp}))
+		return
+
+	case omorpc.CmdClearQueue:
+		d.mu.Lock()
+		steeringTexts := make([]string, 0, len(rec.steering))
+		for _, it := range rec.steering {
+			steeringTexts = append(steeringTexts, it.text)
+		}
+		followUpTexts := make([]string, 0, len(rec.followUp))
+		for _, it := range rec.followUp {
+			followUpTexts = append(followUpTexts, it.text)
+		}
+		rec.steering, rec.followUp = nil, nil
+		update := queueUpdateEventLocked(rec)
+		d.mu.Unlock()
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{"steering": steeringTexts, "followUp": followUpTexts}))
+		d.write(conn, update)
+		return
+
 	case omorpc.CmdGetState:
+		d.mu.Lock()
+		followUp, ordered, pending := queueSnapshotLocked(rec)
+		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{
 			"sessionId":     recDurable,
 			"sessionFile":   recPath,
 			"thinkingLevel": "off",
 			"messageCount":  1,
+
+			"followUp":            followUp,
+			"ordered":             ordered,
+			"pendingMessageCount": pending,
 		}))
 		return
 
@@ -450,8 +579,8 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	default:
 		// set_model, set_thinking_level, set_session_name, set_auto_compaction,
-		// steer, follow_up, abort, get_session_stats, extension_request:
-		// plain success, no data payload required.
+		// get_session_stats, extension_request: plain success, no data
+		// payload required.
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{}))
 	}
 }
@@ -515,6 +644,10 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"sessionName":   rec.name,
 			"entries":       []any{},
 			"messageCount":  0,
+
+			"followUp":            []any{},
+			"ordered":             []any{},
+			"pendingMessageCount": 0,
 		},
 	}))
 }
@@ -587,8 +720,10 @@ func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {
 }
 
 // emitScript writes each scripted event to conn with the session's current
-// rpc id injected, in order, on the handler goroutine.
-func (d *Daemon) emitScript(conn net.Conn, rpcID string, script []map[string]any) {
+// rpc id injected, in order, on the handler goroutine. After the script's
+// agent_end the run is over: the runActive flag drops and one head
+// follow-up item is consumed as the next run.
+func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, script []map[string]any) {
 	for _, ev := range script {
 		e := make(map[string]any, len(ev)+1)
 		for k, v := range ev {
@@ -596,7 +731,31 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, script []map[string]any
 		}
 		e["sessionId"] = rpcID
 		d.write(conn, e)
+		if typ, _ := ev["type"].(string); typ == EventAgentEnd {
+			d.mu.Lock()
+			rec.runActive = false
+			d.mu.Unlock()
+		}
 	}
+	d.consumeNextFollowUp(conn, rec)
+}
+
+// consumeNextFollowUp runs the head follow-up item after the current run's
+// agent_end: exactly ONE item is consumed per run end, announced by a
+// queue_update followed by the next run's agent_start/agent_end.
+func (d *Daemon) consumeNextFollowUp(conn net.Conn, rec *daemonSession) {
+	d.mu.Lock()
+	if len(rec.followUp) == 0 {
+		d.mu.Unlock()
+		return
+	}
+	rec.followUp = rec.followUp[1:]
+	update := queueUpdateEventLocked(rec)
+	rpcID := rec.rpcID
+	d.mu.Unlock()
+	d.write(conn, update)
+	d.write(conn, map[string]any{"type": EventAgentStart, "sessionId": rpcID})
+	d.write(conn, map[string]any{"type": EventAgentEnd, "sessionId": rpcID})
 }
 
 // write emits one frame to conn; handler goroutines may write concurrently.
