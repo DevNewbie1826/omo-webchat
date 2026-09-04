@@ -52,6 +52,21 @@ function argsRecord(args: unknown): Readonly<Record<string, unknown>> | undefine
   return Object.keys(args).length > 0 ? args : undefined;
 }
 
+/**
+ * A read whose target file is exactly SKILL.md (case-sensitive basename)
+ * presents as a skill read; the skill name is the manifest's immediate parent
+ * directory, falling back to SKILL.md when the path has no parent.
+ */
+function skillReadName(args: unknown): string | undefined {
+  if (!isObjectRecord(args)) return undefined;
+  const path = args["path"];
+  if (typeof path !== "string") return undefined;
+  const segments = path.split("/");
+  if (segments[segments.length - 1] !== "SKILL.md") return undefined;
+  const parent = segments[segments.length - 2];
+  return parent !== undefined && parent.length > 0 ? parent : "SKILL.md";
+}
+
 /** Latest non-empty line of an output stream, trimmed for the one-line preview. */
 function latestOutputLine(text: string): string {
   for (const line of text.split("\n").reverse()) {
@@ -102,7 +117,10 @@ export function ToolCard(props: ToolCardProps) {
   const preview = latestOutputLine(text);
   const hasBody = command !== undefined || inputJson !== undefined || text.length > 0;
 
-  const name = subagent?.title ?? toolName;
+  const skillName = toolName === "read" ? skillReadName(props.args) : undefined;
+  const name = skillName !== undefined
+    ? t("tool.skillRead", { name: skillName })
+    : subagent?.title ?? toolName;
   const label = status === "running" ? t("tool.running") : status === "error" ? t("tool.error") : t("tool.done");
   return (
     <div className={`th-tool th-tool--${status}`} data-tool-call-id={toolCallId}>
