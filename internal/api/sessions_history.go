@@ -259,6 +259,13 @@ func populateSessionHistoryNames(items []sessionHistoryItem) {
 func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 	durableID := strings.TrimSpace(chat.DurableSessionID)
 	sessionFile := strings.TrimSpace(chat.SessionFile)
+	// A recorded durable id is authoritative: the same path with a different
+	// id is a distinct replacement session and must not match, and a stored
+	// chat must never rebind onto it. The path only disambiguates rows that
+	// never recorded a durable id.
+	if sess.ID != "" && durableID != "" {
+		return durableID == sess.ID
+	}
 	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 

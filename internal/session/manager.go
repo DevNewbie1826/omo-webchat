@@ -778,7 +778,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if cur.TitleIsPlaceholder && cur.NameSource != NameSourceUser {
 		name = ""
 	}
-	if providerName := strings.TrimSpace(data.State.SessionName); providerName != "" && cur.NameSource != NameSourceUser {
+	if providerName := strings.TrimSpace(data.State.SessionName); providerName != "" && name == "" && cur.NameSource != NameSourceUser {
 		name = providerName
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)

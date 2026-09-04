@@ -357,3 +357,34 @@ func TestSummaryCarriesBoundedActivityPairDigestsAndOversizedFlags(t *testing.T)
 		t.Fatalf("retained task grew to %d bytes", len(after.ActivityPair.Task))
 	}
 }
+
+func TestProviderOpenNameDoesNotReplaceEstablishedAutoTitle(t *testing.T) {
+	d := newDaemon(t)
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "established.jsonl")
+	header := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-established\",\"timestamp\":\"2026-09-04T00:00:00Z\",\"cwd\":%q}", cwd)
+	body := header + "\n" + "{\"type\":\"session_info\",\"id\":\"info\",\"name\":\"Different provider name\"}" + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemStore()
+	if err := store.SaveCursor(context.Background(), "established-auto-open", Cursor{
+		SessionFile:      path,
+		DurableSessionID: "durable-established",
+		Name:             "Established stored title",
+		NameSource:       NameSourceAuto,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := dial(t, d)
+	mgr := testManager(t, client, store, 64)
+	sess, _, detach := acquire(t, mgr, testChat{id: "established-auto-open", cwd: cwd}, nil)
+	defer detach()
+
+	if summary, ok := sess.summary(); !ok || summary.Title != "Established stored title" {
+		t.Fatalf("open summary = %+v, want the established stored title preserved", summary)
+	}
+}

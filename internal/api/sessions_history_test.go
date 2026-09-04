@@ -224,3 +224,24 @@ func TestListWorkspaceSessionsPaginatesDeterministically(t *testing.T) {
 		t.Fatalf("second=%+v", second)
 	}
 }
+
+func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *testing.T) {
+	chats := []cursorstore.Chat{{
+		ID: "chat-1", WorkspaceID: "ws-1", CWD: "/w",
+		SessionFile:        "/sessions/replacement.jsonl",
+		DurableSessionID:   "durable-old",
+		SessionProvenance:  cursorstore.SessionProvenanceNative,
+	}}
+	disk := []diskSession{{
+		ID: "durable-new", Path: "/sessions/replacement.jsonl", Name: "replacement",
+	}}
+	items := mergeSessionHistory(chats, disk)
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2 (stored row + discovered replacement): %+v", len(items), items)
+	}
+	for _, item := range items {
+		if item.Source == sessionHistorySourceDiscovered && item.ID != "durable-new" {
+			t.Fatalf("discovered row id = %q, want durable-new", item.ID)
+		}
+	}
+}
