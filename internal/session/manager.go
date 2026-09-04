@@ -481,20 +481,20 @@ func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, nil, nil, nil, false, false, false)
+	return m.acquire(ctx, chat, sub, nil, nil, nil, nil, false, false, false)
 }
 
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
 func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, false, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, nil, false, false, false)
 }
 
 // AcquireInitializedWithRecovery is AcquireInitialized with explicit authority
 // to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, true, false, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, nil, true, false, false)
 }
 
 // AcquireInitializedChecked validates its caller's metadata generation before
@@ -502,54 +502,56 @@ func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatR
 // validate must not acquire a lock that nests outside the manager's per-chat
 // flight.
 func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, false, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, nil, false, false, false)
 }
 
 // AcquireInitializedCheckedWithRecovery combines checked publication with
 // explicit authority to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedCheckedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, true, false, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, nil, true, false, false)
 }
 
 // AcquireInitializedCheckedAndRun invokes run only after checked manager
 // publication, while retaining the per-chat owner through the callback.
 func (m *Manager) AcquireInitializedCheckedAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, run, false, false, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, false, false)
 }
 
 // AcquireInitializedCheckedWithRecoveryAndRun is the explicit-recovery form of
 // AcquireInitializedCheckedAndRun.
 func (m *Manager) AcquireInitializedCheckedWithRecoveryAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, run, true, false, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, run, nil, true, false, false)
 }
 
 // ResumeInitialized resumes a durable cursor through the ordinary acquisition
 // checks but never falls back to a fresh session when that cursor is unusable.
 func (m *Manager) ResumeInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, true, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, nil, false, true, false)
 }
 
 // ResumeInitializedChecked is ResumeInitialized with metadata-generation
 // validation before and after provider acquisition.
 func (m *Manager) ResumeInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, true, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, nil, false, true, false)
 }
 
 // ResumeInitializedCheckedAndRun keeps the per-chat permit through acquisition
 // and run. It is used by transports that must preserve ordering between a
 // resume and the mutation that caused it.
 func (m *Manager) ResumeInitializedCheckedAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, run, false, true, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, true, false)
 }
 
 // ResumeInitializedCheckedAndRunInFlight is the queued-recovery form. The
 // caller already owns the chat through EnqueueChat and the acquire therefore
-// preserves that exact FIFO position instead of waiting on itself.
-func (m *Manager) ResumeInitializedCheckedAndRunInFlight(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, run, false, true, true)
+// preserves that exact FIFO position instead of waiting on itself. published
+// runs after route publication so transports can bind before replay; run waits
+// until replay has finished and the route has been revalidated.
+func (m *Manager) ResumeInitializedCheckedAndRunInFlight(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, published func(*Session) error, run func(*Session) error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, published, run, false, true, true)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, recoveryAuthorized, resumeOnly, permitHeld bool) (*Session, bool, func(), error) {
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, afterHydration func(*Session) error, recoveryAuthorized, resumeOnly, permitHeld bool) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -600,6 +602,30 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	slotGeneration := m.slotGeneration[chatID]
 	existing := m.byChat[chatID]
 	m.mu.Unlock()
+	revalidateMutation := func(s *Session) error {
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
+		if err := s.acquisitionError(); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == s
+		epochLive := m.cfg.Client.EpochCurrent(s.epoch)
+		if _, invalidated := m.invalidatedEpochs[s.epoch]; invalidated {
+			epochLive = false
+		}
+		m.mu.Unlock()
+		if !valid {
+			return ErrManagerClosed
+		}
+		if !epochLive {
+			return ErrSessionResumable
+		}
+		return nil
+	}
 	if existing != nil {
 		routeErr := existing.acquisitionError()
 		if routeErr == nil {
@@ -630,6 +656,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				// after before history can fill a transport's staging buffer.
 				if existing.sessionFile != "" {
 					hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
+				}
+				if afterHydration != nil {
+					if err := revalidateMutation(existing); err != nil {
+						return existing, false, detach, err
+					}
+					if err := afterHydration(existing); err != nil {
+						return existing, false, detach, err
+					}
 				}
 				return existing, false, detach, nil
 			}
@@ -843,6 +877,20 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if resumed {
 			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 		}
+		if afterHydration != nil {
+			if err := revalidateMutation(s); err != nil {
+				if existing != nil {
+					existing.retireReplaced()
+				}
+				return s, true, detach, err
+			}
+			if err := afterHydration(s); err != nil {
+				if existing != nil {
+					existing.retireReplaced()
+				}
+				return s, true, detach, err
+			}
+		}
 		if existing != nil {
 			existing.retireReplaced()
 		}
@@ -924,6 +972,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	}
 	if after != nil {
 		if err := after(s); err != nil {
+			return s, true, detach, err
+		}
+	}
+	if afterHydration != nil {
+		if err := revalidateMutation(s); err != nil {
+			return s, true, detach, err
+		}
+		if err := afterHydration(s); err != nil {
 			return s, true, detach, err
 		}
 	}

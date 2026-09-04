@@ -278,6 +278,39 @@ func TestReplacementPreservesDetachedBackpressureAccounting(t *testing.T) {
 	}
 }
 
+func TestRetryAdmissionFailurePublishesStoredTerminalOutcome(t *testing.T) {
+	s := &Session{durableID: "durable-retry-failure", queueSize: DefaultQueueSize, readyPublished: true}
+	if err, stop := s.beginSendOperation("retry-failure"); err != nil || stop {
+		t.Fatalf("begin operation = (%v, %v)", err, stop)
+	}
+	s.recordSendOperation("retry-failure", nil)
+	if !s.PrepareDetachedSendRetry("retry-failure", false) {
+		t.Fatal("retry was not claimed")
+	}
+
+	live := &synchronousLedgerRecorder{recorder: newRecorder(3)}
+	if _, err := s.attachChecked(live); err != nil {
+		t.Fatal(err)
+	}
+	defer s.broadcast.close(ErrSubscriberSessionEnd)
+	live.next(t) // ready
+	live.next(t) // retained admission
+
+	forced := errors.New("forced retry admission failure")
+	s.recordSendOperation("retry-failure", forced)
+	operation := s.sendOwner.operations["retry-failure"]
+	if operation.phase != sendOperationTerminal || operation.published {
+		t.Fatalf("stored retry failure = %+v", operation)
+	}
+	s.CompleteDetachedSend("retry-failure", forced)
+	if outcome := live.next(t); outcome.Kind != FrameError || outcome.RequestID != "retry-failure" || outcome.Command != "chat.send" {
+		t.Fatalf("published retry failure = %+v", outcome)
+	}
+	if operation = s.sendOwner.operations["retry-failure"]; !operation.published {
+		t.Fatalf("terminal publication was not recorded: %+v", operation)
+	}
+}
+
 func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *testing.T) {
 	s := &Session{durableID: "durable-success", queueSize: 1, readyPublished: true}
 	if err, stop := s.beginSendOperation("successful-send"); err != nil || stop {

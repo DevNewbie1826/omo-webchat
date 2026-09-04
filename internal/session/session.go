@@ -48,6 +48,7 @@ type sendOperation struct {
 	phase                sendOperationPhase
 	outcome              Frame
 	err                  error
+	published            bool
 	preserveRunAdmission bool
 }
 
@@ -569,13 +570,14 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 	owner.mu.Lock()
 	if requestID != "" {
 		operation, ok := owner.operations[requestID]
-		if !ok || operation.phase == sendOperationTerminal {
+		if !ok || operation.published {
 			owner.mu.Unlock()
 			return
 		}
 		operation.phase = sendOperationTerminal
 		operation.outcome = frame
 		operation.err = errors.New(info.Message)
+		operation.published = true
 		owner.operations[requestID] = operation
 	}
 	owner.publishLocked(frame)
@@ -589,14 +591,20 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	owner := s.operationOwner()
 	owner.mu.Lock()
 	frame, won := s.completeSendOperationLocked(requestID, err)
-	if won {
-		frame.Command = command
-		if requestID != "" {
-			operation := owner.operations[requestID]
-			operation.outcome.Command = command
-			owner.operations[requestID] = operation
+	if requestID == "" {
+		if won {
+			frame.Command = command
+			owner.publishLocked(frame)
 		}
-		owner.publishLocked(frame)
+		owner.mu.Unlock()
+		return
+	}
+	operation, ok := owner.operations[requestID]
+	if ok && operation.phase == sendOperationTerminal && !operation.published {
+		operation.outcome.Command = command
+		operation.published = true
+		owner.operations[requestID] = operation
+		owner.publishLocked(operation.outcome)
 	}
 	owner.mu.Unlock()
 }
@@ -647,7 +655,8 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 }
 
 // recordSendOperation stores the synchronous admission outcome. A failed
-// admission is terminal because no provider response remains outstanding.
+// admission is terminal because no provider response remains outstanding. Its
+// broadcast remains separately claimable by the transport completion path.
 func (s *Session) recordSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return

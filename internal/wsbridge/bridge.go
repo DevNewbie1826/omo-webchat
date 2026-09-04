@@ -668,9 +668,7 @@ func (s *operationSubscriber) BeginReplay() {
 	}
 }
 func (s *operationSubscriber) EndReplay() {
-	if s.subscriber.replaying.Load() {
-		s.subscriber.EndReplay()
-	}
+	s.subscriber.EndReplay()
 }
 
 func (op *chatSendOperation) bindingMatchesSession(want *session.Session) bool {
@@ -778,19 +776,23 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 	}
 	callbackRan := false
 	var outcomeOwner *session.Session
-	resumed, _, detach, err := op.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, attachSub, initialize, validate, func(acquired *session.Session) error {
-		callbackRan = true
+	published := func(acquired *session.Session) error {
 		outcomeOwner = acquired
+		if sub != nil && (stagedSession != acquired || stagedDetach == nil || !op.bindResumed(ctx, stale, acquired, stagedStarted, sub.subscriber, stagedDetach)) {
+			sub = nil
+		}
+		return nil
+	}
+	retry := func(acquired *session.Session) error {
+		callbackRan = true
 		if sub != nil {
 			sub.retryStarted.Store(true)
-			if stagedSession != acquired || stagedDetach == nil || !op.bindResumed(ctx, stale, acquired, stagedStarted, sub.subscriber, stagedDetach) {
-				sub = nil
-			}
 		}
 		return op.send(ctx, acquired, func(completionErr error) {
 			acquired.CompleteDetachedSend(op.requestID, completionErr)
 		})
-	})
+	}
+	resumed, _, detach, err := op.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, attachSub, initialize, validate, published, retry)
 	_ = detach // the live binding or manager owns the acquired route
 	if errors.Is(err, session.ErrNoDurableCursor) {
 		stale.CompleteDetachedSend(op.requestID, originalErr)
@@ -808,9 +810,16 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		stale.PublishSendOperationError(op.requestID, session.ErrorInfo{Code: "resume_failed", Message: "resume returned no session"})
 		return
 	}
-	if !admitted && op.requestID != "" && op.bindingCurrent() {
-		op.conn.sendAck("chat.send", op.requestID)
+	if !admitted && op.requestID != "" {
+		_ = op.writeRecoveredAdmissionAck(resumed)
 	}
+}
+
+func (op *chatSendOperation) writeRecoveredAdmissionAck(resumed *session.Session) error {
+	sid := op.chatID
+	return op.conn.writeIfCurrent(queryBinding{chatID: op.chatID, generation: op.bindingGeneration, session: resumed}, wscontract.AckFrame{
+		Type: "ack", Command: "chat.send", SessionID: &sid, RequestID: &op.requestID,
+	})
 }
 
 func resumeFailureInfo(err error) session.ErrorInfo {

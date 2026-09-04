@@ -529,6 +529,11 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
 	conn, frames := h.connect(t)
+	// Install the gate before initialization can issue get_commands; both the
+	// initialization query and the explicit query are then deterministically
+	// inside the blocked generation.
+	release := h.daemon.BlockHandler(omorpc.CmdGetCommands)
+	defer release()
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "blocked-query-binding"})
 	frames.next(t, "ready")
 	serverConn := h.soleServerConnection(t)
@@ -537,8 +542,6 @@ func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 		t.Fatal("server connection was not bound")
 	}
 
-	release := h.daemon.BlockHandler(omorpc.CmdGetCommands)
-	defer release()
 	returned := make(chan struct{})
 	go func() {
 		serverConn.queryCommands(context.Background(), sess)
