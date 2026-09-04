@@ -1,3 +1,4 @@
+import { detectLang, translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
@@ -105,6 +106,17 @@ const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
 // Without a matching requestId, these codes do not remove an optimistic
 // message or restore its draft.
 const UNCORRELATED_OPERATION_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"]);
+
+// Backend error frames carry a stable English fallback. Codes in this map
+// show localized copy on the transient error surface instead.
+const LOCALIZED_ERROR_KEYS: Readonly<Record<string, string>> = {
+  start_failed: "chat.startFailed",
+};
+
+function errorSurfaceMessage(frame: Extract<ChatServerFrame, { readonly type: "error" }>): string {
+  const key = frame.code !== undefined ? LOCALIZED_ERROR_KEYS[frame.code] : undefined;
+  return key !== undefined ? translate(detectLang(), key) : frame.message;
+}
 
 /**
  * Select error frames that appear in the persistent, manually dismissed
@@ -413,7 +425,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // Send-path command failures persist in a dedicated banner slot instead
         // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);
-        if (sendFailure === null) bindings.setError(frame.message);
+        if (sendFailure === null) bindings.setError(errorSurfaceMessage(frame));
         else bindings.setSendError(sendFailure);
 
         // Error frames without requestId may restore the active draft only

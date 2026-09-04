@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -552,6 +553,49 @@ func TestChatCreateFailureUsesStableUserMessage(t *testing.T) {
 	}
 }
 
+func TestChatCreatePreparationFailuresUseStableUserMessage(t *testing.T) {
+	for _, guarded := range []bool{true, false} {
+		name := "prepare"
+		if guarded {
+			name = "prepare-version"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newInPlaceBridgeHarness(t, "preparation-failure-"+name)
+			h.bridge.cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+			if guarded {
+				h.bridge.cfg.PrepareChatVersion = func(context.Context, string, string) (uint64, error) {
+					return 0, errors.New("sensitive preparation detail")
+				}
+			} else {
+				h.bridge.cfg.PrepareChatVersion = nil
+				h.bridge.cfg.ChatVersion = nil
+				h.bridge.cfg.PrepareChat = func(context.Context, string, string) error {
+					return errors.New("sensitive preparation detail")
+				}
+			}
+
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "preparation-failure-" + name})
+			got := frames.next(t, "error")
+			if got["code"] != "no_chat" || got["message"] != "could not prepare the session; please retry" {
+				t.Fatalf("preparation failure = %#v", got)
+			}
+		})
+	}
+}
+
+func TestResumeFailureInfoSanitizesProviderDetails(t *testing.T) {
+	for _, err := range []error{
+		errors.New("sensitive provider detail"),
+		&session.ResumeError{Info: session.ErrorInfo{Code: "resume_failed", Message: "sensitive provider detail"}},
+	} {
+		got := resumeFailureInfo(err)
+		if got.Code != "resume_failed" || got.Message != "could not resume the session; please retry" {
+			t.Fatalf("resume failure = %#v", got)
+		}
+	}
+}
+
 func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
 	conn, frames := h.connect(t)
@@ -855,6 +899,50 @@ func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
 				t.Fatalf("resume attempts = %d, want %d", got, test.wantOpens)
 			}
 		})
+	}
+}
+
+func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-silent-eviction")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-silent-eviction"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	beforePrompts := h.daemon.RequestCount(omorpc.CmdPrompt)
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	h.daemon.EvictUsedSessionOnNextRoutingCommand()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-silent-eviction", "requestId": "silent-eviction-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "retry after eviction"},
+	})
+	nextSuccessfulSendAcks(t, frames, "silent-eviction-prompt")
+
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession) - beforeOpens; got != 1 {
+		t.Fatalf("reopen attempts = %d, want exactly 1", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdGetEntries) - beforeEntries; got != 1 {
+		t.Fatalf("history replays = %d, want exactly 1", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt) - beforePrompts; got != 2 {
+		t.Fatalf("prompt attempts = %d, want initial plus one retry", got)
+	}
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "error" {
+			t.Fatalf("silent eviction reached client socket: %s", raw)
+		}
 	}
 }
 

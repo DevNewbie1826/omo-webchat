@@ -25,11 +25,16 @@ import (
 )
 
 const (
-	ContractVersion        = 2
-	defaultWriteTimeout    = 10 * time.Second
-	controlFrameTimeout    = 15 * time.Second
-	openFrameTimeout       = 90 * time.Second
+	ContractVersion     = 2
+	defaultWriteTimeout = 10 * time.Second
+	controlFrameTimeout = 15 * time.Second
+	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
+	// while making the route-layer opening budget explicit.
+	openFrameTimeout       = 120 * time.Second
 	takeoverActivityWindow = 250 * time.Millisecond
+
+	prepareFailedMessage = "could not prepare the session; please retry"
+	resumeFailedMessage  = "could not resume the session; please retry"
 )
 
 var (
@@ -758,12 +763,12 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		var err error
 		preparedGeneration, err = op.bridge.cfg.PrepareChatVersion(ctx, op.workspaceID, op.chatID)
 		if err != nil {
-			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+			op.publishResumeFailure(stale, err)
 			return
 		}
 	} else if op.bridge.cfg.PrepareChat != nil {
 		if err := op.bridge.cfg.PrepareChat(ctx, op.workspaceID, op.chatID); err != nil {
-			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+			op.publishResumeFailure(stale, err)
 			return
 		}
 	}
@@ -772,7 +777,7 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		if err == nil {
 			err = errors.New("chat metadata changed while resuming")
 		}
-		stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+		op.publishResumeFailure(stale, err)
 		return
 	}
 
@@ -828,12 +833,12 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		if callbackRan && outcomeOwner != nil {
 			outcomeOwner.CompleteDetachedSend(op.requestID, err)
 		} else {
-			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+			op.publishResumeFailure(stale, err)
 		}
 		return
 	}
 	if resumed == nil {
-		stale.PublishSendOperationError(op.requestID, session.ErrorInfo{Code: "resume_failed", Message: "resume returned no session"})
+		op.publishResumeFailure(stale, errors.New("resume returned no session"))
 		return
 	}
 	if !admitted && op.requestID != "" {
@@ -848,13 +853,22 @@ func (op *chatSendOperation) writeRecoveredAdmissionAck(resumed *session.Session
 	})
 }
 
+func (op *chatSendOperation) publishResumeFailure(stale *session.Session, err error) {
+	op.bridge.cfg.Logger.Warn("resuming v2 chat session", "chat_id", op.chatID, "error", err)
+	stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+}
+
 func resumeFailureInfo(err error) session.ErrorInfo {
 	var resumeErr *session.ResumeError
 	if errors.As(err, &resumeErr) {
 		if isSessionActiveError(err) {
 			return session.ErrorInfo{Code: "session-active", Message: "session is active in another process"}
 		}
-		return resumeErr.Info
+		info := resumeErr.Info
+		if info.Code == "resume_failed" {
+			info.Message = resumeFailedMessage
+		}
+		return info
 	}
 	if errors.Is(err, cursorstore.ErrAdoptionRequired) {
 		return session.ErrorInfo{Code: "adoption_required", Message: "session must be adopted before opening"}
@@ -866,7 +880,7 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 	if errors.As(err, &drift) {
 		return session.ErrorInfo{Code: "external-write-detected", Message: drift.Error(), KnownLeaf: drift.KnownLeaf, ObservedLeaf: drift.ObservedLeaf}
 	}
-	return session.ErrorInfo{Code: "resume_failed", Message: err.Error()}
+	return session.ErrorInfo{Code: "resume_failed", Message: resumeFailedMessage}
 }
 
 func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFrame) {
@@ -881,13 +895,16 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		var err error
 		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, f.WsID, f.ChatID)
 		if err != nil {
+			c.bridge.cfg.Logger.Warn("preparing v2 chat session", "chat_id", f.ChatID, "error", err)
 			code := "no_chat"
-			message := err.Error()
+			message := prepareFailedMessage
 			switch {
 			case errors.Is(err, ErrChatDeleted):
 				code = "no_chat"
+				message = "chat not found"
 			case errors.Is(err, ErrUnsupportedProvider):
 				code = "unsupported_provider"
+				message = ErrUnsupportedProvider.Error()
 			case errors.Is(err, cursorstore.ErrAdoptionRequired):
 				code = "adoption_required"
 				message = "session must be adopted before opening"
@@ -897,11 +914,14 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 	} else if c.bridge.cfg.PrepareChat != nil {
 		if err := c.bridge.cfg.PrepareChat(ctx, f.WsID, f.ChatID); err != nil {
+			c.bridge.cfg.Logger.Warn("preparing v2 chat session", "chat_id", f.ChatID, "error", err)
 			code := "no_chat"
+			message := prepareFailedMessage
 			if errors.Is(err, ErrUnsupportedProvider) {
 				code = "unsupported_provider"
+				message = ErrUnsupportedProvider.Error()
 			}
-			c.sendError(code, err.Error(), "", "")
+			c.sendError(code, message, "", "")
 			return
 		}
 	}

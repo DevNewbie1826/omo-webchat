@@ -653,7 +653,7 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
-	if err == nil && requestID == "" {
+	if errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
 		return
 	}
 	owner := s.operationOwner()
@@ -1483,6 +1483,9 @@ func (s *Session) noteTransportError(err error) {
 // classifySendError turns a definitive provider-side route loss into the
 // lifecycle signal consumed by transparent send recovery. The transition is
 // silent: the replacement send owns the eventual user-visible outcome.
+// This assumes unknown_session and session_closing are pre-mutation negative
+// acknowledgements: the rejected send did not reach the model, so replay plus
+// the local operation ledger is exactly-once from the user's perspective.
 func (s *Session) classifySendError(err error) error {
 	var stable *omorpc.StableError
 	if !errors.As(err, &stable) || (stable.Code != omorpc.ErrCodeUnknownSession && stable.Code != omorpc.ErrCodeSessionClosing) {

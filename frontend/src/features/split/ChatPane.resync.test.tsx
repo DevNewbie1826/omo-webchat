@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
-import { I18nContext } from "../../i18n";
+import { detectLang, I18nContext, translate } from "../../i18n";
 import { messageText } from "./chatEntries";
 import { useChatSession } from "./useChatSession";
 import {
@@ -293,7 +293,6 @@ describe("ChatPane resync", () => {
 		"unsupported_provider",
 		"adoption_required",
 		"bad_create",
-		"start_failed",
 		"session-active",
 	] as const)("treats chat.create error %s as a resync terminal", (code) => {
 		const { deliver } = renderChatPane(root);
@@ -311,6 +310,25 @@ describe("ChatPane resync", () => {
 		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
 		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
 		expect(error.textContent).toBe(`${code} failure`);
+	});
+
+	it("treats chat.create error start_failed as a resync terminal with localized copy", () => {
+		const { deliver } = renderChatPane(root);
+		settleInitial(deliver);
+		act(() => resyncButton({ container }).click());
+
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "start_failed",
+			message: "could not open the session; please retry",
+		}));
+
+		expect(resyncButton({ container }).disabled).toBe(false);
+		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
+		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
+		expect(error.textContent).toBe(translate(detectLang(), "chat.startFailed"));
+		expect(error.textContent).not.toBe("could not open the session; please retry");
 	});
 
 	it("clears the busy state on the matching terminal entries frame", () => {

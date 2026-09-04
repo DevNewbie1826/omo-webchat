@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 	"time"
 
@@ -39,6 +40,49 @@ func TestSendPromptClassifiesProviderRouteLossAsResumable(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDetachedPromptWithoutCompletionSuppressesProviderEvictionError(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 32)
+	pane := newRecorder(32)
+	s, _, detach := acquire(t, mgr, testChat{id: "detached-provider-eviction", cwd: t.TempDir()}, pane)
+	defer detach()
+
+	d.SetPromptScript(s.SessionFile(),
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	if err := s.SendPrompt(context.Background(), "establish route", nil); err != nil {
+		t.Fatalf("initial prompt: %v", err)
+	}
+	_, _ = pane.await(t, FrameRunDone)
+	_ = pane.drain()
+
+	d.EvictUsedSessionOnNextRoutingCommand()
+	if err := s.SendPromptDetachedWithRequestID(context.Background(), "after eviction", nil, "detached-eviction"); err != nil {
+		t.Fatalf("evicted prompt admission: %v", err)
+	}
+
+	deadline := time.NewTimer(testTimeout)
+	defer deadline.Stop()
+	for s.operationOwner().activeDetached.Load() != 0 {
+		select {
+		case <-deadline.C:
+			t.Fatal("timed out waiting for detached eviction response")
+		default:
+			runtime.Gosched()
+		}
+	}
+	if !s.Resumable() {
+		t.Fatal("provider eviction did not latch the session resumable")
+	}
+	for _, frame := range pane.drain() {
+		if frame.Kind == FrameError {
+			t.Fatalf("detached provider eviction exposed an error frame: %+v", frame)
+		}
 	}
 }
 

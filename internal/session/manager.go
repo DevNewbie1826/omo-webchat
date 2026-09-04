@@ -136,7 +136,12 @@ type generationRecord struct {
 
 type retiringRecord struct {
 	chatID string
-	route  string
+	route  retiringRoute
+}
+
+type retiringRoute struct {
+	route string
+	epoch omorpc.EpochToken
 }
 
 type durableEpochBinding struct {
@@ -171,7 +176,7 @@ type Manager struct {
 	identityGeneration   uint64
 	invalidatedEpochs    map[omorpc.EpochToken]struct{}
 	epochIngestions      map[omorpc.EpochToken]int
-	retiringByChat       map[string]map[string]struct{}
+	retiringByChat       map[string]map[retiringRoute]struct{}
 	retiringFIFO         []retiringRecord
 	slotGeneration       map[string]uint64
 	slotGenerationFIFO   []generationRecord
@@ -214,7 +219,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -723,7 +728,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		openErr = validateOpen(data, cur, resumed)
 	}
 	if openErr != nil && data.SessionID != "" {
-		m.discardRouting(chatID, data.SessionID)
+		m.discardRouting(chatID, data.SessionID, epoch)
 	}
 	if openErr != nil && m.isClosed() {
 		return nil, false, nil, ErrManagerClosed
@@ -731,7 +736,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	var recovery *ErrorInfo
 	preserveCursor := false
 	if openErr != nil && resumed {
-		info := ErrorInfo{Code: "resume_failed", Message: openErr.Error(), StoredIdentity: cur, Dangling: danglingResume(openErr)}
+		slog.Warn("failed to resume provider session", "chat_id", chatID, "error", openErr)
+		info := ErrorInfo{Code: "resume_failed", Message: "could not resume the saved session", StoredIdentity: cur, Dangling: danglingResume(openErr)}
 		recovery = &info
 		if resumeOnly {
 			return nil, false, nil, &ResumeError{Info: info, Cause: openErr}
@@ -758,7 +764,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		if err != nil {
 			if data.SessionID != "" {
-				m.discardRouting(chatID, data.SessionID)
+				m.discardRouting(chatID, data.SessionID, epoch)
 			}
 			return nil, false, nil, fmt.Errorf("resume failed (%v), fallback open failed: %w", openErr, err)
 		}
@@ -795,7 +801,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	identityChanged := cur.SessionFile != data.State.SessionFile || cur.DurableSessionID != data.State.SessionID
 	if m.cfg.Store != nil && !preserveCursor && identityChanged {
 		if err := m.cfg.Store.UpdateIdentity(ctx, chatID, data.State.SessionFile, data.State.SessionID); err != nil {
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			return nil, false, nil, err
 		}
 	}
@@ -808,11 +814,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		valid := !m.closed && m.generation == managerGeneration && m.slotGeneration[chatID] == slotGeneration && m.byChat[chatID] == existing
 		m.mu.Unlock()
 		if !valid {
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			return nil, false, nil, ErrManagerClosed
 		}
 		if !m.cfg.Client.EpochCurrent(epoch) {
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			return nil, false, nil, ErrSessionResumable
 		}
 		var detach func()
@@ -829,7 +835,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			detach, target, attachErr = s.attachCheckedTarget(sub)
 		}
 		if attachErr != nil {
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			return nil, false, nil, attachErr
 		}
 		if !resumed {
@@ -846,7 +852,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if err := validate(); err != nil {
 			detach()
 			s.retireReplaced()
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			return nil, false, nil, err
 		}
 		var overviewSnapshot Summary
@@ -874,7 +880,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if !valid || !epochLive {
 			detach()
 			s.retireReplaced()
-			m.discardRouting(chatID, data.SessionID)
+			m.discardRouting(chatID, data.SessionID, epoch)
 			if !epochLive {
 				return nil, false, nil, ErrSessionResumable
 			}
@@ -936,7 +942,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	s.lifecycleMu.Unlock()
 	deliverOverview(overviewSubscribers, overviewSnapshot)
 	if !valid {
-		m.discardRouting(chatID, data.SessionID)
+		m.discardRouting(chatID, data.SessionID, epoch)
 		return nil, false, nil, ErrManagerClosed
 	}
 	if !epochLive {
@@ -964,7 +970,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.mu.Lock()
 		m.retireSessionIdentityLocked(s, true)
 		m.mu.Unlock()
-		m.discardRouting(chatID, data.SessionID)
+		m.discardRouting(chatID, data.SessionID, epoch)
 		return nil, false, nil, attachErr
 	}
 	if !resumed {
@@ -1029,30 +1035,40 @@ func definitiveResumeFailure(err error) bool {
 	return !errors.Is(err, omorpc.ErrDisconnected) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-func (m *Manager) discardRouting(chatID, route string) {
+func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {
 	if route == "" {
 		return
 	}
+	retiring := retiringRoute{route: route, epoch: epoch}
 	m.mu.Lock()
-	m.rememberRetiringLocked(chatID, route)
+	m.rememberRetiringLocked(chatID, retiring)
 	m.mu.Unlock()
 
+	if !m.cfg.Client.EpochCurrent(epoch) {
+		m.mu.Lock()
+		m.removeRetiringLocked(chatID, retiring)
+		m.mu.Unlock()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	defer cancel()
-	_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+	_, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.CloseSession{SessionID: route})
+	if responseEpoch != (omorpc.EpochToken{}) && responseEpoch != epoch {
+		slog.Error("provider routing cleanup crossed connection epoch", "chat_id", chatID, "routing_id", route)
+	}
 	if definitiveCloseFailure(err) {
 		m.mu.Lock()
-		m.removeRetiringLocked(chatID, route)
+		m.removeRetiringLocked(chatID, retiring)
 		m.mu.Unlock()
 		return
 	}
 	slog.Warn("failed to discard provider routing handle; retaining for delete retry", "chat_id", chatID, "routing_id", route, "error", err)
 }
 
-func (m *Manager) rememberRetiringLocked(chatID, route string) {
+func (m *Manager) rememberRetiringLocked(chatID string, route retiringRoute) {
 	routes := m.retiringByChat[chatID]
 	if routes == nil {
-		routes = make(map[string]struct{})
+		routes = make(map[retiringRoute]struct{})
 		m.retiringByChat[chatID] = routes
 	}
 	if _, exists := routes[route]; exists {
@@ -1067,7 +1083,7 @@ func (m *Manager) rememberRetiringLocked(chatID, route string) {
 	}
 }
 
-func (m *Manager) removeRetiringLocked(chatID, route string) {
+func (m *Manager) removeRetiringLocked(chatID string, route retiringRoute) {
 	routes := m.retiringByChat[chatID]
 	delete(routes, route)
 	if len(routes) == 0 {
@@ -1077,14 +1093,23 @@ func (m *Manager) removeRetiringLocked(chatID, route string) {
 
 func (m *Manager) drainRetiring(ctx context.Context, chatID string) error {
 	m.mu.Lock()
-	routes := make([]string, 0, len(m.retiringByChat[chatID]))
+	routes := make([]retiringRoute, 0, len(m.retiringByChat[chatID]))
 	for route := range m.retiringByChat[chatID] {
 		routes = append(routes, route)
 	}
 	m.mu.Unlock()
 	var first error
 	for _, route := range routes {
-		_, err := m.cfg.Client.Call(ctx, omorpc.CloseSession{SessionID: route})
+		if !m.cfg.Client.EpochCurrent(route.epoch) {
+			m.mu.Lock()
+			m.removeRetiringLocked(chatID, route)
+			m.mu.Unlock()
+			continue
+		}
+		_, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.CloseSession{SessionID: route.route})
+		if responseEpoch != (omorpc.EpochToken{}) && responseEpoch != route.epoch {
+			slog.Error("provider routing drain crossed connection epoch", "chat_id", chatID, "routing_id", route.route)
+		}
 		if definitiveCloseFailure(err) {
 			m.mu.Lock()
 			m.removeRetiringLocked(chatID, route)
@@ -1158,7 +1183,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 				m.clearPendingOpen(chatID)
 			}
 			if got.data.SessionID != "" {
-				m.discardRouting(chatID, got.data.SessionID)
+				m.discardRouting(chatID, got.data.SessionID, got.epoch)
 			}
 			m.cleanupWG.Done()
 		case <-timer.C:
@@ -1172,7 +1197,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 				m.clearPendingOpen(chatID)
 			}
 			if got.data.SessionID != "" {
-				m.discardRouting(chatID, got.data.SessionID)
+				m.discardRouting(chatID, got.data.SessionID, got.epoch)
 			}
 			m.cleanupWG.Done()
 		}
@@ -1184,8 +1209,8 @@ func (m *Manager) clearPendingOpen(chatID string) {
 	m.mu.Lock()
 	if pending := m.pendingOpen[chatID]; pending != nil {
 		delete(m.pendingOpen, chatID)
-		close(pending)
 		<-m.openSlots
+		close(pending)
 	}
 	m.mu.Unlock()
 }
@@ -1221,7 +1246,7 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 					}
 					var late omorpc.OpenSessionData
 					if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-						m.discardRouting(chatID, late.SessionID)
+						m.discardRouting(chatID, late.SessionID, got.epoch)
 					}
 				}()
 				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
