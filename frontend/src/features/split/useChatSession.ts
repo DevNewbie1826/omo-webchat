@@ -329,6 +329,7 @@ export function useChatSession(
     pendingApproval: frameState.pendingApproval,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
+    hasPendingFollowUp: frameState.hasPendingFollowUp,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
     goal,

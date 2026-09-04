@@ -173,7 +173,7 @@ describe("ChatPane optimistic runs", () => {
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(2);
 	});
 
-	it("rolls back an optimistic prompt on a terminal send error", async () => {
+	it("rolls back an optimistic prompt on an observed chat.send failure", async () => {
 		submit("retry this");
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
 
@@ -181,7 +181,8 @@ describe("ChatPane optimistic runs", () => {
 			deliver({
 				type: "error",
 				sessionId: "chat-1",
-				code: "send_failed",
+				code: "provider_error",
+				command: "chat.send",
 				message: "Backend failed",
 			});
 		});

@@ -63,8 +63,7 @@ export function ChatPane({
     [chat.messages, chat.notices, chat.historyStatus],
   );
   const sendErrorNotice = chat.notices.find((notice) => notice.kind === SEND_ERROR_NOTICE_KIND);
-  const sendQueued = chat.running
-    && chat.messages.some((message) => message.customType === "followUp" || message.customType === "steer");
+  const sendQueued = chat.hasPendingFollowUp;
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)

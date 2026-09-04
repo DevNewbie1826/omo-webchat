@@ -48,6 +48,17 @@ function pressEnter(input: HTMLTextAreaElement): void {
 	);
 }
 
+function pressSteer(input: HTMLTextAreaElement): void {
+	input.dispatchEvent(
+		new KeyboardEvent("keydown", {
+			key: "Enter",
+			metaKey: true,
+			bubbles: true,
+			cancelable: true,
+		}),
+	);
+}
+
 describe("ChatPane send-error banner", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -117,13 +128,14 @@ describe("ChatPane send-error banner", () => {
 		return container.querySelector(".th-chat-status")?.textContent ?? "";
 	}
 
-	it("persists a send-path failure banner until dismissed", () => {
+	it("persists an observed chat.send provider failure until dismissed", () => {
 		submit("hello");
 		act(() => {
 			deliver({
 				type: "error",
 				sessionId: "chat-1",
-				code: "send_failed",
+				code: "provider_error",
+				command: "chat.send",
 				message: "Backend failed",
 			});
 		});
@@ -140,6 +152,16 @@ describe("ChatPane send-error banner", () => {
 		expect(alertBanner()).toBeNull();
 	});
 
+	it.each(["prompt_in_flight", "compaction_in_flight"])(
+		"persists the observed %s gate rejection",
+		(code) => {
+			act(() => deliver({
+				type: "error", sessionId: "chat-1", code, message: `${code} rejected`,
+			}));
+			expect(alertBanner()?.textContent).toContain(`${code} rejected`);
+		},
+	);
+
 	it("keeps non-send errors out of the persistent banner", () => {
 		act(() => {
 			deliver({
@@ -152,19 +174,45 @@ describe("ChatPane send-error banner", () => {
 		expect(alertBanner()).toBeNull();
 	});
 
-	it("shows the queued hint while a run is active after a queued send", () => {
-		act(() => {
-			deliver({ type: "run.started", sessionId: "chat-1" });
-		});
-		submit("while running");
-		const sends = sent.filter((frame) => frame.type === "chat.send");
-		expect(sends).toHaveLength(1);
-		expect(sends[0]).toMatchObject({ run: { kind: "follow_up", message: "while running" } });
-		expect(statusText()).toContain("chat.sendQueued");
+	it("replaces the previous send failure instead of revealing it after dismissal", () => {
+		act(() => deliver({
+			type: "error", sessionId: "chat-1", code: "provider_error",
+			command: "chat.abort", message: "First failure",
+		}));
+		act(() => deliver({
+			type: "error", sessionId: "chat-1", code: "provider_error",
+			command: "chat.compact", message: "Newest failure",
+		}));
+		expect(alertBanner()?.textContent).toContain("Newest failure");
+		expect(alertBanner()?.textContent).not.toContain("First failure");
 
-		act(() => {
-			deliver({ type: "run.done", sessionId: "chat-1", reason: "end_turn" });
+		act(() => alertBanner()?.querySelector<HTMLButtonElement>("button")?.click());
+		expect(alertBanner()).toBeNull();
+	});
+
+	it("surfaces an observed compaction.done error in the persistent banner", () => {
+		act(() => deliver({
+			type: "compaction.done", sessionId: "chat-1", error: "Nothing to compact",
+		}));
+		expect(alertBanner()?.textContent).toContain("Nothing to compact");
+	});
+
+	it("shows the queued hint only for a pending follow-up", () => {
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+		act(() => setTextareaValue(textarea(), "redirect"));
+		act(() => pressSteer(textarea()));
+		expect(sent.filter((frame) => frame.type === "chat.send")[0]).toMatchObject({
+			run: { kind: "steer", message: "redirect" },
 		});
+		expect(statusText()).not.toContain("chat.sendQueued");
+
+		submit("while running");
+		expect(statusText()).toContain("chat.sendQueued");
+		act(() => deliver({
+			type: "message",
+			sessionId: "chat-1",
+			message: { role: "user", blocks: [{ kind: "text", text: "while running" }] },
+		}));
 		expect(statusText()).not.toContain("chat.sendQueued");
 	});
 });

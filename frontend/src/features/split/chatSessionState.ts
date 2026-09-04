@@ -7,6 +7,7 @@ import { materializeFinalTools } from "./chatFinalTools";
 
 export interface PendingOptimistic extends ChatDraft {
   readonly id: number;
+  readonly kind?: "prompt" | "followUp";
   readonly priorMatchingCount: number;
   /**
    * Whether authoritative history had loaded when this run was submitted.
@@ -94,21 +95,28 @@ export interface ReconcileHistoryResult {
 }
 
 export function optimisticMessage(pending: PendingOptimistic): UiMessage {
-  return pending.echo
-    ? { ...pending.echo, optimisticId: pending.id }
-    : {
-        role: "user",
-        blocks: [{ kind: "text", text: pending.text }],
-        optimisticId: pending.id,
-      };
+  if (pending.echo) {
+    return pending.kind === "followUp"
+      ? pending.echo
+      : { ...pending.echo, optimisticId: pending.id };
+  }
+  const message: UiMessage = {
+    role: "user",
+    ...(pending.kind === "followUp" ? { customType: "followUp" } : {}),
+    blocks: [{ kind: "text", text: pending.text }],
+  };
+  // Follow-up identity is UI bookkeeping, not canonical message data. Keep it
+  // directly readable for reconciliation/render keys without exposing it to
+  // consumers that enumerate the wire-shaped marker.
+  Object.defineProperty(message, "optimisticId", {
+    value: pending.id,
+    enumerable: pending.kind !== "followUp",
+  });
+  return message;
 }
 
 export function steerMessage(text: string): UiMessage {
   return { role: "user", customType: "steer", blocks: [{ kind: "text", text }] };
-}
-
-export function followUpMessage(text: string): UiMessage {
-  return { role: "user", customType: "followUp", blocks: [{ kind: "text", text }] };
 }
 
 export function finalizeRunMessages(
@@ -128,11 +136,13 @@ export function newPendingRun(
   id: number,
   baselineKnown: boolean,
   current: readonly UiMessage[],
+  kind: NonNullable<PendingOptimistic["kind"]> = "prompt",
 ): PendingOptimistic {
   return {
     ...draft,
     text,
     id,
+    kind,
     priorMatchingCount: current.filter((message) => message.role === "user" && messageText(message) === text).length,
     baselineKnown,
     accepted: false,
@@ -184,12 +194,9 @@ export function reconcileLiveUserMessage(
       return null;
     }
     pendingItems.splice(index, 1);
-    return current.map((currentMessage) => (currentMessage.optimisticId === pending.id ? { ...message, optimisticId: pending.id } : currentMessage));
-  }
-  const followUpIndex = current.findIndex((currentMessage) =>
-    currentMessage.customType === "followUp" && messageText(currentMessage) === text);
-  if (followUpIndex >= 0) {
-    return current.map((currentMessage, currentIndex) => currentIndex === followUpIndex ? message : currentMessage);
+    return current.map((currentMessage) => (currentMessage.optimisticId === pending.id
+      ? pending.kind === "followUp" ? message : { ...message, optimisticId: pending.id }
+      : currentMessage));
   }
   if (active?.text !== text || !current.some((currentMessage) => currentMessage.optimisticId === active.id)) {
     return undefined;
@@ -290,10 +297,17 @@ export function reconcileHistory({ entries, current, pending, active, uncertain,
 
   const optimistic = unmatched.filter((item) => item.accepted).map(optimisticMessage);
   const snapshot = [...restored, ...optimistic];
-  const currentWithoutMissing = uncertainMissing ? current.filter((message) => message.optimisticId !== uncertain?.id) : current;
+  const unmatchedIds = new Set(unmatched.map((item) => item.id));
+  const pendingIds = new Set(pending.map((item) => item.id));
+  const currentWithoutSettled = current.filter((message) => {
+    if (uncertainMissing && message.optimisticId === uncertain?.id) return false;
+    return message.optimisticId === undefined
+      || !pendingIds.has(message.optimisticId)
+      || unmatchedIds.has(message.optimisticId);
+  });
 
   return {
-    messages: preserveCurrent ? mergeSnapshot(snapshot, currentWithoutMissing) : snapshot,
+    messages: preserveCurrent ? mergeSnapshot(snapshot, currentWithoutSettled) : snapshot,
     pending: unmatched,
     uncertainMissing,
     uncertainStalled,

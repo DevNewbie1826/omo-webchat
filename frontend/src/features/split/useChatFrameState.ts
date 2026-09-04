@@ -177,13 +177,16 @@ export function useChatFrameState() {
       if (nid !== undefined && current.some((notice) => notice.nid === nid)) {
         return current;
       }
+      const retained = kind === "send_error"
+        ? current.filter((notice) => notice.kind !== kind)
+        : current;
       return [{
         id: ++noticeIdRef.current,
         kind,
         payload,
         at: at ?? Date.now(),
         ...(nid !== undefined ? { nid } : {}),
-      }, ...current].slice(0, NOTICE_LIMIT);
+      }, ...retained].slice(0, NOTICE_LIMIT);
     });
   };
 
@@ -414,12 +417,25 @@ export function useChatFrameState() {
   const followUp = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
     if ((!text && !draft.image) || !client) return false;
-    const sent = client.send(chatState.followUpSendFrame(draft, text, sessionId));
-    if (sent) {
-      messageVersionRef.current += 1;
-      replaceMessages([...messagesRef.current, chatState.followUpMessage(text)]);
+    const pending = chatState.newPendingRun(
+      draft,
+      text,
+      ++optimisticIdRef.current,
+      historyLoadedRef.current,
+      messagesRef.current,
+      "followUp",
+    );
+    pendingRef.current.push(pending);
+    const sent = client.send(chatState.followUpSendFrame(pending, text, sessionId));
+    if (!sent) {
+      pendingRef.current = pendingRef.current.filter((item) => item !== pending);
+      return false;
     }
-    return sent;
+    pending.accepted = true;
+    messageVersionRef.current += 1;
+    if (pending.echo) pendingRef.current = pendingRef.current.filter((item) => item !== pending);
+    replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
+    return true;
   };
 
   const steer = (text: string, sessionId: string, client: ChatClient | null): boolean => {
@@ -525,6 +541,7 @@ export function useChatFrameState() {
     pendingApproval,
     restoreVersion,
     retryDraft,
+    hasPendingFollowUp: pendingRef.current.some((pending) => pending.kind === "followUp"),
     activities,
     activitiesVersion,
     notices,

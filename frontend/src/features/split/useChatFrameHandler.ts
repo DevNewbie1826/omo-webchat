@@ -102,12 +102,11 @@ function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type:
  */
 export const SEND_ERROR_NOTICE_KIND = "send_error";
 
-// Send-path RPC commands echoed on error frames: chat.send (prompt/steer/
-// follow_up), chat.compact, chat.abort. Codes the busy gates and the send
-// path reject with when no command echo is present.
-const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set(["prompt", "steer", "follow_up", "compact", "abort"]);
+// Observed send-path command echoes and busy-gate codes. A generic
+// provider_error belongs in the banner only when its command identifies one
+// of these operations; unrelated provider queries keep the transient surface.
+const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set(["chat.send", "chat.compact", "chat.abort"]);
 const SEND_GATE_ERROR_CODES: ReadonlySet<string> = new Set(["prompt_in_flight", "compaction_in_flight"]);
-const SEND_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed", "compact_failed"]);
 
 /**
  * Classify an error frame as a send-path command failure (chat.send,
@@ -118,10 +117,16 @@ const SEND_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"
  * classification.
  */
 export function sendCommandFailureOf(frame: Extract<ChatServerFrame, { readonly type: "error" }>): JsonObject | null {
-  if (frame.command !== undefined && SEND_ERROR_COMMANDS.has(frame.command)) return { message: frame.message };
-  if (frame.code !== undefined
-    && (SEND_GATE_ERROR_CODES.has(frame.code) || SEND_ERROR_CODES.has(frame.code))) return { message: frame.message };
+  if (frame.code !== undefined && SEND_GATE_ERROR_CODES.has(frame.code)) return { message: frame.message };
+  if (frame.code === "provider_error"
+    && frame.command !== undefined
+    && SEND_ERROR_COMMANDS.has(frame.command)) return { message: frame.message };
   return null;
+}
+
+function settlesChatSend(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
+  return frame.command === "chat.send"
+    || (frame.command === undefined && frame.code !== undefined && SEND_GATE_ERROR_CODES.has(frame.code));
 }
 
 /** The raw failure text of a send-error banner payload. */
@@ -338,6 +343,31 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         const sendFailure = sendCommandFailureOf(frame);
         if (sendFailure === null) bindings.setError(frame.message);
         else bindings.pushNotice(SEND_ERROR_NOTICE_KIND, sendFailure);
+
+        // chat.send has no wire request id, so the pending send queue is the
+        // correlation ledger: bridge work is processed in receive order and a
+        // live/history echo removes exactly the operation it accepted.
+        if (settlesChatSend(frame)) {
+          const pending = bindings.pendingRef.current[0];
+          if (pending) {
+            bindings.messageVersionRef.current += 1;
+            bindings.pendingRef.current = bindings.pendingRef.current.filter((item) => item.id !== pending.id);
+            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
+            bindings.setRetryDraft({ text: pending.text, image: pending.image, version: ++bindings.retryVersionRef.current });
+            if (pending.kind === "prompt") {
+              bindings.submitLatchRef.current = false;
+              clearLiveSurfaces();
+            }
+          } else if (bindings.activeRunRef.current && frame.command === "chat.send") {
+            const active = bindings.activeRunRef.current;
+            bindings.messageVersionRef.current += 1;
+            bindings.submitLatchRef.current = false;
+            clearLiveSurfaces();
+            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== active.id));
+            bindings.setRetryDraft({ text: active.text, image: active.image, version: ++bindings.retryVersionRef.current });
+          }
+          return;
+        }
         if (!isPromptTerminalError(frame)) return;
         const active = bindings.activeRunRef.current;
         bindings.submitLatchRef.current = false;
@@ -365,7 +395,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       case "compaction.done":
         bindings.setIsCompacting(false);
-        if (frame.error) bindings.setError(frame.error);
+        if (frame.error) {
+          bindings.setError(frame.error);
+          bindings.pushNotice(SEND_ERROR_NOTICE_KIND, { message: frame.error });
+        }
         return;
       case "state":
         // ready precedes provider initialization; state proves get_state
