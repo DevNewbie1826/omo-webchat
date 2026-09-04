@@ -3,7 +3,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { I18nValue } from "../../i18n";
-import { I18nContext } from "../../i18n";
+import { I18nContext, translate } from "../../i18n";
 import type {
 	ChatClient,
 	ChatClientFrame,
@@ -19,7 +19,7 @@ const i18n: I18nValue = {
 	setFont: () => undefined,
 	fontSize: 13,
 	setFontSize: () => undefined,
-	t: (key) => key,
+	t: (key, vars) => translate("en", key, vars),
 };
 
 const chatSession = {
@@ -177,6 +177,38 @@ describe("ChatPane tool cards and approvals", () => {
 			head?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 		});
 		expect(card?.querySelector(".th-tool-body")?.textContent).toContain(output);
+	});
+
+	it("titles a restored skill read by its skill directory", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [
+					{
+						type: "message",
+						message: {
+							role: "assistant",
+							content: [
+								{
+									type: "toolCall",
+									id: "call-skill",
+									name: "read",
+									arguments: { path: "/home/user/project/skills/my-skill/SKILL.md" },
+								},
+								{ type: "toolResult", text: "manifest" },
+							],
+						},
+					},
+				],
+				leafId: "leaf-1",
+			});
+		});
+
+		const cards = container.querySelectorAll(".th-tool");
+		expect(cards).toHaveLength(1);
+		expect(cards[0]?.querySelector(".th-tool-name")?.textContent).toBe("Read skill: my-skill");
 	});
 
 	it("renders one disclosure and no toolResult row for a live toolResult message_end", () => {

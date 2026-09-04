@@ -44,7 +44,8 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 	}{
 		{"get_protocol_info", GetProtocolInfo{}, `{"id":"r1","type":"get_protocol_info"}`},
 		{"open_session_cwd", OpenSession{CWD: "/tmp/wk"}, `{"cwd":"/tmp/wk","id":"r1","type":"open_session"}`},
-		{"open_session_resume", OpenSession{SessionPath: "/tmp/s.jsonl"}, `{"id":"r1","sessionPath":"/tmp/s.jsonl","type":"open_session"}`},
+		{"open_session_resume_with_cwd", OpenSession{CWD: "/w", SessionPath: "/f.jsonl"}, `{"cwd":"/w","id":"r1","sessionPath":"/f.jsonl","type":"open_session"}`},
+		{"open_session_resume_no_cwd", OpenSession{SessionPath: "/f.jsonl"}, `{"id":"r1","sessionPath":"/f.jsonl","type":"open_session"}`},
 		{"close_session", CloseSession{SessionID: "rpc-1"}, `{"id":"r1","sessionId":"rpc-1","type":"close_session"}`},
 		{"list_sessions", ListSessions{}, `{"id":"r1","type":"list_sessions"}`},
 		{"prompt", Prompt{SessionID: "rpc-1", Message: "hi", StreamingBehavior: StreamingFollowUp}, `{"id":"r1","message":"hi","sessionId":"rpc-1","streamingBehavior":"followUp","type":"prompt"}`},
