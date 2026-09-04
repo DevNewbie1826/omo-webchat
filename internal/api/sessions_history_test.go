@@ -36,6 +36,9 @@ func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 func listWorkspaceSessions(t *testing.T, s *Server, wsID, q string) sessionHistoryPage {
@@ -105,12 +108,6 @@ func TestListWorkspaceSessionsUsesCursorRowsAndColdDiskScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	diskPath := writeDiskSession(t, agent, ws.Path, "disk-1", "Disk title", time.UnixMilli(10))
-	// The file is created fresh by the helper but represents an old session;
-	// backdate its mtime so it is not mistaken for a lazy first persist.
-	aged := time.Now().Add(-2 * DiscoveredStabilityWindow)
-	if err := os.Chtimes(diskPath, aged, aged); err != nil {
-		t.Fatal(err)
-	}
 	page := listWorkspaceSessions(t, s, ws.ID, "")
 	if len(page.Items) != 2 {
 		t.Fatalf("items=%+v", page.Items)
@@ -242,15 +239,18 @@ func TestListWorkspaceSessionsPaginatesDeterministically(t *testing.T) {
 func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *testing.T) {
 	fixedNow := time.Unix(1_800_000_000, 0)
 	stubSessionClock(t, fixedNow)
+	sameCWD := t.TempDir()
+	otherCWD := t.TempDir()
 	owned := filepath.Join(t.TempDir(), "owned.jsonl")
 	if err := os.WriteFile(owned, []byte("{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	danglingChat := cursorstore.Chat{ID: "chat-dangling", SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
-	settledChat := cursorstore.Chat{ID: "chat-settled", SessionFile: owned}
-	young := diskSession{ID: "disk-young", Path: "/catalog/young.jsonl", Name: "Fresh", ModTime: fixedNow.Add(-time.Second)}
-	boundary := diskSession{ID: "disk-boundary", Path: "/catalog/boundary.jsonl", Name: "Boundary", ModTime: fixedNow.Add(-DiscoveredStabilityWindow)}
-	old := diskSession{ID: "disk-old", Path: "/catalog/old.jsonl", Name: "Old", ModTime: fixedNow.Add(-DiscoveredStabilityWindow - time.Second)}
+	danglingChat := cursorstore.Chat{ID: "chat-dangling", CWD: sameCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
+	otherCWDDanglingChat := cursorstore.Chat{ID: "chat-other-cwd", CWD: otherCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
+	settledChat := cursorstore.Chat{ID: "chat-settled", CWD: sameCWD, SessionFile: owned}
+	young := diskSession{ID: "disk-young", Path: "/catalog/young.jsonl", CWD: sameCWD, Name: "Fresh", ModTime: fixedNow.Add(-time.Second)}
+	boundary := diskSession{ID: "disk-boundary", Path: "/catalog/boundary.jsonl", CWD: sameCWD, Name: "Boundary", ModTime: fixedNow.Add(-DiscoveredStabilityWindow)}
+	old := diskSession{ID: "disk-old", Path: "/catalog/old.jsonl", CWD: sameCWD, Name: "Old", ModTime: fixedNow.Add(-DiscoveredStabilityWindow - time.Second)}
 
 	tests := []struct {
 		name           string
@@ -259,6 +259,7 @@ func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *t
 		wantDiscovered bool
 	}{
 		{name: "dangling stored chat hides young disk session", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{young}, wantDiscovered: false},
+		{name: "dangling stored chat in another cwd shows young disk session", chats: []cursorstore.Chat{otherCWDDanglingChat}, disk: []diskSession{young}, wantDiscovered: true},
 		{name: "dangling stored chat shows disk session at window boundary", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{boundary}, wantDiscovered: true},
 		{name: "dangling stored chat shows disk session aged past window", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{old}, wantDiscovered: true},
 		{name: "settled stored chat shows young disk session", chats: []cursorstore.Chat{settledChat}, disk: []diskSession{young}, wantDiscovered: true},
@@ -289,6 +290,8 @@ func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *t
 }
 
 func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
 	s, st, ws := newChatCreateTestServer(t)
 	agent := t.TempDir()
 	t.Setenv("OMO_CODING_AGENT_DIR", agent)
@@ -297,13 +300,17 @@ func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *te
 		t.Fatal(err)
 	}
 	diskPath := writeDiskSession(t, agent, ws.Path, "disk-1", "Disk title", time.UnixMilli(10))
+	young := fixedNow.Add(-time.Second)
+	if err := os.Chtimes(diskPath, young, young); err != nil {
+		t.Fatal(err)
+	}
 
 	page := listWorkspaceSessions(t, s, ws.ID, "")
 	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" || !page.Items[0].Dangling {
 		t.Fatalf("young disk session must stay hidden while the stored chat dangles: %+v", page.Items)
 	}
 
-	aged := time.Now().Add(-2 * DiscoveredStabilityWindow)
+	aged := fixedNow.Add(-2 * DiscoveredStabilityWindow)
 	if err := os.Chtimes(diskPath, aged, aged); err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +320,34 @@ func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *te
 	}
 }
 
+func TestListWorkspaceSessionsShowsFreshDiskSessionWithDanglingChatInAnotherCWD(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-other-cwd", WorkspaceID: ws.ID, CWD: t.TempDir(), SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	diskPath := writeDiskSession(t, agent, ws.Path, "disk-1", "Disk title", time.UnixMilli(10))
+	young := fixedNow.Add(-time.Second)
+	if err := os.Chtimes(diskPath, young, young); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 2 {
+		t.Fatalf("young disk session must remain visible when only another cwd has a dangling chat: %+v", page.Items)
+	}
+	if page.Items[1].ID != "disk-1" || page.Items[1].Source != sessionHistorySourceDiscovered {
+		t.Fatalf("fresh discovered row missing: %+v", page.Items)
+	}
+}
+
 func TestListWorkspaceSessionsShowsFreshDiskSessionWithoutDanglingStoredChat(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
 	s, st, ws := newChatCreateTestServer(t)
 	agent := t.TempDir()
 	t.Setenv("OMO_CODING_AGENT_DIR", agent)
@@ -325,7 +359,7 @@ func TestListWorkspaceSessionsShowsFreshDiskSessionWithoutDanglingStoredChat(t *
 	if err := st.SaveChat(settled); err != nil {
 		t.Fatal(err)
 	}
-	writeDiskSession(t, agent, ws.Path, "disk-fresh", "Fresh disk", time.Now())
+	writeDiskSession(t, agent, ws.Path, "disk-fresh", "Fresh disk", fixedNow.Add(-time.Second))
 
 	page := listWorkspaceSessions(t, s, ws.ID, "")
 	if len(page.Items) != 2 {
@@ -407,9 +441,9 @@ func TestAdoptionIdentityTransitionMergesDiskSessionIntoStoredRow(t *testing.T) 
 func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *testing.T) {
 	chats := []cursorstore.Chat{{
 		ID: "chat-1", WorkspaceID: "ws-1", CWD: "/w",
-		SessionFile:       "/sessions/replacement.jsonl",
-		DurableSessionID:  "durable-old",
-		SessionProvenance: cursorstore.SessionProvenanceNative,
+		SessionFile:        "/sessions/replacement.jsonl",
+		DurableSessionID:   "durable-old",
+		SessionProvenance:  cursorstore.SessionProvenanceNative,
 	}}
 	disk := []diskSession{{
 		ID: "durable-new", Path: "/sessions/replacement.jsonl", Name: "replacement",

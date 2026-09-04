@@ -299,13 +299,12 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
-	// chats and disk are both scoped to one workspace path by the callers, so
-	// a dangling chat in the slice is a dangling chat in every disk session's
-	// cwd.
-	dangling := false
+	danglingCWDs := make(map[string]struct{})
 	for _, ch := range chats {
 		danglingRow := storedIdentityDangling(ch.SessionFile)
-		dangling = dangling || danglingRow
+		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); danglingRow && ok {
+			danglingCWDs[canonicalCWD] = struct{}{}
+		}
 		items = append(items, sessionHistoryItem{
 			ID:        ch.ID,
 			Name:      ch.Name,
@@ -326,14 +325,16 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 				break
 			}
 		}
-		// While a stored chat in this workspace still dangles, a freshly
-		// written disk session may be that chat's lazy first persist rather
-		// than a distinct session. Hold it out of the catalog until the file
-		// has aged past the stability window (or no dangling chat remains) so
+		// While a stored chat in the same cwd still dangles, a freshly written
+		// disk session may be that chat's lazy first persist rather than a
+		// distinct session. Hold it out of the catalog until the file has aged
+		// past the stability window (or no same-cwd dangling chat remains) so
 		// the user sees one row instead of a transient duplicate. Once the
 		// chat's identity is updated onto the file — takeover or adoption —
 		// the identity match above merges it into the stored row immediately.
-		if suppress || (dangling && discoveredSessionUnstable(sess)) {
+		canonicalCWD, canonical := canonicalSessionCWD(sess.CWD)
+		_, sameCWDDangling := danglingCWDs[canonicalCWD]
+		if suppress || (canonical && sameCWDDangling && discoveredSessionUnstable(sess)) {
 			continue
 		}
 		items = append(items, sessionHistoryItem{
