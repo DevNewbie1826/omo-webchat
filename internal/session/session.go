@@ -1162,7 +1162,7 @@ func (s *Session) applyProviderName(name string) {
 	if cur.NameSource == NameSourceUser {
 		s.title, s.nameSource = cur.Name, NameSourceUser
 	}
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.nameSource == NameSourceUser {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.title != "" || s.nameSource == NameSourceUser {
 		s.lifecycleMu.Unlock()
 		return
 	}
@@ -1172,7 +1172,7 @@ func (s *Session) applyProviderName(name string) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.nameSource != NameSourceUser {
+	if !s.closed && !s.closing && !s.resumable && s.quarantineErr == nil && s.title == "" && s.nameSource != NameSourceUser {
 		s.title, s.nameSource = name, NameSourceAuto
 		s.publishLocked(Frame{Kind: FrameName, SessionID: s.durableID, Data: map[string]any{"name": name, "origin": "provider"}})
 	}

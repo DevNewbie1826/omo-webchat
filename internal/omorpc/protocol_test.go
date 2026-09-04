@@ -357,7 +357,7 @@ func TestProtocolDecoderTrailingLine(t *testing.T) {
 func TestProtocolSessionStateDecoding(t *testing.T) {
 	line := `{"id":"r1","sessionId":"rpc-3","type":"response","command":"open_session","success":true,` +
 		`"data":{"sessionId":"rpc-3","state":{"sessionId":"d0b0-uuid","sessionFile":"/home/.omo/sessions/d0b0-uuid.jsonl",` +
-		`"model":{"id":"claude-x"},"thinkingLevel":"medium","entries":[],"messageCount":0}}}`
+		`"model":{"id":"claude-x"},"thinkingLevel":"medium","sessionName":"Established name","entries":[],"messageCount":0}}}`
 	in, err := DecodeLine([]byte(line))
 	if err != nil {
 		t.Fatalf("DecodeLine: %v", err)
@@ -373,7 +373,7 @@ func TestProtocolSessionStateDecoding(t *testing.T) {
 		t.Fatalf("handle sessionId (response envelope): %q", in.Response.SessionID)
 	}
 	if data.State.SessionID != "d0b0-uuid" || data.State.SessionFile != "/home/.omo/sessions/d0b0-uuid.jsonl" ||
-		data.State.ThinkingLevel != "medium" || data.State.MessageCount != 0 {
+		data.State.ThinkingLevel != "medium" || data.State.SessionName != "Established name" || data.State.MessageCount != 0 {
 		t.Fatalf("state: %+v", data.State)
 	}
 }

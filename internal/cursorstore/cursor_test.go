@@ -400,6 +400,49 @@ func TestChatFieldMutationsSerializeReadModifyWrite(t *testing.T) {
 	}
 }
 
+func TestSaveChatRecordsFreshSessionAsNative(t *testing.T) {
+	s := mustOpen(t, filepath.Join(t.TempDir(), "state.json"))
+	if err := s.SaveWorkspace(testWorkspace("ws1")); err != nil {
+		t.Fatal(err)
+	}
+	chat := Chat{ID: "native", WorkspaceID: "ws1", CWD: "/work", Name: "fresh", NameSource: NameSourceAuto}
+	if err := s.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetChat(chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsNativeSession(got) {
+		t.Fatalf("fresh chat provenance = %q, want %q", got.SessionProvenance, SessionProvenanceNative)
+	}
+}
+
+func TestUpdateIdentityPreservesProvenance(t *testing.T) {
+	for _, provenance := range []string{SessionProvenanceNative, SessionProvenanceAdopted, SessionProvenanceInPlace} {
+		t.Run(provenance, func(t *testing.T) {
+			s := mustOpen(t, filepath.Join(t.TempDir(), "state.json"))
+			if err := s.SaveWorkspace(testWorkspace("ws1")); err != nil {
+				t.Fatal(err)
+			}
+			chat := Chat{ID: "chat", WorkspaceID: "ws1", SessionFile: "/old/session.jsonl", DurableSessionID: "old", SessionProvenance: provenance}
+			if err := s.SaveChat(chat); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.UpdateIdentity(chat.ID, "/new/session.jsonl", "new"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.GetChat(chat.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.SessionProvenance != provenance {
+				t.Fatalf("provenance = %q, want %q", got.SessionProvenance, provenance)
+			}
+		})
+	}
+}
+
 // TestConcurrentMutations: hammer every mutation path from parallel
 // goroutines; the store must stay consistent and fully persisted.
 func TestConcurrentMutations(t *testing.T) {

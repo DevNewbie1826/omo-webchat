@@ -58,8 +58,51 @@ func TestOpenWorkspaceSessionPersistsValidatedOriginal(t *testing.T) {
 	if chat.SessionFile != source || chat.DurableSessionID != "durable-in-place" || !cursorstore.IsInPlaceSession(chat) {
 		t.Fatalf("stored in-place identity = %+v", chat)
 	}
+	if chat.Name != "Original session" || chat.TitleIsPlaceholder {
+		t.Fatalf("stored in-place name provenance = %+v", chat)
+	}
 	if _, err := os.Stat(store.OwnedSessionDir()); !os.IsNotExist(err) {
 		t.Fatalf("in-place open created adoption directory: %v", err)
+	}
+}
+
+func TestOpenWorkspaceSessionRefreshesNativeIdentityWithoutInPlaceFencing(t *testing.T) {
+	server, store, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-native", "Native session")
+	chat := cursorstore.Chat{ID: "chat-native", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "stale.jsonl"), DurableSessionID: "durable-native", SessionProvenance: cursorstore.SessionProvenanceNative, Name: "Native session", NameSource: cursorstore.NameSourceAuto}
+	if err := store.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	var checks atomic.Int32
+	server.activityCheck = func(context.Context, string, time.Duration) (sessionActivity, error) {
+		checks.Add(1)
+		return sessionActivity{}, nil
+	}
+
+	response := openWorkspaceSession(t, server, ws.ID, map[string]any{"id": "durable-native", "resumeIdentity": source})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	stored, err := store.GetChat(chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.SessionFile != source || stored.DurableSessionID != "durable-native" || !cursorstore.IsNativeSession(stored) || cursorstore.IsInPlaceSession(stored) {
+		t.Fatalf("refreshed native identity = %+v", stored)
+	}
+
+	cursorStore := (*wsbridge.CursorStore)(store.Store)
+	cur, err := cursorStore.CursorForOpen(t.Context(), chat.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.InPlace || checks.Load() != 1 {
+		t.Fatalf("native cursor inPlace = %v, activity checks = %d, want false and 1", cur.InPlace, checks.Load())
+	}
+	if _, err := os.Stat(store.OwnedSessionDir()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("native reopen created adoption directory: %v", err)
 	}
 }
 

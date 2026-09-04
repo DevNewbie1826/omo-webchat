@@ -775,8 +775,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	// names also derive naturally; every other auto/provider name is established,
 	// regardless of which durable identity fields happen to be available.
 	name := cur.Name
-	if cur.TitleIsPlaceholder {
+	if cur.TitleIsPlaceholder && cur.NameSource != NameSourceUser {
 		name = ""
+	}
+	if providerName := strings.TrimSpace(data.State.SessionName); providerName != "" && cur.NameSource != NameSourceUser {
+		name = providerName
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
 	s.inheritSendOperationOwner(sendOwner)

@@ -129,37 +129,46 @@ func TestListDiskSessionsRejectsCollidingDirectoryFromAnotherWorkspace(t *testin
 	}
 }
 
-func TestMergeSessionHistoryRequiresOwnedProvenanceAndExactIdentity(t *testing.T) {
+func TestMergeSessionHistorySuppressesMatchingIdentityForEveryProvenance(t *testing.T) {
 	ownedDir := filepath.Join(t.TempDir(), "adopted")
 	session := diskSession{ID: "durable", Path: "/catalog/shared.jsonl"}
 	tests := []struct {
 		name string
 		chat cursorstore.Chat
-		want string
 	}{
-		{
-			name: "legacy exact durable id is not ownership",
-			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: session.Path},
-			want: sessionHistorySourceDiscovered,
-		},
-		{
-			name: "owned copy with basename only does not match",
-			chat: cursorstore.Chat{SessionFile: filepath.Join(ownedDir, filepath.Base(session.Path)), SessionProvenance: cursorstore.SessionProvenanceAdopted},
-			want: sessionHistorySourceDiscovered,
-		},
-		{
-			name: "owned copy with exact durable id marks source",
-			chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: filepath.Join(ownedDir, "owned.jsonl"), SessionProvenance: cursorstore.SessionProvenanceAdopted},
-			want: sessionHistorySourceAlreadyAdopted,
-		},
+		{name: "native durable id", chat: cursorstore.Chat{DurableSessionID: session.ID, SessionProvenance: cursorstore.SessionProvenanceNative}},
+		{name: "in-place path", chat: cursorstore.Chat{SessionFile: session.Path, SessionProvenance: cursorstore.SessionProvenanceInPlace}},
+		{name: "adopted durable id", chat: cursorstore.Chat{DurableSessionID: session.ID, SessionFile: filepath.Join(ownedDir, "owned.jsonl"), SessionProvenance: cursorstore.SessionProvenanceAdopted}},
+		{name: "legacy path", chat: cursorstore.Chat{SessionFile: session.Path}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session}, ownedDir)
-			if len(items) != 2 || items[1].Source != tt.want {
-				t.Fatalf("merged items = %+v, want disk source %q", items, tt.want)
+			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session})
+			if len(items) != 1 || items[0].Source != sessionHistorySourceStored {
+				t.Fatalf("merged items = %+v, want only stored row", items)
 			}
 		})
+	}
+
+	unmatched := cursorstore.Chat{SessionFile: filepath.Join(ownedDir, filepath.Base(session.Path)), SessionProvenance: cursorstore.SessionProvenanceAdopted}
+	if items := mergeSessionHistory([]cursorstore.Chat{unmatched}, []diskSession{session}); len(items) != 2 || items[1].Source != sessionHistorySourceDiscovered {
+		t.Fatalf("unmatched merged items = %+v, want stored and discovered rows", items)
+	}
+}
+
+func TestListWorkspaceSessionsReturnsOneRowForNativeDiskSession(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	source := writeDiskSession(t, agent, ws.Path, "native-durable", "Native title", time.Now())
+	chat := cursorstore.Chat{ID: "native-chat", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "native-durable", SessionProvenance: cursorstore.SessionProvenanceNative, Name: "Native title", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != chat.ID || page.Items[0].Source != sessionHistorySourceStored {
+		t.Fatalf("catalog items = %+v, want one stored native row", page.Items)
 	}
 }
 

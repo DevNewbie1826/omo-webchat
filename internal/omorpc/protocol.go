@@ -338,6 +338,7 @@ type SessionState struct {
 	SessionFile   string          `json:"sessionFile,omitempty"`
 	Model         json.RawMessage `json:"model,omitempty"`
 	ThinkingLevel string          `json:"thinkingLevel,omitempty"`
+	SessionName   string          `json:"sessionName,omitempty"`
 	Entries       json.RawMessage `json:"entries,omitempty"`
 	MessageCount  int             `json:"messageCount,omitempty"`
 }

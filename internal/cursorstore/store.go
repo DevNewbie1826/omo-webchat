@@ -52,6 +52,10 @@ const (
 	// SessionProvenanceInPlace marks an original session selected from the
 	// workspace-scoped disk catalog and validated before it was persisted.
 	SessionProvenanceInPlace = "in-place"
+	// SessionProvenanceNative marks a session created by webchat. Its provider
+	// identity may live in the workspace catalog, but it is not an external
+	// in-place selection and does not require original-file fencing.
+	SessionProvenanceNative = "native"
 )
 
 // Workspace is UI metadata for a workspace directory.
@@ -141,6 +145,12 @@ func IsOwnedSession(chat Chat, ownedDir string) bool {
 // later process working-directory change cannot redirect provider writes.
 func IsInPlaceSession(chat Chat) bool {
 	return chat.SessionProvenance == SessionProvenanceInPlace && filepath.IsAbs(chat.SessionFile)
+}
+
+// IsNativeSession reports whether chat was created by webchat for a fresh
+// provider session rather than selected from the disk catalog.
+func IsNativeSession(chat Chat) bool {
+	return chat.SessionProvenance == SessionProvenanceNative
 }
 
 // OpenWithClock is Open with an injected clock for deterministic LastUsedAt.
@@ -350,6 +360,9 @@ func (s *Store) SaveChat(c Chat) error {
 	if candidate.Chats == nil {
 		candidate.Chats = map[string]Chat{}
 	}
+	if _, exists := candidate.Chats[c.ID]; !exists && c.SessionProvenance == "" && c.SessionFile == "" && c.DurableSessionID == "" {
+		c.SessionProvenance = SessionProvenanceNative
+	}
 	candidate.Chats[c.ID] = c
 	return s.flushLocked(candidate)
 }
@@ -376,14 +389,12 @@ func (s *Store) UpdateChat(c Chat) error {
 }
 
 // UpdateIdentity updates only the durable provider identity. The read and
-// write share one critical section so concurrent name changes cannot be lost.
-// It deliberately clears adopted provenance: ordinary provider updates cannot
-// assert that an arbitrary path is a server-owned verified copy.
+// write share one critical section so concurrent name changes cannot be lost,
+// and the existing provenance remains attached to the chat's identity class.
 func (s *Store) UpdateIdentity(id, sessionFile, durableID string) error {
 	return s.updateChatFields(id, func(c *Chat) error {
 		c.SessionFile = sessionFile
 		c.DurableSessionID = durableID
-		c.SessionProvenance = ""
 		return nil
 	})
 }
@@ -471,7 +482,7 @@ func (s *Store) GetChatForOpen(id string) (Chat, error) {
 	if err != nil {
 		return Chat{}, err
 	}
-	if c.SessionFile != "" && !IsOwnedSession(c, s.OwnedSessionDir()) && !IsInPlaceSession(c) {
+	if c.SessionFile != "" && !IsOwnedSession(c, s.OwnedSessionDir()) && !IsInPlaceSession(c) && !IsNativeSession(c) {
 		return Chat{}, fmt.Errorf("%w: chat %q", ErrAdoptionRequired, id)
 	}
 	return c, nil
