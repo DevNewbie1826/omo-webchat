@@ -155,12 +155,38 @@ func (s *Session) Resumable() bool {
 	return s.resumable
 }
 
-func (s *Session) routeLocked() (string, error) {
-	if s.closed || s.closing {
-		return "", ErrSessionClosed
+// acquisitionError reports route state in the same priority order as writes.
+// In particular, quarantine remains terminal even if transport invalidation
+// subsequently marks the provider route resumable.
+func (s *Session) acquisitionError() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	_, err := s.routeLocked()
+	return err
+}
+
+func (s *Session) inheritSendOperations(prior *Session) {
+	if prior == nil || prior == s {
+		return
 	}
+	prior.lifecycleMu.Lock()
+	defer prior.lifecycleMu.Unlock()
+	if len(prior.sendOperationFIFO) == 0 {
+		return
+	}
+	s.sendOperations = make(map[string]sendOperation, len(prior.sendOperations))
+	s.sendOperationFIFO = append([]string(nil), prior.sendOperationFIFO...)
+	for id, operation := range prior.sendOperations {
+		s.sendOperations[id] = operation
+	}
+}
+
+func (s *Session) routeLocked() (string, error) {
 	if s.quarantineErr != nil {
 		return "", s.quarantineErr
+	}
+	if s.closed || s.closing {
+		return "", ErrSessionClosed
 	}
 	if s.resumable {
 		return "", ErrSessionResumable
@@ -444,6 +470,8 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 		if err != nil {
 			s.lifecycleMu.Lock()
 			switch {
+			case s.quarantineErr != nil:
+				err = s.quarantineErr
 			case s.resumable:
 				err = ErrSessionResumable
 			case s.closed || s.closing:
@@ -455,6 +483,26 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 		return
 	}
 	s.publishDetachedOutcome(err, command, requestID)
+}
+
+// PrepareDetachedSendRetry transfers an inherited request back to admission so
+// the original mutation can be attempted on a replacement provider route.
+func (s *Session) PrepareDetachedSendRetry(requestID string) {
+	if requestID == "" {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if _, ok := s.sendOperations[requestID]; ok {
+		delete(s.sendOperations, requestID)
+		for i, id := range s.sendOperationFIFO {
+			if id == requestID {
+				copy(s.sendOperationFIFO[i:], s.sendOperationFIFO[i+1:])
+				s.sendOperationFIFO = s.sendOperationFIFO[:len(s.sendOperationFIFO)-1]
+				break
+			}
+		}
+	}
+	s.lifecycleMu.Unlock()
 }
 
 // CompleteDetachedSend publishes and retains a terminal outcome owned by a

@@ -241,32 +241,37 @@ func (h *Handler) OnClose(sock *gws.Conn, err error) {
 }
 
 type chatSendOperation struct {
-	conn      *connection
-	kind      string
-	message   string
-	images    []map[string]string
-	requestID string
+	bridge            *Handler
+	conn              *connection // live delivery hint; never owns recovery
+	workspaceID       string
+	chatID            string
+	bindingGeneration uint64
+	kind              string
+	message           string
+	images            []map[string]string
+	requestID         string
 }
 
 type connection struct {
-	bridge       *Handler
-	socket       *gws.Conn
-	ctx          context.Context
-	cancel       context.CancelFunc
-	sub          *subscriber
-	outboundMu   sync.Mutex
-	replayActive bool
-	replayDone   chan struct{}
-	stateMu      sync.Mutex
-	wsID, chatID string
-	sess         *session.Session
-	detach       func()
-	goalCancel   context.CancelFunc
-	activityMu   sync.Mutex
-	activity     *activitySubscription
-	hello        bool
-	work         chan []byte
-	closed       atomic.Bool
+	bridge            *Handler
+	socket            *gws.Conn
+	ctx               context.Context
+	cancel            context.CancelFunc
+	sub               *subscriber
+	outboundMu        sync.Mutex
+	replayActive      bool
+	replayDone        chan struct{}
+	stateMu           sync.Mutex
+	wsID, chatID      string
+	bindingGeneration uint64
+	sess              *session.Session
+	detach            func()
+	goalCancel        context.CancelFunc
+	activityMu        sync.Mutex
+	activity          *activitySubscription
+	hello             bool
+	work              chan []byte
+	closed            atomic.Bool
 }
 
 func (c *connection) write(v any) error {
@@ -363,6 +368,7 @@ func (c *connection) unbind() (string, *session.Session) {
 	c.stateMu.Lock()
 	id, s, detach := c.chatID, c.sess, c.detach
 	c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
+	c.bindingGeneration++
 	c.stateMu.Unlock()
 	if detach != nil {
 		detach()
@@ -373,6 +379,12 @@ func (c *connection) binding() (string, *session.Session) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	return c.chatID, c.sess
+}
+
+func (c *connection) bindingSnapshot() (string, string, uint64, *session.Session) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.wsID, c.chatID, c.bindingGeneration, c.sess
 }
 
 func (c *connection) run() {
@@ -563,19 +575,27 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 }
 
 func (c *connection) handleChatSend(ctx context.Context, bound string, sess *session.Session, f *wscontract.ChatSendFrame) {
-	op := &chatSendOperation{conn: c, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID)}
+	workspaceID, chatID, generation, current := c.bindingSnapshot()
+	op := &chatSendOperation{bridge: c.bridge, conn: c, workspaceID: workspaceID, chatID: chatID,
+		bindingGeneration: generation, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID)}
 	op.images = make([]map[string]string, len(f.Run.Images))
 	for i, image := range f.Run.Images {
 		op.images[i] = map[string]string{"data": image.Data, "mimeType": image.MimeType}
+	}
+	if current != sess || chatID != bound {
+		c.sendError("session_mismatch", "session binding changed before send admission", "chat.send", op.requestID)
+		return
 	}
 	if op.kind != "prompt" && op.kind != "steer" && op.kind != "follow_up" && op.kind != "followUp" {
 		c.sendError("bad_frame", "unknown run kind", "chat.send", op.requestID)
 		return
 	}
 
-	release, err := c.bridge.cfg.Manager.EnterChat(ctx, bound)
+	release, err := c.bridge.cfg.Manager.EnterChat(ctx, op.chatID)
 	if err != nil {
-		c.sendSessionError(err, "chat.send", op.requestID)
+		if op.bindingCurrent() {
+			c.sendSessionError(err, "chat.send", op.requestID)
+		}
 		return
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
@@ -591,8 +611,10 @@ func (c *connection) handleChatSend(ctx context.Context, bound string, sess *ses
 		return
 	}
 	if err != nil {
-		c.sendSessionError(err, "chat.send", op.requestID)
-	} else if op.requestID != "" {
+		if op.bindingCurrent() {
+			c.sendSessionError(err, "chat.send", op.requestID)
+		}
+	} else if op.requestID != "" && op.bindingCurrent() {
 		c.sendAck("chat.send", op.requestID)
 	}
 }
@@ -612,55 +634,154 @@ func isResumableSendError(err error) bool {
 	return errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed)
 }
 
-var errNoDurableCursor = errors.New("chat has no durable cursor")
+type operationSubscriber struct {
+	*subscriber
+	op           *chatSendOperation
+	retryStarted atomic.Bool
+}
 
-func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted bool, originalErr error) {
-	ctx, cancel := context.WithTimeout(op.conn.ctx, op.conn.bridge.cfg.HistoryTimeout)
-	defer cancel()
-	resumed, err := op.conn.resumeBoundSession(ctx, stale)
-	if errors.Is(err, errNoDurableCursor) {
-		if admitted {
-			stale.CompleteDetachedSend(op.requestID, originalErr)
-		} else {
-			op.conn.sendSessionError(originalErr, "chat.send", op.requestID)
-		}
-		return
+func (s *operationSubscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
+func (s *operationSubscriber) DeliverFrame(f session.Frame) error {
+	if !s.retryStarted.Load() && f.RequestID == s.op.requestID && f.Command == "chat.send" {
+		return nil
 	}
-	if err != nil {
-		info := resumeFailureInfo(err)
-		stale.PublishSendOperationError(op.requestID, info)
-		op.conn.sendResumeFailure(info, op.requestID)
-		return
-	}
+	return s.subscriber.DeliverFrame(f)
+}
 
-	chatID, current := op.conn.binding()
-	if resumed == nil || current != resumed || chatID == "" {
-		info := session.ErrorInfo{Code: "resume_failed", Message: "session binding changed while resuming"}
-		stale.PublishSendOperationError(op.requestID, info)
-		op.conn.sendResumeFailure(info, op.requestID)
-		return
+func (s *operationSubscriber) BeginReplay() {
+	if s.op.bindingMatchesSession(nil) {
+		s.subscriber.BeginReplay()
 	}
-	release, err := op.conn.bridge.cfg.Manager.EnterChat(ctx, chatID)
-	if err != nil {
-		resumed.CompleteDetachedSend(op.requestID, err)
-		return
-	}
-	err = op.send(ctx, resumed, func(completionErr error) {
-		resumed.CompleteDetachedSend(op.requestID, completionErr)
-	})
-	release()
-	if err != nil {
-		op.conn.sendSessionError(err, "chat.send", op.requestID)
-	} else if !admitted && op.requestID != "" {
-		op.conn.sendAck("chat.send", op.requestID)
+}
+func (s *operationSubscriber) EndReplay() {
+	if s.subscriber.replaying.Load() {
+		s.subscriber.EndReplay()
 	}
 }
 
-func (c *connection) sendResumeFailure(info session.ErrorInfo, requestID string) {
-	chatID, _ := c.binding()
-	wire, err := mapFrame(session.Frame{Kind: session.FrameError, SessionID: chatID, Command: "chat.send", RequestID: requestID, Data: info}, chatID, false)
-	if err == nil && wire != nil {
-		_ = c.write(wire)
+func (op *chatSendOperation) bindingMatchesSession(want *session.Session) bool {
+	op.conn.stateMu.Lock()
+	defer op.conn.stateMu.Unlock()
+	if op.conn.closed.Load() || op.conn.wsID != op.workspaceID || op.conn.chatID != op.chatID || op.conn.bindingGeneration != op.bindingGeneration {
+		return false
+	}
+	return want == nil || op.conn.sess == want
+}
+
+func (op *chatSendOperation) bindingCurrent() bool { return op.bindingMatchesSession(nil) }
+
+func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *session.Session, started bool, sub *subscriber, acquiredDetach func()) {
+	wrappedDetach := sub.wrapDetach(acquiredDetach)
+	op.conn.stateMu.Lock()
+	if op.conn.closed.Load() || op.conn.wsID != op.workspaceID || op.conn.chatID != op.chatID ||
+		op.conn.bindingGeneration != op.bindingGeneration || op.conn.sess != stale {
+		op.conn.stateMu.Unlock()
+		wrappedDetach()
+		return
+	}
+	oldDetach := op.conn.detach
+	op.conn.sess, op.conn.detach, op.conn.sub = acquired, wrappedDetach, sub
+	op.conn.stateMu.Unlock()
+	if !sub.activate(ctx, !started) {
+		op.conn.stateMu.Lock()
+		if op.conn.bindingGeneration == op.bindingGeneration && op.conn.sess == acquired {
+			op.conn.sess, op.conn.detach = stale, oldDetach
+		}
+		op.conn.stateMu.Unlock()
+		wrappedDetach()
+		return
+	}
+	if oldDetach != nil {
+		oldDetach()
+	}
+	if touchErr := op.bridge.cfg.Store.TouchLastUsed(op.chatID); touchErr != nil {
+		op.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", op.chatID, "error", touchErr)
+	}
+	op.conn.queryState(ctx, acquired)
+	op.conn.queryModels(ctx, acquired)
+	op.conn.queryCommands(ctx, acquired)
+	op.conn.queryStats(ctx, acquired)
+}
+
+func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted bool, originalErr error) {
+	ctx, cancel := context.WithTimeout(op.bridge.cfg.Context, op.bridge.cfg.HistoryTimeout)
+	defer cancel()
+
+	var preparedGeneration uint64
+	guarded := op.bridge.cfg.PrepareChatVersion != nil && op.bridge.cfg.ChatVersion != nil
+	if guarded {
+		var err error
+		preparedGeneration, err = op.bridge.cfg.PrepareChatVersion(ctx, op.workspaceID, op.chatID)
+		if err != nil {
+			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+			return
+		}
+	} else if op.bridge.cfg.PrepareChat != nil {
+		if err := op.bridge.cfg.PrepareChat(ctx, op.workspaceID, op.chatID); err != nil {
+			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+			return
+		}
+	}
+	rec, err := op.bridge.cfg.Store.GetChat(op.chatID)
+	if err != nil || rec.WorkspaceID != op.workspaceID || !cursorstore.IsLaunchableProvider(rec.Provider) {
+		if err == nil {
+			err = errors.New("chat metadata changed while resuming")
+		}
+		stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+		return
+	}
+
+	var sub *operationSubscriber
+	var attachSub session.Subscriber
+	var initialize func(*session.Session, bool, func())
+	if op.bindingMatchesSession(stale) {
+		sub = &operationSubscriber{subscriber: newSubscriber(op.conn), op: op}
+		attachSub = sub
+		initialize = func(acquired *session.Session, started bool, detach func()) {
+			op.bindResumed(ctx, stale, acquired, started, sub.subscriber, detach)
+		}
+	}
+	validate := func() error { return nil }
+	if guarded {
+		validate = func() error {
+			if op.bridge.cfg.ChatVersion(op.chatID) != preparedGeneration {
+				return ErrChatDeleted
+			}
+			return nil
+		}
+	}
+	callbackRan := false
+	var outcomeOwner *session.Session
+	resumed, _, detach, err := op.bridge.cfg.Manager.ResumeInitializedCheckedAndRun(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, attachSub, initialize, validate, func(acquired *session.Session) error {
+		callbackRan = true
+		outcomeOwner = acquired
+		acquired.PrepareDetachedSendRetry(op.requestID)
+		if sub != nil {
+			sub.retryStarted.Store(true)
+		}
+		return op.send(ctx, acquired, func(completionErr error) {
+			acquired.CompleteDetachedSend(op.requestID, completionErr)
+		})
+	})
+	_ = detach // the live binding or manager owns the acquired route
+	if errors.Is(err, session.ErrNoDurableCursor) {
+		stale.CompleteDetachedSend(op.requestID, originalErr)
+		return
+	}
+	if err != nil {
+		if callbackRan && outcomeOwner != nil {
+			outcomeOwner.CompleteDetachedSend(op.requestID, err)
+		} else {
+			stale.PublishSendOperationError(op.requestID, resumeFailureInfo(err))
+		}
+		return
+	}
+	if resumed == nil {
+		stale.PublishSendOperationError(op.requestID, session.ErrorInfo{Code: "resume_failed", Message: "resume returned no session"})
+		return
+	}
+	if !admitted && op.requestID != "" && op.bindingCurrent() {
+		op.conn.sendAck("chat.send", op.requestID)
 	}
 }
 
@@ -683,112 +804,6 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 		return session.ErrorInfo{Code: "external-write-detected", Message: drift.Error(), KnownLeaf: drift.KnownLeaf, ObservedLeaf: drift.ObservedLeaf}
 	}
 	return session.ErrorInfo{Code: "resume_failed", Message: err.Error()}
-}
-
-func (c *connection) resumeBoundSession(ctx context.Context, stale *session.Session) (*session.Session, error) {
-	c.stateMu.Lock()
-	wsID, chatID, current := c.wsID, c.chatID, c.sess
-	c.stateMu.Unlock()
-	if current != stale {
-		if current != nil {
-			return current, nil
-		}
-		return nil, errNoDurableCursor
-	}
-
-	var preparedGeneration uint64
-	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
-	if guarded {
-		var err error
-		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, wsID, chatID)
-		if err != nil {
-			return nil, err
-		}
-	} else if c.bridge.cfg.PrepareChat != nil {
-		if err := c.bridge.cfg.PrepareChat(ctx, wsID, chatID); err != nil {
-			return nil, err
-		}
-	}
-	rec, err := c.bridge.cfg.Store.GetChat(chatID)
-	if err != nil {
-		return nil, err
-	}
-	if rec.SessionFile == "" {
-		return nil, errNoDurableCursor
-	}
-	if rec.WorkspaceID != wsID {
-		return nil, errors.New("chat does not belong to workspace")
-	}
-	if !cursorstore.IsLaunchableProvider(rec.Provider) {
-		return nil, ErrUnsupportedProvider
-	}
-
-	c.stateMu.Lock()
-	staleDetach := c.detach
-	if c.sess == stale {
-		c.detach = nil
-	}
-	c.stateMu.Unlock()
-	if staleDetach != nil {
-		staleDetach()
-	}
-
-	sub := newSubscriber(c)
-	initialized := false
-	initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
-		wrappedDetach := sub.wrapDetach(acquiredDetach)
-		if !sub.activate(ctx, !started) {
-			wrappedDetach()
-			return
-		}
-		c.stateMu.Lock()
-		if c.closed.Load() || c.sess != stale || c.chatID != chatID {
-			c.stateMu.Unlock()
-			wrappedDetach()
-			return
-		}
-		oldDetach := c.detach
-		c.sess, c.detach, c.sub = acquired, wrappedDetach, sub
-		initialized = true
-		c.stateMu.Unlock()
-		if oldDetach != nil {
-			oldDetach()
-		}
-		if touchErr := c.bridge.cfg.Store.TouchLastUsed(chatID); touchErr != nil {
-			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", chatID, "error", touchErr)
-		}
-		c.queryState(ctx, acquired)
-		c.queryModels(ctx, acquired)
-		c.queryCommands(ctx, acquired)
-		c.queryStats(ctx, acquired)
-	}
-	ref := chatRef{id: rec.ID, cwd: rec.CWD}
-	var acquired *session.Session
-	var detach func()
-	if guarded {
-		validate := func() error {
-			if c.bridge.cfg.ChatVersion(chatID) != preparedGeneration {
-				return ErrChatDeleted
-			}
-			return nil
-		}
-		acquired, _, detach, err = c.bridge.cfg.Manager.ResumeInitializedChecked(ctx, ref, sub, initialize, validate)
-	} else {
-		acquired, _, detach, err = c.bridge.cfg.Manager.ResumeInitialized(ctx, ref, sub, initialize)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if !initialized {
-		if detach != nil {
-			detach()
-		}
-		_, acquired = c.binding()
-		if acquired == nil {
-			return nil, errors.New("session binding changed while resuming")
-		}
-	}
-	return acquired, nil
 }
 
 func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
@@ -853,6 +868,7 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 			wrappedDetach()
 			return
 		}
+		c.bindingGeneration++
 		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, wrappedDetach
 		c.stateMu.Unlock()
 		if !sub.activate(ctx, !started) {

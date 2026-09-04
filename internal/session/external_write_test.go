@@ -429,6 +429,21 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 	}
 }
 
+func TestDetachedCompletionKeepsExternalWriteQuarantineAfterDisconnect(t *testing.T) {
+	drift := &ExternalWriteError{KnownLeaf: "known", ObservedLeaf: "changed", Reason: "test drift"}
+	s := &Session{quarantineErr: drift, resumable: true}
+	completed := make(chan error, 1)
+	s.finishDetachedSend(omorpc.ErrDisconnected, "chat.send", "quarantined", func(err error) {
+		completed <- err
+	})
+	if err := <-completed; err != drift {
+		t.Fatalf("completion error = %T %v, want latched quarantine", err, err)
+	}
+	if err := s.acquisitionError(); err != drift {
+		t.Fatalf("acquisition error = %T %v, want latched quarantine", err, err)
+	}
+}
+
 func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-external.jsonl")
