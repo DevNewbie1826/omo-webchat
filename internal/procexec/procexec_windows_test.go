@@ -252,6 +252,84 @@ func Test_StartTracked_assignment_failure_terminates_and_reaps_child(t *testing.
 	}
 }
 
+func Test_TrackedProcess_WaitTreeGone_retains_member_through_exit_window(t *testing.T) {
+	// A member that exits on its own can leave the job's member list while
+	// its process object is not yet signaled. The drain wait must retain
+	// that genuine handle until it signals — returning nil only after the
+	// grandchild is truly gone — never drop it on list absence. The
+	// grandchild self-exits after a short sleep; nothing terminates the
+	// tree, so nil can only come from observing the natural exit.
+	pidFile := filepath.Join(t.TempDir(), "exiting.pid")
+	gateReader, gateWriter := io.Pipe()
+	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+		"$null = [Console]::In.ReadLine(); "+
+			"Start-Process -WindowStyle Hidden -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep','-Seconds','3' |"+
+			" ForEach-Object { $_.Id } | Set-Content -LiteralPath '"+pidFile+"'")
+	cmd.Stdin = gateReader
+	tracked, err := StartTracked(cmd)
+	if err != nil {
+		t.Fatalf("start tracked powershell: %v", err)
+		return
+	}
+	if _, err := gateWriter.Write([]byte("\n")); err != nil {
+		t.Fatalf("release stdin gate: %v", err)
+	}
+	if err := gateWriter.Close(); err != nil {
+		t.Fatalf("close stdin gate: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tracked.TerminateTree()
+		_ = tracked.Close()
+	})
+
+	deadline := time.NewTimer(trackedTreeTestDeadline)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	grandchild := 0
+	for grandchild == 0 {
+		select {
+		case <-retry.C:
+			raw, readErr := os.ReadFile(pidFile)
+			if readErr != nil {
+				continue
+			}
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if parseErr != nil || pid <= 0 {
+				continue
+			}
+			grandchild = pid
+		case <-deadline.C:
+			t.Fatalf("powershell leader %d spawned no grandchild within %s", tracked.Pid(), trackedTreeTestDeadline)
+		}
+	}
+	for GroupAlive(tracked.Pid()) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("leader %d did not exit within %s", tracked.Pid(), trackedTreeTestDeadline)
+		}
+	}
+	if !GroupAlive(grandchild) {
+		t.Fatalf("grandchild %d reported dead before its natural exit", grandchild)
+	}
+
+	// Drain with no termination: nil must follow only after the grandchild's
+	// own exit is fully observed.
+	if err := tracked.WaitTreeGone(trackedTreeTestDeadline); err != nil {
+		t.Fatalf("WaitTreeGone through natural exit: %v", err)
+	}
+	// The retention proof: nil arrived while the grandchild still lived
+	// only if the wait dropped its handle on list absence.
+	for GroupAlive(grandchild) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("grandchild %d still alive after WaitTreeGone returned nil", grandchild)
+		}
+	}
+}
+
 func Test_TrackedProcess_WaitTreeGone_after_Close_reports_job_closed(t *testing.T) {
 	// Given: a tracked child that is released via Close. The job handle is
 	// gone, so a later drain wait must report the honest closed state instead

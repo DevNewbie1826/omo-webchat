@@ -294,33 +294,16 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 				unresolved[pid] = struct{}{}
 				continue
 			}
-			// Capture-time reuse validation: a fresh member list is the
-			// authority for what the job still contains. An unsignaled
-			// handle whose pid is no longer listed was opened against a
-			// process outside the tracked domain (the member exited and the
-			// pid was reused between query and open) — dropping it HERE is
-			// safe because the pid's absence from this fresh list is the
-			// same observation that would have prevented tracking it had the
-			// list been queried first. Tracked handles are never dropped on
-			// later absence.
-			listedNow, err := queryJobMemberPIDs(dup)
+			member, err := adoptMemberHandle(dup, handle)
 			if err != nil {
 				_ = windows.CloseHandle(handle)
-				return fmt.Errorf("procexec: query tracked tree of child %d: %w", t.pid, err)
+				return fmt.Errorf("procexec: validate tree member %d of child %d: %w", pid, t.pid, err)
 			}
-			memberStill := false
-			for _, p := range listedNow {
-				if p == pid {
-					memberStill = true
-					break
-				}
-			}
-			event, _ := windows.WaitForSingleObject(handle, 0)
-			if !memberStill && event != windows.WAIT_OBJECT_0 {
+			if member {
+				pending[pid] = handle
+			} else {
 				_ = windows.CloseHandle(handle)
-				continue
 			}
-			pending[pid] = handle
 		}
 		for pid := range unresolved {
 			if _, ok := pending[pid]; ok {
@@ -330,26 +313,16 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if openErr == nil {
 				delete(unresolved, pid)
-				// Same capture validation as above.
-				listedNow, err := queryJobMemberPIDs(dup)
+				member, err := adoptMemberHandle(dup, handle)
 				if err != nil {
 					_ = windows.CloseHandle(handle)
-					return fmt.Errorf("procexec: query tracked tree of child %d: %w", t.pid, err)
+					return fmt.Errorf("procexec: validate tree member %d of child %d: %w", pid, t.pid, err)
 				}
-				memberStill := false
-				for _, p := range listedNow {
-					if p == pid {
-						memberStill = true
-						break
-					}
-				}
-				event, _ := windows.WaitForSingleObject(handle, 0)
-				if !memberStill && event != windows.WAIT_OBJECT_0 {
+				if member {
+					pending[pid] = handle
+				} else {
 					_ = windows.CloseHandle(handle)
-					delete(unresolved, pid)
-					continue
 				}
-				pending[pid] = handle
 				continue
 			}
 			if errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
@@ -380,6 +353,44 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 				t.pid, len(pids), len(pending), len(unresolved), deadline, ErrTreeDrainTimeout)
 		}
 	}
+}
+
+// adoptMemberHandle decides whether an opened handle belongs to the
+// tracked domain. IsProcessInJob answers per handle — not per pid — so a
+// genuine member that already left the member list during its exit still
+// validates as in-job and is retained until its process object signals,
+// while a pid-reused unrelated process fails the check regardless of any
+// list state. A signaled handle is conclusive either way.
+func adoptMemberHandle(job, handle windows.Handle) (bool, error) {
+	event, waitErr := windows.WaitForSingleObject(handle, 0)
+	if waitErr != nil {
+		return false, fmt.Errorf("wait on candidate: %w", waitErr)
+	}
+	if event == windows.WAIT_OBJECT_0 {
+		// Signaled: the process behind this handle terminated; nothing to
+		// track.
+		return false, nil
+	}
+	var inJob bool
+	if err := isProcessInJob(handle, job, &inJob); err != nil {
+		return false, fmt.Errorf("check job membership: %w", err)
+	}
+	return inJob, nil
+}
+
+// modkernel32 and procIsProcessInJob bind the Win32 IsProcessInJob
+// function (kernel32), which x/sys/windows does not wrap: it reports
+// whether the process behind procHandle belongs to jobHandle — a per-
+// handle answer with no pid ambiguity.
+var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+
+func isProcessInJob(procHandle, jobHandle windows.Handle, result *bool) error {
+	r0, _, e1 := syscall.Syscall(procIsProcessInJob.Addr(), 3,
+		uintptr(procHandle), uintptr(jobHandle), uintptr(unsafe.Pointer(result)))
+	if r0 == 0 {
+		return e1
+	}
+	return nil
 }
 
 // queryJobMemberPIDs returns the PIDs currently assigned to the job via
