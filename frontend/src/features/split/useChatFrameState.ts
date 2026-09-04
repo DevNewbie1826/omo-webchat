@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
+import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
@@ -48,6 +48,33 @@ export interface FailedDraft extends ChatDraft {
 
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
+
+/**
+ * Request outcomes are replayed on every attach. Keep their consumption
+ * shared across panes so a failure handled by one pane stays handled when a
+ * replacement pane attaches, while bounding the process-lifetime registry.
+ */
+const CONSUMED_OUTCOME_LIMIT = 512;
+const consumedOutcomeKeys = new Set<string>();
+const consumedOutcomeOrder: string[] = [];
+
+type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
+
+function consumeOutcome(frame: ErrorFrame): boolean {
+  if (!frame.requestId) return true;
+  // Control request sequences restart in each pane. Include the outcome
+  // discriminator so those local ids cannot collide across operation types,
+  // while an attach replay of the same server frame remains identical.
+  const key = JSON.stringify([frame.requestId, frame.code, frame.command, frame.message]);
+  if (consumedOutcomeKeys.has(key)) return false;
+  consumedOutcomeKeys.add(key);
+  consumedOutcomeOrder.push(key);
+  if (consumedOutcomeOrder.length > CONSUMED_OUTCOME_LIMIT) {
+    const expired = consumedOutcomeOrder.shift();
+    if (expired !== undefined) consumedOutcomeKeys.delete(expired);
+  }
+  return true;
+}
 
 export type HistoryStatus = "loading" | "loaded" | "failed";
 
@@ -144,6 +171,7 @@ export function useChatFrameState() {
   const resyncPendingRef = useRef(false);
   const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
+  const retiredSteerIdsRef = useRef(new Set<number>());
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const awaitingReconnectHistoryRef = useRef(false);
@@ -324,6 +352,7 @@ export function useChatFrameState() {
     runningRef,
     submitLatchRef,
     pendingRef,
+    retiredSteerIdsRef,
     activeRunRef,
     uncertainRunRef,
     awaitingReconnectHistoryRef,
@@ -366,6 +395,7 @@ export function useChatFrameState() {
     setPendingApproval,
     setRestoreVersion,
     setSendError,
+    consumeOutcome,
     retainFailedDrafts,
     pushNotice,
   });

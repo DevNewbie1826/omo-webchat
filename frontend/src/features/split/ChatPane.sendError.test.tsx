@@ -63,6 +63,8 @@ describe("ChatPane send-error banner", () => {
 	let container: HTMLDivElement;
 	let root: Root;
 	let deliver: (frame: ChatServerFrame) => void;
+	let disconnect: () => void;
+	let reconnect: () => void;
 	let sent: ChatClientFrame[];
 
 	beforeEach(() => {
@@ -73,6 +75,8 @@ describe("ChatPane send-error banner", () => {
 		sent = [];
 		const connect: ChatConnector = (handlers) => {
 			deliver = handlers.onFrame;
+			disconnect = () => handlers.onClose?.(1006);
+			reconnect = () => handlers.onOpen?.();
 			handlers.onOpen?.();
 			return {
 				send: (frame) => {
@@ -124,6 +128,12 @@ describe("ChatPane send-error banner", () => {
 		return container.querySelector<HTMLElement>(".th-send-error-banner");
 	}
 
+	function latestSendRequestId(): string {
+		const frame = [...sent].reverse().find((candidate) => candidate.type === "chat.send");
+		if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing chat.send request identity");
+		return frame.requestId;
+	}
+
 	function statusText(): string {
 		return container.querySelector(".th-chat-status")?.textContent ?? "";
 	}
@@ -172,6 +182,74 @@ describe("ChatPane send-error banner", () => {
 			});
 		});
 		expect(alertBanner()).toBeNull();
+	});
+
+	it("does not resurrect a dismissed request failure when reconnect replays it", () => {
+		submit("reconnect failure");
+		const failure: ChatServerFrame = {
+			type: "error",
+			sessionId: "chat-1",
+			code: "send_failed",
+			command: "chat.send",
+			requestId: latestSendRequestId(),
+			message: "Already handled",
+		};
+		act(() => deliver(failure));
+		expect(alertBanner()?.textContent).toContain("Already handled");
+		act(() => alertBanner()?.querySelector<HTMLButtonElement>("button")?.click());
+
+		act(() => {
+			disconnect();
+			reconnect();
+			deliver(failure);
+		});
+		expect(alertBanner()).toBeNull();
+	});
+
+	it("does not expose an already consumed request failure in a newly attached pane", async () => {
+		submit("historical failure");
+		const failure: ChatServerFrame = {
+			type: "error",
+			sessionId: "chat-1",
+			code: "send_failed",
+			command: "chat.send",
+			requestId: latestSendRequestId(),
+			message: "Historical failure",
+		};
+		act(() => deliver(failure));
+		act(() => alertBanner()?.querySelector<HTMLButtonElement>("button")?.click());
+
+		const freshContainer = document.createElement("div");
+		document.body.appendChild(freshContainer);
+		const freshRoot = createRoot(freshContainer);
+		let deliverFresh: (frame: ChatServerFrame) => void = () => undefined;
+		const connectFresh: ChatConnector = (handlers) => {
+			deliverFresh = handlers.onFrame;
+			handlers.onOpen?.();
+			return { send: () => true, close: () => undefined };
+		};
+		try {
+			act(() => freshRoot.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatPane
+						chatSession={chatSession}
+						focused={false}
+						splitEnabled={false}
+						onFocus={() => undefined}
+						onSplit={() => undefined}
+						onClose={() => undefined}
+						onOpenSidebar={() => undefined}
+						connect={connectFresh}
+						notify={() => undefined}
+					/>
+				</I18nContext.Provider>,
+			));
+			act(() => deliverFresh(failure));
+			expect(freshContainer.querySelector(".th-send-error-banner")).toBeNull();
+		} finally {
+			await act(async () => freshRoot.unmount());
+			freshContainer.remove();
+		}
 	});
 
 	it("replaces the previous send failure instead of revealing it after dismissal", () => {

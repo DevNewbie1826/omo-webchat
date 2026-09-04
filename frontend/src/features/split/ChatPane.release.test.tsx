@@ -248,6 +248,7 @@ describe("ChatPane release contracts", () => {
 		}));
 
 		const recovery = container.querySelector<HTMLElement>(".th-failed-drafts");
+		expect(recovery?.getAttribute("role")).toBe("group");
 		expect(recovery?.getAttribute("aria-label")).toBe("[failed-sends]");
 		expect(recovery?.querySelector("button")?.textContent).toBe("common.retry: diagram.png");
 	});

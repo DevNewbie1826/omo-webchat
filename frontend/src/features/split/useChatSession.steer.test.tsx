@@ -81,6 +81,33 @@ describe("useChatSession active-run sends", () => {
 		]);
 	});
 
+	it("restores a steer when its correlated rejection arrives after run.done", () => {
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			current?.steer("late rejected steer");
+		});
+		const frame = sent.find((candidate) => candidate.type === "chat.send" && candidate.run.kind === "steer");
+		if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing steer request identity");
+		const requestId = frame.requestId;
+
+		act(() => deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" }));
+		expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
+
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "send_failed",
+			command: "chat.send",
+			requestId,
+			message: "Steer rejected late",
+		}));
+		expect(current?.retryDraft?.text).toBe("late rejected steer");
+		expect(current?.failedDrafts).toContainEqual(expect.objectContaining({
+			requestId,
+			text: "late rejected steer",
+		}));
+	});
+
 	it("sends two consecutive submissions during a run as follow-ups", () => {
 		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
 		act(() => {

@@ -218,7 +218,7 @@ export function ChatPane({
           )}
         </div>
         {chat.failedDrafts.length > 0 && (
-          <div className="th-failed-drafts" aria-label={t("chat.failedSends")}>
+          <div className="th-failed-drafts" role="group" aria-label={t("chat.failedSends")}>
             {chat.failedDrafts.map((draft) => (
               <button
                 key={draft.requestId}
