@@ -37,12 +37,15 @@ func main() {
 
 func runProbe() (string, func()) {
 	nop := func() {}
-	tempDir, err := os.MkdirTemp("", "omo-windowsprobe-")
+	// Short prefix and shallow nesting keep the unix socket path under the
+	// sockaddr sun_path limit (104 bytes on macOS, 108 on Windows/Linux): the
+	// default os.TempDir() prefix alone plus a deep home tree exceeds it.
+	tempDir, err := os.MkdirTemp("", "wp")
 	if err != nil {
 		return fail("create temp dir: " + err.Error()), nop
 	}
 
-	homeDir := filepath.Join(tempDir, "home")
+	homeDir := filepath.Join(tempDir, "h")
 	agentDir := filepath.Join(homeDir, ".omo", "agent")
 	socketPath := filepath.Join(agentDir, "rpc", "rpc.sock")
 	var (
@@ -65,6 +68,13 @@ func runProbe() (string, func()) {
 	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return fail("create rpc dir: " + err.Error()), cleanup
+	}
+	// acquireEnsureLock in internal/omorpc creates this directory before the
+	// supervisor spawns; the omo host bootstrap on Windows creates
+	// <agentDir>/rpc-host-daemon/internal-<uuid> without recursive mkdir, so a
+	// probe that skips this step crashes the supervisor instead of probing it.
+	if err := os.MkdirAll(filepath.Join(agentDir, "rpc-host-daemon"), 0o700); err != nil {
+		return fail("create rpc host daemon dir: " + err.Error()), cleanup
 	}
 
 	binary, err := exec.LookPath("omo")

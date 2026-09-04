@@ -60,6 +60,8 @@ jobs:
           if ($ext -eq ".exe") { $form = "exe" }
           elseif ($ext -eq ".cmd" -or $ext -eq ".bat") { $form = "cmd/bat shim" }
           elseif ($ext -eq "") { $form = "extensionless" }
+          Write-Output "G2 path: $path"
+          Write-Output "G2 form: $form"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "path: $path"
           Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "form: $form"
 
