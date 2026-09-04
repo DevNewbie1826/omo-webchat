@@ -100,7 +100,10 @@ func runProbe() (string, func()) {
 		return fail("start supervisor: " + err.Error()), cleanup
 	}
 	ch := make(chan error, 1)
-	go func() { ch <- cmd.Wait() }()
+	go func() {
+		defer close(ch)
+		ch <- cmd.Wait()
+	}()
 	waitCh = ch
 
 	return probeSocket(socketPath, waitCh, stderr), cleanup
