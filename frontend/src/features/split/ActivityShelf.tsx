@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
@@ -6,7 +6,7 @@ import type {
 } from "react";
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
-import { lifeSeenThisRunOf } from "./activityState";
+import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection } from "./activityShelfDag";
 import {
   agentTimeMs,
@@ -20,6 +20,7 @@ import {
 import { AgentSection, TodoSection } from "./activityShelfSections";
 import { workflowNodeTasks } from "./activityWorkflowNodes";
 import type { ActivityState } from "./activityTypes";
+import { useShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ActivityShelfProps {
   readonly activities: ActivityState;
@@ -43,14 +44,24 @@ const PANEL_MIN = 120;
 const PANEL_KEY_STEP = 24;
 const PANEL_STORAGE_KEY = "th-activity-panel-height";
 
+/** Mirrors the `.th-activity-panel` max-height cap in activity-shelf.css:
+ *  the default content-sized panel never grows past this, with or without
+ *  a measured column clamp. */
+const PANEL_CONTENT_MAX_PX = 280;
+
+/** Normal content-sized panels keep enough room for a section header and row. */
+const PANEL_NATURAL_MIN_PX = 48;
+
 /** Rendered panel content height below which a section header row paints as
  *  half-clipped glyphs at the scrollport edge: below this the headless state
  *  hides the header chrome until the panel has room to show it legibly. The
  *  trigger is the panel's own measured box (ResizeObserver on the panel
  *  element), never the pane height — a roomy panel in a short pane, or a
  *  short split pane with a usable panel, keeps its headers and DAG
- *  List/Graph controls. */
-const PANEL_HEADLESS_BELOW_PX = 40;
+ *  List/Graph controls. The column clamp below reserves the panel's target
+ *  height in normal use, so only a genuinely crushed panel box (~one
+ *  compact row) crosses this. */
+const PANEL_HEADLESS_BELOW_PX = 24;
 
 function maxPanelHeight(): number {
   return Math.round(window.innerHeight * 0.6);
@@ -76,7 +87,8 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   const [view, setView] = useState<DagView>("list");
   const [height, setHeight] = useState<number | null>(() => detectPanelHeight());
   const [resizing, setResizing] = useState(false);
-  const [headless, setHeadless] = useState(false);
+  const [shelfElement, setShelfElement] = useState<HTMLElement | null>(null);
+  const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
@@ -106,31 +118,20 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     return () => window.clearInterval(timer);
   }, [hasLiveActivity]);
 
-  // Headless measurement: watch the expanded panel's rendered content height
-  // and toggle data-headless around PANEL_HEADLESS_BELOW_PX. Environments
-  // without ResizeObserver (old jsdom) simply never enter the headless state.
-  // The panel element exists exactly while open && hasActivity (the component
-  // returns null without unmounting when the activity empties), so both belong
-  // in the deps: each re-run disconnects the observer bound to the previous
-  // element — resetting headless — and, once a panel is back, observes the
-  // CURRENT one. An observer must never outlive its element.
-  useEffect(() => {
-    if (!open || !hasActivity) {
-      setHeadless(false);
-      return undefined;
-    }
-    const panel = panelRef.current;
-    if (panel === null || typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(([entry]) => {
-      if (!entry) return;
-      setHeadless(entry.contentRect.height < PANEL_HEADLESS_BELOW_PX);
-    });
-    observer.observe(panel);
-    return () => {
-      observer.disconnect();
-      setHeadless(false);
-    };
-  }, [open, hasActivity]);
+  const setPanelRef = useCallback((panel: HTMLDivElement | null): void => {
+    panelRef.current = panel;
+    setPanelElement(panel);
+  }, []);
+  const {
+    availableSpacePx: columnClampPx,
+    selfPanelHeightPx,
+  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement);
+  const naturalFloorActive = height === null
+    && columnClampPx !== null
+    && columnClampPx >= PANEL_NATURAL_MIN_PX;
+  const headless = selfPanelHeightPx !== null
+    && selfPanelHeightPx < PANEL_HEADLESS_BELOW_PX
+    && !naturalFloorActive;
 
   if (!hasActivity) return null;
 
@@ -198,8 +199,22 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     }));
   }
 
+  const panelMaxPx = columnClampPx === null
+    ? null
+    : Math.min(
+        Math.max(columnClampPx, 0),
+        height === null ? PANEL_CONTENT_MAX_PX : maxPanelHeight(),
+      );
+
   return (
-    <section className="th-activity-shelf">
+    <section
+      ref={setShelfElement}
+      className="th-activity-shelf"
+      // While the column clamp is active the expanded shelf keeps its full
+      // height (the inline max-height bounds the panel); flexbox shrink is
+      // what crushed it when the transcript ran long.
+      style={columnClampPx === null ? undefined : { flexShrink: 0 }}
+    >
       <div className="th-activity-bar-row" role="status">
         <button
           type="button"
@@ -244,13 +259,21 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             onDoubleClick={() => applyHeight(null)}
           />
           <div
-            ref={panelRef}
+            ref={setPanelRef}
             id={panelId}
             role="group"
             aria-label={t("activity.panel")}
             data-headless={headless ? "true" : undefined}
             className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
-            style={height === null ? undefined : { height: `${height}px` }}
+            style={
+              height === null && panelMaxPx === null
+                ? undefined
+                : {
+                    ...(height === null ? {} : { height: `${height}px` }),
+                    ...(panelMaxPx === null ? {} : { maxHeight: `${panelMaxPx}px` }),
+                    ...(naturalFloorActive ? { minHeight: `${PANEL_NATURAL_MIN_PX}px` } : {}),
+                  }
+            }
           >
             {tasks.length > 0 && (
               <AgentSection
@@ -259,6 +282,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                 freshnessCtx={{
                   runInFlight: activities.runInFlight === true,
                   lifeSeenThisRun: lifeSeenThisRunOf(activities),
+                  runActivityMsByTask: runActivityMsByTaskOf(activities),
                 }}
                 t={t}
               />

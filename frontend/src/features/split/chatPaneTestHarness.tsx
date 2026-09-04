@@ -146,6 +146,7 @@ export function requireElement<T>(
 export function renderChatPane(
 	root: Root,
 	session: ChatSessionRef = chatSession,
+	i18nValue: I18nValue = i18n,
 ): { deliver: (frame: ChatServerFrame) => void; sent: ChatClientFrame[] } {
 	let deliver: ((frame: ChatServerFrame) => void) | undefined;
 	const sent: ChatClientFrame[] = [];
@@ -162,7 +163,7 @@ export function renderChatPane(
 	};
 	act(() => {
 		root.render(
-			<I18nContext.Provider value={i18n}>
+			<I18nContext.Provider value={i18nValue}>
 				<ChatPane
 					chatSession={session}
 					focused
