@@ -185,8 +185,9 @@ func (Prompt) commandName() string { return CmdPrompt }
 
 // Steer injects a message into the active run without queuing it.
 type Steer struct {
-	SessionID string `json:"sessionId"`
-	Message   string `json:"message"`
+	SessionID string              `json:"sessionId"`
+	Message   string              `json:"message"`
+	Images    []map[string]string `json:"images,omitempty"`
 }
 
 func (Steer) commandName() string { return CmdSteer }

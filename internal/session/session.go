@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,9 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
+	// busyAgentErrorPrefix is the observed response prefix when a prompt reaches
+	// a route that is already processing another run.
+	busyAgentErrorPrefix = "Agent is already processing"
 )
 
 var activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
@@ -182,9 +186,20 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 
+	var retryErr error
 	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
+			_, retryErr = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				s.completePrompt(seq, msg, steerErr)
+			})
+			return
+		}
+		retryErr = callErr
 		s.completePrompt(seq, msg, callErr)
 	})
+	if err != nil && strings.HasPrefix(err.Error(), busyAgentErrorPrefix) {
+		return retryErr
+	}
 	return err
 }
 
@@ -227,10 +242,9 @@ func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc
 		return err
 	}
 	s.lifecycleMu.Lock()
-	if s.compactionActive {
-		s.lifecycleMu.Unlock()
-		return ErrCompactionInFlight
-	}
+	// Observed daemon behavior accepts steer and follow-up while compaction is
+	// active and queues them with the run. They still require an active run;
+	// unlike SendPrompt, compaction alone does not satisfy that requirement.
 	if !s.promptInFlight && !s.providerRunActive {
 		s.lifecycleMu.Unlock()
 		return ErrPromptInFlight
