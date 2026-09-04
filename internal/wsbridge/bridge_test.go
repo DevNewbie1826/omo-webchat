@@ -78,6 +78,47 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 	}
 }
 
+func TestRouteContextBudgetsLongRunningFramesSeparately(t *testing.T) {
+	c := &connection{ctx: context.Background()}
+	longRunning := []struct {
+		name string
+		raw  string
+	}{
+		{name: "prompt", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"prompt","message":"hello"}}`},
+		{name: "steer", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"steer","message":"hello"}}`},
+		{name: "follow_up", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"follow_up","message":"hello"}}`},
+		{name: "compact", raw: `{"type":"chat.compact","sessionId":"chat-1"}`},
+	}
+	for _, tc := range longRunning {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, err := wscontract.ParseClientFrame([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("parse frame: %v", err)
+			}
+			ctx, cancel := c.routeContext(frame)
+			defer cancel()
+			if deadline, ok := ctx.Deadline(); ok {
+				t.Fatalf("long-running route has deadline %v", deadline)
+			}
+		})
+	}
+
+	frame, err := wscontract.ParseClientFrame([]byte(`{"type":"ping"}`))
+	if err != nil {
+		t.Fatalf("parse ping: %v", err)
+	}
+	started := time.Now()
+	ctx, cancel := c.routeContext(frame)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("cheap route has no deadline")
+	}
+	if got := deadline.Sub(started); got < controlFrameTimeout-time.Second || got > controlFrameTimeout+time.Second {
+		t.Fatalf("cheap route budget = %v, want %v", got, controlFrameTimeout)
+	}
+}
+
 func TestContextUsageWithPercentFillsProviderOmission(t *testing.T) {
 	got := contextUsageWithPercent(json.RawMessage(`{"used":150,"total":200000}`))
 	var usage map[string]float64

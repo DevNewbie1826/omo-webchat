@@ -27,6 +27,7 @@ import (
 const (
 	ContractVersion        = 2
 	defaultWriteTimeout    = 10 * time.Second
+	controlFrameTimeout    = 15 * time.Second
 	takeoverActivityWindow = 250 * time.Millisecond
 )
 
@@ -372,14 +373,12 @@ func (c *connection) run() {
 		case <-c.ctx.Done():
 			return
 		case raw := <-c.work:
-			ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
-			c.route(ctx, raw)
-			cancel()
+			c.route(raw)
 		}
 	}
 }
 
-func (c *connection) route(ctx context.Context, raw []byte) {
+func (c *connection) route(raw []byte) {
 	var probe map[string]json.RawMessage
 	if json.Unmarshal(raw, &probe) != nil || probe == nil {
 		c.sendError("bad_frame", "invalid json frame", "", "")
@@ -422,6 +421,29 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 		return
 	}
 
+	ctx, cancel := c.routeContext(frame)
+	defer cancel()
+	c.routeFrame(ctx, frame, typ)
+}
+
+func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context, context.CancelFunc) {
+	// Prompt, in-run sends, and compaction have observably long response times.
+	// Their lifetime is therefore the socket lifetime; cheap control work keeps
+	// the bounded interactive budget.
+	switch f := frame.(type) {
+	case *wscontract.ChatSendFrame:
+		switch string(f.Run.Kind) {
+		case "prompt", "steer", "follow_up", "followUp":
+			return c.ctx, func() {}
+		}
+	case *wscontract.ChatCompactFrame:
+		return c.ctx, func() {}
+	}
+	return context.WithTimeout(c.ctx, controlFrameTimeout)
+}
+
+func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFrame, typ string) {
+	var err error
 	if f, ok := frame.(*wscontract.ClientHelloFrame); ok {
 		if f.Version != ContractVersion {
 			c.sendError("bad_frame", "wire contract version mismatch", "", "")
