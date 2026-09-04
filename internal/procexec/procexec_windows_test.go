@@ -25,11 +25,15 @@ const trackedTreeTestDeadline = 30 * time.Second
 
 func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_terminated(t *testing.T) {
 	// Given: a powershell leader tracked in a job, which itself spawns a
-	// long-running ping grandchild and records the grandchild pid in a file.
+	// long-running Start-Sleep grandchild and records the grandchild pid in
+	// a file. Both children stay reliably alive — a stubbed or instantly
+	// exiting command would make the kill assertions vacuous — and the
+	// leader sleeps after recording, so only the job teardown can end it.
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"Start-Process -WindowStyle Hidden -PassThru ping -ArgumentList '-n','60','127.0.0.1' |"+
-			" ForEach-Object { $_.Id } | Set-Content -LiteralPath '"+pidFile+"'")
+		"Start-Process -WindowStyle Hidden -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep','-Seconds','60' |"+
+			" ForEach-Object { $_.Id } | Set-Content -LiteralPath '"+pidFile+"';"+
+			" Start-Sleep -Seconds 60")
 	tracked, err := StartTracked(cmd)
 	if err != nil {
 		t.Fatalf("start tracked powershell: %v", err)
@@ -39,19 +43,24 @@ func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_term
 		_ = tracked.Close()
 	})
 
-	// Then: the leader reports alive immediately after Start.
-	if !GroupAlive(tracked.Pid()) {
-		t.Fatalf("leader %d reported dead immediately after Start", tracked.Pid())
+	deadline := time.NewTimer(trackedTreeTestDeadline)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	// Precondition: the leader reports alive before any teardown, so the
+	// assertions below prove job kills rather than self-exits.
+	for !GroupAlive(tracked.Pid()) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("precondition failed: leader %d never reported alive within %s after StartTracked", tracked.Pid(), trackedTreeTestDeadline)
+		}
 	}
 
 	// The grandchild pid comes from the spawner itself (Start-Process
 	// -PassThru), so tree membership is attributed without process-table or
 	// name scans; GroupAlive then confirms it from the kernel signaled state.
 	grandchild := 0
-	deadline := time.NewTimer(trackedTreeTestDeadline)
-	defer deadline.Stop()
-	retry := time.NewTicker(10 * time.Millisecond)
-	defer retry.Stop()
 	for grandchild == 0 {
 		select {
 		case <-retry.C:
@@ -109,7 +118,10 @@ func Test_StartTracked_assignment_failure_terminates_and_reaps_child(t *testing.
 	}
 	t.Cleanup(func() { assignProcessToJobObject = originalAssign })
 
-	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
+	// A sleeping powershell is reliably alive when the injected failure
+	// fires, so the synchronous reap exercises TerminateProcess on a live
+	// process instead of racing a command that may exit on its own.
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
 	// A non-file writer makes os/exec run its output copier. StartTracked must
 	// call cmd.Wait before returning, which also waits for that goroutine.
 	cmd.Stdout = &bytes.Buffer{}
@@ -137,11 +149,31 @@ func Test_StartTracked_assignment_failure_terminates_and_reaps_child(t *testing.
 }
 
 func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *testing.T) {
-	// Given: a tracked long-running child that nobody terminated.
-	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
+	// Given: a tracked long-running child that nobody terminated. A sleeping
+	// powershell stays reliably alive, so the kernel kill below is proved
+	// against a live process rather than one that already exited.
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
 	tracked, err := StartTracked(cmd)
 	if err != nil {
-		t.Fatalf("start tracked ping: %v", err)
+		t.Fatalf("start tracked powershell: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tracked.TerminateTree()
+		_ = tracked.Close()
+	})
+
+	// Precondition: the child reports alive before the close, so the
+	// assertions below prove job-close termination rather than self-exit.
+	deadline := time.NewTimer(trackedTreeTestDeadline)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for !GroupAlive(tracked.Pid()) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("precondition failed: child %d never reported alive within %s after StartTracked", tracked.Pid(), trackedTreeTestDeadline)
+		}
 	}
 
 	// When: the tracking handle is released, twice.
@@ -154,10 +186,6 @@ func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *te
 
 	// Then: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE made the kernel terminate the
 	// child on the final job-handle close, within the bounded deadline.
-	deadline := time.NewTimer(trackedTreeTestDeadline)
-	defer deadline.Stop()
-	retry := time.NewTicker(10 * time.Millisecond)
-	defer retry.Stop()
 	for GroupAlive(tracked.Pid()) {
 		select {
 		case <-retry.C:
