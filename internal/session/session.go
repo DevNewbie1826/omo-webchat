@@ -52,14 +52,21 @@ type sendOperation struct {
 }
 
 type sendOperationOwner struct {
-	mu                  sync.Mutex
-	operations          map[string]sendOperation
-	fifo                []string
-	detachedMutations   int
-	retryRunAdmission   bool
-	retryRunAdmissionID string
-	activeDetached      atomic.Int32
-	sessions            map[*Session]struct{}
+	mu                     sync.Mutex
+	operations             map[string]sendOperation
+	fifo                   []string
+	detachedMutations      int
+	retryRunAdmissionToken DetachedSendRetryToken
+	nextRetryToken         uint64
+	activeDetached         atomic.Int32
+	sessions               map[*Session]struct{}
+}
+
+// DetachedSendRetryToken identifies one recovery attempt's run-admission
+// override. Only PrepareDetachedSendRetry can mint a valid token.
+type DetachedSendRetryToken struct {
+	owner *sendOperationOwner
+	value uint64
 }
 
 type Session struct {
@@ -401,7 +408,7 @@ func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
 }
 
 func (s *Session) SendSteer(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, false, "", func(route string) omorpc.Command {
+	return s.sendDuringRun(ctx, false, "", DetachedSendRetryToken{}, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
@@ -418,10 +425,20 @@ func (s *Session) SendSteerDetachedWithRequestID(ctx context.Context, msg, reque
 }
 
 func (s *Session) SendSteerDetachedWithRequestIDAndCompletion(ctx context.Context, msg, requestID string, complete func(error)) error {
+	return s.sendSteerDetached(ctx, msg, requestID, DetachedSendRetryToken{}, complete)
+}
+
+// SendSteerDetachedWithRetryToken consumes the run admission preserved for a
+// specific recovered operation.
+func (s *Session) SendSteerDetachedWithRetryToken(ctx context.Context, msg, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
+	return s.sendSteerDetached(ctx, msg, requestID, retryToken, complete)
+}
+
+func (s *Session) sendSteerDetached(ctx context.Context, msg, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	err := s.sendDuringRun(ctx, true, requestID, retryToken, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
 	}, complete)
 	s.recordSendOperation(requestID, err)
@@ -429,7 +446,7 @@ func (s *Session) SendSteerDetachedWithRequestIDAndCompletion(ctx context.Contex
 }
 
 func (s *Session) SendFollowUp(ctx context.Context, msg string, images []map[string]string) error {
-	return s.sendDuringRun(ctx, false, "", func(route string) omorpc.Command {
+	return s.sendDuringRun(ctx, false, "", DetachedSendRetryToken{}, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
 	})
 }
@@ -446,17 +463,27 @@ func (s *Session) SendFollowUpDetachedWithRequestID(ctx context.Context, msg str
 }
 
 func (s *Session) SendFollowUpDetachedWithRequestIDAndCompletion(ctx context.Context, msg string, images []map[string]string, requestID string, complete func(error)) error {
+	return s.sendFollowUpDetached(ctx, msg, images, requestID, DetachedSendRetryToken{}, complete)
+}
+
+// SendFollowUpDetachedWithRetryToken consumes the run admission preserved for
+// a specific recovered operation.
+func (s *Session) SendFollowUpDetachedWithRetryToken(ctx context.Context, msg string, images []map[string]string, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
+	return s.sendFollowUpDetached(ctx, msg, images, requestID, retryToken, complete)
+}
+
+func (s *Session) sendFollowUpDetached(ctx context.Context, msg string, images []map[string]string, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	err := s.sendDuringRun(ctx, true, requestID, retryToken, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
 	}, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
-func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, command func(string) omorpc.Command, detachedComplete ...func(error)) error {
+func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, retryToken DetachedSendRetryToken, command func(string) omorpc.Command, detachedComplete ...func(error)) error {
 	var sendComplete func(error)
 	if len(detachedComplete) != 0 {
 		sendComplete = detachedComplete[0]
@@ -464,7 +491,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
-	retryAdmission := s.consumeRetryRunAdmission(requestID)
+	retryAdmission := s.consumeRetryRunAdmission(retryToken)
 	s.lifecycleMu.Lock()
 	// Steer and follow-up are accepted while a prompt, provider run, or
 	// standalone compaction is active and queue with that work. A replacement
@@ -547,23 +574,41 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 }
 
 // PrepareDetachedSendRetry atomically claims the one retry owned by an
-// admitted operation. A completion that wins first leaves a terminal outcome
-// and prevents the provider mutation from being repeated.
-func (s *Session) PrepareDetachedSendRetry(requestID string, preserveRunAdmission bool) bool {
+// admitted operation and returns its opaque lifecycle token. A completion that
+// wins first leaves a terminal outcome and prevents the mutation from repeating.
+func (s *Session) PrepareDetachedSendRetry(requestID string, preserveRunAdmission bool) (DetachedSendRetryToken, bool) {
 	owner := s.operationOwner()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
 	if requestID != "" {
 		operation, ok := owner.operations[requestID]
 		if !ok || operation.phase != sendOperationAdmitted {
-			return false
+			return DetachedSendRetryToken{}, false
 		}
 		operation.phase = sendOperationRetrying
 		owner.operations[requestID] = operation
 	}
-	owner.retryRunAdmission = preserveRunAdmission
-	owner.retryRunAdmissionID = requestID
-	return true
+	owner.nextRetryToken++
+	if owner.nextRetryToken == 0 {
+		owner.nextRetryToken++
+	}
+	token := DetachedSendRetryToken{owner: owner, value: owner.nextRetryToken}
+	if preserveRunAdmission {
+		owner.retryRunAdmissionToken = token
+	}
+	return token, true
+}
+
+// RetireDetachedSendRetry abandons an unconsumed run-admission override. A
+// different operation's token, including an unrelated empty-ID completion,
+// cannot retire the slot.
+func (s *Session) RetireDetachedSendRetry(token DetachedSendRetryToken) {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if token.value != 0 && owner.retryRunAdmissionToken == token {
+		owner.retryRunAdmissionToken = DetachedSendRetryToken{}
+	}
+	owner.mu.Unlock()
 }
 
 // CompleteDetachedSend publishes and retains a terminal outcome owned by a
@@ -578,10 +623,6 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 	frame := Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
 	owner := s.operationOwner()
 	owner.mu.Lock()
-	if owner.retryRunAdmission && owner.retryRunAdmissionID == requestID {
-		owner.retryRunAdmission = false
-		owner.retryRunAdmissionID = ""
-	}
 	if requestID != "" {
 		operation, ok := owner.operations[requestID]
 		if !ok || operation.published {
@@ -604,13 +645,6 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	}
 	owner := s.operationOwner()
 	owner.mu.Lock()
-	// A terminal publication retires the retry admission override its
-	// operation claimed: an abandoned retry (resume failure, rejected write)
-	// must not leave a stale override a later unrelated send could consume.
-	if owner.retryRunAdmission && owner.retryRunAdmissionID == requestID {
-		owner.retryRunAdmission = false
-		owner.retryRunAdmissionID = ""
-	}
 	if requestID == "" {
 		frame := s.sendOperationFrameLocked("", err)
 		frame.Command = command
@@ -723,15 +757,14 @@ func (s *Session) completeSendOperationLocked(requestID string, err error) (Fram
 	return operation.outcome, true
 }
 
-func (s *Session) consumeRetryRunAdmission(requestID string) bool {
+func (s *Session) consumeRetryRunAdmission(token DetachedSendRetryToken) bool {
 	owner := s.operationOwner()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	if !owner.retryRunAdmission || owner.retryRunAdmissionID != requestID {
+	if token.value == 0 || owner.retryRunAdmissionToken != token {
 		return false
 	}
-	owner.retryRunAdmission = false
-	owner.retryRunAdmissionID = ""
+	owner.retryRunAdmissionToken = DetachedSendRetryToken{}
 	return true
 }
 

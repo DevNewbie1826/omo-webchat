@@ -329,20 +329,20 @@ func TestNoIDDetachedRunMutationPreservesRecoveryAdmission(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		command string
-		send    func(context.Context, *Session, func(error)) error
+		send    func(context.Context, *Session, DetachedSendRetryToken, func(error)) error
 	}{
 		{
 			name:    "steer",
 			command: omorpc.CmdSteer,
-			send: func(ctx context.Context, s *Session, complete func(error)) error {
-				return s.SendSteerDetachedWithRequestIDAndCompletion(ctx, "recovered steer", "", complete)
+			send: func(ctx context.Context, s *Session, token DetachedSendRetryToken, complete func(error)) error {
+				return s.SendSteerDetachedWithRetryToken(ctx, "recovered steer", "", token, complete)
 			},
 		},
 		{
 			name:    "follow-up",
 			command: omorpc.CmdFollowUp,
-			send: func(ctx context.Context, s *Session, complete func(error)) error {
-				return s.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, "recovered follow-up", nil, "", complete)
+			send: func(ctx context.Context, s *Session, token DetachedSendRetryToken, complete func(error)) error {
+				return s.SendFollowUpDetachedWithRetryToken(ctx, "recovered follow-up", nil, "", token, complete)
 			},
 		},
 	} {
@@ -354,7 +354,8 @@ func TestNoIDDetachedRunMutationPreservesRecoveryAdmission(t *testing.T) {
 			stale, _, detach := acquire(t, mgr, chat, nil)
 			defer detach()
 
-			if !stale.PrepareDetachedSendRetry("", true) {
+			retryToken, prepared := stale.PrepareDetachedSendRetry("", true)
+			if !prepared {
 				t.Fatal("no-id detached retry was not prepared")
 			}
 			replacement := newSession(mgr, chat.id, chat.cwd, omorpc.OpenSessionData{
@@ -368,7 +369,7 @@ func TestNoIDDetachedRunMutationPreservesRecoveryAdmission(t *testing.T) {
 			defer replacement.releaseSendOperations()
 
 			completed := make(chan error, 1)
-			if err := tc.send(context.Background(), replacement, func(err error) { completed <- err }); err != nil {
+			if err := tc.send(context.Background(), replacement, retryToken, func(err error) { completed <- err }); err != nil {
 				t.Fatalf("recovered no-id admission: %v", err)
 			}
 			select {
@@ -382,7 +383,7 @@ func TestNoIDDetachedRunMutationPreservesRecoveryAdmission(t *testing.T) {
 			if got := d.RequestCount(tc.command); got != 1 {
 				t.Fatalf("recovered provider requests = %d, want 1", got)
 			}
-			if err := tc.send(context.Background(), replacement, nil); !errors.Is(err, ErrPromptInFlight) {
+			if err := tc.send(context.Background(), replacement, DetachedSendRetryToken{}, nil); !errors.Is(err, ErrPromptInFlight) {
 				t.Fatalf("consumed retry admission = %v, want ErrPromptInFlight", err)
 			}
 			if got := d.RequestCount(tc.command); got != 1 {
@@ -414,7 +415,7 @@ func TestRetryAdmissionFailurePublishesStoredTerminalOutcome(t *testing.T) {
 		t.Fatalf("begin operation = (%v, %v)", err, stop)
 	}
 	s.recordSendOperation("retry-failure", nil)
-	if !s.PrepareDetachedSendRetry("retry-failure", false) {
+	if _, prepared := s.PrepareDetachedSendRetry("retry-failure", false); !prepared {
 		t.Fatal("retry was not claimed")
 	}
 
@@ -500,10 +501,12 @@ func TestFailedNoIDRetryLeavesNoStaleAdmission(t *testing.T) {
 			original, _, detach := acquire(t, mgr, chat, nil)
 			defer detach()
 
-			if !original.PrepareDetachedSendRetry("", true) {
+			retryToken, prepared := original.PrepareDetachedSendRetry("", true)
+			if !prepared {
 				t.Fatal("no-id detached retry was not prepared")
 			}
 			original.CompleteDetachedSend("", errors.New("resume failed"))
+			original.RetireDetachedSendRetry(retryToken)
 
 			replacement := newSession(mgr, chat.id, chat.cwd, omorpc.OpenSessionData{
 				SessionID: original.RoutingID(),

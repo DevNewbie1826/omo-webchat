@@ -651,6 +651,17 @@ func (op *chatSendOperation) send(ctx context.Context, sess *session.Session, co
 	}
 }
 
+func (op *chatSendOperation) sendRetry(ctx context.Context, sess *session.Session, token session.DetachedSendRetryToken, complete func(error)) error {
+	switch op.kind {
+	case "prompt":
+		return sess.SendPromptDetachedWithRequestIDAndCompletion(ctx, op.message, op.images, op.requestID, complete)
+	case "steer":
+		return sess.SendSteerDetachedWithRetryToken(ctx, op.message, op.requestID, token, complete)
+	default:
+		return sess.SendFollowUpDetachedWithRetryToken(ctx, op.message, op.images, op.requestID, token, complete)
+	}
+}
+
 func isResumableSendError(err error) bool {
 	return errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed)
 }
@@ -732,9 +743,11 @@ func (op *chatSendOperation) enqueueRecovery(stale *session.Session, admitted bo
 func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted bool, originalErr error) {
 	ctx, cancel := context.WithTimeout(op.bridge.cfg.Context, op.bridge.cfg.HistoryTimeout)
 	defer cancel()
-	if !stale.PrepareDetachedSendRetry(op.requestID, admitted && op.kind != "prompt") {
+	retryToken, prepared := stale.PrepareDetachedSendRetry(op.requestID, admitted && op.kind != "prompt")
+	if !prepared {
 		return
 	}
+	defer stale.RetireDetachedSendRetry(retryToken)
 
 	var preparedGeneration uint64
 	guarded := op.bridge.cfg.PrepareChatVersion != nil && op.bridge.cfg.ChatVersion != nil
@@ -795,7 +808,7 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 		if sub != nil {
 			sub.retryStarted.Store(true)
 		}
-		return op.send(ctx, acquired, func(completionErr error) {
+		return op.sendRetry(ctx, acquired, retryToken, func(completionErr error) {
 			acquired.CompleteDetachedSend(op.requestID, completionErr)
 		})
 	}

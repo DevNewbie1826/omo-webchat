@@ -90,6 +90,61 @@ func TestRecoveryFinishesReplayWhenRetryAdmissionFails(t *testing.T) {
 	}
 }
 
+func TestNoIDRecoveryAdmissionSurvivesUnrelatedCompletionDuringHydration(t *testing.T) {
+	mgr, chat := prepareResumableSession(t)
+	stale, ok := mgr.Get(chat.id)
+	if !ok {
+		t.Fatal("resumable route is not retained")
+	}
+	retryToken, prepared := stale.PrepareDetachedSendRetry("", true)
+	if !prepared {
+		t.Fatal("no-id detached retry was not prepared")
+	}
+	defer stale.RetireDetachedSendRetry(retryToken)
+
+	originalStream := streamSessionHistory
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	streamSessionHistory = func(ctx context.Context, path string, options coldHistoryOptions, emit func(coldHistoryMetadata, coldHistoryPage) error) (coldHistoryMetadata, error) {
+		close(entered)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return coldHistoryMetadata{}, ctx.Err()
+		}
+		return originalStream(ctx, path, options, emit)
+	}
+	t.Cleanup(func() { streamSessionHistory = originalStream })
+
+	completed := make(chan error, 1)
+	result := make(chan error, 1)
+	go func() {
+		_, _, _, err := mgr.ResumeInitializedCheckedAndRunInFlight(context.Background(), chat, newRecoveryReplayRecorder(), nil, func() error { return nil }, func(*Session) error { return nil }, func(acquired *Session) error {
+			return acquired.SendSteerDetachedWithRetryToken(context.Background(), "recovered steer", "", retryToken, func(err error) {
+				completed <- err
+			})
+		})
+		result <- err
+	}()
+	<-entered
+
+	// This models a pending chat.abort-style failure completing without a
+	// request ID while the recovered operation is still hydrating.
+	stale.CompleteDetachedSend("", errors.New("unrelated abort failed"))
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatalf("recovered no-id admission: %v", err)
+	}
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("recovered no-id completion: %v", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("recovered no-id mutation did not complete")
+	}
+}
+
 func TestRecoveryRevalidatesAfterHydrationBeforeMutation(t *testing.T) {
 	mgr, chat := prepareResumableSession(t)
 	originalStream := streamSessionHistory
