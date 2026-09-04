@@ -24,8 +24,10 @@ import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from ".
 // start runs whose tasks legitimately stay quiet for minutes, so elapsed
 // quiet alone proves nothing. Only a task that showed life during THIS run
 // (a frame actually changed it) can then be declared severed after 90s of
-// quiet; every other in-flight row is merely quiet. STALE_ACTIVITY_MS no
-// longer gates any alarm (kept only for external reference).
+// quiet - and even then only when the run-level heartbeat channels are
+// silent too (see AgentFreshnessContext.freshestRunActivityMs). Every other
+// in-flight row is merely quiet. STALE_ACTIVITY_MS no longer gates any alarm
+// (kept only for external reference).
 export const STALE_ACTIVITY_MS = 30_000;
 export const SEVERED_ACTIVITY_MS = 90_000;
 export const ACTIVITY_HYDRATION_SIDE_LIMIT = 100;
@@ -162,6 +164,23 @@ export function lifeSeenThisRunOf(state: ActivityState): ReadonlySet<string> {
   return (state as LifeLatchedActivityState).lifeSeenThisRun ?? new Set<string>();
 }
 
+/**
+ * Freshest lastActivityAt across every dag run in the state, in epoch ms;
+ * null when no run carries one. Run-level heartbeats are an independent life
+ * channel: as long as any of them pulsed recently, the session is alive even
+ * if a particular agent row is silent.
+ */
+export function freshestRunActivityMsOf(state: ActivityState): number | null {
+  let freshest: number | null = null;
+  for (const run of state.dags.values()) {
+    if (run.lastActivityAt === undefined) continue;
+    const ms = Date.parse(run.lastActivityAt);
+    if (Number.isNaN(ms)) continue;
+    if (freshest === null || ms > freshest) freshest = ms;
+  }
+  return freshest;
+}
+
 export function emptyActivityState(): ActivityState {
   return { tasks: new Map(), dags: new Map(), todo: null, heartbeats: new Map() };
 }
@@ -192,21 +211,37 @@ export interface AgentFreshnessContext {
   readonly runInFlight: boolean;
   /** Task ids that showed life at least once during the current run. */
   readonly lifeSeenThisRun: ReadonlySet<string>;
+  /**
+   * Freshest dag-run lastActivityAt in the activity state, in epoch ms
+   * (null when none). Corroborates a row's silence: a quiet row may only be
+   * called severed when every run heartbeat channel is silent too.
+   */
+  readonly freshestRunActivityMs: number | null;
 }
 
 /**
  * Freshness of an agent row, judged only while a run is in flight: an idle
- * pane is always fresh. A non-terminal row is "severed" only when it showed
- * life this run and then went quiet past SEVERED_ACTIVITY_MS - the real
- * mid-run death signal. Every other in-flight row is "quiet": muted, with
- * an informational last-update age, never an alarm.
+ * pane is always fresh. A non-terminal row is "severed" only when all of
+ * these hold: it showed life this run, it has been quiet past
+ * SEVERED_ACTIVITY_MS, and no dag run in the activity state has a fresher
+ * lastActivityAt than SEVERED_ACTIVITY_MS - the row's silence and the
+ * run-level heartbeat channels must agree that the agent is gone. Every
+ * other in-flight row is "quiet": muted, with an informational last-update
+ * age, never an alarm.
  */
 export function agentFreshness(task: ActivityTask, nowMs: number, ctx: AgentFreshnessContext): AgentFreshness {
   if (!ctx.runInFlight || TERMINAL_TASK_STATUSES.has(task.status)) return "fresh";
   const lastMs = lastActivityMs(task);
   if (lastMs === null) return "quiet";
   if (!ctx.lifeSeenThisRun.has(task.taskId)) return "quiet";
-  return nowMs - lastMs > SEVERED_ACTIVITY_MS ? "severed" : "quiet";
+  if (nowMs - lastMs <= SEVERED_ACTIVITY_MS) return "quiet";
+  // Corroboration: while any run heartbeat channel is still fresh, the
+  // session is demonstrably alive and the row's silence is not a death
+  // signal - a long tool run or a waiting subagent is just quiet.
+  if (ctx.freshestRunActivityMs !== null && nowMs - ctx.freshestRunActivityMs <= SEVERED_ACTIVITY_MS) {
+    return "quiet";
+  }
+  return "severed";
 }
 
 function liveProgressChanged(

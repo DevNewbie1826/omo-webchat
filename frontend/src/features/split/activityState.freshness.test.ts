@@ -25,10 +25,18 @@ function agentQuietFor(quietMs: number, status = "running") {
   return task;
 }
 
-const idle: AgentFreshnessContext = { runInFlight: false, lifeSeenThisRun: new Set() };
-const inFlight = (lifeSeen: readonly string[] = []): AgentFreshnessContext => ({
+const idle: AgentFreshnessContext = {
+  runInFlight: false,
+  lifeSeenThisRun: new Set(),
+  freshestRunActivityMs: null,
+};
+const inFlight = (
+  lifeSeen: readonly string[] = [],
+  freshestRunActivityMs: number | null = null,
+): AgentFreshnessContext => ({
   runInFlight: true,
   lifeSeenThisRun: new Set(lifeSeen),
+  freshestRunActivityMs,
 });
 
 describe("agentFreshness run-in-flight gating", () => {
@@ -53,7 +61,10 @@ describe("agentFreshness run-in-flight gating", () => {
     expect(agentFreshness(agentQuietFor(70 * 60_000), NOW_MS, inFlight())).toBe("quiet");
   });
 
-  it("severs an agent that showed life this run and then went quiet past 90s", () => {
+  it("severs an agent that showed life this run and went quiet past 90s with no run channel contradicting it", () => {
+    // With no dag run carrying any lastActivityAt there is no heartbeat
+    // channel left to consult, so the row's silence is corroborated by the
+    // absence of any contrary pulse.
     expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, inFlight(["t1"]))).toBe("quiet");
     expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"]))).toBe("severed");
     expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"]))).toBe("severed");
@@ -62,6 +73,41 @@ describe("agentFreshness run-in-flight gating", () => {
   it("never flags terminal agents quiet or severed, even with life seen", () => {
     expect(agentFreshness(agentQuietFor(10 * 60_000, "completed"), NOW_MS, inFlight(["t1"]))).toBe("fresh");
     expect(agentFreshness(agentQuietFor(10 * 60_000, "failed"), NOW_MS, inFlight(["t1"]))).toBe("fresh");
+  });
+});
+
+describe("agentFreshness run-heartbeat corroboration", () => {
+  it("keeps a latched quiet agent quiet while a run heartbeat is still fresh", () => {
+    // The agent's own silence is not a death signal while the run-level
+    // heartbeat channel still pulsed recently: the session is demonstrably
+    // alive even when one quiet row is not.
+    expect(
+      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1_000), NOW_MS, inFlight(["t1"], NOW_MS - 5_000)),
+    ).toBe("quiet");
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"], NOW_MS - 1_000))).toBe("quiet");
+  });
+
+  it("keeps a latched quiet agent quiet at the exact run-heartbeat staleness boundary", () => {
+    expect(
+      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"], NOW_MS - SEVERED_ACTIVITY_MS)),
+    ).toBe("quiet");
+  });
+
+  it("keeps a latched agent quiet at the row-quiet boundary even with a stale run channel", () => {
+    expect(
+      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, inFlight(["t1"], NOW_MS - 70 * 60_000)),
+    ).toBe("quiet");
+  });
+
+  it("severs a latched quiet agent only once every run heartbeat is stale too", () => {
+    expect(
+      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"], NOW_MS - SEVERED_ACTIVITY_MS - 1)),
+    ).toBe("severed");
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"], NOW_MS - 70 * 60_000))).toBe("severed");
+  });
+
+  it("stays quiet for an agent that showed no life this run, whatever the run channels say", () => {
+    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight([], NOW_MS - 70 * 60_000))).toBe("quiet");
   });
 });
 
@@ -104,6 +150,7 @@ describe("applyRunFlight", () => {
     expect(agentFreshness(task, NOW_MS + 120_000, {
       runInFlight: true,
       lifeSeenThisRun: lifeSeenThisRunOf(restarted),
+      freshestRunActivityMs: null,
     })).toBe("quiet");
   });
 
@@ -134,6 +181,7 @@ describe("applyRunFlight", () => {
     expect(agentFreshness(task, NOW_MS, {
       runInFlight: true,
       lifeSeenThisRun: lifeSeenThisRunOf(runTwo),
+      freshestRunActivityMs: null,
     })).toBe("quiet");
   });
 });
