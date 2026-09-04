@@ -212,61 +212,134 @@ func (t *TrackedProcess) TerminateTree() error {
 // waitTreeGonePollSlice is the retry interval of WaitTreeGone's bounded poll.
 const waitTreeGonePollSlice = 50 * time.Millisecond
 
-// jobObjectBasicAccountingInformation mirrors the Win32
-// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION layout returned by
-// QueryInformationJobObject for the JobObjectBasicAccountingInformation
-// class; only ActiveProcesses is consumed here.
-type jobObjectBasicAccountingInformation struct {
-	TotalUserTime             uint64
-	TotalKernelTime           uint64
-	ThisPeriodTotalUserTime   uint64
-	ThisPeriodTotalKernelTime uint64
-	TotalPageFaultCount       uint32
-	TotalProcesses            uint32
-	ActiveProcesses           uint32
-	TerminatedProcesses       uint32
+// jobObjectBasicProcessIdListCapacity is the initial capacity for the member
+// PID list buffer; the query doubles it while the class reports
+// ERROR_MORE_DATA.
+const jobObjectBasicProcessIdListCapacity = 16
+
+// jobObjectBasicProcessIdListHeader mirrors the fixed header of the Win32
+// JOBOBJECT_BASIC_PROCESS_ID_LIST structure returned by
+// QueryInformationJobObject for the JobObjectBasicProcessIdList class. The
+// ProcessIdList array that follows the header is variable-length and is
+// addressed through unsafe pointer arithmetic.
+type jobObjectBasicProcessIdListHeader struct {
+	NumberOfAssignedProcesses uint32
+	NumberOfProcessIdsInList  uint32
 }
 
-// WaitTreeGone blocks until no process remains in the tracked domain — the
-// job object — or until deadline elapses, returning a timeout error if the
-// tree has not drained by then. TerminateJobObject terminates job members
-// asynchronously, so a caller that must observe a drained tree polls the
-// domain instead of assuming the terminate call's return implies completion:
-// QueryInformationJobObject with the JobObjectBasicAccountingInformation
-// class reports the job's ActiveProcessCount, which reaches zero only when
-// every member has terminated. The job object outlives its members, so the
-// wait is safe after the leader already exited and callable any time between
-// StartTracked (or TerminateTree) and Close; a tree that already drained
-// returns nil on the first query.
+// ErrJobClosed reports a WaitTreeGone call on a TrackedProcess whose job
+// handle Close already released: the kernel teardown started at close, but
+// this wait can no longer observe the domain through the released handle,
+// so an honest error replaces a fabricated drain result.
+var ErrJobClosed = errors.New("job handle already closed")
+
+// WaitTreeGone is a full completion barrier for the tracked domain: it
+// returns nil only after the job's member list is empty AND every member
+// process the query ever observed has a signaled process object. Job
+// accounting alone is insufficient — TerminateJobObject terminates members
+// asynchronously, so an empty member list can be observed while a member's
+// process object is not yet signaled — so the wait retains an open,
+// synchronized handle per observed member (immune to PID reuse, per the
+// Win32 guidance that external termination is observed on process handles)
+// and waits for each handle to become signaled. The job handle itself is
+// duplicated under the tracking mutex for the duration of the call, so a
+// concurrent Close cannot invalidate the queried handle; after Close the
+// wait reports ErrJobClosed instead of a fabricated result. Callers that
+// must both wait and release do WaitTreeGone first and Close afterwards.
 func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 	t.mu.Lock()
 	job := t.job
+	var dup windows.Handle
+	if job != 0 {
+		if err := windows.DuplicateHandle(windows.CurrentProcess(), job, windows.CurrentProcess(), &dup, 0, false, 0); err != nil {
+			t.mu.Unlock()
+			return fmt.Errorf("procexec: duplicate job handle of child %d: %w", t.pid, err)
+		}
+	}
 	t.mu.Unlock()
 	if job == 0 {
-		// Close already released the last job handle; under
-		// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that release started the
-		// kernel's tree teardown and no queryable handle remains.
-		return nil
+		return fmt.Errorf("procexec: wait tree of child %d: %w", t.pid, ErrJobClosed)
 	}
+	defer windows.CloseHandle(dup)
+
 	timer := time.NewTimer(deadline)
 	defer timer.Stop()
 	retry := time.NewTicker(waitTreeGonePollSlice)
 	defer retry.Stop()
+
+	pending := make(map[uint32]windows.Handle)
+	defer func() {
+		for _, handle := range pending {
+			_ = windows.CloseHandle(handle)
+		}
+	}()
 	for {
-		var accounting jobObjectBasicAccountingInformation
-		if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
-			uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil); err != nil {
+		pids, err := queryJobMemberPIDs(dup)
+		if err != nil {
 			return fmt.Errorf("procexec: query tracked tree of child %d: %w", t.pid, err)
 		}
-		if accounting.ActiveProcesses == 0 {
+		for _, pid := range pids {
+			if _, ok := pending[pid]; ok {
+				continue
+			}
+			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+			if openErr != nil {
+				// A member can be mid-exit; the next cycle re-queries and
+				// either reopens it or observes a list without it.
+				continue
+			}
+			pending[pid] = handle
+		}
+		for pid, handle := range pending {
+			event, waitErr := windows.WaitForSingleObject(handle, 0)
+			if waitErr != nil {
+				return fmt.Errorf("procexec: wait on tree member %d of child %d: %w", pid, t.pid, waitErr)
+			}
+			if event == windows.WAIT_OBJECT_0 {
+				_ = windows.CloseHandle(handle)
+				delete(pending, pid)
+			}
+		}
+		if len(pids) == 0 && len(pending) == 0 {
 			return nil
 		}
 		select {
 		case <-retry.C:
 		case <-timer.C:
-			return fmt.Errorf("procexec: tracked tree of child %d still had %d live processes after %s",
-				t.pid, accounting.ActiveProcesses, deadline)
+			return fmt.Errorf("procexec: tracked tree of child %d still had %d listed and %d unsignaled members after %s",
+				t.pid, len(pids), len(pending), deadline)
 		}
+	}
+}
+
+// queryJobMemberPIDs returns the PIDs currently assigned to the job via
+// the JobObjectBasicProcessIdList class, growing the buffer while the
+// class reports ERROR_MORE_DATA.
+func queryJobMemberPIDs(job windows.Handle) ([]uint32, error) {
+	capacity := jobObjectBasicProcessIdListCapacity
+	headerSize := int(unsafe.Sizeof(jobObjectBasicProcessIdListHeader{}))
+	pidSize := int(unsafe.Sizeof(uintptr(0)))
+	for {
+		buf := make([]byte, headerSize+capacity*pidSize)
+		if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicProcessIdList,
+			uintptr(unsafe.Pointer(&buf[0])), uint32(len(buf)), nil); err != nil {
+			if errors.Is(err, windows.ERROR_MORE_DATA) {
+				capacity *= 2
+				continue
+			}
+			return nil, err
+		}
+		header := (*jobObjectBasicProcessIdListHeader)(unsafe.Pointer(&buf[0]))
+		count := int(header.NumberOfProcessIdsInList)
+		if count > capacity {
+			count = capacity
+		}
+		list := unsafe.Slice((*uintptr)(unsafe.Pointer(&buf[headerSize])), capacity)
+		pids := make([]uint32, 0, count)
+		for i := 0; i < count; i++ {
+			pids = append(pids, uint32(list[i]))
+		}
+		return pids, nil
 	}
 }
 

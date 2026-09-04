@@ -180,39 +180,26 @@ func Test_TrackedProcess_WaitTreeGone_blocks_while_grandchild_outlives_leader(t 
 		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
 	}
 
-	// When: the drain wait starts while the outliving grandchild is the only
-	// live member, and the tree is then terminated through the job.
-	type waitOutcome struct{ err error }
-	done := make(chan waitOutcome, 1)
-	go func() { done <- waitOutcome{tracked.WaitTreeGone(trackedTreeTestDeadline)} }()
-	// Nothing has been terminated yet, so the wait must still be blocked.
-	select {
-	case err := <-done:
-		t.Fatalf("WaitTreeGone returned %v while grandchild %d was still alive", err, grandchild)
-	default:
+	// When (phase 1): a short-deadline wait, called synchronously while the
+	// outliving grandchild is provably alive, must time out. A drain
+	// primitive that returned early would report nil here and fail this
+	// assertion — no goroutine handshake is needed, the blocked state is
+	// proven by the timeout itself.
+	shortDeadline := 2 * time.Second
+	if err := tracked.WaitTreeGone(shortDeadline); err == nil {
+		t.Fatalf("WaitTreeGone(%s) returned nil while grandchild %d was alive", shortDeadline, grandchild)
 	}
 	if !GroupAlive(grandchild) {
 		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
 	}
+
+	// When (phase 2): terminate through the job, then the full wait must
+	// observe every member's process object signaled.
 	if err := tracked.TerminateTree(); err != nil {
 		t.Fatalf("terminate tree of %d: %v", tracked.Pid(), err)
 	}
-	var waitErr error
-	waitDone := false
-	for !waitDone {
-		select {
-		case outcome := <-done:
-			waitErr = outcome.err
-			waitDone = true
-		case <-retry.C:
-		case <-deadline.C:
-			t.Fatalf("WaitTreeGone did not return within %s of TerminateTree", trackedTreeTestDeadline)
-		}
-	}
-
-	// Then: the wait held until the kernel finished the outliving grandchild.
-	if waitErr != nil {
-		t.Fatalf("WaitTreeGone: %v", waitErr)
+	if err := tracked.WaitTreeGone(trackedTreeTestDeadline); err != nil {
+		t.Fatalf("WaitTreeGone after TerminateTree: %v", err)
 	}
 	// Job accounting can report an empty domain shortly before the member's
 	// process object becomes signaled (termination is asynchronous), so the
@@ -263,6 +250,37 @@ func Test_StartTracked_assignment_failure_terminates_and_reaps_child(t *testing.
 	if GroupAlive(cmd.Process.Pid) {
 		t.Fatalf("child %d survived assignment failure", cmd.Process.Pid)
 	}
+}
+
+func Test_TrackedProcess_WaitTreeGone_after_Close_reports_job_closed(t *testing.T) {
+	// Given: a tracked child that is released via Close. The job handle is
+	// gone, so a later drain wait must report the honest closed state instead
+	// of fabricating a drained result; the kernel meanwhile reaps the child
+	// through KILL_ON_JOB_CLOSE.
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 60")
+	tracked, err := StartTracked(cmd)
+	if err != nil {
+		t.Fatalf("start tracked powershell: %v", err)
+		return
+	}
+	if err := tracked.Close(); err != nil {
+		t.Fatalf("close tracked process: %v", err)
+	}
+	if err := tracked.WaitTreeGone(time.Second); !errors.Is(err, ErrJobClosed) {
+		t.Fatalf("WaitTreeGone after Close = %v, want ErrJobClosed", err)
+	}
+	deadline := time.NewTimer(trackedTreeTestDeadline)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	for GroupAlive(tracked.Pid()) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("child %d survived the job close within %s", tracked.Pid(), trackedTreeTestDeadline)
+		}
+	}
+	_ = cmd.Wait()
 }
 
 func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *testing.T) {
