@@ -91,13 +91,16 @@ describe("useChatSession delayed identical-prompt history", () => {
 		);
 		expect(optimisticTurns).toHaveLength(1);
 
-		// Second identical submit remains blocked until real completion.
-		let secondAccepted = true;
+		// A second identical submit is accepted independently as a follow-up.
+		let secondAccepted = false;
 		act(() => {
 			secondAccepted = current?.submit({ text: "hello", image: null }) ?? false;
 		});
-		expect(secondAccepted).toBe(false);
-		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(1);
+		expect(secondAccepted).toBe(true);
+		expect(sent.filter((frame) => frame.type === "chat.send").map((frame) => frame.run.kind)).toEqual([
+			"prompt",
+			"follow_up",
+		]);
 
 		// Real completion: actual server echo + assistant reply + run.done.
 		act(() => {
@@ -123,12 +126,12 @@ describe("useChatSession delayed identical-prompt history", () => {
 		});
 		expect(current?.running).toBe(false);
 
-		// Now the next submit is unblocked.
+		// Once idle, the next submit starts a prompt normally.
 		let thirdAccepted = false;
 		act(() => {
 			thirdAccepted = current?.submit({ text: "hello", image: null }) ?? false;
 		});
 		expect(thirdAccepted).toBe(true);
-		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(2);
+		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(3);
 	});
 });

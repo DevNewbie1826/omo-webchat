@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "./chatEntries";
 import { messageText } from "./chatEntries";
-import { type PendingOptimistic, nextToolEntry, reconcileHistory, reconcileOutcome, uncertainRun } from "./chatSessionState";
+import { followUpSendFrame, type PendingOptimistic, nextToolEntry, reconcileHistory, reconcileOutcome, uncertainRun } from "./chatSessionState";
 import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
 
 function pending(text: string, overrides: Partial<PendingOptimistic> = {}): PendingOptimistic {
-  return { text, image: null, id: 1, priorMatchingCount: 0, accepted: true, baselineKnown: true, ...overrides };
+  return { text, image: null, id: 1, requestId: "request-1", kind: "prompt", priorMatchingCount: 0, accepted: true, admitted: false, baselineKnown: true, ...overrides };
 }
 
 function userMessage(text: string, optimisticId?: number): UiMessage {
@@ -19,6 +19,24 @@ const staleHistory = [
   { type: "message", message: { role: "user", content: "hello", timestamp: 1 } },
   { type: "message", message: { role: "assistant", content: "old reply", timestamp: 2 } },
 ];
+
+describe("followUpSendFrame", () => {
+  it("preserves an attached image", () => {
+    expect(followUpSendFrame(pending("look here", {
+      kind: "followUp",
+      image: { name: "context.png", mimeType: "image/png", data: "YWJj" },
+    }), "chat-1")).toEqual({
+      type: "chat.send",
+      sessionId: "chat-1",
+      requestId: "request-1",
+      run: {
+        kind: "follow_up",
+        message: "look here",
+        images: [{ mimeType: "image/png", data: "YWJj" }],
+      },
+    });
+  });
+});
 
 describe("reconcileHistory active matching", () => {
   it("does not complete an un-echoed active run from stale initial history", () => {

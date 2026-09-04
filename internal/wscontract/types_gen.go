@@ -154,6 +154,8 @@ type HelloFrame struct {
 type AckFrame struct {
 	Command string  `json:"command"`
 	ID      *string `json:"id,omitempty"`
+	// Absent or admitted acknowledges write admission; completed marks successful terminal completion
+	Phase *string `json:"phase,omitempty"`
 	// Correlates with the client request (invariant 19)
 	RequestID *string `json:"requestId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
@@ -532,6 +534,7 @@ type ChatSendFrameRun struct {
 }
 
 type ChatSendFrame struct {
+	RequestID *string          `json:"requestId,omitempty"`
 	Run       ChatSendFrameRun `json:"run"`
 	SessionID string           `json:"sessionId"`
 	Type      string           `json:"type"`
@@ -901,7 +904,7 @@ func (v *AckFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"command", "id", "requestId", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"command", "id", "phase", "requestId", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -1621,7 +1624,7 @@ func (v *ChatSendFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"run", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"requestId", "run", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -1906,6 +1909,7 @@ const (
 	ErrorCodeNoSession             ErrorCode = "no_session"
 	ErrorCodeSendFailed            ErrorCode = "send_failed"
 	ErrorCodeCompactFailed         ErrorCode = "compact_failed"
+	ErrorCodeSendBackpressure      ErrorCode = "send_backpressure"
 )
 
 // DurableNoticeKind values, from notice-kinds.json.
@@ -2132,7 +2136,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "ack":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ack"}}, Required: []string{"type", "command"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "phase": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ack"}}, Required: []string{"type", "command"}}); err != nil {
 				return nil, err
 			}
 		case "control.result":
@@ -2140,7 +2144,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "error":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "session-active", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "knownLeaf": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "observedLeaf": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "session-active", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed", "send_backpressure"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "knownLeaf": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "observedLeaf": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
 				return nil, err
 			}
 		case "notice":
@@ -2266,7 +2270,7 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 				return nil, err
 			}
 		case "chat.send":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"run": validationSchema{Type: "object", Properties: map[string]validationSchema{"images": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}}, Required: []string{"data", "mimeType"}}}, "kind": validationSchema{Type: "string", Enum: []string{"prompt", "steer", "follow_up"}}, "message": validationSchema{Type: "string"}}, Required: []string{"kind", "message"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.send"}}, Required: []string{"type", "sessionId", "run"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"requestId": validationSchema{Type: "string"}, "run": validationSchema{Type: "object", Properties: map[string]validationSchema{"images": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}}, Required: []string{"data", "mimeType"}}}, "kind": validationSchema{Type: "string", Enum: []string{"prompt", "steer", "follow_up"}}, "message": validationSchema{Type: "string"}}, Required: []string{"kind", "message"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.send"}}, Required: []string{"type", "sessionId", "run"}}); err != nil {
 				return nil, err
 			}
 		case "chat.abort":

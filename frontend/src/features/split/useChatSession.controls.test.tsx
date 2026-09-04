@@ -24,6 +24,7 @@ describe("useChatSession control transactions", () => {
 	let disconnect: () => void;
 	let sent: ChatClientFrame[];
 	let send: (frame: ChatClientFrame) => boolean;
+	let remount: () => void;
 
 	beforeEach(() => {
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -45,7 +46,12 @@ describe("useChatSession control transactions", () => {
 			current = useChatSession(session, connect);
 			return null;
 		}
-		act(() => root.render(<Probe />));
+		let paneKey = 0;
+		remount = () => {
+			paneKey += 1;
+			root.render(<Probe key={paneKey} />);
+		};
+		act(() => root.render(<Probe key={paneKey} />));
 	});
 
 	afterEach(async () => {
@@ -121,6 +127,45 @@ describe("useChatSession control transactions", () => {
 		});
 		expect(accepted).toBe(true);
 		expect(deliveredSets()).toHaveLength(3);
+	});
+
+	it("processes a reused control request id after the pane is remounted", () => {
+		const confirmInitialModel = () => deliver({
+			type: "state",
+			sessionId: session.id,
+			isStreaming: false,
+			isCompacting: false,
+			model: { provider: "mock", modelId: "m1" },
+		});
+		const rejectModel = (requestId: string) => deliver({
+			type: "error",
+			sessionId: session.id,
+			code: "provider_error",
+			command: "set_model",
+			requestId,
+			message: "model rejected",
+		});
+
+		act(() => {
+			confirmInitialModel();
+			current?.changeModel("mock/m2");
+		});
+		const firstRequestId = lastRequestId("chat.set");
+		act(() => rejectModel(firstRequestId));
+		expect(current?.currentModelKey).toBe("mock/m1");
+
+		act(() => remount());
+		act(() => {
+			confirmInitialModel();
+			current?.changeModel("mock/m2");
+		});
+		const reusedRequestId = lastRequestId("chat.set");
+		expect(reusedRequestId).toBe(firstRequestId);
+		expect(current?.currentModelKey).toBe("mock/m2");
+
+		act(() => rejectModel(reusedRequestId));
+		expect(current?.currentModelKey).toBe("mock/m1");
+		expect(current?.error).toBe("model rejected");
 	});
 
 	it("rolls back thinking level to the last state-confirmed value on error", () => {

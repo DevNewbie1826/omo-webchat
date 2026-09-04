@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -75,6 +76,70 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 		case <-timer.C:
 			t.Fatalf("timed out waiting for %s", typ)
 		}
+	}
+}
+
+func nextSuccessfulSendAcks(t *testing.T, frames *collector, requestID string) {
+	t.Helper()
+	var admitted, completed bool
+	for range 2 {
+		ack := frames.next(t, "ack")
+		if ack["command"] != "chat.send" || ack["requestId"] != requestID {
+			t.Fatalf("send ack = %v, want request %q", ack, requestID)
+		}
+		phase, present := ack["phase"]
+		switch {
+		case !present:
+			admitted = true
+		case phase == "completed":
+			completed = true
+		default:
+			t.Fatalf("send ack phase = %v, want absent or completed", phase)
+		}
+	}
+	if !admitted || !completed {
+		t.Fatalf("send acknowledgements admitted=%v completed=%v", admitted, completed)
+	}
+}
+
+func TestRouteContextBudgetsLongRunningFramesSeparately(t *testing.T) {
+	c := &connection{ctx: context.Background()}
+	longRunning := []struct {
+		name string
+		raw  string
+	}{
+		{name: "prompt", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"prompt","message":"hello"}}`},
+		{name: "steer", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"steer","message":"hello"}}`},
+		{name: "follow_up", raw: `{"type":"chat.send","sessionId":"chat-1","run":{"kind":"follow_up","message":"hello"}}`},
+		{name: "compact", raw: `{"type":"chat.compact","sessionId":"chat-1"}`},
+	}
+	for _, tc := range longRunning {
+		t.Run(tc.name, func(t *testing.T) {
+			frame, err := wscontract.ParseClientFrame([]byte(tc.raw))
+			if err != nil {
+				t.Fatalf("parse frame: %v", err)
+			}
+			ctx, cancel := c.routeContext(frame)
+			defer cancel()
+			if deadline, ok := ctx.Deadline(); ok {
+				t.Fatalf("long-running route has deadline %v", deadline)
+			}
+		})
+	}
+
+	frame, err := wscontract.ParseClientFrame([]byte(`{"type":"ping"}`))
+	if err != nil {
+		t.Fatalf("parse ping: %v", err)
+	}
+	started := time.Now()
+	ctx, cancel := c.routeContext(frame)
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("cheap route has no deadline")
+	}
+	if got := deadline.Sub(started); got < controlFrameTimeout-time.Second || got > controlFrameTimeout+time.Second {
+		t.Fatalf("cheap route budget = %v, want %v", got, controlFrameTimeout)
 	}
 }
 
@@ -408,6 +473,269 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 	t.Cleanup(func() { _ = conn.WriteClose(1000, nil) })
 	return conn, frames
+}
+
+func TestBlockedPromptDoesNotBlockFollowUpOrAbort(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "blocked-prompt")
+	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer releasePrompt()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "blocked-prompt"})
+	frames.next(t, "ready")
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "blocked-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "start"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("prompt was not forwarded")
+	}
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "blocked-prompt",
+		"run": map[string]any{
+			"kind": "follow_up", "message": "",
+			"images": []any{map[string]any{"data": "aW1hZ2U=", "mimeType": "image/png"}},
+		},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("follow-up was not forwarded while prompt response was blocked")
+	}
+	followUp := h.daemon.LastRequest(omorpc.CmdFollowUp)
+	images, ok := followUp["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("follow-up images = %#v", followUp["images"])
+	}
+	image, ok := images[0].(map[string]any)
+	if !ok || image["data"] != "aW1hZ2U=" || image["mimeType"] != "image/png" {
+		t.Fatalf("follow-up image = %#v", images[0])
+	}
+
+	writeClient(t, conn, map[string]any{"type": "chat.abort", "sessionId": "blocked-prompt"})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdAbort, 1, 5*time.Second) {
+		t.Fatal("abort was not forwarded while prompt response was blocked")
+	}
+}
+
+func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-identity")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-identity"})
+	frames.next(t, "ready")
+
+	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeUnknownSession)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-1",
+		"run": map[string]any{"kind": "prompt", "message": "fail"},
+	})
+	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "prompt-1" {
+		t.Fatalf("prompt admission ack = %v", ack)
+	} else if _, present := ack["phase"]; present {
+		t.Fatalf("prompt admission ack gained phase: %v", ack)
+	}
+	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "prompt-1" || failure["code"] != "provider_error" {
+		t.Fatalf("prompt completion error = %v", failure)
+	}
+
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	releaseRun := h.daemon.HoldPrompt(h.path)
+	defer releaseRun()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-2",
+		"run": map[string]any{"kind": "prompt", "message": "run"},
+	})
+	nextSuccessfulSendAcks(t, frames, "prompt-2")
+
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "follow-1",
+		"run": map[string]any{"kind": "follow_up", "message": "later"},
+	})
+	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "follow-1" {
+		t.Fatalf("follow-up admission ack = %v", ack)
+	}
+	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "follow-1" || failure["code"] != "provider_error" {
+		t.Fatalf("follow-up completion error = %v", failure)
+	}
+}
+
+func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-completed")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-completed"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	const message = "same canonical message"
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-completed", "requestId": "steer-success",
+		"run": map[string]any{"kind": "steer", "message": message},
+	})
+	nextSuccessfulSendAcks(t, frames, "steer-success")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdSteer, 1, 5*time.Second) {
+		t.Fatal("successful steer was not forwarded")
+	}
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-completed", "requestId": "follow-success",
+		"run": map[string]any{"kind": "follow_up", "message": message},
+	})
+	nextSuccessfulSendAcks(t, frames, "follow-success")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("successful follow-up was not forwarded")
+	}
+}
+
+func TestFullSendLedgerReplayActivatesNewWebSocketSubscriber(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-full-ledger")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-full-ledger"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	for i := 0; i < session.SendOperationLedgerCapacity; i++ {
+		requestID := fmt.Sprintf("full-ledger-%02d", i)
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "send-full-ledger", "requestId": requestID,
+			"run": map[string]any{"kind": "follow_up", "message": requestID},
+		})
+		nextSuccessfulSendAcks(t, frames, requestID)
+	}
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-full-ledger"})
+	if ready := replay.next(t, "ready"); ready["sessionId"] != "send-full-ledger" {
+		t.Fatalf("reconnect ready = %v", ready)
+	}
+	for i := 0; i < session.SendOperationLedgerCapacity; i++ {
+		wantID := fmt.Sprintf("full-ledger-%02d", i)
+		ack := replay.next(t, "ack")
+		if ack["command"] != "chat.send" || ack["requestId"] != wantID || ack["phase"] != "completed" {
+			t.Fatalf("replayed outcome %d = %v, want completed ack for %q", i, ack, wantID)
+		}
+	}
+	writeClient(t, reconnected, map[string]any{"type": "ping"})
+	replay.next(t, "pong")
+}
+
+func TestChatSendRequestIDReplaysAndDeduplicatesAfterReconnect(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-deduplicate")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseRaw) }
+	t.Cleanup(release)
+	request := map[string]any{
+		"type": "chat.send", "sessionId": "send-deduplicate", "requestId": "retry-1",
+		"run": map[string]any{"kind": "follow_up", "message": "only once"},
+	}
+	writeClient(t, conn, request)
+	if ack := frames.next(t, "ack"); ack["requestId"] != "retry-1" {
+		t.Fatalf("initial admission ack = %v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("initial follow-up was not forwarded")
+	}
+	_ = conn.WriteClose(1000, nil)
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
+	replay.next(t, "ready")
+	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" || ack["command"] != "chat.send" {
+		t.Fatalf("replayed admission = %v", ack)
+	}
+	writeClient(t, reconnected, request)
+	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" {
+		t.Fatalf("duplicate outcome = %v", ack)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdFollowUp); got != 1 {
+		t.Fatalf("duplicate request reached provider %d times", got)
+	}
+	release()
+}
+
+func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-error-replay")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseRaw) }
+	t.Cleanup(release)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-error-replay", "requestId": "failed-1",
+		"run": map[string]any{"kind": "follow_up", "message": "fails while away"},
+	})
+	frames.next(t, "ack")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("follow-up was not forwarded")
+	}
+	_ = conn.WriteClose(1000, nil)
+
+	observerConn, observer := h.connect(t)
+	writeClient(t, observerConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	observer.next(t, "ready")
+	observer.next(t, "ack")
+	release()
+	if failure := observer.next(t, "error"); failure["requestId"] != "failed-1" || failure["command"] != "chat.send" {
+		t.Fatalf("detached completion failure = %v", failure)
+	}
+	_ = observerConn.WriteClose(1000, nil)
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	replay.next(t, "ready")
+	failure := replay.next(t, "error")
+	if failure["requestId"] != "failed-1" || failure["command"] != "chat.send" || failure["code"] != "provider_error" {
+		t.Fatalf("replayed completion failure = %v", failure)
+	}
+}
+
+func TestChatSendDetachedMutationBackpressure(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-backpressure")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-backpressure"})
+	frames.next(t, "ready")
+
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	releaseFollowUps := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	defer releaseFollowUps()
+	for i := 0; i < session.DetachedMutationLimit; i++ {
+		requestID := fmt.Sprintf("queued-%d", i)
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "send-backpressure", "requestId": requestID,
+			"run": map[string]any{"kind": "follow_up", "message": requestID},
+		})
+		if ack := frames.next(t, "ack"); ack["requestId"] != requestID {
+			t.Fatalf("queued admission ack = %v, want %q", ack, requestID)
+		}
+	}
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-backpressure", "requestId": "overflow",
+		"run": map[string]any{"kind": "follow_up", "message": "overflow"},
+	})
+	failure := frames.next(t, "error")
+	if failure["code"] != "send_backpressure" || failure["command"] != "chat.send" || failure["requestId"] != "overflow" {
+		t.Fatalf("backpressure error = %v", failure)
+	}
 }
 
 func mustJSON(t *testing.T, value any) []byte {

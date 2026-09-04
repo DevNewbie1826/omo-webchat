@@ -1,11 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseChatServerFrame, type ChatServerFrame } from "../../lib/chatWs";
+import { parseChatServerFrame, type ChatServerFrame, type JsonObject } from "../../lib/chatWs";
 import { useChatFrameState, type ChatNotice } from "./useChatFrameState";
 
 interface ProbeState {
   readonly notices: readonly ChatNotice[];
+  readonly sendError: JsonObject | null;
+  readonly dismissSendError: () => void;
   readonly handleFrame: (frame: ChatServerFrame) => void;
 }
 
@@ -13,7 +15,12 @@ let captured: ProbeState | null = null;
 
 function Probe(): null {
   const state = useChatFrameState();
-  captured = { notices: state.notices, handleFrame: state.handleFrame };
+  captured = {
+    notices: state.notices,
+    sendError: state.sendError,
+    dismissSendError: state.dismissSendError,
+    handleFrame: state.handleFrame,
+  };
   return null;
 }
 
@@ -73,6 +80,18 @@ describe("useChatFrameState notice durability", () => {
     expect(messageOf(captured?.notices[0])).toBe("n51");
     expect(messageOf(captured?.notices[49])).toBe("n2");
     expect(captured?.notices.some((notice) => messageOf(notice) === "n1")).toBe(false);
+  });
+
+  it("does not evict the persistent send error with ordinary notices", () => {
+    renderProbe();
+    act(() => {
+      deliver({ type: "error", sessionId: "chat-1", code: "send_backpressure", command: "chat.send", message: "queue full" });
+      for (let seq = 1; seq <= 51; seq += 1) deliver(noticeWire(seq));
+    });
+    expect(captured?.notices).toHaveLength(50);
+    expect(captured?.sendError?.["message"]).toBe("queue full");
+    act(() => captured?.dismissSendError());
+    expect(captured?.sendError).toBeNull();
   });
 
   it("reconciles a durable reconnect replay by server notice id", () => {

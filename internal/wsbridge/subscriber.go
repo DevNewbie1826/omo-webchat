@@ -11,9 +11,12 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-// subscriber buffers only the attach-time Ready/snapshot frames until the
-// bridge publishes its binding. Durable history starts after activation and is
-// written synchronously, with the connection deadline bounding each page.
+const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity
+
+// subscriber buffers the complete attach-time replay plus the normal live-frame
+// headroom until the bridge publishes its binding. Durable history starts after
+// activation and is written synchronously, with the connection deadline
+// bounding each page.
 type subscriber struct {
 	conn           *connection
 	mu             sync.Mutex
@@ -57,7 +60,7 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.active {
-		if len(s.pending) >= session.DefaultQueueSize {
+		if len(s.pending) >= preActivationBufferCapacity {
 			s.pending = s.pending[1:]
 			s.overflowed = true
 		}
@@ -181,6 +184,9 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		}
 		if f.RequestID != "" {
 			out.RequestID = &f.RequestID
+		}
+		if f.Phase != "" {
+			out.Phase = &f.Phase
 		}
 		if f.ApprovalID != "" {
 			out.ID = &f.ApprovalID
@@ -311,7 +317,7 @@ func firstNonempty(a, b string) string {
 
 func normalizedErrorCode(code string) string {
 	switch code {
-	case "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "no_session", "send_failed", "compact_failed":
+	case "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "send_backpressure", "provider_error", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "no_session", "send_failed", "compact_failed":
 		return code
 	default:
 		return "provider_error"

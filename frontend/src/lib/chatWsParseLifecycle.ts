@@ -83,13 +83,15 @@ export function parseLifecycleFrame(
       if (command === null) return null;
       const id = optString(msg, "id");
       const requestId = optString(msg, "requestId");
-      if (id === null || requestId === null) return null;
+      const phase = optString(msg, "phase");
+      if (id === null || requestId === null || phase === null) return null;
       return {
         type: "ack",
         ...(sessionId !== null ? { sessionId } : {}),
         command,
         ...(id !== undefined ? { id } : {}),
         ...(requestId !== undefined ? { requestId } : {}),
+        ...(phase !== undefined ? { phase } : {}),
       };
     }
     case "control.result": {

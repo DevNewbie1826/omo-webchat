@@ -77,6 +77,7 @@ describe("ChatPane slash command submission", () => {
 		expect(chatSends[0]).toEqual({
 			type: "chat.send",
 			sessionId: "chat-1",
+			requestId: expect.any(String),
 			run: { kind: "prompt", message: "$skill:demo" },
 		});
 		expect(container.querySelector('[role="listbox"]')).toBeNull();
@@ -135,7 +136,7 @@ describe("ChatPane slash command submission", () => {
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.compact")).toHaveLength(0);
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "/compact" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "/compact" } },
 		]);
 	});
 
@@ -184,7 +185,7 @@ describe("ChatPane slash command submission", () => {
 
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "$skill:demo" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "$skill:demo" } },
 		]);
 	});
 
@@ -205,23 +206,20 @@ describe("ChatPane slash command submission", () => {
 		expect(options.some((option) => option.textContent?.includes("/fix-tests"))).toBe(true);
 	});
 
-	it("gates prompt submission and optimistic UI while compacting", () => {
+	it("sends and renders a follow-up while compacting", () => {
 		const { deliver, sent } = renderChatPane(root, chatSession);
 		act(() => deliver({ type: "compaction.started", sessionId: "chat-1" }));
 		const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "missing chat input");
 		const send = requireElement(container.querySelector<HTMLButtonElement>(".th-chat-send-btn"), "missing send button");
-		expect(input.disabled).toBe(true);
-		expect(send.disabled).toBe(true);
-		act(() => setTextareaValue(input, "not during compact"));
-		act(() => pressKey(input, "Enter"));
-		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(0);
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
-		expect(input.value).toBe("not during compact");
-
-		act(() => deliver({ type: "compaction.done", sessionId: "chat-1" }));
 		expect(input.disabled).toBe(false);
+		expect(send.disabled).toBe(false);
+		act(() => setTextareaValue(input, "after compact"));
 		act(() => pressKey(input, "Enter"));
-		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(1);
+		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after compact" } },
+		]);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(input.value).toBe("");
 	});
 
 	it("keeps /compact with arguments on the prompt path", () => {
@@ -250,6 +248,7 @@ describe("ChatPane slash command submission", () => {
 			{
 				type: "chat.send",
 				sessionId: "chat-1",
+				requestId: expect.any(String),
 				run: { kind: "prompt", message: "/compact aggressive" },
 			},
 		]);

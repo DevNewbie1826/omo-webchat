@@ -13,10 +13,12 @@ import { ExternalWriteBanner } from "./ExternalWriteBanner";
 import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
+import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
+import { sendErrorDetail } from "./useChatFrameHandler";
 import { useChatSession } from "./useChatSession";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
@@ -54,10 +56,13 @@ export function ChatPane({
   const chat = useChatSession(chatSession, connect, onChatName);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
+  // Send-path command failures surface in the persistent banner below, so
+  // they never also render as transcript notice blocks.
   const transcriptItems = useMemo(
     () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
     [chat.messages, chat.notices, chat.historyStatus],
   );
+  const sendQueued = chat.hasPendingFollowUp;
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)
@@ -164,6 +169,12 @@ export function ChatPane({
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
+        {chat.sendError && (
+          <SendErrorBanner
+            detail={sendErrorDetail(chat.sendError)}
+            onDismiss={chat.dismissSendError}
+          />
+        )}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}
@@ -184,6 +195,9 @@ export function ChatPane({
               {t("chat.responding")}
             </span>
           )}
+          {sendQueued && (
+            <span className="th-chat-status-item">{t("chat.sendQueued")}</span>
+          )}
           {chat.contextUsage && (
             <span className="th-chat-status-item">
               {t("chat.contextUsage")}
@@ -203,6 +217,20 @@ export function ChatPane({
             <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.reconnecting")}</span>
           )}
         </div>
+        {chat.failedDrafts.length > 0 && (
+          <div className="th-failed-drafts" role="group" aria-label={t("chat.failedSends")}>
+            {chat.failedDrafts.map((draft) => (
+              <button
+                key={draft.requestId}
+                type="button"
+                className="th-btn th-btn--ghost th-failed-draft"
+                onClick={() => chat.recoverFailedDraft(draft.requestId)}
+              >
+                {t("common.retry")}: {draft.text || draft.image?.name || t("chat.image")}
+              </button>
+            ))}
+          </div>
+        )}
         <ChatComposer
           commands={chat.commands}
           running={chat.running}

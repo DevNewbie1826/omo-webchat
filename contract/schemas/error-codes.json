@@ -39,7 +39,8 @@
         "approval_failed",
         "no_session",
         "send_failed",
-        "compact_failed"
+        "compact_failed",
+        "send_backpressure"
       ]
     }
   }

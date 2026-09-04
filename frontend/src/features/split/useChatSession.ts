@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
+import { newUuid } from "../../lib/uuid";
 import type { ChatDraft } from "./chatSessionTypes";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
@@ -31,6 +32,7 @@ export function useChatSession(
   markOpenRef.current = frameState.markOpen;
   markCloseRef.current = frameState.markClose;
   const nextRequestId = (): string => `req-${session.id}-${++requestSeqRef.current}`;
+  const nextSendRequestId = (): string => newUuid();
 
   useEffect(() => {
     let opened = false;
@@ -165,11 +167,10 @@ export function useChatSession(
     // /compact remains the curated action only while the provider has not
     // advertised an authoritative same-name command.
     if (exactCompact && (draft.command ? isCuratedCompact(draft.command) : !providerOwnsCompact)) return compact();
-    if (frameState.isCompacting) {
-      frameState.reportError("Cannot send a prompt while the conversation is compacting.");
-      return false;
+    if (frameState.running || frameState.isCompacting) {
+      return frameState.followUp(draft, nextSendRequestId(), session.id, clientRef.current);
     }
-    return frameState.submit(draft, session.id, clientRef.current);
+    return frameState.submit(draft, nextSendRequestId(), session.id, clientRef.current);
   };
 
   const compact = (): boolean => {
@@ -184,7 +185,7 @@ export function useChatSession(
     return sendControl({ type: "chat.compact", sessionId: session.id }, "Failed to start compaction.");
   };
 
-  const steer = (text: string): boolean => frameState.steer(text, session.id, clientRef.current);
+  const steer = (text: string): boolean => frameState.steer(text, nextSendRequestId(), session.id, clientRef.current);
 
   const stop = (): boolean => sendControl({ type: "chat.abort", sessionId: session.id }, "Failed to stop the current run.");
 
@@ -330,6 +331,11 @@ export function useChatSession(
     pendingApproval: frameState.pendingApproval,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
+    failedDrafts: frameState.failedDrafts,
+    recoverFailedDraft: frameState.recoverFailedDraft,
+    sendError: frameState.sendError,
+    dismissSendError: frameState.dismissSendError,
+    hasPendingFollowUp: frameState.hasPendingFollowUp,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
     goal,

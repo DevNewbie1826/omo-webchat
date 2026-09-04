@@ -27,6 +27,7 @@ import (
 const (
 	ContractVersion        = 2
 	defaultWriteTimeout    = 10 * time.Second
+	controlFrameTimeout    = 15 * time.Second
 	takeoverActivityWindow = 250 * time.Millisecond
 )
 
@@ -372,14 +373,12 @@ func (c *connection) run() {
 		case <-c.ctx.Done():
 			return
 		case raw := <-c.work:
-			ctx, cancel := context.WithTimeout(c.ctx, 15*time.Second)
-			c.route(ctx, raw)
-			cancel()
+			c.route(raw)
 		}
 	}
 }
 
-func (c *connection) route(ctx context.Context, raw []byte) {
+func (c *connection) route(raw []byte) {
 	var probe map[string]json.RawMessage
 	if json.Unmarshal(raw, &probe) != nil || probe == nil {
 		c.sendError("bad_frame", "invalid json frame", "", "")
@@ -422,6 +421,29 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 		return
 	}
 
+	ctx, cancel := c.routeContext(frame)
+	defer cancel()
+	c.routeFrame(ctx, frame, typ)
+}
+
+func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context, context.CancelFunc) {
+	// Prompt, in-run sends, and compaction have observably long response times.
+	// Their lifetime is therefore the socket lifetime; cheap control work keeps
+	// the bounded interactive budget.
+	switch f := frame.(type) {
+	case *wscontract.ChatSendFrame:
+		switch string(f.Run.Kind) {
+		case "prompt", "steer", "follow_up", "followUp":
+			return c.ctx, func() {}
+		}
+	case *wscontract.ChatCompactFrame:
+		return c.ctx, func() {}
+	}
+	return context.WithTimeout(c.ctx, controlFrameTimeout)
+}
+
+func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFrame, typ string) {
+	var err error
 	if f, ok := frame.(*wscontract.ClientHelloFrame); ok {
 		if f.Version != ContractVersion {
 			c.sendError("bad_frame", "wire contract version mismatch", "", "")
@@ -476,23 +498,26 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
+		requestID := deref(f.RequestID)
 		images := make([]map[string]string, len(f.Run.Images))
 		for i, x := range f.Run.Images {
 			images[i] = map[string]string{"data": x.Data, "mimeType": x.MimeType}
 		}
 		switch string(f.Run.Kind) {
 		case "prompt":
-			err = sess.SendPrompt(ctx, f.Run.Message, images)
+			err = sess.SendPromptDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
 		case "steer":
-			err = sess.SendSteer(ctx, f.Run.Message)
+			err = sess.SendSteerDetachedWithRequestID(ctx, f.Run.Message, requestID)
 		case "follow_up", "followUp":
-			err = sess.SendFollowUp(ctx, f.Run.Message)
+			err = sess.SendFollowUpDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
 		default:
-			c.sendError("bad_frame", "unknown run kind", "chat.send", "")
+			c.sendError("bad_frame", "unknown run kind", "chat.send", requestID)
 			return
 		}
 		if err != nil {
-			c.sendSessionError(err, "chat.send", "")
+			c.sendSessionError(err, "chat.send", requestID)
+		} else if requestID != "" {
+			c.sendAck("chat.send", requestID)
 		}
 	case *wscontract.ChatAbortFrame:
 		if err := sess.Abort(ctx); err != nil {
@@ -523,7 +548,7 @@ func (c *connection) route(ctx context.Context, raw []byte) {
 	case *wscontract.ChatCommandsFrame:
 		c.queryCommands(ctx, sess)
 	case *wscontract.ChatCompactFrame:
-		if err := sess.Compact(ctx); err != nil {
+		if err := sess.CompactDetached(ctx); err != nil {
 			c.sendSessionError(err, "chat.compact", "")
 		}
 	case *wscontract.ChatModelsFrame:
@@ -741,6 +766,9 @@ func (c *connection) sendSessionError(err error, command, requestID string) {
 	if errors.Is(err, session.ErrCompactionInFlight) {
 		code = "compaction_in_flight"
 	}
+	if errors.Is(err, session.ErrSendBackpressure) {
+		code = "send_backpressure"
+	}
 	c.sendError(code, err.Error(), command, requestID)
 }
 
@@ -908,6 +936,8 @@ func clientSessionID(f wscontract.ClientFrame) string {
 }
 func requestID(f wscontract.ClientFrame) string {
 	switch x := f.(type) {
+	case *wscontract.ChatSendFrame:
+		return deref(x.RequestID)
 	case *wscontract.ChatSetFrame:
 		return deref(x.RequestID)
 	case *wscontract.ApprovalRespondFrame:

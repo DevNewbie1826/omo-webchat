@@ -161,30 +161,80 @@ describe("ChatPane optimistic runs", () => {
 		expect(textarea().value).toBe("not accepted");
 	});
 
-	it("does not send another prompt while a run is active; queues it instead", () => {
+	it("sends another submission immediately as a follow-up while a run is active", () => {
 		submit("first");
 		submit("second");
-		expect(chatSends()).toHaveLength(1);
+		expect(chatSends()).toEqual([
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "first" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "second" } },
+		]);
 		expect(textarea().value).toBe("");
-		expect(container.querySelector(".th-chat-queued")?.textContent).toContain("second");
+		expect(container.querySelector(".th-chat-queued")).toBeNull();
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(2);
 	});
 
-	it("rolls back an optimistic prompt on a terminal send error", async () => {
+	it("leaves pending operations intact for an uncorrelated send failure", () => {
+		submit("first");
+		submit("second");
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "send_failed",
+			command: "chat.send",
+			message: "Uncorrelated failure",
+		}));
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(2);
+		expect(textarea().value).toBe("");
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain("Uncorrelated failure");
+	});
+
+	it("keeps multiple rejected follow-up drafts individually recoverable", () => {
+		submit("prompt");
+		submit("follow one");
+		submit("follow two");
+		const frames = chatSends();
+		const firstFollowUp = frames[1];
+		const secondFollowUp = frames[2];
+		if (firstFollowUp?.type !== "chat.send" || !firstFollowUp.requestId
+			|| secondFollowUp?.type !== "chat.send" || !secondFollowUp.requestId) throw new Error("missing follow-ups");
+		const firstRequestId = firstFollowUp.requestId;
+		const secondRequestId = secondFollowUp.requestId;
+		act(() => {
+			deliver({ type: "error", sessionId: "chat-1", code: "send_failed", command: "chat.send", requestId: firstRequestId, message: "one failed" });
+			deliver({ type: "error", sessionId: "chat-1", code: "send_failed", command: "chat.send", requestId: secondRequestId, message: "two failed" });
+		});
+		const retries = [...container.querySelectorAll<HTMLButtonElement>(".th-failed-draft")];
+		expect(retries.map((button) => button.textContent)).toEqual(expect.arrayContaining([
+			expect.stringContaining("follow one"),
+			expect.stringContaining("follow two"),
+		]));
+		const older = retries.find((button) => button.textContent?.includes("follow one"));
+		act(() => older?.click());
+		expect(textarea().value).toBe("follow one");
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+	});
+
+	it("rolls back an optimistic prompt on its correlated chat.send failure", async () => {
 		submit("retry this");
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		const frame = chatSends()[0];
+		if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing chat.send");
+		const requestId = frame.requestId;
 
 		await act(async () => {
 			deliver({
 				type: "error",
 				sessionId: "chat-1",
-				code: "send_failed",
+				code: "provider_error",
+				command: "chat.send",
+				requestId,
 				message: "Backend failed",
 			});
 		});
 
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		expect(textarea().value).toBe("retry this");
-		expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"Backend failed",
 		);
 		expect(

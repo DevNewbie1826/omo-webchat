@@ -28,18 +28,15 @@ interface ChatComposerProps {
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ commands, running, isCompacting, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
   const [input, setInput] = useState("");
   const [draftCommand, setDraftCommand] = useState<CommandEntry | null>(null);
-  const [queuedDraft, setQueuedDraft] = useState<ChatDraft | null>(null);
   const [paletteHidden, setPaletteHidden] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const paletteId = useId();
   const paletteListboxId = `${paletteId}-command-listbox`, paletteOptionIdPrefix = `${paletteId}-command-option`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const onSubmitRef = useRef(onSubmit);
-  onSubmitRef.current = onSubmit;
   const isMobile = useMediaQuery(MOBILE_QUERY);
   const { pendingImage, setPendingImage, clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers } = useImageAttachment();
   const [caret, setCaret] = useState(0);
@@ -75,13 +72,6 @@ export function ChatComposer({ commands, running, isCompacting, disabled = false
     setPendingImage(retryDraft.image);
     textareaRef.current?.focus();
   }, [retryDraft, setPendingImage]);
-
-  useEffect(() => {
-    if (running || isCompacting || disabled || !queuedDraft) return;
-    const draft = queuedDraft;
-    setQueuedDraft(null);
-    onSubmitRef.current(draft);
-  }, [running, isCompacting, disabled, queuedDraft]);
 
   useEffect(() => {
     if (!imageSupported && pendingImage) clearImage();
@@ -162,17 +152,12 @@ export function ChatComposer({ commands, running, isCompacting, disabled = false
   };
 
   const submit = (): void => {
-    if (isCompacting || disabled || (!input.trim() && !pendingImage)) return;
+    if (disabled || (!input.trim() && !pendingImage)) return;
     const draft: ChatDraft = {
       text: input,
       image: pendingImage,
       ...(draftCommand ? { command: draftCommand } : {}),
     };
-    if (running) {
-      setQueuedDraft(draft);
-      resetInput();
-      return;
-    }
     if (!onSubmit(draft)) return;
     resetInput();
   };
@@ -198,11 +183,6 @@ export function ChatComposer({ commands, running, isCompacting, disabled = false
         submit();
       }}
     >
-      {queuedDraft && (
-        <div className="th-chat-queued" role="status">
-          {t("chat.queued")}: {queuedDraft.text}
-        </div>
-      )}
       <ChatComposerAttachmentPreview
         pendingImage={pendingImage}
         removeLabel={t("chat.removeAttach")}
@@ -239,7 +219,7 @@ export function ChatComposer({ commands, running, isCompacting, disabled = false
           expanded={paletteOpen || fileOpen}
           activeDescendant={paletteOpen && selectedIndex >= 0 ? `${paletteOptionIdPrefix}-${selectedIndex}` : fileOpen && fileMention.activeIndex >= 0 ? `${fileOptionIdPrefix}-${fileMention.activeIndex}` : undefined}
           input={input}
-          isCompacting={isCompacting}
+          isCompacting={false}
           disabled={disabled}
           running={running}
           sendLabel={t(running ? "chat.stop" : "chat.send")}

@@ -58,20 +58,24 @@ describe("ChatComposer queue / steer / stop", () => {
 		});
 	}
 
-	it("queues a message while running and flushes it when the run ends", () => {
+	it("submits every message immediately while running without retaining a local draft", () => {
 		render(true);
 		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
 		if (!textarea) throw new Error("missing textarea");
-		act(() => setTextareaValue(textarea, "follow up"));
+		act(() => setTextareaValue(textarea, "first follow up"));
+		act(() => enter(textarea, { key: "Enter" }));
+		act(() => setTextareaValue(textarea, "second follow up"));
 		act(() => enter(textarea, { key: "Enter" }));
 
-		expect(submitted).toEqual([]);
-		expect(container.querySelector(".th-chat-queued")?.textContent).toContain("follow up");
+		expect(submitted).toEqual([
+			{ text: "first follow up", image: null },
+			{ text: "second follow up", image: null },
+		]);
+		expect(container.querySelector(".th-chat-queued")).toBeNull();
 		expect(textarea.value).toBe("");
 
 		render(false);
-		expect(submitted).toEqual([{ text: "follow up", image: null }]);
-		expect(container.querySelector(".th-chat-queued")).toBeNull();
+		expect(submitted).toHaveLength(2);
 	});
 
 	it("steers on Cmd+Enter while running and does not submit", () => {
@@ -93,35 +97,18 @@ describe("ChatComposer queue / steer / stop", () => {
 		expect(stopped).toEqual([true]);
 	});
 
-	it("holds a queued draft through compaction and flushes it afterward", () => {
-		render(true);
-		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
-		if (!textarea) throw new Error("missing textarea");
-		act(() => setTextareaValue(textarea, "after compact"));
-		act(() => enter(textarea, { key: "Enter" }));
-
-		render(false, true);
-		expect(submitted).toEqual([]);
-		expect(container.querySelector(".th-chat-queued")?.textContent).toContain("after compact");
-
-		render(false, false);
-		expect(submitted).toEqual([{ text: "after compact", image: null }]);
-		expect(container.querySelector(".th-chat-queued")).toBeNull();
-	});
-
-	it("disables and gates the composer during compaction", () => {
+	it("submits during compaction instead of blocking or retaining the draft", () => {
 		render(false, true);
 		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
 		const send = container.querySelector<HTMLButtonElement>(".th-chat-send-btn");
-		const form = container.querySelector<HTMLFormElement>("form");
-		if (!textarea || !send || !form) throw new Error("missing composer controls");
-		expect(textarea.disabled).toBe(true);
-		expect(send.disabled).toBe(true);
-		act(() => setTextareaValue(textarea, "blocked"));
-		act(() => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-		expect(submitted).toEqual([]);
+		if (!textarea || !send) throw new Error("missing composer controls");
+		expect(textarea.disabled).toBe(false);
+		expect(send.disabled).toBe(false);
+		act(() => setTextareaValue(textarea, "after compact"));
+		act(() => enter(textarea, { key: "Enter" }));
+		expect(submitted).toEqual([{ text: "after compact", image: null }]);
 		expect(container.querySelector(".th-chat-queued")).toBeNull();
-		expect(textarea.value).toBe("blocked");
+		expect(textarea.value).toBe("");
 	});
 
 	it("keeps one stable action slot: the same slot becomes Stop while running and Send otherwise", () => {

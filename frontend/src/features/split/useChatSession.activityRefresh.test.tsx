@@ -85,7 +85,8 @@ describe("useChatSession activity freshness wiring", () => {
       deliver({ type: "run.started", sessionId: session.id });
       deliver({ type: "error", sessionId: session.id, code: "send_failed", message: "failed" });
     });
-    expect(current?.activities.runInFlight).toBe(false);
+    // An uncorrelated send failure is display-only and cannot settle the run.
+    expect(current?.activities.runInFlight).toBe(true);
   });
 
   it("sends activity.refresh when the websocket reconnects, not on the initial open", () => {

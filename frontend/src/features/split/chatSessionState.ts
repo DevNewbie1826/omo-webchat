@@ -7,6 +7,8 @@ import { materializeFinalTools } from "./chatFinalTools";
 
 export interface PendingOptimistic extends ChatDraft {
   readonly id: number;
+  readonly requestId: string;
+  readonly kind: "prompt" | "followUp" | "steer";
   readonly priorMatchingCount: number;
   /**
    * Whether authoritative history had loaded when this run was submitted.
@@ -16,6 +18,7 @@ export interface PendingOptimistic extends ChatDraft {
    */
   readonly baselineKnown: boolean;
   accepted: boolean;
+  admitted: boolean;
   echo?: UiMessage;
 }
 
@@ -94,13 +97,24 @@ export interface ReconcileHistoryResult {
 }
 
 export function optimisticMessage(pending: PendingOptimistic): UiMessage {
-  return pending.echo
-    ? { ...pending.echo, optimisticId: pending.id }
-    : {
-        role: "user",
-        blocks: [{ kind: "text", text: pending.text }],
-        optimisticId: pending.id,
-      };
+  if (pending.echo) {
+    return pending.kind === "followUp"
+      ? pending.echo
+      : { ...pending.echo, optimisticId: pending.id };
+  }
+  const message: UiMessage = {
+    role: "user",
+    ...(pending.kind === "followUp" ? { customType: "followUp" } : pending.kind === "steer" ? { customType: "steer" } : {}),
+    blocks: [{ kind: "text", text: pending.text }],
+  };
+  // Follow-up identity is UI bookkeeping, not canonical message data. Keep it
+  // directly readable for reconciliation/render keys without exposing it to
+  // consumers that enumerate the wire-shaped marker.
+  Object.defineProperty(message, "optimisticId", {
+    value: pending.id,
+    enumerable: pending.kind !== "followUp",
+  });
+  return message;
 }
 
 export function steerMessage(text: string): UiMessage {
@@ -122,16 +136,21 @@ export function newPendingRun(
   draft: ChatDraft,
   text: string,
   id: number,
+  requestId: string,
   baselineKnown: boolean,
   current: readonly UiMessage[],
+  kind: PendingOptimistic["kind"] = "prompt",
 ): PendingOptimistic {
   return {
     ...draft,
     text,
     id,
+    requestId,
+    kind,
     priorMatchingCount: current.filter((message) => message.role === "user" && messageText(message) === text).length,
     baselineKnown,
     accepted: false,
+    admitted: false,
   };
 }
 
@@ -140,6 +159,7 @@ export function promptSendFrame(pending: PendingOptimistic, sessionId: string): 
   return {
     type: "chat.send",
     sessionId,
+    requestId: pending.requestId,
     run: {
       kind: "prompt",
       message: pending.text,
@@ -148,8 +168,21 @@ export function promptSendFrame(pending: PendingOptimistic, sessionId: string): 
   };
 }
 
-export function steerSendFrame(text: string, sessionId: string): ChatClientFrame {
-  return { type: "chat.send", sessionId, run: { kind: "steer", message: text } };
+export function steerSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
+  return { type: "chat.send", sessionId, requestId: pending.requestId, run: { kind: "steer", message: pending.text } };
+}
+
+export function followUpSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
+  return {
+    type: "chat.send",
+    sessionId,
+    requestId: pending.requestId,
+    run: {
+      kind: "follow_up",
+      message: pending.text,
+      ...(pending.image ? { images: [{ data: pending.image.data, mimeType: pending.image.mimeType }] } : {}),
+    },
+  };
 }
 
 export function reconcileLiveUserMessage(
@@ -168,7 +201,9 @@ export function reconcileLiveUserMessage(
       return null;
     }
     pendingItems.splice(index, 1);
-    return current.map((currentMessage) => (currentMessage.optimisticId === pending.id ? { ...message, optimisticId: pending.id } : currentMessage));
+    return current.map((currentMessage) => (currentMessage.optimisticId === pending.id
+      ? pending.kind === "followUp" ? message : { ...message, optimisticId: pending.id }
+      : currentMessage));
   }
   if (active?.text !== text || !current.some((currentMessage) => currentMessage.optimisticId === active.id)) {
     return undefined;
@@ -269,10 +304,17 @@ export function reconcileHistory({ entries, current, pending, active, uncertain,
 
   const optimistic = unmatched.filter((item) => item.accepted).map(optimisticMessage);
   const snapshot = [...restored, ...optimistic];
-  const currentWithoutMissing = uncertainMissing ? current.filter((message) => message.optimisticId !== uncertain?.id) : current;
+  const unmatchedIds = new Set(unmatched.map((item) => item.id));
+  const pendingIds = new Set(pending.map((item) => item.id));
+  const currentWithoutSettled = current.filter((message) => {
+    if (uncertainMissing && message.optimisticId === uncertain?.id) return false;
+    return message.optimisticId === undefined
+      || !pendingIds.has(message.optimisticId)
+      || unmatchedIds.has(message.optimisticId);
+  });
 
   return {
-    messages: preserveCurrent ? mergeSnapshot(snapshot, currentWithoutMissing) : snapshot,
+    messages: preserveCurrent ? mergeSnapshot(snapshot, currentWithoutSettled) : snapshot,
     pending: unmatched,
     uncertainMissing,
     uncertainStalled,
