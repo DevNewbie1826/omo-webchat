@@ -65,6 +65,7 @@ describe("useChatSession pending follow-ups", () => {
     expect(sent.at(-1)).toEqual({
       type: "chat.send",
       sessionId: session.id,
+      requestId: expect.any(String),
       run: {
         kind: "follow_up",
         message: "queued work",
@@ -72,12 +73,16 @@ describe("useChatSession pending follow-ups", () => {
       },
     });
     expect(current?.hasPendingFollowUp).toBe(true);
+    const frame = sent.at(-1);
+    if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing chat.send request id");
+    const requestId = frame.requestId;
 
     act(() => deliver({
       type: "error",
       sessionId: session.id,
       code: "provider_error",
       command: "chat.send",
+      requestId,
       message: "queue rejected",
     }));
 

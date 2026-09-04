@@ -76,7 +76,7 @@ describe("useChatSession manual compaction", () => {
     expect(accepted).toBe(true);
     expect(compactFrames()).toHaveLength(0);
     expect(promptFrames()).toEqual([
-      { type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "/compact aggressive" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "/compact aggressive" } },
     ]);
   });
 
@@ -96,7 +96,7 @@ describe("useChatSession manual compaction", () => {
     expect(accepted).toBe(true);
     expect(compactFrames()).toHaveLength(0);
     expect(promptFrames()).toEqual([
-      { type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "/compact" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "/compact" } },
     ]);
   });
 
@@ -136,7 +136,7 @@ describe("useChatSession manual compaction", () => {
     expect(accepted).toBe(true);
     expect(compactFrames()).toHaveLength(0);
     expect(promptFrames()).toEqual([
-      { type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "/compact" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "/compact" } },
     ]);
   });
 
@@ -154,6 +154,7 @@ describe("useChatSession manual compaction", () => {
       {
         type: "chat.send",
         sessionId: "chat-1",
+        requestId: expect.any(String),
         run: { kind: "prompt", message: "/compact", images: [{ mimeType: "image/png", data: "YWJj" }] },
       },
     ]);
@@ -169,7 +170,7 @@ describe("useChatSession manual compaction", () => {
     });
     expect(accepted).toBe(true);
     expect(promptFrames()).toEqual([
-      { type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "after compact" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after compact" } },
     ]);
     expect(current?.messages).toEqual([
       { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after compact" }] },
@@ -183,23 +184,24 @@ describe("useChatSession manual compaction", () => {
     });
     expect(current?.isCompacting).toBe(true);
 
-    // A failed compaction surfaces its error on the live error surface.
+    // A failed compaction surfaces only in the persistent send-error slot.
     act(() => {
       deliver?.({ type: "compaction.done", sessionId: "chat-1", error: "Nothing to compact" });
     });
     expect(current?.isCompacting).toBe(false);
-    expect(current?.error).toBe("Nothing to compact");
+    expect(current?.error).toBe("");
+    expect(current?.sendError?.["message"]).toBe("Nothing to compact");
 
-    // A later compaction clears the stale error; a clean completion keeps it clear.
+    // A clean completion does not duplicate or clear the persistent failure.
     act(() => {
       deliver?.({ type: "compaction.started", sessionId: "chat-1" });
-    });
-    expect(current?.error).toBe("");
-    act(() => {
       deliver?.({ type: "compaction.done", sessionId: "chat-1" });
     });
     expect(current?.isCompacting).toBe(false);
     expect(current?.error).toBe("");
+    expect(current?.sendError?.["message"]).toBe("Nothing to compact");
+    act(() => current?.dismissSendError());
+    expect(current?.sendError).toBeNull();
   });
 
   it("rejects a repeated compact while one is already in progress", () => {

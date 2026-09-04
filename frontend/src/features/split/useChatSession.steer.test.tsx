@@ -65,8 +65,8 @@ describe("useChatSession active-run sends", () => {
 		});
 
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "first" } },
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "second" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "first" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "second" } },
 		]);
 		expect(current?.messages.filter((message) => message.customType === "followUp").map((message) => message.blocks?.[0]?.text)).toEqual([
 			"first",
@@ -91,7 +91,7 @@ describe("useChatSession active-run sends", () => {
 	it("sends an idle submission as a prompt", () => {
 		act(() => current?.submit({ text: "start work", image: null }));
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "start work" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "start work" } },
 		]);
 	});
 });

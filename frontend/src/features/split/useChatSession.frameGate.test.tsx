@@ -88,7 +88,7 @@ describe("useChatSession inbound session gate", () => {
     });
     expect(accepted).toBe(true);
     expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-      { type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "after reconnect" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after reconnect" } },
     ]);
     expect(current?.messages).toEqual([
       { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after reconnect" }] },

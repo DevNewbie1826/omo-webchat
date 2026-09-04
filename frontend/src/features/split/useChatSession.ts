@@ -31,6 +31,7 @@ export function useChatSession(
   markOpenRef.current = frameState.markOpen;
   markCloseRef.current = frameState.markClose;
   const nextRequestId = (): string => `req-${session.id}-${++requestSeqRef.current}`;
+  const nextSendRequestId = (): string => crypto.randomUUID();
 
   useEffect(() => {
     let opened = false;
@@ -166,9 +167,9 @@ export function useChatSession(
     // advertised an authoritative same-name command.
     if (exactCompact && (draft.command ? isCuratedCompact(draft.command) : !providerOwnsCompact)) return compact();
     if (frameState.running || frameState.isCompacting) {
-      return frameState.followUp(draft, session.id, clientRef.current);
+      return frameState.followUp(draft, nextSendRequestId(), session.id, clientRef.current);
     }
-    return frameState.submit(draft, session.id, clientRef.current);
+    return frameState.submit(draft, nextSendRequestId(), session.id, clientRef.current);
   };
 
   const compact = (): boolean => {
@@ -183,7 +184,7 @@ export function useChatSession(
     return sendControl({ type: "chat.compact", sessionId: session.id }, "Failed to start compaction.");
   };
 
-  const steer = (text: string): boolean => frameState.steer(text, session.id, clientRef.current);
+  const steer = (text: string): boolean => frameState.steer(text, nextSendRequestId(), session.id, clientRef.current);
 
   const stop = (): boolean => sendControl({ type: "chat.abort", sessionId: session.id }, "Failed to stop the current run.");
 
@@ -329,12 +330,15 @@ export function useChatSession(
     pendingApproval: frameState.pendingApproval,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
+    failedDrafts: frameState.failedDrafts,
+    recoverFailedDraft: frameState.recoverFailedDraft,
+    sendError: frameState.sendError,
+    dismissSendError: frameState.dismissSendError,
     hasPendingFollowUp: frameState.hasPendingFollowUp,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
     goal,
     notices: frameState.notices,
-    dismissNotice: frameState.dismissNotice,
     submit,
     compact,
     steer,

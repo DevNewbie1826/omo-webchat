@@ -7,7 +7,8 @@ import { materializeFinalTools } from "./chatFinalTools";
 
 export interface PendingOptimistic extends ChatDraft {
   readonly id: number;
-  readonly kind?: "prompt" | "followUp";
+  readonly requestId: string;
+  readonly kind: "prompt" | "followUp" | "steer";
   readonly priorMatchingCount: number;
   /**
    * Whether authoritative history had loaded when this run was submitted.
@@ -17,6 +18,7 @@ export interface PendingOptimistic extends ChatDraft {
    */
   readonly baselineKnown: boolean;
   accepted: boolean;
+  admitted: boolean;
   echo?: UiMessage;
 }
 
@@ -102,7 +104,7 @@ export function optimisticMessage(pending: PendingOptimistic): UiMessage {
   }
   const message: UiMessage = {
     role: "user",
-    ...(pending.kind === "followUp" ? { customType: "followUp" } : {}),
+    ...(pending.kind === "followUp" ? { customType: "followUp" } : pending.kind === "steer" ? { customType: "steer" } : {}),
     blocks: [{ kind: "text", text: pending.text }],
   };
   // Follow-up identity is UI bookkeeping, not canonical message data. Keep it
@@ -134,18 +136,21 @@ export function newPendingRun(
   draft: ChatDraft,
   text: string,
   id: number,
+  requestId: string,
   baselineKnown: boolean,
   current: readonly UiMessage[],
-  kind: NonNullable<PendingOptimistic["kind"]> = "prompt",
+  kind: PendingOptimistic["kind"] = "prompt",
 ): PendingOptimistic {
   return {
     ...draft,
     text,
     id,
+    requestId,
     kind,
     priorMatchingCount: current.filter((message) => message.role === "user" && messageText(message) === text).length,
     baselineKnown,
     accepted: false,
+    admitted: false,
   };
 }
 
@@ -154,6 +159,7 @@ export function promptSendFrame(pending: PendingOptimistic, sessionId: string): 
   return {
     type: "chat.send",
     sessionId,
+    requestId: pending.requestId,
     run: {
       kind: "prompt",
       message: pending.text,
@@ -162,18 +168,19 @@ export function promptSendFrame(pending: PendingOptimistic, sessionId: string): 
   };
 }
 
-export function steerSendFrame(text: string, sessionId: string): ChatClientFrame {
-  return { type: "chat.send", sessionId, run: { kind: "steer", message: text } };
+export function steerSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
+  return { type: "chat.send", sessionId, requestId: pending.requestId, run: { kind: "steer", message: pending.text } };
 }
 
-export function followUpSendFrame(draft: ChatDraft, text: string, sessionId: string): ChatClientFrame {
+export function followUpSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
   return {
     type: "chat.send",
     sessionId,
+    requestId: pending.requestId,
     run: {
       kind: "follow_up",
-      message: text,
-      ...(draft.image ? { images: [{ data: draft.image.data, mimeType: draft.image.mimeType }] } : {}),
+      message: pending.text,
+      ...(pending.image ? { images: [{ data: pending.image.data, mimeType: pending.image.mimeType }] } : {}),
     },
   };
 }

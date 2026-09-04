@@ -6,10 +6,9 @@ import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import type { UiMessage } from "./chatEntries";
 import type { useConfirmedControls } from "./chatConfirmedControls";
-import { isPromptTerminalError } from "./chatErrorState";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
 import * as chatState from "./chatSessionState";
-import type { ChatDraft, ToolEntry } from "./chatSessionTypes";
+import type { ToolEntry } from "./chatSessionTypes";
 import type { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import type { useStreamingBuffer } from "./useStreamingBuffer";
 
@@ -38,7 +37,6 @@ interface ChatFrameHandlerBindings {
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
   readonly bufferActivityEvent: (event: NonNullable<ReturnType<typeof validatedActivityEvent>>) => void;
-  readonly retryVersionRef: Current<number>;
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
   readonly externalRecoveryHistoryRef: Current<boolean>;
@@ -64,7 +62,8 @@ interface ChatFrameHandlerBindings {
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
-  readonly setRetryDraft: StateSetter<(ChatDraft & { readonly version: number }) | null>;
+  readonly setSendError: StateSetter<JsonObject | null>;
+  readonly retainFailedDrafts: (runs: readonly chatState.PendingOptimistic[]) => void;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
 }
 
@@ -95,18 +94,16 @@ function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type:
   return frame.code !== undefined && HISTORY_TERMINAL_ERROR_CODES.has(frame.code);
 }
 
-/**
- * Notice kind the handler files send-path command failures under. ChatPane
- * lifts the newest non-dismissed one into the persistent send-error banner
- * and keeps these synthetic advisories out of the transcript notice flow.
- */
-export const SEND_ERROR_NOTICE_KIND = "send_error";
-
 // Observed send-path command echoes and busy-gate codes. A generic
 // provider_error belongs in the banner only when its command identifies one
 // of these operations; unrelated provider queries keep the transient surface.
-const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set(["chat.send", "chat.compact", "chat.abort"]);
-const SEND_GATE_ERROR_CODES: ReadonlySet<string> = new Set(["prompt_in_flight", "compaction_in_flight"]);
+const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set([
+  "chat.send", "chat.compact", "chat.abort",
+  "prompt", "steer", "follow_up", "compact", "abort",
+]);
+const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
+  "prompt_in_flight", "compaction_in_flight", "bad_send", "send_failed", "compact_failed", "send_backpressure",
+]);
 
 /**
  * Classify an error frame as a send-path command failure (chat.send,
@@ -117,16 +114,11 @@ const SEND_GATE_ERROR_CODES: ReadonlySet<string> = new Set(["prompt_in_flight", 
  * classification.
  */
 export function sendCommandFailureOf(frame: Extract<ChatServerFrame, { readonly type: "error" }>): JsonObject | null {
-  if (frame.code !== undefined && SEND_GATE_ERROR_CODES.has(frame.code)) return { message: frame.message };
+  if (frame.code !== undefined && SEND_ERROR_CODES.has(frame.code)) return { message: frame.message };
   if (frame.code === "provider_error"
     && frame.command !== undefined
     && SEND_ERROR_COMMANDS.has(frame.command)) return { message: frame.message };
   return null;
-}
-
-function settlesChatSend(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
-  return frame.command === "chat.send"
-    || (frame.command === undefined && frame.code !== undefined && SEND_GATE_ERROR_CODES.has(frame.code));
 }
 
 /** The raw failure text of a send-error banner payload. */
@@ -278,7 +270,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "ack":
-        if (frame.requestId) bindings.controls.ledger.commit(frame.requestId);
+        if (frame.command === "chat.send" && frame.requestId) {
+          const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
+          if (pending) pending.admitted = true;
+        } else if (frame.requestId) {
+          bindings.controls.ledger.commit(frame.requestId);
+        }
         return;
       case "control.result":
         if (frame.success) {
@@ -338,45 +335,24 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.setError(frame.message);
           return;
         }
-        // Send-path command failures persist as a banner notice instead of
-        // the transient error slot that the next delta/tool/run frame clears.
+        // Send-path command failures persist in a dedicated banner slot instead
+        // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);
         if (sendFailure === null) bindings.setError(frame.message);
-        else bindings.pushNotice(SEND_ERROR_NOTICE_KIND, sendFailure);
+        else bindings.setSendError(sendFailure);
 
-        // chat.send has no wire request id, so the pending send queue is the
-        // correlation ledger: bridge work is processed in receive order and a
-        // live/history echo removes exactly the operation it accepted.
-        if (settlesChatSend(frame)) {
-          const pending = bindings.pendingRef.current[0];
-          if (pending) {
-            bindings.messageVersionRef.current += 1;
-            bindings.pendingRef.current = bindings.pendingRef.current.filter((item) => item.id !== pending.id);
-            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
-            bindings.setRetryDraft({ text: pending.text, image: pending.image, version: ++bindings.retryVersionRef.current });
-            if (pending.kind === "prompt") {
-              bindings.submitLatchRef.current = false;
-              clearLiveSurfaces();
-            }
-          } else if (bindings.activeRunRef.current && frame.command === "chat.send") {
-            const active = bindings.activeRunRef.current;
-            bindings.messageVersionRef.current += 1;
-            bindings.submitLatchRef.current = false;
-            clearLiveSurfaces();
-            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== active.id));
-            bindings.setRetryDraft({ text: active.text, image: active.image, version: ++bindings.retryVersionRef.current });
-          }
-          return;
-        }
-        if (!isPromptTerminalError(frame)) return;
-        const active = bindings.activeRunRef.current;
-        bindings.submitLatchRef.current = false;
-        clearLiveSurfaces();
-        if (active) {
-          bindings.messageVersionRef.current += 1;
-          bindings.pendingRef.current = bindings.pendingRef.current.filter((pending) => pending.id !== active.id);
-          bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== active.id));
-          bindings.setRetryDraft({ text: active.text, image: active.image, version: ++bindings.retryVersionRef.current });
+        // Only a request identity can settle a send operation. Uncorrelated
+        // failures remain visible but cannot roll back unrelated optimistic work.
+        if (!frame.requestId) return;
+        const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
+        if (!pending) return;
+        bindings.messageVersionRef.current += 1;
+        bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.requestId !== frame.requestId);
+        bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
+        bindings.retainFailedDrafts([pending]);
+        if (pending.kind === "prompt" && bindings.activeRunRef.current?.requestId === frame.requestId) {
+          bindings.submitLatchRef.current = false;
+          clearLiveSurfaces();
         }
         return;
       }
@@ -395,10 +371,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       case "compaction.done":
         bindings.setIsCompacting(false);
-        if (frame.error) {
-          bindings.setError(frame.error);
-          bindings.pushNotice(SEND_ERROR_NOTICE_KIND, { message: frame.error });
-        }
+        if (frame.error) bindings.setSendError({ message: frame.error });
         return;
       case "state":
         // ready precedes provider initialization; state proves get_state
@@ -456,10 +429,15 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           serverStreaming: bindings.runningRef.current,
           hasLiveTodo: bindings.activitiesRef.current.todo !== null,
         });
-        bindings.pendingRef.current = reconciliation.history.pending;
-        if (reconciliation.uncertain) {
-          bindings.uncertainRunRef.current = null;
+        const unacknowledgedFollowUps = bindings.awaitingReconnectHistoryRef.current && !bindings.runningRef.current
+          ? reconciliation.history.pending.filter((pending) => pending.kind === "followUp" && !pending.admitted)
+          : [];
+        const recoveredIds = new Set(unacknowledgedFollowUps.map((pending) => pending.id));
+        bindings.pendingRef.current = reconciliation.history.pending.filter((pending) => !recoveredIds.has(pending.id));
+        if (unacknowledgedFollowUps.length > 0) bindings.retainFailedDrafts(unacknowledgedFollowUps);
+        if (bindings.awaitingReconnectHistoryRef.current) {
           bindings.awaitingReconnectHistoryRef.current = false;
+          if (reconciliation.uncertain) bindings.uncertainRunRef.current = null;
         }
         if ((reconciliation.outcome === "missing" || reconciliation.outcome === "stalled") && reconciliation.uncertain) {
           bindings.recoverLostRun(reconciliation.uncertain);
@@ -472,7 +450,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.runningRef.current = false;
           bindings.setDoneReason("stop");
         }
-        bindings.replaceMessages(reconciliation.history.messages);
+        bindings.replaceMessages(reconciliation.history.messages.filter((message) =>
+          message.optimisticId === undefined || !recoveredIds.has(message.optimisticId)));
         bindings.setRestoreVersion((version) => version + 1);
         if (reconciliation.todo !== null) {
           bindings.applyActivities({ ...bindings.activitiesRef.current, todo: reconciliation.todo });

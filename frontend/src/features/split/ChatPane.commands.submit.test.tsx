@@ -77,6 +77,7 @@ describe("ChatPane slash command submission", () => {
 		expect(chatSends[0]).toEqual({
 			type: "chat.send",
 			sessionId: "chat-1",
+			requestId: expect.any(String),
 			run: { kind: "prompt", message: "$skill:demo" },
 		});
 		expect(container.querySelector('[role="listbox"]')).toBeNull();
@@ -135,7 +136,7 @@ describe("ChatPane slash command submission", () => {
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.compact")).toHaveLength(0);
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "/compact" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "/compact" } },
 		]);
 	});
 
@@ -184,7 +185,7 @@ describe("ChatPane slash command submission", () => {
 
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "$skill:demo" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "$skill:demo" } },
 		]);
 	});
 
@@ -215,7 +216,7 @@ describe("ChatPane slash command submission", () => {
 		act(() => setTextareaValue(input, "after compact"));
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "after compact" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after compact" } },
 		]);
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
 		expect(input.value).toBe("");
@@ -247,6 +248,7 @@ describe("ChatPane slash command submission", () => {
 			{
 				type: "chat.send",
 				sessionId: "chat-1",
+				requestId: expect.any(String),
 				run: { kind: "prompt", message: "/compact aggressive" },
 			},
 		]);

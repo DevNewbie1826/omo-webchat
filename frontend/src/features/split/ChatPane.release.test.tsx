@@ -103,6 +103,12 @@ describe("ChatPane release contracts", () => {
 		act(() => enterPrompt(input, text));
 	}
 
+	function latestSendRequestId(): string {
+		const frame = [...sent].reverse().find((candidate) => candidate.type === "chat.send");
+		if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing chat.send request id");
+		return frame.requestId;
+	}
+
 	it("rolls back the prompt RPC that owns the optimistic run", () => {
 		submit("provider retry");
 		act(() =>
@@ -111,6 +117,7 @@ describe("ChatPane release contracts", () => {
 				sessionId: "chat-1",
 				code: "provider_error",
 				command: "prompt",
+				requestId: latestSendRequestId(),
 				message: "Prompt rejected",
 			}),
 		);
@@ -134,6 +141,8 @@ describe("ChatPane release contracts", () => {
 					type: "error",
 					sessionId: "chat-1",
 					code,
+					command: "chat.send",
+					requestId: latestSendRequestId(),
 					message: "Transport stopped",
 				}),
 			);
@@ -163,6 +172,8 @@ describe("ChatPane release contracts", () => {
 					type: "error",
 					sessionId: "chat-1",
 					code,
+					command: "chat.send",
+					requestId: latestSendRequestId(),
 					message: "Provider terminated",
 				}),
 			);

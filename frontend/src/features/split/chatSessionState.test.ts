@@ -6,7 +6,7 @@ import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
 
 function pending(text: string, overrides: Partial<PendingOptimistic> = {}): PendingOptimistic {
-  return { text, image: null, id: 1, priorMatchingCount: 0, accepted: true, baselineKnown: true, ...overrides };
+  return { text, image: null, id: 1, requestId: "request-1", kind: "prompt", priorMatchingCount: 0, accepted: true, admitted: false, baselineKnown: true, ...overrides };
 }
 
 function userMessage(text: string, optimisticId?: number): UiMessage {
@@ -22,12 +22,13 @@ const staleHistory = [
 
 describe("followUpSendFrame", () => {
   it("preserves an attached image", () => {
-    expect(followUpSendFrame({
-      text: "look here",
+    expect(followUpSendFrame(pending("look here", {
+      kind: "followUp",
       image: { name: "context.png", mimeType: "image/png", data: "YWJj" },
-    }, "look here", "chat-1")).toEqual({
+    }), "chat-1")).toEqual({
       type: "chat.send",
       sessionId: "chat-1",
+      requestId: "request-1",
       run: {
         kind: "follow_up",
         message: "look here",

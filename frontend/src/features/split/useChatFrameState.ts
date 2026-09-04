@@ -42,6 +42,10 @@ export interface ChatNotice {
   readonly nid?: string;
 }
 
+export interface FailedDraft extends ChatDraft {
+  readonly requestId: string;
+}
+
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
 
@@ -115,6 +119,8 @@ export function useChatFrameState() {
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [restoreVersion, setRestoreVersion] = useState(0);
   const [retryDraft, setRetryDraft] = useState<(ChatDraft & { readonly version: number }) | null>(null);
+  const [failedDrafts, setFailedDrafts] = useState<readonly FailedDraft[]>([]);
+  const [sendError, setSendError] = useState<JsonObject | null>(null);
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
   const [notices, setNotices] = useState<readonly ChatNotice[]>([]);
@@ -177,22 +183,38 @@ export function useChatFrameState() {
       if (nid !== undefined && current.some((notice) => notice.nid === nid)) {
         return current;
       }
-      const retained = kind === "send_error"
-        ? current.filter((notice) => notice.kind !== kind)
-        : current;
       return [{
         id: ++noticeIdRef.current,
         kind,
         payload,
         at: at ?? Date.now(),
         ...(nid !== undefined ? { nid } : {}),
-      }, ...retained].slice(0, NOTICE_LIMIT);
+      }, ...current].slice(0, NOTICE_LIMIT);
     });
   };
 
-  // Dismiss one retained advisory (the send-error banner's close action).
-  const dismissNotice = (id: number): void => {
-    setNotices((current) => current.filter((notice) => notice.id !== id));
+  const retainFailedDrafts = (runs: readonly chatState.PendingOptimistic[]): void => {
+    if (runs.length === 0) return;
+    setFailedDrafts((current) => {
+      const incoming = runs.map(({ requestId, text, image, command }) => ({
+        requestId,
+        text,
+        image,
+        ...(command ? { command } : {}),
+      }));
+      const ids = new Set(incoming.map((draft) => draft.requestId));
+      return [...incoming, ...current.filter((draft) => !ids.has(draft.requestId))].slice(0, 20);
+    });
+    const newest = runs[0]!;
+    setRetryDraft({ text: newest.text, image: newest.image, version: ++retryVersionRef.current });
+  };
+
+  const recoverFailedDraft = (requestId: string): void => {
+    setFailedDrafts((current) => {
+      const failed = current.find((draft) => draft.requestId === requestId);
+      if (failed) setRetryDraft({ text: failed.text, image: failed.image, version: ++retryVersionRef.current });
+      return current.filter((draft) => draft.requestId !== requestId);
+    });
   };
 
   // Clear every transient live surface; shared by run completion, terminal
@@ -212,7 +234,7 @@ export function useChatFrameState() {
   const recoverLostRun = (run: chatState.PendingOptimistic): void => {
     messageVersionRef.current += 1;
     clearLiveSurfaces();
-    setRetryDraft({ text: run.text, image: run.image, version: ++retryVersionRef.current });
+    retainFailedDrafts([run]);
   };
 
   const beginReplay = (connectionGeneration: number): number => {
@@ -318,7 +340,6 @@ export function useChatFrameState() {
       const hydration = activityHydrationRef.current;
       if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
     },
-    retryVersionRef,
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
     externalRecoveryHistoryRef,
@@ -344,7 +365,8 @@ export function useChatFrameState() {
     setModels,
     setPendingApproval,
     setRestoreVersion,
-    setRetryDraft,
+    setSendError,
+    retainFailedDrafts,
     pushNotice,
   });
 
@@ -384,10 +406,10 @@ export function useChatFrameState() {
     if (next !== activitiesRef.current) applyActivities(next);
   };
 
-  const submit = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
+  const submit = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
     if (submitLatchRef.current || runningRef.current || (!text && !draft.image) || !client) return false;
-    const pending = chatState.newPendingRun(draft, text, ++optimisticIdRef.current, historyLoadedRef.current, messagesRef.current);
+    const pending = chatState.newPendingRun(draft, text, ++optimisticIdRef.current, requestId, historyLoadedRef.current, messagesRef.current);
     pendingRef.current.push(pending);
     submitLatchRef.current = true;
     let accepted = false;
@@ -414,19 +436,20 @@ export function useChatFrameState() {
     return true;
   };
 
-  const followUp = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
+  const followUp = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
     if ((!text && !draft.image) || !client) return false;
     const pending = chatState.newPendingRun(
       draft,
       text,
       ++optimisticIdRef.current,
+      requestId,
       historyLoadedRef.current,
       messagesRef.current,
       "followUp",
     );
     pendingRef.current.push(pending);
-    const sent = client.send(chatState.followUpSendFrame(pending, text, sessionId));
+    const sent = client.send(chatState.followUpSendFrame(pending, sessionId));
     if (!sent) {
       pendingRef.current = pendingRef.current.filter((item) => item !== pending);
       return false;
@@ -438,15 +461,23 @@ export function useChatFrameState() {
     return true;
   };
 
-  const steer = (text: string, sessionId: string, client: ChatClient | null): boolean => {
+  const steer = (text: string, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
     const trimmed = text.trim();
     if (!trimmed || !client) return false;
-    const sent = client.send(chatState.steerSendFrame(trimmed, sessionId));
-    if (sent) {
-      messageVersionRef.current += 1;
-      replaceMessages([...messagesRef.current, chatState.steerMessage(trimmed)]);
+    const pending = chatState.newPendingRun(
+      { text: trimmed, image: null }, trimmed, ++optimisticIdRef.current, requestId,
+      historyLoadedRef.current, messagesRef.current, "steer",
+    );
+    pendingRef.current.push(pending);
+    const sent = client.send(chatState.steerSendFrame(pending, sessionId));
+    if (!sent) {
+      pendingRef.current = pendingRef.current.filter((item) => item !== pending);
+      return false;
     }
-    return sent;
+    pending.accepted = true;
+    messageVersionRef.current += 1;
+    replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
+    return true;
   };
 
   const markOpen = (): number => {
@@ -460,7 +491,8 @@ export function useChatFrameState() {
     });
     snapshotVersionRef.current = messageVersionRef.current;
     snapshotMessagesRef.current = messagesRef.current;
-    awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null;
+    awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null
+      || pendingRef.current.some((pending) => pending.kind === "followUp" && !pending.admitted);
     historyLoadedRef.current = false;
     setHistoryStatus("loading");
     setConnected(true);
@@ -541,11 +573,14 @@ export function useChatFrameState() {
     pendingApproval,
     restoreVersion,
     retryDraft,
+    failedDrafts,
+    recoverFailedDraft,
+    sendError,
+    dismissSendError: () => setSendError(null),
     hasPendingFollowUp: pendingRef.current.some((pending) => pending.kind === "followUp"),
     activities,
     activitiesVersion,
     notices,
-    dismissNotice,
     handleFrame,
     beginActivityHydration,
     cancelActivityHydration,

@@ -18,7 +18,7 @@ import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
-import { SEND_ERROR_NOTICE_KIND, sendErrorDetail } from "./useChatFrameHandler";
+import { sendErrorDetail } from "./useChatFrameHandler";
 import { useChatSession } from "./useChatSession";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
@@ -59,10 +59,9 @@ export function ChatPane({
   // Send-path command failures surface in the persistent banner below, so
   // they never also render as transcript notice blocks.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, (chat.historyStatus !== "loading" ? chat.notices : []).filter((notice) => notice.kind !== SEND_ERROR_NOTICE_KIND)),
+    () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
     [chat.messages, chat.notices, chat.historyStatus],
   );
-  const sendErrorNotice = chat.notices.find((notice) => notice.kind === SEND_ERROR_NOTICE_KIND);
   const sendQueued = chat.hasPendingFollowUp;
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
@@ -170,10 +169,10 @@ export function ChatPane({
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
-        {sendErrorNotice && (
+        {chat.sendError && (
           <SendErrorBanner
-            detail={sendErrorDetail(sendErrorNotice.payload)}
-            onDismiss={() => chat.dismissNotice(sendErrorNotice.id)}
+            detail={sendErrorDetail(chat.sendError)}
+            onDismiss={chat.dismissSendError}
           />
         )}
         <ChatTranscript
@@ -218,6 +217,20 @@ export function ChatPane({
             <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.reconnecting")}</span>
           )}
         </div>
+        {chat.failedDrafts.length > 0 && (
+          <div className="th-failed-drafts" aria-label="Failed sends">
+            {chat.failedDrafts.map((draft) => (
+              <button
+                key={draft.requestId}
+                type="button"
+                className="th-btn th-btn--ghost th-failed-draft"
+                onClick={() => chat.recoverFailedDraft(draft.requestId)}
+              >
+                {t("common.retry")}: {draft.text}
+              </button>
+            ))}
+          </div>
+        )}
         <ChatComposer
           commands={chat.commands}
           running={chat.running}
