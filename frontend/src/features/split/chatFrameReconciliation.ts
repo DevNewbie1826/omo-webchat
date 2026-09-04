@@ -13,6 +13,8 @@ interface ReconcileFrameHistoryInput {
   readonly preserveCurrent: boolean;
   readonly serverStreaming: boolean;
   readonly hasLiveTodo: boolean;
+  /** Occurrence counts of this chat's accepted steer texts. */
+  readonly steerMarks?: Readonly<Record<string, number>>;
 }
 
 interface ReconcileFrameHistoryResult {
@@ -32,6 +34,7 @@ export function reconcileFrameHistory(input: ReconcileFrameHistoryInput): Reconc
     uncertain,
     preserveCurrent: input.preserveCurrent,
     serverStreaming: input.serverStreaming,
+    ...(input.steerMarks !== undefined ? { steerMarks: input.steerMarks } : {}),
   });
   return {
     history,

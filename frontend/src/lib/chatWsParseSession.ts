@@ -1,4 +1,5 @@
 import type { ChatServerFrame } from "./chatWs";
+import type { QueueEngine, QueueEngineOrderedItem, QueueItem } from "./contract/types_gen";
 import {
   isRecord,
   mapRecords,
@@ -10,11 +11,41 @@ import {
   parseContextUsage,
   parseModelEntry,
   reqBoolean,
+  reqNumber,
   reqString,
   sanitizeJson,
 } from "./chatWsParseFields";
 
-type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries" | "chat.goal";
+type SessionFrameType = "state" | "stats" | "extensionEvent" | "sessions.activity" | "approval" | "commands" | "models" | "entries" | "chat.goal" | "queue";
+
+function parseQueueItem(record: Record<string, unknown>): QueueItem | null {
+  const id = reqString(record, "id");
+  const text = reqString(record, "text");
+  const hasImage = reqBoolean(record, "hasImage");
+  const createdAt = reqNumber(record, "createdAt");
+  const requestId = optString(record, "requestId");
+  if (id === null || text === null || hasImage === null || createdAt === null || requestId === null) return null;
+  return {
+    id,
+    text,
+    hasImage,
+    createdAt,
+    ...(requestId !== undefined ? { requestId } : {}),
+  };
+}
+
+function parseQueueEngine(value: unknown): QueueEngine | null {
+  if (!isRecord(value)) return null;
+  const pendingMessageCount = reqNumber(value, "pendingMessageCount");
+  const ordered = mapRecords(value["ordered"], (record): QueueEngineOrderedItem | null => {
+    const text = reqString(record, "text");
+    const mode = record["mode"];
+    if (text === null) return null;
+    return mode === "followUp" || mode === "steer" ? { text, mode } : null;
+  });
+  if (pendingMessageCount === null || ordered === null) return null;
+  return { pendingMessageCount, ordered };
+}
 
 /**
  * Session-surface frames, built field-by-field into the generated contract
@@ -173,6 +204,14 @@ export function parseSessionFrame(
         };
       } else return null;
       return { type: "chat.goal", sessionId, goal };
+    }
+    case "queue": {
+      if (sessionId === null) return null;
+      const revision = reqNumber(msg, "revision");
+      const items = mapRecords(msg["items"], parseQueueItem);
+      const engine = parseQueueEngine(msg["engine"]);
+      if (revision === null || items === null || engine === null) return null;
+      return { type: "queue", sessionId, revision, items, engine };
     }
     case "entries": {
       if (sessionId === null) return null;

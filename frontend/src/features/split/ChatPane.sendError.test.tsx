@@ -275,22 +275,35 @@ describe("ChatPane send-error banner", () => {
 		expect(alertBanner()?.textContent).toContain("Nothing to compact");
 	});
 
-	it("shows the queued hint only for a pending follow-up", () => {
+	it("keeps queued feedback out of the transcript and in the queue slot", () => {
 		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
 		act(() => setTextareaValue(textarea(), "redirect"));
 		act(() => pressSteer(textarea()));
 		expect(sent.filter((frame) => frame.type === "chat.send")[0]).toMatchObject({
 			run: { kind: "steer", message: "redirect" },
 		});
-		expect(statusText()).not.toContain("chat.sendQueued");
+		// The steer summary lives in the status strip, not the transcript.
+		expect(statusText()).toContain("chat.steerPending");
+		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
 
 		submit("while running");
-		expect(statusText()).toContain("chat.sendQueued");
+		// The queued submission shows up as a placeholder count, not a row.
+		expect(container.querySelector(".th-queue-header")?.textContent).toContain("queue.count");
+		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
+
+		const last = sent.at(-1);
+		if (last?.type !== "chat.send") throw new Error("missing queued send");
+		const requestId = last.requestId;
+		if (requestId === undefined) throw new Error("missing queued requestId");
 		act(() => deliver({
-			type: "message",
+			type: "queue",
 			sessionId: "chat-1",
-			message: { role: "user", blocks: [{ kind: "text", text: "while running" }] },
+			revision: 1,
+			items: [{ id: "q-1", text: "while running", hasImage: false, createdAt: 1, requestId }],
+			engine: { pendingMessageCount: 0, ordered: [] },
 		}));
-		expect(statusText()).not.toContain("chat.sendQueued");
+		act(() => container.querySelector<HTMLButtonElement>(".th-queue-header")?.click());
+		expect(container.querySelectorAll(".th-queue-row--waiting")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
 	});
 });

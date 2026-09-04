@@ -16,8 +16,9 @@ import {
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
+import { recordSteerMark } from "./chatSteerMarks";
 import * as chatState from "./chatSessionState";
-import type { ChatDraft, ToolEntry } from "./chatSessionTypes";
+import type { ChatDraft, QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
 import { createChatFrameHandler } from "./useChatFrameHandler";
 
 /**
@@ -145,6 +146,10 @@ export function useChatFrameState() {
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
   const [notices, setNotices] = useState<readonly ChatNotice[]>([]);
+  const [queueItems, setQueueItems] = useState<readonly QueueSlotItem[]>([]);
+  const [queueEngine, setQueueEngine] = useState<QueueEngineSummary>({ pendingMessageCount: 0, ordered: [] });
+  const [queuePlaceholders, setQueuePlaceholders] = useState<readonly QueuePlaceholder[]>([]);
+  const [steerPending, setSteerPending] = useState<readonly SteerPendingItem[]>([]);
   const messagesRef = useRef<readonly UiMessage[]>([]);
   const runningRef = useRef(false);
   const submitLatchRef = useRef(false);
@@ -165,6 +170,8 @@ export function useChatFrameState() {
   const resyncPendingRef = useRef(false);
   const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
+  const queuePlaceholdersRef = useRef<readonly QueuePlaceholder[]>([]);
+  const steerPendingRef = useRef<readonly SteerPendingItem[]>([]);
   const ownedSendRequestIdsRef = useRef(new Set<string>());
   const retiredSteerIdsRef = useRef(new Set<number>());
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
@@ -196,6 +203,15 @@ export function useChatFrameState() {
     activitiesRef.current = next;
     setActivities(next);
     setActivitiesVersion((version) => version + 1);
+  };
+
+  const replaceQueuePlaceholders = (next: readonly QueuePlaceholder[]): void => {
+    queuePlaceholdersRef.current = next;
+    setQueuePlaceholders(next);
+  };
+  const replaceSteerPending = (next: readonly SteerPendingItem[]): void => {
+    steerPendingRef.current = next;
+    setSteerPending(next);
   };
 
   // Notices are retained newest-first and capped: a chatty server cannot
@@ -395,6 +411,12 @@ export function useChatFrameState() {
     notifyPendingChanged: () => setPendingVersion((version) => version + 1),
     retainFailedDrafts,
     pushNotice,
+    steerPendingRef,
+    replaceSteerPending,
+    queuePlaceholdersRef,
+    replaceQueuePlaceholders,
+    setQueueItems,
+    setQueueEngine,
   });
 
   // REST is the historical base, but every activity frame received after the
@@ -464,29 +486,17 @@ export function useChatFrameState() {
     return true;
   };
 
-  const followUp = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
+  // While a run (or compaction) is active the server owns the queue: the send
+  // goes out as a plain prompt for the bridge to enqueue and ack. No transcript
+  // row is created; the panel keeps a request-id placeholder until the matching
+  // queue frame lands, and the queue survives reloads server-side.
+  const queueSend = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
     const text = draft.text.trim();
     if ((!text && !draft.image) || !client) return false;
-    const pending = chatState.newPendingRun(
-      draft,
-      text,
-      ++optimisticIdRef.current,
-      requestId,
-      historyLoadedRef.current,
-      messagesRef.current,
-      "followUp",
-    );
-    pendingRef.current.push(pending);
-    const sent = client.send(chatState.followUpSendFrame(pending, sessionId));
-    if (!sent) {
-      pendingRef.current = pendingRef.current.filter((item) => item !== pending);
-      return false;
-    }
-    pending.accepted = true;
+    const sent = client.send(chatState.queuedSendFrame({ text, image: draft.image }, requestId, sessionId));
+    if (!sent) return false;
     ownedSendRequestIdsRef.current.add(requestId);
-    messageVersionRef.current += 1;
-    if (pending.echo) pendingRef.current = pendingRef.current.filter((item) => item !== pending);
-    replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
+    replaceQueuePlaceholders([...queuePlaceholdersRef.current, { requestId, text, hasImage: draft.image !== null }]);
     return true;
   };
 
@@ -505,8 +515,13 @@ export function useChatFrameState() {
     }
     pending.accepted = true;
     ownedSendRequestIdsRef.current.add(requestId);
-    messageVersionRef.current += 1;
-    replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
+    // Persist the steer text so the mark survives settle, resync, and reload:
+    // the mark is UI bookkeeping, re-derived from this store at history
+    // reconciliation because the engine persists no marker.
+    recordSteerMark(sessionId, trimmed);
+    // No optimistic transcript row: the strip shows the pending summary until
+    // the live echo (tagged as a steer) or run.done retires it.
+    replaceSteerPending([...steerPendingRef.current, { requestId, text: trimmed }]);
     return true;
   };
 
@@ -606,7 +621,10 @@ export function useChatFrameState() {
     recoverFailedDraft,
     sendError,
     dismissSendError: () => setSendError(null),
-    hasPendingFollowUp: pendingRef.current.some((pending) => pending.kind === "followUp"),
+    queueItems,
+    queueEngine,
+    queuePlaceholders,
+    steerPending,
     activities,
     activitiesVersion,
     notices,
@@ -615,7 +633,7 @@ export function useChatFrameState() {
     cancelActivityHydration,
     hydrateActivities,
     submit,
-    followUp,
+    queueSend,
     steer,
     markOpen,
     markClose,

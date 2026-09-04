@@ -81,6 +81,14 @@ interface ReconcileHistoryInput {
   readonly uncertain: PendingOptimistic | null;
   readonly preserveCurrent: boolean;
   /**
+   * Occurrence counts of this chat's accepted steer texts (client-side
+   * bookkeeping). Plain canonical user entries whose text has a remaining
+   * occurrence regain the steer mark so it survives resync and reload;
+   * occurrences are consumed from a call-local copy, never from the store,
+   * so every reload derives identical marks.
+   */
+  readonly steerMarks?: Readonly<Record<string, number>>;
+  /**
    * Whether the server may still be streaming the uncertain run (last known
    * isStreaming). When false and the baseline is unknown, an identical turn
    * in delayed history is never accepted as the run's completion.
@@ -125,10 +133,14 @@ export function finalizeRunMessages(
   messages: readonly UiMessage[],
   toolCalls: Readonly<Record<string, ToolEntry>>,
 ): readonly UiMessage[] | null {
-  const withoutSteer = messages.filter((message) => message.customType !== "steer");
+  // Steer-marked rows survive the run terminal. The mark is UI bookkeeping
+  // the client owns: observed engine behavior persists the steer as a plain
+  // user-role entry with no marker and never re-supplies a marked row, so
+  // dropping the local echo here only erased the text. History
+  // reconciliation re-tags the canonical plain flush instead (steerMarks).
   const hasTools = Object.keys(toolCalls).length > 0;
-  if (withoutSteer.length === messages.length && !hasTools) return null;
-  return hasTools ? materializeFinalTools(withoutSteer, toolCalls) : withoutSteer;
+  if (!hasTools) return null;
+  return materializeFinalTools(messages, toolCalls);
 }
 
 /** Create the pending optimistic run, capturing the user-text baseline count. */
@@ -155,17 +167,25 @@ export function newPendingRun(
 }
 
 /** Build the chat.send frame for a pending run. */
-export function promptSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
+export function queuedSendFrame(
+  draft: { readonly text: string; readonly image: PendingOptimistic["image"] },
+  requestId: string,
+  sessionId: string,
+): ChatClientFrame {
   return {
     type: "chat.send",
     sessionId,
-    requestId: pending.requestId,
+    requestId,
     run: {
       kind: "prompt",
-      message: pending.text,
-      ...(pending.image ? { images: [{ data: pending.image.data, mimeType: pending.image.mimeType }] } : {}),
+      message: draft.text,
+      ...(draft.image ? { images: [{ data: draft.image.data, mimeType: draft.image.mimeType }] } : {}),
     },
   };
+}
+
+export function promptSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
+  return queuedSendFrame(pending, pending.requestId, sessionId);
 }
 
 export function steerSendFrame(pending: PendingOptimistic, sessionId: string): ChatClientFrame {
@@ -239,8 +259,22 @@ function mergeSnapshot(snapshot: readonly UiMessage[], current: readonly UiMessa
   return merged;
 }
 
-export function reconcileHistory({ entries, current, pending, active, uncertain, preserveCurrent, serverStreaming = false }: ReconcileHistoryInput): ReconcileHistoryResult {
+export function reconcileHistory({ entries, current, pending, active, uncertain, preserveCurrent, serverStreaming = false, steerMarks }: ReconcileHistoryInput): ReconcileHistoryResult {
   let restored = parseEntries(entries);
+  // Re-derive steer marks on the canonical flush: the engine stores a steer
+  // as a plain user entry, so only this client-side bookkeeping can restore
+  // the presentation across resync and reload.
+  if (steerMarks !== undefined) {
+    const remaining = { ...steerMarks };
+    restored = restored.map((message) => {
+      if (message.role !== "user" || message.customType !== undefined) return message;
+      const text = messageText(message);
+      const left = remaining[text] ?? 0;
+      if (left <= 0) return message;
+      remaining[text] = left - 1;
+      return { ...message, customType: "steer" };
+    });
+  }
   const counts = new Map<string, number>();
   for (const message of restored) {
     if (message.role !== "user") continue;
@@ -302,7 +336,9 @@ export function reconcileHistory({ entries, current, pending, active, uncertain,
     return (counts.get(item.text) ?? 0) <= item.priorMatchingCount;
   });
 
-  const optimistic = unmatched.filter((item) => item.accepted).map(optimisticMessage);
+  // Steers never materialize transcript rows: their pending feedback lives in
+  // the status strip until the live echo arrives (tagged) or the run settles.
+  const optimistic = unmatched.filter((item) => item.accepted && item.kind !== "steer").map(optimisticMessage);
   const snapshot = [...restored, ...optimistic];
   const unmatchedIds = new Set(unmatched.map((item) => item.id));
   const pendingIds = new Set(pending.map((item) => item.id));

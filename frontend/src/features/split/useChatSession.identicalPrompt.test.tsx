@@ -91,7 +91,7 @@ describe("useChatSession delayed identical-prompt history", () => {
 		);
 		expect(optimisticTurns).toHaveLength(1);
 
-		// A second identical submit is accepted independently as a follow-up.
+		// A second identical submit is accepted independently and queued server-side.
 		let secondAccepted = false;
 		act(() => {
 			secondAccepted = current?.submit({ text: "hello", image: null }) ?? false;
@@ -99,7 +99,7 @@ describe("useChatSession delayed identical-prompt history", () => {
 		expect(secondAccepted).toBe(true);
 		expect(sent.filter((frame) => frame.type === "chat.send").map((frame) => frame.run.kind)).toEqual([
 			"prompt",
-			"follow_up",
+			"prompt",
 		]);
 
 		// Real completion: actual server echo + assistant reply + run.done.

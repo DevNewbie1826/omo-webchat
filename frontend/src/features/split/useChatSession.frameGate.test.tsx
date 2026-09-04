@@ -79,7 +79,7 @@ describe("useChatSession inbound session gate", () => {
     expect(current?.error).toBe("socket failure");
   });
 
-  it("reapplies a compacting state after reconnect and sends a follow-up", () => {
+  it("reapplies a compacting state after reconnect and queues a prompt", () => {
     act(() => reconnect());
     act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: true }));
     let accepted = false;
@@ -88,10 +88,11 @@ describe("useChatSession inbound session gate", () => {
     });
     expect(accepted).toBe(true);
     expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after reconnect" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "after reconnect" } },
     ]);
-    expect(current?.messages).toEqual([
-      { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after reconnect" }] },
-    ]);
+    // Queued during compaction: the server owns the pending item, so the
+    // transcript stays untouched.
+    expect(current?.messages).toEqual([]);
+    expect(current?.queuePlaceholders).toHaveLength(1);
   });
 });
