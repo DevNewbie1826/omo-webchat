@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
+import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
@@ -50,25 +50,20 @@ export interface FailedDraft extends ChatDraft {
 const NOTICE_LIMIT = 50;
 
 /**
- * Request outcomes are replayed on every attach. Keep their consumption
- * shared across panes so a failure handled by one pane stays handled when a
+ * chat.send outcomes are replayed on every attach. Keep their consumption
+ * shared across panes so an outcome handled by one pane stays handled when a
  * replacement pane attaches, while bounding the process-lifetime registry.
+ * Local control ids deliberately never enter this registry because their
+ * sequences restart when a pane is replaced.
  */
 const CONSUMED_OUTCOME_LIMIT = 512;
 const consumedOutcomeKeys = new Set<string>();
 const consumedOutcomeOrder: string[] = [];
 
-type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
-
-function consumeOutcome(frame: ErrorFrame): boolean {
-  if (!frame.requestId) return true;
-  // Control request sequences restart in each pane. Include the outcome
-  // discriminator so those local ids cannot collide across operation types,
-  // while an attach replay of the same server frame remains identical.
-  const key = JSON.stringify([frame.requestId, frame.code, frame.command, frame.message]);
-  if (consumedOutcomeKeys.has(key)) return false;
-  consumedOutcomeKeys.add(key);
-  consumedOutcomeOrder.push(key);
+function consumeOutcome(requestId: string): boolean {
+  if (consumedOutcomeKeys.has(requestId)) return false;
+  consumedOutcomeKeys.add(requestId);
+  consumedOutcomeOrder.push(requestId);
   if (consumedOutcomeOrder.length > CONSUMED_OUTCOME_LIMIT) {
     const expired = consumedOutcomeOrder.shift();
     if (expired !== undefined) consumedOutcomeKeys.delete(expired);
@@ -147,6 +142,7 @@ export function useChatFrameState() {
   const [restoreVersion, setRestoreVersion] = useState(0);
   const [retryDraft, setRetryDraft] = useState<(ChatDraft & { readonly version: number }) | null>(null);
   const [failedDrafts, setFailedDrafts] = useState<readonly FailedDraft[]>([]);
+  const [, setPendingVersion] = useState(0);
   const [sendError, setSendError] = useState<JsonObject | null>(null);
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
@@ -171,6 +167,7 @@ export function useChatFrameState() {
   const resyncPendingRef = useRef(false);
   const [resyncBusy, setResyncBusy] = useState(false);
   const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
+  const ownedSendRequestIdsRef = useRef(new Set<string>());
   const retiredSteerIdsRef = useRef(new Set<number>());
   const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
   const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
@@ -352,6 +349,7 @@ export function useChatFrameState() {
     runningRef,
     submitLatchRef,
     pendingRef,
+    ownedSendRequestIdsRef,
     retiredSteerIdsRef,
     activeRunRef,
     uncertainRunRef,
@@ -396,6 +394,7 @@ export function useChatFrameState() {
     setRestoreVersion,
     setSendError,
     consumeOutcome,
+    notifyPendingChanged: () => setPendingVersion((version) => version + 1),
     retainFailedDrafts,
     pushNotice,
   });
@@ -453,6 +452,7 @@ export function useChatFrameState() {
       return false;
     }
     pending.accepted = true;
+    ownedSendRequestIdsRef.current.add(requestId);
     messageVersionRef.current += 1;
     activeRunRef.current = pending;
     runningRef.current = true;
@@ -485,6 +485,7 @@ export function useChatFrameState() {
       return false;
     }
     pending.accepted = true;
+    ownedSendRequestIdsRef.current.add(requestId);
     messageVersionRef.current += 1;
     if (pending.echo) pendingRef.current = pendingRef.current.filter((item) => item !== pending);
     replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
@@ -505,6 +506,7 @@ export function useChatFrameState() {
       return false;
     }
     pending.accepted = true;
+    ownedSendRequestIdsRef.current.add(requestId);
     messageVersionRef.current += 1;
     replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
     return true;

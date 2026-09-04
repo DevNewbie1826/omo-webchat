@@ -81,6 +81,50 @@ describe("useChatSession active-run sends", () => {
 		]);
 	});
 
+	it("retires a successfully completed steer before an identical follow-up echo", () => {
+		act(() => {
+			deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+			deliver({ type: "run.started", sessionId: session.id });
+			current?.steer("same work");
+		});
+		const steerFrame = sent.find((frame) => frame.type === "chat.send" && frame.run.kind === "steer");
+		if (steerFrame?.type !== "chat.send" || !steerFrame.requestId) throw new Error("missing steer request identity");
+		const requestId = steerFrame.requestId;
+
+		act(() => {
+			deliver({ type: "run.done", sessionId: session.id, reason: "stop" });
+			deliver({
+				type: "ack",
+				sessionId: session.id,
+				command: "chat.send",
+				requestId,
+				phase: "completed",
+			});
+			deliver({ type: "run.started", sessionId: session.id });
+			current?.submit({ text: "same work", image: null });
+		});
+
+		act(() => deliver({
+			type: "message",
+			sessionId: session.id,
+			message: { role: "user", blocks: [{ kind: "text", text: "same work" }], ts: 10 },
+		}));
+		expect(current?.messages).toEqual([
+			{ role: "user", blocks: [{ kind: "text", text: "same work" }], ts: 10 },
+		]);
+
+		// A replayed completion is inert after the operation has been retired.
+		const settledMessages = current?.messages;
+		act(() => deliver({
+			type: "ack",
+			sessionId: session.id,
+			command: "chat.send",
+			requestId,
+			phase: "completed",
+		}));
+		expect(current?.messages).toBe(settledMessages);
+	});
+
 	it("restores a steer when its correlated rejection arrives after run.done", () => {
 		act(() => {
 			deliver({ type: "run.started", sessionId: "chat-1" });

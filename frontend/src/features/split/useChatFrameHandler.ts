@@ -25,6 +25,7 @@ interface ChatFrameHandlerBindings {
   readonly runningRef: Current<boolean>;
   readonly submitLatchRef: Current<boolean>;
   readonly pendingRef: Current<chatState.PendingOptimistic[]>;
+  readonly ownedSendRequestIdsRef: Current<Set<string>>;
   readonly retiredSteerIdsRef: Current<Set<number>>;
   readonly activeRunRef: Current<chatState.PendingOptimistic | null>;
   readonly uncertainRunRef: Current<chatState.PendingOptimistic | null>;
@@ -65,7 +66,8 @@ interface ChatFrameHandlerBindings {
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setSendError: StateSetter<JsonObject | null>;
-  readonly consumeOutcome: (frame: Extract<ChatServerFrame, { readonly type: "error" }>) => boolean;
+  readonly consumeOutcome: (requestId: string) => boolean;
+  readonly notifyPendingChanged: () => void;
   readonly retainFailedDrafts: (runs: readonly chatState.PendingOptimistic[]) => void;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
 }
@@ -289,8 +291,23 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       }
       case "ack":
         if (frame.command === "chat.send" && frame.requestId) {
+          if (frame.phase !== "completed") {
+            const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
+            if (pending) pending.admitted = true;
+            return;
+          }
+          // Completion belongs only to the pane that originated this send.
+          // Once consumed, replayed terminal acks have no local state to touch.
+          if (!bindings.ownedSendRequestIdsRef.current.has(frame.requestId)
+            || !bindings.consumeOutcome(frame.requestId)) return;
+          bindings.ownedSendRequestIdsRef.current.delete(frame.requestId);
           const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
-          if (pending) pending.admitted = true;
+          // Prompt correlation already has a dedicated echo/active-run path.
+          // Detached operations do not, so terminal success retires theirs.
+          if (pending && pending.kind !== "prompt") {
+            bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
+            bindings.notifyPendingChanged();
+          }
         } else if (frame.requestId) {
           bindings.controls.ledger.commit(frame.requestId);
         }
@@ -303,10 +320,17 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
         return;
       case "error": {
-        // Attach replay can deliver a terminal request outcome more than once.
-        // Claim it before any banner or settlement side effect so a dismissed
-        // failure cannot be resurrected in this or a newly attached pane.
-        if (frame.requestId && !bindings.consumeOutcome(frame)) return;
+        // Local control ids restart when a pane is replaced, so settle an owned
+        // control before consulting the process-wide send replay registry.
+        if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) {
+          bindings.setError(frame.message);
+          return;
+        }
+        // Only chat.send terminal outcomes are ledger-backed across attaches.
+        // Claim those before banner or settlement side effects so replay cannot
+        // resurrect a dismissed failure.
+        if (frame.requestId && frame.command === "chat.send"
+          && !bindings.consumeOutcome(frame.requestId)) return;
         // The engine unloaded this idle session and deleted it from its
         // registry; the engine process itself is still alive and the
         // conversation is durable on disk. Not terminal: surface the calm
@@ -353,10 +377,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         if (frame.code === "decode_failed" || frame.code === "incomplete_history" || frame.code === "adoption_required") bindings.pageBuffer.reset();
-        if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) {
-          bindings.setError(frame.message);
-          return;
-        }
         // Send-path command failures persist in a dedicated banner slot instead
         // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);
@@ -375,6 +395,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
               ? bindings.activeRunRef.current ?? undefined
               : undefined;
         if (!pending) return;
+        bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
         bindings.messageVersionRef.current += 1;
         bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
         bindings.retiredSteerIdsRef.current.delete(pending.id);
