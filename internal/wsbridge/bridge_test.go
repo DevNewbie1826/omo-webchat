@@ -131,11 +131,26 @@ func TestRouteContextBudgetsLongRunningFramesSeparately(t *testing.T) {
 		})
 	}
 
+	createFrame, err := wscontract.ParseClientFrame([]byte(`{"type":"chat.create","wsId":"ws-1","chatId":"chat-1"}`))
+	if err != nil {
+		t.Fatalf("parse create: %v", err)
+	}
+	started := time.Now()
+	createCtx, createCancel := c.routeContext(createFrame)
+	defer createCancel()
+	createDeadline, ok := createCtx.Deadline()
+	if !ok {
+		t.Fatal("create route has no deadline")
+	}
+	if got := createDeadline.Sub(started); got < openFrameTimeout-time.Second || got > openFrameTimeout+time.Second {
+		t.Fatalf("create route budget = %v, want %v", got, openFrameTimeout)
+	}
+
 	frame, err := wscontract.ParseClientFrame([]byte(`{"type":"ping"}`))
 	if err != nil {
 		t.Fatalf("parse ping: %v", err)
 	}
-	started := time.Now()
+	started = time.Now()
 	ctx, cancel := c.routeContext(frame)
 	defer cancel()
 	deadline, ok := ctx.Deadline()
@@ -526,6 +541,17 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	return conn, frames
 }
 
+func TestChatCreateFailureUsesStableUserMessage(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "create-failure-message")
+	h.daemon.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeInvalidPath)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "create-failure-message"})
+	got := frames.next(t, "error")
+	if got["code"] != "start_failed" || got["message"] != "could not open the session; please retry" {
+		t.Fatalf("create failure = %#v", got)
+	}
+}
+
 func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
 	conn, frames := h.connect(t)
@@ -655,7 +681,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-identity"})
 	frames.next(t, "ready")
 
-	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeTooManySessions)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-1",
 		"run": map[string]any{"kind": "prompt", "message": "fail"},
@@ -681,7 +707,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	})
 	nextSuccessfulSendAcks(t, frames, "prompt-2")
 
-	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeTooManySessions)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "follow-1",
 		"run": map[string]any{"kind": "follow_up", "message": "later"},
@@ -1324,7 +1350,7 @@ func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
-	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeTooManySessions)
 	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(releaseRaw) }

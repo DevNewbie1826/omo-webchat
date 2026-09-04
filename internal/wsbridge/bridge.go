@@ -28,6 +28,7 @@ const (
 	ContractVersion        = 2
 	defaultWriteTimeout    = 10 * time.Second
 	controlFrameTimeout    = 15 * time.Second
+	openFrameTimeout       = 90 * time.Second
 	takeoverActivityWindow = 250 * time.Millisecond
 )
 
@@ -460,8 +461,8 @@ func (c *connection) route(raw []byte) {
 
 func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context, context.CancelFunc) {
 	// Prompt, in-run sends, and compaction have observably long response times.
-	// Their lifetime is therefore the socket lifetime; cheap control work keeps
-	// the bounded interactive budget.
+	// Their lifetime is therefore the socket lifetime. Opening gets a larger
+	// bounded budget; cheap control work keeps the interactive budget.
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
 		switch string(f.Run.Kind) {
@@ -470,6 +471,8 @@ func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context
 		}
 	case *wscontract.ChatCompactFrame:
 		return c.ctx, func() {}
+	case *wscontract.ChatCreateFrame:
+		return context.WithTimeout(c.ctx, openFrameTimeout)
 	}
 	return context.WithTimeout(c.ctx, controlFrameTimeout)
 }
@@ -866,8 +869,8 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 	return session.ErrorInfo{Code: "resume_failed", Message: err.Error()}
 }
 
-func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
-	ctx, cancel := context.WithTimeout(c.ctx, c.bridge.cfg.HistoryTimeout)
+func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFrame) {
+	ctx, cancel := context.WithTimeout(routeCtx, c.bridge.cfg.HistoryTimeout)
 	defer cancel()
 	c.unbind()
 	c.sub = newSubscriber(c)
@@ -981,13 +984,14 @@ func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
 	}
 	if err != nil {
 		c.unbind()
+		c.bridge.cfg.Logger.Warn("opening v2 chat session", "chat_id", f.ChatID, "error", err)
 		var drift *session.ExternalWriteError
 		if errors.As(err, &drift) {
 			c.sendExternalWriteError(drift, "", "")
 			return
 		}
 		code := "start_failed"
-		message := err.Error()
+		message := "could not open the session; please retry"
 		switch {
 		case errors.Is(err, ErrChatDeleted):
 			code = "no_chat"

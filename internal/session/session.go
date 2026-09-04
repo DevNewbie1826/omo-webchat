@@ -320,6 +320,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	s.lifecycleMu.Unlock()
 
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
 			s.lifecycleMu.Lock()
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
@@ -332,6 +333,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				steerErr = s.classifySendError(steerErr)
 				s.completePrompt(seq, msg, steerErr)
 				if detached {
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
@@ -339,6 +341,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			}
 			if detached {
 				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
+					steerErr = s.classifySendError(steerErr)
 					s.completePrompt(seq, msg, steerErr)
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
@@ -355,6 +358,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	if detached {
 		err = s.callDetachedMutation(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, complete)
 		if err != nil {
+			err = s.classifySendError(err)
 			s.completePrompt(seq, msg, err)
 		}
 		return err
@@ -362,6 +366,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 
 	var retryErr error
 	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
 			s.lifecycleMu.Lock()
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
@@ -372,8 +377,10 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				return
 			}
 			_, retryErr = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				steerErr = s.classifySendError(steerErr)
 				s.completePrompt(seq, msg, steerErr)
 			})
+			retryErr = s.classifySendError(retryErr)
 			return
 		}
 		retryErr = callErr
@@ -382,7 +389,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	if err != nil && strings.HasPrefix(err.Error(), busyAgentErrorPrefix) {
 		return retryErr
 	}
-	return err
+	return s.classifySendError(err)
 }
 
 func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
@@ -508,6 +515,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 		return err
 	}
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		s.noteTransportError(callErr)
 		if detached {
 			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
@@ -516,12 +524,13 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	if detached {
 		err = s.callDetachedMutation(ctx, command(route), complete)
 		if err != nil {
+			err = s.classifySendError(err)
 			s.noteTransportError(err)
 		}
 		return err
 	}
 	_, err = s.client.CallRetained(ctx, command(route), complete)
-	return err
+	return s.classifySendError(err)
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
@@ -561,9 +570,13 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 			case s.quarantineErr != nil:
 				err = s.quarantineErr
 			case s.resumable:
-				err = ErrSessionResumable
+				if !errors.Is(err, ErrSessionResumable) {
+					err = ErrSessionResumable
+				}
 			case s.closed || s.closing:
-				err = ErrSessionClosed
+				if !errors.Is(err, ErrSessionClosed) {
+					err = ErrSessionClosed
+				}
 			}
 			s.lifecycleMu.Unlock()
 		}
@@ -1465,6 +1478,35 @@ func (s *Session) noteTransportError(err error) {
 	if errors.Is(err, omorpc.ErrDisconnected) {
 		s.manager.invalidateEpoch(s.epoch)
 	}
+}
+
+// classifySendError turns a definitive provider-side route loss into the
+// lifecycle signal consumed by transparent send recovery. The transition is
+// silent: the replacement send owns the eventual user-visible outcome.
+func (s *Session) classifySendError(err error) error {
+	var stable *omorpc.StableError
+	if !errors.As(err, &stable) || (stable.Code != omorpc.ErrCodeUnknownSession && stable.Code != omorpc.ErrCodeSessionClosing) {
+		return err
+	}
+	s.lifecycleMu.Lock()
+	if !s.closed && !s.invalidated {
+		s.markProviderUnloadedLocked()
+	}
+	s.lifecycleMu.Unlock()
+	if errors.Is(err, ErrSessionResumable) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrSessionResumable, err)
+}
+
+func (s *Session) markProviderUnloadedLocked() {
+	s.invalidated = true
+	s.resumable = true
+	s.promptInFlight = false
+	s.providerRunActive = false
+	s.compactionActive = false
+	s.localCommandActive = false
+	s.cancelIdleLocked()
 }
 
 func (s *Session) activeLocked() bool {

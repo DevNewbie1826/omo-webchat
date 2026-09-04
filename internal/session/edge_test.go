@@ -338,10 +338,10 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		sess, _, _ := acquire(t, mgr, chat, sub)
 		sub.next(t) // ready
 
-		d.FailNext(omorpc.CmdPrompt, omorpctest.CodeUnknownSession)
+		d.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeTooManySessions)
 		err := sess.SendPrompt(context.Background(), "rejected", nil)
 		var stable *omorpc.StableError
-		if !errors.As(err, &stable) || stable.Code != omorpctest.CodeUnknownSession {
+		if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeTooManySessions {
 			t.Fatalf("prompt failure must surface the stable code, got %v", err)
 		}
 		if summary, ok := sess.summary(); !ok || summary.Title != "" {
@@ -450,11 +450,11 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		// NOW A's outcome arrives — as a FAILURE — while B owns the latch.
 		// The sequence guard must skip the rollback: B stays in flight.
 		d.WriteRaw(fmt.Appendf(nil,
-			`{"id":%q,"type":"response","command":"prompt","success":false,"error":"unknown_session"}`+"\n", aid))
+			`{"id":%q,"type":"response","command":"prompt","success":false,"error":"too_many_sessions"}`+"\n", aid))
 		select {
 		case err := <-errA:
 			var stable *omorpc.StableError
-			if !errors.As(err, &stable) || stable.Code != omorpctest.CodeUnknownSession {
+			if !errors.As(err, &stable) || stable.Code != omorpc.ErrCodeTooManySessions {
 				t.Fatalf("stale A failure not stable-typed: %v", err)
 			}
 		case <-time.After(testTimeout):

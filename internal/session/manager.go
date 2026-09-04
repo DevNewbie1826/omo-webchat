@@ -185,7 +185,7 @@ type Manager struct {
 	cleanupWG            sync.WaitGroup
 	eventWG              sync.WaitGroup
 	openCleanupExpired   chan struct{}
-	pendingOpen          map[string]bool
+	pendingOpen          map[string]chan struct{}
 	openSlots            chan struct{}
 	overviewCache        map[string]*overviewCacheEntry
 	overviewCurrent      map[string]Summary
@@ -214,7 +214,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -1108,19 +1108,30 @@ type openResult struct {
 // tracks that ownership until the response or epoch death is observed and any
 // routing handle from a late success has been closed.
 func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
-	select {
-	case m.openSlots <- struct{}{}:
-	default:
-		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ErrOpenBusy
-	}
-	m.mu.Lock()
-	if m.pendingOpen[chatID] {
+	for {
+		select {
+		case m.openSlots <- struct{}{}:
+		default:
+			return omorpc.OpenSessionData{}, omorpc.EpochToken{}, ErrOpenBusy
+		}
+		m.mu.Lock()
+		pending := m.pendingOpen[chatID]
+		if pending == nil {
+			m.pendingOpen[chatID] = make(chan struct{})
+			m.mu.Unlock()
+			break
+		}
 		m.mu.Unlock()
 		<-m.openSlots
-		return omorpc.OpenSessionData{}, omorpc.EpochToken{}, errors.New("session: open already in flight")
+		select {
+		case <-pending:
+			if err := ctx.Err(); err != nil {
+				return omorpc.OpenSessionData{}, omorpc.EpochToken{}, fmt.Errorf("session: waiting for in-flight open: %w", err)
+			}
+		case <-ctx.Done():
+			return omorpc.OpenSessionData{}, omorpc.EpochToken{}, fmt.Errorf("session: waiting for in-flight open: %w", ctx.Err())
+		}
 	}
-	m.pendingOpen[chatID] = true
-	m.mu.Unlock()
 	opCtx, cancel := context.WithCancel(context.Background())
 	result := make(chan openResult, 1)
 	m.cleanupWG.Add(1)
@@ -1171,8 +1182,9 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 
 func (m *Manager) clearPendingOpen(chatID string) {
 	m.mu.Lock()
-	if m.pendingOpen[chatID] {
+	if pending := m.pendingOpen[chatID]; pending != nil {
 		delete(m.pendingOpen, chatID)
+		close(pending)
 		<-m.openSlots
 	}
 	m.mu.Unlock()
