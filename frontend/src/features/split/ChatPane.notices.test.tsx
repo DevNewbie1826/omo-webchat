@@ -85,6 +85,6 @@ describe("ChatPane notice frames", () => {
     });
 
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("auto_retry_start");
+    expect(container.textContent).toContain("notice.autoRetryStarted");
   });
 });
