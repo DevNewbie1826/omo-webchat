@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,8 +56,8 @@ func TestDelayedBusyPromptDoesNotSteerIntoNewerRun(t *testing.T) {
 
 	select {
 	case err := <-aDone:
-		if err != nil {
-			t.Fatalf("A completion: %v", err)
+		if err == nil || !strings.HasPrefix(err.Error(), busyAgentErrorPrefix) {
+			t.Fatalf("A completion = %v, want original busy failure", err)
 		}
 	case <-time.After(testTimeout):
 		t.Fatal("A response did not complete")
@@ -66,6 +67,31 @@ func TestDelayedBusyPromptDoesNotSteerIntoNewerRun(t *testing.T) {
 	}
 	if snapshot := s.RunSnapshot(); !snapshot.Streaming {
 		t.Fatalf("newer B run lost ownership: %+v", snapshot)
+	}
+}
+
+func TestAbortBypassesFullDetachedMutationLimit(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	sub := newRecorder(32)
+	s, _, _ := acquire(t, mgr, testChat{id: "abort-capacity", cwd: t.TempDir()}, sub)
+	sub.next(t)
+
+	d.EmitSession(s.SessionFile(), map[string]any{"type": omorpctest.EventAgentStart})
+	sub.await(t, FrameRunStarted)
+	release := d.BlockHandler(omorpc.CmdFollowUp)
+	defer release()
+	for i := 0; i < DetachedMutationLimit; i++ {
+		if err := s.SendFollowUpDetached(context.Background(), "queued", nil); err != nil {
+			t.Fatalf("detached mutation %d: %v", i, err)
+		}
+	}
+	if err := s.Abort(context.Background()); err != nil {
+		t.Fatalf("abort at full send capacity: %v", err)
+	}
+	if !d.AwaitRequestCount(omorpc.CmdAbort, 1, testTimeout) {
+		t.Fatal("abort did not reach provider at full send capacity")
 	}
 }
 

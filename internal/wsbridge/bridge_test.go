@@ -540,6 +540,89 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	}
 }
 
+func TestChatSendRequestIDReplaysAndDeduplicatesAfterReconnect(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-deduplicate")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseRaw) }
+	t.Cleanup(release)
+	request := map[string]any{
+		"type": "chat.send", "sessionId": "send-deduplicate", "requestId": "retry-1",
+		"run": map[string]any{"kind": "follow_up", "message": "only once"},
+	}
+	writeClient(t, conn, request)
+	if ack := frames.next(t, "ack"); ack["requestId"] != "retry-1" {
+		t.Fatalf("initial admission ack = %v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("initial follow-up was not forwarded")
+	}
+	_ = conn.WriteClose(1000, nil)
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
+	replay.next(t, "ready")
+	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" || ack["command"] != "chat.send" {
+		t.Fatalf("replayed admission = %v", ack)
+	}
+	writeClient(t, reconnected, request)
+	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" {
+		t.Fatalf("duplicate outcome = %v", ack)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdFollowUp); got != 1 {
+		t.Fatalf("duplicate request reached provider %d times", got)
+	}
+	release()
+}
+
+func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-error-replay")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(releaseRaw) }
+	t.Cleanup(release)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-error-replay", "requestId": "failed-1",
+		"run": map[string]any{"kind": "follow_up", "message": "fails while away"},
+	})
+	frames.next(t, "ack")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("follow-up was not forwarded")
+	}
+	_ = conn.WriteClose(1000, nil)
+
+	observerConn, observer := h.connect(t)
+	writeClient(t, observerConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	observer.next(t, "ready")
+	observer.next(t, "ack")
+	release()
+	if failure := observer.next(t, "error"); failure["requestId"] != "failed-1" || failure["command"] != "chat.send" {
+		t.Fatalf("detached completion failure = %v", failure)
+	}
+	_ = observerConn.WriteClose(1000, nil)
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
+	replay.next(t, "ready")
+	failure := replay.next(t, "error")
+	if failure["requestId"] != "failed-1" || failure["command"] != "chat.send" || failure["code"] != "provider_error" {
+		t.Fatalf("replayed completion failure = %v", failure)
+	}
+}
+
 func TestChatSendDetachedMutationBackpressure(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "send-backpressure")
 	conn, frames := h.connect(t)

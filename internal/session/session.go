@@ -19,6 +19,7 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
+	maxSendOperationLedger   = 64
 	// busyAgentErrorPrefix is the observed response prefix when a prompt reaches
 	// a route that is already processing another run.
 	busyAgentErrorPrefix = "Agent is already processing"
@@ -31,6 +32,11 @@ type closeTransaction struct {
 	done chan struct{}
 	err  error
 	idle bool
+}
+
+type sendOperation struct {
+	outcome Frame
+	err     error
 }
 
 type Session struct {
@@ -61,6 +67,8 @@ type Session struct {
 	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
 	detachedMutations                                                       int
+	sendOperations                                                          map[string]sendOperation
+	sendOperationFIFO                                                       []string
 	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
@@ -174,7 +182,12 @@ func (s *Session) SendPromptDetached(ctx context.Context, msg string, images []m
 // SendPromptDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendPromptDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
-	return s.sendPrompt(ctx, msg, images, true, requestID)
+	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
+		return prior
+	}
+	err := s.sendPrompt(ctx, msg, images, true, requestID)
+	s.recordSendOperation(requestID, err)
+	return err
 }
 
 func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool, requestID string) error {
@@ -209,6 +222,10 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
 			s.lifecycleMu.Unlock()
 			if !ownsPrompt {
+				s.completePrompt(seq, msg, callErr)
+				if detached {
+					s.publishDetachedError(callErr, "chat.send", requestID)
+				}
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
@@ -247,6 +264,8 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
 			s.lifecycleMu.Unlock()
 			if !ownsPrompt {
+				retryErr = callErr
+				s.completePrompt(seq, msg, callErr)
 				return
 			}
 			_, retryErr = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
@@ -299,9 +318,14 @@ func (s *Session) SendSteerDetached(ctx context.Context, msg string) error {
 // SendSteerDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendSteerDetachedWithRequestID(ctx context.Context, msg, requestID string) error {
-	return s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
+		return prior
+	}
+	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
 	})
+	s.recordSendOperation(requestID, err)
+	return err
 }
 
 func (s *Session) SendFollowUp(ctx context.Context, msg string, images []map[string]string) error {
@@ -318,9 +342,14 @@ func (s *Session) SendFollowUpDetached(ctx context.Context, msg string, images [
 // SendFollowUpDetachedWithRequestID preserves browser operation identity
 // through detached response completion.
 func (s *Session) SendFollowUpDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
-	return s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
+		return prior
+	}
+	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
 	})
+	s.recordSendOperation(requestID, err)
+	return err
 }
 
 func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, command func(string) omorpc.Command) error {
@@ -383,19 +412,71 @@ func (s *Session) publishDetachedError(err error, command, requestID string) {
 	if err == nil {
 		return
 	}
-	code := "provider_error"
-	if errors.Is(err, ErrSendBackpressure) {
-		code = "send_backpressure"
+	s.recordSendOperation(requestID, err)
+	s.lifecycleMu.Lock()
+	frame := s.sendOperationFrameLocked(requestID, err)
+	frame.Command = command
+	s.publishLocked(frame)
+	s.lifecycleMu.Unlock()
+}
+
+func (s *Session) beginSendOperation(requestID string) (error, bool) {
+	if requestID == "" {
+		return nil, false
 	}
 	s.lifecycleMu.Lock()
-	s.publishLocked(Frame{
-		Kind:      FrameError,
-		SessionID: s.durableID,
-		Command:   command,
-		RequestID: requestID,
-		Data:      ErrorInfo{Code: code, Message: err.Error()},
-	})
+	defer s.lifecycleMu.Unlock()
+	if operation, ok := s.sendOperations[requestID]; ok {
+		return operation.err, true
+	}
+	if s.sendOperations == nil {
+		s.sendOperations = make(map[string]sendOperation)
+	}
+	if len(s.sendOperationFIFO) == maxSendOperationLedger {
+		delete(s.sendOperations, s.sendOperationFIFO[0])
+		s.sendOperationFIFO = s.sendOperationFIFO[1:]
+	}
+	s.sendOperations[requestID] = sendOperation{}
+	s.sendOperationFIFO = append(s.sendOperationFIFO, requestID)
+	return nil, false
+}
+
+func (s *Session) recordSendOperation(requestID string, err error) {
+	if requestID == "" {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if operation, ok := s.sendOperations[requestID]; ok {
+		// A detached response may win the race with the admission return. Never
+		// replace that terminal failure with the earlier admission ACK.
+		if err != nil || operation.outcome.Kind == "" {
+			s.sendOperations[requestID] = sendOperation{outcome: s.sendOperationFrameLocked(requestID, err), err: err}
+		}
+	}
 	s.lifecycleMu.Unlock()
+}
+
+func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {
+	if err == nil {
+		return Frame{Kind: FrameAck, SessionID: s.durableID, Command: "chat.send", RequestID: requestID}
+	}
+	info := ErrorInfo{Code: "provider_error", Message: err.Error()}
+	switch {
+	case errors.Is(err, ErrPromptInFlight):
+		info.Code = "prompt_in_flight"
+	case errors.Is(err, ErrCompactionInFlight):
+		info.Code = "compaction_in_flight"
+	case errors.Is(err, ErrSendBackpressure):
+		info.Code = "send_backpressure"
+	default:
+		var drift *ExternalWriteError
+		if errors.As(err, &drift) {
+			info.Code = "external-write-detected"
+			info.KnownLeaf = drift.KnownLeaf
+			info.ObservedLeaf = drift.ObservedLeaf
+		}
+	}
+	return Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
 }
 
 func (s *Session) completeLocalCommandLocked(seq uint64) {
@@ -426,7 +507,7 @@ func (s *Session) Abort(ctx context.Context) error {
 	}
 	s.abortInFlight = true
 	s.lifecycleMu.Unlock()
-	err = s.callDetachedMutation(ctx, omorpc.Abort{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+	err = s.client.CallDetached(ctx, omorpc.Abort{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
 		s.lifecycleMu.Lock()
 		s.abortInFlight = false
@@ -890,13 +971,18 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 		return nil, nil, ErrSessionResumable
 	}
 	s.cancelIdleLocked()
-	initial := make([]Frame, 0, 3)
+	initial := make([]Frame, 0, 3+len(s.sendOperationFIFO))
 	if s.readyPublished {
 		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.durableID, Resumed: s.resumed})
 	}
 	for _, name := range activitySnapshotOrder {
 		if data := s.activitySnapshots[name]; len(data) > 0 {
 			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
+		}
+	}
+	for _, requestID := range s.sendOperationFIFO {
+		if outcome := s.sendOperations[requestID].outcome; outcome.Kind != "" {
+			initial = append(initial, outcome)
 		}
 	}
 	id, target, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)

@@ -45,6 +45,7 @@
       "properties": {
         "type": { "const": "chat.send" },
         "sessionId": { "type": "string" },
+        "requestId": { "type": "string" },
         "run": {
           "type": "object",
           "additionalProperties": false,
