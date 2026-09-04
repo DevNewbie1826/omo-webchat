@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,7 +75,10 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 		select {
 		case <-c.notify:
 		case <-timer.C:
-			t.Fatalf("timed out waiting for %s", typ)
+			c.mu.Lock()
+			pending := append([]json.RawMessage(nil), c.frames...)
+			c.mu.Unlock()
+			t.Fatalf("timed out waiting for %s; pending frames: %s", typ, pending)
 		}
 	}
 }
@@ -404,20 +408,39 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 }
 
 type inPlaceBridgeHarness struct {
-	daemon  *omorpctest.Daemon
-	store   *cursorstore.Store
-	manager *session.Manager
-	server  *httptest.Server
-	path    string
+	daemon      *omorpctest.Daemon
+	store       *cursorstore.Store
+	manager     *session.Manager
+	bridge      *Handler
+	server      *httptest.Server
+	path        string
+	chatVersion atomic.Uint64
 }
 
 func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness {
+	return newInPlaceBridgeHarnessWithHistory(t, chatID, 1)
+}
+
+func newInPlaceBridgeHarnessWithHistory(t *testing.T, chatID string, entries int) *inPlaceBridgeHarness {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, chatID+".jsonl")
-	body := "{\"type\":\"session\",\"id\":\"durable-" + chatID + "\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":" + string(mustJSON(t, dir)) + "}\n" +
-		"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	var body strings.Builder
+	fmt.Fprintf(&body, "{\"type\":\"session\",\"id\":\"durable-%s\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%s}\n", chatID, mustJSON(t, dir))
+	parent := ""
+	for i := 0; i < entries; i++ {
+		id := "root"
+		if i != 0 {
+			id = fmt.Sprintf("entry-%d", i)
+		}
+		parentJSON := "null"
+		if parent != "" {
+			parentJSON = string(mustJSON(t, parent))
+		}
+		fmt.Fprintf(&body, "{\"type\":\"message\",\"id\":%s,\"parentId\":%s,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n", mustJSON(t, id), parentJSON)
+		parent = id
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	daemonDir, err := os.MkdirTemp("", "wsbridge-inplace-")
@@ -451,14 +474,42 @@ func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness 
 		t.Fatal(err)
 	}
 	manager := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store), RetryBackoff: time.Millisecond})
-	server := httptest.NewServer(New(Config{Manager: manager, Store: store}))
+	harness := &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, path: path}
+	bridge := New(Config{
+		Manager: manager, Store: store,
+		PrepareChatVersion: func(context.Context, string, string) (uint64, error) { return harness.chatVersion.Load(), nil },
+		ChatVersion:        func(string) uint64 { return harness.chatVersion.Load() },
+	})
+	harness.bridge = bridge
+	server := httptest.NewServer(bridge)
+	harness.server = server
 	t.Cleanup(func() {
 		server.Close()
 		_ = manager.CloseAll(context.Background())
 		_ = client.Close()
 		d.Stop()
 	})
-	return &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, server: server, path: path}
+	return harness
+}
+
+func (h *inPlaceBridgeHarness) soleServerConnection(t *testing.T) *connection {
+	t.Helper()
+	var found *connection
+	h.bridge.conns.Range(func(_, value any) bool {
+		if found != nil {
+			t.Fatal("expected exactly one server connection")
+		}
+		found = value.(*connection)
+		return true
+	})
+	if found == nil {
+		t.Fatal("server connection was not registered")
+	}
+	return found
+}
+
+func (h *inPlaceBridgeHarness) soleServerConnectionDone(t *testing.T) <-chan struct{} {
+	return h.soleServerConnection(t).ctx.Done()
 }
 
 func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
@@ -473,6 +524,86 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 	t.Cleanup(func() { _ = conn.WriteClose(1000, nil) })
 	return conn, frames
+}
+
+func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
+	conn, frames := h.connect(t)
+	// Install the gate before initialization can issue get_commands; both the
+	// initialization query and the explicit query are then deterministically
+	// inside the blocked generation.
+	release := h.daemon.BlockHandler(omorpc.CmdGetCommands)
+	defer release()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "blocked-query-binding"})
+	frames.next(t, "ready")
+	serverConn := h.soleServerConnection(t)
+	_, sess := serverConn.binding()
+	if sess == nil {
+		t.Fatal("server connection was not bound")
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		serverConn.queryCommands(context.Background(), sess)
+		close(returned)
+	}()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetCommands, 2, 5*time.Second) {
+		t.Fatal("blocked query did not reach provider")
+	}
+	serverConn.stateMu.Lock()
+	serverConn.chatID = "replacement-chat"
+	serverConn.bindingGeneration++
+	serverConn.stateMu.Unlock()
+	release()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked query did not return")
+	}
+	// Pong is ordered after the direct query goroutine has returned and proves
+	// the client reader has consumed every preceding socket write.
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "commands" {
+			t.Fatalf("stale query crossed binding generation: %s", raw)
+		}
+	}
+}
+
+func TestCheckedBindingActivatesBeforeHistoryHydration(t *testing.T) {
+	h := newInPlaceBridgeHarnessWithHistory(t, "checked-large-history", (preActivationBufferCapacity+1)*100)
+	conn, frames := h.connect(t)
+	release := h.daemon.BlockHandler(omorpc.CmdGetEntries)
+	defer release()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "checked-large-history", "recovery": true})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, 5*time.Second) {
+		t.Fatal("checked acquisition did not reach history hydration")
+	}
+	if ready := frames.next(t, "ready"); ready["sessionId"] != "checked-large-history" {
+		t.Fatalf("binding was not activated before hydration: %#v", ready)
+	}
+	chatID, sess := h.soleServerConnection(t).binding()
+	if chatID != "checked-large-history" || sess == nil {
+		t.Fatalf("validated route was not published before hydration: chat=%q session=%p", chatID, sess)
+	}
+	release()
+	for {
+		if got := frames.next(t, "entries"); got["final"] == true {
+			break
+		}
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	select {
+	case <-h.soleServerConnectionDone(t):
+		t.Fatal("large checked hydration overflowed the pre-activation buffer")
+	default:
+	}
 }
 
 func TestBlockedPromptDoesNotBlockFollowUpOrAbort(t *testing.T) {
@@ -560,6 +691,526 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	}
 	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "follow-1" || failure["code"] != "provider_error" {
 		t.Fatalf("follow-up completion error = %v", failure)
+	}
+}
+
+func TestChatSendResumesIdleUnloadedSessionBeforeOriginalPrompt(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-idle-resume")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-idle-resume"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error") // observed unload transition
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-idle-resume", "requestId": "resume-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "after idle"},
+	})
+	nextSuccessfulSendAcks(t, frames, "resume-prompt")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("resumed prompt was not forwarded")
+	}
+	requests := h.daemon.Requests()
+	openIndex, promptIndex := -1, -1
+	for i, request := range requests {
+		switch request["type"] {
+		case omorpc.CmdOpenSession:
+			if i > openIndex {
+				openIndex = i
+			}
+		case omorpc.CmdPrompt:
+			promptIndex = i
+		}
+	}
+	if openIndex < 0 || promptIndex <= openIndex {
+		t.Fatalf("request order open=%d prompt=%d", openIndex, promptIndex)
+	}
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-idle-resume"})
+	replay.next(t, "ready")
+	if outcome := replay.next(t, "ack"); outcome["requestId"] != "resume-prompt" || outcome["phase"] != "completed" {
+		t.Fatalf("resumed operation replay = %#v", outcome)
+	}
+}
+
+func TestAdmissionTimeFollowUpRecoveryRemainsGatedWhenIdle(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "idle-follow-up-recovery")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "idle-follow-up-recovery"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "idle-follow-up-recovery", "requestId": "idle-follow-up",
+		"run": map[string]any{"kind": "follow_up", "message": "must remain gated"},
+	})
+	failure := frames.next(t, "error")
+	if failure["code"] != "prompt_in_flight" || failure["command"] != "chat.send" || failure["requestId"] != "idle-follow-up" {
+		t.Fatalf("idle recovered follow-up = %#v", failure)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdFollowUp); got != 0 {
+		t.Fatalf("idle recovered follow-up reached provider %d times", got)
+	}
+}
+
+func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantCode  string
+		wantOpens int
+		prepare   func(*testing.T, *inPlaceBridgeHarness)
+	}{
+		{
+			name: "cursor unusable", wantCode: "resume_failed", wantOpens: 1,
+			prepare: func(_ *testing.T, h *inPlaceBridgeHarness) {
+				h.daemon.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeInvalidPath)
+			},
+		},
+		{
+			name: "adoption required", wantCode: "adoption_required", wantOpens: 0,
+			prepare: func(t *testing.T, h *inPlaceBridgeHarness) {
+				record, err := h.store.GetChat("resume-failure-adoption-required")
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.SessionProvenance = ""
+				if err := h.store.UpdateChat(record); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(h.path, []byte("not a session\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "session active", wantCode: "session-active", wantOpens: 3,
+			prepare: func(_ *testing.T, h *inPlaceBridgeHarness) {
+				h.daemon.FailOpenPath(h.path, omorpc.ErrCodeSessionPathInUse, 3)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chatID := "resume-failure-" + strings.ReplaceAll(test.name, " ", "-")
+			h := newInPlaceBridgeHarness(t, chatID)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			frames.next(t, "ready")
+			writeClient(t, conn, map[string]any{"type": "ping"})
+			frames.next(t, "pong")
+			h.daemon.UnloadSession(h.path)
+			frames.next(t, "error")
+			beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+			test.prepare(t, h)
+
+			requestID := "request-" + strings.ReplaceAll(test.name, " ", "-")
+			writeClient(t, conn, map[string]any{
+				"type": "chat.send", "sessionId": chatID, "requestId": requestID,
+				"run": map[string]any{"kind": "prompt", "message": "do not retry"},
+			})
+			failure := frames.next(t, "error")
+			if failure["code"] != test.wantCode || failure["command"] != "chat.send" || failure["requestId"] != requestID {
+				t.Fatalf("resume failure = %#v", failure)
+			}
+			if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 0 {
+				t.Fatalf("failed resume forwarded %d prompts", got)
+			}
+			if got := h.daemon.RequestCount(omorpc.CmdOpenSession) - beforeOpens; got != test.wantOpens {
+				t.Fatalf("resume attempts = %d, want %d", got, test.wantOpens)
+			}
+		})
+	}
+}
+
+func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-detached-resume")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-detached-resume"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-detached-resume", "requestId": "detached-resume",
+		"run": map[string]any{"kind": "prompt", "message": "retry me"},
+	})
+	if ack := frames.next(t, "ack"); ack["requestId"] != "detached-resume" || ack["phase"] != nil {
+		t.Fatalf("initial admission = %#v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("initial prompt was not observed")
+	}
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+	releasePrompt()
+
+	if ack := frames.next(t, "ack"); ack["requestId"] != "detached-resume" || ack["phase"] != "completed" {
+		t.Fatalf("retried completion = %#v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("original prompt was not retried after resume")
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 2 {
+		t.Fatalf("prompt attempts = %d, want exactly 2", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 2 {
+		t.Fatalf("open attempts = %d, want initial plus one resume", got)
+	}
+}
+
+func TestDetachedInRunSendResumesAndRetriesWithOriginalAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		command string
+	}{
+		{name: "steer", kind: "steer", command: omorpc.CmdSteer},
+		{name: "follow-up", kind: "follow_up", command: omorpc.CmdFollowUp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chatID := "send-detached-" + tc.name + "-resume"
+			h := newInPlaceBridgeHarness(t, chatID)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			frames.next(t, "ready")
+			h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+			frames.next(t, "run.started")
+
+			releaseRaw := h.daemon.BlockHandler(tc.command)
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(releaseRaw) }
+			defer release()
+			requestID := "retry-" + tc.name
+			writeClient(t, conn, map[string]any{
+				"type": "chat.send", "sessionId": chatID, "requestId": requestID,
+				"run": map[string]any{"kind": tc.kind, "message": "retry in run"},
+			})
+			if ack := frames.next(t, "ack"); ack["requestId"] != requestID || ack["phase"] != nil {
+				t.Fatalf("initial admission = %#v", ack)
+			}
+			if !h.daemon.AwaitRequestCount(tc.command, 1, 5*time.Second) {
+				t.Fatalf("initial %s was not observed", tc.name)
+			}
+			h.daemon.UnloadSession(h.path)
+			frames.next(t, "error")
+			release()
+
+			if ack := frames.next(t, "ack"); ack["requestId"] != requestID || ack["phase"] != "completed" {
+				t.Fatalf("retried completion = %#v", ack)
+			}
+			if !h.daemon.AwaitRequestCount(tc.command, 2, 5*time.Second) {
+				t.Fatalf("%s was not retried", tc.name)
+			}
+			if got := h.daemon.RequestCount(tc.command); got != 2 {
+				t.Fatalf("%s attempts = %d, want exactly 2", tc.name, got)
+			}
+		})
+	}
+}
+
+func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-resume-serialized")
+	firstConn, first := h.connect(t)
+	writeClient(t, firstConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-resume-serialized"})
+	first.next(t, "ready")
+	writeClient(t, firstConn, map[string]any{"type": "ping"})
+	first.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	first.next(t, "error")
+	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	releaseOpenRaw := h.daemon.BlockHandler(omorpc.CmdOpenSession)
+	var releaseOpenOnce sync.Once
+	releaseOpen := func() { releaseOpenOnce.Do(releaseOpenRaw) }
+	defer releaseOpen()
+	writeClient(t, firstConn, map[string]any{
+		"type": "chat.send", "sessionId": "send-resume-serialized", "requestId": "original",
+		"run": map[string]any{"kind": "prompt", "message": "original retry"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdOpenSession, beforeOpen+1, 5*time.Second) {
+		t.Fatal("original send did not enter blocked resume")
+	}
+	writeClient(t, firstConn, map[string]any{
+		"type": "chat.send", "sessionId": "send-resume-serialized", "requestId": "later",
+		"run": map[string]any{"kind": "prompt", "message": "later send"},
+	})
+	releaseOpen()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("original retry did not reach provider")
+	}
+	if got := h.daemon.LastRequest(omorpc.CmdPrompt)["message"]; got != "original retry" {
+		t.Fatalf("first prompt after resume = %q, want original retry", got)
+	}
+	for {
+		outcome := first.next(t, "error")
+		if outcome["requestId"] == "later" {
+			if outcome["command"] != "chat.send" || outcome["code"] != "prompt_in_flight" {
+				t.Fatalf("queued same-socket send outcome = %#v", outcome)
+			}
+			break
+		}
+	}
+}
+
+func TestQueuedControlsRefreshRecoveredBindingAfterAdmissionWait(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "queued-control-refresh")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "queued-control-refresh"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+
+	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	beforeCommands := h.daemon.RequestCount(omorpc.CmdGetCommands)
+	releaseOpenRaw := h.daemon.BlockHandler(omorpc.CmdOpenSession)
+	var releaseOpenOnce sync.Once
+	releaseOpen := func() { releaseOpenOnce.Do(releaseOpenRaw) }
+	defer releaseOpen()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "queued-control-refresh", "requestId": "trigger-recovery",
+		"run": map[string]any{"kind": "prompt", "message": "resume"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdOpenSession, beforeOpen+1, 5*time.Second) {
+		t.Fatal("recovery did not enter blocked open")
+	}
+
+	serverConn := h.soleServerConnection(t)
+	abortDone := make(chan struct{})
+	commandsDone := make(chan struct{})
+	go func() {
+		serverConn.routeFrame(context.Background(), &wscontract.ChatAbortFrame{Type: "chat.abort", SessionID: "queued-control-refresh"}, "chat.abort")
+		close(abortDone)
+	}()
+	go func() {
+		serverConn.routeFrame(context.Background(), &wscontract.ChatCommandsFrame{Type: "chat.commands", SessionID: "queued-control-refresh"}, "chat.commands")
+		close(commandsDone)
+	}()
+	releaseOpen()
+	select {
+	case <-abortDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued abort did not finish")
+	}
+	select {
+	case <-commandsDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("queued query did not finish")
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdAbort, 1, 5*time.Second) {
+		t.Fatal("queued abort did not reach the recovered route")
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetCommands, beforeCommands+2, 5*time.Second) {
+		t.Fatal("queued query did not reach the recovered route")
+	}
+}
+
+func TestPostHydrationMetadataChangeSettlesRecoveredSend(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "hydration-revalidation")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "hydration-revalidation"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	releaseEntriesRaw := h.daemon.BlockHandler(omorpc.CmdGetEntries)
+	var releaseEntriesOnce sync.Once
+	releaseEntries := func() { releaseEntriesOnce.Do(releaseEntriesRaw) }
+	defer releaseEntries()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "hydration-revalidation", "requestId": "metadata-changed",
+		"run": map[string]any{"kind": "prompt", "message": "must settle"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+1, 5*time.Second) {
+		t.Fatal("recovery did not enter blocked hydration")
+	}
+	h.chatVersion.Add(1)
+	releaseEntries()
+	failure := frames.next(t, "error")
+	if failure["code"] != "resume_failed" || failure["command"] != "chat.send" || failure["requestId"] != "metadata-changed" {
+		t.Fatalf("post-hydration recovery failure = %#v", failure)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 0 {
+		t.Fatalf("post-hydration metadata change forwarded %d prompts", got)
+	}
+}
+
+func TestPostHydrationQuarantineSettlesRecoveredSend(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "hydration-quarantine")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "hydration-quarantine"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	releaseEntriesRaw := h.daemon.BlockHandler(omorpc.CmdGetEntries)
+	var releaseEntriesOnce sync.Once
+	releaseEntries := func() { releaseEntriesOnce.Do(releaseEntriesRaw) }
+	defer releaseEntries()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "hydration-quarantine", "requestId": "quarantined-during-hydration",
+		"run": map[string]any{"kind": "prompt", "message": "must settle"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+1, 5*time.Second) {
+		t.Fatal("recovery did not enter blocked hydration")
+	}
+	resumed, ok := h.manager.Get("hydration-quarantine")
+	if !ok {
+		t.Fatal("resumed route was not published before hydration")
+	}
+	if err := os.Remove(h.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.SetThinking(context.Background(), "high", "quarantine-trigger"); err == nil {
+		t.Fatal("concurrent mutation did not detect the missing session file")
+	}
+	releaseEntries()
+	for {
+		failure := frames.next(t, "error")
+		if failure["requestId"] != "quarantined-during-hydration" {
+			continue
+		}
+		if failure["code"] != "external-write-detected" || failure["command"] != "chat.send" {
+			t.Fatalf("post-hydration quarantine failure = %#v", failure)
+		}
+		break
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 0 {
+		t.Fatalf("post-hydration quarantine forwarded %d prompts", got)
+	}
+}
+
+func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "replay-owner-a")
+	otherID := "replay-owner-b"
+	otherPath := filepath.Join(filepath.Dir(h.path), otherID+".jsonl")
+	otherBody := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-%s\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%s}\n{\"type\":\"message\",\"id\":\"other-root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"other\"}}\n", otherID, mustJSON(t, filepath.Dir(h.path)))
+	if err := os.WriteFile(otherPath, []byte(otherBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.daemon.LoadSessionFile(otherPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveChat(cursorstore.Chat{ID: otherID, WorkspaceID: "ws-1", CWD: filepath.Dir(h.path), Name: otherID, SessionFile: otherPath, DurableSessionID: "durable-" + otherID, SessionProvenance: cursorstore.SessionProvenanceInPlace}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "replay-owner-a"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	releaseARaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, h.path)
+	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, otherPath)
+	var releaseAOnce, releaseBOnce sync.Once
+	releaseA := func() { releaseAOnce.Do(releaseARaw) }
+	releaseB := func() { releaseBOnce.Do(releaseBRaw) }
+	t.Cleanup(releaseA)
+	t.Cleanup(releaseB)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "replay-owner-a", "requestId": "rebind-retry",
+		"run": map[string]any{"kind": "prompt", "message": "retry"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+1, 5*time.Second) {
+		t.Fatal("recovery did not enter staged history replay")
+	}
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": otherID})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+2, 5*time.Second) {
+		t.Fatal("concurrent rebind did not enter history replay")
+	}
+	for {
+		if ready := frames.next(t, "ready"); ready["sessionId"] == otherID {
+			break
+		}
+	}
+	releaseA()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("recovery retry did not settle its replay")
+	}
+	serverConn := h.soleServerConnection(t)
+	serverConn.outboundMu.Lock()
+	replayOwnedByCurrent := serverConn.replayActive && serverConn.replayOwner == serverConn.sub
+	serverConn.outboundMu.Unlock()
+	if !replayOwnedByCurrent {
+		t.Fatal("stale recovery replay terminated the concurrent binding replay")
+	}
+	releaseB()
+	for {
+		if got := frames.next(t, "entries"); got["sessionId"] == otherID && got["final"] == true {
+			break
+		}
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+}
+
+func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-detached-disconnect")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-detached-disconnect"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-detached-disconnect", "requestId": "survives-disconnect",
+		"run": map[string]any{"kind": "prompt", "message": "retry while detached"},
+	})
+	frames.next(t, "ack")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("initial prompt was not observed")
+	}
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+	serverDone := h.soleServerConnectionDone(t)
+	if err := conn.WriteClose(1000, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server connection context was not cancelled after client close")
+	}
+	releasePrompt()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("detached operation was not retried")
+	}
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-detached-disconnect"})
+	replay.next(t, "ready")
+	if outcome := replay.next(t, "ack"); outcome["requestId"] != "survives-disconnect" || outcome["phase"] != "completed" {
+		t.Fatalf("durable detached outcome = %#v", outcome)
 	}
 }
 

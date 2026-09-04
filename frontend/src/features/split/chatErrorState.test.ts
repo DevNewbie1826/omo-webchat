@@ -4,12 +4,8 @@ import { isPromptTerminalError } from "./chatErrorState";
 
 type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
 
-// The backend forwards the provider's raw RPC command string on error frames
-// (see internal/session/dispatch.go: prompt, steer, follow_up, set_model,
-// set_thinking_level, get_state, get_session_stats, get_commands,
-// get_available_models, get_entries, new_session, switch_session,
-// extension_ui_response). The parse boundary must
-// accept any of them as an open string, not a fictional narrow literal union.
+// Error frames may contain any string in the command field. Classification
+// must keep unrecognized values on the non-terminal UI path.
 function errorFrame(command: string, code?: string): ErrorFrame {
   return {
     type: "error",
@@ -27,7 +23,7 @@ describe("error frame command boundary", () => {
     expect(isPromptTerminalError(errorFrame("query"))).toBe(false);
   });
 
-  it("accepts real backend RPC commands that are not prompt", () => {
+  it("keeps other observed command values non-terminal", () => {
     for (const command of ["steer", "follow_up", "get_state", "get_entries", "switch_session", "extension_ui_response"]) {
       expect(isPromptTerminalError(errorFrame(command))).toBe(false);
     }
@@ -38,9 +34,8 @@ describe("error frame command boundary", () => {
     expect(isPromptTerminalError(errorFrame("set_model", "no_session"))).toBe(true);
   });
 
-  // The engine's idle eviction arrives as command close_session with the
-  // resumable session_unloaded code; it must never count as terminal or the
-  // pane would lose its resume affordance.
+  // An error frame with the session_unloaded code leaves the pane usable and
+  // does not expose terminal UI.
   it("treats session_unloaded as resumable, never terminal", () => {
     expect(isPromptTerminalError(errorFrame("close_session", "session_unloaded"))).toBe(false);
   });

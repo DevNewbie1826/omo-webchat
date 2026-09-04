@@ -18,6 +18,22 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
+func TestResumeOnlyWithoutCursorDoesNotOpenFreshSession(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 8)
+	_, _, detach, err := mgr.ResumeInitialized(context.Background(), testChat{id: "no-resume-cursor", cwd: t.TempDir()}, nil, nil)
+	if detach != nil {
+		detach()
+	}
+	if !errors.Is(err, ErrNoDurableCursor) {
+		t.Fatalf("resume-only error = %T %v, want ErrNoDurableCursor", err, err)
+	}
+	if got := d.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("resume-only empty cursor opened %d provider sessions", got)
+	}
+}
+
 // C001 acceptance demo: create chat -> Acquire (fresh open) -> ready
 // {resumed:false} -> prompt -> scripted stream -> run.done -> cursor
 // persisted -> client/daemon restart -> Acquire same chat resumes from the

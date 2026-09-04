@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 )
 
 func TestInPlaceMutationFenceQuarantinesDirectFileDrift(t *testing.T) {
@@ -429,6 +430,21 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 	}
 }
 
+func TestDetachedCompletionKeepsExternalWriteQuarantineAfterDisconnect(t *testing.T) {
+	drift := &ExternalWriteError{KnownLeaf: "known", ObservedLeaf: "changed", Reason: "test drift"}
+	s := &Session{quarantineErr: drift, resumable: true}
+	completed := make(chan error, 1)
+	s.finishDetachedSend(omorpc.ErrDisconnected, "chat.send", "quarantined", func(err error) {
+		completed <- err
+	})
+	if err := <-completed; err != drift {
+		t.Fatalf("completion error = %T %v, want latched quarantine", err, err)
+	}
+	if err := s.acquisitionError(); err != drift {
+		t.Fatalf("acquisition error = %T %v, want latched quarantine", err, err)
+	}
+}
+
 func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-external.jsonl")
@@ -451,6 +467,11 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	first.await(t, FrameReady)
 	first.await(t, FrameEntries)
 	detach()
+	if err, duplicate := stale.beginSendOperation("survives-quarantine-recovery"); err != nil || duplicate {
+		t.Fatalf("begin retained operation = (%v, %v)", err, duplicate)
+	}
+	stale.recordSendOperation("survives-quarantine-recovery", nil)
+	stale.CompleteDetachedSend("survives-quarantine-recovery", nil)
 
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
@@ -518,23 +539,65 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 		t.Fatalf("ordinary reattach reopened quarantined route: %d -> %d", beforeOpens, got)
 	}
 
+	// The first explicit recovery closes the quarantined route, then fails all
+	// reopen attempts. No live session remains to carry operation state.
+	daemon.FailOpenPath(path, omorpctest.CodeSessionPathInUse, 3)
+	_, _, failedDetach, err := manager.AcquireInitializedWithRecovery(context.Background(), chat, newRecorder(32), nil)
+	if failedDetach != nil {
+		failedDetach()
+	}
+	var pathInUse *omorpc.StableError
+	if !errors.As(err, &pathInUse) || pathInUse.Code != omorpc.ErrCodeSessionPathInUse {
+		t.Fatalf("failed quarantine reopen = %T %v, want session_path_in_use", err, err)
+	}
+	if _, live := manager.Get(chat.id); live {
+		t.Fatal("failed quarantine reopen left a live session")
+	}
+
 	recoveredSub := newRecorder(32)
 	recovered, started, recoveredDetach, err := manager.AcquireInitializedWithRecovery(context.Background(), chat, recoveredSub, nil)
 	if err != nil {
-		t.Fatalf("explicit recovery: %v", err)
+		t.Fatalf("explicit recovery retry: %v", err)
 	}
 	defer recoveredDetach()
 	if !started {
-		t.Fatal("external-write recovery reused the quarantined route")
+		t.Fatal("external-write recovery retry reused a prior route")
+	}
+	replayPrior, _ := recoveredSub.await(t, FrameReady)
+	retainedOutcome := false
+	for _, frame := range replayPrior {
+		if frame.Kind == FrameAck && frame.RequestID == "survives-quarantine-recovery" && frame.Phase == "completed" {
+			retainedOutcome = true
+		}
+	}
+	if !retainedOutcome {
+		t.Fatalf("successful retry did not replay retained outcome: %+v", replayPrior)
 	}
 	if recovered.RoutingID() == stale.RoutingID() {
 		t.Fatalf("external-write recovery retained stale route %q", stale.RoutingID())
 	}
+	if recovered.operationOwner() != stale.operationOwner() {
+		t.Fatal("external-write recovery lost the retained operation owner")
+	}
+	beforeFollowUps := daemon.RequestCount(omorpc.CmdFollowUp)
+	if err := recovered.SendFollowUpDetachedWithRequestID(context.Background(), "duplicate", nil, "survives-quarantine-recovery"); err != nil {
+		t.Fatalf("duplicate retained operation: %v", err)
+	}
+	if got := daemon.RequestCount(omorpc.CmdFollowUp); got != beforeFollowUps {
+		t.Fatalf("duplicate retained operation reached provider: %d -> %d", beforeFollowUps, got)
+	}
+	owner := recovered.operationOwner()
+	owner.mu.Lock()
+	retained := owner.operations["survives-quarantine-recovery"]
+	owner.mu.Unlock()
+	if retained.phase != sendOperationTerminal || retained.outcome.Kind != FrameAck || retained.outcome.Phase != "completed" {
+		t.Fatalf("late retained outcome = %+v", retained)
+	}
 	if got := daemon.RequestCount(omorpc.CmdCloseSession); got != beforeCloses+1 {
 		t.Fatalf("external-write recovery close count = %d, want %d", got, beforeCloses+1)
 	}
-	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens+1 {
-		t.Fatalf("external-write recovery open count = %d, want %d", got, beforeOpens+1)
+	if got := daemon.RequestCount(omorpc.CmdOpenSession); got != beforeOpens+4 {
+		t.Fatalf("external-write recovery open count = %d, want %d", got, beforeOpens+4)
 	}
 	open := daemon.LastRequest(omorpc.CmdOpenSession)
 	if got, _ := open["sessionPath"].(string); got != path {

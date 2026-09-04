@@ -476,13 +476,11 @@
   color: var(--th-text-dim);
 }
 
-/* Recoverable session banners stack their copy against one explicit action. */
-.th-unloaded-banner,
+/* The recoverable external-write banner stacks its copy against one action. */
 .th-external-write-banner {
   gap: var(--th-space-3);
 }
 
-.th-unloaded-banner-body,
 .th-external-write-banner-body {
   display: flex;
   flex-direction: column;
@@ -490,17 +488,14 @@
   min-width: 0;
 }
 
-.th-unloaded-banner-title,
 .th-external-write-banner-title {
   font-weight: var(--th-weight-announce);
 }
 
-.th-unloaded-banner-detail,
 .th-external-write-banner-detail {
   color: var(--th-text-dim);
 }
 
-.th-unloaded-banner-actions,
 .th-external-write-banner-actions {
   flex: none;
   align-self: center;

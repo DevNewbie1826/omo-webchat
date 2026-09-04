@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
@@ -39,13 +40,33 @@ type sendOperationPhase uint8
 
 const (
 	sendOperationAdmitted sendOperationPhase = iota
+	sendOperationRetrying
 	sendOperationTerminal
 )
 
 type sendOperation struct {
-	phase   sendOperationPhase
-	outcome Frame
-	err     error
+	phase     sendOperationPhase
+	outcome   Frame
+	err       error
+	published bool
+}
+
+type sendOperationOwner struct {
+	mu                     sync.Mutex
+	operations             map[string]sendOperation
+	fifo                   []string
+	detachedMutations      int
+	retryRunAdmissionToken DetachedSendRetryToken
+	nextRetryToken         uint64
+	activeDetached         atomic.Int32
+	sessions               map[*Session]struct{}
+}
+
+// DetachedSendRetryToken identifies one recovery attempt's run-admission
+// override. Only PrepareDetachedSendRetry can mint a valid token.
+type DetachedSendRetryToken struct {
+	owner *sendOperationOwner
+	value uint64
 }
 
 type Session struct {
@@ -75,9 +96,7 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
-	detachedMutations                                                       int
-	sendOperations                                                          map[string]sendOperation
-	sendOperationFIFO                                                       []string
+	sendOwner                                                               *sendOperationOwner
 	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
@@ -107,6 +126,7 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		title: name, nameSource: nameSource,
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
+	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	s.broadcast.onDetach = m.cfg.OnDetach
 	return s
 }
@@ -155,12 +175,76 @@ func (s *Session) Resumable() bool {
 	return s.resumable
 }
 
-func (s *Session) routeLocked() (string, error) {
-	if s.closed || s.closing {
-		return "", ErrSessionClosed
+// acquisitionError reports route state in the same priority order as writes.
+// In particular, quarantine remains terminal even if transport invalidation
+// subsequently marks the provider route resumable.
+func (s *Session) acquisitionError() error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	_, err := s.routeLocked()
+	return err
+}
+
+func (s *Session) operationOwner() *sendOperationOwner {
+	if s.sendOwner == nil {
+		s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	}
+	return s.sendOwner
+}
+
+func (s *Session) inheritSendOperations(prior *Session) {
+	if prior == nil || prior == s {
+		return
+	}
+	s.inheritSendOperationOwner(prior.operationOwner())
+}
+
+func (s *Session) inheritSendOperationOwner(owner *sendOperationOwner) {
+	if owner == nil || owner == s.sendOwner {
+		return
+	}
+	prior := s.operationOwner()
+	prior.mu.Lock()
+	delete(prior.sessions, s)
+	prior.mu.Unlock()
+	owner.mu.Lock()
+	s.sendOwner = owner
+	owner.sessions[s] = struct{}{}
+	owner.mu.Unlock()
+}
+
+func (s *Session) releaseSendOperations() {
+	if s.sendOwner == nil {
+		return
+	}
+	s.sendOwner.mu.Lock()
+	delete(s.sendOwner.sessions, s)
+	s.sendOwner.mu.Unlock()
+}
+
+func (o *sendOperationOwner) rearmIdle() {
+	if o.activeDetached.Load() != 0 {
+		return
+	}
+	o.mu.Lock()
+	sessions := make([]*Session, 0, len(o.sessions))
+	for s := range o.sessions {
+		sessions = append(sessions, s)
+	}
+	o.mu.Unlock()
+	for _, s := range sessions {
+		s.lifecycleMu.Lock()
+		s.scheduleIdleLocked()
+		s.lifecycleMu.Unlock()
+	}
+}
+
+func (s *Session) routeLocked() (string, error) {
 	if s.quarantineErr != nil {
 		return "", s.quarantineErr
+	}
+	if s.closed || s.closing {
+		return "", ErrSessionClosed
 	}
 	if s.resumable {
 		return "", ErrSessionResumable
@@ -191,15 +275,25 @@ func (s *Session) SendPromptDetached(ctx context.Context, msg string, images []m
 // SendPromptDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendPromptDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
+	return s.SendPromptDetachedWithRequestIDAndCompletion(ctx, msg, images, requestID, nil)
+}
+
+// SendPromptDetachedWithRequestIDAndCompletion transfers terminal outcome
+// ownership to complete while retaining the ordinary admission ledger entry.
+func (s *Session) SendPromptDetachedWithRequestIDAndCompletion(ctx context.Context, msg string, images []map[string]string, requestID string, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendPrompt(ctx, msg, images, true, requestID)
+	err := s.sendPrompt(ctx, msg, images, true, requestID, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
-func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool, requestID string) error {
+func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool, requestID string, detachedComplete ...func(error)) error {
+	var sendComplete func(error)
+	if len(detachedComplete) != 0 {
+		sendComplete = detachedComplete[0]
+	}
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
@@ -233,20 +327,20 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			if !ownsPrompt {
 				s.completePrompt(seq, msg, callErr)
 				if detached {
-					s.publishDetachedOutcome(callErr, "chat.send", requestID)
+					s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 				}
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
 				s.completePrompt(seq, msg, steerErr)
 				if detached {
-					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
+					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
 			}
 			if detached {
 				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
 					s.completePrompt(seq, msg, steerErr)
-					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
+					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
 				return
 			}
@@ -255,7 +349,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 		s.completePrompt(seq, msg, callErr)
 		if detached {
-			s.publishDetachedOutcome(callErr, "chat.send", requestID)
+			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 		}
 	}
 	if detached {
@@ -314,7 +408,7 @@ func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
 }
 
 func (s *Session) SendSteer(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, false, "", func(route string) omorpc.Command {
+	return s.sendDuringRun(ctx, false, "", DetachedSendRetryToken{}, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
@@ -327,18 +421,32 @@ func (s *Session) SendSteerDetached(ctx context.Context, msg string) error {
 // SendSteerDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendSteerDetachedWithRequestID(ctx context.Context, msg, requestID string) error {
+	return s.SendSteerDetachedWithRequestIDAndCompletion(ctx, msg, requestID, nil)
+}
+
+func (s *Session) SendSteerDetachedWithRequestIDAndCompletion(ctx context.Context, msg, requestID string, complete func(error)) error {
+	return s.sendSteerDetached(ctx, msg, requestID, DetachedSendRetryToken{}, complete)
+}
+
+// SendSteerDetachedWithRetryToken consumes the run admission preserved for a
+// specific recovered operation.
+func (s *Session) SendSteerDetachedWithRetryToken(ctx context.Context, msg, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
+	return s.sendSteerDetached(ctx, msg, requestID, retryToken, complete)
+}
+
+func (s *Session) sendSteerDetached(ctx context.Context, msg, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	err := s.sendDuringRun(ctx, true, requestID, retryToken, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
-	})
+	}, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
 func (s *Session) SendFollowUp(ctx context.Context, msg string, images []map[string]string) error {
-	return s.sendDuringRun(ctx, false, "", func(route string) omorpc.Command {
+	return s.sendDuringRun(ctx, false, "", DetachedSendRetryToken{}, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
 	})
 }
@@ -351,24 +459,46 @@ func (s *Session) SendFollowUpDetached(ctx context.Context, msg string, images [
 // SendFollowUpDetachedWithRequestID preserves browser operation identity
 // through detached response completion.
 func (s *Session) SendFollowUpDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
+	return s.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, msg, images, requestID, nil)
+}
+
+func (s *Session) SendFollowUpDetachedWithRequestIDAndCompletion(ctx context.Context, msg string, images []map[string]string, requestID string, complete func(error)) error {
+	return s.sendFollowUpDetached(ctx, msg, images, requestID, DetachedSendRetryToken{}, complete)
+}
+
+// SendFollowUpDetachedWithRetryToken consumes the run admission preserved for
+// a specific recovered operation.
+func (s *Session) SendFollowUpDetachedWithRetryToken(ctx context.Context, msg string, images []map[string]string, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
+	return s.sendFollowUpDetached(ctx, msg, images, requestID, retryToken, complete)
+}
+
+func (s *Session) sendFollowUpDetached(ctx context.Context, msg string, images []map[string]string, requestID string, retryToken DetachedSendRetryToken, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
+	err := s.sendDuringRun(ctx, true, requestID, retryToken, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
-	})
+	}, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
-func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, command func(string) omorpc.Command) error {
+func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, retryToken DetachedSendRetryToken, command func(string) omorpc.Command, detachedComplete ...func(error)) error {
+	var sendComplete func(error)
+	if len(detachedComplete) != 0 {
+		sendComplete = detachedComplete[0]
+	}
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
+	retryAdmission := s.consumeRetryRunAdmission(retryToken)
 	s.lifecycleMu.Lock()
 	// Steer and follow-up are accepted while a prompt, provider run, or
-	// standalone compaction is active and queue with that work.
-	if !s.promptInFlight && !s.providerRunActive && !s.compactionActive {
+	// standalone compaction is active and queue with that work. A replacement
+	// route may not have observed the original run events, so an admitted retry
+	// carries exactly one authoritative in-run admission across that boundary.
+	active := s.promptInFlight || s.providerRunActive || s.compactionActive
+	if !active && !retryAdmission {
 		s.lifecycleMu.Unlock()
 		return ErrPromptInFlight
 	}
@@ -380,7 +510,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
 		if detached {
-			s.publishDetachedOutcome(callErr, "chat.send", requestID)
+			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 		}
 	}
 	if detached {
@@ -395,55 +525,173 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
-	s.lifecycleMu.Lock()
-	if s.detachedMutations >= DetachedMutationLimit {
-		s.lifecycleMu.Unlock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if owner.detachedMutations >= DetachedMutationLimit {
+		owner.mu.Unlock()
 		return fmt.Errorf("%w: maximum %d outstanding operations", ErrSendBackpressure, DetachedMutationLimit)
 	}
-	s.detachedMutations++
-	s.lifecycleMu.Unlock()
+	owner.detachedMutations++
+	owner.activeDetached.Add(1)
+	owner.mu.Unlock()
 
 	err := s.client.CallDetached(ctx, command, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
-		s.lifecycleMu.Lock()
-		s.detachedMutations--
-		s.lifecycleMu.Unlock()
+		owner.mu.Lock()
+		owner.detachedMutations--
+		owner.mu.Unlock()
 		complete(resp, epoch, callErr)
+		owner.activeDetached.Add(-1)
+		owner.rearmIdle()
 	})
 	if err != nil {
-		s.lifecycleMu.Lock()
-		s.detachedMutations--
-		s.lifecycleMu.Unlock()
+		owner.mu.Lock()
+		owner.detachedMutations--
+		owner.mu.Unlock()
+		owner.activeDetached.Add(-1)
+		owner.rearmIdle()
 	}
 	return err
+}
+
+func (s *Session) finishDetachedSend(err error, command, requestID string, complete func(error)) {
+	if complete != nil {
+		if err != nil {
+			s.lifecycleMu.Lock()
+			switch {
+			case s.quarantineErr != nil:
+				err = s.quarantineErr
+			case s.resumable:
+				err = ErrSessionResumable
+			case s.closed || s.closing:
+				err = ErrSessionClosed
+			}
+			s.lifecycleMu.Unlock()
+		}
+		complete(err)
+		return
+	}
+	s.publishDetachedOutcome(err, command, requestID)
+}
+
+// PrepareDetachedSendRetry atomically claims the one retry owned by an
+// admitted operation and returns its opaque lifecycle token. A completion that
+// wins first leaves a terminal outcome and prevents the mutation from repeating.
+func (s *Session) PrepareDetachedSendRetry(requestID string, preserveRunAdmission bool) (DetachedSendRetryToken, bool) {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if requestID != "" {
+		operation, ok := owner.operations[requestID]
+		if !ok || operation.phase != sendOperationAdmitted {
+			return DetachedSendRetryToken{}, false
+		}
+		operation.phase = sendOperationRetrying
+		owner.operations[requestID] = operation
+	}
+	owner.nextRetryToken++
+	if owner.nextRetryToken == 0 {
+		owner.nextRetryToken++
+	}
+	token := DetachedSendRetryToken{owner: owner, value: owner.nextRetryToken}
+	if preserveRunAdmission {
+		owner.retryRunAdmissionToken = token
+	}
+	return token, true
+}
+
+// RetireDetachedSendRetry abandons an unconsumed run-admission override. A
+// different operation's token, including an unrelated empty-ID completion,
+// cannot retire the slot.
+func (s *Session) RetireDetachedSendRetry(token DetachedSendRetryToken) {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if token.value != 0 && owner.retryRunAdmissionToken == token {
+		owner.retryRunAdmissionToken = DetachedSendRetryToken{}
+	}
+	owner.mu.Unlock()
+}
+
+// CompleteDetachedSend publishes and retains a terminal outcome owned by a
+// transport completion callback.
+func (s *Session) CompleteDetachedSend(requestID string, err error) {
+	s.publishDetachedOutcome(err, "chat.send", requestID)
+}
+
+// PublishSendOperationError publishes an acquisition failure as the terminal
+// outcome for the original request, replacing a synchronous admission error.
+func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
+	frame := Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if requestID != "" {
+		operation, ok := owner.operations[requestID]
+		if !ok || operation.published {
+			owner.mu.Unlock()
+			return
+		}
+		operation.phase = sendOperationTerminal
+		operation.outcome = frame
+		operation.err = errors.New(info.Message)
+		operation.published = true
+		owner.operations[requestID] = operation
+	}
+	owner.publishLocked(frame)
+	owner.mu.Unlock()
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	if err == nil && requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
-	frame := s.completeSendOperationLocked(requestID, err)
-	frame.Command = command
-	s.publishLocked(frame)
-	s.lifecycleMu.Unlock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if requestID == "" {
+		frame := s.sendOperationFrameLocked("", err)
+		frame.Command = command
+		owner.publishLocked(frame)
+		owner.mu.Unlock()
+		return
+	}
+	_, _ = s.completeSendOperationLocked(requestID, err)
+	operation, ok := owner.operations[requestID]
+	if ok && operation.phase == sendOperationTerminal && !operation.published {
+		operation.outcome.Command = command
+		operation.published = true
+		owner.operations[requestID] = operation
+		owner.publishLocked(operation.outcome)
+	}
+	owner.mu.Unlock()
+}
+
+func (o *sendOperationOwner) publishLocked(frame Frame) {
+	for target := range o.sessions {
+		target.lifecycleMu.Lock()
+		if !target.closed {
+			target.publishLocked(frame)
+		}
+		target.lifecycleMu.Unlock()
+	}
 }
 
 func (s *Session) beginSendOperation(requestID string) (error, bool) {
 	if requestID == "" {
 		return nil, false
 	}
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if operation, ok := s.sendOperations[requestID]; ok {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if operation, ok := owner.operations[requestID]; ok {
+		if operation.phase == sendOperationRetrying {
+			operation.phase = sendOperationAdmitted
+			owner.operations[requestID] = operation
+			return nil, false
+		}
 		return operation.err, true
 	}
-	if s.sendOperations == nil {
-		s.sendOperations = make(map[string]sendOperation)
-	}
-	if len(s.sendOperationFIFO) >= SendOperationLedgerCapacity {
+	if len(owner.fifo) >= SendOperationLedgerCapacity {
 		terminal := -1
-		for i, id := range s.sendOperationFIFO {
-			if s.sendOperations[id].phase == sendOperationTerminal {
+		for i, id := range owner.fifo {
+			if owner.operations[id].phase == sendOperationTerminal {
 				terminal = i
 				break
 			}
@@ -451,31 +699,33 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 		if terminal < 0 {
 			return fmt.Errorf("%w: maximum %d operations are still in flight", ErrSendBackpressure, SendOperationLedgerCapacity), true
 		}
-		delete(s.sendOperations, s.sendOperationFIFO[terminal])
-		copy(s.sendOperationFIFO[terminal:], s.sendOperationFIFO[terminal+1:])
-		s.sendOperationFIFO = s.sendOperationFIFO[:len(s.sendOperationFIFO)-1]
+		delete(owner.operations, owner.fifo[terminal])
+		copy(owner.fifo[terminal:], owner.fifo[terminal+1:])
+		owner.fifo = owner.fifo[:len(owner.fifo)-1]
 	}
-	s.sendOperations[requestID] = sendOperation{phase: sendOperationAdmitted}
-	s.sendOperationFIFO = append(s.sendOperationFIFO, requestID)
+	owner.operations[requestID] = sendOperation{phase: sendOperationAdmitted}
+	owner.fifo = append(owner.fifo, requestID)
 	return nil, false
 }
 
 // recordSendOperation stores the synchronous admission outcome. A failed
-// admission is terminal because no provider response remains outstanding.
+// admission is terminal because no provider response remains outstanding. Its
+// broadcast remains separately claimable by the transport completion path.
 func (s *Session) recordSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
-	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if operation, ok := owner.operations[requestID]; ok && operation.phase != sendOperationTerminal {
 		operation.outcome = s.sendOperationFrameLocked(requestID, err)
 		operation.err = err
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrSessionResumable) && !errors.Is(err, ErrSessionClosed) {
 			operation.phase = sendOperationTerminal
 		}
-		s.sendOperations[requestID] = operation
+		owner.operations[requestID] = operation
 	}
-	s.lifecycleMu.Unlock()
+	owner.mu.Unlock()
 }
 
 // completeSendOperation records the provider response as the terminal outcome.
@@ -483,28 +733,39 @@ func (s *Session) completeSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
 	s.completeSendOperationLocked(requestID, err)
-	s.lifecycleMu.Unlock()
+	owner.mu.Unlock()
 }
 
-// completeSendOperationLocked returns the retained terminal snapshot while the
-// ledger is protected from concurrent admission and eviction.
-func (s *Session) completeSendOperationLocked(requestID string, err error) Frame {
+// completeSendOperationLocked returns the retained terminal snapshot and
+// whether this caller won completion. sendOwner.mu is held.
+func (s *Session) completeSendOperationLocked(requestID string, err error) (Frame, bool) {
 	frame := s.sendOperationFrameLocked(requestID, err)
-	if operation, ok := s.sendOperations[requestID]; ok {
-		if operation.phase != sendOperationTerminal {
-			operation.phase = sendOperationTerminal
-			operation.outcome = frame
-			if err == nil {
-				operation.outcome.Phase = "completed"
-			}
-			operation.err = err
-			s.sendOperations[requestID] = operation
-		}
-		return operation.outcome
+	operation, ok := s.sendOwner.operations[requestID]
+	if !ok || operation.phase == sendOperationTerminal {
+		return frame, false
 	}
-	return frame
+	operation.phase = sendOperationTerminal
+	operation.outcome = frame
+	if err == nil {
+		operation.outcome.Phase = "completed"
+	}
+	operation.err = err
+	s.sendOwner.operations[requestID] = operation
+	return operation.outcome, true
+}
+
+func (s *Session) consumeRetryRunAdmission(token DetachedSendRetryToken) bool {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if token.value == 0 || owner.retryRunAdmissionToken != token {
+		return false
+	}
+	owner.retryRunAdmissionToken = DetachedSendRetryToken{}
+	return true
 }
 
 func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {
@@ -1007,6 +1268,9 @@ func (s *Session) attachCheckedReplayTarget(sub Subscriber, initial ...Frame) (f
 }
 
 func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, replayInitial []Frame) (func(), *subscription, error) {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
@@ -1022,7 +1286,7 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 		return nil, nil, ErrSessionResumable
 	}
 	s.cancelIdleLocked()
-	initial := make([]Frame, 0, 3+len(s.sendOperationFIFO))
+	initial := make([]Frame, 0, 3+len(owner.fifo))
 	if s.readyPublished {
 		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.durableID, Resumed: s.resumed})
 	}
@@ -1031,8 +1295,8 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
 		}
 	}
-	for _, requestID := range s.sendOperationFIFO {
-		if outcome := s.sendOperations[requestID].outcome; outcome.Kind != "" {
+	for _, requestID := range owner.fifo {
+		if outcome := owner.operations[requestID].outcome; outcome.Kind != "" {
 			initial = append(initial, outcome)
 		}
 	}
@@ -1170,6 +1434,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 	s.lifecycleMu.Unlock()
 	if newlyClosed {
 		s.broadcast.close(ErrSubscriberSessionEnd)
+		s.releaseSendOperations()
 	}
 }
 func definitiveCloseFailure(err error) bool {
@@ -1186,6 +1451,7 @@ func (s *Session) retireReplaced() {
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
+	s.releaseSendOperations()
 }
 func (s *Session) publishError(info ErrorInfo) {
 	s.lifecycleMu.Lock()
@@ -1256,7 +1522,8 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 ||
+		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		return
 	}
 	s.cancelIdleLocked()

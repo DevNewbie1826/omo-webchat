@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
@@ -21,15 +20,16 @@ type subscriber struct {
 	conn           *connection
 	mu             sync.Mutex
 	active         bool
+	detached       bool
+	replaying      bool
 	treatAsResumed bool
+	claim          queryBinding
 	pending        []session.Frame
 	overflowed     bool
 	ready          chan struct{}
 	readyOnce      sync.Once
 	detachSignal   chan struct{}
 	detachOnce     sync.Once
-	detached       atomic.Bool
-	replaying      atomic.Bool
 }
 
 func newSubscriber(c *connection) *subscriber {
@@ -41,15 +41,31 @@ func newSubscriber(c *connection) *subscriber {
 func (*subscriber) SynchronousAttach() {}
 
 func (s *subscriber) BeginReplay() {
-	s.conn.beginReplay()
-	s.replaying.Store(true)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.detached {
+		return
+	}
+	s.replaying = true
+	if s.active {
+		s.conn.beginReplay(s)
+	}
 }
 func (s *subscriber) EndReplay() {
-	s.replaying.Store(false)
-	s.conn.endReplay()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.replaying {
+		return
+	}
+	s.replaying = false
+	if s.active {
+		s.conn.endReplay(s)
+	}
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
-	return s.detachSignal, s.replaying.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.detachSignal, s.replaying
 }
 
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
@@ -58,16 +74,21 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 		s.readyOnce.Do(func() { close(s.ready) })
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.detached {
+		s.mu.Unlock()
+		return nil
+	}
 	if !s.active {
 		if len(s.pending) >= preActivationBufferCapacity {
 			s.pending = s.pending[1:]
 			s.overflowed = true
 		}
 		s.pending = append(s.pending, f)
+		s.mu.Unlock()
 		return nil
 	}
 	err := s.deliver(f)
+	s.mu.Unlock()
 	if err != nil {
 		s.signalDetach()
 	}
@@ -83,14 +104,22 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.detached.Load() || ctx.Err() != nil {
+	if s.detached || ctx.Err() != nil {
 		return false
 	}
 	if s.active {
 		return true
 	}
+	claim, ok := s.conn.subscriberClaim(s)
+	if !ok {
+		return false
+	}
 	s.treatAsResumed = reattach
+	s.claim = claim
 	s.active = true
+	if s.replaying {
+		s.conn.beginReplay(s)
+	}
 	if s.overflowed {
 		s.pending = nil
 		go s.Cancel()
@@ -108,7 +137,13 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 }
 func (s *subscriber) signalDetach() {
 	s.detachOnce.Do(func() {
-		s.detached.Store(true)
+		s.mu.Lock()
+		s.detached = true
+		if s.active && s.replaying {
+			s.conn.endReplay(s)
+		}
+		s.replaying = false
+		s.mu.Unlock()
 		close(s.detachSignal)
 		s.readyOnce.Do(func() { close(s.ready) })
 	})
@@ -130,16 +165,22 @@ func (s *subscriber) Cancel() error {
 	return nil
 }
 func (s *subscriber) deliver(f session.Frame) error {
-	wire, err := mapFrame(f, s.conn.boundID(), s.treatAsResumed)
+	wire, err := mapFrame(f, s.claim.chatID, s.treatAsResumed)
 	if err != nil {
 		return err
 	}
 	if wire == nil {
 		return nil
 	}
-	return s.conn.write(wire)
+	return s.conn.writeIfCurrent(s.claim, wire)
 }
-func (c *connection) boundID() string { c.stateMu.Lock(); defer c.stateMu.Unlock(); return c.chatID }
+
+func (c *connection) subscriberClaim(s *subscriber) (queryBinding, bool) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	claim := queryBinding{chatID: c.chatID, generation: c.bindingGeneration, session: c.sess}
+	return claim, !c.closed.Load() && c.sub == s && claim.chatID != "" && claim.session != nil
+}
 
 func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 	typ, ok := wscontract.FrameKindToWireName[string(f.Kind)]
@@ -317,7 +358,7 @@ func firstNonempty(a, b string) string {
 
 func normalizedErrorCode(code string) string {
 	switch code {
-	case "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "send_backpressure", "provider_error", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "no_session", "send_failed", "compact_failed":
+	case "pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "send_backpressure", "provider_error", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "adoption_required", "session-active", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "no_session", "send_failed", "compact_failed":
 		return code
 	default:
 		return "provider_error"

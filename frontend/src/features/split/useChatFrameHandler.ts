@@ -55,7 +55,6 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
-  readonly setSessionUnloaded: StateSetter<boolean>;
   readonly setExternalWriteDetected: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
@@ -73,13 +72,8 @@ interface ChatFrameHandlerBindings {
 }
 
 /**
- * Error codes that prove the conversation history will never arrive. Three
- * groups: the open/create/resume sequence failing, the provider-termination
- * switch in internal/session/dispatch.go whose terminal kinds tear the session down,
- * and a failed get_entries response. Control rejections - set_model_failed,
- * set_thinking_failed, approval_failed, persist_failed - are absent by
- * design: treating those as history failure would re-expose the notice-only
- * transcript this gate exists to prevent.
+ * Error-frame codes that make unavailable conversation history visible as a
+ * failed load. Other error codes leave the existing transcript visible.
  */
 const CREATE_TERMINAL_ERROR_CODES: readonly string[] = [
   "no_chat", "unsupported_provider", "adoption_required", "bad_create", "start_failed", "session-active",
@@ -92,16 +86,14 @@ const HISTORY_TERMINAL_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type: "error" }>): boolean {
-  // A failed history command is terminal whatever request id the provider
-  // tagged it with: the shared provider always stamps get_entries with a
-  // "webchat-entries-N" id.
+  // A provider_error frame marks history failed only when its command field
+  // identifies the history request.
   if (frame.code === "provider_error") return frame.command === "get_entries";
   return frame.code !== undefined && HISTORY_TERMINAL_ERROR_CODES.has(frame.code);
 }
 
-// Observed send-path command echoes and busy-gate codes. A generic
-// provider_error belongs in the banner only when its command identifies one
-// of these operations; unrelated provider queries keep the transient surface.
+// Error frames matching these observed command or code values use the
+// persistent send-error banner; all other errors use the transient surface.
 const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set([
   "chat.send", "chat.compact", "chat.abort",
   "prompt", "steer", "follow_up", "compact", "abort",
@@ -110,17 +102,13 @@ const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
   "prompt_in_flight", "compaction_in_flight", "bad_send", "send_failed", "compact_failed", "send_backpressure",
 ]);
 
-// These report one rejected send, not a provider/session terminal. Without a
-// request identity they cannot safely claim any optimistic operation.
+// Without a matching requestId, these codes do not remove an optimistic
+// message or restore its draft.
 const UNCORRELATED_OPERATION_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"]);
 
 /**
- * Classify an error frame as a send-path command failure (chat.send,
- * chat.compact, chat.abort, or a busy-gate rejection). These surface in the
- * persistent, manually-dismissed banner instead of the transient error slot
- * the next live frame overwrites; every other error frame keeps the
- * transient slot. The prompt-terminal recovery flow runs regardless of the
- * classification.
+ * Select error frames that appear in the persistent, manually dismissed
+ * banner. Other error frames appear in the transient error surface.
  */
 export function sendCommandFailureOf(frame: Extract<ChatServerFrame, { readonly type: "error" }>): JsonObject | null {
   if (frame.code !== undefined && SEND_ERROR_CODES.has(frame.code)) return { message: frame.message };
@@ -183,6 +171,18 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
   const clearLiveSurfaces = (): void => {
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
+  };
+  const settleFailedPending = (pending: chatState.PendingOptimistic): void => {
+    bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
+    bindings.messageVersionRef.current += 1;
+    bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
+    bindings.retiredSteerIdsRef.current.delete(pending.id);
+    bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
+    bindings.retainFailedDrafts([pending]);
+    if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
+      bindings.submitLatchRef.current = false;
+      clearLiveSurfaces();
+    }
   };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
@@ -357,12 +357,18 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // resurrect a dismissed failure.
         if (frame.requestId && frame.command === "chat.send"
           && !bindings.consumeOutcome(frame.requestId)) return;
-        // The engine unloaded this idle session and deleted it from its
-        // registry; the engine process itself is still alive and the
-        // conversation is durable on disk. Not terminal: surface the calm
-        // resumable banner instead of the raw error, and stop any in-flight
-        // run indicator so the pane does not look busy. Only the provider-backed
-        // state frame of the next open sequence clears the state.
+        // Settle an owned send before any specialized presentation branch can
+        // return. Resume and external-write failures still choose their own UI,
+        // but the optimistic prompt is already rolled back and recoverable.
+        const correlatedPending = frame.requestId
+          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
+            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
+          : undefined;
+        if (correlatedPending) settleFailedPending(correlatedPending);
+        // A session_unloaded error remains hidden and leaves the pane ready
+        // for another prompt. It clears the submission latch, completion
+        // reason, running state, active response, streamed text, thinking,
+        // tools, activity flight, compaction, and pending approval.
         if (frame.code === "external-write-detected") {
           // Cold rehydration pages deliberately remain non-final because the
           // live tail could not be trusted. The drift error is their terminal
@@ -382,7 +388,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
-          bindings.setSessionUnloaded(true);
+          bindings.setIsCompacting(false);
+          bindings.setPendingApproval(null);
           bindings.setError("");
           return;
         }
@@ -409,28 +416,13 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (sendFailure === null) bindings.setError(frame.message);
         else bindings.setSendError(sendFailure);
 
-        // Correlated failures settle only their operation. Legacy provider
-        // prompt failures and genuinely terminal session errors have no
-        // request identity, so retain the established active-run recovery
-        // fallback without allowing an unrelated request id to claim it.
-        const pending = frame.requestId
-          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
-            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
-          : (frame.command === "prompt"
-            || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
-              ? bindings.activeRunRef.current ?? undefined
-              : undefined;
-        if (!pending) return;
-        bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
-        bindings.messageVersionRef.current += 1;
-        bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
-        bindings.retiredSteerIdsRef.current.delete(pending.id);
-        bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
-        bindings.retainFailedDrafts([pending]);
-        if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
-          bindings.submitLatchRef.current = false;
-          clearLiveSurfaces();
-        }
+        // Error frames without requestId may restore the active draft only
+        // for prompt-terminal fields; unrelated request ids leave it visible.
+        const pending = !frame.requestId && (frame.command === "prompt"
+          || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
+            ? bindings.activeRunRef.current ?? undefined
+            : undefined;
+        if (pending) settleFailedPending(pending);
         return;
       }
       case "notice":
@@ -453,7 +445,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "state":
         // ready precedes provider initialization; state proves get_state
         // completed and the reopened provider route is live.
-        bindings.setSessionUnloaded(false);
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);

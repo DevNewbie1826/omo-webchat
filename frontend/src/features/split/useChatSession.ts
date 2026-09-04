@@ -191,16 +191,6 @@ export function useChatSession(
 
   const disconnect = (): boolean => sendControl({ type: "chat.disconnect", sessionId: session.id }, "Failed to disconnect the session.");
 
-  // Reopen an evicted/unloaded session: re-sending the same chat.create
-  // frame the open/reconnect path uses makes the server resume the durable
-  // chat from disk. The pane's unloaded banner clears on the state frame,
-  // which proves get_state completed against a live provider route.
-  const resume = (): boolean => {
-    const client = clientRef.current;
-    return client !== null
-      && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id });
-  };
-
   const reloadExternalWrite = (): boolean => {
     frameState.beginExternalWriteRecovery();
     const client = clientRef.current;
@@ -316,7 +306,6 @@ export function useChatSession(
     doneReason: frameState.doneReason,
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
-    sessionUnloaded: frameState.sessionUnloaded,
     externalWriteDetected: frameState.externalWriteDetected,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
@@ -345,7 +334,6 @@ export function useChatSession(
     steer,
     stop,
     disconnect,
-    resume,
     reloadExternalWrite,
     resync,
     resyncBusy: frameState.resyncBusy,

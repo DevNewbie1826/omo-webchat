@@ -16,6 +16,7 @@ var (
 	ErrCompactionInFlight   = errors.New("session: compaction in flight")
 	ErrSessionClosed        = errors.New("session: closed")
 	ErrSessionResumable     = errors.New("session: provider session is resumable")
+	ErrNoDurableCursor      = errors.New("session: no durable cursor")
 	ErrManagerClosed        = errors.New("session: manager closed")
 	ErrOpenBusy             = errors.New("session: detached open limit reached")
 	ErrSendBackpressure     = errors.New("session: detached mutation limit reached")
@@ -128,6 +129,16 @@ type ErrorInfo struct {
 	KnownLeaf        string
 	ObservedLeaf     string
 }
+
+// ResumeError reports a failed resume-only acquisition without falling back
+// to a fresh session.
+type ResumeError struct {
+	Info  ErrorInfo
+	Cause error
+}
+
+func (e *ResumeError) Error() string { return e.Info.Message }
+func (e *ResumeError) Unwrap() error { return e.Cause }
 
 type EntriesFrame struct {
 	Entries []json.RawMessage

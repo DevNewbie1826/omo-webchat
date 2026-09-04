@@ -801,6 +801,45 @@ func TestMergeGateIdleEvictionConfirmsBeforeRemoval(t *testing.T) {
 	}
 }
 
+func TestIdleEvictionWaitsForSharedOwnerMutationAndRearmsOnCompletion(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 64, IdleAfter: 10 * time.Millisecond, CloseTimeout: time.Second})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	s, _, _, err := mgr.Acquire(context.Background(), testChat{id: "owner-mutation", cwd: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := d.BlockHandler(omorpc.CmdFollowUp)
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(release) })
+	completed := make(chan struct{})
+	if err := s.callDetachedMutation(context.Background(), omorpc.FollowUp{SessionID: s.routingID, Message: "queued"}, func(*omorpc.Response, omorpc.EpochToken, error) {
+		close(completed)
+	}); err != nil {
+		t.Fatalf("detached mutation: %v", err)
+	}
+	if !d.AwaitRequestCount(omorpc.CmdFollowUp, 1, testTimeout) {
+		t.Fatal("detached mutation did not reach provider")
+	}
+	mgr.evict(s)
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 0 {
+		t.Fatalf("idle eviction closed route with owner mutation outstanding: %d", got)
+	}
+	if got, ok := mgr.Get("owner-mutation"); !ok || got != s {
+		t.Fatal("idle eviction removed route with owner mutation outstanding")
+	}
+	releaseOnce.Do(release)
+	select {
+	case <-completed:
+	case <-time.After(testTimeout):
+		t.Fatal("detached mutation did not complete")
+	}
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("last owner completion did not re-arm idle eviction")
+	}
+}
+
 func TestMergeGateIdleEvictionTimeoutRetainsSession(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
