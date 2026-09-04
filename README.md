@@ -24,7 +24,8 @@
 ### 요구 사항
 
 - 채팅을 만들려면 `PATH`에 `omo`가 있어야 합니다.
-- macOS·Linux (amd64/arm64). Windows 릴리스는 없습니다.
+- macOS·Linux (amd64/arm64), Windows (amd64, zip 릴리스).
+- Windows 주의: 서버 자체는 Windows에서 빌드되고 부팅되며 Windows CI를 통과하고, 이미 실행 중인 omo RPC 데몬에 연결됩니다. 다만 Windows에서 omo RPC 데몬을 직접 실행하는 것은 현재 업스트림 CLI 이슈(code-yeongyu/senpi#1370)로 막혀 있습니다.
 
 ### 설치
 
@@ -114,7 +115,8 @@ sh test/install_checksum_test.sh
 ### Requirements
 
 - `omo` on `PATH` to create chats.
-- macOS / Linux (amd64, arm64). No Windows release.
+- macOS / Linux (amd64, arm64), Windows (amd64, zip release).
+- Windows caveat: the server itself builds, boots, and passes its Windows CI, and connects to an already-running omo RPC daemon. Running the real omo RPC daemon on Windows is currently blocked by an upstream CLI issue (code-yeongyu/senpi#1370).
 
 ### Install
 
