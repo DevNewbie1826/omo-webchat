@@ -1,8 +1,46 @@
+/* Shrink contract: .th-chat-main clips overflow, so this sibling of the
+   goal shelf must also shrink (never flex: none). Once the transcript
+   scrollport hits zero, remaining deficit would otherwise push the rigid
+   composer past the pane bottom. overflow: hidden is required so a shelf
+   squeezed below its content height clips instead of painting over the
+   status strip and composer (visible overflow would cover later siblings
+   still inside .th-chat-main). The collapsed bar-row floor keeps
+   overflow:hidden from zeroing the automatic minimum; the expanded floor
+   (below) also reserves the grip and a minimal panel box. flex-grow stays
+   0 so the shelf never expands past its content. */
 .th-activity-shelf {
-  flex: none;
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   min-width: 0;
+  min-height: calc(
+    var(--th-type-secondary-size) * var(--th-type-secondary-line) +
+      var(--th-space-1) + var(--th-space-1) + 2px
+  );
+  overflow: hidden;
   margin: var(--th-space-2) auto 0;
+}
+
+/* The bar row never yields its height; only the panel below it shrinks. */
+.th-activity-shelf .th-activity-bar-row {
+  flex: none;
+}
+
+/* Expanded contract: the collapsed bar floor plus overflow: hidden would
+   clip the resize grip and the panel while the transcript still has space,
+   so the grip hit-tests through to the status strip and the panel loses
+   its bottom border. Reserve the interaction band (grip + a minimal panel
+   box with both borders) only when expanded; collapsed stays the plain
+   bar floor. The outer shelf remains flex: 0 1 auto so a true deficit
+   still yields, and the panel scrolls inside via min-height: 0. */
+.th-activity-shelf:has(.th-activity-bar[aria-expanded="true"]) {
+  min-height: calc(
+    var(--th-type-secondary-size) * var(--th-type-secondary-line) +
+      var(--th-space-1) + var(--th-space-1) + 2px +
+      10px + var(--th-space-0-5) +
+      var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px
+  );
 }
 
 .th-activity-bar {
@@ -34,6 +72,12 @@
   color: var(--th-text);
 }
 
+/* The shelf clips squeezed content, so keep the global focus outline inside
+   the activity button in both collapsed and expanded states. */
+.th-activity-bar:focus-visible {
+  outline-offset: -2px;
+}
+
 .th-activity-bar-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -61,11 +105,14 @@
   transform: rotate(90deg);
 }
 
+/* Shrink contract: min-height: 0 lets the shelf column squeeze the panel
+   (it scrolls via overflow) instead of overflowing the clipped shelf. */
 .th-activity-panel {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--th-space-3);
+  min-height: 0;
   max-height: 280px;
   margin-top: var(--th-space-1);
   padding: var(--th-space-2);
@@ -90,9 +137,11 @@
 
 /* Standalone grip between the summary bar and the panel: always visible,
    centered in the reading column, with the ::after bar carrying the color
-   feedback (border → text-dim on hover → text while dragging). */
+   feedback (border → text-dim on hover → text while dragging). The grip
+   never yields its height; only the panel below it shrinks. */
 .th-activity-resize {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: center;
   width: 100%;
