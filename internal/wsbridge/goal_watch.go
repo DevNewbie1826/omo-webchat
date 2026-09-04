@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -140,17 +140,21 @@ func goalStamp(ctx context.Context, agentDir, cwd, durableSessionID string) (goa
 
 var errGoalStampTransient = errors.New("goal file identity unavailable")
 
+// goalStampFromInfo takes the kernel device/inode pair where the platform
+// exposes it (unix st_dev/st_ino). Windows FileInfo.Sys() carries no file
+// index, so the stamp there keeps size+mtime, which still distinguishes
+// content edits from unchanged ticks.
 func goalStampFromInfo(info os.FileInfo) (goalFileStamp, bool) {
 	if info == nil {
 		return goalFileStamp{}, false
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return goalFileStamp{}, false
+	identity, hasIdentity := fileid.FromInfo(info)
+	if !hasIdentity {
+		return goalFileStamp{size: info.Size(), mod: info.ModTime()}, true
 	}
 	return goalFileStamp{
-		device: uint64(stat.Dev),
-		inode:  uint64(stat.Ino),
+		device: identity.Device,
+		inode:  identity.Inode,
 		size:   info.Size(),
 		mod:    info.ModTime(),
 	}, true

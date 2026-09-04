@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -439,14 +438,14 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 		return false, err
 	}
 	info, err := os.Lstat(dir)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) || (err == nil && !info.IsDir()) {
+	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	f, err := os.Open(dir)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+	if isAbsentPathError(err) {
 		return false, nil
 	}
 	if err != nil {
