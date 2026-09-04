@@ -28,7 +28,20 @@ const (
 	// files are opened, and at most this many candidates are returned.
 	sessionBranchScanMaxFiles      = 32
 	sessionBranchScanMaxCandidates = 8
+
+	// DiscoveredStabilityWindow is how long a freshly written disk session is
+	// held out of the discovered catalog while some stored chat in the same
+	// workspace still dangles. Observed engine behavior: a session's jsonl is
+	// created lazily on first persist, so a brand-new file can be the missing
+	// half of a dangling stored chat rather than a distinct session. Exposing
+	// it immediately makes one user-perceived chat flicker between one and
+	// two rows for as long as the persist takes (seconds to minutes).
+	DiscoveredStabilityWindow = 90 * time.Second
 )
+
+// now is the catalog clock. Tests replace it to age sessions deterministically
+// instead of sleeping.
+var now = time.Now
 
 type sessionHistoryItem struct {
 	ID             string `json:"id"`
@@ -52,6 +65,9 @@ type diskSession struct {
 	Path      string
 	CWD       string
 	RecencyMs int64
+	// ModTime is the session file's modification time, captured when the file
+	// is parsed. Zero for hand-built rows, which disables the freshness gate.
+	ModTime time.Time
 }
 
 type sessionHistoryCursor struct {
@@ -138,11 +154,16 @@ func parseSessionFile(path string) (diskSession, bool) {
 		return diskSession{}, false
 	}
 	createdAt, _ := time.Parse(time.RFC3339Nano, header.Timestamp)
+	var modTime time.Time
+	if info, statErr := f.Stat(); statErr == nil {
+		modTime = info.ModTime()
+	}
 	return diskSession{
 		ID:        header.ID,
 		Path:      path,
 		CWD:       header.CWD,
 		RecencyMs: createdAt.UnixMilli(),
+		ModTime:   modTime,
 	}, true
 }
 
@@ -278,7 +299,13 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
+	// chats and disk are both scoped to one workspace path by the callers, so
+	// a dangling chat in the slice is a dangling chat in every disk session's
+	// cwd.
+	dangling := false
 	for _, ch := range chats {
+		danglingRow := storedIdentityDangling(ch.SessionFile)
+		dangling = dangling || danglingRow
 		items = append(items, sessionHistoryItem{
 			ID:        ch.ID,
 			Name:      ch.Name,
@@ -286,7 +313,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 			RecencyMs: chatRecencyMs(ch),
 			// A cheap Stat per stored row flags an owned copy that vanished.
 			// Never a branch scan — that is recovery-time work.
-			Dangling: storedIdentityDangling(ch.SessionFile),
+			Dangling: danglingRow,
 		})
 	}
 	for _, sess := range disk {
@@ -299,7 +326,14 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 				break
 			}
 		}
-		if suppress {
+		// While a stored chat in this workspace still dangles, a freshly
+		// written disk session may be that chat's lazy first persist rather
+		// than a distinct session. Hold it out of the catalog until the file
+		// has aged past the stability window (or no dangling chat remains) so
+		// the user sees one row instead of a transient duplicate. Once the
+		// chat's identity is updated onto the file — takeover or adoption —
+		// the identity match above merges it into the stored row immediately.
+		if suppress || (dangling && discoveredSessionUnstable(sess)) {
 			continue
 		}
 		items = append(items, sessionHistoryItem{
@@ -406,6 +440,17 @@ func storedIdentityDangling(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return errors.Is(err, os.ErrNotExist)
+}
+
+// discoveredSessionUnstable reports whether the disk session file was written
+// within DiscoveredStabilityWindow of now, i.e. it may still be the lazy first
+// persist backing a dangling stored chat. Rows with an unknown modification
+// time are never treated as unstable.
+func discoveredSessionUnstable(sess diskSession) bool {
+	if sess.ModTime.IsZero() {
+		return false
+	}
+	return now().Sub(sess.ModTime) < DiscoveredStabilityWindow
 }
 
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
