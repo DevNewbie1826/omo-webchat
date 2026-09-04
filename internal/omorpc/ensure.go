@@ -10,13 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
+	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
 const (
@@ -311,7 +312,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procexec.SetupCommand(cmd)
 	cmd.WaitDelay = daemonKillWait
 	if err := cmd.Start(); err != nil {
 		return nil, errors.Join(fmt.Errorf("omorpc: start daemon supervisor: %w", err), finishLog()), false
@@ -394,21 +395,12 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	}
 }
 
-type socketIdentity struct {
-	device uint64
-	inode  uint64
-}
+// socketIdentity aliases the fileid kernel identity pair so endpoint
+// bookkeeping reads identically on every platform while keeping its local name.
+type socketIdentity = fileid.Identity
 
 func currentSocketIdentity(path string) (socketIdentity, bool) {
-	info, err := os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSocket == 0 {
-		return socketIdentity{}, false
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return socketIdentity{}, false
-	}
-	return socketIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, true
+	return fileid.FromPath(path)
 }
 
 type peerProvenance uint8
@@ -543,65 +535,6 @@ func authenticateSocketPathWithPeerPID(ctx context.Context, path string, process
 func connectionPeerProvenance(conn net.Conn, processGroup int) peerProvenance {
 	pid, err := connectionPeerPID(conn)
 	return classifyPeerProvenance(pid, err, processGroup)
-}
-
-func classifyPeerProvenance(pid int, credentialErr error, processGroup int) peerProvenance {
-	if credentialErr != nil || pid <= 0 {
-		return peerUnknown
-	}
-	if pid == processGroup {
-		return peerOwned
-	}
-	pgid, err := syscall.Getpgid(pid)
-	if err != nil {
-		return peerUnknown
-	}
-	if pgid == processGroup {
-		return peerOwned
-	}
-	return peerForeign
-}
-
-func connectionPeerPID(conn net.Conn) (int, error) {
-	syscallConn, ok := conn.(syscall.Conn)
-	if !ok {
-		return 0, errors.New("connection does not expose a file descriptor")
-	}
-	raw, err := syscallConn.SyscallConn()
-	if err != nil {
-		return 0, err
-	}
-	var pid int32
-	var socketErr error
-	err = raw.Control(func(fd uintptr) {
-		length := uint32(unsafe.Sizeof(pid))
-		level, option := uintptr(0), uintptr(2) // SOL_LOCAL, LOCAL_PEERPID on Darwin.
-		var credentials [3]int32
-		value := unsafe.Pointer(&pid)
-		if runtime.GOOS == "linux" {
-			level, option = 1, 17 // SOL_SOCKET, SO_PEERCRED.
-			length = uint32(unsafe.Sizeof(credentials))
-			value = unsafe.Pointer(&credentials[0])
-		}
-		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, level, option, uintptr(value), uintptr(unsafe.Pointer(&length)), 0)
-		if errno != 0 {
-			socketErr = errno
-			return
-		}
-		if runtime.GOOS == "linux" {
-			pid = credentials[0]
-		}
-	})
-	if err != nil {
-		return 0, err
-	}
-	if socketErr != nil {
-		return 0, socketErr
-	}
-	if pid <= 0 {
-		return 0, fmt.Errorf("invalid peer pid %d", pid)
-	}
-	return int(pid), nil
 }
 
 // removeOwnedSocket runs while EnsureDaemon holds the endpoint lock. The
@@ -1302,14 +1235,9 @@ func cleanupStoppedProcessEndpoint(ctx context.Context, pid int) error {
 }
 
 func signalProcessGroup(pid int, signal syscall.Signal) error {
-	err := syscall.Kill(-pid, signal)
-	if err == nil || errors.Is(err, syscall.ESRCH) {
-		return nil
-	}
-	return err
+	return procexec.SignalGroup(pid, signal)
 }
 
 func processGroupAlive(pid int) bool {
-	err := syscall.Kill(-pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+	return procexec.GroupAlive(pid)
 }
