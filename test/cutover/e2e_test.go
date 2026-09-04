@@ -283,8 +283,8 @@ func TestServerKillPreservesDaemonSessionAndReconnectResumes(t *testing.T) {
 	if persisted.DurableSessionID != durableID {
 		t.Fatalf("durable id changed during restart migration: before=%+v after=%+v", cursor, persisted)
 	}
-	if persisted.SessionFile == cursor.SessionFile || !cursorstore.IsOwnedSession(persisted, filepath.Join(stateDir, "adopted")) {
-		t.Fatalf("restart did not migrate the legacy cursor to an owned copy: before=%+v after=%+v", cursor, persisted)
+	if persisted.SessionProvenance != cursorstore.SessionProvenanceNative || persisted.SessionFile != cursor.SessionFile {
+		t.Fatalf("restart did not preserve the native session identity: before=%+v after=%+v", cursor, persisted)
 	}
 	var replayed []any
 	for {
