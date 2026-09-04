@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { I18nContext, type I18nValue } from "../../i18n";
+import { I18nContext, translate, type I18nValue, type Lang } from "../../i18n";
 import type { ChatNotice } from "./useChatFrameState";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 
@@ -14,6 +14,11 @@ const i18n: I18nValue = {
   setFontSize: () => undefined,
   t: (key) => key,
 };
+
+/** Real app translation tables, so assertions can check rendered labels. */
+function realI18n(lang: Lang): I18nValue {
+  return { ...i18n, lang, t: (key) => translate(lang, key) };
+}
 
 function payload(values: Record<string, unknown>): ChatNotice["payload"] {
   return values as ChatNotice["payload"];
@@ -42,10 +47,10 @@ describe("TranscriptNoticeRow", () => {
     vi.unstubAllGlobals();
   });
 
-  const renderRow = (notice: ChatNotice): void => {
+  const renderRow = (notice: ChatNotice, lang?: Lang): void => {
     act(() => {
       root.render(
-        <I18nContext.Provider value={i18n}>
+        <I18nContext.Provider value={lang === undefined ? i18n : realI18n(lang)}>
           <TranscriptNoticeRow notice={notice} />
         </I18nContext.Provider>,
       );
@@ -142,6 +147,31 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("main");
     expect(container.textContent).not.toContain("retry_fallback_exhausted");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
+  });
+
+  it.each<[Lang, string]>([
+    ["en", "Auto retry started"],
+    ["ko", "자동 재시도 시작"],
+  ])("shows the translated auto-retry start label with its message as an info line (%s)", (lang, started) => {
+    renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), lang);
+    expect(container.textContent).toContain(started);
+    expect(container.textContent).toContain("attempt 2");
+    expect(container.textContent).not.toContain("auto_retry_start");
+    expect(container.textContent).not.toContain("notice.autoRetryStarted");
+    expect(container.querySelector(".th-alert--info")).not.toBeNull();
+    expect(container.querySelector(".th-alert--warning")).toBeNull();
+  });
+
+  it.each<[Lang, string]>([
+    ["en", "Auto retry ended"],
+    ["ko", "자동 재시도 종료"],
+  ])("shows the translated auto-retry end label as an info line (%s)", (lang, ended) => {
+    renderRow(notice(1, "auto_retry_end"), lang);
+    expect(container.textContent).toContain(ended);
+    expect(container.textContent).not.toContain("auto_retry_end");
+    expect(container.textContent).not.toContain("notice.autoRetryEnded");
+    expect(container.querySelector(".th-alert--info")).not.toBeNull();
+    expect(container.querySelector(".th-alert--warning")).toBeNull();
   });
 
   it("renders no dismiss button", () => {

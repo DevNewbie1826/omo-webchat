@@ -227,6 +227,8 @@
   "notice.fallbackExhausted": "Provider fallback exhausted",
   "notice.fallbackAborted": "Server fallback aborted",
   "notice.fallbackReason": "Reason",
+  "notice.autoRetryStarted": "Auto retry started",
+  "notice.autoRetryEnded": "Auto retry ended",
   "notice.highReasoningWarning": "High-reasoning model warning",
   "notice.highReasoningGuidance": "Delegate to ultrabrain for deep-reasoning tasks.",
   "notice.system": "System",

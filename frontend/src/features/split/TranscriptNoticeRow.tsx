@@ -95,6 +95,18 @@ function NoticeBody({ notice }: { readonly notice: ChatNotice }) {
         </>
       );
     }
+    case "auto_retry_start":
+    case "auto_retry_end": {
+      const message = payloadString(payload, "message");
+      return (
+        <>
+          <strong className="th-notice-title">
+            {t(notice.kind === "auto_retry_start" ? "notice.autoRetryStarted" : "notice.autoRetryEnded")}
+          </strong>
+          {message !== null && <span className="th-notice-detail">{message}</span>}
+        </>
+      );
+    }
     case "extension_notify": {
       const title = payloadString(payload, "title");
       const message = payloadString(payload, "message");
