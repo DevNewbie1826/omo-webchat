@@ -142,6 +142,14 @@ func TestServerSmokeAgainstMockDaemon(t *testing.T) {
 	if err := tracked.TerminateTree(); err != nil {
 		t.Fatalf("terminate server tree: %v", err)
 	}
+	// The production teardown path (omorpc terminateSupervisor) drains the job
+	// domain with WaitTreeGone after TerminateJobObject because that Win32
+	// call only initiates termination. The server tree is leader-only, but
+	// calling it here exercises the same TerminateTree -> WaitTreeGone order
+	// end-to-end against a real job object.
+	if err := tracked.WaitTreeGone(exitWait); err != nil {
+		t.Fatalf("server tree did not drain after terminate: %v", err)
+	}
 	select {
 	case <-waitCh:
 	case <-time.After(exitWait):
