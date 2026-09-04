@@ -214,8 +214,15 @@ func Test_TrackedProcess_WaitTreeGone_blocks_while_grandchild_outlives_leader(t 
 	if waitErr != nil {
 		t.Fatalf("WaitTreeGone: %v", waitErr)
 	}
-	if GroupAlive(grandchild) {
-		t.Fatalf("grandchild %d still alive after WaitTreeGone returned nil", grandchild)
+	// Job accounting can report an empty domain shortly before the member's
+	// process object becomes signaled (termination is asynchronous), so the
+	// after-state is a bounded poll, not an instantaneous check.
+	for GroupAlive(grandchild) {
+		select {
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("grandchild %d still alive %s after WaitTreeGone returned nil", grandchild, trackedTreeTestDeadline)
+		}
 	}
 }
 
