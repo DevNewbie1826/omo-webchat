@@ -245,6 +245,7 @@
   "tool.command": "명령",
   "tool.input": "입력",
   "tool.output": "출력",
+  "tool.skillRead": "스킬 읽음: {name}",
   "tool.subagent": "서브에이전트",
   "tool.subagentRunning": "실행 중",
   "tool.subagentDone": "완료",

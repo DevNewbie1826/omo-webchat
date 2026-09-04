@@ -148,7 +148,11 @@ func (GetProtocolInfo) commandName() string { return CmdGetProtocolInfo }
 
 // OpenSession opens a fresh session rooted at CWD or, when SessionPath is
 // set, resumes the session stored at that file (durable id = file UUID).
-// Exactly one of the two fields is sent. The reply's data payload is an
+// Observed engine contract: CWD is always sent when known, including on
+// resume alongside SessionPath — session-scoped state keyed by working
+// directory follows the explicit open_session cwd when present and falls
+// back to the shared host process startup cwd when absent. An empty CWD
+// stays omitted via omitempty. The reply's data payload is an
 // OpenSessionData.
 type OpenSession struct {
 	CWD         string `json:"cwd,omitempty"`

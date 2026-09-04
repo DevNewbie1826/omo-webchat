@@ -136,6 +136,12 @@ func TestIntegrationHappyPathResumeAcrossRestart(t *testing.T) {
 	if p, _ := open["sessionPath"].(string); p != cur.SessionFile {
 		t.Fatalf("resume open must carry the stored sessionPath, got %v", open["sessionPath"])
 	}
+	// Observed engine contract: session-scoped state keyed by working
+	// directory follows the explicit open_session cwd, so a resume must
+	// carry the chat cwd alongside the stored sessionPath.
+	if got, _ := open["cwd"].(string); got != chat.cwd {
+		t.Fatalf("resume open must carry the chat cwd alongside sessionPath, got %q", got)
+	}
 
 	// History flows after resume: disk pages append into one live-tail terminal.
 	total := 0

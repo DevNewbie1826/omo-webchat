@@ -245,6 +245,7 @@
   "tool.command": "Command",
   "tool.input": "Input",
   "tool.output": "Output",
+  "tool.skillRead": "Read skill: {name}",
   "tool.subagent": "Sub-agent",
   "tool.subagentRunning": "running",
   "tool.subagentDone": "completed",
