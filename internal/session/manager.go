@@ -1035,6 +1035,20 @@ func definitiveResumeFailure(err error) bool {
 	return !errors.Is(err, omorpc.ErrDisconnected) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
+// routeHeldByLiveSession reports whether a live session other than the
+// identified chat currently owns the routing id. Dead-epoch close attempts
+// use it to avoid closing a route id that a newer session has legitimately
+// re-acquired after an epoch transition.
+func (m *Manager) routeHeldByLiveSession(chatID, route string) bool {
+	if route == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	holder, ok := m.byRoute[route]
+	return ok && holder.chatID != chatID
+}
+
 func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {
 	if route == "" {
 		return
@@ -1044,19 +1058,10 @@ func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) 
 	m.rememberRetiringLocked(chatID, retiring)
 	m.mu.Unlock()
 
-	if !m.cfg.Client.EpochCurrent(epoch) {
-		m.mu.Lock()
-		m.removeRetiringLocked(chatID, retiring)
-		m.mu.Unlock()
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	defer cancel()
-	_, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.CloseSession{SessionID: route})
-	if responseEpoch != (omorpc.EpochToken{}) && responseEpoch != epoch {
-		slog.Error("provider routing cleanup crossed connection epoch", "chat_id", chatID, "routing_id", route)
-	}
-	if definitiveCloseFailure(err) {
+	_, _, err := m.cfg.Client.CallInEpochToken(ctx, epoch, omorpc.CloseSession{SessionID: route})
+	if definitiveCloseFailure(err) || errors.Is(err, omorpc.ErrEpochMismatch) {
 		m.mu.Lock()
 		m.removeRetiringLocked(chatID, retiring)
 		m.mu.Unlock()
@@ -1100,17 +1105,8 @@ func (m *Manager) drainRetiring(ctx context.Context, chatID string) error {
 	m.mu.Unlock()
 	var first error
 	for _, route := range routes {
-		if !m.cfg.Client.EpochCurrent(route.epoch) {
-			m.mu.Lock()
-			m.removeRetiringLocked(chatID, route)
-			m.mu.Unlock()
-			continue
-		}
-		_, responseEpoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.CloseSession{SessionID: route.route})
-		if responseEpoch != (omorpc.EpochToken{}) && responseEpoch != route.epoch {
-			slog.Error("provider routing drain crossed connection epoch", "chat_id", chatID, "routing_id", route.route)
-		}
-		if definitiveCloseFailure(err) {
+		_, _, err := m.cfg.Client.CallInEpochToken(ctx, route.epoch, omorpc.CloseSession{SessionID: route.route})
+		if definitiveCloseFailure(err) || errors.Is(err, omorpc.ErrEpochMismatch) {
 			m.mu.Lock()
 			m.removeRetiringLocked(chatID, route)
 			m.mu.Unlock()

@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"runtime"
 	"testing"
 	"time"
 
@@ -61,20 +60,19 @@ func TestDetachedPromptWithoutCompletionSuppressesProviderEvictionError(t *testi
 	_, _ = pane.await(t, FrameRunDone)
 	_ = pane.drain()
 
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	owner.detachedSettled = make(chan struct{}, 1)
+	owner.mu.Unlock()
 	d.EvictUsedSessionOnNextRoutingCommand()
 	if err := s.SendPromptDetachedWithRequestID(context.Background(), "after eviction", nil, "detached-eviction"); err != nil {
 		t.Fatalf("evicted prompt admission: %v", err)
 	}
 
-	deadline := time.NewTimer(testTimeout)
-	defer deadline.Stop()
-	for s.operationOwner().activeDetached.Load() != 0 {
-		select {
-		case <-deadline.C:
-			t.Fatal("timed out waiting for detached eviction response")
-		default:
-			runtime.Gosched()
-		}
+	select {
+	case <-owner.detachedSettled:
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for detached eviction response")
 	}
 	if !s.Resumable() {
 		t.Fatal("provider eviction did not latch the session resumable")
@@ -83,6 +81,88 @@ func TestDetachedPromptWithoutCompletionSuppressesProviderEvictionError(t *testi
 		if frame.Kind == FrameError {
 			t.Fatalf("detached provider eviction exposed an error frame: %+v", frame)
 		}
+	}
+}
+
+func TestSecondProviderEvictionAfterRecoveryPublishesTerminalSendOutcome(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := testManager(t, client, newMemStore(), 64)
+	chat := testChat{id: "second-provider-eviction", cwd: t.TempDir()}
+	pane := newRecorder(64)
+	stale, _, staleDetach := acquire(t, mgr, chat, pane)
+	defer staleDetach()
+	_ = pane.drain()
+
+	d.SetPromptScript(stale.SessionFile(),
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	if err := stale.SendPrompt(context.Background(), "establish route", nil); err != nil {
+		t.Fatalf("initial prompt: %v", err)
+	}
+	_, _ = pane.await(t, FrameRunDone)
+	_ = pane.drain()
+
+	const requestID = "prompt-after-second-eviction"
+	d.EvictUsedSessionOnNextRoutingCommand()
+	firstCompletion := make(chan error, 1)
+	if err := stale.SendPromptDetachedWithRequestIDAndCompletion(context.Background(), "retry once", nil, requestID, func(err error) {
+		firstCompletion <- err
+	}); err != nil {
+		t.Fatalf("first evicted prompt admission: %v", err)
+	}
+	select {
+	case err := <-firstCompletion:
+		if !errors.Is(err, ErrSessionResumable) {
+			t.Fatalf("first eviction completion = %v, want ErrSessionResumable", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for first eviction response")
+	}
+
+	retryToken, prepared := stale.PrepareDetachedSendRetry(requestID, false)
+	if !prepared {
+		t.Fatal("evicted prompt was not available for transparent retry")
+	}
+	defer stale.RetireDetachedSendRetry(retryToken)
+	retryCompletion := make(chan error, 1)
+	resumed, _, resumedDetach, err := mgr.ResumeInitializedCheckedAndRun(
+		context.Background(), chat, pane, nil, func() error { return nil },
+		func(acquired *Session) error {
+			if _, err := client.Call(context.Background(), omorpc.GetState{SessionID: acquired.RoutingID()}); err != nil {
+				return err
+			}
+			d.EvictUsedSessionOnNextRoutingCommand()
+			return acquired.SendPromptDetachedWithRequestIDAndCompletion(context.Background(), "retry once", nil, requestID, func(err error) {
+				acquired.CompleteDetachedSend(requestID, err)
+				retryCompletion <- err
+			})
+		},
+	)
+	if err != nil {
+		t.Fatalf("transparent resume and retry: %v", err)
+	}
+	defer resumedDetach()
+	select {
+	case err := <-retryCompletion:
+		if !errors.Is(err, ErrSessionResumable) {
+			t.Fatalf("second eviction completion = %v, want ErrSessionResumable", err)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for second eviction response")
+	}
+
+	owner := resumed.operationOwner()
+	owner.mu.Lock()
+	operation := owner.operations[requestID]
+	owner.mu.Unlock()
+	if operation.phase != sendOperationTerminal || !operation.published {
+		t.Fatalf("second eviction outcome = %+v, want published terminal", operation)
+	}
+	_, frame := pane.awaitError(t, "session_unloaded")
+	if frame.Command != "chat.send" || frame.RequestID != requestID {
+		t.Fatalf("second eviction terminal frame = %+v", frame)
 	}
 }
 

@@ -59,6 +59,7 @@ type sendOperationOwner struct {
 	retryRunAdmissionToken DetachedSendRetryToken
 	nextRetryToken         uint64
 	activeDetached         atomic.Int32
+	detachedSettled        chan struct{}
 	sessions               map[*Session]struct{}
 }
 
@@ -549,17 +550,33 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 		owner.detachedMutations--
 		owner.mu.Unlock()
 		complete(resp, epoch, callErr)
-		owner.activeDetached.Add(-1)
+		if owner.activeDetached.Add(-1) == 0 {
+			owner.notifyDetachedSettled()
+		}
 		owner.rearmIdle()
 	})
 	if err != nil {
 		owner.mu.Lock()
 		owner.detachedMutations--
 		owner.mu.Unlock()
-		owner.activeDetached.Add(-1)
+		if owner.activeDetached.Add(-1) == 0 {
+			owner.notifyDetachedSettled()
+		}
 		owner.rearmIdle()
 	}
 	return err
+}
+
+func (o *sendOperationOwner) notifyDetachedSettled() {
+	o.mu.Lock()
+	settled := o.detachedSettled
+	o.mu.Unlock()
+	if settled != nil {
+		select {
+		case settled <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (s *Session) finishDetachedSend(err error, command, requestID string, complete func(error)) {
@@ -624,10 +641,10 @@ func (s *Session) RetireDetachedSendRetry(token DetachedSendRetryToken) {
 	owner.mu.Unlock()
 }
 
-// CompleteDetachedSend publishes and retains a terminal outcome owned by a
-// transport completion callback.
+// CompleteDetachedSend publishes and retains a terminal outcome after
+// transparent recovery has either completed or exhausted its single retry.
 func (s *Session) CompleteDetachedSend(requestID string, err error) {
-	s.publishDetachedOutcome(err, "chat.send", requestID)
+	s.publishDetachedOutcomeWithPolicy(err, "chat.send", requestID, false)
 }
 
 // PublishSendOperationError publishes an acquisition failure as the terminal
@@ -653,7 +670,11 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
-	if errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
+	s.publishDetachedOutcomeWithPolicy(err, command, requestID, true)
+}
+
+func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID string, suppressResumable bool) {
+	if suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
 		return
 	}
 	owner := s.operationOwner()
@@ -787,6 +808,9 @@ func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {
 	}
 	info := ErrorInfo{Code: "provider_error", Message: err.Error()}
 	switch {
+	case errors.Is(err, ErrSessionResumable):
+		info.Code = "session_unloaded"
+		info.Message = "provider unloaded the session"
 	case errors.Is(err, ErrPromptInFlight):
 		info.Code = "prompt_in_flight"
 	case errors.Is(err, ErrCompactionInFlight):
@@ -1368,10 +1392,34 @@ func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
 
 func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
 	route := s.routingID
-	_, err := s.client.CallRetained(ctx, omorpc.CloseSession{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+	cmd := omorpc.CloseSession{SessionID: route}
+	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.completeClose(txn, route, callErr)
-	})
-	return closeResult(err)
+	}
+	// Close bound to the session's epoch whenever that epoch is still live.
+	// When it is dead, the daemon-side route may outlive the connection: a
+	// best-effort close on the current connection is safe unless another
+	// live session already owns the same route id (ids can repeat across
+	// epochs); in that case refusing beats closing someone else's route.
+	if s.client.EpochCurrent(s.epoch) {
+		_, err := s.client.CallRetainedInEpoch(ctx, s.epoch, cmd, complete)
+		return closeResult(err)
+	}
+	if s.manager.routeHeldByLiveSession(s.chatID, route) {
+		err := omorpc.ErrEpochMismatch
+		complete(nil, omorpc.EpochToken{}, err)
+		return err
+	}
+	s.lifecycleMu.Lock()
+	resumable := s.resumable
+	s.lifecycleMu.Unlock()
+	if resumable {
+		_, err := s.client.CallRetained(ctx, cmd, complete)
+		return closeResult(err)
+	}
+	err := omorpc.ErrEpochMismatch
+	complete(nil, omorpc.EpochToken{}, err)
+	return err
 }
 
 func waitCloseTransaction(ctx context.Context, txn *closeTransaction) error {
