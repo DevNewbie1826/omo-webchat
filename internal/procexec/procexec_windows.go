@@ -227,11 +227,6 @@ type jobObjectBasicProcessIdListHeader struct {
 	NumberOfProcessIdsInList  uint32
 }
 
-// ErrJobClosed reports a WaitTreeGone call on a TrackedProcess whose job
-// handle Close already released: the kernel teardown started at close, but
-// this wait can no longer observe the domain through the released handle,
-// so an honest error replaces a fabricated drain result.
-var ErrJobClosed = errors.New("job handle already closed")
 
 // WaitTreeGone is a full completion barrier for the tracked domain: it
 // returns nil only after the job's member list is empty AND every member
@@ -284,11 +279,18 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			}
 			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if openErr != nil {
-				// A member can be mid-exit; the next cycle re-queries and
-				// either reopens it or observes a list without it.
+				// A listed member we cannot open yet (typically mid-exit) stays
+			// listed, so nil is impossible while it is unaccounted for: the
+			// next cycle retries the open, and the member leaves the list only
+			// by exiting. OpenProcess failure is therefore tolerated only for
+			// as long as the member list itself vouches for the pid.
 				continue
 			}
 			pending[pid] = handle
+		}
+		listed := make(map[uint32]struct{}, len(pids))
+		for _, pid := range pids {
+			listed[pid] = struct{}{}
 		}
 		for pid, handle := range pending {
 			event, waitErr := windows.WaitForSingleObject(handle, 0)
@@ -296,6 +298,17 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 				return fmt.Errorf("procexec: wait on tree member %d of child %d: %w", pid, t.pid, waitErr)
 			}
 			if event == windows.WAIT_OBJECT_0 {
+				// Conclusive: the observed member's process object is signaled.
+				_ = windows.CloseHandle(handle)
+				delete(pending, pid)
+				continue
+			}
+			if _, ok := listed[pid]; !ok {
+				// The pid left the job's member list without the handle
+			// signaling: the member exited (only exit removes membership),
+			// and an unsignaled handle for that pid can only be an unrelated
+			// process that reused it after our query — drop it rather than
+			// wait on a process outside the tracked domain.
 				_ = windows.CloseHandle(handle)
 				delete(pending, pid)
 			}
@@ -306,8 +319,8 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 		select {
 		case <-retry.C:
 		case <-timer.C:
-			return fmt.Errorf("procexec: tracked tree of child %d still had %d listed and %d unsignaled members after %s",
-				t.pid, len(pids), len(pending), deadline)
+			return fmt.Errorf("procexec: tracked tree of child %d still had %d listed and %d unsignaled members after %s: %w",
+				t.pid, len(pids), len(pending), deadline, ErrTreeDrainTimeout)
 		}
 	}
 }

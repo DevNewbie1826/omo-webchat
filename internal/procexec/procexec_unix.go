@@ -84,7 +84,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 		select {
 		case <-retry.C:
 		case <-timer.C:
-			return fmt.Errorf("procexec: tracked tree of child %d still alive after %s", t.pid, deadline)
+			return fmt.Errorf("procexec: tracked tree of child %d still alive after %s: %w", t.pid, deadline, ErrTreeDrainTimeout)
 		}
 	}
 }

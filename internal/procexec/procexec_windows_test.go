@@ -186,8 +186,8 @@ func Test_TrackedProcess_WaitTreeGone_blocks_while_grandchild_outlives_leader(t 
 	// assertion — no goroutine handshake is needed, the blocked state is
 	// proven by the timeout itself.
 	shortDeadline := 2 * time.Second
-	if err := tracked.WaitTreeGone(shortDeadline); err == nil {
-		t.Fatalf("WaitTreeGone(%s) returned nil while grandchild %d was alive", shortDeadline, grandchild)
+	if err := tracked.WaitTreeGone(shortDeadline); !errors.Is(err, ErrTreeDrainTimeout) {
+		t.Fatalf("WaitTreeGone(%s) = %v, want ErrTreeDrainTimeout while grandchild %d is alive", shortDeadline, err, grandchild)
 	}
 	if !GroupAlive(grandchild) {
 		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
@@ -262,6 +262,19 @@ func Test_TrackedProcess_WaitTreeGone_after_Close_reports_job_closed(t *testing.
 	if err != nil {
 		t.Fatalf("start tracked powershell: %v", err)
 		return
+	}
+	// Precondition: the child is provably alive before the close, so the
+	// kernel-reap assertion below cannot pass vacuously on an early exit.
+	aliveDeadline := time.NewTimer(trackedTreeTestDeadline)
+	defer aliveDeadline.Stop()
+	aliveRetry := time.NewTicker(10 * time.Millisecond)
+	defer aliveRetry.Stop()
+	for !GroupAlive(tracked.Pid()) {
+		select {
+		case <-aliveRetry.C:
+		case <-aliveDeadline.C:
+			t.Fatalf("child %d never reported alive before close", tracked.Pid())
+		}
 	}
 	if err := tracked.Close(); err != nil {
 		t.Fatalf("close tracked process: %v", err)
