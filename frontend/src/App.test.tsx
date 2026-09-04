@@ -64,9 +64,7 @@ describe("App empty-state creation flow", () => {
     });
   });
 
-  it("creates the first Omo chat directly in a new workspace", async () => {
-    const request = deferred<Terminal>();
-    emptyState.createTerminal.mockReturnValueOnce(request.promise);
+  it("does not create a chat when creating a new workspace", async () => {
     await renderApp();
 
     const newWorkspace = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
@@ -82,11 +80,7 @@ describe("App empty-state creation flow", () => {
 
     expect(container.querySelector('[data-testid="sidebar"]')?.getAttribute("data-workspaces")).toBe("1");
     expect(container.querySelector('[data-testid="new-chat-dialog"]')).toBeNull();
-    expect(emptyState.createTerminal).toHaveBeenCalledTimes(1);
-    expect(emptyState.createTerminal).toHaveBeenCalledWith("ws-created", "", "omo");
-    await act(async () => {
-      request.resolve({ id: "tm-created", name: "chat-created", provider: "omo" });
-    });
+    expect(emptyState.createTerminal).not.toHaveBeenCalled();
   });
 
   it("keeps a pane mounted for a canonical chat outside the loaded sidebar page", async () => {

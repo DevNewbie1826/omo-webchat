@@ -46,7 +46,7 @@
   "sidebar.tm.delete": "챗 세션 삭제",
   "sidebar.tm.rename": "챗 세션 이름 변경",
   "sidebar.ws.rename": "작업 공간 이름 변경",
-  "sidebar.ws.more": "챗 세션 더 보기",
+  "sidebar.ws.more": "세션 더 보기",
   "sidebar.ws.moreLoading": "불러오는 중…",
   "sidebar.confirmDeleteWs": "작업 공간 “{name}”과(와) 모든 챗 세션을 삭제할까요?",
   "sidebar.confirmDeleteTm": "챗 세션 “{name}”을(를) 삭제할까요?",
