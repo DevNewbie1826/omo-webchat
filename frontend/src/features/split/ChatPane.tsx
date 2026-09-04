@@ -218,7 +218,7 @@ export function ChatPane({
           )}
         </div>
         {chat.failedDrafts.length > 0 && (
-          <div className="th-failed-drafts" aria-label="Failed sends">
+          <div className="th-failed-drafts" aria-label={t("chat.failedSends")}>
             {chat.failedDrafts.map((draft) => (
               <button
                 key={draft.requestId}
@@ -226,7 +226,7 @@ export function ChatPane({
                 className="th-btn th-btn--ghost th-failed-draft"
                 onClick={() => chat.recoverFailedDraft(draft.requestId)}
               >
-                {t("common.retry")}: {draft.text}
+                {t("common.retry")}: {draft.text || draft.image?.name || t("chat.image")}
               </button>
             ))}
           </div>

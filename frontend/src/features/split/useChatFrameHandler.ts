@@ -6,6 +6,7 @@ import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import type { UiMessage } from "./chatEntries";
 import type { useConfirmedControls } from "./chatConfirmedControls";
+import { isPromptTerminalError } from "./chatErrorState";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
 import * as chatState from "./chatSessionState";
 import type { ToolEntry } from "./chatSessionTypes";
@@ -104,6 +105,10 @@ const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set([
 const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
   "prompt_in_flight", "compaction_in_flight", "bad_send", "send_failed", "compact_failed", "send_backpressure",
 ]);
+
+// These report one rejected send, not a provider/session terminal. Without a
+// request identity they cannot safely claim any optimistic operation.
+const UNCORRELATED_OPERATION_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"]);
 
 /**
  * Classify an error frame as a send-path command failure (chat.send,
@@ -261,6 +266,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "run.done": {
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
+        // A steer is admitted into the current provider run and has no
+        // operation-specific completion frame. The run terminal retires it
+        // alongside its transient transcript marker.
+        bindings.pendingRef.current = bindings.pendingRef.current.filter((pending) => pending.kind !== "steer");
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {
@@ -341,16 +350,23 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (sendFailure === null) bindings.setError(frame.message);
         else bindings.setSendError(sendFailure);
 
-        // Only a request identity can settle a send operation. Uncorrelated
-        // failures remain visible but cannot roll back unrelated optimistic work.
-        if (!frame.requestId) return;
-        const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
+        // Correlated failures settle only their operation. Legacy provider
+        // prompt failures and genuinely terminal session errors have no
+        // request identity, so retain the established active-run recovery
+        // fallback without allowing an unrelated request id to claim it.
+        const pending = frame.requestId
+          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
+            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
+          : (frame.command === "prompt"
+            || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
+              ? bindings.activeRunRef.current ?? undefined
+              : undefined;
         if (!pending) return;
         bindings.messageVersionRef.current += 1;
-        bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.requestId !== frame.requestId);
+        bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
         bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
         bindings.retainFailedDrafts([pending]);
-        if (pending.kind === "prompt" && bindings.activeRunRef.current?.requestId === frame.requestId) {
+        if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
           bindings.submitLatchRef.current = false;
           clearLiveSurfaces();
         }

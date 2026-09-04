@@ -172,6 +172,8 @@
   "chat.compacting": "Compacting…",
   "chat.sendErrorTitle": "Send failed",
   "chat.sendErrorDismiss": "Dismiss",
+  "chat.failedSends": "Failed sends",
+  "chat.image": "Image",
   "chat.sendQueued": "Queued — runs after the current turn",
   "chat.resync": "Resync",
   "chat.resyncBusy": "Resyncing…",

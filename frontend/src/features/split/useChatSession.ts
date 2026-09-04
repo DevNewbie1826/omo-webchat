@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
+import { newUuid } from "../../lib/uuid";
 import type { ChatDraft } from "./chatSessionTypes";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
@@ -31,7 +32,7 @@ export function useChatSession(
   markOpenRef.current = frameState.markOpen;
   markCloseRef.current = frameState.markClose;
   const nextRequestId = (): string => `req-${session.id}-${++requestSeqRef.current}`;
-  const nextSendRequestId = (): string => crypto.randomUUID();
+  const nextSendRequestId = (): string => newUuid();
 
   useEffect(() => {
     let opened = false;

@@ -16,7 +16,11 @@ const i18n: I18nValue = {
 	setFont: () => undefined,
 	fontSize: 13,
 	setFontSize: () => undefined,
-	t: (key) => key,
+	t: (key) => {
+		if (key === "chat.failedSends") return "[failed-sends]";
+		if (key === "chat.image") return "[image]";
+		return key;
+	},
 };
 const session = {
 	id: "chat-1",
@@ -109,7 +113,7 @@ describe("ChatPane release contracts", () => {
 		return frame.requestId;
 	}
 
-	it("rolls back the prompt RPC that owns the optimistic run", () => {
+	it("rolls back a legacy prompt failure without a request identity", () => {
 		submit("provider retry");
 		act(() =>
 			deliver({
@@ -117,7 +121,6 @@ describe("ChatPane release contracts", () => {
 				sessionId: "chat-1",
 				code: "provider_error",
 				command: "prompt",
-				requestId: latestSendRequestId(),
 				message: "Prompt rejected",
 			}),
 		);
@@ -158,6 +161,28 @@ describe("ChatPane release contracts", () => {
 		},
 	);
 
+	it.each(["pi_eof", "provider_timeout", "no_session"] as const)(
+		"recovers the active run for uncorrelated terminal %s",
+		(code) => {
+			submit("uncorrelated termination");
+			act(() =>
+				deliver({
+					type: "error",
+					sessionId: "chat-1",
+					code,
+					command: "get_state",
+					message: "Session terminated",
+				}),
+			);
+
+			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+			expect(container.querySelector(".th-btn--danger")).toBeNull();
+			expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("uncorrelated termination");
+			submit("retry after uncorrelated termination");
+			expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(2);
+		},
+	);
+
 	it.each(["decode_failed", "provider_overflow", "provider_timeout"] as const)(
 		"clears the active run, optimistic message, and submit latch for terminal %s",
 		(code) => {
@@ -195,6 +220,37 @@ describe("ChatPane release contracts", () => {
 			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
 		},
 	);
+
+	it("labels image-only failed-send recovery with its attachment filename", async () => {
+		const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+		if (!fileInput) throw new Error("missing attachment input");
+		const chipInserted = new Promise<void>((resolve) => {
+			const observer = new MutationObserver(() => {
+				if (!container.querySelector(".th-chat-attach-chip")) return;
+				observer.disconnect();
+				resolve();
+			});
+			observer.observe(container, { childList: true, subtree: true });
+		});
+		const file = new File(["image data"], "diagram.png", { type: "image/png" });
+		Object.defineProperty(fileInput, "files", { configurable: true, value: [file] });
+		act(() => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+		await chipInserted;
+
+		submit("");
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "bad_send",
+			command: "chat.send",
+			requestId: latestSendRequestId(),
+			message: "Image send failed",
+		}));
+
+		const recovery = container.querySelector<HTMLElement>(".th-failed-drafts");
+		expect(recovery?.getAttribute("aria-label")).toBe("[failed-sends]");
+		expect(recovery?.querySelector("button")?.textContent).toBe("common.retry: diagram.png");
+	});
 
 	it.each(["set_model", "set_thinking_level", "query"] as const)(
 		"alerts for failed %s without changing the active run",
