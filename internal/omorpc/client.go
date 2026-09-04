@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -424,7 +423,7 @@ func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
 		if ep != nil {
 			c.invalidate(ep, err)
 		}
-		if !hookRan && c.cfg.OnDialNotExist != nil && errors.Is(err, os.ErrNotExist) {
+		if !hookRan && c.cfg.OnDialNotExist != nil && isDialAbsentError(err) {
 			hookRan = true
 			c.runDialNotExistHook(ctx)
 		}
