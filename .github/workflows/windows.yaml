@@ -1,0 +1,78 @@
+name: windows
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  gate-crosscompile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build embedded frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Cross-compile Windows amd64
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+
+  probe-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install omo CLI
+        continue-on-error: true
+        run: bun install -g omo-ai@beta
+
+      - name: Record omo command form
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "## G2_OMO_FORM"
+          $cmd = Get-Command omo -ErrorAction SilentlyContinue
+          if (-not $cmd) {
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "omo: not found on PATH"
+            exit 0
+          }
+          $path = $cmd.Source
+          if (-not $path) { $path = $cmd.Path }
+          $ext = [System.IO.Path]::GetExtension([string]$path).ToLowerInvariant()
+          $form = "other"
+          if ($ext -eq ".exe") { $form = "exe" }
+          elseif ($ext -eq ".cmd" -or $ext -eq ".bat") { $form = "cmd/bat shim" }
+          elseif ($ext -eq "") { $form = "extensionless" }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "path: $path"
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "form: $form"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Probe AF_UNIX RPC
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "## G1_AF_UNIX"
+          & go run ./test/windowsprobe 2>&1 | Tee-Object -FilePath probe-g1.txt
+          if (Test-Path -LiteralPath probe-g1.txt) {
+            Get-Content -LiteralPath probe-g1.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
