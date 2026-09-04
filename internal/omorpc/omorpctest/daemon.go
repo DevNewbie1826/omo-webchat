@@ -62,6 +62,7 @@ type daemonSession struct {
 	live      bool   // false after UnloadSession or daemon Stop/Restart
 	history   []any  // durable transcript returned by get_entries
 	leafID    string
+	name      string
 }
 
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
@@ -490,6 +491,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"sessionFile":   rec.path,
 			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
 			"thinkingLevel": "off",
+			"sessionName":   rec.name,
 			"entries":       []any{},
 			"messageCount":  0,
 		},
@@ -694,6 +696,11 @@ func (d *Daemon) LoadSessionFile(path string) error {
 				rec.durableID = id
 			}
 			continue
+		}
+		if typ == "session_info" {
+			if name, _ := entry["name"].(string); name != "" {
+				rec.name = name
+			}
 		}
 		if id != "" {
 			rec.history = append(rec.history, entry)

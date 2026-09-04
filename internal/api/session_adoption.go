@@ -96,7 +96,7 @@ func (s *Server) handleAdoptWorkspaceSession(w http.ResponseWriter, r *http.Requ
 			existing = &candidate
 			break
 		}
-		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+		if existing == nil && sessionMatchesChat(source, candidate) {
 			existing = &candidate
 		}
 	}
@@ -117,13 +117,14 @@ func (s *Server) handleAdoptWorkspaceSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	name := strings.TrimSpace(req.Name)
-	placeholder := name == ""
-	if placeholder {
-		name = readSessionName(source.Path)
+	fileName, established := readSessionNameSource(source.Path)
+	if established || name == "" {
+		name = fileName
 	}
 	if name == "" {
 		name = s.defaultChatName(ws)
 	}
+	placeholder := !established
 	id, err := newID("chat-")
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -242,7 +243,7 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusOK, projectChat(candidate))
 			return
 		}
-		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+		if existing == nil && sessionMatchesChat(source, candidate) {
 			existing = &candidate
 		}
 	}
@@ -257,13 +258,14 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 	}
 
 	name := strings.TrimSpace(req.Name)
-	placeholder := name == ""
-	if placeholder {
-		name = readSessionName(source.Path)
+	fileName, established := readSessionNameSource(source.Path)
+	if established || name == "" {
+		name = fileName
 	}
 	if name == "" {
 		name = s.defaultChatName(ws)
 	}
+	placeholder := !established
 	id, err := newID("chat-")
 	if err != nil {
 		s.writeStoreError(w, err)
@@ -295,8 +297,11 @@ func (s *Server) openExistingChat(ctx context.Context, chat cursorstore.Chat, so
 	s.bumpChatLifecycleVersion(chat.ID)
 	s.chatLifecycleMu.Unlock()
 	install := func() error {
-		s.authorizeInPlaceOpen(chat.ID, force)
-		return s.cursors.UpdateInPlaceIdentity(chat.ID, source.Path, source.ID)
+		if cursorstore.IsNativeSession(current) {
+			return s.cursors.UpdateIdentity(current.ID, source.Path, source.ID)
+		}
+		s.authorizeInPlaceOpen(current.ID, force)
+		return s.cursors.UpdateInPlaceIdentity(current.ID, source.Path, source.ID)
 	}
 	if s.manager != nil {
 		err = s.manager.StopAndMutateContext(ctx, chat.ID, install)

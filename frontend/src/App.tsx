@@ -316,7 +316,6 @@ export function App() {
             onCreated={(ws) => {
               setWorkspaces((prev) => [...prev, ws]);
               setExpanded((prev) => new Set(prev).add(ws.id));
-              requestNewChat({ wsId: ws.id });
               notify(t("toast.workspaceAdded"), "success");
             }}
           />

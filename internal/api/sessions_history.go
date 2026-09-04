@@ -19,12 +19,11 @@ import (
 )
 
 const (
-	sessionHistoryDefaultLimit         = 5
-	sessionHistoryMaxLimit             = 5
-	sessionHistoryMaxJSONLLine         = 1 << 20 // 1 MiB; metadata records are normally only a few KiB.
-	sessionHistorySourceStored         = "stored"
-	sessionHistorySourceDiscovered     = "discovered"
-	sessionHistorySourceAlreadyAdopted = "alreadyAdopted"
+	sessionHistoryDefaultLimit     = 5
+	sessionHistoryMaxLimit         = 5
+	sessionHistoryMaxJSONLLine     = 1 << 20 // 1 MiB; metadata records are normally only a few KiB.
+	sessionHistorySourceStored     = "stored"
+	sessionHistorySourceDiscovered = "discovered"
 	// Bounds for the dangling-recovery branch scan: at most this many session
 	// files are opened, and at most this many candidates are returned.
 	sessionBranchScanMaxFiles      = 32
@@ -148,14 +147,20 @@ func parseSessionFile(path string) (diskSession, bool) {
 }
 
 func readSessionName(path string) string {
+	name, _ := readSessionNameSource(path)
+	return name
+}
+
+// readSessionNameSource distinguishes a durable session_info name from the
+// catalog-only fallback derived from the first user message.
+func readSessionNameSource(path string) (name string, established bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer f.Close()
 
 	reader := bufio.NewReader(f)
-	name := ""
 	firstUserText := ""
 	for {
 		line, tooLong, lineErr := readJSONLLine(reader)
@@ -166,8 +171,9 @@ func readSessionName(path string) string {
 				Message json.RawMessage `json:"message"`
 			}
 			if json.Unmarshal(line, &rec) == nil {
-				if rec.Type == "session_info" && rec.Name != "" {
-					name = rec.Name
+				if rec.Type == "session_info" && strings.TrimSpace(rec.Name) != "" {
+					name = strings.TrimSpace(rec.Name)
+					established = true
 				} else if firstUserText == "" && rec.Type == "message" {
 					if text := sessionUserMessageText(rec.Message); text != "" {
 						firstUserText = text
@@ -176,10 +182,10 @@ func readSessionName(path string) string {
 			}
 		}
 		if lineErr != nil {
-			if name != "" {
-				return name
+			if established {
+				return name, true
 			}
-			return deriveSessionTitle(firstUserText)
+			return deriveSessionTitle(firstUserText), false
 		}
 	}
 }
@@ -253,6 +259,13 @@ func populateSessionHistoryNames(items []sessionHistoryItem) {
 func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 	durableID := strings.TrimSpace(chat.DurableSessionID)
 	sessionFile := strings.TrimSpace(chat.SessionFile)
+	// A recorded durable id is authoritative: the same path with a different
+	// id is a distinct replacement session and must not match, and a stored
+	// chat must never rebind onto it. The path only disambiguates rows that
+	// never recorded a durable id.
+	if sess.ID != "" && durableID != "" {
+		return durableID == sess.ID
+	}
 	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
@@ -263,7 +276,7 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 	return cursorstore.RecencyMillis(ch)
 }
 
-func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir string) []sessionHistoryItem {
+func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	for _, ch := range chats {
 		items = append(items, sessionHistoryItem{
@@ -277,20 +290,11 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir 
 		})
 	}
 	for _, sess := range disk {
-		source := sessionHistorySourceDiscovered
 		suppress := false
 		for _, chat := range chats {
-			if !sessionMatchesChat(sess, chat) {
-				continue
-			}
-			if cursorstore.IsOwnedSession(chat, ownedDir) {
-				source = sessionHistorySourceAlreadyAdopted
-				break
-			}
-			// An in-place chat already represents the catalog's original row;
-			// do not emit a duplicate discovered item. sessionMatchesChat
-			// accepts either its durable identity or original path.
-			if cursorstore.IsInPlaceSession(chat) {
+			// The stored row already represents this durable session regardless
+			// of how the chat acquired it. Match only concrete identity fields.
+			if sessionMatchesChat(sess, chat) {
 				suppress = true
 				break
 			}
@@ -301,7 +305,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, ownedDir 
 		items = append(items, sessionHistoryItem{
 			ID:             sess.ID,
 			Name:           sess.Name,
-			Source:         source,
+			Source:         sessionHistorySourceDiscovered,
 			RecencyMs:      sess.RecencyMs,
 			ResumeIdentity: sess.Path,
 		})
@@ -416,7 +420,7 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), s.cursors.OwnedSessionDir())
+	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

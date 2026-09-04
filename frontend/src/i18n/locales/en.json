@@ -46,7 +46,7 @@
   "sidebar.tm.delete": "Delete chat session",
   "sidebar.tm.rename": "Rename chat session",
   "sidebar.ws.rename": "Rename workspace",
-  "sidebar.ws.more": "Load more chat sessions",
+  "sidebar.ws.more": "Load more sessions",
   "sidebar.ws.moreLoading": "Loading…",
   "sidebar.confirmDeleteWs": "Delete workspace “{name}” and all its chat sessions?",
   "sidebar.confirmDeleteTm": "Delete chat session “{name}”?",

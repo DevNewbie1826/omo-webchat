@@ -3,8 +3,13 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
 func TestDeriveSessionTitleMatchesLegacyRules(t *testing.T) {
@@ -158,6 +163,45 @@ func TestDurableOnlyEstablishedAutoTitleSurvivesPlainPrompt(t *testing.T) {
 	}
 }
 
+func TestProviderOpenNameSeedsTitleAndPreventsAutoTitle(t *testing.T) {
+	d := newDaemon(t)
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "named.jsonl")
+	body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-named\",\"timestamp\":\"2026-09-04T00:00:00Z\",\"cwd\":%q}\n", cwd) +
+		"{\"type\":\"session_info\",\"id\":\"info\",\"name\":\"Provider-established title\"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemStore()
+	if err := store.SaveCursor(context.Background(), "provider-open-name", Cursor{
+		SessionFile:        path,
+		DurableSessionID:   "durable-named",
+		Name:               "workspace-1",
+		NameSource:         NameSourceAuto,
+		TitleIsPlaceholder: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := dial(t, d)
+	mgr := testManager(t, client, store, 64)
+	sess, _, detach := acquire(t, mgr, testChat{id: "provider-open-name", cwd: cwd}, nil)
+	defer detach()
+
+	if summary, ok := sess.summary(); !ok || summary.Title != "Provider-established title" {
+		t.Fatalf("open summary = %+v", summary)
+	}
+	runScript(t, d, sess, "Must not replace the provider title")
+	if got := d.RequestCount(omorpc.CmdSetSessionName); got != 0 {
+		t.Fatalf("automatic title sent %d provider renames", got)
+	}
+	if cur := store.stored(sess.ChatID()); cur.Name != "workspace-1" || !cur.TitleIsPlaceholder {
+		t.Fatalf("automatic title changed stored placeholder: %+v", cur)
+	}
+}
+
 func TestStoredAutoTitleSurvivesRestartAndPlainPrompt(t *testing.T) {
 	d := newDaemon(t)
 	store := newMemStore()
@@ -198,7 +242,7 @@ func TestStoredAutoTitleSurvivesRestartAndPlainPrompt(t *testing.T) {
 }
 
 func TestProviderNameOnlyOverwritesAutoSource(t *testing.T) {
-	t.Run("auto", func(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
 		d := newDaemon(t)
 		client := dial(t, d)
 		store := newMemStore()
@@ -215,6 +259,33 @@ func TestProviderNameOnlyOverwritesAutoSource(t *testing.T) {
 		}
 		if cur := store.stored(sess.ChatID()); cur.Name != "Provider title" || cur.NameSource != NameSourceAuto {
 			t.Fatalf("stored name = %+v", cur)
+		}
+	})
+
+	t.Run("established", func(t *testing.T) {
+		d := newDaemon(t)
+		client := dial(t, d)
+		store := newMemStore()
+		const chatID = "provider-established"
+		if err := store.SaveCursor(context.Background(), chatID, Cursor{Name: "Established title", NameSource: NameSourceAuto}); err != nil {
+			t.Fatal(err)
+		}
+		mgr := testManager(t, client, store, 64)
+		sub := newRecorder(16)
+		sess, _, _ := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, sub)
+		sub.next(t) // ready
+
+		injectEvent(t, sess, map[string]any{"type": "session_info_changed", "name": "Later provider title"})
+		injectEvent(t, sess, map[string]any{"type": "state_changed"})
+		prior, _ := sub.await(t, FrameState)
+		if counts(prior)[FrameName] != 0 {
+			t.Fatalf("provider replaced established title: %+v", prior)
+		}
+		if cur := store.stored(chatID); cur.Name != "Established title" || cur.NameSource != NameSourceAuto {
+			t.Fatalf("stored established title overwritten: %+v", cur)
+		}
+		if summary, _ := sess.summary(); summary.Title != "Established title" {
+			t.Fatalf("summary established title overwritten: %+v", summary)
 		}
 	})
 
@@ -284,5 +355,36 @@ func TestSummaryCarriesBoundedActivityPairDigestsAndOversizedFlags(t *testing.T)
 	}
 	if len(after.ActivityPair.Task) > maxActivitySnapshotBytes {
 		t.Fatalf("retained task grew to %d bytes", len(after.ActivityPair.Task))
+	}
+}
+
+func TestProviderOpenNameDoesNotReplaceEstablishedAutoTitle(t *testing.T) {
+	d := newDaemon(t)
+	cwd := t.TempDir()
+	path := filepath.Join(cwd, "established.jsonl")
+	header := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-established\",\"timestamp\":\"2026-09-04T00:00:00Z\",\"cwd\":%q}", cwd)
+	body := header + "\n" + "{\"type\":\"session_info\",\"id\":\"info\",\"name\":\"Different provider name\"}" + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.LoadSessionFile(path); err != nil {
+		t.Fatal(err)
+	}
+	store := newMemStore()
+	if err := store.SaveCursor(context.Background(), "established-auto-open", Cursor{
+		SessionFile:      path,
+		DurableSessionID: "durable-established",
+		Name:             "Established stored title",
+		NameSource:       NameSourceAuto,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	client := dial(t, d)
+	mgr := testManager(t, client, store, 64)
+	sess, _, detach := acquire(t, mgr, testChat{id: "established-auto-open", cwd: cwd}, nil)
+	defer detach()
+
+	if summary, ok := sess.summary(); !ok || summary.Title != "Established stored title" {
+		t.Fatalf("open summary = %+v, want the established stored title preserved", summary)
 	}
 }

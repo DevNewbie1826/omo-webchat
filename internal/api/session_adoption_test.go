@@ -46,6 +46,23 @@ func writeAdoptableDiskSession(t *testing.T, agentDir, cwd, id, name string) str
 	return path
 }
 
+func appendAdoptableUserMessage(t *testing.T, path, id, text string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	message := map[string]any{"type": "message", "id": id, "parentId": nil, "message": map[string]any{"role": "user", "content": text}}
+	encoded, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(encoded, '\n')); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func adoptWorkspaceSession(t *testing.T, s *Server, wsID string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	raw, err := json.Marshal(body)
@@ -627,6 +644,9 @@ func TestAdoptWorkspaceSessionStopsLiveOriginalBeforeInstallingCopy(t *testing.T
 		t.Fatal(err)
 	}
 	manager, daemon := newAdoptionLifecycleHarness(t, st.Store)
+	if err := daemon.LoadSessionFile(source); err != nil {
+		t.Fatal(err)
+	}
 	s.manager = manager
 	_, _, detach, err := manager.Acquire(t.Context(), adoptionChatRef{chat: chat}, nil)
 	if err != nil {
@@ -782,6 +802,88 @@ func TestAdoptWorkspaceSessionCreatesOwnedChatWithoutTouchingOriginal(t *testing
 	}
 }
 
+func TestAdoptedSessionNameProvenanceControlsFirstWebPrompt(t *testing.T) {
+	tests := []struct {
+		name               string
+		established        string
+		firstSessionPrompt string
+		webPrompt          string
+		wantStored         string
+		wantProviderRename int
+		wantPlaceholder    bool
+	}{
+		{
+			name:               "established name",
+			established:        "Established catalog name",
+			webPrompt:          "First web prompt must not replace the established name",
+			wantStored:         "Established catalog name",
+			wantProviderRename: 0,
+			wantPlaceholder:    false,
+		},
+		{
+			name:               "derived fallback",
+			firstSessionPrompt: "Earlier provider prompt",
+			webPrompt:          "First web prompt becomes title",
+			wantStored:         "First web prompt becomes title",
+			wantProviderRename: 1,
+			wantPlaceholder:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, store, ws := newChatCreateTestServer(t)
+			agentDir := t.TempDir()
+			t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+			source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-name-source", tt.established)
+			if tt.firstSessionPrompt != "" {
+				appendAdoptableUserMessage(t, source, "first-user", tt.firstSessionPrompt)
+			}
+
+			response := adoptWorkspaceSession(t, server, ws.ID, map[string]string{"id": "durable-name-source", "resumeIdentity": source})
+			if response.Code != http.StatusCreated {
+				t.Fatalf("status %d: %s", response.Code, response.Body.String())
+			}
+			chat := store.ListChats(ws.ID)[0]
+			initialName := tt.established
+			if initialName == "" {
+				initialName = tt.firstSessionPrompt
+			}
+			if chat.Name != initialName || chat.TitleIsPlaceholder != tt.wantPlaceholder {
+				t.Fatalf("adopted name provenance = %+v", chat)
+			}
+
+			manager, daemon := newAdoptionLifecycleHarness(t, store.Store)
+			if err := daemon.LoadSessionFile(chat.SessionFile); err != nil {
+				t.Fatal(err)
+			}
+			sub := &adoptionSessionSubscriber{frames: make(chan session.Frame, 16)}
+			sess, _, detach, err := manager.Acquire(t.Context(), adoptionChatRef{chat: chat}, sub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer detach()
+			sub.await(t, session.FrameReady)
+			daemon.SetPromptScript(sess.SessionFile(),
+				map[string]any{"type": omorpctest.EventAgentStart},
+				map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+			)
+			if err := sess.SendPrompt(t.Context(), tt.webPrompt, nil); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := store.GetChat(chat.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Name != tt.wantStored {
+				t.Fatalf("stored name = %q, want %q", stored.Name, tt.wantStored)
+			}
+			if got := daemon.RequestCount(omorpc.CmdSetSessionName); got != tt.wantProviderRename {
+				t.Fatalf("provider renames = %d, want %d", got, tt.wantProviderRename)
+			}
+		})
+	}
+}
+
 func TestAdoptWorkspaceSessionCreatesChatWithCompleteIdentityInOneSave(t *testing.T) {
 	s, _, ws := newChatCreateTestServer(t)
 	agentDir := t.TempDir()
@@ -811,7 +913,7 @@ func TestAdoptWorkspaceSessionCreatesChatWithCompleteIdentityInOneSave(t *testin
 	}
 }
 
-func TestAdoptWorkspaceSessionIsIdempotentAndCatalogMarksSource(t *testing.T) {
+func TestAdoptWorkspaceSessionIsIdempotentAndCatalogSuppressesSource(t *testing.T) {
 	s, st, ws := newChatCreateTestServer(t)
 	agentDir := t.TempDir()
 	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
@@ -857,16 +959,7 @@ func TestAdoptWorkspaceSessionIsIdempotentAndCatalogMarksSource(t *testing.T) {
 	}
 
 	page := listWorkspaceSessions(t, s, ws.ID, "")
-	var stored, sourceRow *sessionHistoryItem
-	for i := range page.Items {
-		switch page.Items[i].Source {
-		case sessionHistorySourceStored:
-			stored = &page.Items[i]
-		case sessionHistorySourceAlreadyAdopted:
-			sourceRow = &page.Items[i]
-		}
-	}
-	if stored == nil || stored.Dangling || sourceRow == nil || sourceRow.ID != "durable-2" || sourceRow.ResumeIdentity != source {
+	if len(page.Items) != 1 || page.Items[0].Source != sessionHistorySourceStored || page.Items[0].Dangling {
 		t.Fatalf("catalog = %+v", page.Items)
 	}
 
@@ -1043,5 +1136,28 @@ func TestAdoptedChatRemainsUsableWhenSourceDisappears(t *testing.T) {
 	page := listWorkspaceSessions(t, s, ws.ID, "")
 	if len(page.Items) != 1 || page.Items[0].ID != chat.ID || page.Items[0].Dangling {
 		t.Fatalf("catalog after source removal = %+v", page.Items)
+	}
+}
+
+func TestOpenWorkspaceSessionKeepsOldChatForSamePathConflictingID(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-new", "")
+	before := cursorstore.Chat{ID: "chat-old", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "durable-old", Name: "old", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(before); err != nil {
+		t.Fatal(err)
+	}
+
+	response := openWorkspaceSession(t, s, ws.ID, map[string]string{"id": "durable-new", "resumeIdentity": source})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	after, err := st.GetChat("chat-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DurableSessionID != before.DurableSessionID || after.SessionFile != before.SessionFile || after.SessionProvenance != before.SessionProvenance {
+		t.Fatalf("old chat rebound onto replacement session: before=%+v after=%+v", before, after)
 	}
 }

@@ -313,7 +313,7 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterReattach.SessionFile != chat.SessionFile || afterReattach.SessionProvenance != "" {
+	if afterReattach.SessionFile != chat.SessionFile || afterReattach.SessionProvenance != chat.SessionProvenance {
 		t.Fatalf("live reattach migrated active route: before=%+v after=%+v", chat, afterReattach)
 	}
 	d.SetPromptScript(chat.SessionFile,
