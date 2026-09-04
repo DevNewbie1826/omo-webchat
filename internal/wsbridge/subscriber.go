@@ -11,9 +11,12 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-// subscriber buffers only the attach-time Ready/snapshot frames until the
-// bridge publishes its binding. Durable history starts after activation and is
-// written synchronously, with the connection deadline bounding each page.
+const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity
+
+// subscriber buffers the complete attach-time replay plus the normal live-frame
+// headroom until the bridge publishes its binding. Durable history starts after
+// activation and is written synchronously, with the connection deadline
+// bounding each page.
 type subscriber struct {
 	conn           *connection
 	mu             sync.Mutex
@@ -57,7 +60,7 @@ func (s *subscriber) DeliverFrame(f session.Frame) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.active {
-		if len(s.pending) >= session.DefaultQueueSize {
+		if len(s.pending) >= preActivationBufferCapacity {
 			s.pending = s.pending[1:]
 			s.overflowed = true
 		}

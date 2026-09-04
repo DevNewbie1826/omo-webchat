@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,7 +16,7 @@ func (*synchronousLedgerRecorder) SynchronousAttach() {}
 
 func TestAttachReplaysFullSendOperationLedger(t *testing.T) {
 	s := &Session{durableID: "durable-full-ledger", queueSize: DefaultQueueSize, readyPublished: true}
-	for i := 0; i < maxSendOperationLedger; i++ {
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
 		requestID := fmt.Sprintf("request-%02d", i)
 		if err, stop := s.beginSendOperation(requestID); err != nil || stop {
 			t.Fatalf("begin operation %d = (%v, %v)", i, err, stop)
@@ -24,7 +25,7 @@ func TestAttachReplaysFullSendOperationLedger(t *testing.T) {
 		s.completeSendOperation(requestID, nil)
 	}
 
-	sub := &synchronousLedgerRecorder{recorder: newRecorder(maxSendOperationLedger + 1)}
+	sub := &synchronousLedgerRecorder{recorder: newRecorder(SendOperationLedgerCapacity + 1)}
 	attached := make(chan error, 1)
 	go func() {
 		_, err := s.attachChecked(sub)
@@ -43,7 +44,7 @@ func TestAttachReplaysFullSendOperationLedger(t *testing.T) {
 	if ready := sub.next(t); ready.Kind != FrameReady {
 		t.Fatalf("first replay frame = %+v, want ready", ready)
 	}
-	for i := 0; i < maxSendOperationLedger; i++ {
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
 		frame := sub.next(t)
 		wantID := fmt.Sprintf("request-%02d", i)
 		if frame.Kind != FrameAck || frame.RequestID != wantID || frame.Phase != "completed" {
@@ -54,7 +55,7 @@ func TestAttachReplaysFullSendOperationLedger(t *testing.T) {
 
 func TestFullSendOperationLedgerRejectsWhenEveryEntryIsInFlight(t *testing.T) {
 	s := &Session{durableID: "durable-in-flight"}
-	for i := 0; i < maxSendOperationLedger; i++ {
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
 		requestID := fmt.Sprintf("request-%02d", i)
 		if err, stop := s.beginSendOperation(requestID); err != nil || stop {
 			t.Fatalf("begin operation %d = (%v, %v)", i, err, stop)
@@ -66,7 +67,7 @@ func TestFullSendOperationLedgerRejectsWhenEveryEntryIsInFlight(t *testing.T) {
 	if !stop || !errors.Is(err, ErrSendBackpressure) {
 		t.Fatalf("full in-flight ledger admission = (%v, %v), want send backpressure", err, stop)
 	}
-	if len(s.sendOperationFIFO) != maxSendOperationLedger || len(s.sendOperations) != maxSendOperationLedger {
+	if len(s.sendOperationFIFO) != SendOperationLedgerCapacity || len(s.sendOperations) != SendOperationLedgerCapacity {
 		t.Fatalf("ledger changed after rejection: fifo=%d map=%d", len(s.sendOperationFIFO), len(s.sendOperations))
 	}
 	if _, exists := s.sendOperations["request-00"]; !exists {
@@ -79,7 +80,7 @@ func TestFullSendOperationLedgerRejectsWhenEveryEntryIsInFlight(t *testing.T) {
 
 func TestFullSendOperationLedgerEvictsOldestTerminalEntry(t *testing.T) {
 	s := &Session{durableID: "durable-terminal-eviction"}
-	for i := 0; i < maxSendOperationLedger; i++ {
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
 		requestID := fmt.Sprintf("request-%02d", i)
 		if err, stop := s.beginSendOperation(requestID); err != nil || stop {
 			t.Fatalf("begin operation %d = (%v, %v)", i, err, stop)
@@ -94,7 +95,7 @@ func TestFullSendOperationLedgerEvictsOldestTerminalEntry(t *testing.T) {
 	if _, exists := s.sendOperations["request-00"]; exists {
 		t.Fatal("oldest terminal operation was not evicted")
 	}
-	for i := 1; i < maxSendOperationLedger; i++ {
+	for i := 1; i < SendOperationLedgerCapacity; i++ {
 		requestID := fmt.Sprintf("request-%02d", i)
 		operation, exists := s.sendOperations[requestID]
 		if !exists || operation.phase != sendOperationAdmitted {
@@ -103,6 +104,98 @@ func TestFullSendOperationLedgerEvictsOldestTerminalEntry(t *testing.T) {
 	}
 	if got := s.sendOperationFIFO[len(s.sendOperationFIFO)-1]; got != "replacement" {
 		t.Fatalf("newest ledger entry = %q, want replacement", got)
+	}
+}
+
+func TestConcurrentCompletionAndAdmissionPublishAndRetainTerminalSnapshots(t *testing.T) {
+	s := &Session{durableID: "durable-concurrent", queueSize: 2 * SendOperationLedgerCapacity, readyPublished: true}
+	live := &synchronousLedgerRecorder{recorder: newRecorder(SendOperationLedgerCapacity + 1)}
+	if _, err := s.attachChecked(live); err != nil {
+		t.Fatalf("attach live observer: %v", err)
+	}
+	defer s.broadcast.close(ErrSubscriberSessionEnd)
+	if ready := live.next(t); ready.Kind != FrameReady {
+		t.Fatalf("first live frame = %+v, want ready", ready)
+	}
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
+		requestID := fmt.Sprintf("original-%02d", i)
+		if err, stop := s.beginSendOperation(requestID); err != nil || stop {
+			t.Fatalf("begin operation %d = (%v, %v)", i, err, stop)
+		}
+		s.recordSendOperation(requestID, nil)
+	}
+
+	start := make(chan struct{})
+	admitted := make(chan string, SendOperationLedgerCapacity)
+	var wg sync.WaitGroup
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
+		originalID := fmt.Sprintf("original-%02d", i)
+		replacementID := fmt.Sprintf("replacement-%02d", i)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			s.publishDetachedOutcome(nil, "chat.send", originalID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			if err, stop := s.beginSendOperation(replacementID); err == nil && !stop {
+				admitted <- replacementID
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(admitted)
+
+	seen := make(map[string]bool, SendOperationLedgerCapacity)
+	for i := 0; i < SendOperationLedgerCapacity; i++ {
+		frame := live.next(t)
+		if frame.Kind != FrameAck || frame.Phase != "completed" {
+			t.Fatalf("completion %d = %+v, want completed ack", i, frame)
+		}
+		if seen[frame.RequestID] {
+			t.Fatalf("duplicate completion for %q", frame.RequestID)
+		}
+		seen[frame.RequestID] = true
+	}
+
+	s.lifecycleMu.Lock()
+	if len(s.sendOperationFIFO) != SendOperationLedgerCapacity || len(s.sendOperations) != SendOperationLedgerCapacity {
+		s.lifecycleMu.Unlock()
+		t.Fatalf("concurrent ledger size = fifo %d/map %d, want %d", len(s.sendOperationFIFO), len(s.sendOperations), SendOperationLedgerCapacity)
+	}
+	var replayWant []Frame
+	for _, requestID := range s.sendOperationFIFO {
+		operation := s.sendOperations[requestID]
+		if operation.phase == sendOperationTerminal {
+			if operation.outcome.Kind != FrameAck || operation.outcome.Phase != "completed" {
+				s.lifecycleMu.Unlock()
+				t.Fatalf("retained terminal %q = %+v", requestID, operation)
+			}
+			replayWant = append(replayWant, operation.outcome)
+		}
+	}
+	for replacementID := range admitted {
+		if _, ok := s.sendOperations[replacementID]; !ok {
+			s.lifecycleMu.Unlock()
+			t.Fatalf("successful concurrent admission %q was lost", replacementID)
+		}
+	}
+	s.lifecycleMu.Unlock()
+
+	replay := &synchronousLedgerRecorder{recorder: newRecorder(len(replayWant) + 1)}
+	if _, err := s.attachChecked(replay); err != nil {
+		t.Fatalf("attach replay observer: %v", err)
+	}
+	if ready := replay.next(t); ready.Kind != FrameReady {
+		t.Fatalf("first replay frame = %+v, want ready", ready)
+	}
+	for i, want := range replayWant {
+		if got := replay.next(t); got.Kind != FrameAck || got.RequestID != want.RequestID || got.Phase != "completed" {
+			t.Fatalf("replayed terminal %d = %+v, want %+v", i, got, want)
+		}
 	}
 }
 

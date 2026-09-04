@@ -19,7 +19,8 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
-	maxSendOperationLedger   = 64
+	// SendOperationLedgerCapacity bounds request outcomes retained for reconnect replay.
+	SendOperationLedgerCapacity = 64
 	// busyAgentErrorPrefix is the observed response prefix when a prompt reaches
 	// a route that is already processing another run.
 	busyAgentErrorPrefix = "Agent is already processing"
@@ -417,15 +418,11 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
-	s.completeSendOperation(requestID, err)
 	if err == nil && requestID == "" {
 		return
 	}
 	s.lifecycleMu.Lock()
-	frame := s.sendOperationFrameLocked(requestID, err)
-	if operation, ok := s.sendOperations[requestID]; ok && operation.phase == sendOperationTerminal {
-		frame = operation.outcome
-	}
+	frame := s.completeSendOperationLocked(requestID, err)
 	frame.Command = command
 	s.publishLocked(frame)
 	s.lifecycleMu.Unlock()
@@ -443,7 +440,7 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 	if s.sendOperations == nil {
 		s.sendOperations = make(map[string]sendOperation)
 	}
-	if len(s.sendOperationFIFO) >= maxSendOperationLedger {
+	if len(s.sendOperationFIFO) >= SendOperationLedgerCapacity {
 		terminal := -1
 		for i, id := range s.sendOperationFIFO {
 			if s.sendOperations[id].phase == sendOperationTerminal {
@@ -452,7 +449,7 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 			}
 		}
 		if terminal < 0 {
-			return fmt.Errorf("%w: maximum %d operations are still in flight", ErrSendBackpressure, maxSendOperationLedger), true
+			return fmt.Errorf("%w: maximum %d operations are still in flight", ErrSendBackpressure, SendOperationLedgerCapacity), true
 		}
 		delete(s.sendOperations, s.sendOperationFIFO[terminal])
 		copy(s.sendOperationFIFO[terminal:], s.sendOperationFIFO[terminal+1:])
@@ -487,16 +484,27 @@ func (s *Session) completeSendOperation(requestID string, err error) {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
-		operation.phase = sendOperationTerminal
-		operation.outcome = s.sendOperationFrameLocked(requestID, err)
-		if err == nil {
-			operation.outcome.Phase = "completed"
-		}
-		operation.err = err
-		s.sendOperations[requestID] = operation
-	}
+	s.completeSendOperationLocked(requestID, err)
 	s.lifecycleMu.Unlock()
+}
+
+// completeSendOperationLocked returns the retained terminal snapshot while the
+// ledger is protected from concurrent admission and eviction.
+func (s *Session) completeSendOperationLocked(requestID string, err error) Frame {
+	frame := s.sendOperationFrameLocked(requestID, err)
+	if operation, ok := s.sendOperations[requestID]; ok {
+		if operation.phase != sendOperationTerminal {
+			operation.phase = sendOperationTerminal
+			operation.outcome = frame
+			if err == nil {
+				operation.outcome.Phase = "completed"
+			}
+			operation.err = err
+			s.sendOperations[requestID] = operation
+		}
+		return operation.outcome
+	}
+	return frame
 }
 
 func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {

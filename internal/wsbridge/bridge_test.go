@@ -591,6 +591,39 @@ func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
 	}
 }
 
+func TestFullSendLedgerReplayActivatesNewWebSocketSubscriber(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-full-ledger")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-full-ledger"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	for i := 0; i < session.SendOperationLedgerCapacity; i++ {
+		requestID := fmt.Sprintf("full-ledger-%02d", i)
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "send-full-ledger", "requestId": requestID,
+			"run": map[string]any{"kind": "follow_up", "message": requestID},
+		})
+		nextSuccessfulSendAcks(t, frames, requestID)
+	}
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-full-ledger"})
+	if ready := replay.next(t, "ready"); ready["sessionId"] != "send-full-ledger" {
+		t.Fatalf("reconnect ready = %v", ready)
+	}
+	for i := 0; i < session.SendOperationLedgerCapacity; i++ {
+		wantID := fmt.Sprintf("full-ledger-%02d", i)
+		ack := replay.next(t, "ack")
+		if ack["command"] != "chat.send" || ack["requestId"] != wantID || ack["phase"] != "completed" {
+			t.Fatalf("replayed outcome %d = %v, want completed ack for %q", i, ack, wantID)
+		}
+	}
+	writeClient(t, reconnected, map[string]any{"type": "ping"})
+	replay.next(t, "pong")
+}
+
 func TestChatSendRequestIDReplaysAndDeduplicatesAfterReconnect(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "send-deduplicate")
 	conn, frames := h.connect(t)
