@@ -33,7 +33,7 @@ func TestEnsureLockContentionSecondAcquireReportsHeld(t *testing.T) {
 	}
 }
 
-func TestEnsureLockReparsePointRejected(t *testing.T) {
+func TestEnsureLockFileSymlinkRejected(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.lock")
 	const marker = "do-not-truncate"
@@ -42,31 +42,56 @@ func TestEnsureLockReparsePointRejected(t *testing.T) {
 	}
 	lockPath := filepath.Join(dir, "rpc.sock.ensure.lock")
 
-	symErr := os.Symlink(target, lockPath)
-	if symErr != nil {
-		// Symbolic links need SeCreateSymbolicLinkPrivilege or Developer
-		// Mode; directory junctions are reparse points any user can create
-		// and trigger the same rejection.
-		junctionTarget := filepath.Join(dir, "junction-target")
-		if mkErr := os.Mkdir(junctionTarget, 0o700); mkErr != nil {
-			t.Skipf("cannot create symlink target directory: %v", mkErr)
-		}
-		if out, err := exec.Command("cmd", "/c", "mklink", "/J", lockPath, junctionTarget).CombinedOutput(); err != nil {
-			t.Skipf("cannot create reparse point (symlink: %v; junction: %s): %v", symErr, out, err)
-		}
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Skipf("file symlinks need SeCreateSymbolicLinkPrivilege or Developer Mode: %v", err)
 	}
 
 	file, err := openAndFlockEnsureLock(lockPath)
 	if file != nil {
 		_ = file.Close()
-		t.Fatal("reparse-point lock path was followed and locked")
+		t.Fatal("symlinked lock path was followed and locked")
 	}
 	if !errors.Is(err, errEnsureLockSymlink) {
-		t.Fatalf("reparse-point lock error = %v, want errEnsureLockSymlink", err)
+		t.Fatalf("symlinked lock error = %v, want errEnsureLockSymlink", err)
 	}
 	// The reparse point must be rejected before locking or writing, so the
 	// target of the file symlink is never truncated.
-	if got, readErr := os.ReadFile(target); readErr == nil && string(got) != marker {
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("read lock target: %v", readErr)
+	}
+	if string(got) != marker {
 		t.Fatalf("lock target content = %q, want %q (lock path was truncated or written)", got, marker)
+	}
+}
+
+func TestEnsureLockDirectoryJunctionRejected(t *testing.T) {
+	dir := t.TempDir()
+	junctionTarget := filepath.Join(dir, "junction-target")
+	if err := os.Mkdir(junctionTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(dir, "rpc.sock.ensure.lock")
+
+	// Directory junctions are reparse points any user can create (no
+	// SeCreateSymbolicLinkPrivilege needed). Opening one exercises the
+	// directory-handle path: without FILE_FLAG_BACKUP_SEMANTICS CreateFileW
+	// fails before the reparse check and the typed error contract breaks.
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", lockPath, junctionTarget).CombinedOutput(); err != nil {
+		t.Skipf("cannot create junction: %v: %s", err, out)
+	}
+
+	file, err := openAndFlockEnsureLock(lockPath)
+	if file != nil {
+		_ = file.Close()
+		t.Fatal("junction lock path was followed and locked")
+	}
+	if !errors.Is(err, errEnsureLockSymlink) {
+		t.Fatalf("junction lock error = %v, want errEnsureLockSymlink", err)
+	}
+	if entries, readErr := os.ReadDir(junctionTarget); readErr != nil {
+		t.Fatalf("read junction target: %v", readErr)
+	} else if len(entries) != 0 {
+		t.Fatalf("junction target gained entries through the lock path: %v", entries)
 	}
 }

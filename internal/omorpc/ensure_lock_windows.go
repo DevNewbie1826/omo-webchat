@@ -18,12 +18,16 @@ func openAndFlockEnsureLock(path string) (*os.File, error) {
 	// itself instead of traversing it, so a symlinked lock path is detected
 	// via FILE_ATTRIBUTE_REPARSE_POINT and rejected below before any locking
 	// or writing — the Windows counterpart of O_NOFOLLOW on unix.
+	// FILE_FLAG_BACKUP_SEMANTICS is required to open directory handles, so a
+	// directory junction (a reparse point any user can create) reaches the
+	// rejection below instead of failing CreateFileW outright.
 	handle, err := windows.CreateFile(pathUTF16,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil,
 		windows.OPEN_ALWAYS,
-		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_BACKUP_SEMANTICS |
+			windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		0)
 	if err != nil {
 		return nil, err
