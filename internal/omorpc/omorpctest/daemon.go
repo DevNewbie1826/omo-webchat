@@ -129,6 +129,17 @@ func New(dir string) *Daemon {
 	}
 }
 
+// NewAt is New with an explicit socket path: the daemon serves
+// unix://<socketPath> and mints fresh session files under <dir>/sessions. It
+// exists for harnesses that must present the mock at a consumer-mandated
+// pathname — e.g. the ensure layout <agentDir>/rpc/rpc.sock — which New's
+// fixed d.sock base name cannot reach through path configuration alone.
+func NewAt(dir, socketPath string) *Daemon {
+	d := New(dir)
+	d.sockPath = socketPath
+	return d
+}
+
 // SocketPath is the unix socket the daemon listens on.
 func (d *Daemon) SocketPath() string { return d.sockPath }
 
