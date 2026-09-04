@@ -90,8 +90,10 @@
   white-space: nowrap;
 }
 
+/* Separator spacing lives in the separator text itself (" · ", the same
+   convention as .th-tool-sep) so the gap is symmetric by construction; the
+   rule only dims the glyph. */
 .th-activity-bar-sep {
-  margin: 0 var(--th-space-0-5);
   color: var(--th-faint);
 }
 
@@ -580,5 +582,24 @@
 
   .th-activity-agent-name {
     max-width: 55%;
+  }
+}
+
+/* Extreme vertical compression: once the pane is this short, the expanded
+   panel's visible box drops below ~40px and a section header row at the
+   scrollport edge paints as half-clipped glyphs. Hide the header rows (the
+   list content keeps scrolling) until there is headroom to show them
+   legibly. */
+@container chat-pane (max-height: 600px) {
+  .th-activity-section-head {
+    display: none;
+  }
+
+  .th-activity-dag-toolbar {
+    display: none;
+  }
+
+  .th-activity-section > .th-activity-section-title {
+    display: none;
   }
 }

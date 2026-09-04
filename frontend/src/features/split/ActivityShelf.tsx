@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
+  ReactElement,
 } from "react";
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
@@ -22,6 +23,16 @@ import type { ActivityState } from "./activityTypes";
 
 export interface ActivityShelfProps {
   readonly activities: ActivityState;
+}
+
+/** Summary segments join through this one separator so the " · " gap stays
+ *  symmetric by construction (same convention as ToolCard's .th-tool-sep). */
+function BarSeparator(): ReactElement {
+  return (
+    <span className="th-activity-bar-sep" aria-hidden="true">
+      {" · "}
+    </span>
+  );
 }
 
 const PANEL_MIN = 120;
@@ -160,13 +171,13 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
           <span className="th-activity-bar-text">
             {segments.map((segment, index) => (
               <span key={segment} className="th-activity-bar-seg">
-                {index > 0 && <span className="th-activity-bar-sep">·</span>}
+                {index > 0 && <BarSeparator />}
                 {segment}
               </span>
             ))}
             {historyPartial && (
               <span className="th-activity-bar-seg">
-                {segments.length > 0 && <span className="th-activity-bar-sep">·</span>}
+                {segments.length > 0 && <BarSeparator />}
                 <span className="th-activity-partial">{t("activity.partial")}</span>
               </span>
             )}

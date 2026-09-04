@@ -2,7 +2,7 @@
   --th-chat-max: 760px;
   --th-chat-gutter: 24px;
   --th-chat-scrollbar: 6px;
-  container: chat-pane / inline-size;
+  container: chat-pane / size;
   position: relative;
   display: flex;
   flex-direction: column;
