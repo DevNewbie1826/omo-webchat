@@ -423,20 +423,20 @@ func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, nil, nil, false)
+	return m.acquire(ctx, chat, sub, nil, nil, false, false)
 }
 
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
 func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, false, false)
 }
 
 // AcquireInitializedWithRecovery is AcquireInitialized with explicit authority
 // to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, true)
+	return m.acquire(ctx, chat, sub, initialize, nil, true, false)
 }
 
 // AcquireInitializedChecked validates its caller's metadata generation before
@@ -444,16 +444,28 @@ func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatR
 // validate must not acquire a lock that nests outside the manager's per-chat
 // flight.
 func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, false, false)
 }
 
 // AcquireInitializedCheckedWithRecovery combines checked publication with
 // explicit authority to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedCheckedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, true)
+	return m.acquire(ctx, chat, sub, initialize, validate, true, false)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, recoveryAuthorized bool) (*Session, bool, func(), error) {
+// ResumeInitialized resumes a durable cursor through the ordinary acquisition
+// checks but never falls back to a fresh session when that cursor is unusable.
+func (m *Manager) ResumeInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, nil, false, true)
+}
+
+// ResumeInitializedChecked is ResumeInitialized with metadata-generation
+// validation before and after provider acquisition.
+func (m *Manager) ResumeInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, false, true)
+}
+
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, recoveryAuthorized, resumeOnly bool) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -575,6 +587,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if openErr != nil && resumed {
 		info := ErrorInfo{Code: "resume_failed", Message: openErr.Error(), StoredIdentity: cur, Dangling: danglingResume(openErr)}
 		recovery = &info
+		if resumeOnly {
+			return nil, false, nil, &ResumeError{Info: info, Cause: openErr}
+		}
 		if cur.InPlace {
 			// An in-place cursor names the user's original file. Opening without
 			// that path would create launch debris and then mislabel it in-place.

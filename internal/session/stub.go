@@ -129,6 +129,16 @@ type ErrorInfo struct {
 	ObservedLeaf     string
 }
 
+// ResumeError reports a failed resume-only acquisition without falling back
+// to a fresh session.
+type ResumeError struct {
+	Info  ErrorInfo
+	Cause error
+}
+
+func (e *ResumeError) Error() string { return e.Info.Message }
+func (e *ResumeError) Unwrap() error { return e.Cause }
+
 type EntriesFrame struct {
 	Entries []json.RawMessage
 	LeafID  string

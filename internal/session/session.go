@@ -191,15 +191,25 @@ func (s *Session) SendPromptDetached(ctx context.Context, msg string, images []m
 // SendPromptDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendPromptDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
+	return s.SendPromptDetachedWithRequestIDAndCompletion(ctx, msg, images, requestID, nil)
+}
+
+// SendPromptDetachedWithRequestIDAndCompletion transfers terminal outcome
+// ownership to complete while retaining the ordinary admission ledger entry.
+func (s *Session) SendPromptDetachedWithRequestIDAndCompletion(ctx context.Context, msg string, images []map[string]string, requestID string, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
-	err := s.sendPrompt(ctx, msg, images, true, requestID)
+	err := s.sendPrompt(ctx, msg, images, true, requestID, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
-func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool, requestID string) error {
+func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool, requestID string, detachedComplete ...func(error)) error {
+	var sendComplete func(error)
+	if len(detachedComplete) != 0 {
+		sendComplete = detachedComplete[0]
+	}
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
@@ -233,20 +243,20 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			if !ownsPrompt {
 				s.completePrompt(seq, msg, callErr)
 				if detached {
-					s.publishDetachedOutcome(callErr, "chat.send", requestID)
+					s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 				}
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
 				s.completePrompt(seq, msg, steerErr)
 				if detached {
-					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
+					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
 			}
 			if detached {
 				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
 					s.completePrompt(seq, msg, steerErr)
-					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
+					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
 				return
 			}
@@ -255,7 +265,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 		s.completePrompt(seq, msg, callErr)
 		if detached {
-			s.publishDetachedOutcome(callErr, "chat.send", requestID)
+			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 		}
 	}
 	if detached {
@@ -327,12 +337,16 @@ func (s *Session) SendSteerDetached(ctx context.Context, msg string) error {
 // SendSteerDetachedWithRequestID preserves browser operation identity through
 // detached response completion.
 func (s *Session) SendSteerDetachedWithRequestID(ctx context.Context, msg, requestID string) error {
+	return s.SendSteerDetachedWithRequestIDAndCompletion(ctx, msg, requestID, nil)
+}
+
+func (s *Session) SendSteerDetachedWithRequestIDAndCompletion(ctx context.Context, msg, requestID string, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
 	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
-	})
+	}, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
@@ -351,17 +365,25 @@ func (s *Session) SendFollowUpDetached(ctx context.Context, msg string, images [
 // SendFollowUpDetachedWithRequestID preserves browser operation identity
 // through detached response completion.
 func (s *Session) SendFollowUpDetachedWithRequestID(ctx context.Context, msg string, images []map[string]string, requestID string) error {
+	return s.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, msg, images, requestID, nil)
+}
+
+func (s *Session) SendFollowUpDetachedWithRequestIDAndCompletion(ctx context.Context, msg string, images []map[string]string, requestID string, complete func(error)) error {
 	if prior, duplicate := s.beginSendOperation(requestID); duplicate {
 		return prior
 	}
 	err := s.sendDuringRun(ctx, true, requestID, func(route string) omorpc.Command {
 		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
-	})
+	}, complete)
 	s.recordSendOperation(requestID, err)
 	return err
 }
 
-func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, command func(string) omorpc.Command) error {
+func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID string, command func(string) omorpc.Command, detachedComplete ...func(error)) error {
+	var sendComplete func(error)
+	if len(detachedComplete) != 0 {
+		sendComplete = detachedComplete[0]
+	}
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
@@ -380,7 +402,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
 		if detached {
-			s.publishDetachedOutcome(callErr, "chat.send", requestID)
+			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
 		}
 	}
 	if detached {
@@ -415,6 +437,47 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 		s.lifecycleMu.Unlock()
 	}
 	return err
+}
+
+func (s *Session) finishDetachedSend(err error, command, requestID string, complete func(error)) {
+	if complete != nil {
+		if err != nil {
+			s.lifecycleMu.Lock()
+			switch {
+			case s.resumable:
+				err = ErrSessionResumable
+			case s.closed || s.closing:
+				err = ErrSessionClosed
+			}
+			s.lifecycleMu.Unlock()
+		}
+		complete(err)
+		return
+	}
+	s.publishDetachedOutcome(err, command, requestID)
+}
+
+// CompleteDetachedSend publishes and retains a terminal outcome owned by a
+// transport completion callback.
+func (s *Session) CompleteDetachedSend(requestID string, err error) {
+	s.publishDetachedOutcome(err, "chat.send", requestID)
+}
+
+// PublishSendOperationError publishes an acquisition failure as the terminal
+// outcome for the original request, replacing a synchronous admission error.
+func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
+	s.lifecycleMu.Lock()
+	frame := Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
+	if requestID != "" {
+		if operation, ok := s.sendOperations[requestID]; ok {
+			operation.phase = sendOperationTerminal
+			operation.outcome = frame
+			operation.err = errors.New(info.Message)
+			s.sendOperations[requestID] = operation
+		}
+	}
+	s.publishLocked(frame)
+	s.lifecycleMu.Unlock()
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {

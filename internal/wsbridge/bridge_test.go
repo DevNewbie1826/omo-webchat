@@ -563,6 +563,162 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	}
 }
 
+func TestChatSendResumesIdleUnloadedSessionBeforeOriginalPrompt(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-idle-resume")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-idle-resume"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error") // observed unload transition
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-idle-resume", "requestId": "resume-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "after idle"},
+	})
+	nextSuccessfulSendAcks(t, frames, "resume-prompt")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("resumed prompt was not forwarded")
+	}
+	requests := h.daemon.Requests()
+	openIndex, promptIndex := -1, -1
+	for i, request := range requests {
+		switch request["type"] {
+		case omorpc.CmdOpenSession:
+			if i > openIndex {
+				openIndex = i
+			}
+		case omorpc.CmdPrompt:
+			promptIndex = i
+		}
+	}
+	if openIndex < 0 || promptIndex <= openIndex {
+		t.Fatalf("request order open=%d prompt=%d", openIndex, promptIndex)
+	}
+
+	reconnected, replay := h.connect(t)
+	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-idle-resume"})
+	replay.next(t, "ready")
+	if outcome := replay.next(t, "ack"); outcome["requestId"] != "resume-prompt" || outcome["phase"] != "completed" {
+		t.Fatalf("resumed operation replay = %#v", outcome)
+	}
+}
+
+func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
+	tests := []struct {
+		name      string
+		wantCode  string
+		wantOpens int
+		prepare   func(*testing.T, *inPlaceBridgeHarness)
+	}{
+		{
+			name: "cursor unusable", wantCode: "resume_failed", wantOpens: 1,
+			prepare: func(_ *testing.T, h *inPlaceBridgeHarness) {
+				h.daemon.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeInvalidPath)
+			},
+		},
+		{
+			name: "adoption required", wantCode: "adoption_required", wantOpens: 0,
+			prepare: func(t *testing.T, h *inPlaceBridgeHarness) {
+				record, err := h.store.GetChat("resume-failure-adoption-required")
+				if err != nil {
+					t.Fatal(err)
+				}
+				record.SessionProvenance = ""
+				if err := h.store.UpdateChat(record); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(h.path, []byte("not a session\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "session active", wantCode: "session-active", wantOpens: 3,
+			prepare: func(_ *testing.T, h *inPlaceBridgeHarness) {
+				h.daemon.FailOpenPath(h.path, omorpc.ErrCodeSessionPathInUse, 3)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chatID := "resume-failure-" + strings.ReplaceAll(test.name, " ", "-")
+			h := newInPlaceBridgeHarness(t, chatID)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			frames.next(t, "ready")
+			writeClient(t, conn, map[string]any{"type": "ping"})
+			frames.next(t, "pong")
+			h.daemon.UnloadSession(h.path)
+			frames.next(t, "error")
+			beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+			test.prepare(t, h)
+
+			requestID := "request-" + strings.ReplaceAll(test.name, " ", "-")
+			writeClient(t, conn, map[string]any{
+				"type": "chat.send", "sessionId": chatID, "requestId": requestID,
+				"run": map[string]any{"kind": "prompt", "message": "do not retry"},
+			})
+			failure := frames.next(t, "error")
+			if failure["code"] != test.wantCode || failure["command"] != "chat.send" || failure["requestId"] != requestID {
+				t.Fatalf("resume failure = %#v", failure)
+			}
+			if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 0 {
+				t.Fatalf("failed resume forwarded %d prompts", got)
+			}
+			if got := h.daemon.RequestCount(omorpc.CmdOpenSession) - beforeOpens; got != test.wantOpens {
+				t.Fatalf("resume attempts = %d, want %d", got, test.wantOpens)
+			}
+		})
+	}
+}
+
+func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-detached-resume")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-detached-resume"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-detached-resume", "requestId": "detached-resume",
+		"run": map[string]any{"kind": "prompt", "message": "retry me"},
+	})
+	if ack := frames.next(t, "ack"); ack["requestId"] != "detached-resume" || ack["phase"] != nil {
+		t.Fatalf("initial admission = %#v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("initial prompt was not observed")
+	}
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+	releasePrompt()
+
+	if ack := frames.next(t, "ack"); ack["requestId"] != "detached-resume" || ack["phase"] != "completed" {
+		t.Fatalf("retried completion = %#v", ack)
+	}
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("original prompt was not retried after resume")
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 2 {
+		t.Fatalf("prompt attempts = %d, want exactly 2", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 2 {
+		t.Fatalf("open attempts = %d, want initial plus one resume", got)
+	}
+}
+
 func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "send-completed")
 	conn, frames := h.connect(t)

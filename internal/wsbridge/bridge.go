@@ -240,6 +240,14 @@ func (h *Handler) OnClose(sock *gws.Conn, err error) {
 	}
 }
 
+type chatSendOperation struct {
+	conn      *connection
+	kind      string
+	message   string
+	images    []map[string]string
+	requestID string
+}
+
 type connection struct {
 	bridge       *Handler
 	socket       *gws.Conn
@@ -443,7 +451,6 @@ func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context
 }
 
 func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFrame, typ string) {
-	var err error
 	if f, ok := frame.(*wscontract.ClientHelloFrame); ok {
 		if f.Version != ContractVersion {
 			c.sendError("bad_frame", "wire contract version mismatch", "", "")
@@ -487,7 +494,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 
 	// Session operations from different sockets share the manager's per-chat
 	// flight. Disconnect already enters that flight internally via StopContext.
-	if typ != "chat.disconnect" && bound != "" {
+	if typ != "chat.disconnect" && typ != "chat.send" && bound != "" {
 		release, lockErr := c.bridge.cfg.Manager.EnterChat(ctx, bound)
 		if lockErr != nil {
 			c.sendSessionError(lockErr, typ, requestID(frame))
@@ -498,27 +505,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
-		requestID := deref(f.RequestID)
-		images := make([]map[string]string, len(f.Run.Images))
-		for i, x := range f.Run.Images {
-			images[i] = map[string]string{"data": x.Data, "mimeType": x.MimeType}
-		}
-		switch string(f.Run.Kind) {
-		case "prompt":
-			err = sess.SendPromptDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
-		case "steer":
-			err = sess.SendSteerDetachedWithRequestID(ctx, f.Run.Message, requestID)
-		case "follow_up", "followUp":
-			err = sess.SendFollowUpDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
-		default:
-			c.sendError("bad_frame", "unknown run kind", "chat.send", requestID)
-			return
-		}
-		if err != nil {
-			c.sendSessionError(err, "chat.send", requestID)
-		} else if requestID != "" {
-			c.sendAck("chat.send", requestID)
-		}
+		c.handleChatSend(ctx, bound, sess, f)
 	case *wscontract.ChatAbortFrame:
 		if err := sess.Abort(ctx); err != nil {
 			c.sendSessionError(err, "chat.abort", "")
@@ -573,6 +560,235 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 	default:
 		c.sendError("unknown_type", "unknown frame type: "+typ, "", requestID(frame))
 	}
+}
+
+func (c *connection) handleChatSend(ctx context.Context, bound string, sess *session.Session, f *wscontract.ChatSendFrame) {
+	op := &chatSendOperation{conn: c, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID)}
+	op.images = make([]map[string]string, len(f.Run.Images))
+	for i, image := range f.Run.Images {
+		op.images[i] = map[string]string{"data": image.Data, "mimeType": image.MimeType}
+	}
+	if op.kind != "prompt" && op.kind != "steer" && op.kind != "follow_up" && op.kind != "followUp" {
+		c.sendError("bad_frame", "unknown run kind", "chat.send", op.requestID)
+		return
+	}
+
+	release, err := c.bridge.cfg.Manager.EnterChat(ctx, bound)
+	if err != nil {
+		c.sendSessionError(err, "chat.send", op.requestID)
+		return
+	}
+	err = op.send(ctx, sess, func(completionErr error) {
+		if isResumableSendError(completionErr) {
+			go op.resumeAndRetry(sess, true, completionErr)
+			return
+		}
+		sess.CompleteDetachedSend(op.requestID, completionErr)
+	})
+	release()
+	if isResumableSendError(err) {
+		op.resumeAndRetry(sess, false, err)
+		return
+	}
+	if err != nil {
+		c.sendSessionError(err, "chat.send", op.requestID)
+	} else if op.requestID != "" {
+		c.sendAck("chat.send", op.requestID)
+	}
+}
+
+func (op *chatSendOperation) send(ctx context.Context, sess *session.Session, complete func(error)) error {
+	switch op.kind {
+	case "prompt":
+		return sess.SendPromptDetachedWithRequestIDAndCompletion(ctx, op.message, op.images, op.requestID, complete)
+	case "steer":
+		return sess.SendSteerDetachedWithRequestIDAndCompletion(ctx, op.message, op.requestID, complete)
+	default:
+		return sess.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, op.message, op.images, op.requestID, complete)
+	}
+}
+
+func isResumableSendError(err error) bool {
+	return errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed)
+}
+
+var errNoDurableCursor = errors.New("chat has no durable cursor")
+
+func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted bool, originalErr error) {
+	ctx, cancel := context.WithTimeout(op.conn.ctx, op.conn.bridge.cfg.HistoryTimeout)
+	defer cancel()
+	resumed, err := op.conn.resumeBoundSession(ctx, stale)
+	if errors.Is(err, errNoDurableCursor) {
+		if admitted {
+			stale.CompleteDetachedSend(op.requestID, originalErr)
+		} else {
+			op.conn.sendSessionError(originalErr, "chat.send", op.requestID)
+		}
+		return
+	}
+	if err != nil {
+		info := resumeFailureInfo(err)
+		stale.PublishSendOperationError(op.requestID, info)
+		op.conn.sendResumeFailure(info, op.requestID)
+		return
+	}
+
+	chatID, current := op.conn.binding()
+	if resumed == nil || current != resumed || chatID == "" {
+		info := session.ErrorInfo{Code: "resume_failed", Message: "session binding changed while resuming"}
+		stale.PublishSendOperationError(op.requestID, info)
+		op.conn.sendResumeFailure(info, op.requestID)
+		return
+	}
+	release, err := op.conn.bridge.cfg.Manager.EnterChat(ctx, chatID)
+	if err != nil {
+		resumed.CompleteDetachedSend(op.requestID, err)
+		return
+	}
+	err = op.send(ctx, resumed, func(completionErr error) {
+		resumed.CompleteDetachedSend(op.requestID, completionErr)
+	})
+	release()
+	if err != nil {
+		op.conn.sendSessionError(err, "chat.send", op.requestID)
+	} else if !admitted && op.requestID != "" {
+		op.conn.sendAck("chat.send", op.requestID)
+	}
+}
+
+func (c *connection) sendResumeFailure(info session.ErrorInfo, requestID string) {
+	chatID, _ := c.binding()
+	wire, err := mapFrame(session.Frame{Kind: session.FrameError, SessionID: chatID, Command: "chat.send", RequestID: requestID, Data: info}, chatID, false)
+	if err == nil && wire != nil {
+		_ = c.write(wire)
+	}
+}
+
+func resumeFailureInfo(err error) session.ErrorInfo {
+	var resumeErr *session.ResumeError
+	if errors.As(err, &resumeErr) {
+		if isSessionActiveError(err) {
+			return session.ErrorInfo{Code: "session-active", Message: "session is active in another process"}
+		}
+		return resumeErr.Info
+	}
+	if errors.Is(err, cursorstore.ErrAdoptionRequired) {
+		return session.ErrorInfo{Code: "adoption_required", Message: "session must be adopted before opening"}
+	}
+	if isSessionActiveError(err) {
+		return session.ErrorInfo{Code: "session-active", Message: "session is active in another process"}
+	}
+	var drift *session.ExternalWriteError
+	if errors.As(err, &drift) {
+		return session.ErrorInfo{Code: "external-write-detected", Message: drift.Error(), KnownLeaf: drift.KnownLeaf, ObservedLeaf: drift.ObservedLeaf}
+	}
+	return session.ErrorInfo{Code: "resume_failed", Message: err.Error()}
+}
+
+func (c *connection) resumeBoundSession(ctx context.Context, stale *session.Session) (*session.Session, error) {
+	c.stateMu.Lock()
+	wsID, chatID, current := c.wsID, c.chatID, c.sess
+	c.stateMu.Unlock()
+	if current != stale {
+		if current != nil {
+			return current, nil
+		}
+		return nil, errNoDurableCursor
+	}
+
+	var preparedGeneration uint64
+	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
+	if guarded {
+		var err error
+		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, wsID, chatID)
+		if err != nil {
+			return nil, err
+		}
+	} else if c.bridge.cfg.PrepareChat != nil {
+		if err := c.bridge.cfg.PrepareChat(ctx, wsID, chatID); err != nil {
+			return nil, err
+		}
+	}
+	rec, err := c.bridge.cfg.Store.GetChat(chatID)
+	if err != nil {
+		return nil, err
+	}
+	if rec.SessionFile == "" {
+		return nil, errNoDurableCursor
+	}
+	if rec.WorkspaceID != wsID {
+		return nil, errors.New("chat does not belong to workspace")
+	}
+	if !cursorstore.IsLaunchableProvider(rec.Provider) {
+		return nil, ErrUnsupportedProvider
+	}
+
+	c.stateMu.Lock()
+	staleDetach := c.detach
+	if c.sess == stale {
+		c.detach = nil
+	}
+	c.stateMu.Unlock()
+	if staleDetach != nil {
+		staleDetach()
+	}
+
+	sub := newSubscriber(c)
+	initialized := false
+	initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
+		wrappedDetach := sub.wrapDetach(acquiredDetach)
+		if !sub.activate(ctx, !started) {
+			wrappedDetach()
+			return
+		}
+		c.stateMu.Lock()
+		if c.closed.Load() || c.sess != stale || c.chatID != chatID {
+			c.stateMu.Unlock()
+			wrappedDetach()
+			return
+		}
+		oldDetach := c.detach
+		c.sess, c.detach, c.sub = acquired, wrappedDetach, sub
+		initialized = true
+		c.stateMu.Unlock()
+		if oldDetach != nil {
+			oldDetach()
+		}
+		if touchErr := c.bridge.cfg.Store.TouchLastUsed(chatID); touchErr != nil {
+			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", chatID, "error", touchErr)
+		}
+		c.queryState(ctx, acquired)
+		c.queryModels(ctx, acquired)
+		c.queryCommands(ctx, acquired)
+		c.queryStats(ctx, acquired)
+	}
+	ref := chatRef{id: rec.ID, cwd: rec.CWD}
+	var acquired *session.Session
+	var detach func()
+	if guarded {
+		validate := func() error {
+			if c.bridge.cfg.ChatVersion(chatID) != preparedGeneration {
+				return ErrChatDeleted
+			}
+			return nil
+		}
+		acquired, _, detach, err = c.bridge.cfg.Manager.ResumeInitializedChecked(ctx, ref, sub, initialize, validate)
+	} else {
+		acquired, _, detach, err = c.bridge.cfg.Manager.ResumeInitialized(ctx, ref, sub, initialize)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !initialized {
+		if detach != nil {
+			detach()
+		}
+		_, acquired = c.binding()
+		if acquired == nil {
+			return nil, errors.New("session binding changed while resuming")
+		}
+	}
+	return acquired, nil
 }
 
 func (c *connection) create(_ context.Context, f *wscontract.ChatCreateFrame) {
