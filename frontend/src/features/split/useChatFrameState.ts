@@ -125,11 +125,6 @@ export function useChatFrameState() {
   const [doneReason, setDoneReason] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [missingOriginal, setMissingOriginal] = useState<MissingOriginal | null>(null);
-  // Quiet internal recording of an idle unload (session_unloaded): nothing
-  // renders from it and no manual action is offered - the next chat.send
-  // transparently resumes the durable chat. The state frame proving the
-  // session is live again clears it, never transcript traffic alone.
-  const sessionUnloadedRef = useRef(false);
   const [externalWriteDetected, setExternalWriteDetected] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
@@ -383,7 +378,6 @@ export function useChatFrameState() {
     setDoneReason,
     setError,
     setMissingOriginal,
-    sessionUnloadedRef,
     setExternalWriteDetected,
     setContextUsage,
     setCacheHitRate,

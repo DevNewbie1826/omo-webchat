@@ -55,7 +55,6 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
-  readonly sessionUnloadedRef: Current<boolean>;
   readonly setExternalWriteDetected: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
@@ -403,7 +402,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
-          bindings.sessionUnloadedRef.current = true;
           bindings.setError("");
           return;
         }
@@ -460,7 +458,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "state":
         // ready precedes provider initialization; state proves get_state
         // completed and the reopened provider route is live.
-        bindings.sessionUnloadedRef.current = false;
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);
