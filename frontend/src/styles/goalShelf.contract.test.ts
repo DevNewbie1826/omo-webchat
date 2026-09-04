@@ -9,8 +9,10 @@ import { describe, expect, it } from "vitest";
  * bottom at short viewports - with both shelves expanded, Chrome measured
  * the composer entirely below the container edge at 1280x720. The shelf
  * must therefore yield height (the panel scrolls) while the bar never
- * shrinks. A squeezed shelf must additionally clip itself (overflow:
- * hidden) so its content cannot paint over the status strip and composer.
+ * shrinks: an explicit min-height floor at the bar-row height (collapsed
+ * and expanded) keeps overflow: hidden from zeroing the automatic minimum.
+ * A squeezed shelf must additionally clip itself (overflow: hidden) so its
+ * content cannot paint over the status strip and composer.
  * Because that clipping also cuts off the global outside focus outline, the
  * goal button must pull its focus treatment inside its own bounds in both
  * collapsed and expanded states. The user-sized activity panel must stay
@@ -34,8 +36,27 @@ const declarationValue = (body: string, property: string): string => {
   return body.match(new RegExp(`(?:^|;)\\s*${escaped}\\s*:\\s*([^;}]*)`, "i"))?.[1]?.trim() ?? "";
 };
 
+const compactCss = (value: string): string => value.replace(/\s+/g, "");
+
+/** .th-activity-bar: secondary line box + vertical padding + 1px borders. */
+const BAR_ROW_HEIGHT_FLOOR = compactCss(
+  "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px)",
+);
+
+const shelfMinHeightFloorViolations = (shelf: string): string[] => {
+  const minHeight = declarationValue(shelf, "min-height");
+  if (compactCss(minHeight) !== BAR_ROW_HEIGHT_FLOOR) {
+    return [
+      `chat-pane.css .th-goal-shelf min-height is "${minHeight || "missing"}"; ` +
+        "expected the bar-row height floor (secondary size * line-height + " +
+        "space-1 + space-1 + 2px borders) so the bar never collapses",
+    ];
+  }
+  return [];
+};
+
 describe("goal shelf shrink contract", () => {
-  it("makes .th-goal-shelf a shrinkable min-height: 0 flex column (never flex: none)", () => {
+  it("makes .th-goal-shelf a shrinkable flex column floored at the bar-row height (never flex: none)", () => {
     const shelf = ruleBody(chatPane, ".th-goal-shelf");
     const violations: string[] = [];
     if (declarationValue(shelf, "display").toLowerCase() !== "flex") {
@@ -44,12 +65,7 @@ describe("goal shelf shrink contract", () => {
     if (declarationValue(shelf, "flex-direction").toLowerCase() !== "column") {
       violations.push("chat-pane.css .th-goal-shelf is not flex-direction: column");
     }
-    if (declarationValue(shelf, "min-height") !== "0") {
-      violations.push(
-        `chat-pane.css .th-goal-shelf min-height is ` +
-          `"${declarationValue(shelf, "min-height") || "missing"}"; expected 0`,
-      );
-    }
+    violations.push(...shelfMinHeightFloorViolations(shelf));
     // Shrinkability: the flex shorthand must declare shrink 1 (flex: 0 1
     // auto). flex: none - or any shrink-0 form - re-creates the
     // composer-overflow blocker under .th-chat-main's clipping.
@@ -99,15 +115,16 @@ describe("goal shelf shrink contract", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps .th-goal-shelf shrinkable (min-height: 0) AND clips it with overflow: hidden", () => {
+  it("floors .th-goal-shelf min-height at the bar row (collapsed and expanded) AND clips with overflow: hidden", () => {
     const shelf = ruleBody(chatPane, ".th-goal-shelf");
     const violations: string[] = [];
-    // Shrink participation: without min-height: 0 the shelf pushes the
-    // status strip and composer past the pane bottom at short viewports.
-    if (declarationValue(shelf, "min-height") !== "0") {
+    // Floor applies on the shelf itself, so both collapsed (bar only) and
+    // expanded (bar + panel) keep the bar row; only the panel yields.
+    violations.push(...shelfMinHeightFloorViolations(shelf));
+    if (/\.th-goal-(?:shelf|bar)\[aria-expanded[^\]]*\][^{]*\{[^}]*min-height/i.test(chatPane)) {
       violations.push(
-        `chat-pane.css .th-goal-shelf min-height is ` +
-          `"${declarationValue(shelf, "min-height") || "missing"}"; expected 0`,
+        "chat-pane.css must not override .th-goal-shelf min-height by aria-expanded; " +
+          "the bar-row floor applies in collapsed and expanded states",
       );
     }
     // Clipping: once the shelf yields height, its bar and panel content
