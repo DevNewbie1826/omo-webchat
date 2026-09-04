@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nContext, translate, type I18nValue, type Lang } from "../../i18n";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
 
 const subagentOutput = "Inspection complete";
@@ -35,9 +36,22 @@ describe("ToolCard disclosures", () => {
 		vi.unstubAllGlobals();
 	});
 
-	function renderCard(props: ToolCardProps): HTMLElement {
+	function renderCard(props: ToolCardProps, lang?: Lang): HTMLElement {
+		const value: I18nValue | undefined = lang === undefined ? undefined : {
+			lang,
+			setLang: () => undefined,
+			font: "system",
+			setFont: () => undefined,
+			fontSize: 13,
+			setFontSize: () => undefined,
+			t: (key, vars) => translate(lang, key, vars),
+		};
 		act(() => {
-			root.render(<ToolCard {...props} />);
+			root.render(
+				value === undefined
+					? <ToolCard {...props} />
+					: <I18nContext.Provider value={value}><ToolCard {...props} /></I18nContext.Provider>,
+			);
 		});
 		const card = container.querySelector<HTMLElement>(".th-tool");
 		if (!card) throw new Error("tool card missing");
@@ -154,5 +168,75 @@ describe("ToolCard disclosures", () => {
 		expect(card.classList.contains("th-tool--error")).toBe(true);
 		expect(card.querySelector(".th-tool-status--error")?.textContent).toBe("tool.error");
 		expect(card.querySelector(".th-tool-glyph--error")?.textContent).toBe("!");
+	});
+
+	it("titles a read of skills/<name>/SKILL.md with the skill directory", () => {
+		const card = renderCard({
+			toolCallId: "call-skill",
+			toolName: "read",
+			phase: "end",
+			text: "skill manifest",
+			isError: false,
+			args: { path: "/home/user/project/skills/my-skill/SKILL.md" },
+		}, "en");
+
+		expect(card.querySelector(".th-tool-name")?.textContent).toBe("Read skill: my-skill");
+		// The disclosure anatomy is unchanged: collapsed until toggled, then the
+		// invocation input and output still fold open behind the same head.
+		expect(card.querySelector(".th-tool-body")).toBeNull();
+		click(card);
+		expect(card.querySelector(".th-tool-body")?.textContent).toContain("my-skill");
+	});
+
+	it("keeps the generic read header for a non-skill path", () => {
+		const card = renderCard({
+			toolCallId: "call-read",
+			toolName: "read",
+			phase: "end",
+			text: "notes",
+			isError: false,
+			args: { path: "/home/user/notes.md" },
+		}, "en");
+
+		expect(card.querySelector(".th-tool-name")?.textContent).toBe("read");
+	});
+
+	it("matches the SKILL.md basename case-sensitively", () => {
+		const card = renderCard({
+			toolCallId: "call-lower",
+			toolName: "read",
+			phase: "end",
+			text: "notes",
+			isError: false,
+			args: { path: "/home/user/project/skill.md" },
+		}, "en");
+
+		expect(card.querySelector(".th-tool-name")?.textContent).toBe("read");
+	});
+
+	it("falls back to SKILL.md as the name when there is no parent directory", () => {
+		const card = renderCard({
+			toolCallId: "call-bare",
+			toolName: "read",
+			phase: "end",
+			text: "skill manifest",
+			isError: false,
+			args: { path: "SKILL.md" },
+		}, "en");
+
+		expect(card.querySelector(".th-tool-name")?.textContent).toBe("Read skill: SKILL.md");
+	});
+
+	it("localizes the skill-read header in Korean", () => {
+		const card = renderCard({
+			toolCallId: "call-skill-ko",
+			toolName: "read",
+			phase: "end",
+			text: "skill manifest",
+			isError: false,
+			args: { path: "/home/user/project/skills/another-skill/SKILL.md" },
+		}, "ko");
+
+		expect(card.querySelector(".th-tool-name")?.textContent).toBe("스킬 읽음: another-skill");
 	});
 });
