@@ -5,6 +5,7 @@ package procexec
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,18 +111,32 @@ func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_term
 }
 
 func Test_TrackedProcess_WaitTreeGone_blocks_while_grandchild_outlives_leader(t *testing.T) {
-	// Given: a leader that spawns a Start-Sleep grandchild and exits
-	// immediately after recording the pid. The grandchild inherits job
-	// membership at its own CreateProcess, so it remains the tracked
-	// domain's only live member once the leader is gone, and only kernel
-	// teardown can end it.
+	// Given: a leader that waits for a stdin gate, then spawns a Start-Sleep
+	// grandchild and exits immediately after recording the pid. The gate is
+	// released only after StartTracked has returned, so the grandchild's
+	// CreateProcess happens strictly after the leader's job assignment and
+	// inherits job membership deterministically — without the gate the
+	// documented Win32 create-to-assign window can leave the grandchild
+	// outside the job and the test nondeterministic.
 	pidFile := filepath.Join(t.TempDir(), "outliving.pid")
+	gateReader, gateWriter := io.Pipe()
 	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"Start-Process -WindowStyle Hidden -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep','-Seconds','60' |"+
+		"$null = [Console]::In.ReadLine(); "+
+			"Start-Process -WindowStyle Hidden -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep','-Seconds','60' |"+
 			" ForEach-Object { $_.Id } | Set-Content -LiteralPath '"+pidFile+"'")
+	cmd.Stdin = gateReader
 	tracked, err := StartTracked(cmd)
 	if err != nil {
 		t.Fatalf("start tracked powershell: %v", err)
+		return
+	}
+	// Assignment is complete once StartTracked returns; release the gate so
+	// the grandchild is created inside the job.
+	if _, err := gateWriter.Write([]byte("\n")); err != nil {
+		t.Fatalf("release stdin gate: %v", err)
+	}
+	if err := gateWriter.Close(); err != nil {
+		t.Fatalf("close stdin gate: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = tracked.TerminateTree()
