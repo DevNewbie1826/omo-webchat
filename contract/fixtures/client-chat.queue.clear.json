@@ -1,0 +1,1 @@
+{ "type": "chat.queue.clear", "sessionId": "sess-1", "scope": "all", "requestId": "req-23" }

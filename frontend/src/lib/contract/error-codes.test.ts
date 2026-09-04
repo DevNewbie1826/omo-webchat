@@ -8,6 +8,7 @@ const addedErrorCodes = [
   "incomplete_history",
   "external-write-detected",
   "adoption_required",
+  "queue_item_not_found",
 ] as const;
 
 describe("generated error-code parser", () => {

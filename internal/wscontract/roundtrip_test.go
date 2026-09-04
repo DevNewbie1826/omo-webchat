@@ -143,6 +143,10 @@ func TestInvalidFixturesAreRejected(t *testing.T) {
 	}{
 		{name: "invalid-server-hello-missing-required.json", server: true},
 		{name: "invalid-client-run-kind.json"},
+		{name: "invalid-server-queue-missing-required.json", server: true},
+		{name: "invalid-client-chat.queue.remove.json"},
+		{name: "invalid-client-chat.queue.move.json"},
+		{name: "invalid-client-chat.queue.clear.json"},
 	} {
 		data, err := os.ReadFile(filepath.Join(fixturesDir(t), test.name))
 		if err != nil {
@@ -320,6 +324,56 @@ func TestContractRequirements(t *testing.T) {
 
 // TestNoticeRFC3339NanoShape documents the wire shape the parser converts:
 // nanosecond precision survives as a string on the wire.
+func TestQueueWireContract(t *testing.T) {
+	if !slices.Contains(ServerFrameTypes(), "queue") {
+		t.Error(`ServerFrameTypes missing "queue"`)
+	}
+	if NewServerFrame("queue") == nil {
+		t.Error(`NewServerFrame("queue") is nil`)
+	}
+	for _, wire := range []string{"chat.queue.remove", "chat.queue.move", "chat.queue.clear"} {
+		if !slices.Contains(ClientFrameTypes(), wire) {
+			t.Errorf("ClientFrameTypes missing %q", wire)
+		}
+		if NewClientFrame(wire) == nil {
+			t.Errorf("NewClientFrame(%q) is nil", wire)
+		}
+		if ClientWireNames[wire] != wire {
+			t.Errorf("ClientWireNames[%q] = %q", wire, ClientWireNames[wire])
+		}
+	}
+
+	for _, name := range []string{
+		"server-queue.json",
+		"client-chat.queue.remove.json",
+		"client-chat.queue.move.json",
+		"client-chat.queue.clear.json",
+	} {
+		data, err := os.ReadFile(filepath.Join(fixturesDir(t), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frame any
+		if strings.HasPrefix(name, "server-") {
+			frame, err = ParseServerFrame(data)
+		} else {
+			frame, err = ParseClientFrame(data)
+		}
+		assertRoundtrip(t, name, data, frame, err)
+		if _, ok := frame.(UnknownFrame); ok {
+			t.Errorf("%s decoded as UnknownFrame", name)
+		}
+	}
+
+	data := []byte(`{"type":"error","message":"queued item is gone","code":"queue_item_not_found"}`)
+	frame, err := ParseServerFrame(data)
+	assertRoundtrip(t, "queue_item_not_found", data, frame, err)
+	errorFrame, ok := frame.(*ErrorFrame)
+	if !ok || errorFrame.Code == nil || *errorFrame.Code != "queue_item_not_found" {
+		t.Fatalf("parsed frame code = %v, want %q", frame, "queue_item_not_found")
+	}
+}
+
 func TestNoticeRFC3339NanoShape(t *testing.T) {
 	rfc3339Nano := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`)
 	for _, fx := range loadFixtures(t) {
