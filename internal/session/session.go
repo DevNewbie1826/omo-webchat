@@ -604,6 +604,13 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	}
 	owner := s.operationOwner()
 	owner.mu.Lock()
+	// A terminal publication retires the retry admission override its
+	// operation claimed: an abandoned retry (resume failure, rejected write)
+	// must not leave a stale override a later unrelated send could consume.
+	if owner.retryRunAdmission && owner.retryRunAdmissionID == requestID {
+		owner.retryRunAdmission = false
+		owner.retryRunAdmissionID = ""
+	}
 	if requestID == "" {
 		frame := s.sendOperationFrameLocked("", err)
 		frame.Command = command

@@ -471,3 +471,56 @@ func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *test
 		t.Fatalf("successful replay outcome = %+v", outcome)
 	}
 }
+func TestFailedNoIDRetryLeavesNoStaleAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		send    func(context.Context, *Session, func(error)) error
+	}{
+		{
+			name:    "steer",
+			command: omorpc.CmdSteer,
+			send: func(ctx context.Context, s *Session, complete func(error)) error {
+				return s.SendSteerDetachedWithRequestIDAndCompletion(ctx, "unrelated steer", "", complete)
+			},
+		},
+		{
+			name:    "follow-up",
+			command: omorpc.CmdFollowUp,
+			send: func(ctx context.Context, s *Session, complete func(error)) error {
+				return s.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, "unrelated follow-up", nil, "", complete)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDaemon(t)
+			client := dial(t, d)
+			mgr := testManager(t, client, newMemStore(), 64)
+			chat := testChat{id: "no-id-stale-" + tc.name, cwd: t.TempDir()}
+			original, _, detach := acquire(t, mgr, chat, nil)
+			defer detach()
+
+			if !original.PrepareDetachedSendRetry("", true) {
+				t.Fatal("no-id detached retry was not prepared")
+			}
+			original.CompleteDetachedSend("", errors.New("resume failed"))
+
+			replacement := newSession(mgr, chat.id, chat.cwd, omorpc.OpenSessionData{
+				SessionID: original.RoutingID(),
+				State: omorpc.SessionState{
+					SessionID:   original.ID(),
+					SessionFile: original.SessionFile(),
+				},
+			}, true, original.epoch)
+			replacement.inheritSendOperations(original)
+			defer replacement.releaseSendOperations()
+
+			if err := tc.send(context.Background(), replacement, nil); !errors.Is(err, ErrPromptInFlight) {
+				t.Fatalf("idle send after failed no-id retry = %v, want ErrPromptInFlight", err)
+			}
+			if got := d.RequestCount(tc.command); got != 0 {
+				t.Fatalf("idle send after failed no-id retry mutated provider: %d requests", got)
+			}
+		})
+	}
+}
