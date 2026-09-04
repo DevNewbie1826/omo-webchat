@@ -330,6 +330,99 @@ func Test_TrackedProcess_WaitTreeGone_retains_member_through_exit_window(t *test
 	}
 }
 
+func Test_WaitTreeGone_retains_handle_across_list_absence_scripted(t *testing.T) {
+	// Deterministic state machine for the exit window: the member is listed
+	// once, the opened handle validates in-job, then every later member-list
+	// query is EMPTY while the handle keeps returning WAIT_TIMEOUT, and only
+	// the final wait returns WAIT_OBJECT_0. A correct drain retains the
+	// tracked handle through the empty-list phase and releases it exactly on
+	// the signal; an implementation that dropped it on list absence would
+	// return nil before any post-empty-list WAIT_TIMEOUT wait, and the call
+	// log below proves that never happened.
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		t.Fatalf("create script job: %v", err)
+	}
+	defer windows.CloseHandle(job)
+	tracked := &TrackedProcess{pid: 4242, job: job}
+
+	type call struct{ name string }
+	var calls []call
+	queryCalls := 0
+	waitScript := []uint32{
+		uint32(windows.WAIT_TIMEOUT), // adopt candidate check
+		uint32(windows.WAIT_TIMEOUT), // drain cycle 1 (list already empty hereafter)
+		uint32(windows.WAIT_TIMEOUT), // drain cycle 2 — retention across absence
+		uint32(windows.WAIT_OBJECT_0),
+	}
+	waitIdx := 0
+	sentinel := windows.Handle(0x5C91D)
+
+	restoreQuery := queryMemberPIDsFn
+	restoreOpen := openProcessFn
+	restoreWait := waitForSingleObject
+	restoreInJob := isProcessInJobFn
+	queryMemberPIDsFn = func(windows.Handle) ([]uint32, error) {
+		queryCalls++
+		calls = append(calls, call{"query"})
+		if queryCalls == 1 {
+			return []uint32{4242}, nil
+		}
+		return nil, nil
+	}
+	openProcessFn = func(access uint32, inherit bool, pid uint32) (windows.Handle, error) {
+		calls = append(calls, call{"open"})
+		return sentinel, nil
+	}
+	waitForSingleObject = func(handle windows.Handle, ms uint32) (uint32, error) {
+		calls = append(calls, call{"wait"})
+		if waitIdx >= len(waitScript) {
+			t.Fatalf("unexpected wait beyond script at call %d", waitIdx)
+		}
+		event := waitScript[waitIdx]
+		waitIdx++
+		return event, nil
+	}
+	isProcessInJobFn = func(windows.Handle, windows.Handle) (bool, error) {
+		calls = append(calls, call{"injob"})
+		return true, nil
+	}
+	t.Cleanup(func() {
+		queryMemberPIDsFn = restoreQuery
+		openProcessFn = restoreOpen
+		waitForSingleObject = restoreWait
+		isProcessInJobFn = restoreInJob
+	})
+
+	if err := tracked.WaitTreeGone(5 * time.Second); err != nil {
+		t.Fatalf("scripted WaitTreeGone: %v", err)
+	}
+
+	// Invariants from the call log.
+	lastWait := -1
+	for i, c := range calls {
+		if c.name == "wait" {
+			lastWait = i
+		}
+	}
+	var lastQuery int
+	for i, c := range calls {
+		if c.name == "query" {
+			lastQuery = i
+		}
+	}
+	// The signal wait must exist and be the final wait, strictly after the
+	// last (empty) query — proving the handle was retained across absence.
+	signaled := waitIdx == len(waitScript)
+	if !signaled || lastWait < lastQuery {
+		log := make([]string, 0, len(calls))
+		for _, c := range calls {
+			log = append(log, c.name)
+		}
+		t.Fatalf("call log = %v (waits=%d, lastQuery@%d, lastWait@%d): drain did not retain the handle across an empty member list", log, waitIdx, lastQuery, lastWait)
+	}
+}
+
 func Test_TrackedProcess_WaitTreeGone_after_Close_reports_job_closed(t *testing.T) {
 	// Given: a tracked child that is released via Close. The job handle is
 	// gone, so a later drain wait must report the honest closed state instead

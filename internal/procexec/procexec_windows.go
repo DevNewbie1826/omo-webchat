@@ -30,7 +30,7 @@ func SetupCommand(cmd *exec.Cmd) {}
 // with the STILL_ACTIVE pseudo code (259), which GetExitCodeProcess would
 // keep reporting as "alive", while the signaled state is unambiguous.
 func processTerminated(handle windows.Handle) (bool, error) {
-	event, err := windows.WaitForSingleObject(handle, 0)
+	event, err := waitForSingleObject(handle, 0)
 	if err != nil {
 		return false, fmt.Errorf("procexec: wait on process object: %w", err)
 	}
@@ -63,6 +63,16 @@ const (
 // assignProcessToJobObject is a test seam for forcing the post-Start failure
 // path without changing the exported process-tracking API.
 var assignProcessToJobObject = windows.AssignProcessToJobObject
+
+// The following seams let windows-tagged tests script WaitTreeGone's kernel
+// collaborators deterministically (member-list contents, handle waits, and
+// job-membership verdicts) instead of racing real process exits.
+var (
+	queryMemberPIDsFn   = queryJobMemberPIDs
+	openProcessFn       = windows.OpenProcess
+	waitForSingleObject = windows.WaitForSingleObject
+	isProcessInJobFn    = isProcessInJob
+)
 
 // waitForProcessExit waits in bounded slices because TerminateProcess starts
 // termination asynchronously. A process handle becomes signaled when
@@ -269,7 +279,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 		}
 	}()
 	for {
-		pids, err := queryJobMemberPIDs(dup)
+		pids, err := queryMemberPIDsFn(dup)
 		if err != nil {
 			return fmt.Errorf("procexec: query tracked tree of child %d: %w", t.pid, err)
 		}
@@ -280,7 +290,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			if _, ok := unresolved[pid]; ok {
 				continue
 			}
-			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+			handle, openErr := openProcessFn(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if openErr != nil {
 				if errors.Is(openErr, windows.ERROR_INVALID_PARAMETER) {
 					// The kernel reports the pid no longer exists: the member
@@ -310,7 +320,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 				delete(unresolved, pid)
 				continue
 			}
-			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+			handle, openErr := openProcessFn(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if openErr == nil {
 				delete(unresolved, pid)
 				member, err := adoptMemberHandle(dup, handle)
@@ -332,7 +342,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			}
 		}
 		for pid, handle := range pending {
-			event, waitErr := windows.WaitForSingleObject(handle, 0)
+			event, waitErr := waitForSingleObject(handle, 0)
 			if waitErr != nil {
 				return fmt.Errorf("procexec: wait on tree member %d of child %d: %w", pid, t.pid, waitErr)
 			}
@@ -362,7 +372,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 // while a pid-reused unrelated process fails the check regardless of any
 // list state. A signaled handle is conclusive either way.
 func adoptMemberHandle(job, handle windows.Handle) (bool, error) {
-	event, waitErr := windows.WaitForSingleObject(handle, 0)
+	event, waitErr := waitForSingleObject(handle, 0)
 	if waitErr != nil {
 		return false, fmt.Errorf("wait on candidate: %w", waitErr)
 	}
@@ -371,8 +381,8 @@ func adoptMemberHandle(job, handle windows.Handle) (bool, error) {
 		// track.
 		return false, nil
 	}
-	var inJob bool
-	if err := isProcessInJob(handle, job, &inJob); err != nil {
+	inJob, err := isProcessInJobFn(handle, job)
+	if err != nil {
 		return false, fmt.Errorf("check job membership: %w", err)
 	}
 	return inJob, nil
@@ -384,13 +394,17 @@ func adoptMemberHandle(job, handle windows.Handle) (bool, error) {
 // handle answer with no pid ambiguity.
 var procIsProcessInJob = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
 
-func isProcessInJob(procHandle, jobHandle windows.Handle, result *bool) error {
+func isProcessInJob(procHandle, jobHandle windows.Handle) (bool, error) {
+	// Win32 BOOL is 4 bytes wide; a Go bool is 1 byte, so the kernel
+	// result must land in an int32 and be converted, the way generated
+	// x/sys wrappers marshal PBOOL.
+	var result int32
 	r0, _, e1 := syscall.Syscall(procIsProcessInJob.Addr(), 3,
-		uintptr(procHandle), uintptr(jobHandle), uintptr(unsafe.Pointer(result)))
+		uintptr(procHandle), uintptr(jobHandle), uintptr(unsafe.Pointer(&result)))
 	if r0 == 0 {
-		return e1
+		return false, e1
 	}
-	return nil
+	return result != 0, nil
 }
 
 // queryJobMemberPIDs returns the PIDs currently assigned to the job via
