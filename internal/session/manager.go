@@ -149,6 +149,12 @@ type durableEpochBinding struct {
 	chatID  string
 }
 
+// SetQueueCallbacks connects the server-owned queue lifecycle before sessions are acquired.
+func (m *Manager) SetQueueCallbacks(onSettled, onQueueUpdate func(string, *Session)) {
+	m.cfg.OnRunSettled = onSettled
+	m.cfg.OnQueueUpdate = onQueueUpdate
+}
+
 type durableTombstoneRecord struct {
 	epoch   omorpc.EpochToken
 	durable string

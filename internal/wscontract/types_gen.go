@@ -348,6 +348,42 @@ type PongFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type QueueEngine struct {
+	Ordered             []QueueEngineOrderedItem `json:"ordered"`
+	PendingMessageCount int64                    `json:"pendingMessageCount"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type QueueEngineOrderedItem struct {
+	Mode string `json:"mode"`
+	Text string `json:"text"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// QueueFrame — Webchat-owned queue snapshot for one chat, sent on attach after ready and on every change.
+type QueueFrame struct {
+	Engine    QueueEngine `json:"engine"`
+	Items     []QueueItem `json:"items"`
+	Revision  int64       `json:"revision"`
+	SessionID string      `json:"sessionId"`
+	Type      string      `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type QueueItem struct {
+	CreatedAt int64  `json:"createdAt"`
+	HasImage  bool   `json:"hasImage"`
+	ID        string `json:"id"`
+	// The chat.send requestId that enqueued this item
+	RequestID *string `json:"requestId,omitempty"`
+	Text      string  `json:"text"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type ReadyFrame struct {
 	PISessionID *string `json:"piSessionId"`
 	Resumed     bool    `json:"resumed"`
@@ -513,6 +549,34 @@ type ChatDisconnectFrame struct {
 type ChatModelsFrame struct {
 	SessionID string `json:"sessionId"`
 	Type      string `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type ChatQueueClearFrame struct {
+	RequestID *string `json:"requestId,omitempty"`
+	Scope     string  `json:"scope"`
+	SessionID string  `json:"sessionId"`
+	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type ChatQueueMoveFrame struct {
+	ItemID    string  `json:"itemId"`
+	RequestID *string `json:"requestId,omitempty"`
+	SessionID string  `json:"sessionId"`
+	ToIndex   int64   `json:"toIndex"`
+	Type      string  `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type ChatQueueRemoveFrame struct {
+	ItemID    string  `json:"itemId"`
+	RequestID *string `json:"requestId,omitempty"`
+	SessionID string  `json:"sessionId"`
+	Type      string  `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1241,6 +1305,78 @@ func (v PongFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *QueueEngine) UnmarshalJSON(data []byte) error {
+	type plain QueueEngine
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"ordered", "pendingMessageCount"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QueueEngine) MarshalJSON() ([]byte, error) {
+	type plain QueueEngine
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *QueueEngineOrderedItem) UnmarshalJSON(data []byte) error {
+	type plain QueueEngineOrderedItem
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"mode", "text"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QueueEngineOrderedItem) MarshalJSON() ([]byte, error) {
+	type plain QueueEngineOrderedItem
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *QueueFrame) UnmarshalJSON(data []byte) error {
+	type plain QueueFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"engine", "items", "revision", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QueueFrame) MarshalJSON() ([]byte, error) {
+	type plain QueueFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *QueueItem) UnmarshalJSON(data []byte) error {
+	type plain QueueItem
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"createdAt", "hasImage", "id", "requestId", "text"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QueueItem) MarshalJSON() ([]byte, error) {
+	type plain QueueItem
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ReadyFrame) UnmarshalJSON(data []byte) error {
 	type plain ReadyFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1583,6 +1719,60 @@ func (v ChatModelsFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *ChatQueueClearFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatQueueClearFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"requestId", "scope", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatQueueClearFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatQueueClearFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatQueueMoveFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatQueueMoveFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"itemId", "requestId", "sessionId", "toIndex", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatQueueMoveFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatQueueMoveFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *ChatQueueRemoveFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatQueueRemoveFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"itemId", "requestId", "sessionId", "type"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatQueueRemoveFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatQueueRemoveFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ChatResumeFrame) UnmarshalJSON(data []byte) error {
 	type plain ChatResumeFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1851,6 +2041,7 @@ func (NoticeFrame) serverFrame()            {}
 func (PongFrame) serverFrame()              {}
 func (HelloFrame) serverFrame()             {}
 func (ChatGoalFrame) serverFrame()          {}
+func (QueueFrame) serverFrame()             {}
 func (u UnknownFrame) serverFrame()         {}
 
 func (PingFrame) clientFrame()              {}
@@ -1868,6 +2059,9 @@ func (SessionsSubscribeFrame) clientFrame() {}
 func (ChatResumeFrame) clientFrame()        {}
 func (ChatCloseFrame) clientFrame()         {}
 func (ChatDisconnectFrame) clientFrame()    {}
+func (ChatQueueRemoveFrame) clientFrame()   {}
+func (ChatQueueMoveFrame) clientFrame()     {}
+func (ChatQueueClearFrame) clientFrame()    {}
 func (ClientHelloFrame) clientFrame()       {}
 func (u UnknownFrame) clientFrame()         {}
 
@@ -1910,6 +2104,7 @@ const (
 	ErrorCodeSendFailed            ErrorCode = "send_failed"
 	ErrorCodeCompactFailed         ErrorCode = "compact_failed"
 	ErrorCodeSendBackpressure      ErrorCode = "send_backpressure"
+	ErrorCodeQueueItemNotFound     ErrorCode = "queue_item_not_found"
 )
 
 // DurableNoticeKind values, from notice-kinds.json.
@@ -2048,6 +2243,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(HelloFrame)
 	case "chat.goal":
 		return new(ChatGoalFrame)
+	case "queue":
+		return new(QueueFrame)
 	}
 	return nil
 }
@@ -2144,7 +2341,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "error":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "session-active", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed", "send_backpressure"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "knownLeaf": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "observedLeaf": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"candidates": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"hostPath": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}}, Required: []string{"id", "name"}}}, "code": validationSchema{Type: "string", Enum: []string{"pi_eof", "resume_failed", "session_unloaded", "session_mismatch", "prompt_in_flight", "compaction_in_flight", "provider_error", "unsupported_provider", "persist_failed", "decode_failed", "incomplete_history", "external-write-detected", "session-active", "adoption_required", "bad_frame", "unknown_type", "bad_create", "bad_provider", "no_workspace", "no_chat", "start_failed", "initialize_failed", "provider_overflow", "provider_timeout", "bad_approval", "bad_resume", "bad_send", "bad_set", "set_model_failed", "set_thinking_failed", "approval_failed", "no_session", "send_failed", "compact_failed", "send_backpressure", "queue_item_not_found"}}, "command": validationSchema{Type: "string"}, "dangling": validationSchema{Type: "boolean"}, "knownLeaf": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "observedLeaf": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "error"}}, Required: []string{"type", "message"}}); err != nil {
 				return nil, err
 			}
 		case "notice":
@@ -2161,6 +2358,10 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 			}
 		case "chat.goal":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"goal": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "object", Properties: map[string]validationSchema{"blockedReason": validationSchema{Type: "string"}, "completedAt": validationSchema{Type: "integer"}, "createdAt": validationSchema{Type: "integer"}, "objective": validationSchema{Type: "string"}, "objectiveTruncated": validationSchema{Type: "boolean"}, "status": validationSchema{Type: "string"}, "updatedAt": validationSchema{Type: "integer"}}, Required: []string{"objective", "status"}}, validationSchema{Type: "null"}}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.goal"}}, Required: []string{"type", "sessionId", "goal"}}); err != nil {
+				return nil, err
+			}
+		case "queue":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"engine": validationSchema{Type: "object", Properties: map[string]validationSchema{"ordered": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"mode": validationSchema{Type: "string", Enum: []string{"followUp", "steer"}}, "text": validationSchema{Type: "string"}}, Required: []string{"text", "mode"}}}, "pendingMessageCount": validationSchema{Type: "integer"}}, Required: []string{"pendingMessageCount", "ordered"}}, "items": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"createdAt": validationSchema{Type: "integer"}, "hasImage": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}}, Required: []string{"id", "text", "hasImage", "createdAt"}}}, "revision": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "queue"}}, Required: []string{"type", "sessionId", "revision", "items", "engine"}}); err != nil {
 				return nil, err
 			}
 		}
@@ -2203,6 +2404,7 @@ func ServerFrameTypes() []string {
 		"pong",
 		"hello",
 		"chat.goal",
+		"queue",
 	}
 }
 
@@ -2240,6 +2442,12 @@ func NewClientFrame(wireType string) ClientFrame {
 		return new(ChatCloseFrame)
 	case "chat.disconnect":
 		return new(ChatDisconnectFrame)
+	case "chat.queue.remove":
+		return new(ChatQueueRemoveFrame)
+	case "chat.queue.move":
+		return new(ChatQueueMoveFrame)
+	case "chat.queue.clear":
+		return new(ChatQueueClearFrame)
 	case "hello":
 		return new(ClientHelloFrame)
 	}
@@ -2321,6 +2529,18 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.disconnect"}}, Required: []string{"type", "sessionId"}}); err != nil {
 				return nil, err
 			}
+		case "chat.queue.remove":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"itemId": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.queue.remove"}}, Required: []string{"type", "sessionId", "itemId"}}); err != nil {
+				return nil, err
+			}
+		case "chat.queue.move":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"itemId": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "toIndex": validationSchema{Type: "integer"}, "type": validationSchema{Const: "chat.queue.move"}}, Required: []string{"type", "sessionId", "itemId", "toIndex"}}); err != nil {
+				return nil, err
+			}
+		case "chat.queue.clear":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"requestId": validationSchema{Type: "string"}, "scope": validationSchema{Type: "string", Enum: []string{"webchat", "engine", "all"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.queue.clear"}}, Required: []string{"type", "sessionId", "scope"}}); err != nil {
+				return nil, err
+			}
 		case "hello":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"type": validationSchema{Const: "hello"}, "version": validationSchema{Type: "integer"}}, Required: []string{"type", "version"}}); err != nil {
 				return nil, err
@@ -2356,6 +2576,9 @@ func ClientFrameTypes() []string {
 		"chat.resume",
 		"chat.close",
 		"chat.disconnect",
+		"chat.queue.remove",
+		"chat.queue.move",
+		"chat.queue.clear",
 		"hello",
 	}
 }
@@ -2397,6 +2620,9 @@ var ClientWireNames = map[string]string{
 	"chat.create":        "chat.create",
 	"chat.disconnect":    "chat.disconnect",
 	"chat.models":        "chat.models",
+	"chat.queue.clear":   "chat.queue.clear",
+	"chat.queue.move":    "chat.queue.move",
+	"chat.queue.remove":  "chat.queue.remove",
 	"chat.resume":        "chat.resume",
 	"chat.send":          "chat.send",
 	"chat.set":           "chat.set",

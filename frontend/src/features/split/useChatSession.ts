@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChatClient, ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, type ChatClientFrame, type ChatConnector, type ChatServerFrame } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
@@ -168,10 +168,21 @@ export function useChatSession(
     // advertised an authoritative same-name command.
     if (exactCompact && (draft.command ? isCuratedCompact(draft.command) : !providerOwnsCompact)) return compact();
     if (frameState.running || frameState.isCompacting) {
-      return frameState.followUp(draft, nextSendRequestId(), session.id, clientRef.current);
+      // The server owns the run-time queue: send a plain prompt for the bridge
+      // to enqueue; the queue frame publishes the item to the panel.
+      return frameState.queueSend(draft, nextSendRequestId(), session.id, clientRef.current);
     }
     return frameState.submit(draft, nextSendRequestId(), session.id, clientRef.current);
   };
+
+  const queueRemove = (itemId: string): boolean =>
+    sendControl(queueRemoveFrame(session.id, itemId), "Failed to remove the queued item.");
+
+  const queueMove = (itemId: string, toIndex: number): boolean =>
+    sendControl(queueMoveFrame(session.id, itemId, toIndex), "Failed to reorder the queue.");
+
+  const queueClear = (scope: "webchat" | "engine" | "all"): boolean =>
+    sendControl(queueClearFrame(session.id, scope), "Failed to clear the queue.");
 
   const compact = (): boolean => {
     if (frameState.running) {
@@ -324,7 +335,13 @@ export function useChatSession(
     recoverFailedDraft: frameState.recoverFailedDraft,
     sendError: frameState.sendError,
     dismissSendError: frameState.dismissSendError,
-    hasPendingFollowUp: frameState.hasPendingFollowUp,
+    queueItems: frameState.queueItems,
+    queueEngine: frameState.queueEngine,
+    queuePlaceholders: frameState.queuePlaceholders,
+    steerPending: frameState.steerPending,
+    queueRemove,
+    queueMove,
+    queueClear,
     activities: frameState.activities,
     activitiesVersion: frameState.activitiesVersion,
     goal,

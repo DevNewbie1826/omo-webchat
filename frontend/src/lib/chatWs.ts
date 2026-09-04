@@ -126,6 +126,7 @@ export type ChatServerFrame =
   | ct.ApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame
+  | ct.QueueFrame
   | EntriesFrameSeam
   | ct.CompactionStartedFrame
   | ct.CompactionDoneFrame
@@ -152,7 +153,27 @@ export type ChatClientFrame =
   | ct.ActivityRefreshFrame
   | ct.SessionsSubscribeFrame
   | ct.ChatResumeFrame
+  | ct.ChatQueueRemoveFrame
+  | ct.ChatQueueMoveFrame
+  | ct.ChatQueueClearFrame
   | ct.ClientHelloFrame;
+
+/**
+ * Builders for the queue-management client frames (contract: the server acks
+ * each command and answers with a fresh queue frame; requestId stays optional
+ * because the queue panel issues fire-and-forget edits).
+ */
+export function queueRemoveFrame(sessionId: string, itemId: string): ct.ChatQueueRemoveFrame {
+  return { type: "chat.queue.remove", sessionId, itemId };
+}
+
+export function queueMoveFrame(sessionId: string, itemId: string, toIndex: number): ct.ChatQueueMoveFrame {
+  return { type: "chat.queue.move", sessionId, itemId, toIndex };
+}
+
+export function queueClearFrame(sessionId: string, scope: ct.ChatQueueClearFrame["scope"]): ct.ChatQueueClearFrame {
+  return { type: "chat.queue.clear", sessionId, scope };
+}
 
 export interface ChatClient {
   readonly send: (msg: ChatClientFrame) => boolean;

@@ -1,0 +1,1 @@
+{ "type": "chat.queue.move", "sessionId": "sess-1", "itemId": "q-1", "toIndex": "head" }

@@ -53,6 +53,11 @@ export function reqBoolean(record: Record<string, unknown>, key: string): boolea
   return typeof value === "boolean" ? value : null;
 }
 
+export function reqNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" ? value : null;
+}
+
 export function optString(record: Record<string, unknown>, key: string): string | null | undefined {
   const value = record[key];
   if (value === undefined) return undefined;

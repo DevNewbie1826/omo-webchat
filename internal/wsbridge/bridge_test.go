@@ -116,24 +116,9 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 
 func nextSuccessfulSendAcks(t *testing.T, frames *collector, requestID string) {
 	t.Helper()
-	var admitted, completed bool
-	for range 2 {
-		ack := frames.next(t, "ack")
-		if ack["command"] != "chat.send" || ack["requestId"] != requestID {
-			t.Fatalf("send ack = %v, want request %q", ack, requestID)
-		}
-		phase, present := ack["phase"]
-		switch {
-		case !present:
-			admitted = true
-		case phase == "completed":
-			completed = true
-		default:
-			t.Fatalf("send ack phase = %v, want absent or completed", phase)
-		}
-	}
-	if !admitted || !completed {
-		t.Fatalf("send acknowledgements admitted=%v completed=%v", admitted, completed)
+	ack := frames.next(t, "ack")
+	if ack["command"] != "chat.send" || ack["requestId"] != requestID || ack["phase"] != nil {
+		t.Fatalf("send admission ack = %v, want one unphased ack for %q", ack, requestID)
 	}
 }
 
@@ -835,9 +820,8 @@ func TestChatSendResumesIdleUnloadedSessionBeforeOriginalPrompt(t *testing.T) {
 	reconnected, replay := h.connect(t)
 	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-idle-resume"})
 	replay.next(t, "ready")
-	if outcome := replay.next(t, "ack"); outcome["requestId"] != "resume-prompt" || outcome["phase"] != "completed" {
-		t.Fatalf("resumed operation replay = %#v", outcome)
-	}
+	writeClient(t, reconnected, map[string]any{"type": "ping"})
+	replay.next(t, "pong")
 }
 
 func TestAdmissionTimeFollowUpRecoveryRemainsGatedWhenIdle(t *testing.T) {
@@ -1068,6 +1052,9 @@ func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T)
 		"run": map[string]any{"kind": "prompt", "message": "retry after eviction"},
 	})
 	nextSuccessfulSendAcks(t, frames, "silent-eviction-prompt")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, beforePrompts+2, 5*time.Second) {
+		t.Fatal("prompt was not retried after silent eviction")
+	}
 
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
@@ -1118,9 +1105,6 @@ func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) 
 	frames.next(t, "error")
 	releasePrompt()
 
-	if ack := frames.next(t, "ack"); ack["requestId"] != "detached-resume" || ack["phase"] != "completed" {
-		t.Fatalf("retried completion = %#v", ack)
-	}
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
 		t.Fatal("original prompt was not retried after resume")
 	}
@@ -1169,9 +1153,6 @@ func TestDetachedInRunSendResumesAndRetriesWithOriginalAdmission(t *testing.T) {
 			frames.next(t, "error")
 			release()
 
-			if ack := frames.next(t, "ack"); ack["requestId"] != requestID || ack["phase"] != "completed" {
-				t.Fatalf("retried completion = %#v", ack)
-			}
 			if !h.daemon.AwaitRequestCount(tc.command, 2, 5*time.Second) {
 				t.Fatalf("%s was not retried", tc.name)
 			}
@@ -1468,9 +1449,8 @@ func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T)
 	reconnected, replay := h.connect(t)
 	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-detached-disconnect"})
 	replay.next(t, "ready")
-	if outcome := replay.next(t, "ack"); outcome["requestId"] != "survives-disconnect" || outcome["phase"] != "completed" {
-		t.Fatalf("durable detached outcome = %#v", outcome)
-	}
+	writeClient(t, reconnected, map[string]any{"type": "ping"})
+	replay.next(t, "pong")
 }
 
 func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
@@ -1523,13 +1503,6 @@ func TestFullSendLedgerReplayActivatesNewWebSocketSubscriber(t *testing.T) {
 	if ready := replay.next(t, "ready"); ready["sessionId"] != "send-full-ledger" {
 		t.Fatalf("reconnect ready = %v", ready)
 	}
-	for i := 0; i < session.SendOperationLedgerCapacity; i++ {
-		wantID := fmt.Sprintf("full-ledger-%02d", i)
-		ack := replay.next(t, "ack")
-		if ack["command"] != "chat.send" || ack["requestId"] != wantID || ack["phase"] != "completed" {
-			t.Fatalf("replayed outcome %d = %v, want completed ack for %q", i, ack, wantID)
-		}
-	}
 	writeClient(t, reconnected, map[string]any{"type": "ping"})
 	replay.next(t, "pong")
 }
@@ -1562,9 +1535,6 @@ func TestChatSendRequestIDReplaysAndDeduplicatesAfterReconnect(t *testing.T) {
 	reconnected, replay := h.connect(t)
 	writeClient(t, reconnected, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
 	replay.next(t, "ready")
-	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" || ack["command"] != "chat.send" {
-		t.Fatalf("replayed admission = %v", ack)
-	}
 	writeClient(t, reconnected, request)
 	if ack := replay.next(t, "ack"); ack["requestId"] != "retry-1" {
 		t.Fatalf("duplicate outcome = %v", ack)
@@ -1601,7 +1571,6 @@ func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
 	observerConn, observer := h.connect(t)
 	writeClient(t, observerConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
 	observer.next(t, "ready")
-	observer.next(t, "ack")
 	release()
 	if failure := observer.next(t, "error"); failure["requestId"] != "failed-1" || failure["command"] != "chat.send" {
 		t.Fatalf("detached completion failure = %v", failure)

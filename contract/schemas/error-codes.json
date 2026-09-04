@@ -40,7 +40,8 @@
         "no_session",
         "send_failed",
         "compact_failed",
-        "send_backpressure"
+        "send_backpressure",
+        "queue_item_not_found"
       ]
     }
   }

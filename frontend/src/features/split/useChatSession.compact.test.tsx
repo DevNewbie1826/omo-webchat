@@ -160,7 +160,7 @@ describe("useChatSession manual compaction", () => {
     ]);
   });
 
-  it("sends a submission during compaction as a follow-up", () => {
+	it("sends a submission during compaction as a queued prompt", () => {
     act(() => {
       deliver?.({ type: "compaction.started", sessionId: "chat-1" });
     });
@@ -170,11 +170,10 @@ describe("useChatSession manual compaction", () => {
     });
     expect(accepted).toBe(true);
     expect(promptFrames()).toEqual([
-      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after compact" } },
+      { type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "after compact" } },
     ]);
-    expect(current?.messages).toEqual([
-      { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after compact" }] },
-    ]);
+    // The server owns the queue during compaction: no transcript row.
+    expect(current?.messages).toEqual([]);
     expect(current?.error).toBe("");
   });
 

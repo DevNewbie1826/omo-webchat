@@ -6,11 +6,12 @@ import { applyActivityEvent, applyRunFlight, applyTodoToolDetails, validatedActi
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import { messageText, type UiMessage } from "./chatEntries";
+import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { isPromptTerminalError } from "./chatErrorState";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
 import * as chatState from "./chatSessionState";
-import type { ToolEntry } from "./chatSessionTypes";
+import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
 import type { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import type { useStreamingBuffer } from "./useStreamingBuffer";
 
@@ -71,6 +72,12 @@ interface ChatFrameHandlerBindings {
   readonly notifyPendingChanged: () => void;
   readonly retainFailedDrafts: (runs: readonly chatState.PendingOptimistic[]) => void;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
+  readonly steerPendingRef: Current<readonly SteerPendingItem[]>;
+  readonly replaceSteerPending: (next: readonly SteerPendingItem[]) => void;
+  readonly queuePlaceholdersRef: Current<readonly QueuePlaceholder[]>;
+  readonly replaceQueuePlaceholders: (next: readonly QueuePlaceholder[]) => void;
+  readonly setQueueItems: StateSetter<readonly QueueSlotItem[]>;
+  readonly setQueueEngine: StateSetter<QueueEngineSummary>;
 }
 
 /**
@@ -188,11 +195,17 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
   };
-  const settleFailedPending = (pending: chatState.PendingOptimistic): void => {
+  const settleFailedPending = (pending: chatState.PendingOptimistic, sessionId: string): void => {
     bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
     bindings.messageVersionRef.current += 1;
     bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
     bindings.retiredSteerIdsRef.current.delete(pending.id);
+    if (pending.kind === "steer") {
+      // A rejected steer never persisted engine-side: drop its exact request
+      // identity without touching another occurrence with the same text.
+      forgetSteerMark(sessionId, pending.requestId);
+      bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((item) => item.requestId !== pending.requestId));
+    }
     bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
     bindings.retainFailedDrafts([pending]);
     if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
@@ -277,7 +290,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.message.role === "toolResult") return;
         bindings.messageVersionRef.current += 1;
         if (frame.message.role === "user") {
-          const pendingMatch = bindings.pendingRef.current.find((pending) => pending.text === messageText(frame.message));
+          const echoText = messageText(frame.message);
+          const pendingMatch = bindings.pendingRef.current.find((pending) => pending.text === echoText);
+          // The steer summary clears the moment its echo renders; the appended
+          // echo carries the steer mark so the transcript keeps showing it
+          // until the run settles (finalizeRunMessages strips it then).
+          const steerSummaryIndex = bindings.steerPendingRef.current.findIndex((item) => item.text === echoText);
           const reconciled = chatState.reconcileLiveUserMessage(
             frame.message,
             bindings.messagesRef.current,
@@ -288,7 +306,21 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (reconciled) {
             const markerWasRetired = pendingMatch?.kind === "steer"
               && bindings.retiredSteerIdsRef.current.delete(pendingMatch.id);
-            bindings.replaceMessages(markerWasRetired ? [...reconciled, frame.message] : reconciled);
+            if (!markerWasRetired && pendingMatch?.kind === "steer") {
+              bindings.replaceMessages([...reconciled, { ...frame.message, customType: "steer" }]);
+            } else {
+              bindings.replaceMessages(markerWasRetired ? [...reconciled, frame.message] : reconciled);
+            }
+            if (steerSummaryIndex >= 0) {
+              bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((_, index) => index !== steerSummaryIndex));
+            }
+            return;
+          }
+          if (steerSummaryIndex >= 0) {
+            bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((_, index) => index !== steerSummaryIndex));
+            bindings.replaceMessages([...bindings.messagesRef.current, { ...frame.message, customType: "steer" }]);
+            bindings.streaming.clear();
+            bindings.setThinking("");
             return;
           }
         }
@@ -310,10 +342,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
         // The run terminal retires the transient steer transcript marker via
-        // finalizeRunMessages below. Keep the operation correlated until its
-        // own outcome arrives: either a provider echo admits it or a late
-        // error restores its draft. Remember which correlated operations no
-        // longer have a marker so history replay cannot recreate one.
+        // finalizeRunMessages below, and drops every steer summary: without an
+        // echo (or after one) there is nothing left to wait for.
+        bindings.replaceSteerPending([]);
         retirePendingSteers(bindings.pendingRef.current, bindings.retiredSteerIdsRef.current);
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
@@ -380,7 +411,16 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
             ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
           : undefined;
-        if (correlatedPending) settleFailedPending(correlatedPending);
+        if (correlatedPending) settleFailedPending(correlatedPending, frame.sessionId ?? "");
+        // A rejected queued send was never enqueued: retire its placeholder so
+        // the panel cannot keep showing a ghost item.
+        if (frame.requestId) {
+          const remainingPlaceholders = bindings.queuePlaceholdersRef.current
+            .filter((placeholder) => placeholder.requestId !== frame.requestId);
+          if (remainingPlaceholders.length !== bindings.queuePlaceholdersRef.current.length) {
+            bindings.replaceQueuePlaceholders(remainingPlaceholders);
+          }
+        }
         // A session_unloaded error remains hidden and leaves the pane ready
         // for another prompt. It clears the submission latch, completion
         // reason, running state, active response, streamed text, thinking,
@@ -438,12 +478,27 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
             ? bindings.activeRunRef.current ?? undefined
             : undefined;
-        if (pending) settleFailedPending(pending);
+        if (pending) settleFailedPending(pending, frame.sessionId ?? "");
         return;
       }
       case "notice":
         bindings.pushNotice(frame.kind, frame.payload ?? null, frame.at, frame.nid);
         return;
+      case "queue": {
+        // Authoritative snapshot: on attach right after ready and on every
+        // change. Placeholders whose requestId the server confirmed graduate
+        // into listed items; the rest keep waiting for their frame.
+        bindings.setQueueItems(frame.items);
+        bindings.setQueueEngine(frame.engine);
+        const confirmed = new Set(
+          frame.items.map((item) => item.requestId).filter((requestId): requestId is string => requestId !== undefined),
+        );
+        const remaining = bindings.queuePlaceholdersRef.current.filter((placeholder) => !confirmed.has(placeholder.requestId));
+        if (remaining.length !== bindings.queuePlaceholdersRef.current.length) {
+          bindings.replaceQueuePlaceholders(remaining);
+        }
+        return;
+      }
       case "approval":
         bindings.setPendingApproval(chatState.approvalRequestOf(frame));
         return;
@@ -512,6 +567,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           preserveCurrent,
           serverStreaming: bindings.runningRef.current,
           hasLiveTodo: bindings.activitiesRef.current.todo !== null,
+          steerMarks: steerMarks(frame.sessionId),
         });
         const unacknowledgedFollowUps = bindings.awaitingReconnectHistoryRef.current && !bindings.runningRef.current
           ? reconciliation.history.pending.filter((pending) => pending.kind === "followUp" && !pending.admitted)

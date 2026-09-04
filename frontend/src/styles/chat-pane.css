@@ -166,6 +166,137 @@
   }
 }
 
+/* Queue slot: run-time pending feedback lives here, fixed between the shelves
+   and the composer — never inside the transcript scrollport. Queued rows carry
+   a dashed waiting edge so they cannot be mistaken for sent messages. */
+.th-queue {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-1) auto 0;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  font-size: var(--th-type-micro-size);
+}
+
+.th-queue-header {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: 100%;
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 0;
+  border-radius: inherit;
+  background: none;
+  color: var(--th-text-dim);
+  font: inherit;
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+  cursor: pointer;
+  text-align: left;
+}
+
+.th-queue-header:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+.th-queue-engine {
+  padding: 0 var(--th-space-1);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-pill);
+  color: var(--th-warning);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-queue-chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--th-muted);
+  transition: transform var(--th-dur-fast) var(--th-ease);
+}
+
+.th-queue-chevron--open {
+  transform: rotate(90deg);
+}
+
+.th-queue-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0 var(--th-space-2) var(--th-space-2);
+}
+
+.th-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-0-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.th-queue-row {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-height: 24px;
+  padding: var(--th-space-0-5) var(--th-space-2);
+  border-radius: var(--th-radius-sm);
+  color: var(--th-text-dim);
+}
+
+.th-queue-row--waiting {
+  border-left: 2px dashed var(--th-border-user);
+}
+
+.th-queue-row--engine {
+  border-left: 2px solid var(--th-border-raised);
+  color: var(--th-muted);
+}
+
+.th-queue-pos {
+  flex: none;
+  min-width: var(--th-space-4);
+  color: var(--th-muted);
+  font-family: var(--th-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-queue-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-queue-actions {
+  flex: none;
+  display: flex;
+  gap: 0;
+}
+
+.th-queue-btn {
+  width: 22px;
+  height: 22px;
+}
+
+.th-queue-btn--down svg {
+  transform: rotate(180deg);
+}
+
+.th-queue-btn--remove:hover {
+  color: var(--th-error);
+}
+
+.th-queue-clear {
+  flex: none;
+  align-self: flex-end;
+  margin-top: var(--th-space-1);
+}
+
 .th-chat-loading {
   flex: 1 1 auto;
   display: flex;

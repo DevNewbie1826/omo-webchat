@@ -74,6 +74,9 @@
     },
     {
       "$ref": "#/$defs/ChatGoalFrame"
+    },
+    {
+      "$ref": "#/$defs/QueueFrame"
     }
   ],
   "$defs": {
@@ -862,6 +865,105 @@
         },
         "completedAt": {
           "type": "integer"
+        }
+      }
+    },
+    "QueueItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "text",
+        "hasImage",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "hasImage": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "integer"
+        },
+        "requestId": {
+          "type": "string",
+          "description": "The chat.send requestId that enqueued this item"
+        }
+      }
+    },
+    "QueueEngineOrderedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "mode"
+      ],
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "followUp",
+            "steer"
+          ]
+        }
+      }
+    },
+    "QueueEngine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pendingMessageCount",
+        "ordered"
+      ],
+      "properties": {
+        "pendingMessageCount": {
+          "type": "integer"
+        },
+        "ordered": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueEngineOrderedItem"
+          }
+        }
+      }
+    },
+    "QueueFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "sessionId",
+        "revision",
+        "items",
+        "engine"
+      ],
+      "description": "Webchat-owned queue snapshot for one chat, sent on attach after ready and on every change.",
+      "properties": {
+        "type": {
+          "const": "queue"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/QueueItem"
+          }
+        },
+        "engine": {
+          "$ref": "#/$defs/QueueEngine"
         }
       }
     }

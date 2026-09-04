@@ -23,6 +23,23 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.applyProviderName(name)
 		return
 	}
+	if ev.Type == omorpc.EventQueueUpdate {
+		update, err := omorpc.ParseQueueUpdate(ev)
+		if err != nil {
+			return
+		}
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.resumable {
+			s.engineQueue = EngineQueueSnapshot{PendingMessageCount: update.PendingMessageCount, Ordered: append([]omorpc.QueuedMessage(nil), update.Ordered...)}
+		}
+		s.lifecycleMu.Unlock()
+		if s.manager != nil {
+			if callback := s.manager.cfg.OnQueueUpdate; callback != nil {
+				callback(s.chatID, s)
+			}
+		}
+		return
+	}
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
 	if s.closed || s.resumable {
@@ -128,6 +145,7 @@ func (s *Session) completeProviderRunLocked(reason string) {
 	s.promptResponse = false
 	s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
 	s.scheduleIdleLocked()
+	s.notifyRunSettledLocked()
 }
 
 func (s *Session) reconcileFailedCloseLocked() {
@@ -215,6 +233,9 @@ func (s *Session) finishCompactionLocked(requestID, errText string) {
 	s.compactProviderID = ""
 	s.publishLocked(Frame{Kind: FrameCompactionDone, SessionID: s.durableID, RequestID: requestID, Data: CompactionInfo{Phase: phase, Error: errText}})
 	s.scheduleIdleLocked()
+	if !s.promptInFlight && !s.providerRunActive && !s.localCommandActive {
+		s.notifyRunSettledLocked()
+	}
 }
 
 func (s *Session) forwardExtensionEventLocked(raw map[string]any) {

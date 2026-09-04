@@ -14,6 +14,7 @@ import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
+import { QueuePanel } from "./QueuePanel";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
@@ -61,7 +62,6 @@ export function ChatPane({
     () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
     [chat.messages, chat.notices, chat.historyStatus],
   );
-  const sendQueued = chat.hasPendingFollowUp;
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)
@@ -186,6 +186,17 @@ export function ChatPane({
         />
         <GoalBar goal={chat.goal} />
         <ActivityShelf activities={chat.activities} />
+        {/* Fixed queue slot: run-time pending feedback renders here, outside
+        the transcript scrollport, anchored above the status strip/composer. */}
+        <QueuePanel
+          items={chat.queueItems}
+          engine={chat.queueEngine}
+          placeholders={chat.queuePlaceholders}
+          steerPending={chat.steerPending}
+          onRemove={chat.queueRemove}
+          onMove={chat.queueMove}
+          onClear={chat.queueClear}
+        />
         <div className="th-chat-status" role="status" aria-live="polite">
           {chat.running && (
             <span className="th-chat-status-item th-chat-status-item--live">
@@ -193,9 +204,11 @@ export function ChatPane({
               {t("chat.responding")}
             </span>
           )}
-          {sendQueued && (
-            <span className="th-chat-status-item">{t("chat.sendQueued")}</span>
-          )}
+          {chat.steerPending.map((item) => (
+            <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer">
+              {t("chat.steerPending", { text: item.text.length > 40 ? `${item.text.slice(0, 40)}…` : item.text })}
+            </span>
+          ))}
           {chat.contextUsage && (
             <span className="th-chat-status-item">
               {t("chat.contextUsage")}

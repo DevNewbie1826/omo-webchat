@@ -20,6 +20,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/adoptcopy"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -91,6 +92,7 @@ type Config struct {
 	Context       context.Context
 	Manager       *session.Manager
 	Store         *cursorstore.Store
+	SendQueue     *sendqueue.Store
 	ServerVersion string
 	Logger        *slog.Logger
 	WriteTimeout  time.Duration
@@ -134,6 +136,9 @@ func New(cfg Config) *Handler {
 		cfg.HistoryTimeout = session.DefaultHistoryTimeout
 	}
 	h := &Handler{cfg: cfg}
+	if cfg.Manager != nil {
+		cfg.Manager.SetQueueCallbacks(h.SessionRunSettled, h.SessionQueueUpdated)
+	}
 	h.upgrader = gws.NewUpgrader(h, &gws.ServerOption{
 		Recovery:          gws.Recovery,
 		PermessageDeflate: gws.PermessageDeflate{Enabled: true},
@@ -545,6 +550,12 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
 		c.handleChatSend(ctx, workspaceID, bound, bindingGeneration, f)
+	case *wscontract.ChatQueueRemoveFrame:
+		c.handleQueueRemove(bound, sess, f)
+	case *wscontract.ChatQueueMoveFrame:
+		c.handleQueueMove(bound, sess, f)
+	case *wscontract.ChatQueueClearFrame:
+		c.handleQueueClear(ctx, bound, sess, f)
 	case *wscontract.ChatAbortFrame:
 		if err := sess.Abort(ctx); err != nil {
 			c.sendSessionError(err, "chat.abort", "")
@@ -626,6 +637,19 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 	sess, current := c.sessionForBinding(op.chatID, op.bindingGeneration)
 	if !current {
 		release()
+		return
+	}
+	run := sess.RunSnapshot()
+	if op.kind != "steer" && (run.Streaming || run.Compacting) && c.bridge.cfg.SendQueue != nil {
+		id, _ := c.bridge.cfg.SendQueue.Append(op.chatID, sendqueue.Item{Text: op.message, Images: op.images, RequestID: op.requestID})
+		if id == "" {
+			release()
+			c.sendError("persist_failed", c.bridge.cfg.SendQueue.LastError().Error(), "chat.send", op.requestID)
+			return
+		}
+		release()
+		c.sendAck("chat.send", op.requestID)
+		c.bridge.publishQueue(op.chatID, sess)
 		return
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
@@ -737,6 +761,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 	if touchErr := op.bridge.cfg.Store.TouchLastUsed(op.chatID); touchErr != nil {
 		op.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", op.chatID, "error", touchErr)
 	}
+	op.bridge.publishQueueToConnection(op.conn, acquired)
 	op.conn.queryState(ctx, acquired)
 	op.conn.queryModels(ctx, acquired)
 	op.conn.queryCommands(ctx, acquired)
@@ -981,6 +1006,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
 			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
 		}
+		c.bridge.publishQueueToConnection(c, acquired)
 		c.queryState(ctx, acquired)
 		c.queryModels(ctx, acquired)
 		c.queryCommands(ctx, acquired)
@@ -1058,6 +1084,171 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			c.startGoalWatch(fresh)
 		}
 	}
+}
+
+func (c *connection) handleQueueRemove(chatID string, sess *session.Session, f *wscontract.ChatQueueRemoveFrame) {
+	if c.bridge.cfg.SendQueue == nil {
+		c.sendError("provider_error", "send queue is not configured", f.Type, deref(f.RequestID))
+		return
+	}
+	if err := c.bridge.cfg.SendQueue.Remove(chatID, f.ItemID); err != nil {
+		if errors.Is(err, sendqueue.ErrItemNotFound) {
+			c.sendError("queue_item_not_found", "queued item not found", f.Type, deref(f.RequestID))
+		} else {
+			c.sendError("persist_failed", err.Error(), f.Type, deref(f.RequestID))
+		}
+		return
+	}
+	c.sendAck(f.Type, deref(f.RequestID))
+	c.bridge.publishQueue(chatID, sess)
+}
+
+func (c *connection) handleQueueMove(chatID string, sess *session.Session, f *wscontract.ChatQueueMoveFrame) {
+	if c.bridge.cfg.SendQueue == nil {
+		c.sendError("provider_error", "send queue is not configured", f.Type, deref(f.RequestID))
+		return
+	}
+	if err := c.bridge.cfg.SendQueue.Move(chatID, f.ItemID, int(f.ToIndex)); err != nil {
+		if errors.Is(err, sendqueue.ErrItemNotFound) {
+			c.sendError("queue_item_not_found", "queued item not found", f.Type, deref(f.RequestID))
+		} else {
+			c.sendError("persist_failed", err.Error(), f.Type, deref(f.RequestID))
+		}
+		return
+	}
+	c.sendAck(f.Type, deref(f.RequestID))
+	c.bridge.publishQueue(chatID, sess)
+}
+
+func (c *connection) handleQueueClear(ctx context.Context, chatID string, sess *session.Session, f *wscontract.ChatQueueClearFrame) {
+	if (f.Scope == "engine" || f.Scope == "all") && sess != nil {
+		if err := sess.ClearQueue(ctx); err != nil {
+			c.sendSessionError(err, f.Type, deref(f.RequestID))
+			return
+		}
+		if c.bridge.cfg.SendQueue != nil {
+			c.bridge.cfg.SendQueue.Bump(chatID)
+		}
+	}
+	if f.Scope == "webchat" || f.Scope == "all" {
+		if c.bridge.cfg.SendQueue == nil {
+			c.sendError("provider_error", "send queue is not configured", f.Type, deref(f.RequestID))
+			return
+		}
+		c.bridge.cfg.SendQueue.Clear(chatID)
+		if err := c.bridge.cfg.SendQueue.LastError(); err != nil {
+			c.sendError("persist_failed", err.Error(), f.Type, deref(f.RequestID))
+			return
+		}
+	}
+	c.sendAck(f.Type, deref(f.RequestID))
+	c.bridge.publishQueue(chatID, sess)
+}
+
+func (h *Handler) queueFrame(chatID string, sess *session.Session) wscontract.QueueFrame {
+	frame := wscontract.QueueFrame{Type: "queue", SessionID: chatID, Items: []wscontract.QueueItem{}, Engine: wscontract.QueueEngine{Ordered: []wscontract.QueueEngineOrderedItem{}}}
+	if h.cfg.SendQueue != nil {
+		snapshot := h.cfg.SendQueue.Snapshot(chatID)
+		frame.Revision = snapshot.Revision
+		frame.Items = make([]wscontract.QueueItem, len(snapshot.Items))
+		for i, item := range snapshot.Items {
+			frame.Items[i] = wscontract.QueueItem{ID: item.ID, Text: item.Text, HasImage: item.HasImage, CreatedAt: item.CreatedAt}
+			if item.RequestID != "" {
+				requestID := item.RequestID
+				frame.Items[i].RequestID = &requestID
+			}
+		}
+	}
+	if sess != nil {
+		engine := sess.EngineQueueSnapshot()
+		frame.Engine.PendingMessageCount = int64(engine.PendingMessageCount)
+		frame.Engine.Ordered = make([]wscontract.QueueEngineOrderedItem, len(engine.Ordered))
+		for i, item := range engine.Ordered {
+			mode := item.Mode
+			if mode == "follow_up" {
+				mode = "followUp"
+			}
+			frame.Engine.Ordered[i] = wscontract.QueueEngineOrderedItem{Text: item.Text, Mode: mode}
+		}
+	}
+	return frame
+}
+
+func (h *Handler) publishQueue(chatID string, sess *session.Session) {
+	if h.cfg.SendQueue == nil {
+		return
+	}
+	h.conns.Range(func(_, value any) bool {
+		conn := value.(*connection)
+		_, bound, generation, current := conn.bindingSnapshot()
+		if bound == chatID && current != nil {
+			claim := queryBinding{chatID: bound, generation: generation, session: current}
+			_ = conn.writeIfCurrent(claim, h.queueFrame(chatID, current))
+		}
+		return true
+	})
+}
+
+func (h *Handler) publishQueueToConnection(conn *connection, sess *session.Session) {
+	if h.cfg.SendQueue == nil {
+		return
+	}
+	binding, ok := conn.beginQuery(sess)
+	if ok {
+		_ = conn.writeIfCurrent(binding, h.queueFrame(binding.chatID, sess))
+	}
+}
+
+// SessionQueueUpdated publishes the latest engine-owned queue mirror.
+func (h *Handler) SessionQueueUpdated(chatID string, sess *session.Session) {
+	if h.cfg.SendQueue != nil {
+		h.cfg.SendQueue.Bump(chatID)
+	}
+	h.publishQueue(chatID, sess)
+}
+
+// SessionRunSettled schedules one persistent queue head for the next run.
+func (h *Handler) SessionRunSettled(chatID string, sess *session.Session) {
+	if h.cfg.SendQueue == nil || h.cfg.Manager == nil {
+		return
+	}
+	h.cfg.Manager.EnqueueChat(chatID, func() { h.flushHead(chatID, sess) })
+}
+
+func (h *Handler) flushHead(chatID string, sess *session.Session) {
+	if current, ok := h.cfg.Manager.Get(chatID); ok {
+		sess = current
+	}
+	item, ok := h.cfg.SendQueue.ClaimHead(chatID)
+	if !ok {
+		return
+	}
+	restored := atomic.Bool{}
+	restore := func(err error) {
+		if err == nil || !restored.CompareAndSwap(false, true) {
+			return
+		}
+		h.cfg.SendQueue.RestoreHead(chatID, item)
+		h.publishQueue(chatID, sess)
+		h.publishChatFrame(chatID, sessionErrorFrame(err, "chat.send", item.RequestID, chatID))
+	}
+	err := sess.SendPromptDetachedWithRequestIDAndCompletion(h.cfg.Context, item.Text, item.Images, "", restore)
+	if err != nil {
+		restore(err)
+		return
+	}
+	h.publishQueue(chatID, sess)
+}
+
+func (h *Handler) publishChatFrame(chatID string, frame any) {
+	h.conns.Range(func(_, value any) bool {
+		conn := value.(*connection)
+		_, bound, generation, current := conn.bindingSnapshot()
+		if bound == chatID && current != nil {
+			_ = conn.writeIfCurrent(queryBinding{chatID: bound, generation: generation, session: current}, frame)
+		}
+		return true
+	})
 }
 
 func (c *connection) sendAck(command, requestID string) {
@@ -1218,6 +1409,7 @@ func (c *connection) queryState(ctx context.Context, s *session.Session) {
 	}
 	run := s.RunSnapshot()
 	_ = c.writeIfCurrent(binding, map[string]any{"type": "state", "sessionId": binding.chatID, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
+	c.bridge.publishQueue(binding.chatID, s)
 }
 func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 	binding, ok := c.beginQuery(s)
@@ -1344,6 +1536,12 @@ func clientSessionID(f wscontract.ClientFrame) string {
 		return x.SessionID
 	case *wscontract.ChatAbortFrame:
 		return x.SessionID
+	case *wscontract.ChatQueueRemoveFrame:
+		return x.SessionID
+	case *wscontract.ChatQueueMoveFrame:
+		return x.SessionID
+	case *wscontract.ChatQueueClearFrame:
+		return x.SessionID
 	case *wscontract.ChatSetFrame:
 		return x.SessionID
 	case *wscontract.ApprovalRespondFrame:
@@ -1374,6 +1572,12 @@ func requestID(f wscontract.ClientFrame) string {
 	case *wscontract.ChatSetFrame:
 		return deref(x.RequestID)
 	case *wscontract.ApprovalRespondFrame:
+		return deref(x.RequestID)
+	case *wscontract.ChatQueueRemoveFrame:
+		return deref(x.RequestID)
+	case *wscontract.ChatQueueMoveFrame:
+		return deref(x.RequestID)
+	case *wscontract.ChatQueueClearFrame:
 		return deref(x.RequestID)
 	}
 	return ""

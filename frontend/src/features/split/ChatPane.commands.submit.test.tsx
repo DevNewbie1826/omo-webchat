@@ -206,7 +206,7 @@ describe("ChatPane slash command submission", () => {
 		expect(options.some((option) => option.textContent?.includes("/fix-tests"))).toBe(true);
 	});
 
-	it("sends and renders a follow-up while compacting", () => {
+	it("queues a prompt while compacting instead of rendering a pending row", () => {
 		const { deliver, sent } = renderChatPane(root, chatSession);
 		act(() => deliver({ type: "compaction.started", sessionId: "chat-1" }));
 		const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "missing chat input");
@@ -216,9 +216,9 @@ describe("ChatPane slash command submission", () => {
 		act(() => setTextareaValue(input, "after compact"));
 		act(() => pressKey(input, "Enter"));
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "after compact" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "after compact" } },
 		]);
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		expect(input.value).toBe("");
 	});
 

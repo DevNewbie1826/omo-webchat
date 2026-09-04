@@ -18,6 +18,9 @@
     { "$ref": "#/$defs/ChatResumeFrame" },
     { "$ref": "#/$defs/ChatCloseFrame" },
     { "$ref": "#/$defs/ChatDisconnectFrame" },
+    { "$ref": "#/$defs/ChatQueueRemoveFrame" },
+    { "$ref": "#/$defs/ChatQueueMoveFrame" },
+    { "$ref": "#/$defs/ChatQueueClearFrame" },
     { "$ref": "hello.json#/$defs/ClientHelloFrame" }
   ],
   "$defs": {
@@ -175,6 +178,40 @@
       "properties": {
         "type": { "const": "chat.disconnect" },
         "sessionId": { "type": "string" }
+      }
+    },
+    "ChatQueueRemoveFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "itemId"],
+      "properties": {
+        "type": { "const": "chat.queue.remove" },
+        "sessionId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "requestId": { "type": "string" }
+      }
+    },
+    "ChatQueueMoveFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "itemId", "toIndex"],
+      "properties": {
+        "type": { "const": "chat.queue.move" },
+        "sessionId": { "type": "string" },
+        "itemId": { "type": "string" },
+        "toIndex": { "type": "integer" },
+        "requestId": { "type": "string" }
+      }
+    },
+    "ChatQueueClearFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "scope"],
+      "properties": {
+        "type": { "const": "chat.queue.clear" },
+        "sessionId": { "type": "string" },
+        "scope": { "type": "string", "enum": ["webchat", "engine", "all"] },
+        "requestId": { "type": "string" }
       }
     }
   }

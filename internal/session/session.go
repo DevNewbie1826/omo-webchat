@@ -107,6 +107,7 @@ type Session struct {
 	sessionFileIdentity                                                     os.FileInfo
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
+	engineQueue                                                             EngineQueueSnapshot
 
 	broadcast broadcaster
 }
@@ -126,6 +127,7 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		title: name, nameSource: nameSource,
+		engineQueue:          engineQueueFromState(data.State),
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
 	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	s.broadcast.onDetach = m.cfg.OnDetach
@@ -260,6 +262,29 @@ func (s *Session) RunSnapshot() RunSnapshot {
 	return RunSnapshot{
 		Streaming:  s.promptInFlight || s.providerRunActive || s.localCommandActive,
 		Compacting: s.compactionActive,
+	}
+}
+
+func (s *Session) EngineQueueSnapshot() EngineQueueSnapshot {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	return cloneEngineQueue(s.engineQueue)
+}
+
+func engineQueueFromState(state omorpc.SessionState) EngineQueueSnapshot {
+	return EngineQueueSnapshot{PendingMessageCount: state.PendingMessageCount, Ordered: append([]omorpc.QueuedMessage(nil), state.Ordered...)}
+}
+
+func cloneEngineQueue(snapshot EngineQueueSnapshot) EngineQueueSnapshot {
+	snapshot.Ordered = append([]omorpc.QueuedMessage(nil), snapshot.Ordered...)
+	return snapshot
+}
+
+func (s *Session) notifyRunSettledLocked() {
+	if s.manager != nil {
+		if callback := s.manager.cfg.OnRunSettled; callback != nil {
+			callback(s.chatID, s)
+		}
 	}
 }
 
@@ -838,6 +863,7 @@ func (s *Session) completeLocalCommandLocked(seq uint64) {
 	s.promptResponse = false
 	s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: "local_command"}})
 	s.scheduleIdleLocked()
+	s.notifyRunSettledLocked()
 }
 
 func (s *Session) Abort(ctx context.Context) error {
@@ -942,6 +968,9 @@ func (s *Session) completeCompact(seq uint64, rpcID string, callErr error) {
 		s.compactRPCID = ""
 		s.compactProviderID = ""
 		s.scheduleIdleLocked()
+		if !s.promptInFlight && !s.providerRunActive && !s.localCommandActive {
+			s.notifyRunSettledLocked()
+		}
 	}
 	s.lifecycleMu.Unlock()
 }
@@ -1024,8 +1053,32 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	if err := json.Unmarshal(resp.Data, &out); err != nil {
 		return nil, err
 	}
+	s.lifecycleMu.Lock()
+	s.engineQueue = engineQueueFromState(out)
+	s.lifecycleMu.Unlock()
 	return &out, nil
 }
+
+func (s *Session) ClearQueue(ctx context.Context) error {
+	if err := s.prepareWrite(ctx); err != nil {
+		return err
+	}
+	s.lifecycleMu.Lock()
+	route, err := s.routeLocked()
+	s.lifecycleMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.Call(ctx, omorpc.ClearQueue{SessionID: route}); err != nil {
+		s.noteTransportError(err)
+		return err
+	}
+	s.lifecycleMu.Lock()
+	s.engineQueue = EngineQueueSnapshot{Ordered: []omorpc.QueuedMessage{}}
+	s.lifecycleMu.Unlock()
+	return nil
+}
+
 func (s *Session) Models(ctx context.Context) ([]Model, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()

@@ -53,6 +53,7 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "commands":
     case "models":
     case "entries":
+    case "queue":
       return parseSessionFrame(type, validated, sessionId);
     case "compaction.started":
     case "compaction.done":

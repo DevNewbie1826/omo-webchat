@@ -23,6 +23,7 @@ describe("useChatSession active-run sends", () => {
 	let reconnect: () => void;
 
 	beforeEach(() => {
+		window.sessionStorage.clear();
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 		container = document.createElement("div");
 		document.body.appendChild(container);
@@ -48,11 +49,11 @@ describe("useChatSession active-run sends", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("sends a steer frame and appends a steer marker to the transcript", () => {
+	it("sends a steer frame without a transcript row and shows the pending summary", () => {
 		act(() => current?.steer("also do X"));
 		expect(sent.some((f) => f.type === "chat.send" && f.run.kind === "steer")).toBe(true);
-		const steer = current?.messages.find((m) => m.customType === "steer");
-		expect(steer?.blocks?.[0]?.text).toBe("also do X");
+		expect(current?.messages).toEqual([]);
+		expect(current?.steerPending.map((item) => item.text)).toEqual(["also do X"]);
 	});
 
 	it("retires a completed steer across replay without consuming later identical user text", () => {
@@ -61,7 +62,7 @@ describe("useChatSession active-run sends", () => {
 			deliver({ type: "run.started", sessionId: "chat-1" });
 			current?.steer("also do X");
 		});
-		expect(current?.messages.some((m) => m.customType === "steer")).toBe(true);
+		expect(current?.steerPending).toHaveLength(1);
 
 		act(() => {
 			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
@@ -91,6 +92,7 @@ describe("useChatSession active-run sends", () => {
 		const steerFrame = sent.find((frame) => frame.type === "chat.send" && frame.run.kind === "steer");
 		if (steerFrame?.type !== "chat.send" || !steerFrame.requestId) throw new Error("missing steer request identity");
 		const requestId = steerFrame.requestId;
+		expect(current?.messages.some((m) => m.customType === "steer" && m.blocks?.[0]?.text === "same work")).toBe(false);
 
 		const completedAck = parseChatServerFrame(JSON.parse(JSON.stringify({
 			type: "ack",
@@ -170,7 +172,8 @@ describe("useChatSession active-run sends", () => {
 		});
 
 		expect(current?.messages.filter((message) => messageText(message) === "completed before done")).toHaveLength(1);
-		expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
+		// The canonical flush regains the steer mark from the client-side store.
+		expect(current?.messages.some((message) => message.customType === "steer")).toBe(true);
 	});
 
 	it("settles a steer marker when completion replays after run.done was missed", () => {
@@ -228,7 +231,29 @@ describe("useChatSession active-run sends", () => {
 		}));
 	});
 
-	it("sends two consecutive submissions during a run as follow-ups", () => {
+	it("keeps the steer-marked entry in the transcript when the run settles (QA B2)", () => {
+		act(() => {
+			deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+			deliver({ type: "run.started", sessionId: session.id });
+			current?.steer("redirect now");
+		});
+		act(() => deliver({
+			type: "message",
+			sessionId: session.id,
+			message: { role: "user", blocks: [{ kind: "text", text: "redirect now" }], ts: 10 },
+		}));
+		expect(current?.messages).toEqual([
+			{ role: "user", customType: "steer", blocks: [{ kind: "text", text: "redirect now" }], ts: 10 },
+		]);
+
+		act(() => deliver({ type: "run.done", sessionId: session.id, reason: "stop" }));
+		expect(current?.steerPending).toEqual([]);
+		expect(current?.messages).toEqual([
+			{ role: "user", customType: "steer", blocks: [{ kind: "text", text: "redirect now" }], ts: 10 },
+		]);
+	});
+
+	it("sends two consecutive submissions during a run as queued prompts", () => {
 		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
 		act(() => {
 			current?.submit({ text: "first", image: null });
@@ -236,18 +261,37 @@ describe("useChatSession active-run sends", () => {
 		});
 
 		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "first" } },
-			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "follow_up", message: "second" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "first" } },
+			{ type: "chat.send", sessionId: "chat-1", requestId: expect.any(String), run: { kind: "prompt", message: "second" } },
 		]);
-		expect(current?.messages.filter((message) => message.customType === "followUp").map((message) => message.blocks?.[0]?.text)).toEqual([
-			"first",
-			"second",
-		]);
+		// Queued items stay out of the transcript flow entirely.
+		expect(current?.messages).toEqual([]);
+		expect(current?.queuePlaceholders.map((placeholder) => placeholder.text)).toEqual(["first", "second"]);
 	});
 
-	it("replaces a follow-up marker with its canonical user message", () => {
+	it("replaces a queued prompt's placeholder once its queue frame lands", () => {
 		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
 		act(() => current?.submit({ text: "queued work", image: null }));
+		const sentFrame = sent.at(-1);
+		if (sentFrame?.type !== "chat.send") throw new Error("missing chat.send");
+		const requestId = sentFrame.requestId;
+		if (requestId === undefined) throw new Error("missing queued request identity");
+		act(() => deliver({
+			type: "queue",
+			sessionId: "chat-1",
+			revision: 1,
+			items: [{ id: "q-1", text: "queued work", hasImage: false, createdAt: 1, requestId }],
+			engine: { pendingMessageCount: 0, ordered: [] },
+		}));
+
+		expect(current?.queueItems.map((item) => item.text)).toEqual(["queued work"]);
+		expect(current?.queuePlaceholders).toEqual([]);
+		expect(current?.messages).toEqual([]);
+	});
+
+	it("replaces a steer-pending echo with its canonical user message", () => {
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+		act(() => current?.steer("queued work"));
 		act(() => deliver({
 			type: "message",
 			sessionId: "chat-1",
@@ -255,8 +299,9 @@ describe("useChatSession active-run sends", () => {
 		}));
 
 		expect(current?.messages).toEqual([
-			{ role: "user", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
+			{ role: "user", customType: "steer", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
 		]);
+		expect(current?.steerPending).toEqual([]);
 	});
 
 	it("sends an idle submission as a prompt", () => {
@@ -266,7 +311,7 @@ describe("useChatSession active-run sends", () => {
 		]);
 	});
 
-	it("uses fallback request ids for prompt, steer, and follow-up sends when randomUUID is unavailable", () => {
+	it("uses fallback request ids for prompt, steer, and queued sends when randomUUID is unavailable", () => {
 		vi.stubGlobal("crypto", { randomUUID: undefined });
 		act(() => current?.submit({ text: "start work", image: null }));
 		act(() => {
@@ -275,7 +320,7 @@ describe("useChatSession active-run sends", () => {
 		});
 
 		const sends = sent.filter((frame): frame is Extract<ChatClientFrame, { readonly type: "chat.send" }> => frame.type === "chat.send");
-		expect(sends.map((frame) => frame.run.kind)).toEqual(["prompt", "steer", "follow_up"]);
+		expect(sends.map((frame) => frame.run.kind)).toEqual(["prompt", "steer", "prompt"]);
 		expect(sends.every((frame) => typeof frame.requestId === "string" && frame.requestId.length > 0)).toBe(true);
 		expect(new Set(sends.map((frame) => frame.requestId)).size).toBe(3);
 	});

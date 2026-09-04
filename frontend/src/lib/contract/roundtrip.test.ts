@@ -82,6 +82,17 @@ describe("server frame fixtures roundtrip against generated types", () => {
     expect(badEnum).toBeDefined();
     expect(parseServerFrame(missing?.data)).toBeNull();
     expect(parseClientFrame(badEnum?.data)).toBeNull();
+    for (const name of [
+      "invalid-server-queue-missing-required.json",
+      "invalid-client-chat.queue.remove.json",
+      "invalid-client-chat.queue.move.json",
+      "invalid-client-chat.queue.clear.json",
+    ]) {
+      const fixture = fixtures.find((f) => f.name === name);
+      expect(fixture, name).toBeDefined();
+      const parser = name.includes("server-") ? parseServerFrame : parseClientFrame;
+      expect(parser(fixture?.data), name).toBeNull();
+    }
   });
 
   it("validates RFC3339Nano exactly rather than using Date.parse leniency", () => {
@@ -164,6 +175,33 @@ describe("wire-name mapping (bridge-owned, v1 continuity)", () => {
     for (const [kind, wire] of Object.entries(ClientWireNames)) {
       expect(wire).toBe(kind);
       expect(CLIENT_FRAME_TYPES).toContain(wire);
+    }
+  });
+});
+
+describe("queue wire contract", () => {
+  it("enumerates queue frames, client commands, and queue_item_not_found", () => {
+    expect(SERVER_FRAME_TYPES).toContain("queue");
+    expect(CLIENT_FRAME_TYPES).toContain("chat.queue.remove");
+    expect(CLIENT_FRAME_TYPES).toContain("chat.queue.move");
+    expect(CLIENT_FRAME_TYPES).toContain("chat.queue.clear");
+    expect(ERROR_CODE).toContain("queue_item_not_found");
+    expect(ClientWireNames["chat.queue.remove"]).toBe("chat.queue.remove");
+    expect(ClientWireNames["chat.queue.move"]).toBe("chat.queue.move");
+    expect(ClientWireNames["chat.queue.clear"]).toBe("chat.queue.clear");
+  });
+
+  it("accepts one valid instance of each queue frame", () => {
+    for (const name of [
+      "server-queue.json",
+      "client-chat.queue.remove.json",
+      "client-chat.queue.move.json",
+      "client-chat.queue.clear.json",
+    ]) {
+      const fixture = fixtures.find((f) => f.name === name);
+      expect(fixture, name).toBeDefined();
+      const parser = name.startsWith("server-") ? parseServerFrame : parseClientFrame;
+      expect(parser(fixture?.data), name).toEqual(fixture?.data);
     }
   });
 });
