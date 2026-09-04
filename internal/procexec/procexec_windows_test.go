@@ -81,13 +81,19 @@ func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_term
 		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
 	}
 
-	// When: the whole tree is terminated through the job.
+	// When: the whole tree is terminated through the job and awaited until
+	// the tracked domain drains.
 	if err := tracked.TerminateTree(); err != nil {
 		t.Fatalf("terminate tree of %d: %v", tracked.Pid(), err)
 	}
+	if err := tracked.WaitTreeGone(trackedTreeTestDeadline); err != nil {
+		t.Fatalf("wait for tree of %d to drain: %v", tracked.Pid(), err)
+	}
 
-	// Then: both the leader and the grandchild are gone within the bounded
-	// deadline, proving the job reached the descendant the leader spawned.
+	// Then: both the leader and the grandchild are gone. WaitTreeGone's nil
+	// return is the drain signal, and the GroupAlive checks below are the
+	// after-state proof that the job reached the descendant the leader
+	// spawned.
 	for GroupAlive(tracked.Pid()) || GroupAlive(grandchild) {
 		select {
 		case <-retry.C:
@@ -97,15 +103,104 @@ func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_term
 		}
 	}
 
+	// cmd.Wait must return once the leader's process object is signaled.
+	// TerminateJobObject promises termination, not a nonzero exit status, so
+	// the reaped status itself is not asserted.
+	_ = cmd.Wait()
+}
+
+func Test_TrackedProcess_WaitTreeGone_blocks_while_grandchild_outlives_leader(t *testing.T) {
+	// Given: a leader that spawns a Start-Sleep grandchild and exits
+	// immediately after recording the pid. The grandchild inherits job
+	// membership at its own CreateProcess, so it remains the tracked
+	// domain's only live member once the leader is gone, and only kernel
+	// teardown can end it.
+	pidFile := filepath.Join(t.TempDir(), "outliving.pid")
+	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+		"Start-Process -WindowStyle Hidden -PassThru powershell -ArgumentList '-NoProfile','-Command','Start-Sleep','-Seconds','60' |"+
+			" ForEach-Object { $_.Id } | Set-Content -LiteralPath '"+pidFile+"'")
+	tracked, err := StartTracked(cmd)
+	if err != nil {
+		t.Fatalf("start tracked powershell: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tracked.TerminateTree()
+		_ = tracked.Close()
+	})
+
+	deadline := time.NewTimer(trackedTreeTestDeadline)
+	defer deadline.Stop()
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+	grandchild := 0
+	for grandchild == 0 {
+		select {
+		case <-retry.C:
+			raw, err := os.ReadFile(pidFile)
+			if err != nil {
+				continue
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil || pid <= 0 {
+				continue
+			}
+			grandchild = pid
+		case <-deadline.C:
+			t.Fatalf("powershell leader %d spawned no grandchild within %s", tracked.Pid(), trackedTreeTestDeadline)
+		}
+	}
+	// Precondition: the leader has exited and been reaped, so the tracked
+	// domain is held alive by the outliving grandchild alone.
 	reaped := make(chan error, 1)
 	go func() { reaped <- cmd.Wait() }()
-	select {
-	case err := <-reaped:
-		if err == nil {
-			t.Fatalf("job-terminated leader %d reaped with a clean exit", tracked.Pid())
+	for GroupAlive(tracked.Pid()) {
+		select {
+		case <-retry.C:
+		case <-reaped:
+		case <-deadline.C:
+			t.Fatalf("leader %d did not exit within %s", tracked.Pid(), trackedTreeTestDeadline)
 		}
-	case <-deadline.C:
-		t.Fatalf("leader %d not reaped within %s", tracked.Pid(), trackedTreeTestDeadline)
+	}
+	if !GroupAlive(grandchild) {
+		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
+	}
+
+	// When: the drain wait starts while the outliving grandchild is the only
+	// live member, and the tree is then terminated through the job.
+	type waitOutcome struct{ err error }
+	done := make(chan waitOutcome, 1)
+	go func() { done <- waitOutcome{tracked.WaitTreeGone(trackedTreeTestDeadline)} }()
+	// Nothing has been terminated yet, so the wait must still be blocked.
+	select {
+	case err := <-done:
+		t.Fatalf("WaitTreeGone returned %v while grandchild %d was still alive", err, grandchild)
+	default:
+	}
+	if !GroupAlive(grandchild) {
+		t.Fatalf("grandchild %d reported dead before TerminateTree", grandchild)
+	}
+	if err := tracked.TerminateTree(); err != nil {
+		t.Fatalf("terminate tree of %d: %v", tracked.Pid(), err)
+	}
+	var waitErr error
+	waitDone := false
+	for !waitDone {
+		select {
+		case outcome := <-done:
+			waitErr = outcome.err
+			waitDone = true
+		case <-retry.C:
+		case <-deadline.C:
+			t.Fatalf("WaitTreeGone did not return within %s of TerminateTree", trackedTreeTestDeadline)
+		}
+	}
+
+	// Then: the wait held until the kernel finished the outliving grandchild.
+	if waitErr != nil {
+		t.Fatalf("WaitTreeGone: %v", waitErr)
+	}
+	if GroupAlive(grandchild) {
+		t.Fatalf("grandchild %d still alive after WaitTreeGone returned nil", grandchild)
 	}
 }
 
@@ -193,7 +288,8 @@ func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *te
 			t.Fatalf("child %d survived the job close within %s", tracked.Pid(), trackedTreeTestDeadline)
 		}
 	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatalf("job-closed child %d reaped with a clean exit", tracked.Pid())
-	}
+	// cmd.Wait must return once the child's process object is signaled.
+	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE promises termination, not a nonzero
+	// exit status, so the reaped status itself is not asserted.
+	_ = cmd.Wait()
 }

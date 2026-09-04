@@ -209,6 +209,67 @@ func (t *TrackedProcess) TerminateTree() error {
 	return nil
 }
 
+// waitTreeGonePollSlice is the retry interval of WaitTreeGone's bounded poll.
+const waitTreeGonePollSlice = 50 * time.Millisecond
+
+// jobObjectBasicAccountingInformation mirrors the Win32
+// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION layout returned by
+// QueryInformationJobObject for the JobObjectBasicAccountingInformation
+// class; only ActiveProcesses is consumed here.
+type jobObjectBasicAccountingInformation struct {
+	TotalUserTime             uint64
+	TotalKernelTime           uint64
+	ThisPeriodTotalUserTime   uint64
+	ThisPeriodTotalKernelTime uint64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TerminatedProcesses       uint32
+}
+
+// WaitTreeGone blocks until no process remains in the tracked domain — the
+// job object — or until deadline elapses, returning a timeout error if the
+// tree has not drained by then. TerminateJobObject terminates job members
+// asynchronously, so a caller that must observe a drained tree polls the
+// domain instead of assuming the terminate call's return implies completion:
+// QueryInformationJobObject with the JobObjectBasicAccountingInformation
+// class reports the job's ActiveProcessCount, which reaches zero only when
+// every member has terminated. The job object outlives its members, so the
+// wait is safe after the leader already exited and callable any time between
+// StartTracked (or TerminateTree) and Close; a tree that already drained
+// returns nil on the first query.
+func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
+	t.mu.Lock()
+	job := t.job
+	t.mu.Unlock()
+	if job == 0 {
+		// Close already released the last job handle; under
+		// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE that release started the
+		// kernel's tree teardown and no queryable handle remains.
+		return nil
+	}
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	retry := time.NewTicker(waitTreeGonePollSlice)
+	defer retry.Stop()
+	for {
+		var accounting jobObjectBasicAccountingInformation
+		if err := windows.QueryInformationJobObject(job, windows.JobObjectBasicAccountingInformation,
+			uintptr(unsafe.Pointer(&accounting)), uint32(unsafe.Sizeof(accounting)), nil); err != nil {
+			return fmt.Errorf("procexec: query tracked tree of child %d: %w", t.pid, err)
+		}
+		if accounting.ActiveProcesses == 0 {
+			return nil
+		}
+		select {
+		case <-retry.C:
+		case <-timer.C:
+			return fmt.Errorf("procexec: tracked tree of child %d still had %d live processes after %s",
+				t.pid, accounting.ActiveProcesses, deadline)
+		}
+	}
+}
+
 // Close releases the job handle. Under JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE the
 // final CloseHandle is the kernel's tree reaper: every process still in the
 // job terminates, so a supervisor that loses interest cannot orphan the tree.

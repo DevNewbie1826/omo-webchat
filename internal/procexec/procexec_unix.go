@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // SetupCommand applies platform process-domain settings to cmd before Start.
@@ -57,6 +58,35 @@ func (t *TrackedProcess) Pid() int { return t.pid }
 // already-dead group resolves to teardown success per SignalGroup's contract.
 func (t *TrackedProcess) TerminateTree() error {
 	return SignalGroup(t.pid, syscall.SIGKILL)
+}
+
+// waitTreeGonePollSlice is the retry interval of WaitTreeGone's bounded poll.
+const waitTreeGonePollSlice = 50 * time.Millisecond
+
+// WaitTreeGone blocks until no process remains in the tracked domain — the
+// process group led by the child's pid — or until deadline elapses,
+// returning a timeout error if the tree has not drained by then. GroupAlive
+// polls the kernel's existence check for the whole group, so the wait is
+// safe after the leader already exited and callable any time between
+// StartTracked (or TerminateTree) and Close. A group member that has
+// terminated but not been reaped still exists to the kernel, so a caller
+// responsible for reaping the leader must do so (concurrently) for the
+// domain to drain.
+func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	retry := time.NewTicker(waitTreeGonePollSlice)
+	defer retry.Stop()
+	for {
+		if !GroupAlive(t.pid) {
+			return nil
+		}
+		select {
+		case <-retry.C:
+		case <-timer.C:
+			return fmt.Errorf("procexec: tracked tree of child %d still alive after %s", t.pid, deadline)
+		}
+	}
 }
 
 // Close releases tracking resources. Unix tracking lives entirely in kernel
