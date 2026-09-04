@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
@@ -96,7 +95,7 @@ type EnsuredDaemon struct {
 	VersionWarning string
 	ProtocolInfo   *ProtocolInfo
 
-	process      *os.Process
+	supervisor   *supervisorHandle
 	waitCh       <-chan error
 	childWrapper string
 
@@ -124,7 +123,7 @@ func (d *EnsuredDaemon) StopBounded(timeout time.Duration) error {
 }
 
 // Stop closes the client and, when this ensure call spawned the supervisor,
-// sends SIGTERM, waits up to three seconds, then falls back to SIGKILL.
+// tears down its platform process domain within the lifecycle timeouts.
 func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 	if d == nil {
 		return nil
@@ -141,8 +140,8 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 			if d.Client != nil {
 				d.stopErr = d.Client.Close()
 			}
-			if d.Owned && d.process != nil {
-				if err := stopOwnedProcess(context.Background(), d.process, d.waitCh); err != nil && d.stopErr == nil {
+			if d.Owned && d.supervisor != nil {
+				if err := stopOwnedSupervisor(context.Background(), d.supervisor, d.waitCh); err != nil && d.stopErr == nil {
 					d.stopErr = err
 				}
 			}
@@ -314,18 +313,20 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	cmd.Stderr = stderr
 	procexec.SetupCommand(cmd)
 	cmd.WaitDelay = daemonKillWait
-	if err := cmd.Start(); err != nil {
+	supervisor, err := startSupervisor(cmd)
+	if err != nil {
 		return nil, errors.Join(fmt.Errorf("omorpc: start daemon supervisor: %w", err), finishLog()), false
 	}
 	waitCh := make(chan error, 1)
 	go func() {
 		waitErr := cmd.Wait()
-		waitCh <- errors.Join(waitErr, finishLog())
+		waitErr = errors.Join(waitErr, finishLog())
+		waitCh <- finishSupervisorWait(supervisor, waitErr)
 		close(waitCh)
 	}()
 
 	cleanup := func() error {
-		if err := stopOwnedProcess(context.Background(), cmd.Process, waitCh); err != nil {
+		if err := stopOwnedSupervisor(context.Background(), supervisor, waitCh); err != nil {
 			return err
 		}
 		return provenance.cleanupAfterReap(cfg.ProbeTimeout)
@@ -337,10 +338,10 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 		// A raw peer check can acknowledge a launch-owned endpoint even when
 		// protocol negotiation fails. Only a positively identified out-of-group
 		// peer can permanently protect an endpoint from this attempt's cleanup.
-		identity, stable, peer, _ := authenticateSocketPath(readyCtx, cfg.SocketPath, cmd.Process.Pid)
+		identity, stable, peer, _ := authenticateSocketPath(readyCtx, cfg.SocketPath, supervisor.process.Pid)
 		provenance.observe(identity, stable, peer)
 
-		client, identity, stable, peer, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
+		client, identity, stable, peer, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, supervisor.process.Pid)
 		if dialErr == nil && client != nil {
 			provenance.observe(identity, stable, peer)
 			// peerUnknown rejects on unix, where LOCAL_PEERPID / SO_PEERCRED make
@@ -353,7 +354,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 				_ = client.Close()
 			} else {
 				owned := provenance.owns(identity)
-				result, checkErr := checkedDaemon(client, cfg, owned, cmd.Process, waitCh)
+				result, checkErr := checkedDaemon(client, cfg, owned, supervisor, waitCh)
 				if checkErr != nil {
 					if cleanupErr := cleanup(); cleanupErr != nil {
 						return nil, errors.Join(checkErr, cleanupErr), false
@@ -361,7 +362,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 					return nil, checkErr, true
 				}
 				if !owned {
-					if stopErr := stopOwnedProcess(context.Background(), cmd.Process, waitCh); stopErr != nil {
+					if stopErr := stopOwnedSupervisor(context.Background(), supervisor, waitCh); stopErr != nil {
 						_ = client.Close()
 						return nil, stopErr, false
 					}
@@ -369,11 +370,11 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 						_ = client.Close()
 						return nil, cleanupErr, false
 					}
-					result.process = nil
+					result.supervisor = nil
 					result.waitCh = nil
 					return result, nil, false
 				}
-				ownedProcessSockets.Store(cmd.Process.Pid, ownedProcessSocket{cfg: cfg, provenance: provenance})
+				ownedProcessSockets.Store(supervisor.process.Pid, ownedProcessSocket{cfg: cfg, provenance: provenance})
 				return result, nil, false
 			}
 		} else if client != nil {
@@ -719,7 +720,7 @@ func probeDaemon(ctx context.Context, cfg EnsureConfig) (*Client, error) {
 	return DialWithConfig(probeCtx, cfg.SocketPath, Config{OnDialNotExist: cfg.OnDialNotExist})
 }
 
-func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, process *os.Process, waitCh <-chan error) (*EnsuredDaemon, error) {
+func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, supervisor *supervisorHandle, waitCh <-chan error) (*EnsuredDaemon, error) {
 	info := client.ProtocolInfo()
 	missing := make([]string, 0, 2)
 	if info == nil || !slices.Contains(info.Capabilities, capMultiSession) {
@@ -742,7 +743,7 @@ func checkedDaemon(client *Client, cfg EnsureConfig, owned bool, process *os.Pro
 	}
 	return &EnsuredDaemon{
 		Client: client, Owned: owned, Warning: warning, VersionWarning: warning,
-		ProtocolInfo: info, process: process, waitCh: waitCh,
+		ProtocolInfo: info, supervisor: supervisor, waitCh: waitCh,
 	}, nil
 }
 
@@ -878,11 +879,6 @@ func EnsureExtensionEventsCapability(env []string) []string {
 		env = setEnv(env, key, strings.Join(capabilities, ","))
 	}
 	return env
-}
-
-func isSpawnableProbeError(err error) bool {
-	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) ||
-		errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // nodeFallbackContext preserves the native host while restoring launcher
@@ -1172,60 +1168,16 @@ func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
 	return binary, args, nil
 }
 
-func stopOwnedProcess(ctx context.Context, process *os.Process, waitCh <-chan error) (resultErr error) {
-	if process == nil {
+func stopOwnedSupervisor(ctx context.Context, supervisor *supervisorHandle, waitCh <-chan error) (resultErr error) {
+	if supervisor == nil || supervisor.process == nil {
 		return nil
 	}
 	defer func() {
 		if resultErr == nil {
-			resultErr = cleanupStoppedProcessEndpoint(ctx, process.Pid)
+			resultErr = cleanupStoppedProcessEndpoint(ctx, supervisor.process.Pid)
 		}
 	}()
-	if err := signalProcessGroup(process.Pid, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("omorpc: terminate daemon process group: %w", err)
-	}
-	grace := time.NewTimer(daemonStopGrace)
-	defer grace.Stop()
-	leaderReaped := false
-	for !leaderReaped || processGroupAlive(process.Pid) {
-		select {
-		case <-waitCh:
-			leaderReaped = true
-			waitCh = nil
-			if !processGroupAlive(process.Pid) {
-				return nil
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-grace.C:
-			goto kill
-		}
-	}
-	return nil
-
-kill:
-	if err := signalProcessGroup(process.Pid, syscall.SIGKILL); err != nil {
-		return fmt.Errorf("omorpc: kill daemon process group: %w", err)
-	}
-	deadline := time.NewTimer(daemonKillWait)
-	defer deadline.Stop()
-	retry := time.NewTicker(10 * time.Millisecond)
-	defer retry.Stop()
-	for {
-		if leaderReaped && !processGroupAlive(process.Pid) {
-			return nil
-		}
-		select {
-		case <-waitCh:
-			leaderReaped = true
-			waitCh = nil
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return errors.New("omorpc: daemon process group did not exit after SIGKILL")
-		case <-retry.C:
-		}
-	}
+	return terminateSupervisor(ctx, supervisor, waitCh, daemonStopGrace, daemonKillWait)
 }
 
 func cleanupStoppedProcessEndpoint(ctx context.Context, pid int) error {
@@ -1240,12 +1192,4 @@ func cleanupStoppedProcessEndpoint(ctx context.Context, pid int) error {
 	}
 	defer releaseEnsureLock(lock)
 	return owned.provenance.cleanupAfterReap(owned.cfg.ProbeTimeout)
-}
-
-func signalProcessGroup(pid int, signal syscall.Signal) error {
-	return procexec.SignalGroup(pid, signal)
-}
-
-func processGroupAlive(pid int) bool {
-	return procexec.GroupAlive(pid)
 }

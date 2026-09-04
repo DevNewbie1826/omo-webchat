@@ -72,7 +72,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 		}
 	}()
 	fallbackCommands := extensionCommandNames(t, fallback.Client, workDir)
-	fallbackBrand := nativeDescendantBrand(t, fallback.process.Pid)
+	fallbackBrand := nativeDescendantBrand(t, fallback.supervisor.process.Pid)
 	derivedProfile, _, err := launcherNativeContext(binary, env)
 	if err != nil {
 		t.Fatalf("derive launcher profile: %v", err)
@@ -88,7 +88,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 		t.Fatalf("node fallback native child brand = %q, launcher native child = %q, want OmO", fallbackBrand, automaticBrand)
 	}
 	assertJSONEqual(t, "direct-native profile versus launcher", derivedProfile, automaticProfile)
-	nativePID, nativeCommand := directChildProcess(t, fallback.process.Pid)
+	nativePID, nativeCommand := directChildProcess(t, fallback.supervisor.process.Pid)
 	if !strings.EqualFold(nativeCommand, "omo") && !strings.EqualFold(nativeCommand, "senpi") {
 		t.Fatalf("supervisor child %d is not the branded native host: %s", nativePID, nativeCommand)
 	}
