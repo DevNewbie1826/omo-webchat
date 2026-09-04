@@ -144,6 +144,23 @@ describe("TranscriptNoticeRow", () => {
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
   });
 
+  it("localizes the auto-retry start notice with its message as an info line", () => {
+    renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }));
+    expect(container.textContent).toContain("notice.autoRetryStarted");
+    expect(container.textContent).toContain("attempt 2");
+    expect(container.textContent).not.toContain("auto_retry_start");
+    expect(container.querySelector(".th-alert--info")).not.toBeNull();
+    expect(container.querySelector(".th-alert--warning")).toBeNull();
+  });
+
+  it("localizes the auto-retry end notice without a message as an info line", () => {
+    renderRow(notice(1, "auto_retry_end"));
+    expect(container.textContent).toContain("notice.autoRetryEnded");
+    expect(container.textContent).not.toContain("auto_retry_end");
+    expect(container.querySelector(".th-alert--info")).not.toBeNull();
+    expect(container.querySelector(".th-alert--warning")).toBeNull();
+  });
+
   it("renders no dismiss button", () => {
     renderRows([notice(1, "auto_retry_start", { message: "first" }), notice(2, "auto_retry_end")]);
     const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
