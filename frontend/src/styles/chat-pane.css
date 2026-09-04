@@ -412,7 +412,13 @@
    panel instead of painting them over the status strip and composer that
    follow later in the column. The shelf may shrink only by yielding panel
    height; the bar row never collapses — overflow:hidden would otherwise
-   zero the automatic minimum. */
+   zero the automatic minimum. While the panel is expanded, the shared
+   shelf-space hook measures every chat-column band and bounds the panel with
+   an inline max-height (the column's real available space), holds the
+   yield with an inline flex-shrink: 0 so a long transcript's deficit lands
+   on the transcript alone (which keeps a ~120px reserve and scrolls), and
+   collapses the expanded panel back to the summary bar when the clamped
+   height would fall below a usable minimum. */
 .th-goal-shelf {
   display: flex;
   flex: 0 1 auto;
@@ -446,7 +452,9 @@
 /* Expanded panel hangs off the bar as one continuous surface: no top
    border, square top corners, rounded bottom ones. Shrink contract:
    min-height: 0 lets the shelf column squeeze it (it scrolls via
-   overflow-y) while max-height still caps its unconstrained size at 40vh. */
+   overflow-y) while max-height still caps its unconstrained size at 40vh;
+   the inline max-height from the shared column clamp (bounded by this
+   cap) takes over when the column is measured. */
 .th-goal-panel {
   min-height: 0;
   max-height: 40vh;

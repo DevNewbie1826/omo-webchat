@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
  * Headroom contract for the activity shelf panel's section header rows.
  *
  * When the expanded panel is squeezed to an extreme height (below roughly
- * 40px of visible box), the first thing inside the scrollport is a section
+ * 24px of visible box), the first thing inside the scrollport is a section
  * header row ("에이전트" + counts, the DAG toolbar, the todo title) clipped
  * mid-glyph by the panel's top padding edge - half-cut text that reads as a
  * rendering bug. Rows that short cannot show a header legibly, so the
@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
  * The trigger is measured panel headroom, not pane height: ActivityShelf.tsx
  * watches the rendered panel with a ResizeObserver and sets
  * data-headless="true" only while the panel's own content height is below
- * PANEL_HEADLESS_BELOW_PX (40). A pane-height proxy cannot do this - the
+ * PANEL_HEADLESS_BELOW_PX (24). A pane-height proxy cannot do this - the
  * real-Chrome probes that motivated this contract measured a 577px pane
  * hiding every header and the DAG List/Graph controls despite a 269.25px
  * panel, and a 601px pane with an 18px panel still painting the agent
@@ -28,6 +28,7 @@ import { describe, expect, it } from "vitest";
 const chatPane = readFileSync("src/styles/chat-pane.css", "utf8");
 const activityShelf = readFileSync("src/styles/activity-shelf.css", "utf8");
 const component = readFileSync("src/features/split/ActivityShelf.tsx", "utf8");
+const shelfMeasurement = readFileSync("src/features/split/useShelfAvailableSpace.ts", "utf8");
 
 const HEADLESS_RULE = /(?:^|})([^{}]*\.th-activity-panel\[data-headless="true"\][^{}]*)\{([^}]*)\}/;
 const HIDDEN_WHEN_HEADLESS = [
@@ -96,12 +97,17 @@ describe("activity shelf panel headroom contract", () => {
     ).not.toBeNull();
     expect(
       constant?.[1],
-      "PANEL_HEADLESS_BELOW_PX must stay 40: below that a section header row cannot " +
-        "render legibly inside the panel's padding box",
-    ).toBe("40");
+      "PANEL_HEADLESS_BELOW_PX must stay 24: the column clamp reserves the panel's " +
+        "target height in normal use, so headers survive until the panel box is " +
+        "genuinely below one compact row (~24px)",
+    ).toBe("24");
     expect(
       component,
-      "ActivityShelf.tsx must observe the panel with a ResizeObserver to measure headroom",
+      "ActivityShelf.tsx must consume the shared measured panel headroom",
+    ).toContain("useShelfAvailableSpace(");
+    expect(
+      shelfMeasurement,
+      "the shared shelf measurement path must use ResizeObserver for panel headroom",
     ).toContain("new ResizeObserver(");
     expect(
       component,
