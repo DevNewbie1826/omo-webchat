@@ -48,12 +48,11 @@ function pressEnter(input: HTMLTextAreaElement): void {
 	);
 }
 
-describe("ChatPane optimistic runs", () => {
+describe("ChatPane send-error banner", () => {
 	let container: HTMLDivElement;
 	let root: Root;
 	let deliver: (frame: ChatServerFrame) => void;
 	let sent: ChatClientFrame[];
-	let sendResult: boolean;
 
 	beforeEach(() => {
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -61,14 +60,13 @@ describe("ChatPane optimistic runs", () => {
 		document.body.appendChild(container);
 		root = createRoot(container);
 		sent = [];
-		sendResult = true;
 		const connect: ChatConnector = (handlers) => {
 			deliver = handlers.onFrame;
 			handlers.onOpen?.();
 			return {
 				send: (frame) => {
 					sent.push(frame);
-					return frame.type === "chat.send" ? sendResult : true;
+					return true;
 				},
 				close: vi.fn(),
 			};
@@ -111,73 +109,17 @@ describe("ChatPane optimistic runs", () => {
 		act(() => pressEnter(textarea()));
 	}
 
-	function chatSends(): ChatClientFrame[] {
-		return sent.filter((frame) => frame.type === "chat.send");
+	function alertBanner(): HTMLElement | null {
+		return container.querySelector<HTMLElement>(".th-send-error-banner");
 	}
 
-	it("uses a synchronous latch so submit reentry sends once", () => {
-		act(() => setTextareaValue(textarea(), "one action"));
-		const form = container.querySelector<HTMLFormElement>("form");
+	function statusText(): string {
+		return container.querySelector(".th-chat-status")?.textContent ?? "";
+	}
+
+	it("persists a send-path failure banner until dismissed", () => {
+		submit("hello");
 		act(() => {
-			form?.dispatchEvent(
-				new SubmitEvent("submit", { bubbles: true, cancelable: true }),
-			);
-			form?.dispatchEvent(
-				new SubmitEvent("submit", { bubbles: true, cancelable: true }),
-			);
-		});
-		expect(chatSends()).toHaveLength(1);
-		expect(
-			container.querySelectorAll(".th-chat-history .th-chat-msg--user"),
-		).toHaveLength(1);
-	});
-
-	it("reconciles one matching live user echo with its optimistic row", () => {
-		submit("same prompt");
-		act(() =>
-			deliver({
-				type: "message",
-				sessionId: "chat-1",
-				message: {
-					role: "user",
-					blocks: [{ kind: "text", text: "same prompt" }],
-					ts: 10,
-				},
-			}),
-		);
-		expect(
-			container.querySelectorAll(".th-chat-history .th-chat-msg--user"),
-		).toHaveLength(1);
-	});
-
-	it("keeps the draft and rolls back when local send returns false", () => {
-		sendResult = false;
-		submit("not accepted");
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
-		expect(
-			container.querySelector<HTMLButtonElement>('button[type="submit"]')
-				?.textContent,
-		).toBe("chat.send");
-		expect(textarea().value).toBe("not accepted");
-	});
-
-	it("sends another submission immediately as a follow-up while a run is active", () => {
-		submit("first");
-		submit("second");
-		expect(chatSends()).toEqual([
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "first" } },
-			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "second" } },
-		]);
-		expect(textarea().value).toBe("");
-		expect(container.querySelector(".th-chat-queued")).toBeNull();
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(2);
-	});
-
-	it("rolls back an optimistic prompt on a terminal send error", async () => {
-		submit("retry this");
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
-
-		await act(async () => {
 			deliver({
 				type: "error",
 				sessionId: "chat-1",
@@ -185,16 +127,44 @@ describe("ChatPane optimistic runs", () => {
 				message: "Backend failed",
 			});
 		});
+		expect(alertBanner()?.textContent).toContain("Backend failed");
+		// A later successful live frame must not clear the banner.
+		act(() => {
+			deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false });
+		});
+		expect(alertBanner()?.textContent).toContain("Backend failed");
 
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
-		expect(textarea().value).toBe("retry this");
-		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-			"Backend failed",
-		);
-		expect(
-			container.querySelector<HTMLButtonElement>('button[type="submit"]')
-				?.textContent,
-		).toBe("chat.send");
+		const dismiss = alertBanner()?.querySelector<HTMLButtonElement>("button");
+		expect(dismiss).not.toBeNull();
+		act(() => dismiss!.click());
+		expect(alertBanner()).toBeNull();
 	});
 
+	it("keeps non-send errors out of the persistent banner", () => {
+		act(() => {
+			deliver({
+				type: "error",
+				sessionId: "chat-1",
+				code: "decode_failed",
+				message: "history gone",
+			});
+		});
+		expect(alertBanner()).toBeNull();
+	});
+
+	it("shows the queued hint while a run is active after a queued send", () => {
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+		});
+		submit("while running");
+		const sends = sent.filter((frame) => frame.type === "chat.send");
+		expect(sends).toHaveLength(1);
+		expect(sends[0]).toMatchObject({ run: { kind: "follow_up", message: "while running" } });
+		expect(statusText()).toContain("chat.sendQueued");
+
+		act(() => {
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "end_turn" });
+		});
+		expect(statusText()).not.toContain("chat.sendQueued");
+	});
 });

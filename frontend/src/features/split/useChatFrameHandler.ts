@@ -95,6 +95,41 @@ function isHistoryTerminalError(frame: Extract<ChatServerFrame, { readonly type:
   return frame.code !== undefined && HISTORY_TERMINAL_ERROR_CODES.has(frame.code);
 }
 
+/**
+ * Notice kind the handler files send-path command failures under. ChatPane
+ * lifts the newest non-dismissed one into the persistent send-error banner
+ * and keeps these synthetic advisories out of the transcript notice flow.
+ */
+export const SEND_ERROR_NOTICE_KIND = "send_error";
+
+// Send-path RPC commands echoed on error frames: chat.send (prompt/steer/
+// follow_up), chat.compact, chat.abort. Codes the busy gates and the send
+// path reject with when no command echo is present.
+const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set(["prompt", "steer", "follow_up", "compact", "abort"]);
+const SEND_GATE_ERROR_CODES: ReadonlySet<string> = new Set(["prompt_in_flight", "compaction_in_flight"]);
+const SEND_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed", "compact_failed"]);
+
+/**
+ * Classify an error frame as a send-path command failure (chat.send,
+ * chat.compact, chat.abort, or a busy-gate rejection). These surface in the
+ * persistent, manually-dismissed banner instead of the transient error slot
+ * the next live frame overwrites; every other error frame keeps the
+ * transient slot. The prompt-terminal recovery flow runs regardless of the
+ * classification.
+ */
+export function sendCommandFailureOf(frame: Extract<ChatServerFrame, { readonly type: "error" }>): JsonObject | null {
+  if (frame.command !== undefined && SEND_ERROR_COMMANDS.has(frame.command)) return { message: frame.message };
+  if (frame.code !== undefined
+    && (SEND_GATE_ERROR_CODES.has(frame.code) || SEND_ERROR_CODES.has(frame.code))) return { message: frame.message };
+  return null;
+}
+
+/** The raw failure text of a send-error banner payload. */
+export function sendErrorDetail(payload: JsonObject | null): string {
+  const message = payload?.["message"];
+  return typeof message === "string" ? message : "";
+}
+
 function cacheHitRateOf(tokens: unknown): number | null {
   if (typeof tokens !== "object" || tokens === null || Array.isArray(tokens)) return null;
   const input = "input" in tokens ? tokens.input : undefined;
@@ -298,7 +333,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.setError(frame.message);
           return;
         }
-        bindings.setError(frame.message);
+        // Send-path command failures persist as a banner notice instead of
+        // the transient error slot that the next delta/tool/run frame clears.
+        const sendFailure = sendCommandFailureOf(frame);
+        if (sendFailure === null) bindings.setError(frame.message);
+        else bindings.pushNotice(SEND_ERROR_NOTICE_KIND, sendFailure);
         if (!isPromptTerminalError(frame)) return;
         const active = bindings.activeRunRef.current;
         bindings.submitLatchRef.current = false;

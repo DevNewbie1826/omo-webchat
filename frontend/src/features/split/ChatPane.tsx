@@ -13,10 +13,12 @@ import { ExternalWriteBanner } from "./ExternalWriteBanner";
 import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
+import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
+import { SEND_ERROR_NOTICE_KIND, sendErrorDetail } from "./useChatFrameHandler";
 import { useChatSession } from "./useChatSession";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
@@ -54,10 +56,15 @@ export function ChatPane({
   const chat = useChatSession(chatSession, connect, onChatName);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
+  // Send-path command failures surface in the persistent banner below, so
+  // they never also render as transcript notice blocks.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
+    () => mergeTranscriptItems(chat.messages, (chat.historyStatus !== "loading" ? chat.notices : []).filter((notice) => notice.kind !== SEND_ERROR_NOTICE_KIND)),
     [chat.messages, chat.notices, chat.historyStatus],
   );
+  const sendErrorNotice = chat.notices.find((notice) => notice.kind === SEND_ERROR_NOTICE_KIND);
+  const sendQueued = chat.running
+    && chat.messages.some((message) => message.customType === "followUp" || message.customType === "steer");
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);
   const imageSupported = currentModel ? (currentModel.input?.includes("image") ?? true) : true;
   const thinkingOptions = chat.thinkingLevel !== "" && !THINKING_LEVELS.includes(chat.thinkingLevel)
@@ -164,6 +171,12 @@ export function ChatPane({
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
+        {sendErrorNotice && (
+          <SendErrorBanner
+            detail={sendErrorDetail(sendErrorNotice.payload)}
+            onDismiss={() => chat.dismissNotice(sendErrorNotice.id)}
+          />
+        )}
         <ChatTranscript
           items={transcriptItems}
           historyLoaded={chat.historyLoaded}
@@ -183,6 +196,9 @@ export function ChatPane({
               <span className="th-chat-status-spinner" aria-hidden="true" />
               {t("chat.responding")}
             </span>
+          )}
+          {sendQueued && (
+            <span className="th-chat-status-item">{t("chat.sendQueued")}</span>
           )}
           {chat.contextUsage && (
             <span className="th-chat-status-item">

@@ -187,6 +187,11 @@ export function useChatFrameState() {
     });
   };
 
+  // Dismiss one retained advisory (the send-error banner's close action).
+  const dismissNotice = (id: number): void => {
+    setNotices((current) => current.filter((notice) => notice.id !== id));
+  };
+
   // Clear every transient live surface; shared by run completion, terminal
   // errors, and lost-run recovery.
   const clearLiveSurfaces = (): void => {
@@ -406,6 +411,17 @@ export function useChatFrameState() {
     return true;
   };
 
+  const followUp = (draft: ChatDraft, sessionId: string, client: ChatClient | null): boolean => {
+    const text = draft.text.trim();
+    if ((!text && !draft.image) || !client) return false;
+    const sent = client.send(chatState.followUpSendFrame(draft, text, sessionId));
+    if (sent) {
+      messageVersionRef.current += 1;
+      replaceMessages([...messagesRef.current, chatState.followUpMessage(text)]);
+    }
+    return sent;
+  };
+
   const steer = (text: string, sessionId: string, client: ChatClient | null): boolean => {
     const trimmed = text.trim();
     if (!trimmed || !client) return false;
@@ -512,11 +528,13 @@ export function useChatFrameState() {
     activities,
     activitiesVersion,
     notices,
+    dismissNotice,
     handleFrame,
     beginActivityHydration,
     cancelActivityHydration,
     hydrateActivities,
     submit,
+    followUp,
     steer,
     markOpen,
     markClose,
