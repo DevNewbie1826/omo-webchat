@@ -6,7 +6,7 @@ PKG := ./cmd/server
 default: build
 
 frontend:
-	cd frontend && npm ci && npm run build
+	cd frontend && npm ci --no-audit --no-fund && npm run build
 
 build: frontend
 	go build -trimpath -ldflags="-s -w" -o bin/$(BINARY) $(PKG)
