@@ -25,18 +25,21 @@ function agentQuietFor(quietMs: number, status = "running") {
   return task;
 }
 
+const noRuns: ReadonlyMap<string, number> = new Map();
+const runMs = (entries: readonly (readonly [string, number])[]): ReadonlyMap<string, number> =>
+  new Map(entries);
 const idle: AgentFreshnessContext = {
   runInFlight: false,
   lifeSeenThisRun: new Set(),
-  freshestRunActivityMs: null,
+  runActivityMsByTask: noRuns,
 };
 const inFlight = (
   lifeSeen: readonly string[] = [],
-  freshestRunActivityMs: number | null = null,
+  runActivityMsByTask: ReadonlyMap<string, number> = noRuns,
 ): AgentFreshnessContext => ({
   runInFlight: true,
   lifeSeenThisRun: new Set(lifeSeen),
-  freshestRunActivityMs,
+  runActivityMsByTask,
 });
 
 describe("agentFreshness run-in-flight gating", () => {
@@ -61,13 +64,36 @@ describe("agentFreshness run-in-flight gating", () => {
     expect(agentFreshness(agentQuietFor(70 * 60_000), NOW_MS, inFlight())).toBe("quiet");
   });
 
-  it("severs an agent that showed life this run and went quiet past 90s with no run channel contradicting it", () => {
-    // With no dag run carrying any lastActivityAt there is no heartbeat
-    // channel left to consult, so the row's silence is corroborated by the
-    // absence of any contrary pulse.
-    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, inFlight(["t1"]))).toBe("quiet");
-    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"]))).toBe("severed");
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"]))).toBe("severed");
+  it("severs a latched quiet agent only once its own run is stale past the threshold too", () => {
+    // Observed engine contract: severance is corroborated per-row - the run
+    // CONTAINING the row must have gone silent as well.
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - SEVERED_ACTIVITY_MS - 1]])),
+    )).toBe("quiet");
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS + 1),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - SEVERED_ACTIVITY_MS - 1]])),
+    )).toBe("severed");
+    expect(agentFreshness(
+      agentQuietFor(10 * 60_000),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - 70 * 60_000]])),
+    )).toBe("severed");
+  });
+
+  it("keeps a latched quiet agent quiet when it has no dag membership", () => {
+    // Silence alone proves nothing: a row no dag run contains can never
+    // sever, however stale every other run's stamps are - or when there are
+    // no runs at all.
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"]))).toBe("quiet");
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS + 1),
+      NOW_MS,
+      inFlight(["t1"], runMs([["unrelated", NOW_MS - 70 * 60_000]])),
+    )).toBe("quiet");
   });
 
   it("never flags terminal agents quiet or severed, even with life seen", () => {
@@ -76,38 +102,63 @@ describe("agentFreshness run-in-flight gating", () => {
   });
 });
 
-describe("agentFreshness run-heartbeat corroboration", () => {
-  it("keeps a latched quiet agent quiet while a run heartbeat is still fresh", () => {
-    // The agent's own silence is not a death signal while the run-level
-    // heartbeat channel still pulsed recently: the session is demonstrably
-    // alive even when one quiet row is not.
-    expect(
-      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1_000), NOW_MS, inFlight(["t1"], NOW_MS - 5_000)),
-    ).toBe("quiet");
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"], NOW_MS - 1_000))).toBe("quiet");
+describe("agentFreshness own-run corroboration", () => {
+  it("keeps a member agent quiet while its own run is still fresh", () => {
+    // The row's own silence is not a death signal while its own run still
+    // pulsed recently: a long tool run or a waiting subagent is just quiet.
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS + 1_000),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - 5_000]])),
+    )).toBe("quiet");
+    expect(agentFreshness(
+      agentQuietFor(10 * 60_000),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - 1_000]])),
+    )).toBe("quiet");
   });
 
-  it("keeps a latched quiet agent quiet at the exact run-heartbeat staleness boundary", () => {
-    expect(
-      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"], NOW_MS - SEVERED_ACTIVITY_MS)),
-    ).toBe("quiet");
+  it("keeps a member agent quiet at the exact own-run staleness boundary", () => {
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS + 1),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - SEVERED_ACTIVITY_MS]])),
+    )).toBe("quiet");
   });
 
-  it("keeps a latched agent quiet at the row-quiet boundary even with a stale run channel", () => {
-    expect(
-      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS), NOW_MS, inFlight(["t1"], NOW_MS - 70 * 60_000)),
-    ).toBe("quiet");
+  it("keeps a member agent quiet at the row-quiet boundary even with a stale own run", () => {
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS),
+      NOW_MS,
+      inFlight(["t1"], runMs([["t1", NOW_MS - 70 * 60_000]])),
+    )).toBe("quiet");
   });
 
-  it("severs a latched quiet agent only once every run heartbeat is stale too", () => {
-    expect(
-      agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"], NOW_MS - SEVERED_ACTIVITY_MS - 1)),
-    ).toBe("severed");
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight(["t1"], NOW_MS - 70 * 60_000))).toBe("severed");
+  it("severs a member agent once its own run is stale, whatever an unrelated fresh run says", () => {
+    // A run that does not contain the row is irrelevant in BOTH directions:
+    // its freshness cannot save the row, and its staleness cannot condemn a
+    // row it does not contain.
+    expect(agentFreshness(
+      agentQuietFor(SEVERED_ACTIVITY_MS + 1),
+      NOW_MS,
+      inFlight(["t1"], runMs([
+        ["t1", NOW_MS - SEVERED_ACTIVITY_MS - 1],
+        ["unrelated", NOW_MS - 5_000],
+      ])),
+    )).toBe("severed");
   });
 
-  it("stays quiet for an agent that showed no life this run, whatever the run channels say", () => {
-    expect(agentFreshness(agentQuietFor(10 * 60_000), NOW_MS, inFlight([], NOW_MS - 70 * 60_000))).toBe("quiet");
+  it("keeps a member agent quiet when its own run carries no activity stamp", () => {
+    // A run without a stamp cannot corroborate the row's silence.
+    expect(agentFreshness(agentQuietFor(SEVERED_ACTIVITY_MS + 1), NOW_MS, inFlight(["t1"]))).toBe("quiet");
+  });
+
+  it("stays quiet for an agent that showed no life this run, whatever its own run says", () => {
+    expect(agentFreshness(
+      agentQuietFor(10 * 60_000),
+      NOW_MS,
+      inFlight([], runMs([["t1", NOW_MS - 70 * 60_000]])),
+    )).toBe("quiet");
   });
 });
 
@@ -150,7 +201,7 @@ describe("applyRunFlight", () => {
     expect(agentFreshness(task, NOW_MS + 120_000, {
       runInFlight: true,
       lifeSeenThisRun: lifeSeenThisRunOf(restarted),
-      freshestRunActivityMs: null,
+      runActivityMsByTask: new Map(),
     })).toBe("quiet");
   });
 
@@ -181,7 +232,7 @@ describe("applyRunFlight", () => {
     expect(agentFreshness(task, NOW_MS, {
       runInFlight: true,
       lifeSeenThisRun: lifeSeenThisRunOf(runTwo),
-      freshestRunActivityMs: null,
+      runActivityMsByTask: new Map(),
     })).toBe("quiet");
   });
 });

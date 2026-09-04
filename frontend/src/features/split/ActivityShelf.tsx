@@ -6,7 +6,7 @@ import type {
 } from "react";
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
-import { freshestRunActivityMsOf, lifeSeenThisRunOf } from "./activityState";
+import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection } from "./activityShelfDag";
 import {
   agentTimeMs,
@@ -259,7 +259,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                 freshnessCtx={{
                   runInFlight: activities.runInFlight === true,
                   lifeSeenThisRun: lifeSeenThisRunOf(activities),
-                  freshestRunActivityMs: freshestRunActivityMsOf(activities),
+                  runActivityMsByTask: runActivityMsByTaskOf(activities),
                 }}
                 t={t}
               />

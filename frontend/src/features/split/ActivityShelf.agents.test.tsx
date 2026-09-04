@@ -165,9 +165,31 @@ describe("ActivityShelf", () => {
     expect(row.textContent).not.toContain("activity.severed");
   });
 
-  it("still severs an agent that showed life this run after 90s of quiet", () => {
+  it("keeps a latched quiet agent without dag membership quiet, never severed", () => {
     const state: LifeLatchedActivityState = {
       ...activityState({ tasks: [makeTask({ taskId: "gone-quiet", updatedAt: iso(120_000) })] }),
+      runInFlight: true,
+      lifeSeenThisRun: new Set(["gone-quiet"]),
+    };
+    renderShelf(harness, state);
+    openShelf(harness.container);
+    // Silence alone proves nothing: no dag run contains this row, so it can
+    // never sever - muted quiet with an age note instead.
+    expect(harness.container.querySelectorAll(".th-activity-severed").length).toBe(0);
+    const quietRows = harness.container.querySelectorAll(".th-activity-quiet-note");
+    expect(quietRows.length).toBe(1);
+    expect(quietRows[0]?.textContent).toContain("activity.lastUpdateAgo");
+  });
+
+  it("severs a latched quiet agent whose own dag run is stale too", () => {
+    const state: LifeLatchedActivityState = {
+      ...activityState({
+        tasks: [makeTask({ taskId: "gone-quiet", updatedAt: iso(120_000) })],
+        dags: [makeDag({
+          nodes: [{ id: "c", prompt: "gamma step", dependsOn: [], state: "running", taskId: "gone-quiet" }],
+          lastActivityAt: iso(120_000),
+        })],
+      }),
       runInFlight: true,
       lifeSeenThisRun: new Set(["gone-quiet"]),
     };
@@ -176,12 +198,25 @@ describe("ActivityShelf", () => {
     const severedRows = harness.container.querySelectorAll(".th-activity-severed");
     expect(severedRows.length).toBe(1);
     expect(severedRows[0]?.textContent).toContain("activity.severed");
-    expect(requireElement(
-      harness.container.querySelector(".th-activity-severed-note"),
-      "severed note",
-    ).textContent).toContain("activity.severed");
-    // Severed rows show the alarm, not the quiet info note.
-    expect(severedRows[0]?.textContent).not.toContain("activity.lastUpdateAgo");
+  });
+
+  it("keeps a member agent quiet while its own dag run is still fresh", () => {
+    const state: LifeLatchedActivityState = {
+      ...activityState({
+        tasks: [makeTask({ taskId: "gone-quiet", updatedAt: iso(120_000) })],
+        dags: [makeDag({
+          nodes: [{ id: "c", prompt: "gamma step", dependsOn: [], state: "running", taskId: "gone-quiet" }],
+          lastActivityAt: iso(5_000),
+        })],
+      }),
+      runInFlight: true,
+      lifeSeenThisRun: new Set(["gone-quiet"]),
+    };
+    renderShelf(harness, state);
+    openShelf(harness.container);
+    // The run containing the row still pulsed: no alarm, just the muted note.
+    expect(harness.container.querySelectorAll(".th-activity-severed").length).toBe(0);
+    expect(harness.container.querySelectorAll(".th-activity-quiet-note").length).toBe(1);
   });
 
   it("renders the quiet note localized for the active locale", () => {
