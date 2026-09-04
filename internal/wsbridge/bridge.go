@@ -30,8 +30,10 @@ const (
 	controlFrameTimeout = 15 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
 	// while making the route-layer opening budget explicit.
-	openFrameTimeout       = 120 * time.Second
-	takeoverActivityWindow = 250 * time.Millisecond
+	openFrameTimeout          = 120 * time.Second
+	takeoverActivityWindow    = 250 * time.Millisecond
+	resumeRouteCleanupTimeout = 10 * time.Second
+	resumeOpenAttempts        = 2
 
 	prepareFailedMessage = "could not prepare the session; please retry"
 	resumeFailedMessage  = "could not resume the session; please retry"
@@ -820,7 +822,25 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 			acquired.CompleteDetachedSend(op.requestID, completionErr)
 		})
 	}
-	resumed, _, detach, err := op.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, attachSub, initialize, validate, published, retry)
+	var resumed *session.Session
+	var detach func()
+	for attempt := 1; attempt <= resumeOpenAttempts; attempt++ {
+		resumed, _, detach, err = op.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, attachSub, initialize, validate, published, retry)
+		if err == nil || !errors.Is(err, session.ErrSessionResumable) || outcomeOwner != nil || callbackRan || attempt == resumeOpenAttempts {
+			break
+		}
+		op.bridge.cfg.Logger.Warn("waiting for provider route cleanup before retrying resume", "chat_id", op.chatID, "attempt", attempt+1)
+		waitCtx, waitCancel := context.WithTimeout(ctx, resumeRouteCleanupTimeout)
+		select {
+		case <-op.bridge.cfg.Manager.RouteCleanupDone(stale.RoutingID()):
+		case <-waitCtx.Done():
+			err = waitCtx.Err()
+		}
+		waitCancel()
+		if err != nil && !errors.Is(err, session.ErrSessionResumable) {
+			break
+		}
+	}
 	_ = detach // the live binding or manager owns the acquired route
 	if errors.Is(err, session.ErrNoDurableCursor) {
 		stale.CompleteDetachedSend(op.requestID, originalErr)

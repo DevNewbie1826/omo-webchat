@@ -1408,23 +1408,28 @@ func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error
 		_, err := s.client.CallRetainedInEpoch(ctx, s.epoch, cmd, complete)
 		return closeResult(err)
 	}
-	if !s.manager.beginFallbackCleanup(s.chatID, route) {
+	cleanupDone, ok := s.manager.beginFallbackCleanup(s, route)
+	if !ok {
 		err := omorpc.ErrEpochMismatch
 		complete(nil, omorpc.EpochToken{}, err)
 		return err
 	}
-	defer s.manager.endRouteCleanup(route)
+	var releaseCleanup sync.Once
+	fallbackComplete := func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		defer releaseCleanup.Do(func() { s.manager.endRouteCleanup(route, cleanupDone) })
+		complete(resp, epoch, callErr)
+	}
 	s.lifecycleMu.Lock()
 	resumable := s.resumable
 	s.lifecycleMu.Unlock()
 	if resumable {
 		fallbackCtx, cancel := context.WithTimeout(ctx, s.manager.cfg.CloseTimeout)
 		defer cancel()
-		_, err := s.client.CallRetained(fallbackCtx, cmd, complete)
+		_, err := s.client.CallRetained(fallbackCtx, cmd, fallbackComplete)
 		return closeResult(err)
 	}
 	err := omorpc.ErrEpochMismatch
-	complete(nil, omorpc.EpochToken{}, err)
+	fallbackComplete(nil, omorpc.EpochToken{}, err)
 	return err
 }
 

@@ -27,6 +27,36 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
+type signalLogHandler struct{ records chan struct{} }
+
+func (h *signalLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *signalLogHandler) Handle(context.Context, slog.Record) error {
+	select {
+	case h.records <- struct{}{}:
+	default:
+	}
+	return nil
+}
+func (h *signalLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *signalLogHandler) WithGroup(string) slog.Handler      { return h }
+
+type cancelSignalSubscriber struct {
+	frames    chan session.Frame
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func (s *cancelSignalSubscriber) Deliver(frame session.Frame) {
+	select {
+	case s.frames <- frame:
+	case <-s.cancelled:
+	}
+}
+func (s *cancelSignalSubscriber) Cancel() error {
+	s.once.Do(func() { close(s.cancelled) })
+	return nil
+}
+
 type collector struct {
 	gws.BuiltinEventHandler
 	mu      sync.Mutex
@@ -899,6 +929,121 @@ func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
 				t.Fatalf("resume attempts = %d, want %d", got, test.wantOpens)
 			}
 		})
+	}
+}
+
+func TestChatSendWaitsForFencedRouteCleanupBeforeReopening(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-fenced-reopen")
+	resumeLog := &signalLogHandler{records: make(chan struct{}, 1)}
+	h.bridge.cfg.Logger = slog.New(resumeLog)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-fenced-reopen"})
+	frames.next(t, "ready")
+	serverConn := h.soleServerConnection(t)
+	_, stale := serverConn.binding()
+	if stale == nil {
+		t.Fatal("server connection was not bound")
+	}
+
+	transition := &cancelSignalSubscriber{frames: make(chan session.Frame, 64), cancelled: make(chan struct{})}
+	_, _, transitionDetach, err := h.manager.Acquire(t.Context(), chatRef{id: "send-fenced-reopen", cwd: filepath.Dir(h.path)}, transition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transitionDetach()
+	select {
+	case frame := <-transition.frames:
+		if frame.Kind != session.FrameReady {
+			t.Fatalf("transition subscriber initial frame = %#v, want ready", frame)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("transition subscriber did not attach")
+	}
+	serverConn.stateMu.Lock()
+	staleDetach := serverConn.detach
+	serverConn.detach = nil
+	serverConn.stateMu.Unlock()
+	staleDetach()
+
+	root := filepath.Dir(h.daemon.SocketPath())
+	h.daemon.Stop()
+	replacement := omorpctest.New(root)
+	if err := replacement.LoadSessionFile(h.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := replacement.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(replacement.Stop)
+	transitionTimer := time.NewTimer(5 * time.Second)
+	defer transitionTimer.Stop()
+	for {
+		select {
+		case frame := <-transition.frames:
+			if frame.Kind == session.FrameError {
+				goto invalidated
+			}
+		case <-transitionTimer.C:
+			t.Fatal("provider replacement did not invalidate the stale route")
+		}
+	}
+
+invalidated:
+
+	releaseClose := replacement.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- stale.Close() }()
+	if !replacement.AwaitRequestCount(omorpc.CmdCloseSession, 1, 5*time.Second) {
+		t.Fatal("fallback cleanup did not reach replacement daemon")
+	}
+
+	replacement.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-fenced-reopen", "requestId": "fenced-reopen",
+		"run": map[string]any{"kind": "prompt", "message": "retry after cleanup"},
+	})
+	if !replacement.AwaitRequestCount(omorpc.CmdOpenSession, 1, 5*time.Second) {
+		t.Fatal("fenced open was not attempted")
+	}
+	select {
+	case <-resumeLog.records:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fenced rejection was not observed")
+	}
+	releaseClose()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("fallback cleanup: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fallback cleanup did not settle")
+	}
+
+	nextSuccessfulSendAcks(t, frames, "fenced-reopen")
+	if !replacement.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("prompt did not complete after fenced reopen")
+	}
+	if got := replacement.RequestCount(omorpc.CmdOpenSession); got != 2 {
+		t.Fatalf("reopen attempts = %d, want one rejected and one successful", got)
+	}
+	if got := replacement.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("prompt attempts = %d, want exactly 1", got)
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "error" {
+			t.Fatalf("fenced reopen reached client socket: %s", raw)
+		}
 	}
 }
 

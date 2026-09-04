@@ -1049,29 +1049,45 @@ func definitiveResumeFailure(err error) bool {
 // beginFallbackCleanup fences publication of route while a dead-epoch close
 // is sent on the current connection. Ownership inspection and marker creation
 // share one critical section, so a colliding open cannot publish between them.
-func (m *Manager) beginFallbackCleanup(chatID, route string) bool {
+func (m *Manager) beginFallbackCleanup(owner *Session, route string) (chan struct{}, bool) {
 	if route == "" {
-		return false
+		return nil, false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if holder := m.byRoute[route]; holder != nil && holder.chatID != chatID {
-		return false
+	if holder := m.byRoute[route]; holder != nil && holder != owner {
+		return nil, false
 	}
 	if _, cleaning := m.routeCleanup[route]; cleaning {
-		return false
+		return nil, false
 	}
-	m.routeCleanup[route] = make(chan struct{})
-	return true
+	done := make(chan struct{})
+	m.routeCleanup[route] = done
+	return done, true
 }
 
-func (m *Manager) endRouteCleanup(route string) {
+func (m *Manager) endRouteCleanup(route string, expected chan struct{}) {
 	m.mu.Lock()
-	if done := m.routeCleanup[route]; done != nil {
+	if done := m.routeCleanup[route]; done == expected {
 		delete(m.routeCleanup, route)
 		close(done)
 	}
 	m.mu.Unlock()
+}
+
+// RouteCleanupDone returns a channel that closes when the active fallback
+// cleanup for route definitively settles. It is already closed when route has
+// no active cleanup marker.
+func (m *Manager) RouteCleanupDone(route string) <-chan struct{} {
+	m.mu.Lock()
+	done := m.routeCleanup[route]
+	m.mu.Unlock()
+	if done != nil {
+		return done
+	}
+	settled := make(chan struct{})
+	close(settled)
+	return settled
 }
 
 func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {

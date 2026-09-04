@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"testing"
@@ -81,6 +82,46 @@ func TestExecuteCloseStaleEpochRefusesOwnedRoute(t *testing.T) {
 	}
 }
 
+// A replacement for the same chat is still a distinct route holder. The stale
+// session must not close it merely because both holders have the same chat ID.
+func TestExecuteCloseStaleEpochRefusesSameChatReplacement(t *testing.T) {
+	mgr, stale, root, cleanup := staleCloseFixture(t, "same-chat")
+	replacementDaemon := omorpctest.New(root)
+	if err := replacementDaemon.Start(); err != nil {
+		cleanup()
+		t.Fatalf("start replacement daemon: %v", err)
+	}
+	defer replacementDaemon.Stop()
+	defer cleanup()
+
+	resp, epoch, err := mgr.cfg.Client.CallInEpoch(context.Background(), omorpc.OpenSession{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("open same-chat replacement: %v", err)
+	}
+	var opened omorpc.OpenSessionData
+	if err := json.Unmarshal(resp.Data, &opened); err != nil {
+		t.Fatalf("decode same-chat replacement: %v", err)
+	}
+	replacement := newSession(mgr, stale.chatID, t.TempDir(), opened, false, epoch)
+	if replacement.routingID != stale.routingID {
+		t.Fatalf("routing IDs did not collide: stale=%q replacement=%q", stale.routingID, replacement.routingID)
+	}
+	mgr.mu.Lock()
+	mgr.byChat[stale.chatID] = replacement
+	mgr.byRoute[replacement.routingID] = replacement
+	mgr.mu.Unlock()
+	before := replacementDaemon.RequestCount(omorpc.CmdCloseSession)
+	if err := stale.Close(); !errors.Is(err, omorpc.ErrEpochMismatch) {
+		t.Fatalf("stale close with same-chat replacement = %v, want ErrEpochMismatch", err)
+	}
+	if got := replacementDaemon.RequestCount(omorpc.CmdCloseSession); got != before {
+		t.Fatalf("stale close wrote against same-chat replacement: close requests %d -> %d", before, got)
+	}
+	if live := replacementDaemon.LiveSessions(); len(live) != 1 {
+		t.Fatalf("same-chat replacement was closed: live sessions %v", live)
+	}
+}
+
 // With no published owner, a dead-epoch close falls back exactly once on the
 // replacement connection. The replacement has reset route IDs but has no live
 // route, so unknown_session definitively settles the stale cleanup.
@@ -106,6 +147,46 @@ func TestExecuteCloseStaleEpochFallsBackOnceWhenUnowned(t *testing.T) {
 // Regression: before the manager fence, an open completing after the stale
 // ownership snapshot could publish the colliding route while close_session was
 // still in flight. Holding the close handler makes that interleaving exact.
+func TestFallbackCleanupMarkerSurvivesCallerTimeout(t *testing.T) {
+	mgr, stale, root, cleanup := staleCloseFixture(t, "stale-timeout")
+	mgr.cfg.CloseTimeout = 20 * time.Millisecond
+	replacementDaemon := omorpctest.New(root)
+	if err := replacementDaemon.Start(); err != nil {
+		cleanup()
+		t.Fatalf("start replacement daemon: %v", err)
+	}
+	defer replacementDaemon.Stop()
+	defer cleanup()
+
+	releaseClose := replacementDaemon.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	if err := stale.Close(); !errors.Is(err, omorpc.ErrWrittenUnanswered) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed-out fallback close = %v, want ErrWrittenUnanswered + DeadlineExceeded", err)
+	}
+	cleanupDone := mgr.RouteCleanupDone(stale.routingID)
+	select {
+	case <-cleanupDone:
+		t.Fatal("fallback cleanup marker cleared at caller timeout")
+	default:
+	}
+
+	releaseClose()
+	select {
+	case <-cleanupDone:
+	case <-time.After(testTimeout):
+		t.Fatal("fallback cleanup marker did not close after retained completion")
+	}
+
+	colliding, _, detach := acquire(t, mgr, testChat{id: "after-timeout", cwd: t.TempDir()}, nil)
+	defer detach()
+	if colliding.routingID != stale.routingID {
+		t.Fatalf("routing IDs did not collide: stale=%q open=%q", stale.routingID, colliding.routingID)
+	}
+	if live := replacementDaemon.LiveSessions(); len(live) != 1 {
+		t.Fatalf("colliding route opened after marker completion was closed: %v", live)
+	}
+}
+
 func TestFallbackCleanupRejectsCollidingOpenUntilMarkerClears(t *testing.T) {
 	mgr, stale, root, cleanup := staleCloseFixture(t, "stale-in-flight")
 	replacement := omorpctest.New(root)
