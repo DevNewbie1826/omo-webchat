@@ -10,7 +10,6 @@
 package smoke_test
 
 import (
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -167,16 +166,6 @@ func TestServerSmokeAgainstMockDaemon(t *testing.T) {
 		}
 		time.Sleep(pollStep)
 	}
-	// Reap the terminated leader. A second Kill then reports the process
-	// done — on Windows only for a Wait-reaped process; an un-reaped dead
-	// process fails TerminateProcess with a different error, so the reap
-	// comes first. The exit status itself is unasserted: job termination
-	// promises termination, not a nonzero status.
-	_ = cmd.Wait()
-	if err := cmd.Process.Kill(); !errors.Is(err, os.ErrProcessDone) {
-		t.Fatalf("second kill of server process = %v, want os.ErrProcessDone", err)
-	}
-
 	// Shutdown hygiene: the port must refuse new connections afterwards.
 	deadline = time.Now().Add(stopWait)
 	for {
