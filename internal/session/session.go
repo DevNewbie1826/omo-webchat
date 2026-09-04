@@ -34,7 +34,15 @@ type closeTransaction struct {
 	idle bool
 }
 
+type sendOperationPhase uint8
+
+const (
+	sendOperationAdmitted sendOperationPhase = iota
+	sendOperationTerminal
+)
+
 type sendOperation struct {
+	phase   sendOperationPhase
 	outcome Frame
 	err     error
 }
@@ -409,10 +417,10 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 }
 
 func (s *Session) publishDetachedError(err error, command, requestID string) {
+	s.completeSendOperation(requestID, err)
 	if err == nil {
 		return
 	}
-	s.recordSendOperation(requestID, err)
 	s.lifecycleMu.Lock()
 	frame := s.sendOperationFrameLocked(requestID, err)
 	frame.Command = command
@@ -432,26 +440,55 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 	if s.sendOperations == nil {
 		s.sendOperations = make(map[string]sendOperation)
 	}
-	if len(s.sendOperationFIFO) == maxSendOperationLedger {
-		delete(s.sendOperations, s.sendOperationFIFO[0])
-		s.sendOperationFIFO = s.sendOperationFIFO[1:]
+	if len(s.sendOperationFIFO) >= maxSendOperationLedger {
+		terminal := -1
+		for i, id := range s.sendOperationFIFO {
+			if s.sendOperations[id].phase == sendOperationTerminal {
+				terminal = i
+				break
+			}
+		}
+		if terminal < 0 {
+			return fmt.Errorf("%w: maximum %d operations are still in flight", ErrSendBackpressure, maxSendOperationLedger), true
+		}
+		delete(s.sendOperations, s.sendOperationFIFO[terminal])
+		copy(s.sendOperationFIFO[terminal:], s.sendOperationFIFO[terminal+1:])
+		s.sendOperationFIFO = s.sendOperationFIFO[:len(s.sendOperationFIFO)-1]
 	}
-	s.sendOperations[requestID] = sendOperation{}
+	s.sendOperations[requestID] = sendOperation{phase: sendOperationAdmitted}
 	s.sendOperationFIFO = append(s.sendOperationFIFO, requestID)
 	return nil, false
 }
 
+// recordSendOperation stores the synchronous admission outcome. A failed
+// admission is terminal because no provider response remains outstanding.
 func (s *Session) recordSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return
 	}
 	s.lifecycleMu.Lock()
-	if operation, ok := s.sendOperations[requestID]; ok {
-		// A detached response may win the race with the admission return. Never
-		// replace that terminal failure with the earlier admission ACK.
-		if err != nil || operation.outcome.Kind == "" {
-			s.sendOperations[requestID] = sendOperation{outcome: s.sendOperationFrameLocked(requestID, err), err: err}
+	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
+		operation.outcome = s.sendOperationFrameLocked(requestID, err)
+		operation.err = err
+		if err != nil {
+			operation.phase = sendOperationTerminal
 		}
+		s.sendOperations[requestID] = operation
+	}
+	s.lifecycleMu.Unlock()
+}
+
+// completeSendOperation records the provider response as the terminal outcome.
+func (s *Session) completeSendOperation(requestID string, err error) {
+	if requestID == "" {
+		return
+	}
+	s.lifecycleMu.Lock()
+	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
+		operation.phase = sendOperationTerminal
+		operation.outcome = s.sendOperationFrameLocked(requestID, err)
+		operation.err = err
+		s.sendOperations[requestID] = operation
 	}
 	s.lifecycleMu.Unlock()
 }
@@ -985,7 +1022,11 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, outcome)
 		}
 	}
-	id, target, rawDetach := s.broadcast.attach(sub, s.queueSize, initial)
+	queueSize := s.queueSize
+	if queueSize < len(initial) {
+		queueSize = len(initial)
+	}
+	id, target, rawDetach := s.broadcast.attach(sub, queueSize, initial)
 	for _, frame := range replayInitial {
 		s.publishLocked(frame)
 	}
