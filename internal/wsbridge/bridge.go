@@ -261,6 +261,7 @@ type connection struct {
 	outboundMu        sync.Mutex
 	replayActive      bool
 	replayDone        chan struct{}
+	replayOwner       *subscriber
 	stateMu           sync.Mutex
 	wsID, chatID      string
 	bindingGeneration uint64
@@ -309,19 +310,21 @@ func (c *connection) writeActivity(v any) error {
 	}
 }
 
-func (c *connection) beginReplay() {
+func (c *connection) beginReplay(owner *subscriber) {
 	c.outboundMu.Lock()
 	if !c.replayActive {
 		c.replayActive = true
 		c.replayDone = make(chan struct{})
 	}
+	c.replayOwner = owner
 	c.outboundMu.Unlock()
 }
 
-func (c *connection) endReplay() {
+func (c *connection) endReplay(owner *subscriber) {
 	c.outboundMu.Lock()
-	if c.replayActive {
+	if c.replayActive && c.replayOwner == owner {
 		c.replayActive = false
+		c.replayOwner = nil
 		close(c.replayDone)
 		c.replayDone = nil
 	}
@@ -598,14 +601,15 @@ func (c *connection) handleChatSend(ctx context.Context, bound string, sess *ses
 		}
 		return
 	}
-	if !op.bindingMatchesSession(sess) {
+	if !op.bindingCurrent() {
 		release()
 		return
 	}
-	if live, ok := c.bridge.cfg.Manager.Get(op.chatID); !ok || live != sess {
-		op.enqueueRecovery(sess, false, session.ErrSessionClosed)
-		release()
-		return
+	// A recovery ahead of this send in the per-chat FIFO may have replaced the
+	// provider route without changing the logical socket binding. Route the send
+	// to that replacement rather than silently abandoning its correlation.
+	if live, ok := c.bridge.cfg.Manager.Get(op.chatID); ok {
+		sess = live
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
 		if isResumableSendError(completionErr) {
@@ -1063,9 +1067,59 @@ func (c *connection) beginQuery(s *session.Session) (queryBinding, bool) {
 	return queryBinding{chatID: chatID, generation: generation, session: s}, current == s && chatID != ""
 }
 
-func (c *connection) queryCurrent(q queryBinding) bool {
-	_, chatID, generation, current := c.bindingSnapshot()
-	return chatID == q.chatID && generation == q.generation && current == q.session
+func (c *connection) queryCurrentLocked(q queryBinding) bool {
+	return !c.closed.Load() && c.chatID == q.chatID && c.bindingGeneration == q.generation && c.sess == q.session
+}
+
+// writeIfCurrent keeps the binding claim through the socket write, so a rebind
+// cannot split validation from delivery.
+func (c *connection) writeIfCurrent(q queryBinding, v any) error {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if !c.queryCurrentLocked(q) {
+		return nil
+	}
+	return c.write(v)
+}
+
+func sessionErrorFrame(err error, command, requestID, sessionID string) any {
+	var drift *session.ExternalWriteError
+	if errors.As(err, &drift) {
+		frame := map[string]any{
+			"type": "error", "code": "external-write-detected", "message": drift.Error(),
+			"knownLeaf": drift.KnownLeaf, "observedLeaf": drift.ObservedLeaf,
+		}
+		if sessionID != "" {
+			frame["sessionId"] = sessionID
+		}
+		if command != "" {
+			frame["command"] = command
+		}
+		if requestID != "" {
+			frame["requestId"] = requestID
+		}
+		return frame
+	}
+	code := "provider_error"
+	switch {
+	case errors.Is(err, session.ErrPromptInFlight):
+		code = "prompt_in_flight"
+	case errors.Is(err, session.ErrCompactionInFlight):
+		code = "compaction_in_flight"
+	case errors.Is(err, session.ErrSendBackpressure):
+		code = "send_backpressure"
+	}
+	frame := map[string]any{"type": "error", "code": code, "message": err.Error()}
+	if sessionID != "" {
+		frame["sessionId"] = sessionID
+	}
+	if command != "" {
+		frame["command"] = command
+	}
+	if requestID != "" {
+		frame["requestId"] = requestID
+	}
+	return frame
 }
 
 func (c *connection) queryState(ctx context.Context, s *session.Session) {
@@ -1074,11 +1128,8 @@ func (c *connection) queryState(ctx context.Context, s *session.Session) {
 		return
 	}
 	x, err := s.QueryState(ctx)
-	if !c.queryCurrent(binding) {
-		return
-	}
 	if err != nil {
-		c.sendSessionError(err, "get_state", "")
+		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_state", "", binding.chatID))
 		return
 	}
 	var model map[string]any
@@ -1090,9 +1141,7 @@ func (c *connection) queryState(ctx context.Context, s *session.Session) {
 		}
 	}
 	run := s.RunSnapshot()
-	if c.queryCurrent(binding) {
-		_ = c.write(map[string]any{"type": "state", "sessionId": binding.chatID, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
-	}
+	_ = c.writeIfCurrent(binding, map[string]any{"type": "state", "sessionId": binding.chatID, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
 }
 func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 	binding, ok := c.beginQuery(s)
@@ -1100,11 +1149,8 @@ func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 		return
 	}
 	xs, err := s.Models(ctx)
-	if !c.queryCurrent(binding) {
-		return
-	}
 	if err != nil {
-		c.sendSessionError(err, "get_available_models", "")
+		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_available_models", "", binding.chatID))
 		return
 	}
 	sid := binding.chatID
@@ -1115,9 +1161,7 @@ func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 			out[i].Name = &x.Name
 		}
 	}
-	if c.queryCurrent(binding) {
-		_ = c.write(wscontract.ModelsFrame{Type: "models", SessionID: sid, Models: out})
-	}
+	_ = c.writeIfCurrent(binding, wscontract.ModelsFrame{Type: "models", SessionID: sid, Models: out})
 }
 func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
 	binding, ok := c.beginQuery(s)
@@ -1125,11 +1169,8 @@ func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
 		return
 	}
 	xs, err := s.Commands(ctx)
-	if !c.queryCurrent(binding) {
-		return
-	}
 	if err != nil {
-		c.sendSessionError(err, "get_commands", "")
+		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_commands", "", binding.chatID))
 		return
 	}
 	sid := binding.chatID
@@ -1137,9 +1178,7 @@ func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
 	for i, x := range xs {
 		out[i] = commandEntry(x)
 	}
-	if c.queryCurrent(binding) {
-		_ = c.write(wscontract.CommandsFrame{Type: "commands", SessionID: sid, Commands: out})
-	}
+	_ = c.writeIfCurrent(binding, wscontract.CommandsFrame{Type: "commands", SessionID: sid, Commands: out})
 }
 func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 	binding, ok := c.beginQuery(s)
@@ -1147,11 +1186,8 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 		return
 	}
 	x, err := s.Stats(ctx)
-	if !c.queryCurrent(binding) {
-		return
-	}
 	if err != nil {
-		c.sendSessionError(err, "get_session_stats", "")
+		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_session_stats", "", binding.chatID))
 		return
 	}
 	sid := binding.chatID
@@ -1162,9 +1198,7 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 	if len(x.ContextUsage) != 0 {
 		frame["contextUsage"] = contextUsageWithPercent(x.ContextUsage)
 	}
-	if c.queryCurrent(binding) {
-		_ = c.write(frame)
-	}
+	_ = c.writeIfCurrent(binding, frame)
 }
 
 func contextUsageWithPercent(raw json.RawMessage) json.RawMessage {

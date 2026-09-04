@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
@@ -55,6 +56,7 @@ type sendOperationOwner struct {
 	operations        map[string]sendOperation
 	fifo              []string
 	detachedMutations int
+	activeDetached    atomic.Int32
 	sessions          map[*Session]struct{}
 }
 
@@ -200,6 +202,23 @@ func (s *Session) releaseSendOperations() {
 	s.sendOwner.mu.Lock()
 	delete(s.sendOwner.sessions, s)
 	s.sendOwner.mu.Unlock()
+}
+
+func (o *sendOperationOwner) rearmIdle() {
+	if o.activeDetached.Load() != 0 {
+		return
+	}
+	o.mu.Lock()
+	sessions := make([]*Session, 0, len(o.sessions))
+	for s := range o.sessions {
+		sessions = append(sessions, s)
+	}
+	o.mu.Unlock()
+	for _, s := range sessions {
+		s.lifecycleMu.Lock()
+		s.scheduleIdleLocked()
+		s.lifecycleMu.Unlock()
+	}
 }
 
 func (s *Session) routeLocked() (string, error) {
@@ -475,18 +494,23 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 		return fmt.Errorf("%w: maximum %d outstanding operations", ErrSendBackpressure, DetachedMutationLimit)
 	}
 	owner.detachedMutations++
+	owner.activeDetached.Add(1)
 	owner.mu.Unlock()
 
 	err := s.client.CallDetached(ctx, command, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
 		owner.mu.Lock()
 		owner.detachedMutations--
 		owner.mu.Unlock()
+		owner.activeDetached.Add(-1)
 		complete(resp, epoch, callErr)
+		owner.rearmIdle()
 	})
 	if err != nil {
 		owner.mu.Lock()
 		owner.detachedMutations--
 		owner.mu.Unlock()
+		owner.activeDetached.Add(-1)
+		owner.rearmIdle()
 	}
 	return err
 }
@@ -1439,7 +1463,8 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 {
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 ||
+		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		return
 	}
 	s.cancelIdleLocked()

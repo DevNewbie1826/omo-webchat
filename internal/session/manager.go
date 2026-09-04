@@ -615,9 +615,6 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				if initialize != nil {
 					initialize(existing, false, detach)
 				}
-				if existing.sessionFile != "" {
-					hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
-				}
 				if validate != nil {
 					if err := validate(); err != nil {
 						detach()
@@ -628,6 +625,11 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 					if err := after(existing); err != nil {
 						return existing, false, detach, err
 					}
+				}
+				// Checked callers publish and activate their validated binding in
+				// after before history can fill a transport's staging buffer.
+				if existing.sessionFile != "" {
+					hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
 				}
 				return existing, false, detach, nil
 			}
@@ -793,9 +795,6 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if initialize != nil {
 			initialize(s, true, detach)
 		}
-		if resumed {
-			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
-		}
 		if err := validate(); err != nil {
 			detach()
 			s.retireReplaced()
@@ -840,6 +839,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 				}
 				return s, true, detach, err
 			}
+		}
+		if resumed {
+			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
 		}
 		if existing != nil {
 			existing.retireReplaced()
@@ -1368,7 +1370,8 @@ func (m *Manager) evict(s *Session) {
 	}
 	defer unlock()
 	s.lifecycleMu.Lock()
-	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 {
+	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 ||
+		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		s.lifecycleMu.Unlock()
 		return
 	}

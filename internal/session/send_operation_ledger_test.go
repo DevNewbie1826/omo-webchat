@@ -247,13 +247,17 @@ func TestReplacementSharesSendOwnerAndTerminalPublicationHasOneWinner(t *testing
 	}
 
 	// A late callback from either route observes the terminal state and must not
-	// republish it.
+	// republish it. Per-route sentinels are queued after that publication attempt,
+	// proving the asynchronous broadcaster pumps reached the assertion boundary.
 	prior.CompleteDetachedSend("shared-request", errors.New("late failure"))
+	for _, sess := range []*Session{prior, replacement} {
+		sess.lifecycleMu.Lock()
+		sess.publishLocked(Frame{Kind: FrameName, SessionID: sess.durableID, Data: map[string]any{"name": "sentinel"}})
+		sess.lifecycleMu.Unlock()
+	}
 	for name, sub := range map[string]*synchronousLedgerRecorder{"prior": priorSub, "replacement": replacementSub} {
-		select {
-		case frame := <-sub.ch:
-			t.Fatalf("%s received republished terminal outcome: %+v", name, frame)
-		default:
+		if frame := sub.next(t); frame.Kind != FrameName {
+			t.Fatalf("%s received republished terminal before sentinel: %+v", name, frame)
 		}
 	}
 }

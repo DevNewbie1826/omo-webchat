@@ -41,12 +41,16 @@ func newSubscriber(c *connection) *subscriber {
 func (*subscriber) SynchronousAttach() {}
 
 func (s *subscriber) BeginReplay() {
-	s.conn.beginReplay()
 	s.replaying.Store(true)
+	s.mu.Lock()
+	if s.active {
+		s.conn.beginReplay(s)
+	}
+	s.mu.Unlock()
 }
 func (s *subscriber) EndReplay() {
 	s.replaying.Store(false)
-	s.conn.endReplay()
+	s.conn.endReplay(s)
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	return s.detachSignal, s.replaying.Load()
@@ -91,6 +95,9 @@ func (s *subscriber) activate(ctx context.Context, reattach bool) bool {
 	}
 	s.treatAsResumed = reattach
 	s.active = true
+	if s.replaying.Load() {
+		s.conn.beginReplay(s)
+	}
 	if s.overflowed {
 		s.pending = nil
 		go s.Cancel()

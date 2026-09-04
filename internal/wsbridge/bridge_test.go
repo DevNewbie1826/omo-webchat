@@ -418,12 +418,29 @@ type inPlaceBridgeHarness struct {
 }
 
 func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness {
+	return newInPlaceBridgeHarnessWithHistory(t, chatID, 1)
+}
+
+func newInPlaceBridgeHarnessWithHistory(t *testing.T, chatID string, entries int) *inPlaceBridgeHarness {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, chatID+".jsonl")
-	body := "{\"type\":\"session\",\"id\":\"durable-" + chatID + "\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":" + string(mustJSON(t, dir)) + "}\n" +
-		"{\"type\":\"message\",\"id\":\"root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n"
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	var body strings.Builder
+	fmt.Fprintf(&body, "{\"type\":\"session\",\"id\":\"durable-%s\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%s}\n", chatID, mustJSON(t, dir))
+	parent := ""
+	for i := 0; i < entries; i++ {
+		id := "root"
+		if i != 0 {
+			id = fmt.Sprintf("entry-%d", i)
+		}
+		parentJSON := "null"
+		if parent != "" {
+			parentJSON = string(mustJSON(t, parent))
+		}
+		fmt.Fprintf(&body, "{\"type\":\"message\",\"id\":%s,\"parentId\":%s,\"message\":{\"role\":\"user\",\"content\":\"before\"}}\n", mustJSON(t, id), parentJSON)
+		parent = id
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	daemonDir, err := os.MkdirTemp("", "wsbridge-inplace-")
@@ -540,6 +557,10 @@ func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("blocked query did not return")
 	}
+	// Pong is ordered after the direct query goroutine has returned and proves
+	// the client reader has consumed every preceding socket write.
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
 	frames.mu.Lock()
 	defer frames.mu.Unlock()
 	for _, raw := range frames.frames {
@@ -551,24 +572,34 @@ func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	}
 }
 
-func TestDeletionAfterInitializeDoesNotPublishSocketBinding(t *testing.T) {
-	h := newInPlaceBridgeHarness(t, "post-initialize-delete")
+func TestCheckedBindingActivatesBeforeHistoryHydration(t *testing.T) {
+	h := newInPlaceBridgeHarnessWithHistory(t, "checked-large-history", (preActivationBufferCapacity+1)*100)
 	conn, frames := h.connect(t)
 	release := h.daemon.BlockHandler(omorpc.CmdGetEntries)
 	defer release()
-	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "post-initialize-delete", "recovery": true})
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "checked-large-history", "recovery": true})
 	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, 5*time.Second) {
-		t.Fatal("initialize did not reach history hydration")
+		t.Fatal("checked acquisition did not reach history hydration")
 	}
-	h.chatVersion.Add(1)
-	release()
-	failure := frames.next(t, "error")
-	if failure["code"] != "no_chat" {
-		t.Fatalf("post-initialize deletion = %#v", failure)
+	if ready := frames.next(t, "ready"); ready["sessionId"] != "checked-large-history" {
+		t.Fatalf("binding was not activated before hydration: %#v", ready)
 	}
 	chatID, sess := h.soleServerConnection(t).binding()
-	if chatID != "" || sess != nil {
-		t.Fatalf("rejected route was published to socket: chat=%q session=%p", chatID, sess)
+	if chatID != "checked-large-history" || sess == nil {
+		t.Fatalf("validated route was not published before hydration: chat=%q session=%p", chatID, sess)
+	}
+	release()
+	for {
+		if got := frames.next(t, "entries"); got["final"] == true {
+			break
+		}
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	select {
+	case <-h.soleServerConnectionDone(t):
+		t.Fatal("large checked hydration overflowed the pre-activation buffer")
+	default:
 	}
 }
 
@@ -873,15 +904,8 @@ func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	first.next(t, "ready")
 	writeClient(t, firstConn, map[string]any{"type": "ping"})
 	first.next(t, "pong")
-	secondConn, second := h.connect(t)
-	writeClient(t, secondConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-resume-serialized"})
-	second.next(t, "ready")
-	writeClient(t, secondConn, map[string]any{"type": "ping"})
-	second.next(t, "pong")
-
 	h.daemon.UnloadSession(h.path)
 	first.next(t, "error")
-	second.next(t, "error")
 	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
 	releaseOpenRaw := h.daemon.BlockHandler(omorpc.CmdOpenSession)
 	var releaseOpenOnce sync.Once
@@ -894,7 +918,7 @@ func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	if !h.daemon.AwaitRequestCount(omorpc.CmdOpenSession, beforeOpen+1, 5*time.Second) {
 		t.Fatal("original send did not enter blocked resume")
 	}
-	writeClient(t, secondConn, map[string]any{
+	writeClient(t, firstConn, map[string]any{
 		"type": "chat.send", "sessionId": "send-resume-serialized", "requestId": "later",
 		"run": map[string]any{"kind": "prompt", "message": "later send"},
 	})
@@ -905,6 +929,83 @@ func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	if got := h.daemon.LastRequest(omorpc.CmdPrompt)["message"]; got != "original retry" {
 		t.Fatalf("first prompt after resume = %q, want original retry", got)
 	}
+	for {
+		outcome := first.next(t, "error")
+		if outcome["requestId"] == "later" {
+			if outcome["command"] != "chat.send" || outcome["code"] != "prompt_in_flight" {
+				t.Fatalf("queued same-socket send outcome = %#v", outcome)
+			}
+			break
+		}
+	}
+}
+
+func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "replay-owner-a")
+	otherID := "replay-owner-b"
+	otherPath := filepath.Join(filepath.Dir(h.path), otherID+".jsonl")
+	otherBody := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-%s\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%s}\n{\"type\":\"message\",\"id\":\"other-root\",\"parentId\":null,\"message\":{\"role\":\"user\",\"content\":\"other\"}}\n", otherID, mustJSON(t, filepath.Dir(h.path)))
+	if err := os.WriteFile(otherPath, []byte(otherBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.daemon.LoadSessionFile(otherPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.SaveChat(cursorstore.Chat{ID: otherID, WorkspaceID: "ws-1", CWD: filepath.Dir(h.path), Name: otherID, SessionFile: otherPath, DurableSessionID: "durable-" + otherID, SessionProvenance: cursorstore.SessionProvenanceInPlace}); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "replay-owner-a"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	h.daemon.UnloadSession(h.path)
+	frames.next(t, "error")
+
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	releaseARaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, h.path)
+	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, otherPath)
+	var releaseAOnce, releaseBOnce sync.Once
+	releaseA := func() { releaseAOnce.Do(releaseARaw) }
+	releaseB := func() { releaseBOnce.Do(releaseBRaw) }
+	t.Cleanup(releaseA)
+	t.Cleanup(releaseB)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "replay-owner-a", "requestId": "rebind-retry",
+		"run": map[string]any{"kind": "prompt", "message": "retry"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+1, 5*time.Second) {
+		t.Fatal("recovery did not enter staged history replay")
+	}
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": otherID})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+2, 5*time.Second) {
+		t.Fatal("concurrent rebind did not enter history replay")
+	}
+	for {
+		if ready := frames.next(t, "ready"); ready["sessionId"] == otherID {
+			break
+		}
+	}
+	releaseA()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("recovery retry did not settle its replay")
+	}
+	serverConn := h.soleServerConnection(t)
+	serverConn.outboundMu.Lock()
+	replayOwnedByCurrent := serverConn.replayActive && serverConn.replayOwner == serverConn.sub
+	serverConn.outboundMu.Unlock()
+	if !replayOwnedByCurrent {
+		t.Fatal("stale recovery replay terminated the concurrent binding replay")
+	}
+	releaseB()
+	for {
+		if got := frames.next(t, "entries"); got["sessionId"] == otherID && got["final"] == true {
+			break
+		}
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
 }
 
 func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T) {
