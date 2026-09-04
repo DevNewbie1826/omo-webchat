@@ -93,6 +93,10 @@ type Config struct {
 	DetachedOpenLimit int
 	// OnDetach is called exactly once after a subscription pump exits.
 	OnDetach func(Subscriber, error)
+	// OnRunSettled is called after a run.done or an idle compaction completion.
+	OnRunSettled func(string, *Session)
+	// OnQueueUpdate is called when the engine publishes a queue snapshot.
+	OnQueueUpdate func(string, *Session)
 }
 
 type FrameKind string
@@ -200,6 +204,11 @@ type Stats struct {
 type RunSnapshot struct {
 	Streaming  bool
 	Compacting bool
+}
+
+type EngineQueueSnapshot struct {
+	PendingMessageCount int
+	Ordered             []omorpc.QueuedMessage
 }
 
 type Model struct{ Provider, ModelID, Name string }

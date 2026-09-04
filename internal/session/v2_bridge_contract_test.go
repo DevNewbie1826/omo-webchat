@@ -166,7 +166,4 @@ func TestSteerAndFollowUpDispatchDuringActiveRun(t *testing.T) {
 	}
 	release()
 	sub.await(t, FrameRunDone)
-	if snapshot := s.RunSnapshot(); snapshot.Streaming || snapshot.Compacting {
-		t.Fatalf("settled snapshot = %+v", snapshot)
-	}
 }

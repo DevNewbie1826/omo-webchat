@@ -17,6 +17,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
@@ -122,9 +123,13 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	if err != nil {
 		return fmt.Errorf("opening cursor store: %w", err)
 	}
+	queue, err := sendqueue.Load(filepath.Join(stateDir, "queue-v1.json"))
+	if err != nil {
+		return fmt.Errorf("opening send queue: %w", err)
+	}
 	manager := session.NewManager(session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
 	var apiServer *Server
-	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, ServerVersion: ensured.Client.ServerVersion(), Logger: logger,
+	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, SendQueue: queue, ServerVersion: ensured.Client.ServerVersion(), Logger: logger,
 		PrepareChatVersion: func(c context.Context, wsID, chatID string) (uint64, error) {
 			return apiServer.prepareChatVersion(c, wsID, chatID)
 		},

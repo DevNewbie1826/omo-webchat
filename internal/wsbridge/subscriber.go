@@ -219,6 +219,11 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		}
 		return out, nil
 	case session.FrameAck:
+		// chat.send is acknowledged at admission by the bridge. The session's
+		// retained completion is internal lifecycle state, not a second client ack.
+		if f.Command == "chat.send" {
+			return nil, nil
+		}
 		out := wscontract.AckFrame{Type: typ, Command: f.Command}
 		if chatID != "" {
 			out.SessionID = &chatID
