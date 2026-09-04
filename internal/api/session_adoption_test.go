@@ -644,6 +644,9 @@ func TestAdoptWorkspaceSessionStopsLiveOriginalBeforeInstallingCopy(t *testing.T
 		t.Fatal(err)
 	}
 	manager, daemon := newAdoptionLifecycleHarness(t, st.Store)
+	if err := daemon.LoadSessionFile(source); err != nil {
+		t.Fatal(err)
+	}
 	s.manager = manager
 	_, _, detach, err := manager.Acquire(t.Context(), adoptionChatRef{chat: chat}, nil)
 	if err != nil {
@@ -1133,5 +1136,28 @@ func TestAdoptedChatRemainsUsableWhenSourceDisappears(t *testing.T) {
 	page := listWorkspaceSessions(t, s, ws.ID, "")
 	if len(page.Items) != 1 || page.Items[0].ID != chat.ID || page.Items[0].Dangling {
 		t.Fatalf("catalog after source removal = %+v", page.Items)
+	}
+}
+
+func TestOpenWorkspaceSessionKeepsOldChatForSamePathConflictingID(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-new", "")
+	before := cursorstore.Chat{ID: "chat-old", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "durable-old", Name: "old", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(before); err != nil {
+		t.Fatal(err)
+	}
+
+	response := openWorkspaceSession(t, s, ws.ID, map[string]string{"id": "durable-new", "resumeIdentity": source})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", response.Code, response.Body.String())
+	}
+	after, err := st.GetChat("chat-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DurableSessionID != before.DurableSessionID || after.SessionFile != before.SessionFile || after.SessionProvenance != before.SessionProvenance {
+		t.Fatalf("old chat rebound onto replacement session: before=%+v after=%+v", before, after)
 	}
 }

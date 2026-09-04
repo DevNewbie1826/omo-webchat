@@ -96,7 +96,7 @@ func (s *Server) handleAdoptWorkspaceSession(w http.ResponseWriter, r *http.Requ
 			existing = &candidate
 			break
 		}
-		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+		if existing == nil && sessionMatchesChat(source, candidate) {
 			existing = &candidate
 		}
 	}
@@ -243,7 +243,7 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 			writeJSON(w, http.StatusOK, projectChat(candidate))
 			return
 		}
-		if existing == nil && (candidate.DurableSessionID == source.ID || candidate.SessionFile == source.Path) {
+		if existing == nil && sessionMatchesChat(source, candidate) {
 			existing = &candidate
 		}
 	}
