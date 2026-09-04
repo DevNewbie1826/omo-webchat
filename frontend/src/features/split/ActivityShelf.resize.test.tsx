@@ -35,6 +35,10 @@ function activityState(): ActivityState {
   };
 }
 
+function emptyState(): ActivityState {
+  return { tasks: new Map(), dags: new Map(), todo: null, heartbeats: new Map() };
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -56,6 +60,39 @@ function mockPanelRect(height: number): void {
     y: 400,
     toJSON: () => ({}),
   } as DOMRect);
+}
+
+/** Controllable ResizeObserver fake: tests fire measured heights explicitly. */
+class HeadroomResizeObserver {
+  static instances: HeadroomResizeObserver[] = [];
+  readonly observed: Element[] = [];
+  disconnected = false;
+
+  constructor(private readonly callback: ResizeObserverCallback) {
+    HeadroomResizeObserver.instances.push(this);
+  }
+
+  observe(target: Element): void {
+    this.observed.push(target);
+  }
+
+  unobserve(): void {}
+
+  disconnect(): void {
+    this.disconnected = true;
+  }
+
+  fire(height: number): void {
+    act(() => {
+      this.callback(
+        this.observed.map((target) => ({
+          target,
+          contentRect: { height, width: 600, x: 0, y: 0, top: 0, left: 0, bottom: height, right: 600, toJSON: () => ({}) },
+        }) as unknown as ResizeObserverEntry),
+        this as unknown as ResizeObserver,
+      );
+    });
+  }
 }
 
 function pointerDown(clientY: number): void {
@@ -99,14 +136,18 @@ describe("ActivityShelf resize", () => {
     vi.unstubAllGlobals();
   });
 
-  function renderShelf(): void {
+  function renderShelfWith(activities: ActivityState): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
-          <ActivityShelf activities={activityState()} />
+          <ActivityShelf activities={activities} />
         </I18nContext.Provider>,
       );
     });
+  }
+
+  function renderShelf(): void {
+    renderShelfWith(activityState());
   }
 
   function openShelf(): void {
@@ -257,5 +298,79 @@ describe("ActivityShelf resize", () => {
     const css = readFileSync("src/styles/activity-shelf.css", "utf8");
     const narrow = css.match(/@container chat-pane \(max-width: 494px\) \{([\s\S]+)\}\s*$/)?.[1] ?? "";
     expect(narrow).not.toMatch(/\.th-activity-resize\s*\{[^}]*display:\s*none/);
+  });
+
+  describe("measured panel headroom", () => {
+    beforeEach(() => {
+      HeadroomResizeObserver.instances = [];
+      vi.stubGlobal("ResizeObserver", HeadroomResizeObserver);
+    });
+
+    it("toggles data-headless from the measured panel height (18px hides headers, 120px restores them)", () => {
+      renderShelf();
+      openShelf();
+      const panel = panelOf();
+      expect(panel.hasAttribute("data-headless")).toBe(false);
+      const [observer] = HeadroomResizeObserver.instances;
+      expect(observer).toBeDefined();
+      expect(observer?.observed).toEqual([panel]);
+      observer?.fire(18);
+      expect(panel.getAttribute("data-headless")).toBe("true");
+      observer?.fire(120);
+      expect(panel.hasAttribute("data-headless")).toBe(false);
+    });
+
+    it("disconnects the observer, clears the flag on close, and starts fresh on reopen", () => {
+      renderShelf();
+      openShelf();
+      const panel = panelOf();
+      const [observer] = HeadroomResizeObserver.instances;
+      observer?.fire(18);
+      expect(panel.getAttribute("data-headless")).toBe("true");
+      const bar = requireElement(
+        container.querySelector<HTMLButtonElement>(".th-activity-bar"),
+        "collapsed summary bar",
+      );
+      act(() => {
+        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      expect(observer?.disconnected).toBe(true);
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+      act(() => {
+        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      expect(HeadroomResizeObserver.instances.length).toBe(2);
+      expect(panelOf().hasAttribute("data-headless")).toBe(false);
+    });
+
+    it("re-observes the replacement panel when an open shelf empties and repopulates", () => {
+      renderShelf();
+      openShelf();
+      const firstPanel = panelOf();
+      const [firstObserver] = HeadroomResizeObserver.instances;
+      firstObserver?.fire(18);
+      expect(firstPanel.getAttribute("data-headless")).toBe("true");
+
+      // Activity empties while the shelf stays open: the component returns
+      // null without unmounting, so the observer must be torn down with the
+      // panel instead of lingering attached to the detached element.
+      renderShelfWith(emptyState());
+      expect(container.querySelector(".th-activity-shelf")).toBeNull();
+      expect(firstObserver?.disconnected).toBe(true);
+
+      // Activity returns: the replacement panel is a NEW element and must be
+      // observed by a NEW observer, with headless reset instead of inherited.
+      renderShelfWith(activityState());
+      expect(HeadroomResizeObserver.instances.length).toBe(2);
+      const secondPanel = panelOf();
+      expect(secondPanel).not.toBe(firstPanel);
+      const [, secondObserver] = HeadroomResizeObserver.instances;
+      expect(secondObserver?.observed).toEqual([secondPanel]);
+      expect(secondPanel.hasAttribute("data-headless")).toBe(false);
+      secondObserver?.fire(54);
+      expect(secondPanel.hasAttribute("data-headless")).toBe(false);
+      secondObserver?.fire(18);
+      expect(secondPanel.getAttribute("data-headless")).toBe("true");
+    });
   });
 });

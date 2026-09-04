@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
+  ReactElement,
 } from "react";
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
@@ -24,9 +25,32 @@ export interface ActivityShelfProps {
   readonly activities: ActivityState;
 }
 
+/** Summary segments join through this one separator so the " · " gap stays
+ *  symmetric by construction (same convention as ToolCard's .th-tool-sep). */
+function BarSeparator(): ReactElement {
+  return (
+    <>
+      {" "}
+      <span className="th-activity-bar-sep" aria-hidden="true">
+        {"·"}
+      </span>
+      {" "}
+    </>
+  );
+}
+
 const PANEL_MIN = 120;
 const PANEL_KEY_STEP = 24;
 const PANEL_STORAGE_KEY = "th-activity-panel-height";
+
+/** Rendered panel content height below which a section header row paints as
+ *  half-clipped glyphs at the scrollport edge: below this the headless state
+ *  hides the header chrome until the panel has room to show it legibly. The
+ *  trigger is the panel's own measured box (ResizeObserver on the panel
+ *  element), never the pane height — a roomy panel in a short pane, or a
+ *  short split pane with a usable panel, keeps its headers and DAG
+ *  List/Graph controls. */
+const PANEL_HEADLESS_BELOW_PX = 40;
 
 function maxPanelHeight(): number {
   return Math.round(window.innerHeight * 0.6);
@@ -52,6 +76,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   const [view, setView] = useState<DagView>("list");
   const [height, setHeight] = useState<number | null>(() => detectPanelHeight());
   const [resizing, setResizing] = useState(false);
+  const [headless, setHeadless] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
@@ -80,6 +105,32 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [hasLiveActivity]);
+
+  // Headless measurement: watch the expanded panel's rendered content height
+  // and toggle data-headless around PANEL_HEADLESS_BELOW_PX. Environments
+  // without ResizeObserver (old jsdom) simply never enter the headless state.
+  // The panel element exists exactly while open && hasActivity (the component
+  // returns null without unmounting when the activity empties), so both belong
+  // in the deps: each re-run disconnects the observer bound to the previous
+  // element — resetting headless — and, once a panel is back, observes the
+  // CURRENT one. An observer must never outlive its element.
+  useEffect(() => {
+    if (!open || !hasActivity) {
+      setHeadless(false);
+      return undefined;
+    }
+    const panel = panelRef.current;
+    if (panel === null || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry) return;
+      setHeadless(entry.contentRect.height < PANEL_HEADLESS_BELOW_PX);
+    });
+    observer.observe(panel);
+    return () => {
+      observer.disconnect();
+      setHeadless(false);
+    };
+  }, [open, hasActivity]);
 
   if (!hasActivity) return null;
 
@@ -160,13 +211,13 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
           <span className="th-activity-bar-text">
             {segments.map((segment, index) => (
               <span key={segment} className="th-activity-bar-seg">
-                {index > 0 && <span className="th-activity-bar-sep">·</span>}
+                {index > 0 && <BarSeparator />}
                 {segment}
               </span>
             ))}
             {historyPartial && (
               <span className="th-activity-bar-seg">
-                {segments.length > 0 && <span className="th-activity-bar-sep">·</span>}
+                {segments.length > 0 && <BarSeparator />}
                 <span className="th-activity-partial">{t("activity.partial")}</span>
               </span>
             )}
@@ -197,6 +248,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             id={panelId}
             role="group"
             aria-label={t("activity.panel")}
+            data-headless={headless ? "true" : undefined}
             className={`th-activity-panel${height === null ? "" : " th-activity-panel--sized"}${resizing ? " th-activity-panel--resizing" : ""}`}
             style={height === null ? undefined : { height: `${height}px` }}
           >
