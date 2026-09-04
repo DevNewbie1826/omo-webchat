@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -491,6 +492,82 @@ func TestBlockedPromptDoesNotBlockFollowUpOrAbort(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "chat.abort", "sessionId": "blocked-prompt"})
 	if !h.daemon.AwaitRequestCount(omorpc.CmdAbort, 1, 5*time.Second) {
 		t.Fatal("abort was not forwarded while prompt response was blocked")
+	}
+}
+
+func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-identity")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-identity"})
+	frames.next(t, "ready")
+
+	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeUnknownSession)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-1",
+		"run": map[string]any{"kind": "prompt", "message": "fail"},
+	})
+	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "prompt-1" {
+		t.Fatalf("prompt admission ack = %v", ack)
+	}
+	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "prompt-1" || failure["code"] != "provider_error" {
+		t.Fatalf("prompt completion error = %v", failure)
+	}
+
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	releaseRun := h.daemon.HoldPrompt(h.path)
+	defer releaseRun()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-2",
+		"run": map[string]any{"kind": "prompt", "message": "run"},
+	})
+	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "prompt-2" {
+		t.Fatalf("successful admission ack = %v", ack)
+	}
+
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-identity", "requestId": "follow-1",
+		"run": map[string]any{"kind": "follow_up", "message": "later"},
+	})
+	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "follow-1" {
+		t.Fatalf("follow-up admission ack = %v", ack)
+	}
+	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "follow-1" || failure["code"] != "provider_error" {
+		t.Fatalf("follow-up completion error = %v", failure)
+	}
+}
+
+func TestChatSendDetachedMutationBackpressure(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-backpressure")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-backpressure"})
+	frames.next(t, "ready")
+
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	releaseFollowUps := h.daemon.BlockHandler(omorpc.CmdFollowUp)
+	defer releaseFollowUps()
+	for i := 0; i < session.DetachedMutationLimit; i++ {
+		requestID := fmt.Sprintf("queued-%d", i)
+		writeClient(t, conn, map[string]any{
+			"type": "chat.send", "sessionId": "send-backpressure", "requestId": requestID,
+			"run": map[string]any{"kind": "follow_up", "message": requestID},
+		})
+		if ack := frames.next(t, "ack"); ack["requestId"] != requestID {
+			t.Fatalf("queued admission ack = %v, want %q", ack, requestID)
+		}
+	}
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-backpressure", "requestId": "overflow",
+		"run": map[string]any{"kind": "follow_up", "message": "overflow"},
+	})
+	failure := frames.next(t, "error")
+	if failure["code"] != "send_backpressure" || failure["command"] != "chat.send" || failure["requestId"] != "overflow" {
+		t.Fatalf("backpressure error = %v", failure)
 	}
 }
 

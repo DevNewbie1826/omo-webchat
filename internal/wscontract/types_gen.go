@@ -532,6 +532,7 @@ type ChatSendFrameRun struct {
 }
 
 type ChatSendFrame struct {
+	RequestID *string          `json:"requestId,omitempty"`
 	Run       ChatSendFrameRun `json:"run"`
 	SessionID string           `json:"sessionId"`
 	Type      string           `json:"type"`
@@ -1621,7 +1622,7 @@ func (v *ChatSendFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"run", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"requestId", "run", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2266,7 +2267,7 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 				return nil, err
 			}
 		case "chat.send":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"run": validationSchema{Type: "object", Properties: map[string]validationSchema{"images": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}}, Required: []string{"data", "mimeType"}}}, "kind": validationSchema{Type: "string", Enum: []string{"prompt", "steer", "follow_up"}}, "message": validationSchema{Type: "string"}}, Required: []string{"kind", "message"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.send"}}, Required: []string{"type", "sessionId", "run"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"requestId": validationSchema{Type: "string"}, "run": validationSchema{Type: "object", Properties: map[string]validationSchema{"images": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}}, Required: []string{"data", "mimeType"}}}, "kind": validationSchema{Type: "string", Enum: []string{"prompt", "steer", "follow_up"}}, "message": validationSchema{Type: "string"}}, Required: []string{"kind", "message"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.send"}}, Required: []string{"type", "sessionId", "run"}}); err != nil {
 				return nil, err
 			}
 		case "chat.abort":

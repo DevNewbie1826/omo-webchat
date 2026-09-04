@@ -18,6 +18,7 @@ var (
 	ErrSessionResumable     = errors.New("session: provider session is resumable")
 	ErrManagerClosed        = errors.New("session: manager closed")
 	ErrOpenBusy             = errors.New("session: detached open limit reached")
+	ErrSendBackpressure     = errors.New("session: detached mutation limit reached")
 	ErrSubscriberOverflow   = errors.New("session: subscriber queue overflow")
 	ErrSubscriberDetached   = errors.New("session: subscriber detached")
 	ErrSubscriberDelivery   = errors.New("session: subscriber delivery failed")
@@ -34,6 +35,8 @@ const (
 	// DefaultDetachedOpenLimit bounds RPC correlations and cleanup goroutines
 	// retained by cancelled open_session calls across all chat IDs.
 	DefaultDetachedOpenLimit = 32
+	// DetachedMutationLimit bounds response correlations retained by one session.
+	DetachedMutationLimit = 16
 )
 
 const (

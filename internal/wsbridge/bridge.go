@@ -498,23 +498,26 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 
 	switch f := frame.(type) {
 	case *wscontract.ChatSendFrame:
+		requestID := deref(f.RequestID)
 		images := make([]map[string]string, len(f.Run.Images))
 		for i, x := range f.Run.Images {
 			images[i] = map[string]string{"data": x.Data, "mimeType": x.MimeType}
 		}
 		switch string(f.Run.Kind) {
 		case "prompt":
-			err = sess.SendPromptDetached(ctx, f.Run.Message, images)
+			err = sess.SendPromptDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
 		case "steer":
-			err = sess.SendSteerDetached(ctx, f.Run.Message)
+			err = sess.SendSteerDetachedWithRequestID(ctx, f.Run.Message, requestID)
 		case "follow_up", "followUp":
-			err = sess.SendFollowUpDetached(ctx, f.Run.Message, images)
+			err = sess.SendFollowUpDetachedWithRequestID(ctx, f.Run.Message, images, requestID)
 		default:
-			c.sendError("bad_frame", "unknown run kind", "chat.send", "")
+			c.sendError("bad_frame", "unknown run kind", "chat.send", requestID)
 			return
 		}
 		if err != nil {
-			c.sendSessionError(err, "chat.send", "")
+			c.sendSessionError(err, "chat.send", requestID)
+		} else if requestID != "" {
+			c.sendAck("chat.send", requestID)
 		}
 	case *wscontract.ChatAbortFrame:
 		if err := sess.Abort(ctx); err != nil {
@@ -763,6 +766,9 @@ func (c *connection) sendSessionError(err error, command, requestID string) {
 	if errors.Is(err, session.ErrCompactionInFlight) {
 		code = "compaction_in_flight"
 	}
+	if errors.Is(err, session.ErrSendBackpressure) {
+		code = "send_backpressure"
+	}
 	c.sendError(code, err.Error(), command, requestID)
 }
 
@@ -930,6 +936,8 @@ func clientSessionID(f wscontract.ClientFrame) string {
 }
 func requestID(f wscontract.ClientFrame) string {
 	switch x := f.(type) {
+	case *wscontract.ChatSendFrame:
+		return deref(x.RequestID)
 	case *wscontract.ChatSetFrame:
 		return deref(x.RequestID)
 	case *wscontract.ApprovalRespondFrame:
