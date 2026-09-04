@@ -184,6 +184,18 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
   };
+  const settleFailedPending = (pending: chatState.PendingOptimistic): void => {
+    bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
+    bindings.messageVersionRef.current += 1;
+    bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
+    bindings.retiredSteerIdsRef.current.delete(pending.id);
+    bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
+    bindings.retainFailedDrafts([pending]);
+    if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
+      bindings.submitLatchRef.current = false;
+      clearLiveSurfaces();
+    }
+  };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
       || !bindings.externalRecoveryReadyRef.current
@@ -357,6 +369,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // resurrect a dismissed failure.
         if (frame.requestId && frame.command === "chat.send"
           && !bindings.consumeOutcome(frame.requestId)) return;
+        // Settle an owned send before any specialized presentation branch can
+        // return. Resume and external-write failures still choose their own UI,
+        // but the optimistic prompt is already rolled back and recoverable.
+        const correlatedPending = frame.requestId
+          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
+            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
+          : undefined;
+        if (correlatedPending) settleFailedPending(correlatedPending);
         // The session was unloaded while idle; the conversation is durable
         // and the next chat.send transparently resumes it. Nothing is
         // rendered and no manual action is offered - only the state frame
@@ -410,28 +430,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (sendFailure === null) bindings.setError(frame.message);
         else bindings.setSendError(sendFailure);
 
-        // Correlated failures settle only their operation. Legacy provider
-        // prompt failures and genuinely terminal session errors have no
-        // request identity, so retain the established active-run recovery
-        // fallback without allowing an unrelated request id to claim it.
-        const pending = frame.requestId
-          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
-            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
-          : (frame.command === "prompt"
-            || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
-              ? bindings.activeRunRef.current ?? undefined
-              : undefined;
-        if (!pending) return;
-        bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
-        bindings.messageVersionRef.current += 1;
-        bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
-        bindings.retiredSteerIdsRef.current.delete(pending.id);
-        bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
-        bindings.retainFailedDrafts([pending]);
-        if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
-          bindings.submitLatchRef.current = false;
-          clearLiveSurfaces();
-        }
+        // Legacy provider prompt failures and genuinely terminal session
+        // errors have no request identity, so retain the established active-run
+        // recovery fallback without allowing an unrelated request id to claim it.
+        const pending = !frame.requestId && (frame.command === "prompt"
+          || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
+            ? bindings.activeRunRef.current ?? undefined
+            : undefined;
+        if (pending) settleFailedPending(pending);
         return;
       }
       case "notice":

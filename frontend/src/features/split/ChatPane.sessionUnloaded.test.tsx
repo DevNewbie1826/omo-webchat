@@ -104,27 +104,85 @@ describe("ChatPane session_unloaded quiet handling", () => {
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
 	});
 
-	it("lets the next chat.send proceed normally after an unload", () => {
+	it("settles a transparently resumed send through admission and completed replay", () => {
 		act(() => {
 			deliver(sessionUnloadedFrame());
 		});
+		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
 
 		act(() => setTextareaValue(textarea(), "after the unload"));
 		act(() => pressKey(textarea(), "Enter"));
 
+		const send = chatSends(sent)[0];
+		if (!send?.requestId) throw new Error("missing chat.send request id");
+		const requestId = send.requestId;
 		expect(chatSends(sent)).toHaveLength(1);
-		expect(chatSends(sent)[0]).toMatchObject({
+		expect(send).toMatchObject({
 			type: "chat.send",
-			run: { message: "after the unload" },
+			run: { kind: "prompt", message: "after the unload" },
+		});
+		expect(container.textContent).toContain("chat.responding");
+
+		// Admission belongs to the first attempt. The resumed retry emits the
+		// provider lifecycle and its terminal outcome is replayed to this pane.
+		act(() => {
+			deliver({ type: "ack", sessionId: "chat-1", command: "chat.send", requestId });
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "end_turn" });
+			deliver({
+				type: "ack",
+				sessionId: "chat-1",
+				command: "chat.send",
+				requestId,
+				phase: "completed",
+			});
 		});
 
-		// The transparent resume lands: a state frame proves the session is
-		// live again and the pane keeps working without any unload surface.
-		act(() => {
-			deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false });
-		});
+		expect(container.textContent).not.toContain("chat.responding");
+		expect(textarea().value).toBe("");
+		expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe("chat.send");
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
-		expect(container.querySelector(".th-chat-input")).not.toBeNull();
+	});
+
+	it("restores the draft when transparent resume fails with typed correlation", () => {
+		act(() => {
+			deliver(sessionUnloadedFrame());
+		});
+		act(() => setTextareaValue(textarea(), "recover this draft"));
+		act(() => pressKey(textarea(), "Enter"));
+
+		const send = chatSends(sent)[0];
+		if (!send?.requestId) throw new Error("missing chat.send request id");
+		const requestId = send.requestId;
+		expect(container.textContent).toContain("chat.responding");
+
+		act(() => {
+			deliver(parsedFrame({
+				type: "error",
+				sessionId: "chat-1",
+				code: "resume_failed",
+				command: "chat.send",
+				requestId,
+				dangling: true,
+				candidates: [],
+				message: "stored session no longer resolves",
+			}));
+		});
+
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+		expect(textarea().value).toBe("recover this draft");
+		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe("chat.send");
+		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
+		expect(container.querySelector(".th-send-error-banner")).toBeNull();
+		expect(container.textContent).not.toContain("stored session no longer resolves");
+
+		act(() => pressKey(textarea(), "Enter"));
+		expect(chatSends(sent)).toHaveLength(2);
+		expect(chatSends(sent)[1]).toMatchObject({
+			type: "chat.send",
+			run: { kind: "prompt", message: "recover this draft" },
+		});
 	});
 
 	it("removes the sessionUnloaded i18n keys from both locales", () => {
