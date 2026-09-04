@@ -106,58 +106,8 @@ jobs:
 
       - name: Windows omorpc tests
         shell: pwsh
-        run: go test ./internal/omorpc/ -count=1 -run TestResolve
+        run: go test ./internal/omorpc/ -count=1
 
       - name: Server smoke
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          go build -o omo-webchat.exe ./cmd/server
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $exe = Join-Path (Get-Location) 'omo-webchat.exe'
-          $proc = Start-Process -FilePath $exe -ArgumentList '--password','devsmoke123','--port','18099' -PassThru -NoNewWindow
-          if (-not $proc) { throw 'Start-Process returned no process' }
-          $status = 0
-          try {
-            $readyDeadline = [datetime]::UtcNow.AddSeconds(30)
-            while ([datetime]::UtcNow -lt $readyDeadline) {
-              try {
-                $resp = Invoke-WebRequest -Uri 'http://127.0.0.1:18099/' -UseBasicParsing -TimeoutSec 2
-                $status = [int]$resp.StatusCode
-                if ($status -eq 200) { break }
-              } catch {
-                $status = 0
-              }
-            }
-            if ($status -ne 200) {
-              throw "server did not return HTTP 200 within deadline (last status=$status)"
-            }
-          } finally {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            try { & taskkill.exe /T /F /PID $proc.Id | Out-Null } catch {}
-          }
-          $freeDeadline = [datetime]::UtcNow.AddSeconds(15)
-          $listening = $true
-          while ([datetime]::UtcNow -lt $freeDeadline) {
-            $client = [System.Net.Sockets.TcpClient]::new()
-            try {
-              $iar = $client.BeginConnect('127.0.0.1', 18099, $null, $null)
-              if (-not $iar.AsyncWaitHandle.WaitOne(200, $false)) {
-                continue
-              }
-              try {
-                $client.EndConnect($iar)
-              } catch {
-                $listening = $false
-                break
-              }
-            } catch {
-              $listening = $false
-              break
-            } finally {
-              $client.Dispose()
-            }
-          }
-          if ($listening) { throw 'port 18099 still accepting connections after stop' }
-          Write-Output "SMOKE=PASS status=$status"
+        run: go test ./test/smoke/ -count=1 -v
