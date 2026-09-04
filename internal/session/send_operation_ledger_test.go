@@ -46,8 +46,8 @@ func TestAttachReplaysFullSendOperationLedger(t *testing.T) {
 	for i := 0; i < maxSendOperationLedger; i++ {
 		frame := sub.next(t)
 		wantID := fmt.Sprintf("request-%02d", i)
-		if frame.Kind != FrameAck || frame.RequestID != wantID {
-			t.Fatalf("operation replay %d = %+v, want ack for %q", i, frame, wantID)
+		if frame.Kind != FrameAck || frame.RequestID != wantID || frame.Phase != "completed" {
+			t.Fatalf("operation replay %d = %+v, want completed ack for %q", i, frame, wantID)
 		}
 	}
 }
@@ -116,13 +116,12 @@ func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *test
 		t.Fatalf("admission phase = %v, want admitted", operation.phase)
 	}
 
-	// Detached completion callbacks use publishDetachedError for both success
-	// and failure; success records the terminal outcome without publishing an
-	// additional live frame.
-	s.publishDetachedError(nil, "chat.send", "successful-send")
+	// Detached completion callbacks publish the request-keyed terminal outcome
+	// and retain it for reconnect replay.
+	s.publishDetachedOutcome(nil, "chat.send", "successful-send")
 	operation := s.sendOperations["successful-send"]
-	if operation.phase != sendOperationTerminal || operation.outcome.Kind != FrameAck {
-		t.Fatalf("successful completion = %+v, want terminal ack", operation)
+	if operation.phase != sendOperationTerminal || operation.outcome.Kind != FrameAck || operation.outcome.Phase != "completed" {
+		t.Fatalf("successful completion = %+v, want completed terminal ack", operation)
 	}
 
 	sub := &synchronousLedgerRecorder{recorder: newRecorder(2)}
@@ -133,7 +132,7 @@ func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *test
 	if ready := sub.next(t); ready.Kind != FrameReady {
 		t.Fatalf("first replay frame = %+v, want ready", ready)
 	}
-	if outcome := sub.next(t); outcome.Kind != FrameAck || outcome.RequestID != "successful-send" {
+	if outcome := sub.next(t); outcome.Kind != FrameAck || outcome.RequestID != "successful-send" || outcome.Phase != "completed" {
 		t.Fatalf("successful replay outcome = %+v", outcome)
 	}
 }

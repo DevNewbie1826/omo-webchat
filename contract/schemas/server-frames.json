@@ -671,6 +671,10 @@
         "requestId": {
           "type": "string",
           "description": "Correlates with the client request (invariant 19)"
+        },
+        "phase": {
+          "type": "string",
+          "description": "Absent or admitted acknowledges write admission; completed marks successful terminal completion"
         }
       }
     },

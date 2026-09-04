@@ -79,6 +79,29 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 	}
 }
 
+func nextSuccessfulSendAcks(t *testing.T, frames *collector, requestID string) {
+	t.Helper()
+	var admitted, completed bool
+	for range 2 {
+		ack := frames.next(t, "ack")
+		if ack["command"] != "chat.send" || ack["requestId"] != requestID {
+			t.Fatalf("send ack = %v, want request %q", ack, requestID)
+		}
+		phase, present := ack["phase"]
+		switch {
+		case !present:
+			admitted = true
+		case phase == "completed":
+			completed = true
+		default:
+			t.Fatalf("send ack phase = %v, want absent or completed", phase)
+		}
+	}
+	if !admitted || !completed {
+		t.Fatalf("send acknowledgements admitted=%v completed=%v", admitted, completed)
+	}
+}
+
 func TestRouteContextBudgetsLongRunningFramesSeparately(t *testing.T) {
 	c := &connection{ctx: context.Background()}
 	longRunning := []struct {
@@ -508,6 +531,8 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	})
 	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "prompt-1" {
 		t.Fatalf("prompt admission ack = %v", ack)
+	} else if _, present := ack["phase"]; present {
+		t.Fatalf("prompt admission ack gained phase: %v", ack)
 	}
 	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "prompt-1" || failure["code"] != "provider_error" {
 		t.Fatalf("prompt completion error = %v", failure)
@@ -523,9 +548,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-2",
 		"run": map[string]any{"kind": "prompt", "message": "run"},
 	})
-	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "prompt-2" {
-		t.Fatalf("successful admission ack = %v", ack)
-	}
+	nextSuccessfulSendAcks(t, frames, "prompt-2")
 
 	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
 	writeClient(t, conn, map[string]any{
@@ -537,6 +560,34 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	}
 	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "follow-1" || failure["code"] != "provider_error" {
 		t.Fatalf("follow-up completion error = %v", failure)
+	}
+}
+
+func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-completed")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-completed"})
+	frames.next(t, "ready")
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+
+	const message = "same canonical message"
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-completed", "requestId": "steer-success",
+		"run": map[string]any{"kind": "steer", "message": message},
+	})
+	nextSuccessfulSendAcks(t, frames, "steer-success")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdSteer, 1, 5*time.Second) {
+		t.Fatal("successful steer was not forwarded")
+	}
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-completed", "requestId": "follow-success",
+		"run": map[string]any{"kind": "follow_up", "message": message},
+	})
+	nextSuccessfulSendAcks(t, frames, "follow-success")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("successful follow-up was not forwarded")
 	}
 }
 

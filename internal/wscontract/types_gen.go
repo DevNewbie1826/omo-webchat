@@ -154,6 +154,8 @@ type HelloFrame struct {
 type AckFrame struct {
 	Command string  `json:"command"`
 	ID      *string `json:"id,omitempty"`
+	// Absent or admitted acknowledges write admission; completed marks successful terminal completion
+	Phase *string `json:"phase,omitempty"`
 	// Correlates with the client request (invariant 19)
 	RequestID *string `json:"requestId,omitempty"`
 	SessionID *string `json:"sessionId,omitempty"`
@@ -902,7 +904,7 @@ func (v *AckFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"command", "id", "requestId", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"command", "id", "phase", "requestId", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2134,7 +2136,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "ack":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ack"}}, Required: []string{"type", "command"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"command": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "phase": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ack"}}, Required: []string{"type", "command"}}); err != nil {
 				return nil, err
 			}
 		case "control.result":

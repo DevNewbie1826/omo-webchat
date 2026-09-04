@@ -182,6 +182,9 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		if f.RequestID != "" {
 			out.RequestID = &f.RequestID
 		}
+		if f.Phase != "" {
+			out.Phase = &f.Phase
+		}
 		if f.ApprovalID != "" {
 			out.ID = &f.ApprovalID
 		}

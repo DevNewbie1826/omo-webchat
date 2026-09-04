@@ -232,20 +232,20 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			if !ownsPrompt {
 				s.completePrompt(seq, msg, callErr)
 				if detached {
-					s.publishDetachedError(callErr, "chat.send", requestID)
+					s.publishDetachedOutcome(callErr, "chat.send", requestID)
 				}
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
 				s.completePrompt(seq, msg, steerErr)
 				if detached {
-					s.publishDetachedError(steerErr, "chat.send", requestID)
+					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
 				}
 			}
 			if detached {
 				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
 					s.completePrompt(seq, msg, steerErr)
-					s.publishDetachedError(steerErr, "chat.send", requestID)
+					s.publishDetachedOutcome(steerErr, "chat.send", requestID)
 				}
 				return
 			}
@@ -254,7 +254,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 		s.completePrompt(seq, msg, callErr)
 		if detached {
-			s.publishDetachedError(callErr, "chat.send", requestID)
+			s.publishDetachedOutcome(callErr, "chat.send", requestID)
 		}
 	}
 	if detached {
@@ -379,7 +379,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
 		if detached {
-			s.publishDetachedError(callErr, "chat.send", requestID)
+			s.publishDetachedOutcome(callErr, "chat.send", requestID)
 		}
 	}
 	if detached {
@@ -416,13 +416,16 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 	return err
 }
 
-func (s *Session) publishDetachedError(err error, command, requestID string) {
+func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	s.completeSendOperation(requestID, err)
-	if err == nil {
+	if err == nil && requestID == "" {
 		return
 	}
 	s.lifecycleMu.Lock()
 	frame := s.sendOperationFrameLocked(requestID, err)
+	if operation, ok := s.sendOperations[requestID]; ok && operation.phase == sendOperationTerminal {
+		frame = operation.outcome
+	}
 	frame.Command = command
 	s.publishLocked(frame)
 	s.lifecycleMu.Unlock()
@@ -487,6 +490,9 @@ func (s *Session) completeSendOperation(requestID string, err error) {
 	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
 		operation.phase = sendOperationTerminal
 		operation.outcome = s.sendOperationFrameLocked(requestID, err)
+		if err == nil {
+			operation.outcome.Phase = "completed"
+		}
 		operation.err = err
 		s.sendOperations[requestID] = operation
 	}
@@ -549,7 +555,7 @@ func (s *Session) Abort(ctx context.Context) error {
 		s.lifecycleMu.Lock()
 		s.abortInFlight = false
 		s.lifecycleMu.Unlock()
-		s.publishDetachedError(callErr, "chat.abort", "")
+		s.publishDetachedOutcome(callErr, "chat.abort", "")
 	})
 	if err != nil {
 		s.noteTransportError(err)

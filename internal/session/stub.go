@@ -144,6 +144,7 @@ type Frame struct {
 	Resumed    bool
 	Command    string
 	RequestID  string
+	Phase      string
 	ApprovalID string
 	Data       any
 }
