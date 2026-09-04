@@ -69,6 +69,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Windows lock tests
+        shell: pwsh
+        run: go test ./internal/omorpc/ -count=1 -run TestEnsureLock
+
       - name: Probe AF_UNIX RPC
         continue-on-error: true
         shell: pwsh
