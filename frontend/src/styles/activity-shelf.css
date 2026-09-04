@@ -90,9 +90,9 @@
   white-space: nowrap;
 }
 
-/* Separator spacing lives in the separator text itself (" · ", the same
-   convention as .th-tool-sep) so the gap is symmetric by construction; the
-   rule only dims the glyph. */
+/* Symmetric spacing comes from BarSeparator markup: the middot is in an
+   aria-hidden span with spaces in surrounding text nodes; this rule only dims
+   the glyph and adds no margins. */
 .th-activity-bar-sep {
   color: var(--th-faint);
 }
@@ -585,21 +585,17 @@
   }
 }
 
-/* Extreme vertical compression: once the pane is this short, the expanded
-   panel's visible box drops below ~40px and a section header row at the
-   scrollport edge paints as half-clipped glyphs. Hide the header rows (the
-   list content keeps scrolling) until there is headroom to show them
-   legibly. */
-@container chat-pane (max-height: 600px) {
-  .th-activity-section-head {
-    display: none;
-  }
-
-  .th-activity-dag-toolbar {
-    display: none;
-  }
-
-  .th-activity-section > .th-activity-section-title {
-    display: none;
-  }
+/* Headless panel under extreme vertical compression: once the panel's own
+   rendered content height drops below PANEL_HEADLESS_BELOW_PX (40px,
+   measured by the ResizeObserver in ActivityShelf.tsx), a section header
+   row at the scrollport edge paints as half-clipped glyphs. The component
+   sets data-headless="true" on this panel — measured panel headroom is the
+   trigger, not pane height, so a roomy panel in a short pane keeps its
+   headers and the DAG List/Graph controls, and a short split pane with a
+   usable panel keeps them too. While headless only the header chrome is
+   hidden; the list content keeps scrolling. */
+.th-activity-panel[data-headless="true"] .th-activity-section-head,
+.th-activity-panel[data-headless="true"] .th-activity-dag-toolbar,
+.th-activity-panel[data-headless="true"] .th-activity-section > .th-activity-section-title {
+  display: none;
 }
