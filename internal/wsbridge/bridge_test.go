@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -74,7 +75,10 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 		select {
 		case <-c.notify:
 		case <-timer.C:
-			t.Fatalf("timed out waiting for %s", typ)
+			c.mu.Lock()
+			pending := append([]json.RawMessage(nil), c.frames...)
+			c.mu.Unlock()
+			t.Fatalf("timed out waiting for %s; pending frames: %s", typ, pending)
 		}
 	}
 }
@@ -404,11 +408,13 @@ func TestBridgeEndToEndResumeReplayAndErrors(t *testing.T) {
 }
 
 type inPlaceBridgeHarness struct {
-	daemon  *omorpctest.Daemon
-	store   *cursorstore.Store
-	manager *session.Manager
-	server  *httptest.Server
-	path    string
+	daemon      *omorpctest.Daemon
+	store       *cursorstore.Store
+	manager     *session.Manager
+	bridge      *Handler
+	server      *httptest.Server
+	path        string
+	chatVersion atomic.Uint64
 }
 
 func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness {
@@ -451,14 +457,42 @@ func newInPlaceBridgeHarness(t *testing.T, chatID string) *inPlaceBridgeHarness 
 		t.Fatal(err)
 	}
 	manager := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store), RetryBackoff: time.Millisecond})
-	server := httptest.NewServer(New(Config{Manager: manager, Store: store}))
+	harness := &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, path: path}
+	bridge := New(Config{
+		Manager: manager, Store: store,
+		PrepareChatVersion: func(context.Context, string, string) (uint64, error) { return harness.chatVersion.Load(), nil },
+		ChatVersion:        func(string) uint64 { return harness.chatVersion.Load() },
+	})
+	harness.bridge = bridge
+	server := httptest.NewServer(bridge)
+	harness.server = server
 	t.Cleanup(func() {
 		server.Close()
 		_ = manager.CloseAll(context.Background())
 		_ = client.Close()
 		d.Stop()
 	})
-	return &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, server: server, path: path}
+	return harness
+}
+
+func (h *inPlaceBridgeHarness) soleServerConnection(t *testing.T) *connection {
+	t.Helper()
+	var found *connection
+	h.bridge.conns.Range(func(_, value any) bool {
+		if found != nil {
+			t.Fatal("expected exactly one server connection")
+		}
+		found = value.(*connection)
+		return true
+	})
+	if found == nil {
+		t.Fatal("server connection was not registered")
+	}
+	return found
+}
+
+func (h *inPlaceBridgeHarness) soleServerConnectionDone(t *testing.T) <-chan struct{} {
+	return h.soleServerConnection(t).ctx.Done()
 }
 
 func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
@@ -473,6 +507,69 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	writeClient(t, conn, map[string]any{"type": "hello", "version": 2})
 	t.Cleanup(func() { _ = conn.WriteClose(1000, nil) })
 	return conn, frames
+}
+
+func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "blocked-query-binding"})
+	frames.next(t, "ready")
+	serverConn := h.soleServerConnection(t)
+	_, sess := serverConn.binding()
+	if sess == nil {
+		t.Fatal("server connection was not bound")
+	}
+
+	release := h.daemon.BlockHandler(omorpc.CmdGetCommands)
+	defer release()
+	returned := make(chan struct{})
+	go func() {
+		serverConn.queryCommands(context.Background(), sess)
+		close(returned)
+	}()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetCommands, 2, 5*time.Second) {
+		t.Fatal("blocked query did not reach provider")
+	}
+	serverConn.stateMu.Lock()
+	serverConn.chatID = "replacement-chat"
+	serverConn.bindingGeneration++
+	serverConn.stateMu.Unlock()
+	release()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked query did not return")
+	}
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "commands" {
+			t.Fatalf("stale query crossed binding generation: %s", raw)
+		}
+	}
+}
+
+func TestDeletionAfterInitializeDoesNotPublishSocketBinding(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "post-initialize-delete")
+	conn, frames := h.connect(t)
+	release := h.daemon.BlockHandler(omorpc.CmdGetEntries)
+	defer release()
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "post-initialize-delete", "recovery": true})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, 5*time.Second) {
+		t.Fatal("initialize did not reach history hydration")
+	}
+	h.chatVersion.Add(1)
+	release()
+	failure := frames.next(t, "error")
+	if failure["code"] != "no_chat" {
+		t.Fatalf("post-initialize deletion = %#v", failure)
+	}
+	chatID, sess := h.soleServerConnection(t).binding()
+	if chatID != "" || sess != nil {
+		t.Fatalf("rejected route was published to socket: chat=%q session=%p", chatID, sess)
+	}
 }
 
 func TestBlockedPromptDoesNotBlockFollowUpOrAbort(t *testing.T) {
@@ -719,6 +816,56 @@ func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) 
 	}
 }
 
+func TestDetachedInRunSendResumesAndRetriesWithOriginalAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    string
+		command string
+	}{
+		{name: "steer", kind: "steer", command: omorpc.CmdSteer},
+		{name: "follow-up", kind: "follow_up", command: omorpc.CmdFollowUp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chatID := "send-detached-" + tc.name + "-resume"
+			h := newInPlaceBridgeHarness(t, chatID)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			frames.next(t, "ready")
+			h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+			frames.next(t, "run.started")
+
+			releaseRaw := h.daemon.BlockHandler(tc.command)
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(releaseRaw) }
+			defer release()
+			requestID := "retry-" + tc.name
+			writeClient(t, conn, map[string]any{
+				"type": "chat.send", "sessionId": chatID, "requestId": requestID,
+				"run": map[string]any{"kind": tc.kind, "message": "retry in run"},
+			})
+			if ack := frames.next(t, "ack"); ack["requestId"] != requestID || ack["phase"] != nil {
+				t.Fatalf("initial admission = %#v", ack)
+			}
+			if !h.daemon.AwaitRequestCount(tc.command, 1, 5*time.Second) {
+				t.Fatalf("initial %s was not observed", tc.name)
+			}
+			h.daemon.UnloadSession(h.path)
+			frames.next(t, "error")
+			release()
+
+			if ack := frames.next(t, "ack"); ack["requestId"] != requestID || ack["phase"] != "completed" {
+				t.Fatalf("retried completion = %#v", ack)
+			}
+			if !h.daemon.AwaitRequestCount(tc.command, 2, 5*time.Second) {
+				t.Fatalf("%s was not retried", tc.name)
+			}
+			if got := h.daemon.RequestCount(tc.command); got != 2 {
+				t.Fatalf("%s attempts = %d, want exactly 2", tc.name, got)
+			}
+		})
+	}
+}
+
 func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "send-resume-serialized")
 	firstConn, first := h.connect(t)
@@ -783,8 +930,14 @@ func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T)
 	}
 	h.daemon.UnloadSession(h.path)
 	frames.next(t, "error")
+	serverDone := h.soleServerConnectionDone(t)
 	if err := conn.WriteClose(1000, nil); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server connection context was not cancelled after client close")
 	}
 	releasePrompt()
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {

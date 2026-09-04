@@ -39,13 +39,23 @@ type sendOperationPhase uint8
 
 const (
 	sendOperationAdmitted sendOperationPhase = iota
+	sendOperationRetrying
 	sendOperationTerminal
 )
 
 type sendOperation struct {
-	phase   sendOperationPhase
-	outcome Frame
-	err     error
+	phase                sendOperationPhase
+	outcome              Frame
+	err                  error
+	preserveRunAdmission bool
+}
+
+type sendOperationOwner struct {
+	mu                sync.Mutex
+	operations        map[string]sendOperation
+	fifo              []string
+	detachedMutations int
+	sessions          map[*Session]struct{}
 }
 
 type Session struct {
@@ -75,9 +85,7 @@ type Session struct {
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
 	abortInFlight                                                           bool
-	detachedMutations                                                       int
-	sendOperations                                                          map[string]sendOperation
-	sendOperationFIFO                                                       []string
+	sendOwner                                                               *sendOperationOwner
 	closeTxn                                                                *closeTransaction
 	idleTimer                                                               *time.Timer
 	activitySnapshots                                                       map[string]json.RawMessage
@@ -107,6 +115,7 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		title: name, nameSource: nameSource,
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
+	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	s.broadcast.onDetach = m.cfg.OnDetach
 	return s
 }
@@ -165,20 +174,32 @@ func (s *Session) acquisitionError() error {
 	return err
 }
 
+func (s *Session) operationOwner() *sendOperationOwner {
+	if s.sendOwner == nil {
+		s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
+	}
+	return s.sendOwner
+}
+
 func (s *Session) inheritSendOperations(prior *Session) {
 	if prior == nil || prior == s {
 		return
 	}
-	prior.lifecycleMu.Lock()
-	defer prior.lifecycleMu.Unlock()
-	if len(prior.sendOperationFIFO) == 0 {
+	owner := prior.operationOwner()
+	owner.mu.Lock()
+	delete(s.sendOwner.sessions, s)
+	s.sendOwner = owner
+	owner.sessions[s] = struct{}{}
+	owner.mu.Unlock()
+}
+
+func (s *Session) releaseSendOperations() {
+	if s.sendOwner == nil {
 		return
 	}
-	s.sendOperations = make(map[string]sendOperation, len(prior.sendOperations))
-	s.sendOperationFIFO = append([]string(nil), prior.sendOperationFIFO...)
-	for id, operation := range prior.sendOperations {
-		s.sendOperations[id] = operation
-	}
+	s.sendOwner.mu.Lock()
+	delete(s.sendOwner.sessions, s)
+	s.sendOwner.mu.Unlock()
 }
 
 func (s *Session) routeLocked() (string, error) {
@@ -413,10 +434,14 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
+	retryAdmission := s.consumeRetryRunAdmission(requestID)
 	s.lifecycleMu.Lock()
 	// Steer and follow-up are accepted while a prompt, provider run, or
-	// standalone compaction is active and queue with that work.
-	if !s.promptInFlight && !s.providerRunActive && !s.compactionActive {
+	// standalone compaction is active and queue with that work. A replacement
+	// route may not have observed the original run events, so an admitted retry
+	// carries exactly one authoritative in-run admission across that boundary.
+	active := s.promptInFlight || s.providerRunActive || s.compactionActive
+	if !active && !retryAdmission {
 		s.lifecycleMu.Unlock()
 		return ErrPromptInFlight
 	}
@@ -443,24 +468,25 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
-	s.lifecycleMu.Lock()
-	if s.detachedMutations >= DetachedMutationLimit {
-		s.lifecycleMu.Unlock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if owner.detachedMutations >= DetachedMutationLimit {
+		owner.mu.Unlock()
 		return fmt.Errorf("%w: maximum %d outstanding operations", ErrSendBackpressure, DetachedMutationLimit)
 	}
-	s.detachedMutations++
-	s.lifecycleMu.Unlock()
+	owner.detachedMutations++
+	owner.mu.Unlock()
 
 	err := s.client.CallDetached(ctx, command, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
-		s.lifecycleMu.Lock()
-		s.detachedMutations--
-		s.lifecycleMu.Unlock()
+		owner.mu.Lock()
+		owner.detachedMutations--
+		owner.mu.Unlock()
 		complete(resp, epoch, callErr)
 	})
 	if err != nil {
-		s.lifecycleMu.Lock()
-		s.detachedMutations--
-		s.lifecycleMu.Unlock()
+		owner.mu.Lock()
+		owner.detachedMutations--
+		owner.mu.Unlock()
 	}
 	return err
 }
@@ -485,24 +511,24 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 	s.publishDetachedOutcome(err, command, requestID)
 }
 
-// PrepareDetachedSendRetry transfers an inherited request back to admission so
-// the original mutation can be attempted on a replacement provider route.
-func (s *Session) PrepareDetachedSendRetry(requestID string) {
+// PrepareDetachedSendRetry atomically claims the one retry owned by an
+// admitted operation. A completion that wins first leaves a terminal outcome
+// and prevents the provider mutation from being repeated.
+func (s *Session) PrepareDetachedSendRetry(requestID string, preserveRunAdmission bool) bool {
 	if requestID == "" {
-		return
+		return true
 	}
-	s.lifecycleMu.Lock()
-	if _, ok := s.sendOperations[requestID]; ok {
-		delete(s.sendOperations, requestID)
-		for i, id := range s.sendOperationFIFO {
-			if id == requestID {
-				copy(s.sendOperationFIFO[i:], s.sendOperationFIFO[i+1:])
-				s.sendOperationFIFO = s.sendOperationFIFO[:len(s.sendOperationFIFO)-1]
-				break
-			}
-		}
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	operation, ok := owner.operations[requestID]
+	if !ok || operation.phase != sendOperationAdmitted {
+		return false
 	}
-	s.lifecycleMu.Unlock()
+	operation.phase = sendOperationRetrying
+	operation.preserveRunAdmission = preserveRunAdmission
+	owner.operations[requestID] = operation
+	return true
 }
 
 // CompleteDetachedSend publishes and retains a terminal outcome owned by a
@@ -514,47 +540,72 @@ func (s *Session) CompleteDetachedSend(requestID string, err error) {
 // PublishSendOperationError publishes an acquisition failure as the terminal
 // outcome for the original request, replacing a synchronous admission error.
 func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
-	s.lifecycleMu.Lock()
 	frame := Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
+	owner := s.operationOwner()
+	owner.mu.Lock()
 	if requestID != "" {
-		if operation, ok := s.sendOperations[requestID]; ok {
-			operation.phase = sendOperationTerminal
-			operation.outcome = frame
-			operation.err = errors.New(info.Message)
-			s.sendOperations[requestID] = operation
+		operation, ok := owner.operations[requestID]
+		if !ok || operation.phase == sendOperationTerminal {
+			owner.mu.Unlock()
+			return
 		}
+		operation.phase = sendOperationTerminal
+		operation.outcome = frame
+		operation.err = errors.New(info.Message)
+		owner.operations[requestID] = operation
 	}
-	s.publishLocked(frame)
-	s.lifecycleMu.Unlock()
+	owner.publishLocked(frame)
+	owner.mu.Unlock()
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 	if err == nil && requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
-	frame := s.completeSendOperationLocked(requestID, err)
-	frame.Command = command
-	s.publishLocked(frame)
-	s.lifecycleMu.Unlock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	frame, won := s.completeSendOperationLocked(requestID, err)
+	if won {
+		frame.Command = command
+		if requestID != "" {
+			operation := owner.operations[requestID]
+			operation.outcome.Command = command
+			owner.operations[requestID] = operation
+		}
+		owner.publishLocked(frame)
+	}
+	owner.mu.Unlock()
+}
+
+func (o *sendOperationOwner) publishLocked(frame Frame) {
+	for target := range o.sessions {
+		target.lifecycleMu.Lock()
+		if !target.closed {
+			target.publishLocked(frame)
+		}
+		target.lifecycleMu.Unlock()
+	}
 }
 
 func (s *Session) beginSendOperation(requestID string) (error, bool) {
 	if requestID == "" {
 		return nil, false
 	}
-	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if operation, ok := s.sendOperations[requestID]; ok {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if operation, ok := owner.operations[requestID]; ok {
+		if operation.phase == sendOperationRetrying {
+			operation.phase = sendOperationAdmitted
+			owner.operations[requestID] = operation
+			return nil, false
+		}
 		return operation.err, true
 	}
-	if s.sendOperations == nil {
-		s.sendOperations = make(map[string]sendOperation)
-	}
-	if len(s.sendOperationFIFO) >= SendOperationLedgerCapacity {
+	if len(owner.fifo) >= SendOperationLedgerCapacity {
 		terminal := -1
-		for i, id := range s.sendOperationFIFO {
-			if s.sendOperations[id].phase == sendOperationTerminal {
+		for i, id := range owner.fifo {
+			if owner.operations[id].phase == sendOperationTerminal {
 				terminal = i
 				break
 			}
@@ -562,12 +613,12 @@ func (s *Session) beginSendOperation(requestID string) (error, bool) {
 		if terminal < 0 {
 			return fmt.Errorf("%w: maximum %d operations are still in flight", ErrSendBackpressure, SendOperationLedgerCapacity), true
 		}
-		delete(s.sendOperations, s.sendOperationFIFO[terminal])
-		copy(s.sendOperationFIFO[terminal:], s.sendOperationFIFO[terminal+1:])
-		s.sendOperationFIFO = s.sendOperationFIFO[:len(s.sendOperationFIFO)-1]
+		delete(owner.operations, owner.fifo[terminal])
+		copy(owner.fifo[terminal:], owner.fifo[terminal+1:])
+		owner.fifo = owner.fifo[:len(owner.fifo)-1]
 	}
-	s.sendOperations[requestID] = sendOperation{phase: sendOperationAdmitted}
-	s.sendOperationFIFO = append(s.sendOperationFIFO, requestID)
+	owner.operations[requestID] = sendOperation{phase: sendOperationAdmitted}
+	owner.fifo = append(owner.fifo, requestID)
 	return nil, false
 }
 
@@ -577,16 +628,17 @@ func (s *Session) recordSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
-	if operation, ok := s.sendOperations[requestID]; ok && operation.phase != sendOperationTerminal {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	if operation, ok := owner.operations[requestID]; ok && operation.phase != sendOperationTerminal {
 		operation.outcome = s.sendOperationFrameLocked(requestID, err)
 		operation.err = err
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrSessionResumable) && !errors.Is(err, ErrSessionClosed) {
 			operation.phase = sendOperationTerminal
 		}
-		s.sendOperations[requestID] = operation
+		owner.operations[requestID] = operation
 	}
-	s.lifecycleMu.Unlock()
+	owner.mu.Unlock()
 }
 
 // completeSendOperation records the provider response as the terminal outcome.
@@ -594,28 +646,44 @@ func (s *Session) completeSendOperation(requestID string, err error) {
 	if requestID == "" {
 		return
 	}
-	s.lifecycleMu.Lock()
+	owner := s.operationOwner()
+	owner.mu.Lock()
 	s.completeSendOperationLocked(requestID, err)
-	s.lifecycleMu.Unlock()
+	owner.mu.Unlock()
 }
 
-// completeSendOperationLocked returns the retained terminal snapshot while the
-// ledger is protected from concurrent admission and eviction.
-func (s *Session) completeSendOperationLocked(requestID string, err error) Frame {
+// completeSendOperationLocked returns the retained terminal snapshot and
+// whether this caller won completion. sendOwner.mu is held.
+func (s *Session) completeSendOperationLocked(requestID string, err error) (Frame, bool) {
 	frame := s.sendOperationFrameLocked(requestID, err)
-	if operation, ok := s.sendOperations[requestID]; ok {
-		if operation.phase != sendOperationTerminal {
-			operation.phase = sendOperationTerminal
-			operation.outcome = frame
-			if err == nil {
-				operation.outcome.Phase = "completed"
-			}
-			operation.err = err
-			s.sendOperations[requestID] = operation
-		}
-		return operation.outcome
+	operation, ok := s.sendOwner.operations[requestID]
+	if !ok || operation.phase == sendOperationTerminal {
+		return frame, false
 	}
-	return frame
+	operation.phase = sendOperationTerminal
+	operation.outcome = frame
+	if err == nil {
+		operation.outcome.Phase = "completed"
+	}
+	operation.err = err
+	s.sendOwner.operations[requestID] = operation
+	return operation.outcome, true
+}
+
+func (s *Session) consumeRetryRunAdmission(requestID string) bool {
+	if requestID == "" {
+		return false
+	}
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	operation, ok := owner.operations[requestID]
+	if !ok || !operation.preserveRunAdmission {
+		return false
+	}
+	operation.preserveRunAdmission = false
+	owner.operations[requestID] = operation
+	return true
 }
 
 func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {
@@ -1118,6 +1186,9 @@ func (s *Session) attachCheckedReplayTarget(sub Subscriber, initial ...Frame) (f
 }
 
 func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, replayInitial []Frame) (func(), *subscription, error) {
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
 	s.lifecycleMu.Lock()
 	if s.closed || s.closing {
 		s.lifecycleMu.Unlock()
@@ -1133,7 +1204,7 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 		return nil, nil, ErrSessionResumable
 	}
 	s.cancelIdleLocked()
-	initial := make([]Frame, 0, 3+len(s.sendOperationFIFO))
+	initial := make([]Frame, 0, 3+len(owner.fifo))
 	if s.readyPublished {
 		initial = append(initial, Frame{Kind: FrameReady, SessionID: s.durableID, Resumed: s.resumed})
 	}
@@ -1142,8 +1213,8 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
 		}
 	}
-	for _, requestID := range s.sendOperationFIFO {
-		if outcome := s.sendOperations[requestID].outcome; outcome.Kind != "" {
+	for _, requestID := range owner.fifo {
+		if outcome := owner.operations[requestID].outcome; outcome.Kind != "" {
 			initial = append(initial, outcome)
 		}
 	}
@@ -1297,6 +1368,7 @@ func (s *Session) retireReplaced() {
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 	s.broadcast.close(ErrSubscriberSessionEnd)
+	s.releaseSendOperations()
 }
 func (s *Session) publishError(info ErrorInfo) {
 	s.lifecycleMu.Lock()

@@ -24,44 +24,102 @@ type keyedFlight struct {
 	flights map[string]*chatFlight
 }
 type chatFlight struct {
-	permit chan struct{}
-	refs   int
+	owned   bool
+	waiters []*chatWaiter
 }
 
-// enter serializes operations for one chat through a permit channel. Waiting
-// is cancellable so manager shutdown can drain every keyed-flight entry.
+type chatWaiter struct {
+	ready   chan struct{}
+	granted bool
+}
+
+// enter serializes operations for one chat in explicit FIFO order. Waiting is
+// cancellable, and enqueue can reserve recovery's position before the current
+// owner hands the chat to another transport operation.
 func (k *keyedFlight) enter(ctx context.Context, key string) (func(), error) {
+	waiter := &chatWaiter{ready: make(chan struct{})}
 	k.mu.Lock()
 	if k.flights == nil {
 		k.flights = make(map[string]*chatFlight)
 	}
 	x := k.flights[key]
 	if x == nil {
-		x = &chatFlight{permit: make(chan struct{}, 1)}
-		x.permit <- struct{}{}
+		x = &chatFlight{}
 		k.flights[key] = x
 	}
-	x.refs++
+	if !x.owned && len(x.waiters) == 0 {
+		x.owned = true
+		waiter.granted = true
+		close(waiter.ready)
+	} else {
+		x.waiters = append(x.waiters, waiter)
+	}
 	k.mu.Unlock()
+
 	select {
-	case <-x.permit:
-		return func() {
-			x.permit <- struct{}{}
-			k.release(key, x)
-		}, nil
+	case <-waiter.ready:
+		var once sync.Once
+		return func() { once.Do(func() { k.release(key, x) }) }, nil
 	case <-ctx.Done():
-		k.release(key, x)
+		k.mu.Lock()
+		if waiter.granted {
+			k.mu.Unlock()
+			k.release(key, x)
+		} else {
+			for i, queued := range x.waiters {
+				if queued == waiter {
+					x.waiters = append(x.waiters[:i], x.waiters[i+1:]...)
+					break
+				}
+			}
+			if !x.owned && len(x.waiters) == 0 {
+				delete(k.flights, key)
+			}
+			k.mu.Unlock()
+		}
 		return nil, ctx.Err()
 	}
 }
 
 func (k *keyedFlight) release(key string, x *chatFlight) {
 	k.mu.Lock()
-	x.refs--
-	if x.refs == 0 {
+	if len(x.waiters) == 0 {
+		x.owned = false
 		delete(k.flights, key)
+		k.mu.Unlock()
+		return
+	}
+	next := x.waiters[0]
+	x.waiters = x.waiters[1:]
+	next.granted = true
+	close(next.ready)
+	k.mu.Unlock()
+}
+
+func (k *keyedFlight) enqueue(key string, run func()) {
+	waiter := &chatWaiter{ready: make(chan struct{})}
+	k.mu.Lock()
+	if k.flights == nil {
+		k.flights = make(map[string]*chatFlight)
+	}
+	x := k.flights[key]
+	if x == nil {
+		x = &chatFlight{}
+		k.flights[key] = x
+	}
+	if !x.owned && len(x.waiters) == 0 {
+		x.owned = true
+		waiter.granted = true
+		close(waiter.ready)
+	} else {
+		x.waiters = append(x.waiters, waiter)
 	}
 	k.mu.Unlock()
+	go func() {
+		<-waiter.ready
+		defer k.release(key, x)
+		run()
+	}()
 }
 
 const (
@@ -423,20 +481,20 @@ func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, nil, nil, nil, false, false)
+	return m.acquire(ctx, chat, sub, nil, nil, nil, false, false, false)
 }
 
 // AcquireInitialized keeps the per-chat flight through initialize, allowing a
 // transport to publish its binding and complete initial state/history queries
 // without cross-socket controls interleaving.
 func (m *Manager) AcquireInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, false, false)
 }
 
 // AcquireInitializedWithRecovery is AcquireInitialized with explicit authority
 // to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, true, false)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, true, false, false)
 }
 
 // AcquireInitializedChecked validates its caller's metadata generation before
@@ -444,35 +502,54 @@ func (m *Manager) AcquireInitializedWithRecovery(ctx context.Context, chat ChatR
 // validate must not acquire a lock that nests outside the manager's per-chat
 // flight.
 func (m *Manager) AcquireInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, false, false)
 }
 
 // AcquireInitializedCheckedWithRecovery combines checked publication with
 // explicit authority to replace a quarantined in-place provider route.
 func (m *Manager) AcquireInitializedCheckedWithRecovery(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, true, false)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, true, false, false)
+}
+
+// AcquireInitializedCheckedAndRun invokes run only after checked manager
+// publication, while retaining the per-chat owner through the callback.
+func (m *Manager) AcquireInitializedCheckedAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, run, false, false, false)
+}
+
+// AcquireInitializedCheckedWithRecoveryAndRun is the explicit-recovery form of
+// AcquireInitializedCheckedAndRun.
+func (m *Manager) AcquireInitializedCheckedWithRecoveryAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, run, true, false, false)
 }
 
 // ResumeInitialized resumes a durable cursor through the ordinary acquisition
 // checks but never falls back to a fresh session when that cursor is unusable.
 func (m *Manager) ResumeInitialized(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func())) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, true)
+	return m.acquire(ctx, chat, sub, initialize, nil, nil, false, true, false)
 }
 
 // ResumeInitializedChecked is ResumeInitialized with metadata-generation
 // validation before and after provider acquisition.
 func (m *Manager) ResumeInitializedChecked(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, true)
+	return m.acquire(ctx, chat, sub, initialize, validate, nil, false, true, false)
 }
 
 // ResumeInitializedCheckedAndRun keeps the per-chat permit through acquisition
 // and run. It is used by transports that must preserve ordering between a
 // resume and the mutation that caused it.
 func (m *Manager) ResumeInitializedCheckedAndRun(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
-	return m.acquire(ctx, chat, sub, initialize, validate, run, false, true)
+	return m.acquire(ctx, chat, sub, initialize, validate, run, false, true, false)
 }
 
-func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, recoveryAuthorized, resumeOnly bool) (*Session, bool, func(), error) {
+// ResumeInitializedCheckedAndRunInFlight is the queued-recovery form. The
+// caller already owns the chat through EnqueueChat and the acquire therefore
+// preserves that exact FIFO position instead of waiting on itself.
+func (m *Manager) ResumeInitializedCheckedAndRunInFlight(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
+	return m.acquire(ctx, chat, sub, initialize, validate, run, false, true, true)
+}
+
+func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, recoveryAuthorized, resumeOnly, permitHeld bool) (*Session, bool, func(), error) {
 	if chat == nil || chat.ChatID() == "" {
 		return nil, false, nil, errors.New("session: empty chat id")
 	}
@@ -493,14 +570,17 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	defer func() { stopShutdownCancel(); cancel() }()
 
 	chatID := chat.ChatID()
-	unlock, err := m.chats.enter(ctx, chatID)
-	if err != nil {
-		if m.isClosed() {
-			return nil, false, nil, ErrManagerClosed
+	var err error
+	if !permitHeld {
+		unlock, err := m.chats.enter(ctx, chatID)
+		if err != nil {
+			if m.isClosed() {
+				return nil, false, nil, ErrManagerClosed
+			}
+			return nil, false, nil, err
 		}
-		return nil, false, nil, err
+		defer unlock()
 	}
-	defer unlock()
 
 	// A delete that acquired the flight first has already invalidated callers
 	// prepared against its prior metadata generation. Reject them before they
@@ -653,6 +733,12 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
 	s.inheritSendOperations(existing)
+	sendOwnerAdopted := false
+	defer func() {
+		if !sendOwnerAdopted {
+			s.releaseSendOperations()
+		}
+	}()
 	s.inPlace = cur.InPlace
 	s.writePrepared = cur.WritePrepared
 	s.sessionFileIdentity = sessionFileIdentity
@@ -726,6 +812,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			epochLive = false
 		}
 		if valid && epochLive {
+			sendOwnerAdopted = true
 			if existing != nil {
 				delete(m.byRoute, existing.routingID)
 			}
@@ -746,13 +833,16 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return nil, false, nil, ErrManagerClosed
 		}
-		if existing != nil {
-			existing.retireReplaced()
-		}
 		if after != nil {
 			if err := after(s); err != nil {
+				if existing != nil {
+					existing.retireReplaced()
+				}
 				return s, true, detach, err
 			}
+		}
+		if existing != nil {
+			existing.retireReplaced()
 		}
 		return s, true, detach, nil
 	}
@@ -767,6 +857,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		epochLive = false
 	}
 	if valid {
+		sendOwnerAdopted = true
 		if existing != nil {
 			delete(m.byRoute, existing.routingID)
 		}
@@ -1108,6 +1199,12 @@ func (m *Manager) bumpSlotGenerationLocked(chatID string) {
 // called exactly once; waiting respects ctx cancellation.
 func (m *Manager) EnterChat(ctx context.Context, chatID string) (func(), error) {
 	return m.chats.enter(ctx, chatID)
+}
+
+// EnqueueChat reserves a FIFO chat-owner position before returning. run is
+// invoked asynchronously while that position is owned.
+func (m *Manager) EnqueueChat(chatID string, run func()) {
+	m.chats.enqueue(chatID, run)
 }
 
 func (m *Manager) Get(chatID string) (*Session, bool) {

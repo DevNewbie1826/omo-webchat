@@ -1,11 +1,14 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
 type synchronousLedgerRecorder struct {
@@ -67,13 +70,13 @@ func TestFullSendOperationLedgerRejectsWhenEveryEntryIsInFlight(t *testing.T) {
 	if !stop || !errors.Is(err, ErrSendBackpressure) {
 		t.Fatalf("full in-flight ledger admission = (%v, %v), want send backpressure", err, stop)
 	}
-	if len(s.sendOperationFIFO) != SendOperationLedgerCapacity || len(s.sendOperations) != SendOperationLedgerCapacity {
-		t.Fatalf("ledger changed after rejection: fifo=%d map=%d", len(s.sendOperationFIFO), len(s.sendOperations))
+	if len(s.sendOwner.fifo) != SendOperationLedgerCapacity || len(s.sendOwner.operations) != SendOperationLedgerCapacity {
+		t.Fatalf("ledger changed after rejection: fifo=%d map=%d", len(s.sendOwner.fifo), len(s.sendOwner.operations))
 	}
-	if _, exists := s.sendOperations["request-00"]; !exists {
+	if _, exists := s.sendOwner.operations["request-00"]; !exists {
 		t.Fatal("oldest in-flight operation was evicted")
 	}
-	if _, exists := s.sendOperations["overflow"]; exists {
+	if _, exists := s.sendOwner.operations["overflow"]; exists {
 		t.Fatal("rejected operation was inserted")
 	}
 }
@@ -92,17 +95,17 @@ func TestFullSendOperationLedgerEvictsOldestTerminalEntry(t *testing.T) {
 	if err, stop := s.beginSendOperation("replacement"); err != nil || stop {
 		t.Fatalf("replacement admission = (%v, %v)", err, stop)
 	}
-	if _, exists := s.sendOperations["request-00"]; exists {
+	if _, exists := s.sendOwner.operations["request-00"]; exists {
 		t.Fatal("oldest terminal operation was not evicted")
 	}
 	for i := 1; i < SendOperationLedgerCapacity; i++ {
 		requestID := fmt.Sprintf("request-%02d", i)
-		operation, exists := s.sendOperations[requestID]
+		operation, exists := s.sendOwner.operations[requestID]
 		if !exists || operation.phase != sendOperationAdmitted {
 			t.Fatalf("in-flight operation %q was not preserved: %+v, exists=%v", requestID, operation, exists)
 		}
 	}
-	if got := s.sendOperationFIFO[len(s.sendOperationFIFO)-1]; got != "replacement" {
+	if got := s.sendOwner.fifo[len(s.sendOwner.fifo)-1]; got != "replacement" {
 		t.Fatalf("newest ledger entry = %q, want replacement", got)
 	}
 }
@@ -161,29 +164,29 @@ func TestConcurrentCompletionAndAdmissionPublishAndRetainTerminalSnapshots(t *te
 		seen[frame.RequestID] = true
 	}
 
-	s.lifecycleMu.Lock()
-	if len(s.sendOperationFIFO) != SendOperationLedgerCapacity || len(s.sendOperations) != SendOperationLedgerCapacity {
-		s.lifecycleMu.Unlock()
-		t.Fatalf("concurrent ledger size = fifo %d/map %d, want %d", len(s.sendOperationFIFO), len(s.sendOperations), SendOperationLedgerCapacity)
+	s.sendOwner.mu.Lock()
+	if len(s.sendOwner.fifo) != SendOperationLedgerCapacity || len(s.sendOwner.operations) != SendOperationLedgerCapacity {
+		s.sendOwner.mu.Unlock()
+		t.Fatalf("concurrent ledger size = fifo %d/map %d, want %d", len(s.sendOwner.fifo), len(s.sendOwner.operations), SendOperationLedgerCapacity)
 	}
 	var replayWant []Frame
-	for _, requestID := range s.sendOperationFIFO {
-		operation := s.sendOperations[requestID]
+	for _, requestID := range s.sendOwner.fifo {
+		operation := s.sendOwner.operations[requestID]
 		if operation.phase == sendOperationTerminal {
 			if operation.outcome.Kind != FrameAck || operation.outcome.Phase != "completed" {
-				s.lifecycleMu.Unlock()
+				s.sendOwner.mu.Unlock()
 				t.Fatalf("retained terminal %q = %+v", requestID, operation)
 			}
 			replayWant = append(replayWant, operation.outcome)
 		}
 	}
 	for replacementID := range admitted {
-		if _, ok := s.sendOperations[replacementID]; !ok {
-			s.lifecycleMu.Unlock()
+		if _, ok := s.sendOwner.operations[replacementID]; !ok {
+			s.sendOwner.mu.Unlock()
 			t.Fatalf("successful concurrent admission %q was lost", replacementID)
 		}
 	}
-	s.lifecycleMu.Unlock()
+	s.sendOwner.mu.Unlock()
 
 	replay := &synchronousLedgerRecorder{recorder: newRecorder(len(replayWant) + 1)}
 	if _, err := s.attachChecked(replay); err != nil {
@@ -199,20 +202,92 @@ func TestConcurrentCompletionAndAdmissionPublishAndRetainTerminalSnapshots(t *te
 	}
 }
 
+func TestReplacementSharesSendOwnerAndTerminalPublicationHasOneWinner(t *testing.T) {
+	prior := &Session{durableID: "durable-shared", queueSize: DefaultQueueSize, readyPublished: true}
+	prior.operationOwner()
+	if err, duplicate := prior.beginSendOperation("shared-request"); err != nil || duplicate {
+		t.Fatalf("begin operation = (%v, %v)", err, duplicate)
+	}
+	prior.recordSendOperation("shared-request", nil)
+
+	replacement := &Session{durableID: "durable-shared", queueSize: DefaultQueueSize, readyPublished: true}
+	replacement.operationOwner()
+	replacement.inheritSendOperations(prior)
+	priorSub := &synchronousLedgerRecorder{recorder: newRecorder(3)}
+	replacementSub := &synchronousLedgerRecorder{recorder: newRecorder(3)}
+	if _, err := prior.attachChecked(priorSub); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replacement.attachChecked(replacementSub); err != nil {
+		t.Fatal(err)
+	}
+	defer prior.broadcast.close(ErrSubscriberSessionEnd)
+	defer replacement.broadcast.close(ErrSubscriberSessionEnd)
+	priorSub.next(t)
+	replacementSub.next(t)
+	priorSub.next(t)       // admitted replay
+	replacementSub.next(t) // admitted replay
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, sess := range []*Session{prior, replacement} {
+		wg.Add(1)
+		go func(sess *Session) {
+			defer wg.Done()
+			<-start
+			sess.CompleteDetachedSend("shared-request", nil)
+		}(sess)
+	}
+	close(start)
+	wg.Wait()
+	for name, sub := range map[string]*synchronousLedgerRecorder{"prior": priorSub, "replacement": replacementSub} {
+		if frame := sub.next(t); frame.Kind != FrameAck || frame.RequestID != "shared-request" || frame.Phase != "completed" {
+			t.Fatalf("%s completion = %+v", name, frame)
+		}
+	}
+
+	// A late callback from either route observes the terminal state and must not
+	// republish it.
+	prior.CompleteDetachedSend("shared-request", errors.New("late failure"))
+	for name, sub := range map[string]*synchronousLedgerRecorder{"prior": priorSub, "replacement": replacementSub} {
+		select {
+		case frame := <-sub.ch:
+			t.Fatalf("%s received republished terminal outcome: %+v", name, frame)
+		default:
+		}
+	}
+}
+
+func TestReplacementPreservesDetachedBackpressureAccounting(t *testing.T) {
+	prior := &Session{durableID: "durable-backpressure"}
+	owner := prior.operationOwner()
+	owner.mu.Lock()
+	owner.detachedMutations = DetachedMutationLimit
+	owner.mu.Unlock()
+	replacement := &Session{durableID: "durable-backpressure"}
+	replacement.operationOwner()
+	replacement.inheritSendOperations(prior)
+
+	err := replacement.callDetachedMutation(context.Background(), nil, func(*omorpc.Response, omorpc.EpochToken, error) {})
+	if !errors.Is(err, ErrSendBackpressure) {
+		t.Fatalf("replacement detached admission = %v, want ErrSendBackpressure", err)
+	}
+}
+
 func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *testing.T) {
 	s := &Session{durableID: "durable-success", queueSize: 1, readyPublished: true}
 	if err, stop := s.beginSendOperation("successful-send"); err != nil || stop {
 		t.Fatalf("begin operation = (%v, %v)", err, stop)
 	}
 	s.recordSendOperation("successful-send", nil)
-	if operation := s.sendOperations["successful-send"]; operation.phase != sendOperationAdmitted {
+	if operation := s.sendOwner.operations["successful-send"]; operation.phase != sendOperationAdmitted {
 		t.Fatalf("admission phase = %v, want admitted", operation.phase)
 	}
 
 	// Detached completion callbacks publish the request-keyed terminal outcome
 	// and retain it for reconnect replay.
 	s.publishDetachedOutcome(nil, "chat.send", "successful-send")
-	operation := s.sendOperations["successful-send"]
+	operation := s.sendOwner.operations["successful-send"]
 	if operation.phase != sendOperationTerminal || operation.outcome.Kind != FrameAck || operation.outcome.Phase != "completed" {
 		t.Fatalf("successful completion = %+v, want completed terminal ack", operation)
 	}
