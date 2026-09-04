@@ -15,10 +15,13 @@ import { describe, expect, it } from "vitest";
  * content cannot paint over the status strip and composer.
  * Because that clipping also cuts off the global outside focus outline, the
  * goal button must pull its focus treatment inside its own bounds in both
- * collapsed and expanded states. The user-sized activity panel must stay
- * viewport-bounded (max-height as a vh fraction, never none) so a stale
- * stored height from a taller window cannot dominate a short one. Rules are
- * read straight from disk
+ * collapsed and expanded states. The activity shelf is the other shrinkable
+ * sibling: flex: 0 1 auto (never flex: none) with the same bar-row min-height
+ * floor so its 60vh panel cannot shove the composer past the clipped pane
+ * once the transcript has already gone to zero. The user-sized activity
+ * panel must stay viewport-bounded (max-height as a vh fraction, never none)
+ * so a stale stored height from a taller window cannot dominate a short one.
+ * Rules are read straight from disk
  * (same readFileSync+regex approach as styleContracts.test.ts) so removing
  * or weakening any of them fails here.
  */
@@ -177,6 +180,57 @@ describe("goal shelf shrink contract", () => {
         `activity-shelf.css .th-activity-panel max-height is ` +
           `"${declarationValue(base, "max-height") || "missing"}"; ` +
           "the 280px default cap must stay intact",
+      );
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("makes .th-activity-shelf a shrinkable flex column floored at the bar-row height (never flex: none)", () => {
+    const shelf = ruleBody(activityShelf, ".th-activity-shelf");
+    const violations: string[] = [];
+    if (declarationValue(shelf, "display").toLowerCase() !== "flex") {
+      violations.push("activity-shelf.css .th-activity-shelf is not display: flex");
+    }
+    if (declarationValue(shelf, "flex-direction").toLowerCase() !== "column") {
+      violations.push("activity-shelf.css .th-activity-shelf is not flex-direction: column");
+    }
+    const minHeight = declarationValue(shelf, "min-height");
+    if (compactCss(minHeight) !== BAR_ROW_HEIGHT_FLOOR) {
+      violations.push(
+        `activity-shelf.css .th-activity-shelf min-height is "${minHeight || "missing"}"; ` +
+          "expected the bar-row height floor (secondary size * line-height + " +
+          "space-1 + space-1 + 2px borders) so the bar never collapses",
+      );
+    }
+    // Shrinkability: the flex shorthand must declare shrink 1 (flex: 0 1
+    // auto). flex: none - or any shrink-0 form - re-creates the
+    // composer-overflow blocker under .th-chat-main's clipping.
+    if (declarationValue(shelf, "flex") !== "0 1 auto") {
+      violations.push(
+        `activity-shelf.css .th-activity-shelf flex is ` +
+          `"${declarationValue(shelf, "flex") || "missing"}"; ` +
+          "it must stay shrinkable (flex: 0 1 auto), never flex: none",
+      );
+    }
+    // Clipping: once the shelf yields height, grip and panel content would
+    // otherwise render outside the box over later column siblings.
+    if (declarationValue(shelf, "overflow").toLowerCase() !== "hidden") {
+      violations.push(
+        `activity-shelf.css .th-activity-shelf overflow is ` +
+          `"${declarationValue(shelf, "overflow") || "missing"}"; ` +
+          "a squeezed shelf must clip (overflow: hidden) instead of painting over the status strip and composer",
+      );
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps the activity bar row non-shrinking with flex: none", () => {
+    const row = ruleBody(activityShelf, ".th-activity-shelf .th-activity-bar-row");
+    const violations: string[] = [];
+    if (declarationValue(row, "flex") !== "none") {
+      violations.push(
+        `activity-shelf.css .th-activity-shelf .th-activity-bar-row flex is ` +
+          `"${declarationValue(row, "flex") || "missing"}"; the bar must keep flex: none`,
       );
     }
     expect(violations).toEqual([]);

@@ -1,8 +1,30 @@
+/* Shrink contract: .th-chat-main clips overflow, so this sibling of the
+   goal shelf must also shrink (never flex: none). Once the transcript
+   scrollport hits zero, remaining deficit would otherwise push the rigid
+   composer past the pane bottom. overflow: hidden is required so a shelf
+   squeezed below its content height clips the grip and panel instead of
+   painting them over the status strip and composer (visible overflow would
+   cover later siblings still inside .th-chat-main). The shelf may shrink
+   only by yielding panel height; the bar-row floor keeps overflow:hidden
+   from zeroing the automatic minimum. flex-grow stays 0 so the shelf never
+   expands past its content. */
 .th-activity-shelf {
-  flex: none;
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   min-width: 0;
+  min-height: calc(
+    var(--th-type-secondary-size) * var(--th-type-secondary-line) +
+      var(--th-space-1) + var(--th-space-1) + 2px
+  );
+  overflow: hidden;
   margin: var(--th-space-2) auto 0;
+}
+
+/* The bar row never yields its height; only the panel below it shrinks. */
+.th-activity-shelf .th-activity-bar-row {
+  flex: none;
 }
 
 .th-activity-bar {
