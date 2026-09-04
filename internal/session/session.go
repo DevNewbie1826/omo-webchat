@@ -59,6 +59,7 @@ type sendOperationOwner struct {
 	retryRunAdmissionToken DetachedSendRetryToken
 	nextRetryToken         uint64
 	activeDetached         atomic.Int32
+	detachedSettled        chan struct{}
 	sessions               map[*Session]struct{}
 }
 
@@ -320,6 +321,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	s.lifecycleMu.Unlock()
 
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
 			s.lifecycleMu.Lock()
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
@@ -332,6 +334,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				return
 			}
 			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				steerErr = s.classifySendError(steerErr)
 				s.completePrompt(seq, msg, steerErr)
 				if detached {
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
@@ -339,6 +342,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 			}
 			if detached {
 				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
+					steerErr = s.classifySendError(steerErr)
 					s.completePrompt(seq, msg, steerErr)
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
 				}
@@ -355,6 +359,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	if detached {
 		err = s.callDetachedMutation(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, complete)
 		if err != nil {
+			err = s.classifySendError(err)
 			s.completePrompt(seq, msg, err)
 		}
 		return err
@@ -362,6 +367,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 
 	var retryErr error
 	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
 			s.lifecycleMu.Lock()
 			ownsPrompt := s.promptSeq == seq && s.promptInFlight
@@ -372,8 +378,10 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				return
 			}
 			_, retryErr = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				steerErr = s.classifySendError(steerErr)
 				s.completePrompt(seq, msg, steerErr)
 			})
+			retryErr = s.classifySendError(retryErr)
 			return
 		}
 		retryErr = callErr
@@ -382,7 +390,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	if err != nil && strings.HasPrefix(err.Error(), busyAgentErrorPrefix) {
 		return retryErr
 	}
-	return err
+	return s.classifySendError(err)
 }
 
 func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
@@ -508,6 +516,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 		return err
 	}
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		callErr = s.classifySendError(callErr)
 		s.noteTransportError(callErr)
 		if detached {
 			s.finishDetachedSend(callErr, "chat.send", requestID, sendComplete)
@@ -516,12 +525,13 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	if detached {
 		err = s.callDetachedMutation(ctx, command(route), complete)
 		if err != nil {
+			err = s.classifySendError(err)
 			s.noteTransportError(err)
 		}
 		return err
 	}
 	_, err = s.client.CallRetained(ctx, command(route), complete)
-	return err
+	return s.classifySendError(err)
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
@@ -540,17 +550,33 @@ func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Comma
 		owner.detachedMutations--
 		owner.mu.Unlock()
 		complete(resp, epoch, callErr)
-		owner.activeDetached.Add(-1)
+		if owner.activeDetached.Add(-1) == 0 {
+			owner.notifyDetachedSettled()
+		}
 		owner.rearmIdle()
 	})
 	if err != nil {
 		owner.mu.Lock()
 		owner.detachedMutations--
 		owner.mu.Unlock()
-		owner.activeDetached.Add(-1)
+		if owner.activeDetached.Add(-1) == 0 {
+			owner.notifyDetachedSettled()
+		}
 		owner.rearmIdle()
 	}
 	return err
+}
+
+func (o *sendOperationOwner) notifyDetachedSettled() {
+	o.mu.Lock()
+	settled := o.detachedSettled
+	o.mu.Unlock()
+	if settled != nil {
+		select {
+		case settled <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func (s *Session) finishDetachedSend(err error, command, requestID string, complete func(error)) {
@@ -561,9 +587,13 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 			case s.quarantineErr != nil:
 				err = s.quarantineErr
 			case s.resumable:
-				err = ErrSessionResumable
+				if !errors.Is(err, ErrSessionResumable) {
+					err = ErrSessionResumable
+				}
 			case s.closed || s.closing:
-				err = ErrSessionClosed
+				if !errors.Is(err, ErrSessionClosed) {
+					err = ErrSessionClosed
+				}
 			}
 			s.lifecycleMu.Unlock()
 		}
@@ -611,10 +641,10 @@ func (s *Session) RetireDetachedSendRetry(token DetachedSendRetryToken) {
 	owner.mu.Unlock()
 }
 
-// CompleteDetachedSend publishes and retains a terminal outcome owned by a
-// transport completion callback.
+// CompleteDetachedSend publishes and retains a terminal outcome after
+// transparent recovery has either completed or exhausted its single retry.
 func (s *Session) CompleteDetachedSend(requestID string, err error) {
-	s.publishDetachedOutcome(err, "chat.send", requestID)
+	s.publishDetachedOutcomeWithPolicy(err, "chat.send", requestID, false)
 }
 
 // PublishSendOperationError publishes an acquisition failure as the terminal
@@ -640,7 +670,11 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 }
 
 func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
-	if err == nil && requestID == "" {
+	s.publishDetachedOutcomeWithPolicy(err, command, requestID, true)
+}
+
+func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID string, suppressResumable bool) {
+	if suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
 		return
 	}
 	owner := s.operationOwner()
@@ -774,6 +808,9 @@ func (s *Session) sendOperationFrameLocked(requestID string, err error) Frame {
 	}
 	info := ErrorInfo{Code: "provider_error", Message: err.Error()}
 	switch {
+	case errors.Is(err, ErrSessionResumable):
+		info.Code = "session_unloaded"
+		info.Message = "provider unloaded the session"
 	case errors.Is(err, ErrPromptInFlight):
 		info.Code = "prompt_in_flight"
 	case errors.Is(err, ErrCompactionInFlight):
@@ -1353,12 +1390,47 @@ func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
 	return txn
 }
 
+// executeClose binds a close to its opening epoch whenever possible. For a
+// dead epoch, a manager fence makes ownership inspection, fallback cleanup,
+// and colliding route publication mutually exclusive without holding a lock
+// across the RPC.
 func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
 	route := s.routingID
-	_, err := s.client.CallRetained(ctx, omorpc.CloseSession{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+	cmd := omorpc.CloseSession{SessionID: route}
+	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.completeClose(txn, route, callErr)
-	})
-	return closeResult(err)
+	}
+	// Close bound to the session's epoch whenever that epoch is still live.
+	// When it is dead, the daemon-side route may outlive the connection, but
+	// route ids can also repeat across epochs. The fallback fence refuses an
+	// existing owner and prevents an in-flight colliding open from publishing.
+	if s.client.EpochCurrent(s.epoch) {
+		_, err := s.client.CallRetainedInEpoch(ctx, s.epoch, cmd, complete)
+		return closeResult(err)
+	}
+	cleanupDone, ok := s.manager.beginFallbackCleanup(s, route)
+	if !ok {
+		err := omorpc.ErrEpochMismatch
+		complete(nil, omorpc.EpochToken{}, err)
+		return err
+	}
+	var releaseCleanup sync.Once
+	fallbackComplete := func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		defer releaseCleanup.Do(func() { s.manager.endRouteCleanup(route, cleanupDone) })
+		complete(resp, epoch, callErr)
+	}
+	s.lifecycleMu.Lock()
+	resumable := s.resumable
+	s.lifecycleMu.Unlock()
+	if resumable {
+		fallbackCtx, cancel := context.WithTimeout(ctx, s.manager.cfg.CloseTimeout)
+		defer cancel()
+		_, err := s.client.CallRetained(fallbackCtx, cmd, fallbackComplete)
+		return closeResult(err)
+	}
+	err := omorpc.ErrEpochMismatch
+	fallbackComplete(nil, omorpc.EpochToken{}, err)
+	return err
 }
 
 func waitCloseTransaction(ctx context.Context, txn *closeTransaction) error {
@@ -1465,6 +1537,38 @@ func (s *Session) noteTransportError(err error) {
 	if errors.Is(err, omorpc.ErrDisconnected) {
 		s.manager.invalidateEpoch(s.epoch)
 	}
+}
+
+// classifySendError turns a definitive provider-side route loss into the
+// lifecycle signal consumed by transparent send recovery. The transition is
+// silent: the replacement send owns the eventual user-visible outcome.
+// This assumes unknown_session and session_closing are pre-mutation negative
+// acknowledgements: the rejected send did not reach the model, so replay plus
+// the local operation ledger is exactly-once from the user's perspective.
+func (s *Session) classifySendError(err error) error {
+	var stable *omorpc.StableError
+	if !errors.As(err, &stable) || (stable.Code != omorpc.ErrCodeUnknownSession && stable.Code != omorpc.ErrCodeSessionClosing) {
+		return err
+	}
+	s.lifecycleMu.Lock()
+	if !s.closed && !s.invalidated {
+		s.markProviderUnloadedLocked()
+	}
+	s.lifecycleMu.Unlock()
+	if errors.Is(err, ErrSessionResumable) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrSessionResumable, err)
+}
+
+func (s *Session) markProviderUnloadedLocked() {
+	s.invalidated = true
+	s.resumable = true
+	s.promptInFlight = false
+	s.providerRunActive = false
+	s.compactionActive = false
+	s.localCommandActive = false
+	s.cancelIdleLocked()
 }
 
 func (s *Session) activeLocked() bool {

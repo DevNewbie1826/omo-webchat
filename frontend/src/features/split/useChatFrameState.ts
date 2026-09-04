@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useT } from "../../i18n";
 import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
@@ -114,6 +115,7 @@ export function mergeTranscriptItems(
 }
 
 export function useChatFrameState() {
+  const { t } = useT();
   const controls = useConfirmedControls();
   const ledger = controls.ledger;
   const [messages, setMessages] = useState<readonly UiMessage[]>([]);
@@ -338,6 +340,7 @@ export function useChatFrameState() {
   };
 
   const handleFrame = createChatFrameHandler({
+    t,
     controls,
     streaming,
     pageBuffer,
