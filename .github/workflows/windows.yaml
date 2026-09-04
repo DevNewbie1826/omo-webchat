@@ -82,3 +82,32 @@ jobs:
           if (Test-Path -LiteralPath probe-g1.txt) {
             Get-Content -LiteralPath probe-g1.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
+
+  smoke-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build embedded frontend
+        run: cd frontend && npm ci && npm run build
+
+      - name: Windows procexec tests
+        shell: pwsh
+        run: go test ./internal/procexec/ -count=1
+
+      - name: Windows omorpc tests
+        shell: pwsh
+        run: go test ./internal/omorpc/ -count=1
+
+      - name: Server smoke
+        shell: pwsh
+        run: go test ./test/smoke/ -count=1 -v

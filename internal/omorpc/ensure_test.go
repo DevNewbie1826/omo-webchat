@@ -1123,7 +1123,7 @@ func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) 
 		}
 	}()
 
-	client, identity, stable, peer, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.process.Pid)
+	client, identity, stable, peer, err := probeAuthenticatedDaemon(context.Background(), cfg, ensured.supervisor.process.Pid)
 	if err != nil {
 		t.Fatalf("authenticate replacement: %v", err)
 	}
@@ -1594,7 +1594,7 @@ func TestEnsuredDaemonStopEscalatesAfterCanceledWait(t *testing.T) {
 	if err := ensured.StopBounded(6 * time.Second); err != nil {
 		t.Fatalf("StopBounded did not complete SIGKILL escalation: %v", err)
 	}
-	if err := ensured.process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
+	if err := ensured.supervisor.process.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) {
 		t.Fatalf("SIGTERM-ignoring supervisor remains alive after Stop: %v", err)
 	}
 }
