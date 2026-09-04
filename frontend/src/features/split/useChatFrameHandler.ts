@@ -136,6 +136,26 @@ export function sendErrorDetail(payload: JsonObject | null): string {
   return typeof message === "string" ? message : "";
 }
 
+export function retirePendingSteers(
+  pending: readonly chatState.PendingOptimistic[],
+  retiredSteerIds: Set<number>,
+): void {
+  for (const operation of pending) {
+    if (operation.kind === "steer") retiredSteerIds.add(operation.id);
+  }
+}
+
+export function settleCompletedSendPending(
+  pending: chatState.PendingOptimistic[],
+  requestId: string,
+  retiredSteerIds: Set<number>,
+): chatState.PendingOptimistic[] {
+  const operation = pending.find((candidate) => candidate.requestId === requestId);
+  if (operation?.kind !== "steer") return pending;
+  retiredSteerIds.delete(operation.id);
+  return pending.filter((candidate) => candidate.id !== operation.id);
+}
+
 function cacheHitRateOf(tokens: unknown): number | null {
   if (typeof tokens !== "object" || tokens === null || Array.isArray(tokens)) return null;
   const input = "input" in tokens ? tokens.input : undefined;
@@ -278,9 +298,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // own outcome arrives: either a provider echo admits it or a late
         // error restores its draft. Remember which correlated operations no
         // longer have a marker so history replay cannot recreate one.
-        for (const pending of bindings.pendingRef.current) {
-          if (pending.kind === "steer") bindings.retiredSteerIdsRef.current.add(pending.id);
-        }
+        retirePendingSteers(bindings.pendingRef.current, bindings.retiredSteerIdsRef.current);
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {
@@ -301,11 +319,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (!bindings.ownedSendRequestIdsRef.current.has(frame.requestId)
             || !bindings.consumeOutcome(frame.requestId)) return;
           bindings.ownedSendRequestIdsRef.current.delete(frame.requestId);
-          const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
-          // Prompt correlation already has a dedicated echo/active-run path.
-          // Detached operations do not, so terminal success retires theirs.
-          if (pending && pending.kind !== "prompt") {
-            bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
+          // An unechoed follow-up keeps its correlation and optimistic marker
+          // until live/history reconciliation replaces both with the canonical
+          // user message. A steer marker was already removed by run.done, so
+          // terminal success can retire the operation and its replay tombstone.
+          const pending = bindings.pendingRef.current;
+          const settled = settleCompletedSendPending(pending, frame.requestId, bindings.retiredSteerIdsRef.current);
+          if (settled !== pending) {
+            bindings.pendingRef.current = settled;
             bindings.notifyPendingChanged();
           }
         } else if (frame.requestId) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatServerFrame } from "../../lib/chatWs";
-import { sendCommandFailureOf } from "./useChatFrameHandler";
+import { retirePendingSteers, sendCommandFailureOf, settleCompletedSendPending } from "./useChatFrameHandler";
+import type { PendingOptimistic } from "./chatSessionState";
 
 type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
 
@@ -30,5 +31,36 @@ describe("sendCommandFailureOf", () => {
 
   it("does not classify unrelated provider failures", () => {
     expect(sendCommandFailureOf(failure("get_entries", "provider_error"))).toBeNull();
+  });
+});
+
+describe("completed chat.send settlement", () => {
+  const pending = (kind: PendingOptimistic["kind"], id: number, requestId: string): PendingOptimistic => ({
+    id,
+    requestId,
+    kind,
+    text: "work",
+    image: null,
+    priorMatchingCount: 0,
+    baselineKnown: true,
+    accepted: true,
+    admitted: true,
+  });
+
+  it("clears the steer tombstone when completion follows run.done", () => {
+    const steer = pending("steer", 7, "steer-7");
+    const retiredSteerIds = new Set<number>();
+    retirePendingSteers([steer], retiredSteerIds);
+    expect(retiredSteerIds).toEqual(new Set([steer.id]));
+
+    expect(settleCompletedSendPending([steer], steer.requestId, retiredSteerIds)).toEqual([]);
+    expect(retiredSteerIds.size).toBe(0);
+  });
+
+  it("retains a completed follow-up until its canonical echo reconciles", () => {
+    const followUp = pending("followUp", 8, "follow-up-8");
+    const operations = [followUp];
+
+    expect(settleCompletedSendPending(operations, followUp.requestId, new Set())).toBe(operations);
   });
 });

@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatClientFrame, ChatConnector, ChatHandlers, ChatServerFrame } from "../../lib/chatWs";
+import { parseChatServerFrame, type ChatClientFrame, type ChatConnector, type ChatHandlers, type ChatServerFrame } from "../../lib/chatWs";
 import { messageText } from "./chatEntries";
 import { useChatSession } from "./useChatSession";
 
@@ -51,6 +51,11 @@ describe("useChatSession pending follow-ups", () => {
   });
 
   const deliver = (frame: ChatServerFrame): void => handlers.onFrame(frame);
+  const deliverRaw = (raw: string): void => {
+    const frame = parseChatServerFrame(JSON.parse(raw));
+    if (frame === null) throw new Error("raw server frame did not parse");
+    deliver(frame);
+  };
   const beginRun = (): void => {
     act(() => deliver({ type: "run.started", sessionId: session.id }));
   };
@@ -106,6 +111,33 @@ describe("useChatSession pending follow-ups", () => {
     expect(current?.messages).toHaveLength(1);
     expect(current?.messages[0]?.customType).toBeUndefined();
     expect(current?.messages[0]?.ts).toBe(10);
+    expect(current?.hasPendingFollowUp).toBe(false);
+  });
+
+  it("reconciles one user message when completion arrives before the follow-up echo", () => {
+    beginRun();
+    act(() => current?.submit({ text: "queued work", image: null }));
+    const sentFrame = sent.at(-1);
+    if (sentFrame?.type !== "chat.send" || !sentFrame.requestId) throw new Error("missing follow-up request identity");
+
+    act(() => deliverRaw(JSON.stringify({
+      type: "ack",
+      sessionId: session.id,
+      command: "chat.send",
+      requestId: sentFrame.requestId,
+      phase: "completed",
+    })));
+    expect(current?.hasPendingFollowUp).toBe(true);
+
+    act(() => deliver({
+      type: "message",
+      sessionId: session.id,
+      message: { role: "user", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
+    }));
+
+    expect(current?.messages).toEqual([
+      { role: "user", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
+    ]);
     expect(current?.hasPendingFollowUp).toBe(false);
   });
 

@@ -36,6 +36,18 @@ describe("parseChatServerFrame", () => {
     ).toMatchObject({ type: "run.done", reason: "stop" });
   });
 
+  it("preserves a completed chat.send ack across the real parse boundary", () => {
+    const raw = '{"type":"ack","sessionId":"c1","command":"chat.send","requestId":"send-1","phase":"completed"}';
+
+    expect(parseChatServerFrame(JSON.parse(raw))).toEqual({
+      type: "ack",
+      sessionId: "c1",
+      command: "chat.send",
+      requestId: "send-1",
+      phase: "completed",
+    });
+  });
+
   it("accepts ack and error without a sessionId but requires their discriminator fields", () => {
     expect(parseChatServerFrame({ type: "ack", command: "set_model", requestId: "r1" })).toMatchObject({
       type: "ack",

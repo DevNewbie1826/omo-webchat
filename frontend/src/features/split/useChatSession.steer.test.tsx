@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import { parseChatServerFrame, type ChatClientFrame, type ChatConnector, type ChatServerFrame } from "../../lib/chatWs";
 import { useChatSession } from "./useChatSession";
 
 const session = {
@@ -91,15 +91,18 @@ describe("useChatSession active-run sends", () => {
 		if (steerFrame?.type !== "chat.send" || !steerFrame.requestId) throw new Error("missing steer request identity");
 		const requestId = steerFrame.requestId;
 
+		const completedAck = parseChatServerFrame(JSON.parse(JSON.stringify({
+			type: "ack",
+			sessionId: session.id,
+			command: "chat.send",
+			requestId,
+			phase: "completed",
+		})));
+		if (completedAck === null) throw new Error("completed steer ack did not parse");
+
 		act(() => {
 			deliver({ type: "run.done", sessionId: session.id, reason: "stop" });
-			deliver({
-				type: "ack",
-				sessionId: session.id,
-				command: "chat.send",
-				requestId,
-				phase: "completed",
-			});
+			deliver(completedAck);
 			deliver({ type: "run.started", sessionId: session.id });
 			current?.submit({ text: "same work", image: null });
 		});
