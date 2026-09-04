@@ -165,9 +165,8 @@ export function useChatSession(
     // /compact remains the curated action only while the provider has not
     // advertised an authoritative same-name command.
     if (exactCompact && (draft.command ? isCuratedCompact(draft.command) : !providerOwnsCompact)) return compact();
-    if (frameState.isCompacting) {
-      frameState.reportError("Cannot send a prompt while the conversation is compacting.");
-      return false;
+    if (frameState.running || frameState.isCompacting) {
+      return frameState.followUp(draft, session.id, clientRef.current);
     }
     return frameState.submit(draft, session.id, clientRef.current);
   };
@@ -334,6 +333,7 @@ export function useChatSession(
     activitiesVersion: frameState.activitiesVersion,
     goal,
     notices: frameState.notices,
+    dismissNotice: frameState.dismissNotice,
     submit,
     compact,
     steer,

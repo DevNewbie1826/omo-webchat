@@ -107,6 +107,10 @@ export function steerMessage(text: string): UiMessage {
   return { role: "user", customType: "steer", blocks: [{ kind: "text", text }] };
 }
 
+export function followUpMessage(text: string): UiMessage {
+  return { role: "user", customType: "followUp", blocks: [{ kind: "text", text }] };
+}
+
 export function finalizeRunMessages(
   messages: readonly UiMessage[],
   toolCalls: Readonly<Record<string, ToolEntry>>,
@@ -152,6 +156,18 @@ export function steerSendFrame(text: string, sessionId: string): ChatClientFrame
   return { type: "chat.send", sessionId, run: { kind: "steer", message: text } };
 }
 
+export function followUpSendFrame(draft: ChatDraft, text: string, sessionId: string): ChatClientFrame {
+  return {
+    type: "chat.send",
+    sessionId,
+    run: {
+      kind: "follow_up",
+      message: text,
+      ...(draft.image ? { images: [{ data: draft.image.data, mimeType: draft.image.mimeType }] } : {}),
+    },
+  };
+}
+
 export function reconcileLiveUserMessage(
   message: AssistantMessage,
   current: readonly UiMessage[],
@@ -169,6 +185,11 @@ export function reconcileLiveUserMessage(
     }
     pendingItems.splice(index, 1);
     return current.map((currentMessage) => (currentMessage.optimisticId === pending.id ? { ...message, optimisticId: pending.id } : currentMessage));
+  }
+  const followUpIndex = current.findIndex((currentMessage) =>
+    currentMessage.customType === "followUp" && messageText(currentMessage) === text);
+  if (followUpIndex >= 0) {
+    return current.map((currentMessage, currentIndex) => currentIndex === followUpIndex ? message : currentMessage);
   }
   if (active?.text !== text || !current.some((currentMessage) => currentMessage.optimisticId === active.id)) {
     return undefined;

@@ -12,7 +12,7 @@ const session = {
 	provider: "omo",
 } as const;
 
-describe("useChatSession steer marker", () => {
+describe("useChatSession active-run sends", () => {
 	let root: Root;
 	let container: HTMLDivElement;
 	let current: ReturnType<typeof useChatSession> | undefined;
@@ -55,5 +55,43 @@ describe("useChatSession steer marker", () => {
 		expect(current?.messages.some((m) => m.customType === "steer")).toBe(true);
 		act(() => deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" }));
 		expect(current?.messages.some((m) => m.customType === "steer")).toBe(false);
+	});
+
+	it("sends two consecutive submissions during a run as follow-ups", () => {
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+		act(() => {
+			current?.submit({ text: "first", image: null });
+			current?.submit({ text: "second", image: null });
+		});
+
+		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
+			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "first" } },
+			{ type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "second" } },
+		]);
+		expect(current?.messages.filter((message) => message.customType === "followUp").map((message) => message.blocks?.[0]?.text)).toEqual([
+			"first",
+			"second",
+		]);
+	});
+
+	it("replaces a follow-up marker with its canonical user message", () => {
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+		act(() => current?.submit({ text: "queued work", image: null }));
+		act(() => deliver({
+			type: "message",
+			sessionId: "chat-1",
+			message: { role: "user", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
+		}));
+
+		expect(current?.messages).toEqual([
+			{ role: "user", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
+		]);
+	});
+
+	it("sends an idle submission as a prompt", () => {
+		act(() => current?.submit({ text: "start work", image: null }));
+		expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
+			{ type: "chat.send", sessionId: "chat-1", run: { kind: "prompt", message: "start work" } },
+		]);
 	});
 });

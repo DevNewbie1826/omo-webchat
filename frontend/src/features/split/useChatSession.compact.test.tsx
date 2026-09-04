@@ -159,18 +159,22 @@ describe("useChatSession manual compaction", () => {
     ]);
   });
 
-  it("rejects a prompt during compaction without an optimistic message", () => {
+  it("sends a submission during compaction as a follow-up", () => {
     act(() => {
       deliver?.({ type: "compaction.started", sessionId: "chat-1" });
     });
-    let accepted = true;
+    let accepted = false;
     act(() => {
-      accepted = current?.submit({ text: "not now", image: null }) ?? true;
+      accepted = current?.submit({ text: "after compact", image: null }) ?? false;
     });
-    expect(accepted).toBe(false);
-    expect(promptFrames()).toHaveLength(0);
-    expect(current?.messages).toEqual([]);
-    expect(current?.error).toContain("compact");
+    expect(accepted).toBe(true);
+    expect(promptFrames()).toEqual([
+      { type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "after compact" } },
+    ]);
+    expect(current?.messages).toEqual([
+      { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after compact" }] },
+    ]);
+    expect(current?.error).toBe("");
   });
 
   it("tracks compaction.started and compaction.done, reporting a failed compaction", () => {

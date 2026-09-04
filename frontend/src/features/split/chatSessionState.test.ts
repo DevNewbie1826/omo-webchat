@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "./chatEntries";
 import { messageText } from "./chatEntries";
-import { type PendingOptimistic, nextToolEntry, reconcileHistory, reconcileOutcome, uncertainRun } from "./chatSessionState";
+import { followUpSendFrame, type PendingOptimistic, nextToolEntry, reconcileHistory, reconcileOutcome, uncertainRun } from "./chatSessionState";
 import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
 
@@ -19,6 +19,23 @@ const staleHistory = [
   { type: "message", message: { role: "user", content: "hello", timestamp: 1 } },
   { type: "message", message: { role: "assistant", content: "old reply", timestamp: 2 } },
 ];
+
+describe("followUpSendFrame", () => {
+  it("preserves an attached image", () => {
+    expect(followUpSendFrame({
+      text: "look here",
+      image: { name: "context.png", mimeType: "image/png", data: "YWJj" },
+    }, "look here", "chat-1")).toEqual({
+      type: "chat.send",
+      sessionId: "chat-1",
+      run: {
+        kind: "follow_up",
+        message: "look here",
+        images: [{ mimeType: "image/png", data: "YWJj" }],
+      },
+    });
+  });
+});
 
 describe("reconcileHistory active matching", () => {
   it("does not complete an un-echoed active run from stale initial history", () => {

@@ -79,16 +79,19 @@ describe("useChatSession inbound session gate", () => {
     expect(current?.error).toBe("socket failure");
   });
 
-  it("reapplies a compacting state after reconnect and rejects prompt submission", () => {
+  it("reapplies a compacting state after reconnect and sends a follow-up", () => {
     act(() => reconnect());
     act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: true }));
-    const before = sent.filter((frame) => frame.type === "chat.send").length;
-    let accepted = true;
+    let accepted = false;
     act(() => {
-      accepted = current?.submit({ text: "after reconnect", image: null }) ?? true;
+      accepted = current?.submit({ text: "after reconnect", image: null }) ?? false;
     });
-    expect(accepted).toBe(false);
-    expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(before);
-    expect(current?.messages).toEqual([]);
+    expect(accepted).toBe(true);
+    expect(sent.filter((frame) => frame.type === "chat.send")).toEqual([
+      { type: "chat.send", sessionId: "chat-1", run: { kind: "follow_up", message: "after reconnect" } },
+    ]);
+    expect(current?.messages).toEqual([
+      { role: "user", customType: "followUp", blocks: [{ kind: "text", text: "after reconnect" }] },
+    ]);
   });
 });
