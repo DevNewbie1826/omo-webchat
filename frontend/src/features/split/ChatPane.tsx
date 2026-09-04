@@ -12,7 +12,6 @@ import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
 import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
-import { SessionUnloadedBanner } from "./SessionUnloadedBanner";
 import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
 import { ChatTranscript } from "./ChatTranscript";
@@ -167,7 +166,6 @@ export function ChatPane({
       </header>
       <div className="th-chat-main">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
-        {chat.sessionUnloaded && <SessionUnloadedBanner onResume={chat.resume} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
         {chat.sendError && (
           <SendErrorBanner

@@ -125,10 +125,11 @@ export function useChatFrameState() {
   const [doneReason, setDoneReason] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [missingOriginal, setMissingOriginal] = useState<MissingOriginal | null>(null);
-  // Calm resumable marker for the engine's idle eviction (session_unloaded):
-  // cleared by the state frame proving get_state completed against a live
-  // provider route, never by transcript traffic alone.
-  const [sessionUnloaded, setSessionUnloaded] = useState(false);
+  // Quiet internal recording of an idle unload (session_unloaded): nothing
+  // renders from it and no manual action is offered - the next chat.send
+  // transparently resumes the durable chat. The state frame proving the
+  // session is live again clears it, never transcript traffic alone.
+  const sessionUnloadedRef = useRef(false);
   const [externalWriteDetected, setExternalWriteDetected] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
@@ -382,7 +383,7 @@ export function useChatFrameState() {
     setDoneReason,
     setError,
     setMissingOriginal,
-    setSessionUnloaded,
+    sessionUnloadedRef,
     setExternalWriteDetected,
     setContextUsage,
     setCacheHitRate,
@@ -590,7 +591,6 @@ export function useChatFrameState() {
     doneReason,
     error,
     missingOriginal,
-    sessionUnloaded,
     externalWriteDetected,
     contextUsage,
     cacheHitRate,

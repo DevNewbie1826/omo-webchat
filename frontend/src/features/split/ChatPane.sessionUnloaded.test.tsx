@@ -1,158 +1,138 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseChatServerFrame, type ChatServerFrame } from "../../lib/chatWs";
-import { ControlledResizeObserver, renderChatPane, requireElement } from "./chatPaneTestHarness";
+import en from "../../i18n/locales/en.json";
+import ko from "../../i18n/locales/ko.json";
+import { parseChatServerFrame, type ChatClientFrame, type ChatServerFrame } from "../../lib/chatWs";
+import {
+	ControlledResizeObserver,
+	pressKey,
+	renderChatPane,
+	setTextareaValue,
+} from "./chatPaneTestHarness";
 
 function parsedFrame(raw: Record<string, unknown>): ChatServerFrame {
-  const frame = parseChatServerFrame(raw);
-  if (frame === null) throw new Error("expected a valid chat server frame");
-  return frame;
+	const frame = parseChatServerFrame(raw);
+	if (frame === null) throw new Error("expected a valid chat server frame");
+	return frame;
 }
 
-// The locked wire shape for engine-side idle eviction: one unsolicited error
-// frame tagged with the chat id and the resumable session_unloaded code.
+// Observed wire shape for an idle unload: one unsolicited error frame tagged
+// with the chat id and the resumable session_unloaded code.
 function sessionUnloadedFrame(): ChatServerFrame {
-  return parsedFrame({
-    type: "error",
-    sessionId: "chat-1",
-    code: "session_unloaded",
-    message: "session unloaded after 30m idle",
-  });
+	return parsedFrame({
+		type: "error",
+		sessionId: "chat-1",
+		code: "session_unloaded",
+		message: "session unloaded after 30m idle",
+	});
 }
 
-describe("ChatPane session_unloaded resumable state", () => {
-  let container: HTMLDivElement;
-  let root: Root;
+function isChatSend(
+	frame: ChatClientFrame,
+): frame is Extract<ChatClientFrame, { type: "chat.send" }> {
+	return frame.type === "chat.send";
+}
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    ControlledResizeObserver.instances = [];
-    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
+function chatSends(sent: readonly ChatClientFrame[]) {
+	return sent.filter(isChatSend);
+}
 
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    ControlledResizeObserver.instances = [];
-    container.remove();
-    vi.unstubAllGlobals();
-  });
+// Unloads are invisible: the frame is quiet internal state, the next send
+// transparently resumes, and no unloaded-specific i18n copy exists.
+describe("ChatPane session_unloaded quiet handling", () => {
+	let container: HTMLDivElement;
+	let root: Root;
+	let deliver: ReturnType<typeof renderChatPane>["deliver"];
+	let sent: ReturnType<typeof renderChatPane>["sent"];
 
-  it("shows the resumable unloaded banner instead of the raw error or a terminal state", () => {
-    const { deliver } = renderChatPane(root);
+	beforeEach(() => {
+		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+		ControlledResizeObserver.instances = [];
+		vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+		vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => undefined)));
+		container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+		({ deliver, sent } = renderChatPane(root));
+	});
 
-    act(() => {
-      deliver(sessionUnloadedFrame());
-      deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
-    });
+	afterEach(async () => {
+		await act(async () => {
+			root.unmount();
+		});
+		ControlledResizeObserver.instances = [];
+		container.remove();
+		vi.unstubAllGlobals();
+	});
 
-    expect(container.textContent).toContain("chat.sessionUnloadedTitle");
-    expect(container.textContent).toContain("chat.sessionUnloadedDetail");
-    expect(container.textContent).toContain("chat.sessionUnloadedResume");
-    expect(container.textContent).not.toContain("session unloaded after 30m idle");
-    expect(container.querySelector(".th-chat-error")).toBeNull();
-    expect(container.querySelector(".th-unloaded-banner")).not.toBeNull();
-    // The pane stays usable: the composer is present, the pane is not a
-    // terminal dead end.
-    expect(container.querySelector(".th-chat-input")).not.toBeNull();
-  });
+	function textarea(): HTMLTextAreaElement {
+		const element = container.querySelector<HTMLTextAreaElement>(
+			'textarea[aria-label="chat.placeholder"]',
+		);
+		if (!element) throw new Error("missing chat textarea");
+		return element;
+	}
 
-  it("clears a stale in-flight run indicator when the unload frame lands", () => {
-    const { deliver } = renderChatPane(root);
+	it("changes nothing visible: no banner, no raw error, pane stays usable", () => {
+		act(() => {
+			deliver(sessionUnloadedFrame());
+			deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+		});
 
-    act(() => {
-      deliver({ type: "run.started", sessionId: "chat-1" });
-    });
-    expect(container.textContent).toContain("chat.responding");
+		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
+		expect(container.querySelector(".th-chat-error")).toBeNull();
+		expect(container.textContent).not.toContain("session unloaded after 30m idle");
+		// No manual resume affordance of any kind.
+		expect(container.textContent).not.toContain("chat.sessionUnloadedResume");
+		// The pane stays usable: the composer is present, the pane is not a
+		// terminal dead end.
+		expect(container.querySelector(".th-chat-input")).not.toBeNull();
+	});
 
-    act(() => {
-      deliver(sessionUnloadedFrame());
-    });
+	it("retires a stale in-flight run indicator when the unload frame lands", () => {
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+		});
+		expect(container.textContent).toContain("chat.responding");
 
-    expect(container.textContent).not.toContain("chat.responding");
-    expect(container.textContent).toContain("chat.sessionUnloadedTitle");
-  });
+		act(() => {
+			deliver(sessionUnloadedFrame());
+		});
 
-  it("re-sends chat.create for the pane's session when the resume control is used", () => {
-    const { deliver, sent } = renderChatPane(root);
+		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
+	});
 
-    act(() => {
-      deliver(sessionUnloadedFrame());
-    });
+	it("lets the next chat.send proceed normally after an unload", () => {
+		act(() => {
+			deliver(sessionUnloadedFrame());
+		});
 
-    const resume = requireElement(
-      container.querySelector<HTMLButtonElement>(".th-unloaded-banner-actions"),
-      "resume control",
-    );
-    act(() => {
-      resume.click();
-    });
+		act(() => setTextareaValue(textarea(), "after the unload"));
+		act(() => pressKey(textarea(), "Enter"));
 
-    expect(sent.at(-1)).toEqual({ type: "chat.create", wsId: "workspace-1", chatId: "chat-1" });
-  });
+		expect(chatSends(sent)).toHaveLength(1);
+		expect(chatSends(sent)[0]).toMatchObject({
+			type: "chat.send",
+			run: { message: "after the unload" },
+		});
 
-  it("keeps the unloaded state when ready is followed by initialize_failed", () => {
-    const { deliver } = renderChatPane(root);
+		// The transparent resume lands: a state frame proves the session is
+		// live again and the pane keeps working without any unload surface.
+		act(() => {
+			deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false });
+		});
+		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
+		expect(container.querySelector(".th-chat-input")).not.toBeNull();
+	});
 
-    act(() => {
-      deliver(sessionUnloadedFrame());
-      deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
-      deliver({
-        type: "error",
-        sessionId: "chat-1",
-        code: "initialize_failed",
-        message: "get_state failed",
-      });
-    });
-
-    expect(container.querySelector(".th-unloaded-banner")).not.toBeNull();
-    expect(container.textContent).toContain("chat.sessionUnloadedTitle");
-    expect(container.textContent).toContain("chat.sessionUnloadedResume");
-  });
-
-  it("clears the unloaded state once the resumed provider answers with state", () => {
-    const { deliver, sent } = renderChatPane(root);
-
-    act(() => {
-      deliver(sessionUnloadedFrame());
-    });
-    const resume = requireElement(
-      container.querySelector<HTMLButtonElement>(".th-unloaded-banner-actions"),
-      "resume control",
-    );
-    act(() => {
-      resume.click();
-    });
-    act(() => {
-      deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
-      deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false });
-    });
-
-    expect(container.querySelector(".th-unloaded-banner")).toBeNull();
-    expect(container.textContent).not.toContain("chat.sessionUnloadedTitle");
-    expect(container.textContent).not.toContain("chat.sessionUnloadedResume");
-    // The resume re-sent chat.create on top of the mount-time open frame;
-    // later frames (ready-triggered chat.stats) may follow, so assert on the
-    // create frames themselves.
-    const creates = sent.filter((frame) => frame.type === "chat.create");
-    expect(creates).toHaveLength(2);
-    expect(creates.at(-1)).toEqual({ type: "chat.create", wsId: "workspace-1", chatId: "chat-1" });
-  });
-
-  it("keeps the unloaded banner visible until the chat is live again, not on later entries alone", () => {
-    const { deliver } = renderChatPane(root);
-
-    act(() => {
-      deliver(sessionUnloadedFrame());
-      deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
-    });
-
-    expect(container.querySelector(".th-unloaded-banner")).not.toBeNull();
-  });
+	it("removes the sessionUnloaded i18n keys from both locales", () => {
+		const unloadedKeys = ["chat.sessionUnloadedTitle", "chat.sessionUnloadedDetail", "chat.sessionUnloadedResume"];
+		for (const table of [en as Record<string, string>, ko as Record<string, string>]) {
+			for (const key of unloadedKeys) {
+				expect(table[key], `${key}`).toBeUndefined();
+			}
+		}
+	});
 });

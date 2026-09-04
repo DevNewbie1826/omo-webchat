@@ -55,7 +55,7 @@ interface ChatFrameHandlerBindings {
   readonly setDoneReason: StateSetter<string | null>;
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
-  readonly setSessionUnloaded: StateSetter<boolean>;
+  readonly sessionUnloadedRef: Current<boolean>;
   readonly setExternalWriteDetected: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
@@ -357,12 +357,13 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // resurrect a dismissed failure.
         if (frame.requestId && frame.command === "chat.send"
           && !bindings.consumeOutcome(frame.requestId)) return;
-        // The engine unloaded this idle session and deleted it from its
-        // registry; the engine process itself is still alive and the
-        // conversation is durable on disk. Not terminal: surface the calm
-        // resumable banner instead of the raw error, and stop any in-flight
-        // run indicator so the pane does not look busy. Only the provider-backed
-        // state frame of the next open sequence clears the state.
+        // The session was unloaded while idle; the conversation is durable
+        // and the next chat.send transparently resumes it. Nothing is
+        // rendered and no manual action is offered - only the state frame
+        // proving the session is live again clears the quiet marker. A stale
+        // in-flight run indicator is still retired so the pane does not look
+        // busy for a dead run, and the raw error stays out of the transient
+        // slot.
         if (frame.code === "external-write-detected") {
           // Cold rehydration pages deliberately remain non-final because the
           // live tail could not be trusted. The drift error is their terminal
@@ -382,7 +383,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
-          bindings.setSessionUnloaded(true);
+          bindings.sessionUnloadedRef.current = true;
           bindings.setError("");
           return;
         }
@@ -453,7 +454,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "state":
         // ready precedes provider initialization; state proves get_state
         // completed and the reopened provider route is live.
-        bindings.setSessionUnloaded(false);
+        bindings.sessionUnloadedRef.current = false;
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);
