@@ -162,6 +162,7 @@ type Manager struct {
 	mu                   sync.Mutex
 	byChat               map[string]*Session
 	byRoute              map[string]*Session
+	operationOwners      map[string]*sendOperationOwner
 	byDurableEpoch       map[omorpc.EpochToken]map[string]*durableEpochBinding
 	durableTombstones    []durableTombstoneRecord
 	durableToChat        map[string]string
@@ -213,7 +214,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[string]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]bool), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -461,6 +462,7 @@ func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 func (m *Manager) RetireIdentity(chatID string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
+	delete(m.operationOwners, chatID)
 	m.mu.Unlock()
 }
 
@@ -602,6 +604,14 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	slotGeneration := m.slotGeneration[chatID]
 	existing := m.byChat[chatID]
 	replaced := existing
+	if m.operationOwners == nil {
+		m.operationOwners = make(map[string]*sendOperationOwner)
+	}
+	sendOwner := m.operationOwners[chatID]
+	if sendOwner == nil {
+		sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: make(map[*Session]struct{})}
+		m.operationOwners[chatID] = sendOwner
+	}
 	m.mu.Unlock()
 	revalidateMutation := func(s *Session) error {
 		if validate != nil {
@@ -769,7 +779,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		name = ""
 	}
 	s := newSession(m, chatID, chat.CWD(), data, resumed, epoch, name, cur.NameSource)
-	s.inheritSendOperations(replaced)
+	s.inheritSendOperationOwner(sendOwner)
 	sendOwnerAdopted := false
 	defer func() {
 		if !sendOwnerAdopted {
@@ -1384,6 +1394,7 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 	}
 	m.byChat = make(map[string]*Session)
 	m.byRoute = make(map[string]*Session)
+	m.operationOwners = make(map[string]*sendOperationOwner)
 	m.byDurableEpoch = make(map[omorpc.EpochToken]map[string]*durableEpochBinding)
 	m.durableTombstones = nil
 	m.durableToChat = make(map[string]string)

@@ -45,20 +45,21 @@ const (
 )
 
 type sendOperation struct {
-	phase                sendOperationPhase
-	outcome              Frame
-	err                  error
-	published            bool
-	preserveRunAdmission bool
+	phase     sendOperationPhase
+	outcome   Frame
+	err       error
+	published bool
 }
 
 type sendOperationOwner struct {
-	mu                sync.Mutex
-	operations        map[string]sendOperation
-	fifo              []string
-	detachedMutations int
-	activeDetached    atomic.Int32
-	sessions          map[*Session]struct{}
+	mu                  sync.Mutex
+	operations          map[string]sendOperation
+	fifo                []string
+	detachedMutations   int
+	retryRunAdmission   bool
+	retryRunAdmissionID string
+	activeDetached      atomic.Int32
+	sessions            map[*Session]struct{}
 }
 
 type Session struct {
@@ -188,9 +189,18 @@ func (s *Session) inheritSendOperations(prior *Session) {
 	if prior == nil || prior == s {
 		return
 	}
-	owner := prior.operationOwner()
+	s.inheritSendOperationOwner(prior.operationOwner())
+}
+
+func (s *Session) inheritSendOperationOwner(owner *sendOperationOwner) {
+	if owner == nil || owner == s.sendOwner {
+		return
+	}
+	prior := s.operationOwner()
+	prior.mu.Lock()
+	delete(prior.sessions, s)
+	prior.mu.Unlock()
 	owner.mu.Lock()
-	delete(s.sendOwner.sessions, s)
 	s.sendOwner = owner
 	owner.sessions[s] = struct{}{}
 	owner.mu.Unlock()
@@ -540,19 +550,19 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 // admitted operation. A completion that wins first leaves a terminal outcome
 // and prevents the provider mutation from being repeated.
 func (s *Session) PrepareDetachedSendRetry(requestID string, preserveRunAdmission bool) bool {
-	if requestID == "" {
-		return true
-	}
 	owner := s.operationOwner()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	operation, ok := owner.operations[requestID]
-	if !ok || operation.phase != sendOperationAdmitted {
-		return false
+	if requestID != "" {
+		operation, ok := owner.operations[requestID]
+		if !ok || operation.phase != sendOperationAdmitted {
+			return false
+		}
+		operation.phase = sendOperationRetrying
+		owner.operations[requestID] = operation
 	}
-	operation.phase = sendOperationRetrying
-	operation.preserveRunAdmission = preserveRunAdmission
-	owner.operations[requestID] = operation
+	owner.retryRunAdmission = preserveRunAdmission
+	owner.retryRunAdmissionID = requestID
 	return true
 }
 
@@ -568,6 +578,10 @@ func (s *Session) PublishSendOperationError(requestID string, info ErrorInfo) {
 	frame := Frame{Kind: FrameError, SessionID: s.durableID, Command: "chat.send", RequestID: requestID, Data: info}
 	owner := s.operationOwner()
 	owner.mu.Lock()
+	if owner.retryRunAdmission && owner.retryRunAdmissionID == requestID {
+		owner.retryRunAdmission = false
+		owner.retryRunAdmissionID = ""
+	}
 	if requestID != "" {
 		operation, ok := owner.operations[requestID]
 		if !ok || operation.published {
@@ -703,18 +717,14 @@ func (s *Session) completeSendOperationLocked(requestID string, err error) (Fram
 }
 
 func (s *Session) consumeRetryRunAdmission(requestID string) bool {
-	if requestID == "" {
-		return false
-	}
 	owner := s.operationOwner()
 	owner.mu.Lock()
 	defer owner.mu.Unlock()
-	operation, ok := owner.operations[requestID]
-	if !ok || !operation.preserveRunAdmission {
+	if !owner.retryRunAdmission || owner.retryRunAdmissionID != requestID {
 		return false
 	}
-	operation.preserveRunAdmission = false
-	owner.operations[requestID] = operation
+	owner.retryRunAdmission = false
+	owner.retryRunAdmissionID = ""
 	return true
 }
 
@@ -1384,6 +1394,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 	s.lifecycleMu.Unlock()
 	if newlyClosed {
 		s.broadcast.close(ErrSubscriberSessionEnd)
+		s.releaseSendOperations()
 	}
 }
 func definitiveCloseFailure(err error) bool {

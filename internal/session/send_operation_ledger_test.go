@@ -325,6 +325,73 @@ func TestDetachedCompletionGuardsEvictionUntilOutcomeAndRearmsIdle(t *testing.T)
 	}
 }
 
+func TestNoIDDetachedRunMutationPreservesRecoveryAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		command string
+		send    func(context.Context, *Session, func(error)) error
+	}{
+		{
+			name:    "steer",
+			command: omorpc.CmdSteer,
+			send: func(ctx context.Context, s *Session, complete func(error)) error {
+				return s.SendSteerDetachedWithRequestIDAndCompletion(ctx, "recovered steer", "", complete)
+			},
+		},
+		{
+			name:    "follow-up",
+			command: omorpc.CmdFollowUp,
+			send: func(ctx context.Context, s *Session, complete func(error)) error {
+				return s.SendFollowUpDetachedWithRequestIDAndCompletion(ctx, "recovered follow-up", nil, "", complete)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDaemon(t)
+			client := dial(t, d)
+			mgr := testManager(t, client, newMemStore(), 64)
+			chat := testChat{id: "no-id-recovery-" + tc.name, cwd: t.TempDir()}
+			stale, _, detach := acquire(t, mgr, chat, nil)
+			defer detach()
+
+			if !stale.PrepareDetachedSendRetry("", true) {
+				t.Fatal("no-id detached retry was not prepared")
+			}
+			replacement := newSession(mgr, chat.id, chat.cwd, omorpc.OpenSessionData{
+				SessionID: stale.RoutingID(),
+				State: omorpc.SessionState{
+					SessionID:   stale.ID(),
+					SessionFile: stale.SessionFile(),
+				},
+			}, true, stale.epoch)
+			replacement.inheritSendOperations(stale)
+			defer replacement.releaseSendOperations()
+
+			completed := make(chan error, 1)
+			if err := tc.send(context.Background(), replacement, func(err error) { completed <- err }); err != nil {
+				t.Fatalf("recovered no-id admission: %v", err)
+			}
+			select {
+			case err := <-completed:
+				if err != nil {
+					t.Fatalf("recovered no-id completion: %v", err)
+				}
+			case <-time.After(testTimeout):
+				t.Fatal("recovered no-id mutation did not complete")
+			}
+			if got := d.RequestCount(tc.command); got != 1 {
+				t.Fatalf("recovered provider requests = %d, want 1", got)
+			}
+			if err := tc.send(context.Background(), replacement, nil); !errors.Is(err, ErrPromptInFlight) {
+				t.Fatalf("consumed retry admission = %v, want ErrPromptInFlight", err)
+			}
+			if got := d.RequestCount(tc.command); got != 1 {
+				t.Fatalf("one-shot admission repeated provider mutation: %d requests", got)
+			}
+		})
+	}
+}
+
 func TestReplacementPreservesDetachedBackpressureAccounting(t *testing.T) {
 	prior := &Session{durableID: "durable-backpressure"}
 	owner := prior.operationOwner()
