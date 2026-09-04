@@ -1,4 +1,4 @@
-import { detectLang, translate } from "../../i18n";
+import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
@@ -19,6 +19,7 @@ type Current<T> = { current: T };
 type ModelsFrame = Extract<ChatServerFrame, { readonly type: "models" }>;
 
 interface ChatFrameHandlerBindings {
+  readonly t: Translate;
   readonly controls: ReturnType<typeof useConfirmedControls>;
   readonly streaming: ReturnType<typeof useStreamingBuffer>;
   readonly pageBuffer: ReturnType<typeof useEntriesPageBuffer>;
@@ -113,9 +114,12 @@ const LOCALIZED_ERROR_KEYS: Readonly<Record<string, string>> = {
   start_failed: "chat.startFailed",
 };
 
-function errorSurfaceMessage(frame: Extract<ChatServerFrame, { readonly type: "error" }>): string {
+function errorSurfaceMessage(
+  frame: Extract<ChatServerFrame, { readonly type: "error" }>,
+  t: Translate,
+): string {
   const key = frame.code !== undefined ? LOCALIZED_ERROR_KEYS[frame.code] : undefined;
-  return key !== undefined ? translate(detectLang(), key) : frame.message;
+  return key !== undefined ? t(key) : frame.message;
 }
 
 /**
@@ -425,7 +429,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // Send-path command failures persist in a dedicated banner slot instead
         // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);
-        if (sendFailure === null) bindings.setError(errorSurfaceMessage(frame));
+        if (sendFailure === null) bindings.setError(errorSurfaceMessage(frame, bindings.t));
         else bindings.setSendError(sendFailure);
 
         // Error frames without requestId may restore the active draft only

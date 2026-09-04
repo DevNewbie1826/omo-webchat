@@ -2,8 +2,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
-import { detectLang, I18nContext, translate } from "../../i18n";
+import { I18nContext, translate, type I18nValue } from "../../i18n";
 import { messageText } from "./chatEntries";
+import { ChatPane } from "./ChatPane";
 import { useChatSession } from "./useChatSession";
 import {
 	chatSession,
@@ -313,6 +314,7 @@ describe("ChatPane resync", () => {
 	});
 
 	it("treats chat.create error start_failed as a resync terminal with localized copy", () => {
+		window.localStorage.setItem("th-lang", "ko");
 		const { deliver } = renderChatPane(root);
 		settleInitial(deliver);
 		act(() => resyncButton({ container }).click());
@@ -327,7 +329,58 @@ describe("ChatPane resync", () => {
 		expect(resyncButton({ container }).disabled).toBe(false);
 		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
 		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
-		expect(error.textContent).toBe(translate(detectLang(), "chat.startFailed"));
+		expect(error.textContent).toBe(i18n.t("chat.startFailed"));
+		expect(error.textContent).not.toBe(translate("ko", "chat.startFailed"));
+		expect(error.textContent).not.toBe("could not open the session; please retry");
+	});
+
+	it("renders Korean start_failed copy from the active translator when storage still holds English", () => {
+		window.localStorage.setItem("th-lang", "en");
+		const koI18n: I18nValue = {
+			lang: "ko",
+			setLang: () => undefined,
+			font: "system",
+			setFont: () => undefined,
+			fontSize: 13,
+			setFontSize: () => undefined,
+			t: (key) => translate("ko", key),
+		};
+		let deliver: ((frame: ChatServerFrame) => void) | undefined;
+		const connect: ChatConnector = (handlers) => {
+			deliver = handlers.onFrame;
+			handlers.onOpen?.();
+			return { send: vi.fn(() => true), close: vi.fn() };
+		};
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={koI18n}>
+					<ChatPane
+						chatSession={chatSession}
+						focused
+						splitEnabled={false}
+						onFocus={() => undefined}
+						onSplit={() => undefined}
+						onClose={() => undefined}
+						onOpenSidebar={() => undefined}
+						connect={connect}
+						notify={() => undefined}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+		const deliverFrame = requireElement(deliver, "chat frame delivery");
+		settleInitial(deliverFrame);
+		act(() => resyncButton({ container }).click());
+		act(() => deliverFrame({
+			type: "error",
+			sessionId: "chat-1",
+			code: "start_failed",
+			message: "could not open the session; please retry",
+		}));
+
+		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
+		expect(error.textContent).toBe(translate("ko", "chat.startFailed"));
+		expect(error.textContent).not.toBe(translate("en", "chat.startFailed"));
 		expect(error.textContent).not.toBe("could not open the session; please retry");
 	});
 

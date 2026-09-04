@@ -1390,6 +1390,10 @@ func (s *Session) beginCloseLocked(idle bool) *closeTransaction {
 	return txn
 }
 
+// executeClose binds a close to its opening epoch whenever possible. For a
+// dead epoch, a manager fence makes ownership inspection, fallback cleanup,
+// and colliding route publication mutually exclusive without holding a lock
+// across the RPC.
 func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error {
 	route := s.routingID
 	cmd := omorpc.CloseSession{SessionID: route}
@@ -1397,24 +1401,26 @@ func (s *Session) executeClose(ctx context.Context, txn *closeTransaction) error
 		s.completeClose(txn, route, callErr)
 	}
 	// Close bound to the session's epoch whenever that epoch is still live.
-	// When it is dead, the daemon-side route may outlive the connection: a
-	// best-effort close on the current connection is safe unless another
-	// live session already owns the same route id (ids can repeat across
-	// epochs); in that case refusing beats closing someone else's route.
+	// When it is dead, the daemon-side route may outlive the connection, but
+	// route ids can also repeat across epochs. The fallback fence refuses an
+	// existing owner and prevents an in-flight colliding open from publishing.
 	if s.client.EpochCurrent(s.epoch) {
 		_, err := s.client.CallRetainedInEpoch(ctx, s.epoch, cmd, complete)
 		return closeResult(err)
 	}
-	if s.manager.routeHeldByLiveSession(s.chatID, route) {
+	if !s.manager.beginFallbackCleanup(s.chatID, route) {
 		err := omorpc.ErrEpochMismatch
 		complete(nil, omorpc.EpochToken{}, err)
 		return err
 	}
+	defer s.manager.endRouteCleanup(route)
 	s.lifecycleMu.Lock()
 	resumable := s.resumable
 	s.lifecycleMu.Unlock()
 	if resumable {
-		_, err := s.client.CallRetained(ctx, cmd, complete)
+		fallbackCtx, cancel := context.WithTimeout(ctx, s.manager.cfg.CloseTimeout)
+		defer cancel()
+		_, err := s.client.CallRetained(fallbackCtx, cmd, complete)
 		return closeResult(err)
 	}
 	err := omorpc.ErrEpochMismatch

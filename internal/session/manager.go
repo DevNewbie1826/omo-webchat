@@ -167,6 +167,7 @@ type Manager struct {
 	mu                   sync.Mutex
 	byChat               map[string]*Session
 	byRoute              map[string]*Session
+	routeCleanup         map[string]chan struct{}
 	operationOwners      map[string]*sendOperationOwner
 	byDurableEpoch       map[omorpc.EpochToken]map[string]*durableEpochBinding
 	durableTombstones    []durableTombstoneRecord
@@ -219,7 +220,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -864,7 +865,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
 			epochLive = false
 		}
-		if valid && epochLive {
+		_, cleanupInFlight := m.routeCleanup[data.SessionID]
+		if valid && epochLive && !cleanupInFlight {
 			sendOwnerAdopted = true
 			if existing != nil {
 				delete(m.byRoute, existing.routingID)
@@ -877,14 +879,18 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.mu.Unlock()
 		s.lifecycleMu.Unlock()
 		deliverOverview(overviewSubscribers, overviewSnapshot)
-		if !valid || !epochLive {
+		if !valid || !epochLive || cleanupInFlight {
 			detach()
-			s.retireReplaced()
-			m.discardRouting(chatID, data.SessionID, epoch)
-			if !epochLive {
-				return nil, false, nil, ErrSessionResumable
+			if cleanupInFlight && valid {
+				s.invalidate("provider_disconnected", "provider route cleanup was already in progress")
+			} else {
+				s.retireReplaced()
+				m.discardRouting(chatID, data.SessionID, epoch)
 			}
-			return nil, false, nil, ErrManagerClosed
+			if !valid {
+				return nil, false, nil, ErrManagerClosed
+			}
+			return nil, false, nil, ErrSessionResumable
 		}
 		if after != nil {
 			if err := after(s); err != nil {
@@ -926,6 +932,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
 		epochLive = false
 	}
+	_, cleanupInFlight := m.routeCleanup[data.SessionID]
 	if valid {
 		sendOwnerAdopted = true
 		if existing != nil {
@@ -933,7 +940,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		m.byChat[chatID] = s
 		delete(m.overviewCurrent, chatID)
-		if epochLive {
+		if epochLive && !cleanupInFlight {
 			m.byRoute[data.SessionID] = s
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
@@ -945,8 +952,12 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.discardRouting(chatID, data.SessionID, epoch)
 		return nil, false, nil, ErrManagerClosed
 	}
-	if !epochLive {
-		s.invalidate("provider_disconnected", "provider connection changed while opening session")
+	if !epochLive || cleanupInFlight {
+		message := "provider connection changed while opening session"
+		if cleanupInFlight {
+			message = "provider route cleanup was already in progress"
+		}
+		s.invalidate("provider_disconnected", message)
 		if existing != nil {
 			existing.retireReplaced()
 		}
@@ -1035,18 +1046,32 @@ func definitiveResumeFailure(err error) bool {
 	return !errors.Is(err, omorpc.ErrDisconnected) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
-// routeHeldByLiveSession reports whether a live session other than the
-// identified chat currently owns the routing id. Dead-epoch close attempts
-// use it to avoid closing a route id that a newer session has legitimately
-// re-acquired after an epoch transition.
-func (m *Manager) routeHeldByLiveSession(chatID, route string) bool {
+// beginFallbackCleanup fences publication of route while a dead-epoch close
+// is sent on the current connection. Ownership inspection and marker creation
+// share one critical section, so a colliding open cannot publish between them.
+func (m *Manager) beginFallbackCleanup(chatID, route string) bool {
 	if route == "" {
 		return false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	holder, ok := m.byRoute[route]
-	return ok && holder.chatID != chatID
+	if holder := m.byRoute[route]; holder != nil && holder.chatID != chatID {
+		return false
+	}
+	if _, cleaning := m.routeCleanup[route]; cleaning {
+		return false
+	}
+	m.routeCleanup[route] = make(chan struct{})
+	return true
+}
+
+func (m *Manager) endRouteCleanup(route string) {
+	m.mu.Lock()
+	if done := m.routeCleanup[route]; done != nil {
+		delete(m.routeCleanup, route)
+		close(done)
+	}
+	m.mu.Unlock()
 }
 
 func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {
