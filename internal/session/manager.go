@@ -1259,10 +1259,7 @@ func (m *Manager) clearPendingOpen(chatID string) {
 }
 
 func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
-	cmd := omorpc.OpenSession{CWD: cwd}
-	if path != "" {
-		cmd = omorpc.OpenSession{SessionPath: path}
-	}
+	cmd := omorpc.OpenSession{CWD: cwd, SessionPath: path}
 	var last error
 	var epoch omorpc.EpochToken
 	for attempt := 0; attempt < m.cfg.RetryAttempts; attempt++ {

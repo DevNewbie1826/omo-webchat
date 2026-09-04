@@ -7,7 +7,13 @@
    still inside .th-chat-main). The collapsed bar-row floor keeps
    overflow:hidden from zeroing the automatic minimum; the expanded floor
    (below) also reserves the grip and a minimal panel box. flex-grow stays
-   0 so the shelf never expands past its content. */
+   0 so the shelf never expands past its content. While a shelf panel is
+   expanded, useShelfAvailableSpace measures every chat-column band and
+   bounds the panel with an inline max-height (the
+   column's real available space) and an inline flex-shrink: 0 — the
+   transcript alone then absorbs a long transcript's deficit (it keeps a
+   ~120px reserve and scrolls), and the shelf only ever yields on viewports
+   too small for the reserve. */
 .th-activity-shelf {
   display: flex;
   flex: 0 1 auto;
@@ -108,7 +114,11 @@
 }
 
 /* Shrink contract: min-height: 0 lets the shelf column squeeze the panel
-   (it scrolls via overflow) instead of overflowing the clipped shelf. */
+   (it scrolls via overflow) instead of overflowing the clipped shelf. The
+   inline max-height set by the shared column clamp bounds the
+   panel by the column's real available space; these stylesheet caps are
+   the fallbacks when no measurement exists (no ResizeObserver, standalone
+   render) and the ceilings the clamp never exceeds. */
 .th-activity-panel {
   position: relative;
   display: flex;
@@ -586,14 +596,14 @@
 }
 
 /* Headless panel under extreme vertical compression: once the panel's own
-   rendered content height drops below PANEL_HEADLESS_BELOW_PX (40px,
-   measured by the ResizeObserver in ActivityShelf.tsx), a section header
+   rendered content height drops below PANEL_HEADLESS_BELOW_PX (24px,
+   measured by useShelfAvailableSpace), a section header
    row at the scrollport edge paints as half-clipped glyphs. The component
    sets data-headless="true" on this panel — measured panel headroom is the
-   trigger, not pane height, so a roomy panel in a short pane keeps its
-   headers and the DAG List/Graph controls, and a short split pane with a
-   usable panel keeps them too. While headless only the header chrome is
-   hidden; the list content keeps scrolling. */
+   trigger, not pane height, and the column clamp reserves the panel's
+   target height in normal use, so headers survive until the box is
+   genuinely below one compact row. While headless only the header chrome
+   is hidden; the list content keeps scrolling. */
 .th-activity-panel[data-headless="true"] .th-activity-section-head,
 .th-activity-panel[data-headless="true"] .th-activity-dag-toolbar,
 .th-activity-panel[data-headless="true"] .th-activity-section > .th-activity-section-title {

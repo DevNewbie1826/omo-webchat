@@ -14,6 +14,14 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
+// stubSessionClock pins the catalog clock for the duration of the test.
+func stubSessionClock(t *testing.T, at time.Time) {
+	t.Helper()
+	previous := now
+	now = func() time.Time { return at }
+	t.Cleanup(func() { now = previous })
+}
+
 func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time) string {
 	t.Helper()
 	dir := filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
@@ -26,6 +34,9 @@ func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time
 		body += fmt.Sprintf("{\"type\":\"session_info\",\"name\":%q}\n", name)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -222,6 +233,208 @@ func TestListWorkspaceSessionsPaginatesDeterministically(t *testing.T) {
 	second := listWorkspaceSessions(t, s, ws.ID, "cursor="+first.NextCursor)
 	if len(second.Items) != 2 || second.NextCursor != "" {
 		t.Fatalf("second=%+v", second)
+	}
+}
+
+func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	sameCWD := t.TempDir()
+	otherCWD := t.TempDir()
+	owned := filepath.Join(t.TempDir(), "owned.jsonl")
+	if err := os.WriteFile(owned, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	danglingChat := cursorstore.Chat{ID: "chat-dangling", CWD: sameCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
+	otherCWDDanglingChat := cursorstore.Chat{ID: "chat-other-cwd", CWD: otherCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
+	settledChat := cursorstore.Chat{ID: "chat-settled", CWD: sameCWD, SessionFile: owned}
+	young := diskSession{ID: "disk-young", Path: "/catalog/young.jsonl", CWD: sameCWD, Name: "Fresh", ModTime: fixedNow.Add(-time.Second)}
+	boundary := diskSession{ID: "disk-boundary", Path: "/catalog/boundary.jsonl", CWD: sameCWD, Name: "Boundary", ModTime: fixedNow.Add(-DiscoveredStabilityWindow)}
+	old := diskSession{ID: "disk-old", Path: "/catalog/old.jsonl", CWD: sameCWD, Name: "Old", ModTime: fixedNow.Add(-DiscoveredStabilityWindow - time.Second)}
+
+	tests := []struct {
+		name           string
+		chats          []cursorstore.Chat
+		disk           []diskSession
+		wantDiscovered bool
+	}{
+		{name: "dangling stored chat hides young disk session", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{young}, wantDiscovered: false},
+		{name: "dangling stored chat in another cwd shows young disk session", chats: []cursorstore.Chat{otherCWDDanglingChat}, disk: []diskSession{young}, wantDiscovered: true},
+		{name: "dangling stored chat shows disk session at window boundary", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{boundary}, wantDiscovered: true},
+		{name: "dangling stored chat shows disk session aged past window", chats: []cursorstore.Chat{danglingChat}, disk: []diskSession{old}, wantDiscovered: true},
+		{name: "settled stored chat shows young disk session", chats: []cursorstore.Chat{settledChat}, disk: []diskSession{young}, wantDiscovered: true},
+		{name: "no stored chat shows young disk session", chats: nil, disk: []diskSession{young}, wantDiscovered: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := mergeSessionHistory(tt.chats, tt.disk)
+			discovered := 0
+			for _, item := range items {
+				if item.Source == sessionHistorySourceDiscovered {
+					discovered++
+				}
+			}
+			if (discovered > 0) != tt.wantDiscovered || discovered > 1 {
+				t.Fatalf("discovered rows = %d, wantDiscovered = %v: %+v", discovered, tt.wantDiscovered, items)
+			}
+		})
+	}
+
+	t.Run("aging past the window exposes the session without sleeping", func(t *testing.T) {
+		now = func() time.Time { return fixedNow.Add(2 * DiscoveredStabilityWindow) }
+		items := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{young})
+		if len(items) != 2 || items[0].Source != sessionHistorySourceStored || items[1].Source != sessionHistorySourceDiscovered {
+			t.Fatalf("aged items = %+v, want stored row and discovered row", items)
+		}
+	})
+}
+
+func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-1", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	diskPath := writeDiskSession(t, agent, ws.Path, "disk-1", "Disk title", time.UnixMilli(10))
+	young := fixedNow.Add(-time.Second)
+	if err := os.Chtimes(diskPath, young, young); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" || !page.Items[0].Dangling {
+		t.Fatalf("young disk session must stay hidden while the stored chat dangles: %+v", page.Items)
+	}
+
+	aged := fixedNow.Add(-2 * DiscoveredStabilityWindow)
+	if err := os.Chtimes(diskPath, aged, aged); err != nil {
+		t.Fatal(err)
+	}
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 2 || page.Items[1].ID != "disk-1" || page.Items[1].Source != sessionHistorySourceDiscovered {
+		t.Fatalf("aged disk session must be discovered: %+v", page.Items)
+	}
+}
+
+func TestListWorkspaceSessionsShowsFreshDiskSessionWithDanglingChatInAnotherCWD(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-other-cwd", WorkspaceID: ws.ID, CWD: t.TempDir(), SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	diskPath := writeDiskSession(t, agent, ws.Path, "disk-1", "Disk title", time.UnixMilli(10))
+	young := fixedNow.Add(-time.Second)
+	if err := os.Chtimes(diskPath, young, young); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 2 {
+		t.Fatalf("young disk session must remain visible when only another cwd has a dangling chat: %+v", page.Items)
+	}
+	if page.Items[1].ID != "disk-1" || page.Items[1].Source != sessionHistorySourceDiscovered {
+		t.Fatalf("fresh discovered row missing: %+v", page.Items)
+	}
+}
+
+func TestListWorkspaceSessionsShowsFreshDiskSessionWithoutDanglingStoredChat(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	owned := filepath.Join(t.TempDir(), "owned.jsonl")
+	if err := os.WriteFile(owned, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settled := cursorstore.Chat{ID: "chat-settled", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: owned, Name: "settled", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(settled); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-fresh", "Fresh disk", fixedNow.Add(-time.Second))
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 2 {
+		t.Fatalf("items = %+v, want settled stored row and fresh discovered row", page.Items)
+	}
+	var fresh *sessionHistoryItem
+	for i := range page.Items {
+		if page.Items[i].ID == "disk-fresh" {
+			fresh = &page.Items[i]
+		}
+	}
+	if fresh == nil || fresh.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("fresh disk row missing or wrong source: %+v", page.Items)
+	}
+}
+
+func TestTakeoverIdentityTransitionMergesDiskSessionIntoStoredRow(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	chat := cursorstore.Chat{ID: "chat-takeover", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), DurableSessionID: "durable-stale", SessionProvenance: cursorstore.SessionProvenanceNative, Name: "Takeover", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	source := writeDiskSession(t, agent, ws.Path, "durable-takeover", "Taken over", time.Now())
+
+	// Simulate the in-place takeover: the stored chat's identity is updated to
+	// point at the disk session, the same store mutation the open handler's
+	// install step performs.
+	if err := st.UpdateInPlaceIdentity(chat.ID, source, "durable-takeover"); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 {
+		t.Fatalf("catalog items = %+v, want exactly one merged row", page.Items)
+	}
+	if item := page.Items[0]; item.ID != chat.ID || item.Source != sessionHistorySourceStored || item.Dangling {
+		t.Fatalf("merged row = %+v, want non-dangling stored row", item)
+	}
+}
+
+func TestAdoptionIdentityTransitionMergesDiskSessionIntoStoredRow(t *testing.T) {
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	chat := cursorstore.Chat{ID: "chat-adoption", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), DurableSessionID: "durable-stale", SessionProvenance: cursorstore.SessionProvenanceNative, Name: "Adoption", NameSource: cursorstore.NameSourceAuto}
+	if err := st.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	source := writeDiskSession(t, agent, ws.Path, "durable-adopted", "Adopted", time.Now())
+	if err := os.MkdirAll(st.OwnedSessionDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ownedCopy := filepath.Join(st.OwnedSessionDir(), "durable-adopted.jsonl")
+	body, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownedCopy, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the adoption transition: the stored chat is repointed at the
+	// verified owned copy of the disk session.
+	if err := st.UpdateOwnedIdentity(chat.ID, ownedCopy, "durable-adopted"); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 {
+		t.Fatalf("catalog items = %+v, want exactly one merged row", page.Items)
+	}
+	if item := page.Items[0]; item.ID != chat.ID || item.Source != sessionHistorySourceStored || item.Dangling {
+		t.Fatalf("merged row = %+v, want non-dangling stored row", item)
 	}
 }
 
