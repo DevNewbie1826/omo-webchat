@@ -92,7 +92,9 @@ func TestDeliveryUncertaintyPromptLateOutcome(t *testing.T) {
 			releasePrompt := d.BlockHandler(omorpc.CmdPrompt)
 			defer releasePrompt()
 			if tc.reject {
-				d.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeUnknownSession)
+				// This case exercises generic late rejection rollback. Definitive
+				// route-loss codes instead invalidate the session for recovery.
+				d.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeTooManySessions)
 			}
 			ctx := newSessionTriggeredDeadline()
 			returned := make(chan error, 1)

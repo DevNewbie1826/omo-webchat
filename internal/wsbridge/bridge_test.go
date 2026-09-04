@@ -3,6 +3,7 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,36 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
+
+type signalLogHandler struct{ records chan struct{} }
+
+func (h *signalLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *signalLogHandler) Handle(context.Context, slog.Record) error {
+	select {
+	case h.records <- struct{}{}:
+	default:
+	}
+	return nil
+}
+func (h *signalLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *signalLogHandler) WithGroup(string) slog.Handler      { return h }
+
+type cancelSignalSubscriber struct {
+	frames    chan session.Frame
+	cancelled chan struct{}
+	once      sync.Once
+}
+
+func (s *cancelSignalSubscriber) Deliver(frame session.Frame) {
+	select {
+	case s.frames <- frame:
+	case <-s.cancelled:
+	}
+}
+func (s *cancelSignalSubscriber) Cancel() error {
+	s.once.Do(func() { close(s.cancelled) })
+	return nil
+}
 
 type collector struct {
 	gws.BuiltinEventHandler
@@ -131,11 +162,26 @@ func TestRouteContextBudgetsLongRunningFramesSeparately(t *testing.T) {
 		})
 	}
 
+	createFrame, err := wscontract.ParseClientFrame([]byte(`{"type":"chat.create","wsId":"ws-1","chatId":"chat-1"}`))
+	if err != nil {
+		t.Fatalf("parse create: %v", err)
+	}
+	started := time.Now()
+	createCtx, createCancel := c.routeContext(createFrame)
+	defer createCancel()
+	createDeadline, ok := createCtx.Deadline()
+	if !ok {
+		t.Fatal("create route has no deadline")
+	}
+	if got := createDeadline.Sub(started); got < openFrameTimeout-time.Second || got > openFrameTimeout+time.Second {
+		t.Fatalf("create route budget = %v, want %v", got, openFrameTimeout)
+	}
+
 	frame, err := wscontract.ParseClientFrame([]byte(`{"type":"ping"}`))
 	if err != nil {
 		t.Fatalf("parse ping: %v", err)
 	}
-	started := time.Now()
+	started = time.Now()
 	ctx, cancel := c.routeContext(frame)
 	defer cancel()
 	deadline, ok := ctx.Deadline()
@@ -526,6 +572,60 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	return conn, frames
 }
 
+func TestChatCreateFailureUsesStableUserMessage(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "create-failure-message")
+	h.daemon.FailNext(omorpc.CmdOpenSession, omorpc.ErrCodeInvalidPath)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "create-failure-message"})
+	got := frames.next(t, "error")
+	if got["code"] != "start_failed" || got["message"] != "could not open the session; please retry" {
+		t.Fatalf("create failure = %#v", got)
+	}
+}
+
+func TestChatCreatePreparationFailuresUseStableUserMessage(t *testing.T) {
+	for _, guarded := range []bool{true, false} {
+		name := "prepare"
+		if guarded {
+			name = "prepare-version"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newInPlaceBridgeHarness(t, "preparation-failure-"+name)
+			h.bridge.cfg.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+			if guarded {
+				h.bridge.cfg.PrepareChatVersion = func(context.Context, string, string) (uint64, error) {
+					return 0, errors.New("sensitive preparation detail")
+				}
+			} else {
+				h.bridge.cfg.PrepareChatVersion = nil
+				h.bridge.cfg.ChatVersion = nil
+				h.bridge.cfg.PrepareChat = func(context.Context, string, string) error {
+					return errors.New("sensitive preparation detail")
+				}
+			}
+
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "preparation-failure-" + name})
+			got := frames.next(t, "error")
+			if got["code"] != "no_chat" || got["message"] != "could not prepare the session; please retry" {
+				t.Fatalf("preparation failure = %#v", got)
+			}
+		})
+	}
+}
+
+func TestResumeFailureInfoSanitizesProviderDetails(t *testing.T) {
+	for _, err := range []error{
+		errors.New("sensitive provider detail"),
+		&session.ResumeError{Info: session.ErrorInfo{Code: "resume_failed", Message: "sensitive provider detail"}},
+	} {
+		got := resumeFailureInfo(err)
+		if got.Code != "resume_failed" || got.Message != "could not resume the session; please retry" {
+			t.Fatalf("resume failure = %#v", got)
+		}
+	}
+}
+
 func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "blocked-query-binding")
 	conn, frames := h.connect(t)
@@ -655,7 +755,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-identity"})
 	frames.next(t, "ready")
 
-	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdPrompt, omorpc.ErrCodeTooManySessions)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "prompt-1",
 		"run": map[string]any{"kind": "prompt", "message": "fail"},
@@ -681,7 +781,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 	})
 	nextSuccessfulSendAcks(t, frames, "prompt-2")
 
-	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeTooManySessions)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "follow-1",
 		"run": map[string]any{"kind": "follow_up", "message": "later"},
@@ -829,6 +929,165 @@ func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
 				t.Fatalf("resume attempts = %d, want %d", got, test.wantOpens)
 			}
 		})
+	}
+}
+
+func TestChatSendWaitsForFencedRouteCleanupBeforeReopening(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-fenced-reopen")
+	resumeLog := &signalLogHandler{records: make(chan struct{}, 1)}
+	h.bridge.cfg.Logger = slog.New(resumeLog)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-fenced-reopen"})
+	frames.next(t, "ready")
+	serverConn := h.soleServerConnection(t)
+	_, stale := serverConn.binding()
+	if stale == nil {
+		t.Fatal("server connection was not bound")
+	}
+
+	transition := &cancelSignalSubscriber{frames: make(chan session.Frame, 64), cancelled: make(chan struct{})}
+	_, _, transitionDetach, err := h.manager.Acquire(t.Context(), chatRef{id: "send-fenced-reopen", cwd: filepath.Dir(h.path)}, transition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transitionDetach()
+	select {
+	case frame := <-transition.frames:
+		if frame.Kind != session.FrameReady {
+			t.Fatalf("transition subscriber initial frame = %#v, want ready", frame)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("transition subscriber did not attach")
+	}
+	serverConn.stateMu.Lock()
+	staleDetach := serverConn.detach
+	serverConn.detach = nil
+	serverConn.stateMu.Unlock()
+	staleDetach()
+
+	root := filepath.Dir(h.daemon.SocketPath())
+	h.daemon.Stop()
+	replacement := omorpctest.New(root)
+	if err := replacement.LoadSessionFile(h.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := replacement.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(replacement.Stop)
+	transitionTimer := time.NewTimer(5 * time.Second)
+	defer transitionTimer.Stop()
+	for {
+		select {
+		case frame := <-transition.frames:
+			if frame.Kind == session.FrameError {
+				goto invalidated
+			}
+		case <-transitionTimer.C:
+			t.Fatal("provider replacement did not invalidate the stale route")
+		}
+	}
+
+invalidated:
+
+	releaseClose := replacement.BlockHandler(omorpc.CmdCloseSession)
+	defer releaseClose()
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- stale.Close() }()
+	if !replacement.AwaitRequestCount(omorpc.CmdCloseSession, 1, 5*time.Second) {
+		t.Fatal("fallback cleanup did not reach replacement daemon")
+	}
+
+	replacement.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-fenced-reopen", "requestId": "fenced-reopen",
+		"run": map[string]any{"kind": "prompt", "message": "retry after cleanup"},
+	})
+	if !replacement.AwaitRequestCount(omorpc.CmdOpenSession, 1, 5*time.Second) {
+		t.Fatal("fenced open was not attempted")
+	}
+	select {
+	case <-resumeLog.records:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fenced rejection was not observed")
+	}
+	releaseClose()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatalf("fallback cleanup: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fallback cleanup did not settle")
+	}
+
+	nextSuccessfulSendAcks(t, frames, "fenced-reopen")
+	if !replacement.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("prompt did not complete after fenced reopen")
+	}
+	if got := replacement.RequestCount(omorpc.CmdOpenSession); got != 2 {
+		t.Fatalf("reopen attempts = %d, want one rejected and one successful", got)
+	}
+	if got := replacement.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("prompt attempts = %d, want exactly 1", got)
+	}
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "error" {
+			t.Fatalf("fenced reopen reached client socket: %s", raw)
+		}
+	}
+}
+
+func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "send-silent-eviction")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-silent-eviction"})
+	frames.next(t, "ready")
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+
+	beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	beforePrompts := h.daemon.RequestCount(omorpc.CmdPrompt)
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	h.daemon.EvictUsedSessionOnNextRoutingCommand()
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "send-silent-eviction", "requestId": "silent-eviction-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "retry after eviction"},
+	})
+	nextSuccessfulSendAcks(t, frames, "silent-eviction-prompt")
+
+	writeClient(t, conn, map[string]any{"type": "ping"})
+	frames.next(t, "pong")
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession) - beforeOpens; got != 1 {
+		t.Fatalf("reopen attempts = %d, want exactly 1", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdGetEntries) - beforeEntries; got != 1 {
+		t.Fatalf("history replays = %d, want exactly 1", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt) - beforePrompts; got != 2 {
+		t.Fatalf("prompt attempts = %d, want initial plus one retry", got)
+	}
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		_ = json.Unmarshal(raw, &frame)
+		if frame["type"] == "error" {
+			t.Fatalf("silent eviction reached client socket: %s", raw)
+		}
 	}
 }
 
@@ -1324,7 +1583,7 @@ func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
-	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeUnknownSession)
+	h.daemon.FailNext(omorpc.CmdFollowUp, omorpc.ErrCodeTooManySessions)
 	releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(releaseRaw) }

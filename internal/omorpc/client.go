@@ -26,6 +26,10 @@ var (
 	// Delivery is uncertain; unlike ErrDisconnected, this does not invalidate
 	// the connection epoch.
 	ErrWrittenUnanswered = errors.New("omorpc: request written but unanswered")
+
+	// ErrEpochMismatch means an expected-token call was rejected before write
+	// because its concrete connection epoch was no longer current.
+	ErrEpochMismatch = fmt.Errorf("%w: expected connection epoch is not current", ErrDisconnected)
 )
 
 // Config tunes the client. Zero-valued fields are replaced field-wise by
@@ -456,6 +460,15 @@ func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, Epoch
 	return c.callOnEpochInEpoch(ctx, ep, cmd)
 }
 
+// CallInEpochToken sends a request only when expected still identifies the
+// current concrete connection. It never reconnects or selects a newer epoch.
+func (c *Client) CallInEpochToken(ctx context.Context, expected EpochToken, cmd Command) (*Response, EpochToken, error) {
+	if expected.epoch == nil {
+		return nil, EpochToken{}, ErrEpochMismatch
+	}
+	return c.callOnEpochInEpochWithUnavailable(ctx, expected.epoch, cmd, ErrEpochMismatch)
+}
+
 // CallRetained sends a two-way request while retaining completion ownership
 // after the caller stops waiting. complete runs exactly once: immediately for
 // a request that could not be written, or when the correlated response or
@@ -466,6 +479,20 @@ func (c *Client) CallRetained(ctx context.Context, cmd Command, complete func(*R
 		complete(nil, EpochToken{}, err)
 		return nil, err
 	}
+	return c.callRetainedOnEpoch(ctx, ep, cmd, complete, ErrDisconnected)
+}
+
+// CallRetainedInEpoch is CallRetained bound to expected. It rejects before
+// write rather than reconnecting or selecting a newer connection epoch.
+func (c *Client) CallRetainedInEpoch(ctx context.Context, expected EpochToken, cmd Command, complete func(*Response, EpochToken, error)) (*Response, error) {
+	if expected.epoch == nil {
+		complete(nil, EpochToken{}, ErrEpochMismatch)
+		return nil, ErrEpochMismatch
+	}
+	return c.callRetainedOnEpoch(ctx, expected.epoch, cmd, complete, ErrEpochMismatch)
+}
+
+func (c *Client) callRetainedOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Command, complete func(*Response, EpochToken, error), unavailable error) (*Response, error) {
 	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
 	frame, err := EncodeRequest(id, cmd)
 	if err != nil {
@@ -477,8 +504,8 @@ func (c *Client) CallRetained(ctx context.Context, cmd Command, complete func(*R
 	c.mu.Lock()
 	if c.closed || c.current != ep {
 		c.mu.Unlock()
-		complete(nil, EpochToken{}, ErrDisconnected)
-		return nil, ErrDisconnected
+		complete(nil, EpochToken{}, unavailable)
+		return nil, unavailable
 	}
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()
@@ -563,6 +590,10 @@ func (c *Client) callOnEpoch(ctx context.Context, ep *connectionEpoch, cmd Comma
 }
 
 func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cmd Command) (*Response, EpochToken, error) {
+	return c.callOnEpochInEpochWithUnavailable(ctx, ep, cmd, ErrDisconnected)
+}
+
+func (c *Client) callOnEpochInEpochWithUnavailable(ctx context.Context, ep *connectionEpoch, cmd Command, unavailable error) (*Response, EpochToken, error) {
 	id := "omo_go_" + strconv.FormatUint(c.nextID.Add(1), 10)
 	frame, err := EncodeRequest(id, cmd)
 	if err != nil {
@@ -573,7 +604,7 @@ func (c *Client) callOnEpochInEpoch(ctx context.Context, ep *connectionEpoch, cm
 	c.mu.Lock()
 	if c.closed || c.current != ep {
 		c.mu.Unlock()
-		return nil, EpochToken{}, ErrDisconnected
+		return nil, EpochToken{}, unavailable
 	}
 	c.pending[id] = pendingRequest{command: cmd.commandName(), result: result}
 	c.mu.Unlock()

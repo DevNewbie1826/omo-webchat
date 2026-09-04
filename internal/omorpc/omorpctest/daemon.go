@@ -15,7 +15,8 @@
 //     sequence of unsolicited events to a session; HoldPrompt delays the
 //     event stream after the accepted response so tests can hold a run open
 //   - UnloadSession evicts a live session (subsequent commands fail
-//     unknown_session) and emits a session_unloaded event
+//     unknown_session) and emits a session_unloaded event; EvictUsedSessionOnNextRoutingCommand
+//     models silent provider-side eviction discovered by the next command
 //   - Emit / EmitSession inject unsolicited events; WriteRaw injects
 //     hostile bytes verbatim
 //
@@ -60,6 +61,7 @@ type daemonSession struct {
 	durableID string // durable UUID stored in the session file
 	rpcID     string // CURRENT epoch-local routing handle ("rpc-N")
 	live      bool   // false after UnloadSession or daemon Stop/Restart
+	used      bool   // at least one command reached the current routing handle
 	history   []any  // durable transcript returned by get_entries
 	leafID    string
 	name      string
@@ -81,6 +83,7 @@ type Daemon struct {
 	handlerGateByPath map[string]map[string]<-chan struct{}
 	failNext          map[string]string
 	pathFailures      map[string]int
+	evictUsedSession  bool
 	refuse            bool
 	connections       int
 	handshakes        int
@@ -328,8 +331,14 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	d.mu.Lock()
 	rec := d.sessionByRPC(sid)
 	live := rec != nil && rec.live
+	if live && d.evictUsedSession && rec.used {
+		rec.live = false
+		d.evictUsedSession = false
+		live = false
+	}
 	var recPath, recDurable string
 	if live {
+		rec.used = true
 		recPath, recDurable = rec.path, rec.durableID
 	}
 	var script []map[string]any
@@ -482,6 +491,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	d.rpcCounter++
 	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
 	rec.live = true
+	rec.used = false
 	d.mu.Unlock()
 
 	d.write(conn, d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
@@ -767,6 +777,15 @@ func (d *Daemon) BlockHandlerForPath(cmd, sessionPath string) (release func()) {
 func (d *Daemon) FailNext(cmd, code string) {
 	d.mu.Lock()
 	d.failNext[cmd] = code
+	d.mu.Unlock()
+}
+
+// EvictUsedSessionOnNextRoutingCommand silently forgets the next live route
+// that has already handled a command. The triggering command receives
+// unknown_session and the one-shot knob is consumed; no unload event is sent.
+func (d *Daemon) EvictUsedSessionOnNextRoutingCommand() {
+	d.mu.Lock()
+	d.evictUsedSession = true
 	d.mu.Unlock()
 }
 

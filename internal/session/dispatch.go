@@ -85,13 +85,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "compaction_end", "compaction_done":
 		s.endCompactionLocked(raw)
 	case "session_unloaded":
-		s.invalidated = true
-		s.resumable = true
-		s.promptInFlight = false
-		s.providerRunActive = false
-		s.compactionActive = false
-		s.localCommandActive = false
-		s.cancelIdleLocked()
+		s.markProviderUnloadedLocked()
 		s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "provider unloaded the session"}})
 	case "state", "state_changed":
 		payload := eventPayload(raw)

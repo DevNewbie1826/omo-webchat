@@ -180,6 +180,7 @@
   "chat.resyncBusyResponding": "Cannot resync while the assistant is responding.",
   "chat.resyncBusyCompacting": "Cannot resync while the conversation is compacting.",
   "chat.resyncError": "Failed to resync the session.",
+  "chat.startFailed": "Could not open the session; please retry.",
   "chat.missingOriginal": "Original session not found",
   "chat.missingOriginalElsewhere": "The original conversation lives inside another session file",
   "chat.missingOriginalNone": "No related session branches were found for this chat.",

@@ -442,6 +442,36 @@ func TestRetryAdmissionFailurePublishesStoredTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestRecoveryCompletionTerminalizesLifecycleSubstitutedResumableError(t *testing.T) {
+	s := &Session{durableID: "durable-substituted-resumable", queueSize: DefaultQueueSize}
+	if err, stop := s.beginSendOperation("substituted-resumable"); err != nil || stop {
+		t.Fatalf("begin operation = (%v, %v)", err, stop)
+	}
+	s.recordSendOperation("substituted-resumable", nil)
+	s.lifecycleMu.Lock()
+	s.resumable = true
+	s.lifecycleMu.Unlock()
+
+	original := errors.New("provider detail that must not be exposed")
+	var completionErr error
+	s.finishDetachedSend(original, "chat.send", "substituted-resumable", func(err error) {
+		completionErr = err
+		s.CompleteDetachedSend("substituted-resumable", err)
+	})
+	if !errors.Is(completionErr, ErrSessionResumable) {
+		t.Fatalf("completion = %v, want lifecycle-substituted ErrSessionResumable", completionErr)
+	}
+
+	operation := s.sendOwner.operations["substituted-resumable"]
+	info, _ := operation.outcome.Data.(ErrorInfo)
+	if operation.phase != sendOperationTerminal || !operation.published || info.Code != "session_unloaded" {
+		t.Fatalf("substituted completion outcome = %+v, info=%+v", operation, info)
+	}
+	if info.Message != "provider unloaded the session" {
+		t.Fatalf("substituted completion exposed unstable provider text: %+v", info)
+	}
+}
+
 func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *testing.T) {
 	s := &Session{durableID: "durable-success", queueSize: 1, readyPublished: true}
 	if err, stop := s.beginSendOperation("successful-send"); err != nil || stop {
