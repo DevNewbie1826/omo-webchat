@@ -55,4 +55,23 @@ describe("follow-up admission reconciliation", () => {
     expect(harness.current?.hasPendingFollowUp).toBe(true);
     expect(harness.current?.messages.map(messageText)).toContain("admitted follow-up");
   });
+
+  it("treats a completed-only replay as admission before idle history reconciliation", () => {
+    const requestId = queueFollowUp("completed follow-up");
+    const sendsBeforeReconnect = harness.sent.filter((frame) => frame.type === "chat.send").length;
+
+    act(() => {
+      harness.disconnect();
+      harness.reconnect();
+      harness.deliver({ type: "ack", command: "chat.send", requestId, phase: "completed" });
+      harness.deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false });
+      harness.deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+    });
+
+    expect(harness.current?.retryDraft).toBeNull();
+    expect(harness.current?.failedDrafts).toEqual([]);
+    expect(harness.current?.hasPendingFollowUp).toBe(true);
+    expect(harness.current?.messages.map(messageText)).toContain("completed follow-up");
+    expect(harness.sent.filter((frame) => frame.type === "chat.send")).toHaveLength(sendsBeforeReconnect);
+  });
 });

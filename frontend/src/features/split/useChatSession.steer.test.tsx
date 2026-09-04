@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseChatServerFrame, type ChatClientFrame, type ChatConnector, type ChatServerFrame } from "../../lib/chatWs";
+import { messageText } from "./chatEntries";
 import { useChatSession } from "./useChatSession";
 
 const session = {
@@ -126,6 +127,78 @@ describe("useChatSession active-run sends", () => {
 			phase: "completed",
 		}));
 		expect(current?.messages).toBe(settledMessages);
+	});
+
+	it("renders one steer when completion precedes run.done and canonical reconciliation", () => {
+		act(() => {
+			deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+			deliver({ type: "run.started", sessionId: session.id });
+			current?.steer("completed before done");
+		});
+		const steerFrame = sent.find((frame) => frame.type === "chat.send" && frame.run.kind === "steer");
+		if (steerFrame?.type !== "chat.send" || !steerFrame.requestId) throw new Error("missing steer request identity");
+		const requestId = steerFrame.requestId;
+
+		act(() => deliver({
+			type: "ack",
+			sessionId: session.id,
+			command: "chat.send",
+			requestId,
+			phase: "completed",
+		}));
+		expect(current?.messages.filter((message) => messageText(message) === "completed before done")).toEqual([]);
+
+		act(() => {
+			deliver({
+				type: "message",
+				sessionId: session.id,
+				message: { role: "user", blocks: [{ kind: "text", text: "completed before done" }], ts: 10 },
+			});
+			deliver({ type: "run.done", sessionId: session.id, reason: "stop" });
+			disconnect();
+			reconnect();
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false });
+			deliver({
+				type: "entries",
+				sessionId: session.id,
+				entries: [{
+					type: "message",
+					message: { role: "user", content: "completed before done", timestamp: 10 },
+				}],
+				final: true,
+			});
+		});
+
+		expect(current?.messages.filter((message) => messageText(message) === "completed before done")).toHaveLength(1);
+		expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
+	});
+
+	it("settles a steer marker when completion replays after run.done was missed", () => {
+		act(() => {
+			deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+			deliver({ type: "run.started", sessionId: session.id });
+			current?.steer("missed terminal");
+		});
+		const steerFrame = sent.find((frame) => frame.type === "chat.send" && frame.run.kind === "steer");
+		if (steerFrame?.type !== "chat.send" || !steerFrame.requestId) throw new Error("missing steer request identity");
+		const requestId = steerFrame.requestId;
+
+		act(() => {
+			disconnect();
+			reconnect();
+			deliver({ type: "ack", command: "chat.send", requestId, phase: "completed" });
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false });
+			deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+		});
+		expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
+		expect(current?.messages.map(messageText)).not.toContain("missed terminal");
+
+		act(() => deliver({
+			type: "message",
+			sessionId: session.id,
+			message: { role: "user", blocks: [{ kind: "text", text: "missed terminal" }], ts: 20 },
+		}));
+		expect(current?.messages.filter((message) => messageText(message) === "missed terminal")).toHaveLength(1);
 	});
 
 	it("restores a steer when its correlated rejection arrives after run.done", () => {

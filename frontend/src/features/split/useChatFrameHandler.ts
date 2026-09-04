@@ -319,14 +319,19 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (!bindings.ownedSendRequestIdsRef.current.has(frame.requestId)
             || !bindings.consumeOutcome(frame.requestId)) return;
           bindings.ownedSendRequestIdsRef.current.delete(frame.requestId);
-          // An unechoed follow-up keeps its correlation and optimistic marker
-          // until live/history reconciliation replaces both with the canonical
-          // user message. A steer marker was already removed by run.done, so
-          // terminal success can retire the operation and its replay tombstone.
+          // Completion is stronger than admission. Preserve an unechoed
+          // follow-up for canonical reconciliation, but never recover it as an
+          // unsent operation if an attach replay omitted the admission ack.
           const pending = bindings.pendingRef.current;
+          const completed = pending.find((operation) => operation.requestId === frame.requestId);
+          if (completed) completed.admitted = true;
+          // Settle a steer and its exact optimistic marker in the same frame.
+          // run.done may not have arrived (or may have been missed), so retiring
+          // only the correlation would leave a duplicate/permanent marker.
           const settled = settleCompletedSendPending(pending, frame.requestId, bindings.retiredSteerIdsRef.current);
           if (settled !== pending) {
             bindings.pendingRef.current = settled;
+            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== completed?.id));
             bindings.notifyPendingChanged();
           }
         } else if (frame.requestId) {
