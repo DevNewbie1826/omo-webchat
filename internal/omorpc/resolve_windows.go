@@ -3,7 +3,6 @@
 package omorpc
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +41,13 @@ func resolveOmoBinary(cfgPath string) (string, error) {
 	if strings.Trim(pathExt, " ;") == "" {
 		pathExt = defaultPathExt
 	}
+	// Read the bin directory once and match case-insensitively: PATHEXT uses
+	// uppercase extensions while the on-disk name keeps its own casing, so the
+	// returned path must come from the directory listing, not the pattern.
+	entries, dirErr := os.ReadDir(bunBin)
+	if dirErr != nil {
+		return "", fmt.Errorf("omorpc: resolve supervisor %q: %w (also scanned %s)", cfgPath, err, bunBin)
+	}
 	for _, ext := range strings.Split(pathExt, ";") {
 		ext = strings.TrimSpace(ext)
 		if ext == "" {
@@ -50,27 +56,21 @@ func resolveOmoBinary(cfgPath string) (string, error) {
 		if !strings.HasPrefix(ext, ".") {
 			ext = "." + ext
 		}
-		ext = strings.ToUpper(ext)
-		switch ext {
+		switch strings.ToUpper(ext) {
 		case ".COM", ".EXE", ".BAT", ".CMD":
 		default:
 			continue
 		}
-		candidate := filepath.Join(bunBin, "omo"+ext)
-		info, statErr := os.Stat(candidate)
-		if errors.Is(statErr, os.ErrNotExist) {
-			continue
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.EqualFold(entry.Name(), "omo"+ext) {
+				continue
+			}
+			candidate := filepath.Join(bunBin, entry.Name())
+			if shimErr := batchShimError(candidate); shimErr != nil {
+				return "", shimErr
+			}
+			return candidate, nil
 		}
-		if statErr != nil {
-			return "", fmt.Errorf("omorpc: inspect supervisor candidate %q: %w", candidate, statErr)
-		}
-		if info.IsDir() {
-			continue
-		}
-		if shimErr := batchShimError(candidate); shimErr != nil {
-			return "", shimErr
-		}
-		return candidate, nil
 	}
 	return "", fmt.Errorf("omorpc: resolve supervisor %q: %w (also scanned %s)", cfgPath, err, bunBin)
 }
