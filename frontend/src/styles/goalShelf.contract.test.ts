@@ -18,10 +18,14 @@ import { describe, expect, it } from "vitest";
  * collapsed and expanded states. The activity shelf is the other shrinkable
  * sibling: flex: 0 1 auto (never flex: none) with the same bar-row min-height
  * floor so its 60vh panel cannot shove the composer past the clipped pane
- * once the transcript has already gone to zero. The user-sized activity
- * panel must stay viewport-bounded (max-height as a vh fraction, never none)
- * so a stale stored height from a taller window cannot dominate a short one.
- * Rules are read straight from disk
+ * once the transcript has already gone to zero. When the activity shelf is
+ * expanded, that floor also reserves the resize grip and a minimal panel
+ * box (borders intact) so overflow: hidden cannot clip the interaction
+ * band in half; collapsed stays the plain bar floor. The activity button
+ * uses the same inward focus outline as the goal button. The user-sized
+ * activity panel must stay viewport-bounded (max-height as a vh fraction,
+ * never none) so a stale stored height from a taller window cannot dominate
+ * a short one. Rules are read straight from disk
  * (same readFileSync+regex approach as styleContracts.test.ts) so removing
  * or weakening any of them fails here.
  */
@@ -44,6 +48,12 @@ const compactCss = (value: string): string => value.replace(/\s+/g, "");
 /** .th-activity-bar: secondary line box + vertical padding + 1px borders. */
 const BAR_ROW_HEIGHT_FLOOR = compactCss(
   "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px)",
+);
+
+/** Expanded activity shelf: bar floor + 10px grip + grip margin-top +
+ *  panel margin-top + vertical padding + 1px borders. */
+const ACTIVITY_EXPANDED_HEIGHT_FLOOR = compactCss(
+  "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px + 10px + var(--th-space-0-5) + var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px)",
 );
 
 const shelfMinHeightFloorViolations = (shelf: string): string[] => {
@@ -232,6 +242,71 @@ describe("goal shelf shrink contract", () => {
         `activity-shelf.css .th-activity-shelf .th-activity-bar-row flex is ` +
           `"${declarationValue(row, "flex") || "missing"}"; the bar must keep flex: none`,
       );
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("reserves the grip and a minimal panel box in the expanded activity-shelf floor", () => {
+    const expanded = ruleBody(
+      activityShelf,
+      '.th-activity-shelf:has(.th-activity-bar[aria-expanded="true"])',
+    );
+    const panel = ruleBody(activityShelf, ".th-activity-panel");
+    const grip = ruleBody(activityShelf, ".th-activity-resize");
+    const violations: string[] = [];
+    const minHeight = declarationValue(expanded, "min-height");
+    if (compactCss(minHeight) !== ACTIVITY_EXPANDED_HEIGHT_FLOOR) {
+      violations.push(
+        `activity-shelf.css expanded .th-activity-shelf min-height is "${minHeight || "missing"}"; ` +
+          "expected bar floor + 10px grip + space-0-5 grip margin + space-1 panel margin + " +
+          "space-2 + space-2 padding + 2px borders so the interaction band stays inside the clip",
+      );
+    }
+    // Collapsed must stay the plain bar floor: the expanded calc belongs on
+    // the :has(aria-expanded) rule, not the base shelf.
+    const collapsed = declarationValue(ruleBody(activityShelf, ".th-activity-shelf"), "min-height");
+    if (compactCss(collapsed) !== BAR_ROW_HEIGHT_FLOOR) {
+      violations.push(
+        `activity-shelf.css collapsed .th-activity-shelf min-height is "${collapsed || "missing"}"; ` +
+          "collapsed must keep the bar-row floor (no blank space below the bar)",
+      );
+    }
+    if (declarationValue(expanded, "flex") === "none") {
+      violations.push(
+        "activity-shelf.css expanded .th-activity-shelf must stay shrinkable; do not set flex: none",
+      );
+    }
+    // Equivalent structure to .th-goal-panel: the panel yields and scrolls
+    // inside the shelf instead of overflowing the clip.
+    if (declarationValue(panel, "min-height") !== "0") {
+      violations.push(
+        `activity-shelf.css .th-activity-panel min-height is ` +
+          `"${declarationValue(panel, "min-height") || "missing"}"; expected 0`,
+      );
+    }
+    if (declarationValue(grip, "flex") !== "none") {
+      violations.push(
+        `activity-shelf.css .th-activity-resize flex is ` +
+          `"${declarationValue(grip, "flex") || "missing"}"; the grip must keep flex: none`,
+      );
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("draws the activity button focus outline inside the clipped shelf in either aria-expanded state", () => {
+    const focus = ruleBody(activityShelf, ".th-activity-bar:focus-visible");
+    const violations: string[] = [];
+    if (declarationValue(focus, "outline-offset") !== "-2px") {
+      violations.push(
+        `activity-shelf.css .th-activity-bar:focus-visible outline-offset is ` +
+          `"${declarationValue(focus, "outline-offset") || "missing"}"; expected -2px`,
+      );
+    }
+    // The selector must not depend on aria-expanded, otherwise one shelf state
+    // can silently lose its visible keyboard focus treatment.
+    if (activityShelf.includes('.th-activity-bar[aria-expanded="true"]:focus-visible') ||
+        activityShelf.includes('.th-activity-bar[aria-expanded="false"]:focus-visible')) {
+      violations.push("activity focus treatment must apply regardless of aria-expanded state");
     }
     expect(violations).toEqual([]);
   });
