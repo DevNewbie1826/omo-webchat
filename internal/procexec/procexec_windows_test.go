@@ -3,6 +3,8 @@
 package procexec
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // The bounded deadline mirrors the stop OwnedProcess kill loop in
@@ -96,6 +100,42 @@ func Test_TrackedProcess_TerminateTree_kills_leader_and_grandchild_when_job_term
 	}
 }
 
+func Test_StartTracked_assignment_failure_terminates_and_reaps_child(t *testing.T) {
+	// Given: assignment is forced to fail after a long-running child starts.
+	assignmentFailure := errors.New("injected assignment failure")
+	originalAssign := assignProcessToJobObject
+	assignProcessToJobObject = func(windows.Handle, windows.Handle) error {
+		return assignmentFailure
+	}
+	t.Cleanup(func() { assignProcessToJobObject = originalAssign })
+
+	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
+	// A non-file writer makes os/exec run its output copier. StartTracked must
+	// call cmd.Wait before returning, which also waits for that goroutine.
+	cmd.Stdout = &bytes.Buffer{}
+
+	// When: StartTracked cannot assign the running child to its prepared job.
+	tracked, err := StartTracked(cmd)
+
+	// Then: the assignment error surfaces without a tracking handle, and the
+	// leader has synchronously exited and been reaped before return.
+	if !errors.Is(err, assignmentFailure) {
+		t.Fatalf("StartTracked error = %v, want injected assignment failure", err)
+	}
+	if tracked != nil {
+		t.Fatalf("StartTracked returned a handle after assignment failure: %v", tracked)
+	}
+	if cmd.Process == nil {
+		t.Fatal("command did not start before assignment failure")
+	}
+	if cmd.ProcessState == nil {
+		t.Fatal("failed child was not reaped before StartTracked returned")
+	}
+	if GroupAlive(cmd.Process.Pid) {
+		t.Fatalf("child %d survived assignment failure", cmd.Process.Pid)
+	}
+}
+
 func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *testing.T) {
 	// Given: a tracked long-running child that nobody terminated.
 	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
@@ -124,5 +164,8 @@ func Test_TrackedProcess_Close_kernel_kills_child_when_job_handle_released(t *te
 		case <-deadline.C:
 			t.Fatalf("child %d survived the job close within %s", tracked.Pid(), trackedTreeTestDeadline)
 		}
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatalf("job-closed child %d reaped with a clean exit", tracked.Pid())
 	}
 }
