@@ -251,7 +251,7 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 	job := t.job
 	var dup windows.Handle
 	if job != 0 {
-		if err := windows.DuplicateHandle(windows.CurrentProcess(), job, windows.CurrentProcess(), &dup, 0, false, 0); err != nil {
+		if err := windows.DuplicateHandle(windows.CurrentProcess(), job, windows.CurrentProcess(), &dup, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
 			t.mu.Unlock()
 			return fmt.Errorf("procexec: duplicate job handle of child %d: %w", t.pid, err)
 		}
