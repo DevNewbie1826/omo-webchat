@@ -16,7 +16,7 @@ import {
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
-import { recordSteerMark } from "./chatSteerMarks";
+import { recordSteerMark, steerMarks } from "./chatSteerMarks";
 import * as chatState from "./chatSessionState";
 import type { ChatDraft, QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
 import { createChatFrameHandler } from "./useChatFrameHandler";
@@ -503,6 +503,9 @@ export function useChatFrameState() {
   const steer = (text: string, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
     const trimmed = text.trim();
     if (!trimmed || !client) return false;
+    const priorMarks = steerMarks(sessionId);
+    const visibleUserCount = messagesRef.current.filter((message) => message.role === "user").length;
+    const canonicalUserOrdinal = Math.max(visibleUserCount, ...priorMarks.map((mark) => mark.ordinal)) + 1;
     const pending = chatState.newPendingRun(
       { text: trimmed, image: null }, trimmed, ++optimisticIdRef.current, requestId,
       historyLoadedRef.current, messagesRef.current, "steer",
@@ -515,10 +518,9 @@ export function useChatFrameState() {
     }
     pending.accepted = true;
     ownedSendRequestIdsRef.current.add(requestId);
-    // Persist the steer text so the mark survives settle, resync, and reload:
-    // the mark is UI bookkeeping, re-derived from this store at history
-    // reconciliation because the engine persists no marker.
-    recordSteerMark(sessionId, trimmed);
+    // Persist the canonical occurrence identity so resync and reload can tag
+    // this user row without matching another row that happens to share text.
+    recordSteerMark(sessionId, { requestId, text: trimmed, ordinal: canonicalUserOrdinal });
     // No optimistic transcript row: the strip shows the pending summary until
     // the live echo (tagged as a steer) or run.done retires it.
     replaceSteerPending([...steerPendingRef.current, { requestId, text: trimmed }]);

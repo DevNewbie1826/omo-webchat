@@ -4,6 +4,7 @@ import type { UiMessage } from "./chatEntries";
 import { messageText, parseEntries } from "./chatEntries";
 import type { ChatDraft, ToolEntry } from "./chatSessionTypes";
 import { materializeFinalTools } from "./chatFinalTools";
+import type { SteerMark } from "./chatSteerMarks";
 
 export interface PendingOptimistic extends ChatDraft {
   readonly id: number;
@@ -80,14 +81,8 @@ interface ReconcileHistoryInput {
   readonly active: PendingOptimistic | null;
   readonly uncertain: PendingOptimistic | null;
   readonly preserveCurrent: boolean;
-  /**
-   * Occurrence counts of this chat's accepted steer texts (client-side
-   * bookkeeping). Plain canonical user entries whose text has a remaining
-   * occurrence regain the steer mark so it survives resync and reload;
-   * occurrences are consumed from a call-local copy, never from the store,
-   * so every reload derives identical marks.
-   */
-  readonly steerMarks?: Readonly<Record<string, number>>;
+  /** Stable canonical user-message occurrences admitted as steers. */
+  readonly steerMarks?: readonly SteerMark[];
   /**
    * Whether the server may still be streaming the uncertain run (last known
    * isStreaming). When false and the baseline is unknown, an identical turn
@@ -261,17 +256,17 @@ function mergeSnapshot(snapshot: readonly UiMessage[], current: readonly UiMessa
 
 export function reconcileHistory({ entries, current, pending, active, uncertain, preserveCurrent, serverStreaming = false, steerMarks }: ReconcileHistoryInput): ReconcileHistoryResult {
   let restored = parseEntries(entries);
-  // Re-derive steer marks on the canonical flush: the engine stores a steer
-  // as a plain user entry, so only this client-side bookkeeping can restore
-  // the presentation across resync and reload.
+  // Re-derive steer marks on the exact canonical user occurrences recorded at
+  // admission. Text is only a consistency guard; it is never used to search
+  // for another occurrence if history and the stored identity disagree.
   if (steerMarks !== undefined) {
-    const remaining = { ...steerMarks };
+    const marksByOrdinal = new Map(steerMarks.map((mark) => [mark.ordinal, mark]));
+    let userOrdinal = 0;
     restored = restored.map((message) => {
-      if (message.role !== "user" || message.customType !== undefined) return message;
-      const text = messageText(message);
-      const left = remaining[text] ?? 0;
-      if (left <= 0) return message;
-      remaining[text] = left - 1;
+      if (message.role !== "user") return message;
+      userOrdinal += 1;
+      const mark = marksByOrdinal.get(userOrdinal);
+      if (mark === undefined || mark.text !== messageText(message)) return message;
       return { ...message, customType: "steer" };
     });
   }

@@ -2,6 +2,7 @@ import type { UiMessage } from "./chatEntries";
 import { extractTodoPhases } from "./chatTodoHistory";
 import * as chatState from "./chatSessionState";
 import type { TodoPhase } from "./activityTypes";
+import type { SteerMark } from "./chatSteerMarks";
 
 interface ReconcileFrameHistoryInput {
   readonly entries: unknown;
@@ -13,8 +14,8 @@ interface ReconcileFrameHistoryInput {
   readonly preserveCurrent: boolean;
   readonly serverStreaming: boolean;
   readonly hasLiveTodo: boolean;
-  /** Occurrence counts of this chat's accepted steer texts. */
-  readonly steerMarks?: Readonly<Record<string, number>>;
+  /** Stable canonical user-message occurrences admitted as steers. */
+  readonly steerMarks?: readonly SteerMark[];
 }
 
 interface ReconcileFrameHistoryResult {

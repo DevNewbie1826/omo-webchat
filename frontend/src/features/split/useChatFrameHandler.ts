@@ -6,7 +6,7 @@ import { applyActivityEvent, applyRunFlight, applyTodoToolDetails, validatedActi
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import { messageText, type UiMessage } from "./chatEntries";
-import { forgetSteerMark, steerMarkCounts } from "./chatSteerMarks";
+import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { isPromptTerminalError } from "./chatErrorState";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
@@ -201,9 +201,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
     bindings.retiredSteerIdsRef.current.delete(pending.id);
     if (pending.kind === "steer") {
-      // A rejected steer never persisted engine-side: drop its occurrence so
-      // the mark store cannot mis-tag a later identical prompt entry.
-      forgetSteerMark(sessionId, pending.text);
+      // A rejected steer never persisted engine-side: drop its exact request
+      // identity without touching another occurrence with the same text.
+      forgetSteerMark(sessionId, pending.requestId);
       bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((item) => item.requestId !== pending.requestId));
     }
     bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
@@ -567,7 +567,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           preserveCurrent,
           serverStreaming: bindings.runningRef.current,
           hasLiveTodo: bindings.activitiesRef.current.todo !== null,
-          steerMarks: steerMarkCounts(frame.sessionId),
+          steerMarks: steerMarks(frame.sessionId),
         });
         const unacknowledgedFollowUps = bindings.awaitingReconnectHistoryRef.current && !bindings.runningRef.current
           ? reconciliation.history.pending.filter((pending) => pending.kind === "followUp" && !pending.admitted)

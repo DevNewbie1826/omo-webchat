@@ -39,14 +39,14 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
       active: null,
       uncertain: null,
       preserveCurrent: false,
-      steerMarks: { "hold on": 1 },
+      steerMarks: [{ requestId: "r1", text: "hold on", ordinal: 1 }],
     });
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]?.customType).toBe("steer");
     expect(result.messages[0]?.id).toBe("e1");
   });
 
-  it("marks only as many identical rows as recorded steer occurrences", () => {
+  it("marks the recorded canonical occurrence when identical text appears earlier", () => {
     const result = reconcileHistory({
       entries: [
         { type: "message", id: "e1", message: { role: "user", content: "same", timestamp: 10 } },
@@ -57,9 +57,9 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
       active: null,
       uncertain: null,
       preserveCurrent: false,
-      steerMarks: { same: 1 },
+      steerMarks: [{ requestId: "r1", text: "same", ordinal: 2 }],
     });
-    expect(result.messages.map((message) => message.customType)).toEqual(["steer", undefined]);
+    expect(result.messages.map((message) => message.customType)).toEqual([undefined, "steer"]);
   });
 
   it("leaves canonical rows unmarked without recorded steer occurrences", () => {
@@ -82,7 +82,7 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
       active: null,
       uncertain: null,
       preserveCurrent: true,
-      steerMarks: { "hold on": 1 },
+      steerMarks: [{ requestId: "r1", text: "hold on", ordinal: 1 }],
     });
     const rows = result.messages.filter((message) => message.blocks?.[0]?.text === "hold on");
     expect(rows).toHaveLength(1);

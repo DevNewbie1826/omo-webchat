@@ -23,6 +23,7 @@ describe("useChatSession active-run sends", () => {
 	let reconnect: () => void;
 
 	beforeEach(() => {
+		window.sessionStorage.clear();
 		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
 		container = document.createElement("div");
 		document.body.appendChild(container);
