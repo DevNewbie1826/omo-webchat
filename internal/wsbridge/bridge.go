@@ -504,11 +504,11 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 		}
 		switch string(f.Run.Kind) {
 		case "prompt":
-			err = sess.SendPrompt(ctx, f.Run.Message, images)
+			err = sess.SendPromptDetached(ctx, f.Run.Message, images)
 		case "steer":
-			err = sess.SendSteer(ctx, f.Run.Message)
+			err = sess.SendSteerDetached(ctx, f.Run.Message)
 		case "follow_up", "followUp":
-			err = sess.SendFollowUp(ctx, f.Run.Message)
+			err = sess.SendFollowUpDetached(ctx, f.Run.Message, images)
 		default:
 			c.sendError("bad_frame", "unknown run kind", "chat.send", "")
 			return
@@ -545,7 +545,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 	case *wscontract.ChatCommandsFrame:
 		c.queryCommands(ctx, sess)
 	case *wscontract.ChatCompactFrame:
-		if err := sess.Compact(ctx); err != nil {
+		if err := sess.CompactDetached(ctx); err != nil {
 			c.sendSessionError(err, "chat.compact", "")
 		}
 	case *wscontract.ChatModelsFrame:

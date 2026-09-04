@@ -46,7 +46,7 @@ func TestSteerAndFollowUpDispatchDuringActiveRun(t *testing.T) {
 	if err := s.SendSteer(context.Background(), "left"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SendFollowUp(context.Background(), "next"); err != nil {
+	if err := s.SendFollowUp(context.Background(), "next", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !d.AwaitRequestCount(omorpc.CmdSteer, 1, testTimeout) || !d.AwaitRequestCount(omorpc.CmdFollowUp, 1, testTimeout) {

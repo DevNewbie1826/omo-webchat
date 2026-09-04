@@ -161,6 +161,16 @@ func (s *Session) RunSnapshot() RunSnapshot {
 }
 
 func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[string]string) error {
+	return s.sendPrompt(ctx, msg, images, false)
+}
+
+// SendPromptDetached admits a prompt through the provider write and leaves
+// response completion to the session callback.
+func (s *Session) SendPromptDetached(ctx context.Context, msg string, images []map[string]string) error {
+	return s.sendPrompt(ctx, msg, images, true)
+}
+
+func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[string]string, detached bool) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
@@ -186,8 +196,32 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
 
+	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
+			steerComplete := func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
+				s.completePrompt(seq, msg, steerErr)
+			}
+			if detached {
+				if steerErr := s.client.CallDetached(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
+					s.completePrompt(seq, msg, steerErr)
+				}
+				return
+			}
+			_, _ = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete)
+			return
+		}
+		s.completePrompt(seq, msg, callErr)
+	}
+	if detached {
+		err = s.client.CallDetached(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, complete)
+		if err != nil {
+			s.completePrompt(seq, msg, err)
+		}
+		return err
+	}
+
 	var retryErr error
-	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+	_, err = s.client.CallRetained(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
 		if callErr != nil && strings.HasPrefix(callErr.Error(), busyAgentErrorPrefix) {
 			_, retryErr = s.client.CallRetained(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, func(_ *omorpc.Response, _ omorpc.EpochToken, steerErr error) {
 				s.completePrompt(seq, msg, steerErr)
@@ -195,7 +229,7 @@ func (s *Session) SendPrompt(ctx context.Context, msg string, images []map[strin
 			return
 		}
 		retryErr = callErr
-		s.completePrompt(seq, msg, callErr)
+		complete(resp, epoch, callErr)
 	})
 	if err != nil && strings.HasPrefix(err.Error(), busyAgentErrorPrefix) {
 		return retryErr
@@ -226,26 +260,39 @@ func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
 }
 
 func (s *Session) SendSteer(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
+	return s.sendDuringRun(ctx, false, func(route string) omorpc.Command {
 		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
 
-func (s *Session) SendFollowUp(ctx context.Context, msg string) error {
-	return s.sendDuringRun(ctx, func(route string) omorpc.Command {
-		return omorpc.FollowUp{SessionID: route, Message: msg}
+// SendSteerDetached admits an in-run steer without waiting for its response.
+func (s *Session) SendSteerDetached(ctx context.Context, msg string) error {
+	return s.sendDuringRun(ctx, true, func(route string) omorpc.Command {
+		return omorpc.Steer{SessionID: route, Message: msg}
 	})
 }
 
-func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc.Command) error {
+func (s *Session) SendFollowUp(ctx context.Context, msg string, images []map[string]string) error {
+	return s.sendDuringRun(ctx, false, func(route string) omorpc.Command {
+		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
+	})
+}
+
+// SendFollowUpDetached admits an in-run follow-up without waiting for its response.
+func (s *Session) SendFollowUpDetached(ctx context.Context, msg string, images []map[string]string) error {
+	return s.sendDuringRun(ctx, true, func(route string) omorpc.Command {
+		return omorpc.FollowUp{SessionID: route, Message: msg, Images: images}
+	})
+}
+
+func (s *Session) sendDuringRun(ctx context.Context, detached bool, command func(string) omorpc.Command) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
 	s.lifecycleMu.Lock()
-	// Observed daemon behavior accepts steer and follow-up while compaction is
-	// active and queues them with the run. They still require an active run;
-	// unlike SendPrompt, compaction alone does not satisfy that requirement.
-	if !s.promptInFlight && !s.providerRunActive {
+	// Steer and follow-up are accepted while a prompt, provider run, or
+	// standalone compaction is active and queue with that work.
+	if !s.promptInFlight && !s.providerRunActive && !s.compactionActive {
 		s.lifecycleMu.Unlock()
 		return ErrPromptInFlight
 	}
@@ -254,9 +301,17 @@ func (s *Session) sendDuringRun(ctx context.Context, command func(string) omorpc
 	if err != nil {
 		return err
 	}
-	_, err = s.client.CallRetained(ctx, command(route), func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
+	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
 		s.noteTransportError(callErr)
-	})
+	}
+	if detached {
+		err = s.client.CallDetached(ctx, command(route), complete)
+		if err != nil {
+			s.noteTransportError(err)
+		}
+		return err
+	}
+	_, err = s.client.CallRetained(ctx, command(route), complete)
 	return err
 }
 
@@ -304,6 +359,16 @@ func (s *Session) Abort(ctx context.Context) error {
 }
 
 func (s *Session) Compact(ctx context.Context) error {
+	return s.compact(ctx, false)
+}
+
+// CompactDetached admits compaction through the provider write and leaves
+// response completion to the session callback.
+func (s *Session) CompactDetached(ctx context.Context) error {
+	return s.compact(ctx, true)
+}
+
+func (s *Session) compact(ctx context.Context, detached bool) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
 	}
@@ -328,9 +393,17 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.publishLocked(Frame{Kind: FrameCompactionStart, SessionID: s.durableID, RequestID: rpcID, Data: CompactionInfo{Phase: "manual"}})
 	s.lifecycleMu.Unlock()
 
-	_, callErr := s.client.CallRetained(ctx, omorpc.Compact{SessionID: route}, func(_ *omorpc.Response, _ omorpc.EpochToken, completionErr error) {
+	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, completionErr error) {
 		s.completeCompact(seq, rpcID, completionErr)
-	})
+	}
+	if detached {
+		callErr := s.client.CallDetached(ctx, omorpc.Compact{SessionID: route}, complete)
+		if callErr != nil {
+			s.completeCompact(seq, rpcID, callErr)
+		}
+		return callErr
+	}
+	_, callErr := s.client.CallRetained(ctx, omorpc.Compact{SessionID: route}, complete)
 	return callErr
 }
 

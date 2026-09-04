@@ -15,15 +15,13 @@ func TestSendDuringRunPassesThroughCompaction(t *testing.T) {
 	s, _, _ := acquire(t, mgr, testChat{id: "send-during-compaction", cwd: t.TempDir()}, newRecorder(32))
 
 	s.lifecycleMu.Lock()
-	s.promptInFlight = true
-	s.providerRunActive = true
 	s.compactionActive = true
 	s.lifecycleMu.Unlock()
 
 	if err := s.SendSteer(context.Background(), "redirect"); err != nil {
 		t.Fatalf("steer during compaction: %v", err)
 	}
-	if err := s.SendFollowUp(context.Background(), "then continue"); err != nil {
+	if err := s.SendFollowUp(context.Background(), "then continue", nil); err != nil {
 		t.Fatalf("follow-up during compaction: %v", err)
 	}
 	if !d.AwaitRequestCount(omorpc.CmdSteer, 1, testTimeout) || !d.AwaitRequestCount(omorpc.CmdFollowUp, 1, testTimeout) {

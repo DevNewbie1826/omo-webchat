@@ -451,6 +451,49 @@ func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	return conn, frames
 }
 
+func TestBlockedPromptDoesNotBlockFollowUpOrAbort(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "blocked-prompt")
+	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer releasePrompt()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "blocked-prompt"})
+	frames.next(t, "ready")
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "blocked-prompt",
+		"run": map[string]any{"kind": "prompt", "message": "start"},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("prompt was not forwarded")
+	}
+
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "blocked-prompt",
+		"run": map[string]any{
+			"kind": "follow_up", "message": "",
+			"images": []any{map[string]any{"data": "aW1hZ2U=", "mimeType": "image/png"}},
+		},
+	})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
+		t.Fatal("follow-up was not forwarded while prompt response was blocked")
+	}
+	followUp := h.daemon.LastRequest(omorpc.CmdFollowUp)
+	images, ok := followUp["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("follow-up images = %#v", followUp["images"])
+	}
+	image, ok := images[0].(map[string]any)
+	if !ok || image["data"] != "aW1hZ2U=" || image["mimeType"] != "image/png" {
+		t.Fatalf("follow-up image = %#v", images[0])
+	}
+
+	writeClient(t, conn, map[string]any{"type": "chat.abort", "sessionId": "blocked-prompt"})
+	if !h.daemon.AwaitRequestCount(omorpc.CmdAbort, 1, 5*time.Second) {
+		t.Fatal("abort was not forwarded while prompt response was blocked")
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	data, err := json.Marshal(value)
