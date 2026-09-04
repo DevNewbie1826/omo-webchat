@@ -343,7 +343,13 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 		client, identity, stable, peer, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, cmd.Process.Pid)
 		if dialErr == nil && client != nil {
 			provenance.observe(identity, stable, peer)
-			if !stable || peer == peerUnknown {
+			// peerUnknown rejects on unix, where LOCAL_PEERPID / SO_PEERCRED make
+			// the credential lookup definitive. Windows exposes no peer-PID
+			// credential for a connected socket, so every classification is
+			// unknown there; peerpolicy_windows.go accepts it and leaves the
+			// launch guard to fileid socket-identity stability plus the protocol
+			// capability probe below.
+			if !stable || (peer == peerUnknown && !peerUnknownAccepted()) {
 				_ = client.Close()
 			} else {
 				owned := provenance.owns(identity)
@@ -427,7 +433,9 @@ func newEndpointProvenance(path string) *endpointProvenance {
 }
 
 func (p *endpointProvenance) observe(identity socketIdentity, stable bool, peer peerProvenance) {
-	if identity == (socketIdentity{}) || !stable || peer == peerUnknown {
+	// The unknown gate mirrors peerUnknownAccepted: see the decision in
+	// spawnDaemonAttempt for the platform credential availability.
+	if identity == (socketIdentity{}) || !stable || (peer == peerUnknown && !peerUnknownAccepted()) {
 		return
 	}
 	if peer == peerForeign {
@@ -1122,9 +1130,9 @@ func shellQuote(value string) string {
 }
 
 func supervisorCommand(cfg EnsureConfig) (string, []string, error) {
-	binary, err := exec.LookPath(cfg.BinaryPath)
+	binary, err := resolveOmoBinary(cfg.BinaryPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("omorpc: resolve supervisor %q: %w", cfg.BinaryPath, err)
+		return "", nil, err
 	}
 	if cfg.ChildCommand != "" {
 		cfg.ChildCommand, err = exec.LookPath(cfg.ChildCommand)
