@@ -6,24 +6,34 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"slices"
 	"testing"
 	"time"
 )
 
 type mockTrackedSupervisor struct {
-	terminated bool
-	closed     bool
+	events          []string
+	waitTreeGone    time.Duration
+	waitTreeGoneErr error
 }
 
 func (m *mockTrackedSupervisor) TerminateTree() error {
-	m.terminated = true
+	m.events = append(m.events, "terminate")
 	return nil
 }
 
+func (m *mockTrackedSupervisor) WaitTreeGone(deadline time.Duration) error {
+	m.events = append(m.events, "wait-tree-gone")
+	m.waitTreeGone = deadline
+	return m.waitTreeGoneErr
+}
+
 func (m *mockTrackedSupervisor) Close() error {
-	m.closed = true
+	m.events = append(m.events, "close")
 	return nil
 }
+
+var teardownCallOrder = []string{"terminate", "wait-tree-gone", "close"}
 
 func TestStartSupervisorUsesTrackedProcess(t *testing.T) {
 	original := startTrackedSupervisor
@@ -43,6 +53,19 @@ func TestStartSupervisorUsesTrackedProcess(t *testing.T) {
 	}
 }
 
+func TestFinishSupervisorWaitLeavesCloseForTreeDrain(t *testing.T) {
+	tracked := &mockTrackedSupervisor{}
+	sentinel := errors.New("leader wait")
+	handle := &supervisorHandle{tracked: tracked}
+
+	if err := finishSupervisorWait(handle, sentinel); !errors.Is(err, sentinel) {
+		t.Fatalf("finishSupervisorWait = %v, want leader wait error", err)
+	}
+	if len(tracked.events) != 0 {
+		t.Fatalf("finishSupervisorWait called tracked process methods: %v", tracked.events)
+	}
+}
+
 func TestTerminateSupervisorTerminatesTrackedTree(t *testing.T) {
 	tracked := &mockTrackedSupervisor{}
 	waitCh := make(chan error)
@@ -52,10 +75,28 @@ func TestTerminateSupervisorTerminatesTrackedTree(t *testing.T) {
 	if err := terminateSupervisor(context.Background(), handle, waitCh, time.Second, time.Second); err != nil {
 		t.Fatalf("terminateSupervisor: %v", err)
 	}
-	if !tracked.terminated {
-		t.Fatal("terminateSupervisor did not call TrackedProcess.TerminateTree")
+	if !slices.Equal(tracked.events, teardownCallOrder) {
+		t.Fatalf("teardown call order = %v, want %v", tracked.events, teardownCallOrder)
 	}
-	if !tracked.closed {
-		t.Fatal("terminateSupervisor did not release tracked process")
+	if tracked.waitTreeGone != time.Second {
+		t.Fatalf("WaitTreeGone deadline = %v, want killWait %v", tracked.waitTreeGone, time.Second)
+	}
+}
+
+func TestTerminateSupervisorPropagatesTreeDrainTimeout(t *testing.T) {
+	drainTimeout := errors.New("tree drain deadline exceeded")
+	tracked := &mockTrackedSupervisor{waitTreeGoneErr: drainTimeout}
+	waitCh := make(chan error)
+	close(waitCh)
+	handle := &supervisorHandle{tracked: tracked}
+
+	err := terminateSupervisor(context.Background(), handle, waitCh, time.Second, time.Second)
+	if !errors.Is(err, drainTimeout) {
+		t.Fatalf("terminateSupervisor = %v, want tree-drain timeout propagated", err)
+	}
+	// Close must still release the job handle after a failed drain so the
+	// KILL_ON_JOB_CLOSE reaper cannot be skipped.
+	if !slices.Equal(tracked.events, teardownCallOrder) {
+		t.Fatalf("teardown call order = %v, want %v", tracked.events, teardownCallOrder)
 	}
 }

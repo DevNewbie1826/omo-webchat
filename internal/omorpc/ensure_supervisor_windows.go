@@ -15,6 +15,7 @@ import (
 
 type trackedSupervisor interface {
 	TerminateTree() error
+	WaitTreeGone(deadline time.Duration) error
 	Close() error
 }
 
@@ -35,8 +36,11 @@ func startSupervisor(cmd *exec.Cmd) (*supervisorHandle, error) {
 	return &supervisorHandle{process: cmd.Process, tracked: tracked}, nil
 }
 
-func finishSupervisorWait(supervisor *supervisorHandle, waitErr error) error {
-	return errors.Join(waitErr, supervisor.tracked.Close())
+func finishSupervisorWait(_ *supervisorHandle, waitErr error) error {
+	// terminateSupervisor owns Close so it can wait for the job to drain before
+	// releasing the handle; closing from the leader-wait goroutine would race
+	// WaitTreeGone while descendants can still be terminating.
+	return waitErr
 }
 
 func terminateSupervisor(ctx context.Context, supervisor *supervisorHandle, waitCh <-chan error, _ time.Duration, killWait time.Duration) (resultErr error) {
@@ -45,6 +49,13 @@ func terminateSupervisor(ctx context.Context, supervisor *supervisorHandle, wait
 	}()
 	if err := supervisor.tracked.TerminateTree(); err != nil {
 		return fmt.Errorf("omorpc: terminate daemon process tree: %w", err)
+	}
+	// TerminateJobObject only initiates termination; a job member can outlive
+	// the leader's cmd.Wait. WaitTreeGone blocks until the whole kernel domain
+	// is empty, so the socket cleanup after this teardown never races a
+	// surviving descendant, and Close is deferred until the tree is truly gone.
+	if err := supervisor.tracked.WaitTreeGone(killWait); err != nil {
+		return fmt.Errorf("omorpc: daemon job did not drain after tree termination: %w", err)
 	}
 	deadline := time.NewTimer(killWait)
 	defer deadline.Stop()
