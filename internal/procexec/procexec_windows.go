@@ -227,7 +227,6 @@ type jobObjectBasicProcessIdListHeader struct {
 	NumberOfProcessIdsInList  uint32
 }
 
-
 // WaitTreeGone is a full completion barrier for the tracked domain: it
 // returns nil only after the job's member list is empty AND every member
 // process the query ever observed has a signaled process object. Job
@@ -280,10 +279,10 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			handle, openErr := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 			if openErr != nil {
 				// A listed member we cannot open yet (typically mid-exit) stays
-			// listed, so nil is impossible while it is unaccounted for: the
-			// next cycle retries the open, and the member leaves the list only
-			// by exiting. OpenProcess failure is therefore tolerated only for
-			// as long as the member list itself vouches for the pid.
+				// listed, so nil is impossible while it is unaccounted for: the
+				// next cycle retries the open, and the member leaves the list only
+				// by exiting. OpenProcess failure is therefore tolerated only for
+				// as long as the member list itself vouches for the pid.
 				continue
 			}
 			pending[pid] = handle
@@ -305,10 +304,10 @@ func (t *TrackedProcess) WaitTreeGone(deadline time.Duration) error {
 			}
 			if _, ok := listed[pid]; !ok {
 				// The pid left the job's member list without the handle
-			// signaling: the member exited (only exit removes membership),
-			// and an unsignaled handle for that pid can only be an unrelated
-			// process that reused it after our query — drop it rather than
-			// wait on a process outside the tracked domain.
+				// signaling: the member exited (only exit removes membership),
+				// and an unsignaled handle for that pid can only be an unrelated
+				// process that reused it after our query — drop it rather than
+				// wait on a process outside the tracked domain.
 				_ = windows.CloseHandle(handle)
 				delete(pending, pid)
 			}
