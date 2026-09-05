@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/test/windowsprobe/profile"
 )
 
 func runServerProbe(binary, runtimeName string) (resultErr error) {
@@ -23,7 +25,7 @@ func runServerProbe(binary, runtimeName string) (resultErr error) {
 		return err
 	}
 	defer func() {
-		err := os.RemoveAll(dir)
+		err := profile.RemoveAll(dir)
 		fmt.Printf("cleanup: server-profile=%s error=%v\n", dir, err)
 		resultErr = errors.Join(resultErr, err)
 	}()

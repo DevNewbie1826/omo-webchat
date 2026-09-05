@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/test/windowsprobe/profile"
+
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -38,7 +40,7 @@ func runProbe(binary string) (resultErr error) {
 		return err
 	}
 	defer func() {
-		err := os.RemoveAll(dir)
+		err := profile.RemoveAll(dir)
 		fmt.Printf("cleanup: profile=%s error=%v\n", dir, err)
 		resultErr = errors.Join(resultErr, err)
 	}()

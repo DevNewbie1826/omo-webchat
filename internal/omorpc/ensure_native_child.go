@@ -6,19 +6,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // windowsNativeChildContext carries the launcher's context through the native
 // supervisor's brand scrub without inserting a process between it and its host.
-// NODE_OPTIONS preloads run before the engine imports its brand configuration in
-// both Node and Bun. The host consumes this one-hop handoff and restores the
-// caller's NODE_OPTIONS before extensions or tools can spawn anything else.
+// NODE_OPTIONS (Node) and BUN_OPTIONS (Bun) preloads run before the engine
+// imports its brand configuration. The host consumes this one-hop handoff and
+// restores the caller's runtime options before extensions or tools can spawn anything else.
 func windowsNativeChildContext(cfg EnsureConfig) ([]string, string, error) {
-	options, present := lookupEnv(cfg.Env, "NODE_OPTIONS")
-	var original any
-	if present {
-		original = options
+	original := make(map[string]any, 2)
+	for _, key := range []string{"NODE_OPTIONS", "BUN_OPTIONS"} {
+		original[key] = nil
+		if value, present := lookupEnv(cfg.Env, key); present {
+			original[key] = value
+		}
 	}
 	encoded, err := json.Marshal(original)
 	if err != nil {
@@ -35,11 +38,15 @@ func windowsNativeChildContext(cfg EnsureConfig) ([]string, string, error) {
 		removeErr := os.Remove(path)
 		return nil, "", errors.Join(writeErr, err, removeErr)
 	}
-	quoted, err := json.Marshal(filepath.ToSlash(path))
-	if err != nil {
-		return nil, "", errors.Join(err, os.Remove(path))
+	// Runtime options use quoted argv, not JSON (HTML escapes corrupt '&').
+	// Bun preserves quotes inside long --require=value options; its short -r
+	// form correctly tokenizes a separate quoted path, including spaces.
+	quoted := strconv.Quote(filepath.ToSlash(path))
+	env := cfg.Env
+	for _, key := range []string{"NODE_OPTIONS", "BUN_OPTIONS"} {
+		options, _ := lookupEnv(cfg.Env, key)
+		env = setEnv(env, key, strings.TrimSpace(options+" -r "+quoted))
 	}
-	env := setEnv(cfg.Env, "NODE_OPTIONS", strings.TrimSpace(options+" --require="+string(quoted)))
 	return env, path, nil
 }
 
@@ -67,8 +74,10 @@ if (/\/senpi\/dist\/cli(?:-main)?\.js$/.test(entry)) {
     process.env.SENPI_BRAND = JSON.parse(process.env[key]).brand;
     delete process.env[key];
     const original = %s;
-    if (original === null) delete process.env.NODE_OPTIONS;
-    else process.env.NODE_OPTIONS = original;
+    for (const [key, value] of Object.entries(original)) {
+      if (value === null) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 }
 `

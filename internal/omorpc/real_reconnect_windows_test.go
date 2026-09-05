@@ -18,6 +18,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/DevNewbie1826/omo-webchat/test/windowsprobe/profile"
 	"golang.org/x/sys/windows"
 )
 
@@ -167,7 +168,7 @@ export default function(pi) {
 	}
 	ownerEpoch, _ := owner.Client.CurrentEpoch()
 	pipes = append(pipes, ownerEpoch.epoch.conn.(*identifiedPipe))
-	recordReconnectRuntime(t, owner, ownerEpoch.epoch.conn.(*identifiedPipe), requestedRuntime)
+	effectiveRuntime := recordReconnectRuntime(t, owner, ownerEpoch.epoch.conn.(*identifiedPipe), requestedRuntime)
 	shared, err = EnsureDaemon(ctx, cfg)
 	if err != nil {
 		t.Fatalf("real omo compatible Ensure: %v", err)
@@ -243,7 +244,7 @@ export default function(pi) {
 		opened.Command != "open_session" || session.SessionID == "" {
 		t.Fatal("real session did not open successfully in the recovered epoch")
 	}
-	assertReconnectHostContext(t, ctx, shared.Client, current, session.SessionID, pipe.pid, requestedRuntime)
+	assertReconnectHostContext(t, ctx, shared.Client, current, session.SessionID, pipe.pid, effectiveRuntime, owner)
 	closed, closeEpoch, err := shared.Client.CallInEpochToken(ctx, current, CloseSession{SessionID: session.SessionID})
 	if err != nil || closeEpoch != current || closed == nil || !closed.Success ||
 		closed.ID == "" || closed.Command != "close_session" {
@@ -271,7 +272,7 @@ export default function(pi) {
 }
 
 // get_commands observes the real loaded extensions and the native session host.
-func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Client, epoch EpochToken, session string, supervisor uint32, requested string) {
+func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Client, epoch EpochToken, session string, supervisor uint32, requested string, owner *EnsuredDaemon) {
 	t.Helper()
 	response, gotEpoch, err := client.CallInEpochToken(ctx, epoch, GetCommands{SessionID: session})
 	if err != nil || gotEpoch != epoch || response == nil || !response.Success || response.ID == "" || response.Command != "get_commands" {
@@ -312,6 +313,24 @@ func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Clien
 		if err := json.Unmarshal([]byte(command.Description), &host); err != nil {
 			t.Fatal(err)
 		}
+		// Retain the exact host's native process object and query its parent.
+		// This replaces the extra PowerShell/CIM diagnostic with direct native
+		// evidence at the correlated session operation, without a timing gate.
+		handle, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION, false, host.PID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var basic windows.PROCESS_BASIC_INFORMATION
+		queryErr := windows.NtQueryInformationProcess(handle, windows.ProcessBasicInformation, unsafe.Pointer(&basic), uint32(unsafe.Sizeof(basic)), nil)
+		domain := owner.supervisor.tracked.(interface{ ContainsProcess(uintptr) (bool, error) })
+		owned, memberErr := domain.ContainsProcess(uintptr(handle))
+		if err := errors.Join(queryErr, memberErr, windows.CloseHandle(handle)); err != nil {
+			t.Fatal(err)
+		}
+		if !owned || basic.UniqueProcessId != uintptr(host.PID) || basic.InheritedFromUniqueProcessId != uintptr(supervisor) {
+			t.Errorf("native host identity/parent mismatch: host=%d native-parent=%d supervisor=%d owned=%t", host.PID, basic.InheritedFromUniqueProcessId, supervisor, owned)
+		}
+		t.Logf("native command role: host=%d parent=%d public-supervisor=%d direct=%t owned=%t handle-closed=true", host.PID, basic.InheritedFromUniqueProcessId, supervisor, basic.InheritedFromUniqueProcessId == uintptr(supervisor), owned)
 		t.Logf("native host contract: pid=%d parent=%d supervisor=%d watch-ppid=%d fd3=%v brand=%s runtime=%s native=%t", host.PID, host.PPID, supervisor, host.WatchPPID, host.FD3, host.Brand, host.Runtime, host.Native)
 		if host.PPID != supervisor || host.WatchPPID != supervisor || host.FD3 != true || host.Brand != "OmO" || !host.Native {
 			t.Errorf("native host lost direct parent, FD3, or brand context")
@@ -340,7 +359,7 @@ func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Clien
 // effective engine. Only sandbox-owned processes are reported, never command
 // lines, profile contents or full executable paths. Descendant labels do not
 // assert which launcher layer hosts sessions.
-func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identifiedPipe, requested string) {
+func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identifiedPipe, requested string) string {
 	t.Helper()
 	if requested == "" {
 		requested = "automatic"
@@ -366,21 +385,6 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 	t.Logf("runtime comparison: requested=%s role=public-pipe-server pid=%d image=%s effective=%s", requested, pipe.pid, image, effective)
 	if requested != "automatic" && effective != requested {
 		t.Fatalf("requested %s but actual public server image is %s", requested, image)
-	}
-	queryCtx, queryCancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer queryCancel()
-	query := exec.CommandContext(queryCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '[\\/]senpi[\\/]dist[\\/]cli(?:-main)?\.js' -and $_.CommandLine -match '--multi-session' -and $_.CommandLine -match '--listen' } | ForEach-Object { [pscustomobject]@{pid=$_.ProcessId;parent=$_.ParentProcessId} })`)
-	query.WaitDelay = time.Second
-	output, err := query.Output()
-	if err != nil {
-		t.Fatalf("bounded native host-role query: %v", err)
-	}
-	var hosts []struct {
-		PID    uint32
-		Parent uint32
-	}
-	if err := json.Unmarshal(output, &hosts); err != nil {
-		t.Fatalf("native host-role result: %v", err)
 	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -423,14 +427,6 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 		}
 		owned, memberErr := domain.ContainsProcess(uintptr(h))
 		if memberErr == nil && owned {
-			for _, host := range hosts {
-				if host.PID == entry.ProcessID {
-					t.Logf("native command role: host=%d parent=%d public-supervisor=%d direct=%t", host.PID, host.Parent, pipe.pid, host.Parent == pipe.pid)
-					if host.Parent != pipe.pid {
-						t.Errorf("native session host parent=%d, supervisor requires %d", host.Parent, pipe.pid)
-					}
-				}
-			}
 			image, memberErr = imageName(h)
 			if memberErr == nil {
 				t.Logf("runtime comparison: requested=%s role=owned-descendant pid=%d parent=%d image=%s", requested, entry.ProcessID, entry.ParentProcessID, image)
@@ -440,6 +436,7 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 			t.Fatal(err)
 		}
 	}
+	return effective
 }
 
 // A native query observed an external PowerShell holder after tracked-job drain.
@@ -448,105 +445,7 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 // exit event under one overall bound, without termination, polling or retries.
 func waitReconnectDirectoryHolders(t *testing.T, dir string, observed func(uint32)) error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	deadline, _ := ctx.Deadline()
-	return endpointIO(ctx, func() (resultErr error) {
-		path, err := windows.UTF16PtrFromString(dir)
-		if err != nil {
-			return err
-		}
-		h, err := windows.CreateFile(path, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-			nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
-		if err != nil {
-			return err
-		}
-		defer func() { resultErr = errors.Join(resultErr, windows.CloseHandle(h)) }()
-		query := func() ([]uintptr, error) {
-			var info struct {
-				Count uint32
-				IDs   [128]uintptr
-			}
-			var status windows.IO_STATUS_BLOCK
-			const fileProcessIdsUsingFileInformation = 47
-			if err := windows.NtQueryInformationFile(h, &status, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), fileProcessIdsUsingFileInformation); err != nil {
-				return nil, err
-			}
-			if info.Count > uint32(len(info.IDs)) {
-				return nil, fmt.Errorf("directory holder list overflow: %d", info.Count)
-			}
-			return info.IDs[:info.Count], nil
-		}
-		ids, err := query()
-		if err != nil {
-			return err
-		}
-		type holder struct {
-			pid    uintptr
-			handle windows.Handle
-		}
-		var holders []holder
-		defer func() {
-			for _, holder := range holders {
-				if holder.handle != 0 {
-					resultErr = errors.Join(resultErr, windows.CloseHandle(holder.handle))
-				}
-			}
-		}()
-		for _, pid := range ids {
-			if pid == uintptr(os.Getpid()) {
-				continue // The query owns h; self-only output proves no application leak.
-			}
-			p, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
-			if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-				t.Logf("cleanup: directory-holder pid=%d already exited before native handle open", pid)
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			holders = append(holders, holder{pid, p})
-		}
-		// Confirm membership AFTER retaining the process handles; the first PID
-		// snapshot alone is not a safe identity across process exit/PID reuse.
-		confirmed, err := query()
-		if err != nil {
-			return err
-		}
-		for i, holder := range holders {
-			stillHolds := false
-			for _, pid := range confirmed {
-				stillHolds = stillHolds || pid == holder.pid
-			}
-			if !stillHolds {
-				continue // Native confirmation shows this process released the resource.
-			}
-			var code uint32
-			if err := windows.GetExitCodeProcess(holder.handle, &code); err != nil {
-				return err
-			}
-			t.Logf("cleanup: directory-holder pid=%d native-membership-confirmed=true exit-handle-retained=true", holder.pid)
-			if observed != nil {
-				observed(uint32(holder.pid))
-			}
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				return context.DeadlineExceeded
-			}
-			milliseconds := uint32((remaining + time.Millisecond - 1) / time.Millisecond)
-			state, waitErr := windows.WaitForSingleObject(holder.handle, milliseconds)
-			closeErr := windows.CloseHandle(holder.handle)
-			holders[i].handle = 0
-			if err := errors.Join(waitErr, closeErr); err != nil {
-				return err
-			}
-			if state != windows.WAIT_OBJECT_0 {
-				return fmt.Errorf("directory-holder pid=%d exit event did not signal: %d: %w", holder.pid, state, context.DeadlineExceeded)
-			}
-			t.Logf("cleanup: directory-holder pid=%d initial-exit-code=%d process-exit-signaled=true handle-closed=true", holder.pid, code)
-		}
-		return nil
-	})
+	return profile.WaitDirectoryHolders(dir, observed, t.Logf)
 }
 
 // This child owns no descendants. Its cwd retains the directory until stdin EOF
