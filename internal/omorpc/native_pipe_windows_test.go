@@ -45,6 +45,38 @@ func TestWindowsNativePendingIO(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Go forbids overlays directly beneath GOMODCACHE. A temporary module
+	// replacement through a junction keeps every untouched dependency file in
+	// place; only file.go gets a compiler overlay. This is not a vendored fork.
+	alias := filepath.Join(dir, "winio")
+	junction := exec.CommandContext(t.Context(), "cmd", "/c", "mklink", "/J", alias, filepath.Dir(source))
+	if output, err := junction.CombinedOutput(); err != nil {
+		t.Fatalf("native observer junction: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(alias); err != nil {
+			t.Error(err)
+		}
+	})
+	modulePath, err := exec.CommandContext(t.Context(), "go", "env", "GOMOD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleDir := filepath.Dir(strings.TrimSpace(string(modulePath)))
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(moduleDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	modfile := filepath.Join(dir, "go.mod")
+	replaceModule := exec.CommandContext(t.Context(), "go", "mod", "edit", "-modfile", modfile, "-replace", "github.com/Microsoft/go-winio="+alias)
+	if output, err := replaceModule.CombinedOutput(); err != nil {
+		t.Fatalf("native observer module alias: %v: %s", err, output)
+	}
 	patched := string(original)
 	replace := func(old, new string, count int) {
 		t.Helper()
@@ -62,7 +94,7 @@ func TestWindowsNativePendingIO(t *testing.T) {
 	if err := os.WriteFile(overlaySource, []byte(patched), 0600); err != nil {
 		t.Fatal(err)
 	}
-	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{source: overlaySource}})
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{filepath.Join(alias, "file.go"): overlaySource}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +104,7 @@ func TestWindowsNativePendingIO(t *testing.T) {
 	}
 	t.Logf("native observer: original SHA256=%x overlay SHA256=%x; exact replacements recorded in test source", sha256.Sum256(original), sha256.Sum256([]byte(patched)))
 	exe := filepath.Join(dir, "native-pipe.test.exe")
-	build := exec.CommandContext(t.Context(), "go", "test", "-c", "-overlay", overlayPath, "-o", exe, ".")
+	build := exec.CommandContext(t.Context(), "go", "test", "-c", "-modfile", modfile, "-overlay", overlayPath, "-o", exe, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build native observer: %v\n%s", err, output)
 	}
@@ -97,7 +129,7 @@ func TestWindowsNativePendingIO(t *testing.T) {
 					}
 				}
 			}
-			if strings.Count(string(output), "cleanup: pending native operation and caller joined") != 4 {
+			if strings.Count(string(output), "NATIVE_IO_JOINED") != 4 {
 				t.Error("native caller cleanup receipt missing")
 			}
 		})
@@ -264,7 +296,7 @@ func TestWindowsNativePendingIOCases(t *testing.T) {
 				}
 			}
 			disabledHandle.Store(0)
-			t.Log("cleanup: pending native operation and caller joined")
+			t.Log("NATIVE_IO_JOINED: pending native operation and caller joined")
 			if write {
 				if c.EpochCurrent(token) {
 					t.Fatal("failed native write retained epoch")
