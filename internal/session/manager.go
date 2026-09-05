@@ -239,6 +239,7 @@ func (m *Manager) eventLoop() {
 	backoff := time.Millisecond
 	for {
 		token, ch := m.cfg.Client.CurrentEpoch()
+		m.invalidateDisconnectedEpochs()
 		m.observeEpoch(token)
 		select {
 		case <-m.done:
@@ -273,6 +274,30 @@ func (m *Manager) eventLoop() {
 				deliverOverview(subscribers, snapshot)
 			}
 			m.endEpochIngestion(token)
+		}
+	}
+}
+
+// invalidateDisconnectedEpochs reconciles retained ownership, not just the
+// client's latest snapshot: CurrentEpoch can already be zero (or a successor)
+// when the observer first starts or returns from dispatch. Snapshot the stream
+// before reconciliation so a disconnect after these checks still closes the
+// stream selected by this iteration.
+func (m *Manager) invalidateDisconnectedEpochs() {
+	m.mu.Lock()
+	epochs := make(map[omorpc.EpochToken]struct{})
+	for _, s := range m.byRoute {
+		epochs[s.epoch] = struct{}{}
+	}
+	for _, entry := range m.overviewCache {
+		epochs[entry.epoch] = struct{}{}
+	}
+	m.mu.Unlock()
+	for epoch := range epochs {
+		// Do not compare against the earlier snapshot: acquisition may have
+		// registered a live successor since then. Tokens never become live again.
+		if !m.cfg.Client.EpochCurrent(epoch) {
+			m.invalidateEpoch(epoch)
 		}
 	}
 }
