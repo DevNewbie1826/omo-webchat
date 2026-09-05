@@ -73,14 +73,6 @@ jobs:
         with:
           go-version: "1.26.7"
 
-      - name: Production named-pipe contracts
-        shell: pwsh
-        run: go test ./internal/omorpc -count=1 -v
-
-      - name: Windows lock tests
-        shell: pwsh
-        run: go test ./internal/omorpc/ -count=1 -run TestEnsureLock
-
       - name: Real production daemon lifecycle
         shell: pwsh
         run: |
@@ -91,6 +83,15 @@ jobs:
           }
 
           exit $probeExit
+
+      - name: Production named-pipe contracts
+        shell: pwsh
+        run: go test ./internal/omorpc -count=1 -v -timeout=2m
+
+      - name: Windows lock tests
+        shell: pwsh
+        run: go test ./internal/omorpc/ -count=1 -timeout=2m -run TestEnsureLock
+
 
   smoke-windows:
     runs-on: windows-latest
@@ -115,7 +116,7 @@ jobs:
 
       - name: Windows omorpc tests
         shell: pwsh
-        run: go test ./internal/omorpc/ -count=1
+        run: go test ./internal/omorpc/ -count=1 -timeout=2m
 
       - name: Server smoke
         shell: pwsh

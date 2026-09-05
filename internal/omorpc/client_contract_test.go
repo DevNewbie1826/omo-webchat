@@ -746,6 +746,9 @@ func TestMockDaemonWireSmoke(t *testing.T) {
 		t.Fatalf("dial mock daemon: %v", err)
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(testAwaitTimeout)); err != nil {
+		t.Fatal(err)
+	}
 	dec := NewDecoder(conn)
 
 	write := func(frame []byte, ferr error, wantCmd string) *Response {
@@ -786,7 +789,18 @@ func TestMockDaemonWireSmoke(t *testing.T) {
 		t.Fatalf("open_session ids wrong: handle=%q durable=%q", opened.SessionID, opened.State.SessionID)
 	}
 
-	d.Emit(map[string]any{"type": "agent_idle", "sessionId": opened.SessionID})
+	emitted := make(chan struct{})
+	go func() {
+		defer close(emitted)
+		d.Emit(map[string]any{"type": "agent_idle", "sessionId": opened.SessionID})
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-emitted:
+		case <-time.After(testAwaitTimeout):
+			t.Error("fixture emitter did not stop")
+		}
+	})
 	in, err := dec.Decode()
 	if err != nil {
 		t.Fatalf("decode event: %v", err)
