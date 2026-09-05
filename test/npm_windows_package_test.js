@@ -214,10 +214,18 @@ function binName(target) {
   return `omo-webchat-bin${target.ext ?? ''}`;
 }
 
+function assertOptionalDependencies(manifest) {
+  for (const target of TARGETS) {
+    const name = `omo-webchat-${target.osNode}-${target.cpuNode}`;
+    assert.equal(manifest.optionalDependencies[name], VERSION, `${name} optional dependency is not in lockstep`);
+  }
+}
+
 function assertGeneratedContract(workRepo, binaries) {
   const cliManifest = JSON.parse(fs.readFileSync(path.join(workRepo, 'npm/cli/package.json'), 'utf8'));
   assert.equal(cliManifest.version, VERSION);
   assert.equal(Object.keys(cliManifest.optionalDependencies).length, TARGETS.length);
+  assertOptionalDependencies(cliManifest);
   for (const target of TARGETS) {
     const label = `${target.osNode}-${target.cpuNode}`;
     const pkgDir = path.join(workRepo, 'npm/platform', label);
@@ -226,7 +234,6 @@ function assertGeneratedContract(workRepo, binaries) {
     const shipped = fs.readFileSync(path.join(pkgDir, 'exe', exe));
     assert.equal(manifest.name, `omo-webchat-${label}`);
     assert.equal(manifest.version, VERSION);
-    assert.equal(cliManifest.optionalDependencies[manifest.name], VERSION, `${manifest.name} optional dependency is not in lockstep`);
     assert.deepEqual(manifest.os, [target.osNode]);
     assert.deepEqual(manifest.cpu, [target.cpuNode]);
     assert.equal(shipped.equals(binaries.get(label)), true, `${label} shipped bytes differ from archive fixture`);
@@ -294,10 +301,7 @@ function packPackages(workRepo, tarballDir, env) {
     env,
   }).stdout.trim();
   packed.cli = path.join(tarballDir, cliFilename);
-  const cliPacked = JSON.parse(tarExtract(packed.cli, 'package/package.json').toString('utf8'));
-  for (const target of TARGETS) {
-    assert.equal(cliPacked.optionalDependencies[`omo-webchat-${target.osNode}-${target.cpuNode}`], VERSION);
-  }
+  assertOptionalDependencies(JSON.parse(tarExtract(packed.cli, 'package/package.json').toString('utf8')));
   return packed;
 }
 
@@ -461,33 +465,50 @@ test('archive to packed npx contract', { timeout: 180_000 }, async (t) => {
   });
 
   await t.test('wrong Windows exe export fails the packed entrypoint contract', () => {
-    const pkgDir = path.join(work, 'mutation-exe');
-    fs.cpSync(path.join(workRepo, 'npm/platform/win32-x64'), pkgDir, { recursive: true });
-    const indexPath = path.join(pkgDir, 'index.js');
-    fs.writeFileSync(indexPath, mutateOnce(fs.readFileSync(indexPath, 'utf8'), 'omo-webchat-bin.exe', 'omo-webchat-bin'));
-    assert.throws(() => {
-      assert.equal(path.basename(requireUncached(indexPath)), 'omo-webchat-bin.exe');
-    }, /omo-webchat-bin\.exe/);
+    const mutRepo = path.join(work, 'mutation-exe');
+    fs.cpSync(workRepo, mutRepo, { recursive: true });
+    const indexPath = path.join(mutRepo, 'npm/platform/win32-x64/index.js');
+    const original = fs.readFileSync(indexPath, 'utf8');
+    fs.writeFileSync(indexPath, mutateOnce(original, 'omo-webchat-bin.exe', 'omo-webchat-bin'));
+    assert.throws(() => assertGeneratedContract(mutRepo, binaries), {
+      code: 'ERR_ASSERTION',
+      actual: 'omo-webchat-bin',
+      expected: 'omo-webchat-bin.exe',
+      operator: 'strictEqual',
+    });
+    fs.writeFileSync(indexPath, original);
+    assertGeneratedContract(mutRepo, binaries);
   });
 
-  await t.test('omitted optional dependency fails lockstep and native resolve', () => {
-    const cliManifest = JSON.parse(fs.readFileSync(path.join(workRepo, 'npm/cli/package.json'), 'utf8'));
-    const omitted = structuredClone(cliManifest);
+  await t.test('omitted optional dependency fails packed lockstep', () => {
+    const omitCli = path.join(work, 'mutation-omit-cli');
+    fs.cpSync(path.join(workRepo, 'npm/cli'), omitCli, { recursive: true });
+    const manifestPath = path.join(omitCli, 'package.json');
+    const original = fs.readFileSync(manifestPath, 'utf8');
+    const omitted = JSON.parse(original);
     delete omitted.optionalDependencies['omo-webchat-win32-x64'];
-    assert.throws(() => {
-      assert.equal(omitted.optionalDependencies['omo-webchat-win32-x64'], VERSION, 'omo-webchat-win32-x64 optional dependency is not in lockstep');
-    }, /optional dependency is not in lockstep/);
-
-    const omitProject = path.join(work, 'mutation-omit');
-    fs.mkdirSync(omitProject, { recursive: true });
-    fs.writeFileSync(path.join(omitProject, 'package.json'), JSON.stringify({ name: 'omit-dep', version: '1.0.0', private: true }));
-    npm(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', packed.cli], { cwd: omitProject, env });
-    const result = npx(['--offline', '--no-install', 'omo-webchat', '--status'], {
-      cwd: omitProject,
-      env: { ...env, CHAT_PI_BINARY: AGENT_PATH },
-      expected: 1,
-    });
-    assert.match(`${result.stdout}\n${result.stderr}`, /not installed|unsupported platform|binary not found/);
+    fs.writeFileSync(manifestPath, `${JSON.stringify(omitted, null, 2)}\n`);
+    const omitPackDir = path.join(work, 'mutation-omit-tarballs');
+    fs.mkdirSync(omitPackDir, { recursive: true });
+    const omittedTarball = path.join(
+      omitPackDir,
+      npm(['pack', '--silent', '--pack-destination', omitPackDir], { cwd: omitCli, env }).stdout.trim(),
+    );
+    assert.throws(
+      () => assertOptionalDependencies(JSON.parse(tarExtract(omittedTarball, 'package/package.json').toString('utf8'))),
+      {
+        code: 'ERR_ASSERTION',
+        actual: undefined,
+        expected: VERSION,
+        operator: 'strictEqual',
+      },
+    );
+    fs.writeFileSync(manifestPath, original);
+    const restoredTarball = path.join(
+      omitPackDir,
+      npm(['pack', '--silent', '--pack-destination', omitPackDir], { cwd: omitCli, env }).stdout.trim(),
+    );
+    assertOptionalDependencies(JSON.parse(tarExtract(restoredTarball, 'package/package.json').toString('utf8')));
   });
 
   await t.test('wrapper dropping argv or swallowing exit fails native npx receipts', () => {
