@@ -117,6 +117,32 @@ jobs:
           }
           exit $probeExit
 
+      - name: Real omo reconnect explicitly on node
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          OMORPC_REAL_RUNTIME: node
+        run: |
+          & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnect$' -count=1 -v -timeout=2m 2>&1 | Tee-Object -FilePath probe-reconnect-node.txt
+          $probeExit = $LASTEXITCODE
+          if (Test-Path -LiteralPath probe-reconnect-node.txt) {
+            Get-Content -LiteralPath probe-reconnect-node.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
+          exit $probeExit
+
+      - name: Real omo reconnect explicitly on bun
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        env:
+          OMORPC_REAL_RUNTIME: bun
+        run: |
+          & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnect$' -count=1 -v -timeout=2m 2>&1 | Tee-Object -FilePath probe-reconnect-bun.txt
+          $probeExit = $LASTEXITCODE
+          if (Test-Path -LiteralPath probe-reconnect-bun.txt) {
+            Get-Content -LiteralPath probe-reconnect-bun.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
+          exit $probeExit
+
       - name: Production named-pipe contracts
         shell: pwsh
         run: go test ./internal/omorpc -count=1 -v -timeout=2m
@@ -136,6 +162,8 @@ jobs:
           path: |
             probe-production.txt
             probe-reconnect.txt
+            probe-reconnect-node.txt
+            probe-reconnect-bun.txt
 
   smoke-windows:
     runs-on: windows-latest

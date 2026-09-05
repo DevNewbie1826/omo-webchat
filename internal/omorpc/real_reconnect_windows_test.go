@@ -59,6 +59,14 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	} {
 		env = setEnv(env, key, value)
 	}
+	requestedRuntime := os.Getenv("OMORPC_REAL_RUNTIME")
+	if requestedRuntime != "" {
+		if requestedRuntime != "node" && requestedRuntime != "bun" {
+			t.Fatalf("invalid diagnostic runtime selection %q", requestedRuntime)
+		}
+		env = setEnv(env, "OMO_RUNTIME", requestedRuntime)
+		env = setEnv(env, "SENPI_RUNTIME", requestedRuntime)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	cfg := EnsureConfig{BinaryPath: "omo", AgentDir: agent, WorkingDir: dir,
@@ -136,6 +144,7 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	}
 	ownerEpoch, _ := owner.Client.CurrentEpoch()
 	pipes = append(pipes, ownerEpoch.epoch.conn.(*identifiedPipe))
+	recordReconnectRuntime(t, owner, ownerEpoch.epoch.conn.(*identifiedPipe), requestedRuntime)
 	shared, err = EnsureDaemon(ctx, cfg)
 	if err != nil {
 		t.Fatalf("real omo compatible Ensure: %v", err)
@@ -235,6 +244,89 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	}
 	t.Logf("real reconnect: shared owned=false Stop preserved peer=%d owner-epoch=%d protocol-id=%s success=true",
 		pipe.pid, ownerEpoch.epoch.number, preserved.ID)
+}
+
+// Native image observations avoid confusing the requested environment with the
+// effective engine. Only sandbox-owned processes are reported, never command
+// lines, profile contents or full executable paths. Descendant labels do not
+// assert which launcher layer hosts sessions.
+func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identifiedPipe, requested string) {
+	t.Helper()
+	if requested == "" {
+		requested = "automatic"
+	}
+	imageName := func(process windows.Handle) (string, error) {
+		var image [32768]uint16
+		size := uint32(len(image))
+		if err := windows.QueryFullProcessImageName(process, 0, &image[0], &size); err != nil {
+			return "", err
+		}
+		return strings.ToLower(filepath.Base(windows.UTF16ToString(image[:size]))), nil
+	}
+	pipe.mu.Lock()
+	image, err := imageName(pipe.process)
+	pipe.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := strings.TrimSuffix(image, ".exe")
+	if effective != "node" && effective != "bun" {
+		effective = "unclassified"
+	}
+	t.Logf("runtime comparison: requested=%s role=public-pipe-server pid=%d image=%s effective=%s", requested, pipe.pid, image, effective)
+	if requested != "automatic" && effective != requested {
+		t.Fatalf("requested %s but actual public server image is %s", requested, image)
+	}
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := windows.CloseHandle(snapshot); err != nil {
+			t.Error(err)
+		}
+	}()
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	var entries []windows.ProcessEntry32
+	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
+		entries = append(entries, entry)
+	}
+	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		t.Fatal(err)
+	}
+	descendants := map[uint32]bool{pipe.pid: true}
+	for changed := true; changed; {
+		changed = false
+		for _, entry := range entries {
+			if descendants[entry.ParentProcessID] && !descendants[entry.ProcessID] {
+				descendants[entry.ProcessID] = true
+				changed = true
+			}
+		}
+	}
+	domain := owner.supervisor.tracked.(interface{ ContainsProcess(uintptr) (bool, error) })
+	for _, entry := range entries {
+		if entry.ProcessID == pipe.pid || !descendants[entry.ProcessID] {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID)
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			continue // This snapshot member has already exited; no live image claimed.
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		owned, memberErr := domain.ContainsProcess(uintptr(h))
+		if memberErr == nil && owned {
+			image, memberErr = imageName(h)
+			if memberErr == nil {
+				t.Logf("runtime comparison: requested=%s role=owned-descendant pid=%d parent=%d image=%s", requested, entry.ProcessID, entry.ParentProcessID, image)
+			}
+		}
+		if err := errors.Join(memberErr, windows.CloseHandle(h)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // A native query observed an external PowerShell holder after tracked-job drain.
