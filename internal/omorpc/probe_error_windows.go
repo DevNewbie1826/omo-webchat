@@ -10,9 +10,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// isSpawnableProbeError reports whether a failed probe of an existing daemon
+// means "no daemon is listening", so EnsureDaemon may spawn one.
+//
+// Winsock reports refusal as WSAECONNREFUSED (10061), which is a different
+// value from Go's Windows syscall.ECONNREFUSED (an internal POSIX-name
+// constant a Winsock dial never produces), so the Winsock error must be
+// matched explicitly. Dialing an absent or stale AF_UNIX endpoint on Windows
+// surfaces as WSAENETDOWN or WSAECONNREFUSED depending on the path's residual
+// state — both mean no listener, exactly as isDialAbsentError treats them.
 func isSpawnableProbeError(err error) bool {
 	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOENT) ||
-		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, windows.WSAENETDOWN)
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, windows.WSAENETDOWN) ||
+		errors.Is(err, windows.WSAECONNREFUSED)
 }
 
 // isDialAbsentError reports whether a dial failure means the endpoint is
