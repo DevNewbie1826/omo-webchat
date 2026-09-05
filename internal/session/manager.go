@@ -286,6 +286,12 @@ func (m *Manager) eventLoop() {
 func (m *Manager) invalidateDisconnectedEpochs() {
 	m.mu.Lock()
 	epochs := make(map[omorpc.EpochToken]struct{})
+	// A restarted daemon can overwrite a route with another chat's holder.
+	// byChat retains ownership even when that routing index no longer does.
+	retained := make([]*Session, 0, len(m.byChat))
+	for _, s := range m.byChat {
+		retained = append(retained, s)
+	}
 	for _, s := range m.byRoute {
 		epochs[s.epoch] = struct{}{}
 	}
@@ -293,6 +299,15 @@ func (m *Manager) invalidateDisconnectedEpochs() {
 		epochs[entry.epoch] = struct{}{}
 	}
 	m.mu.Unlock()
+	for _, s := range retained {
+		// Never nest lifecycleMu under Manager.mu. Resumable sessions remain
+		// in byChat, but must not recreate an already-drained epoch barrier.
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.resumable {
+			epochs[s.epoch] = struct{}{}
+		}
+		s.lifecycleMu.Unlock()
+	}
 	for epoch := range epochs {
 		// Do not compare against the earlier snapshot: acquisition may have
 		// registered a live successor since then. Tokens never become live again.
@@ -323,7 +338,9 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	for _, s := range m.byChat {
 		if s.epoch == token {
 			all = append(all, s)
-			delete(m.byRoute, s.routingID)
+			if m.byRoute[s.routingID] == s {
+				delete(m.byRoute, s.routingID)
+			}
 		}
 	}
 	delete(m.byDurableEpoch, token)
