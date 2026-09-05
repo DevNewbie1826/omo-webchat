@@ -611,15 +611,15 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			c.sendSessionError(err, "approval.respond", deref(f.RequestID))
 		}
 	case *wscontract.ChatCommandsFrame:
-		c.queryCommands(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_commands", run: c.queryCommands})
 	case *wscontract.ChatCompactFrame:
 		if err := sess.CompactDetached(ctx); err != nil {
 			c.sendSessionError(err, "chat.compact", "")
 		}
 	case *wscontract.ChatModelsFrame:
-		c.queryModels(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_available_models", run: c.queryModels})
 	case *wscontract.ChatStatsFrame:
-		c.queryStats(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_session_stats", run: c.queryStats})
 	case *wscontract.ActivityRefreshFrame:
 		if sess != nil {
 			for _, x := range sess.ActivitySnapshot() {
@@ -627,7 +627,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			}
 		}
 	case *wscontract.ChatResumeFrame:
-		c.queryState(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_state", run: c.queryState})
 	case *wscontract.ChatCloseFrame:
 		c.unbind()
 	case *wscontract.ChatDisconnectFrame:
@@ -1075,7 +1075,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		if recovery {
 			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
 		} else {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, stage, validate, commit)
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
 		}
 	} else if recovery {
 		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
@@ -1577,15 +1577,15 @@ func sessionErrorFrame(err error, command, requestID, sessionID string) any {
 	return frame
 }
 
-func (c *connection) queryState(ctx context.Context, s *session.Session) {
+func (c *connection) queryState(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	x, err := s.QueryState(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_state", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_state")
+		return err
 	}
 	var model map[string]any
 	if len(x.Model) > 0 {
@@ -1598,16 +1598,18 @@ func (c *connection) queryState(ctx context.Context, s *session.Session) {
 	run := s.RunSnapshot()
 	_ = c.writeIfCurrent(binding, map[string]any{"type": "state", "sessionId": binding.chatID, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
 	c.bridge.publishQueue(binding.chatID, s)
+	return nil
 }
-func (c *connection) queryModels(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryModels(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	xs, err := s.Models(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_available_models", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_available_models")
+		return err
 	}
 	sid := binding.chatID
 	out := make([]wscontract.ModelInfo, len(xs))
@@ -1618,16 +1620,18 @@ func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 		}
 	}
 	_ = c.writeIfCurrent(binding, wscontract.ModelsFrame{Type: "models", SessionID: sid, Models: out})
+	return nil
 }
-func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryCommands(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	xs, err := s.Commands(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_commands", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_commands")
+		return err
 	}
 	sid := binding.chatID
 	out := make([]wscontract.CommandEntry, len(xs))
@@ -1635,16 +1639,18 @@ func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
 		out[i] = commandEntry(x)
 	}
 	_ = c.writeIfCurrent(binding, wscontract.CommandsFrame{Type: "commands", SessionID: sid, Commands: out})
+	return nil
 }
-func (c *connection) queryStats(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryStats(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	x, err := s.Stats(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_session_stats", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_session_stats")
+		return err
 	}
 	sid := binding.chatID
 	frame := map[string]any{"type": "stats", "sessionId": sid, "cost": x.Cost}
@@ -1655,6 +1661,14 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 		frame["contextUsage"] = contextUsageWithPercent(x.ContextUsage)
 	}
 	_ = c.writeIfCurrent(binding, frame)
+	return nil
+}
+
+func (c *connection) publishQueryError(binding queryBinding, err error, command string) {
+	if errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed) {
+		return
+	}
+	_ = c.writeIfCurrent(binding, sessionErrorFrame(err, command, "", binding.chatID))
 }
 
 func contextUsageWithPercent(raw json.RawMessage) json.RawMessage {

@@ -343,10 +343,9 @@ func TestIntegrationPermanentOpenFailureFallsBackKeepingCursor(t *testing.T) {
 	}
 }
 
-// Invariant 11: daemon-side idle unload emits EXACTLY ONE session_unloaded
-// error frame, marks the session resumable, and the next Acquire reopens
-// from the stored cursor.
-func TestIntegrationIdleUnloadExactlyOnceThenReopen(t *testing.T) {
+// Invariant 11: daemon-side idle unload silently marks the route resumable,
+// and the next Acquire reopens from the stored cursor.
+func TestIntegrationIdleUnloadSilentThenReopen(t *testing.T) {
 	d := newDaemon(t)
 	client := dial(t, d)
 	store := newMemStore()
@@ -362,15 +361,11 @@ func TestIntegrationIdleUnloadExactlyOnceThenReopen(t *testing.T) {
 
 	// Daemon evicts the session (idle sweep simulated daemon-side).
 	d.UnloadSession(stored.SessionFile)
-
-	prior, _ := sub.awaitError(t, "session_unloaded")
-	for _, f := range prior {
-		if f.Kind == FrameError {
-			t.Fatalf("session_unloaded must fire exactly once, saw: %+v", prior)
-		}
+	if _, err := sess.QueryState(context.Background()); !errors.Is(err, ErrSessionResumable) {
+		t.Fatalf("unloaded route query = %v, want ErrSessionResumable", err)
 	}
 	if extra := sub.drain(); counts(extra)[FrameError] != 0 {
-		t.Fatalf("session_unloaded emitted more than once: %+v", extra)
+		t.Fatalf("silent unload published an error: %+v", extra)
 	}
 	if !sess.Resumable() {
 		t.Fatalf("unloaded session must be resumable from the stored cursor")

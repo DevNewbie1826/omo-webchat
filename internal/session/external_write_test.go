@@ -425,8 +425,8 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 			t.Fatalf("%s subscriber received %d quarantine transitions, want 1: %+v", name, count, frames)
 		}
 	}
-	if entries, transition := frameIndex(priorB, FrameEntries), frameIndex(priorB, FrameError); entries < 0 || transition <= entries {
-		t.Fatalf("detecting subscriber replay order = %+v", priorB)
+	if entries := frameIndex(priorB, FrameEntries); entries >= 0 {
+		t.Fatalf("failed hydration leaked partial disk history: %+v", priorB)
 	}
 }
 
@@ -497,20 +497,15 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	if !ok || info.KnownLeaf != "root" || info.ObservedLeaf != "external-leaf" {
 		t.Fatalf("external-write state = %#v", frame.Data)
 	}
-	foundExternal := false
 	for _, candidate := range prior {
 		if candidate.Kind != FrameEntries {
 			continue
 		}
-		entries := candidate.Data.(EntriesFrame).Entries
-		for _, entry := range entries {
+		for _, entry := range candidate.Data.(EntriesFrame).Entries {
 			if bytes.Contains(entry, []byte("external-leaf")) {
-				foundExternal = true
+				t.Fatalf("failed hydration leaked external disk entry: %+v", prior)
 			}
 		}
-	}
-	if !foundExternal {
-		t.Fatalf("cold re-hydration did not emit external disk entry before state: %+v", prior)
 	}
 
 	beforePrompts := daemon.RequestCount(omorpc.CmdPrompt)

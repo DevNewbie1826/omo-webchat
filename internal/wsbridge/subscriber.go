@@ -62,6 +62,21 @@ func (s *subscriber) EndReplay() {
 		s.conn.endReplay(s)
 	}
 }
+
+// DiscardHydrationAttempt drops frames staged by a route generation that was
+// proven absent before transport binding. The subscriber remains reusable by
+// the bounded replacement attempt under the same per-chat flight.
+func (s *subscriber) DiscardHydrationAttempt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active {
+		return
+	}
+	s.pending = nil
+	s.overflowed = false
+	s.replaying = false
+	s.claim = queryBinding{}
+}
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

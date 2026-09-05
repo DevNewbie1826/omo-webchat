@@ -1046,6 +1046,7 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetState{SessionID: route})
 	if err != nil {
+		err = s.classifyRouteError(err)
 		s.noteTransportError(err)
 		return nil, err
 	}
@@ -1088,6 +1089,7 @@ func (s *Session) Models(ctx context.Context) ([]Model, error) {
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetAvailableModels{SessionID: route})
 	if err != nil {
+		err = s.classifyRouteError(err)
 		return nil, err
 	}
 	var wire struct {
@@ -1119,6 +1121,7 @@ func (s *Session) Commands(ctx context.Context) ([]CommandInfo, error) {
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetCommands{SessionID: route})
 	if err != nil {
+		err = s.classifyRouteError(err)
 		return nil, err
 	}
 	return decodeCommands(resp.Data)
@@ -1152,6 +1155,7 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 	}
 	resp, err := s.client.Call(ctx, omorpc.GetSessionStats{SessionID: route})
 	if err != nil {
+		err = s.classifyRouteError(err)
 		return nil, err
 	}
 	var out Stats
@@ -1575,7 +1579,7 @@ func (s *Session) retireReplaced() {
 	s.closed = true
 	s.cancelIdleLocked()
 	s.lifecycleMu.Unlock()
-	s.broadcast.close(ErrSubscriberSessionEnd)
+	s.broadcast.retireAll(ErrSubscriberSessionEnd)
 	s.releaseSendOperations()
 }
 func (s *Session) publishError(info ErrorInfo) {
@@ -1599,6 +1603,13 @@ func (s *Session) noteTransportError(err error) {
 // acknowledgements: the rejected send did not reach the model, so replay plus
 // the local operation ledger is exactly-once from the user's perspective.
 func (s *Session) classifySendError(err error) error {
+	return s.classifyRouteError(err)
+}
+
+// classifyRouteError turns a definitive negative acknowledgement for an
+// epoch-local route into shared resumable lifecycle state. Callers decide
+// whether their operation is safe to retry; classification stays silent.
+func (s *Session) classifyRouteError(err error) error {
 	var stable *omorpc.StableError
 	if !errors.As(err, &stable) || (stable.Code != omorpc.ErrCodeUnknownSession && stable.Code != omorpc.ErrCodeSessionClosing) {
 		return err
@@ -1798,7 +1809,12 @@ func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget 
 // hydrateEntries serves disk pages and the validated live tail only to target.
 // A nil target is retained for direct callers and publishes through the normal
 // broadcaster, but manager-driven attachment always supplies its subscription.
-func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, targets ...*subscription) {
+func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, targets ...*subscription) error {
+	s.hydrateEntriesLegacy(ctx, sessionPath, targets...)
+	return nil
+}
+
+func (s *Session) hydrateEntriesLegacy(ctx context.Context, sessionPath string, targets ...*subscription) {
 	var target *subscription
 	if len(targets) != 0 {
 		target = targets[0]
@@ -1941,6 +1957,183 @@ func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, target
 	s.emitTailEntries(wire, emit, target)
 }
 
+// hydrateEntriesValidated validates the live tail before publishing any disk
+// page. onValidated binds a transport after the terminal query is known-good
+// and before streaming starts, so a failed generation cannot leak partial
+// history while successful long transcripts remain page-bounded.
+func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath string, target *subscription, onValidated func() error) error {
+	emit := func(frame Frame, terminal bool) error {
+		if routeErr := s.acquisitionError(); errors.Is(routeErr, ErrSessionResumable) || errors.Is(routeErr, ErrSessionClosed) {
+			return routeErr
+		}
+		if target != nil {
+			return target.enqueueReplay(ctx, frame, terminal)
+		}
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		if s.closed || s.resumable {
+			return ErrSessionResumable
+		}
+		s.publishLocked(frame)
+		return nil
+	}
+	validatedDone := false
+	var validated func() error
+	publishErr := func(err error) error {
+		if errors.Is(err, ErrSessionResumable) || errors.Is(err, ErrSessionClosed) {
+			if onValidated == nil && target != nil {
+				target.retire(err)
+			}
+			return err
+		}
+		if !validatedDone {
+			if validateErr := validated(); validateErr != nil {
+				return validateErr
+			}
+		}
+		var drift *ExternalWriteError
+		if errors.As(err, &drift) {
+			if !s.quarantineExternalWrite(drift, target) {
+				if target != nil {
+					if barrierErr := target.enqueueReplayBarrier(ctx); barrierErr != nil {
+						target.retire(barrierErr)
+					}
+				}
+				return nil
+			}
+			if target == nil {
+				return nil
+			}
+		}
+		if target != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrSessionClosed) || errors.Is(err, context.Canceled) {
+				target.retire(err)
+				return nil
+			}
+		} else if errors.Is(err, ErrSessionClosed) || errors.Is(err, context.Canceled) {
+			return nil
+		}
+		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: historyErrorInfo(err)}
+		if target != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if !target.enqueueReplayTerminalNow(frame) {
+				target.retire(ErrSubscriberDetached)
+			}
+			return nil
+		}
+		if emitErr := emit(frame, true); emitErr != nil && target != nil {
+			target.retire(emitErr)
+		}
+		return nil
+	}
+	validated = func() error {
+		if validatedDone {
+			return nil
+		}
+		if onValidated != nil {
+			if err := onValidated(); err != nil {
+				return err
+			}
+		}
+		validatedDone = true
+		return nil
+	}
+
+	if err := s.verifySessionFileIdentity(sessionPath, ""); err != nil {
+		return publishErr(err)
+	}
+
+	var tail entriesTail
+	var preparationErr error
+	callbackFailed := false
+	prepared := false
+	_, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
+		PageEntries: entriesPageMaxCount,
+	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		if metadata.Header.ID != s.durableID {
+			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
+		}
+		if !prepared {
+			if identityErr := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); identityErr != nil {
+				preparationErr = identityErr
+				return identityErr
+			}
+			cursor := metadata.LeafID
+			if cursor == "" {
+				cursor = metadata.Header.ID
+				if _, probeErr := s.fetchEntriesAfter(ctx, cursor); probeErr != nil && !errors.Is(probeErr, errIncompleteHistory) {
+					preparationErr = probeErr
+					return probeErr
+				}
+				preparationErr = fmt.Errorf("%w: durable session has no entry cursor", errIncompleteHistory)
+				return preparationErr
+			}
+			var tailErr error
+			tail, tailErr = s.fetchEntriesAfter(ctx, cursor)
+			if tailErr != nil {
+				preparationErr = tailErr
+				return tailErr
+			}
+			if validateErr := validated(); validateErr != nil {
+				preparationErr = validateErr
+				callbackFailed = true
+				return validateErr
+			}
+			prepared = true
+		}
+		if metadata.LeafID == "" {
+			return nil
+		}
+		for _, entries := range chunkEntries(page.Entries) {
+			if emitErr := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries}}, false); emitErr != nil {
+				return emitErr
+			}
+		}
+		return nil
+	})
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		s.lifecycleMu.Lock()
+		s.sessionFileObserved = true
+		s.lifecycleMu.Unlock()
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		if preparationErr != nil {
+			if callbackFailed {
+				return preparationErr
+			}
+			return publishErr(preparationErr)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return publishErr(err)
+		}
+		if s.inPlace || s.sessionFileIdentity != nil {
+			return publishErr(externalIdentityReadError(err))
+		}
+		s.lifecycleMu.Lock()
+		rootHydrationAllowed := !s.resumed && !s.sessionFileObserved
+		s.lifecycleMu.Unlock()
+		if !rootHydrationAllowed {
+			return publishErr(err)
+		}
+		wire, rootErr := s.fetchEntriesAfter(ctx, "")
+		if rootErr != nil {
+			return publishErr(rootErr)
+		}
+		if validateErr := validated(); validateErr != nil {
+			return validateErr
+		}
+		s.emitTailEntries(wire, emit, target)
+		return nil
+	}
+	if routeErr := s.acquisitionError(); routeErr != nil {
+		return publishErr(routeErr)
+	}
+	s.emitTailEntries(tail, emit, target)
+	return nil
+}
+
 // emitTailEntries emits bounded pages with exactly one final page, including
 // an empty final page when no entries are returned.
 func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error, target *subscription) {
@@ -2039,7 +2232,7 @@ func (s *Session) fetchEntriesAfter(ctx context.Context, since string) (entriesT
 	resp, err := s.client.Call(ctx, omorpc.GetEntries{SessionID: route, Since: since})
 	if err != nil {
 		s.noteTransportError(err)
-		return entriesTail{}, err
+		return entriesTail{}, s.classifyRouteError(err)
 	}
 	var wire entriesTail
 	if !json.Valid(resp.Data) || json.Unmarshal(resp.Data, &wire) != nil {

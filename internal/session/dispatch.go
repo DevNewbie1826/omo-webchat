@@ -101,9 +101,17 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.beginCompactionLocked(raw)
 	case "compaction_end", "compaction_done":
 		s.endCompactionLocked(raw)
-	case "session_unloaded":
+	case "session_unloaded", "session_closed":
+		// Provider lifecycle notices only invalidate the epoch-local routing
+		// handle. The durable chat remains attached and reopens lazily when a
+		// user-required operation next enters the per-chat flight.
 		s.markProviderUnloadedLocked()
-		s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: "session_unloaded", Message: "provider unloaded the session"}})
+	case "response":
+		command, _ := raw["command"].(string)
+		success, _ := raw["success"].(bool)
+		if command == omorpc.CmdCloseSession && success {
+			s.markProviderUnloadedLocked()
+		}
 	case "state", "state_changed":
 		payload := eventPayload(raw)
 		if model, ok := payload["model"].(map[string]any); ok {
