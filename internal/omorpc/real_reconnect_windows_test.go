@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,22 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	var peer windows.Handle
 	var pipes []*identifiedPipe
 	t.Cleanup(func() {
+		if t.Failed() && peer != 0 {
+			// Failure-only diagnostics: native process events/codes and a fixed
+			// marker allowlist, never runtime source, secrets, paths or raw logs.
+			state, waitErr := windows.WaitForSingleObject(peer, 5000)
+			var code uint32
+			codeErr := windows.GetExitCodeProcess(peer, &code)
+			t.Logf("failure: real peer exit state=%d wait-error=%v code=%d code-error=%v", state, waitErr, code, codeErr)
+			data, err := os.ReadFile(filepath.Join(cfg.StateDir, "daemon-spawn.log"))
+			if err != nil {
+				t.Errorf("read bounded runtime diagnostics: %v", err)
+			} else {
+				for _, marker := range []string{"EPIPE", "ENOENT", "ERR_STREAM_DESTROYED", "TypeError:", "ReferenceError:", "panic:", "Segmentation fault", "shutting down", "Bun v", "Node.js v"} {
+					t.Logf("failure: runtime marker=%q present=%t", marker, strings.Contains(string(data), marker))
+				}
+			}
+		}
 		if shared != nil {
 			if err := shared.StopBounded(10 * time.Second); err != nil {
 				t.Errorf("cleanup shared client: %v", err)
