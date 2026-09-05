@@ -57,24 +57,118 @@ func (s *cancelSignalSubscriber) Cancel() error {
 	return nil
 }
 
-type collector struct {
-	gws.BuiltinEventHandler
-	mu      sync.Mutex
-	frames  []json.RawMessage
-	notify  chan struct{}
-	timeout time.Duration
+type decodedFrame struct {
+	raw   json.RawMessage
+	typ   string
+	final bool
+	err   error
 }
 
-func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
-	defer m.Close()
-	c.mu.Lock()
-	c.frames = append(c.frames, append(json.RawMessage(nil), m.Bytes()...))
-	c.mu.Unlock()
+type collector struct {
+	gws.BuiltinEventHandler
+	mu           sync.Mutex
+	frames       []json.RawMessage
+	decoded      []decodedFrame
+	notify       chan struct{}
+	timeout      time.Duration
+	closed       chan struct{}
+	closeOnce    sync.Once
+	streamClosed bool
+	generation   uint64
+}
+
+func decodeFrameMeta(raw json.RawMessage) decodedFrame {
+	frame := decodedFrame{raw: raw}
+	var head struct {
+		Type  string `json:"type"`
+		Final bool   `json:"final"`
+	}
+	frame.err = json.Unmarshal(raw, &head)
+	frame.typ = head.Type
+	frame.final = head.Final
+	return frame
+}
+
+func (c *collector) wake() {
+	if c.notify == nil {
+		return
+	}
 	select {
 	case c.notify <- struct{}{}:
 	default:
 	}
 }
+
+func (c *collector) OnMessage(_ *gws.Conn, m *gws.Message) {
+	raw := append(json.RawMessage(nil), m.Bytes()...)
+	m.Close()
+	decoded := decodeFrameMeta(raw)
+	c.mu.Lock()
+	c.frames = append(c.frames, raw)
+	c.decoded = append(c.decoded, decoded)
+	c.generation++
+	c.mu.Unlock()
+	c.wake()
+}
+
+func (c *collector) OnClose(_ *gws.Conn, _ error) {
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		c.streamClosed = true
+		c.generation++
+		if c.closed == nil {
+			c.closed = make(chan struct{})
+		}
+		close(c.closed)
+		c.mu.Unlock()
+		c.wake()
+	})
+}
+
+func (c *collector) takeDecoded(start int) ([]decodedFrame, bool, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var batch []decodedFrame
+	if start < len(c.decoded) {
+		batch = append([]decodedFrame(nil), c.decoded[start:]...)
+	}
+	return batch, c.streamClosed, c.generation
+}
+
+func (c *collector) waitAfter(gen uint64, timeout time.Duration) error {
+	if timeout <= 0 {
+		return errHistoryTerminalTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		c.mu.Lock()
+		if c.generation != gen || c.streamClosed {
+			c.mu.Unlock()
+			return nil
+		}
+		notify := c.notify
+		var closed <-chan struct{}
+		if c.closed != nil {
+			closed = c.closed
+		}
+		c.mu.Unlock()
+		select {
+		case <-notify:
+		case <-closed:
+			return nil
+		case <-timer.C:
+			c.mu.Lock()
+			changed := c.generation != gen || c.streamClosed
+			c.mu.Unlock()
+			if changed {
+				return nil
+			}
+			return errHistoryTerminalTimeout
+		}
+	}
+}
+
 func (c *collector) next(t *testing.T, typ string) map[string]any {
 	t.Helper()
 	timeout := c.timeout
@@ -93,16 +187,26 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 	defer timer.Stop()
 	for {
 		c.mu.Lock()
-		for i, b := range c.frames {
-			var f map[string]any
-			_ = json.Unmarshal(b, &f)
-			if f["type"] == typ {
-				c.frames = append(c.frames[:i], c.frames[i+1:]...)
-				c.mu.Unlock()
-				return f
+		var raw json.RawMessage
+		found := false
+		for i, decoded := range c.decoded {
+			if decoded.err != nil || decoded.typ != typ {
+				continue
 			}
+			raw = decoded.raw
+			c.frames = append(c.frames[:i], c.frames[i+1:]...)
+			c.decoded = append(c.decoded[:i], c.decoded[i+1:]...)
+			found = true
+			break
 		}
 		c.mu.Unlock()
+		if found {
+			var f map[string]any
+			if err := json.Unmarshal(raw, &f); err != nil {
+				t.Fatalf("decode %s frame: %v", typ, err)
+			}
+			return f
+		}
 		select {
 		case <-c.notify:
 		case <-timer.C:
