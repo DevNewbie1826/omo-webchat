@@ -17,8 +17,8 @@ const os = require('os');
 const path = require('path');
 
 // Platform package names, keyed by process.platform then process.arch.
-// win32 entries are additive: no windows targets are built yet, but the
-// naming and .exe layout are already wired for them.
+// Every entry maps to a published platform package; a platform/arch with no
+// package resolves to an actionable error instead of a silent fallback.
 const PLATFORM_PACKAGES = {
   darwin: { arm64: 'omo-webchat-darwin-arm64', x64: 'omo-webchat-darwin-x64' },
   linux: { arm64: 'omo-webchat-linux-arm64', x64: 'omo-webchat-linux-x64' },

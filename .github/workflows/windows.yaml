@@ -22,12 +22,14 @@ jobs:
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build
 
-      - name: Cross-compile Windows amd64
+      - name: Cross-compile Windows amd64 and arm64
         env:
           CGO_ENABLED: "0"
         run: |
           GOOS=windows GOARCH=amd64 go build ./...
           GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=arm64 go vet ./...
 
   probe-windows:
     runs-on: windows-latest
@@ -111,3 +113,7 @@ jobs:
       - name: Server smoke
         shell: pwsh
         run: go test ./test/smoke/ -count=1 -v
+
+      - name: Installer script (install.ps1)
+        shell: pwsh
+        run: pwsh -NoProfile -File test/install_ps1_test.ps1
