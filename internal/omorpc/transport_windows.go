@@ -9,10 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 func pipeAddress(path string, secret []byte) (string, error) {
@@ -20,7 +21,7 @@ func pipeAddress(path string, secret []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(append([]byte(strings.ToLower(path)), secret...))
+	sum := sha256.Sum256(append([]byte(cases.Lower(language.Und).String(path)), secret...))
 	return fmt.Sprintf(`\\.\pipe\senpi-rpc-%x`, sum[:16]), nil
 }
 

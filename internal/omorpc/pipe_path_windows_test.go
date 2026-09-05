@@ -26,13 +26,12 @@ func TestWindowsPipePathForms(t *testing.T) {
 	}
 }
 
-func TestWindowsPipeUnicodeRED(t *testing.T) {
+func TestWindowsPipeUnicodeNormalization(t *testing.T) {
 	got, err := pipeAddress("C:\\\u039f\u03a3\\\u0130\\rpc.sock", bytes.Repeat([]byte{123}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got == `\\.\pipe\senpi-rpc-e8eece8854db3339c8bbfa85dcd53da6` {
-		t.Fatal("RED not reproduced: full Unicode lowercase already matches")
+	if got != `\\.\pipe\senpi-rpc-e8eece8854db3339c8bbfa85dcd53da6` {
+		t.Fatalf("full Unicode lowercase address=%q does not match runtime", got)
 	}
-	t.Log("RED: Go simple lowercase differs from runtime full Unicode lowercase")
 }

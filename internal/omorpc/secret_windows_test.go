@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -17,13 +19,20 @@ import (
 
 func TestWindowsEnsureRejectsMalformedSecretWithoutOverwrite(t *testing.T) {
 	for _, size := range []int{0, 31, 33} {
-		t.Run(string(rune('a'+size)), func(t *testing.T) {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			cfg := pipeEnsureConfig(t)
 			original := bytes.Repeat([]byte{0x41}, size)
 			if err := os.WriteFile(cfg.SocketPath+".secret", original, 0600); err != nil {
 				t.Fatal(err)
 			}
 			daemon, err := EnsureDaemon(t.Context(), cfg)
+			if daemon != nil {
+				t.Cleanup(func() {
+					if err := daemon.StopBounded(5 * time.Second); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 			if daemon != nil || !errors.Is(err, os.ErrPermission) {
 				t.Fatalf("malformed secret: daemon=%v error=%v", daemon, err)
 			}
@@ -54,6 +63,13 @@ func TestWindowsEnsureRejectsSecretDirectoryAndParentJunction(t *testing.T) {
 				}
 			})
 			daemon, err := EnsureDaemon(t.Context(), cfg)
+			if daemon != nil {
+				t.Cleanup(func() {
+					if err := daemon.StopBounded(5 * time.Second); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 			if daemon != nil || !errors.Is(err, os.ErrPermission) {
 				t.Fatalf("reparse secret: daemon=%v error=%v", daemon, err)
 			}
@@ -83,6 +99,13 @@ func TestWindowsEnsureRejectsPublicSecretACL(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon, err := EnsureDaemon(t.Context(), cfg)
+	if daemon != nil {
+		t.Cleanup(func() {
+			if err := daemon.StopBounded(5 * time.Second); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 	if daemon != nil || !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("public secret accepted: %v", err)
 	}
@@ -117,6 +140,18 @@ func TestWindowsPipeReadDeadlineAndClose(t *testing.T) {
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
 		t.Fatal(err)
 	}
+
+	if err := conn.SetWriteDeadline(time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := conn.Write([]byte("\n"))
+	var timeout net.Error
+	if !errors.Is(writeErr, os.ErrDeadlineExceeded) || !errors.As(writeErr, &timeout) || !timeout.Timeout() {
+		t.Fatalf("write deadline: %v", writeErr)
+	}
+	if err := conn.SetWriteDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() { close(started); _, err := conn.Read(make([]byte, 1)); done <- err }()
@@ -126,8 +161,8 @@ func TestWindowsPipeReadDeadlineAndClose(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("blocked read survived Close")
+		if !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("blocked read after Close: %v", err)
 		}
 	case <-ctx.Done():
 		t.Fatal("Close did not release blocked I/O")

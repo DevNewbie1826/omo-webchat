@@ -36,12 +36,8 @@ func identifyPipeServer(conn net.Conn) (*identifiedPipe, error) {
 		return nil, err
 	}
 	fail := func(err error) (*identifiedPipe, error) { return nil, errors.Join(err, windows.CloseHandle(process)) }
-	var token windows.Token
-	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
-		return fail(err)
-	}
-	user, userErr := token.GetTokenUser()
-	if err := errors.Join(userErr, token.Close()); err != nil {
+	user, err := pipeServerUser(process)
+	if err != nil {
 		return fail(err)
 	}
 	current, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -114,4 +110,15 @@ func connectionPeerProvenance(conn net.Conn, supervisorPID int) peerProvenance {
 		return peerOwned
 	}
 	return peerForeign
+}
+
+// The syscall boundary is replaceable only by package tests; the connection,
+// server PID, retained process handle, and pre-auth rejection remain real.
+var pipeServerUser = func(process windows.Handle) (*windows.Tokenuser, error) {
+	var token windows.Token
+	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
+		return nil, err
+	}
+	user, err := token.GetTokenUser()
+	return user, errors.Join(err, token.Close())
 }

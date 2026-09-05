@@ -17,6 +17,9 @@ import (
 
 const socketSecretBytes = 32
 
+// A narrow native-metadata seam for adversarial owner/ACL tests.
+var secretSecurityInfo = windows.GetSecurityInfo
+
 func logicalEndpoint(path string) (string, error) {
 	// Raw pipes have no filesystem secret, and drive-relative paths depend on
 	// per-process state. Keep the runtime's drive-qualified/UNC contract.
@@ -114,7 +117,7 @@ func validateSecretHandle(h windows.Handle) error {
 	if err != nil {
 		return err
 	}
-	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+	sd, err := secretSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return err
 	}
