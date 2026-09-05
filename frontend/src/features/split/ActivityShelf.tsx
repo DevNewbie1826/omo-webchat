@@ -125,7 +125,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   const {
     availableSpacePx: columnClampPx,
     selfPanelHeightPx,
-  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement);
+  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement, height);
   const naturalFloorActive = height === null
     && columnClampPx !== null
     && columnClampPx >= PANEL_NATURAL_MIN_PX;

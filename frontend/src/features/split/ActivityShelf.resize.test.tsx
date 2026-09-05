@@ -409,10 +409,10 @@ describe("ActivityShelf resize", () => {
       // Unmeasured so far: no inline clamp, CSS caps only.
       expect(panel.style.maxHeight).toBe("");
       // 800 − 120 composer − 24 status − 30 goal bar − 30 activity bar − 120
-      // transcript reserve = 476; min(476, 60vh = 461) keeps the CSS cap.
+      // transcript reserve = 476; the saved 450px preference fits.
       mockRect(fixture.column, 800);
       observer?.fireAt(fixture.column, 800);
-      expect(panel.style.maxHeight).toBe(`${PANEL_MAX}px`);
+      expect(panel.style.maxHeight).toBe("450px");
       // Column shrinks to 500: 500 − 204 − 120 = 176 binds below the 450 height.
       mockRect(fixture.column, 500);
       observer?.fireAt(fixture.column, 500);
@@ -433,7 +433,7 @@ describe("ActivityShelf resize", () => {
       fixtureRects(fixture);
       const observer = HeadroomResizeObserver.instances.at(-1);
       observer?.fireAt(fixture.column, 800);
-      expect(panel.style.maxHeight).toBe(`${PANEL_MAX}px`);
+      expect(panel.style.maxHeight).toBe("450px");
 
       const siblingShelf = document.createElement("section");
       siblingShelf.className = "th-goal-shelf";
@@ -449,11 +449,14 @@ describe("ActivityShelf resize", () => {
       ShelfMutationObserver.instances.at(-1)?.fire();
       expect(observer?.observed).toContain(siblingBar);
       expect(observer?.observed).toContain(goalPanel);
-      expect(panel.style.maxHeight).toBe("346px");
+      expect(panel.style.maxHeight).toBe("446px");
+      mockRect(goalPanel, 240);
+      observer?.fireAt(goalPanel, 240);
+      expect(panel.style.maxHeight).toBe("446px");
 
       siblingShelf.remove();
       ShelfMutationObserver.instances.at(-1)?.fire();
-      expect(panel.style.maxHeight).toBe(`${PANEL_MAX}px`);
+      expect(panel.style.maxHeight).toBe("450px");
     });
 
     it("recomputes when the composer grows while the column box stays fixed", () => {
@@ -464,7 +467,7 @@ describe("ActivityShelf resize", () => {
       fixtureRects(fixture);
       const observer = HeadroomResizeObserver.instances.at(-1);
       observer?.fireAt(fixture.column, 800);
-      expect(panelOf().style.maxHeight).toBe(`${PANEL_MAX}px`);
+      expect(panelOf().style.maxHeight).toBe("450px");
 
       mockRect(fixture.composer, 240);
       observer?.fireAt(fixture.composer, 240);
@@ -487,13 +490,13 @@ describe("ActivityShelf resize", () => {
       const observer = HeadroomResizeObserver.instances.at(-1);
       expect(observer?.observed).toContain(grip);
       observer?.fireAt(fixture.column, 800);
-      expect(panel.style.maxHeight).toBe("452px");
+      expect(panel.style.maxHeight).toBe("450px");
     });
 
     it("keeps a short-transcript panel naturally sized while preserving the transcript and composer bands", () => {
       const fixture = mountInColumn();
       const transcript = document.createElement("div");
-      transcript.className = "th-chat-transcript";
+      transcript.className = "th-chat-scrollport";
       fixture.column.prepend(transcript);
       renderShelf();
       openShelf();
@@ -580,8 +583,8 @@ describe("ActivityShelf resize", () => {
       fixtureRects(fixture);
       const observer = HeadroomResizeObserver.instances.at(-1);
       observer?.fireAt(fixture.column, 800);
-      // 800 − 120 − 24 − 30 − 30 − 120 = 476 available; the 60vh cap wins.
-      expect(panelOf().style.maxHeight).toBe(`${PANEL_MAX}px`);
+      // 800 − 120 − 24 − 30 − 30 − 120 = 476 available; the saved 450px preference fits.
+      expect(panelOf().style.maxHeight).toBe("450px");
 
       // A collapsed queue appears between the shelves and the composer.
       const queue = document.createElement("section");
@@ -617,7 +620,7 @@ describe("ActivityShelf resize", () => {
       queue.remove();
       ShelfMutationObserver.instances.at(-1)?.fire();
       expect(observer?.observed).not.toContain(queue);
-      expect(panelOf().style.maxHeight).toBe(`${PANEL_MAX}px`);
+      expect(panelOf().style.maxHeight).toBe("450px");
     });
 
     it("bounds the expanded queue body with an internal scrollport", () => {

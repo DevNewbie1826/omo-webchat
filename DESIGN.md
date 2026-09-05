@@ -220,6 +220,13 @@ Choose a tested foreground/background token pair instead.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
+- Goal and activity panels share one column allocator. Fixed bands include
+  dynamically mounted queue, recovery/error banners, status and composer.
+  Neither rendered panel allocation is an input to the other. The goal uses
+  its intrinsic content preference; activity retains its saved height or the
+  280px default preference. Reserve 120px for conversation when feasible,
+  allocate goal first while retaining a 48px activity row, and collapse a goal
+  allocation below 48px without losing the user's expansion intent.
 - Reading column: `min(760px, 100%)`, horizontally centered. Structural
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
