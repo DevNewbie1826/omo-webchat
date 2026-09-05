@@ -1,5 +1,6 @@
 /** Full application, disposable HTTP/WS frontend channel. Backend claims require r2-backend.mjs.
  * PATH=/Users/mirage/.bun/bin:$PATH QA_PLAYWRIGHT=/absolute/playwright/index.mjs bun test/qa/cwfix5-ui-r2.mjs /tmp/cwfix5-ui-r2/UNUSED-RUN /absolute/dist
+ * Full runs bind exactly 127.0.0.1:25015 (occupied port fails; never kills/falls back). --capture-r3 uses port 0.
  * Never reuses a run directory. No external engine or user session is contacted.
  */
 import assert from 'node:assert/strict';
@@ -42,7 +43,8 @@ function queue(chat){return {type:'queue',revision:++chat.revision,items:chat.qu
 function state(chat){return {type:'state',isStreaming:chat.running,isCompacting:false,model:chat.model,thinkingLevel:'high'};}
 function ack(ws,id,frame){send(ws,id,{type:'ack',command:frame.type,requestId:frame.requestId});}
 function echo(chat,text){const message={role:'user',content:text};chat.entries.push({id:`sent-${chat.entries.length}`,type:'message',message});publish(chat.id,{type:'message',message});}
-const server=Bun.serve({hostname:'127.0.0.1',port:0,
+const requestedPort=focused?0:25015;
+const server=Bun.serve({hostname:'127.0.0.1',port:requestedPort,
  async fetch(req,server){
   const path=new URL(req.url).pathname;
   if(path==='/api/v2/ws'&&server.upgrade(req,{data:{ids:new Set()}}))return;
@@ -83,8 +85,12 @@ const server=Bun.serve({hostname:'127.0.0.1',port:0,
   else if(frame.type==='chat.abort'){chat.running=false;send(ws,id,{type:'run.done',reason:'aborted'});}
   else if(!['hello','sessions.subscribe','chat.close','ping'].includes(frame.type))errors.push(`Unhandled client frame ${frame.type}`);
  }} });
+const fixturePort=server.port;
+const origin=`http://127.0.0.1:${fixturePort}`;
+Object.assign(manifest,{requestedPort,origin,port:fixturePort,command:{executable:process.execPath,argv:process.argv.slice(1),cwd:process.cwd()}});
+await save('manifest.json',manifest);
 const browser=await chromium.launch({channel:'chrome',headless:true});
-let context=await browser.newContext({viewport:{width:1280,height:800}});
+let context=await browser.newContext({viewport:{width:1280,height:800},...(focused?{storageState:{cookies:[],origins:[{origin,localStorage:[{name:'th-activity-panel-height',value:'480'}]}]}}:{})});
 let traceIndex=0;
 await context.tracing.start({screenshots:true,snapshots:true,sources:true});
 async function closeContext(){await context.tracing.stop({path:join(directory,`trace-${traceIndex++}.zip`)});await context.close();}
@@ -92,8 +98,6 @@ async function startContext(options){context=await browser.newContext(options);a
 let page=await context.newPage();
 function configure(){page.setDefaultTimeout(6000);page.on('pageerror',e=>errors.push(e.message));}
 configure();
-const fixturePort=server.port;
-const origin=`http://127.0.0.1:${fixturePort}`;
 async function action(label,fn){actions.push({label});const value=await fn();actions.at(-1).complete=true;return value;}
 // Mutation subscription is installed BEFORE each action. No polling or timing grace period.
 async function expectDOM(expression,fn){
@@ -105,18 +109,45 @@ function wire(type,fn){const waiting=new Promise((resolve,reject)=>{const timer=
 async function load(){await page.addInitScript(()=>{localStorage.setItem('th-lang','en');window.__qaHydrated=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(new Error('hydrate deadline'));},10000);const observer=new MutationObserver(check);function check(){if(document.querySelector('.th-model-picker-btn')&&document.querySelector('textarea:not([disabled])')){observer.disconnect();clearTimeout(timer);resolve(true);}}observer.observe(document,{childList:true,subtree:true,attributes:true});check();});});await page.goto(origin);await page.evaluate(()=>window.__qaHydrated);}
 async function geometry(){return page.evaluate(()=>new Promise((resolve,reject)=>{const rows=[];const timer=setTimeout(()=>reject(new Error('geometry deadline')),6000);function sample(){const frame={};for(const selector of ['.th-termhead','.th-chat-main','.th-chat-main-content','.th-chat-input','textarea','.th-chat-send-btn','.th-chat-scrollport','.th-goal-panel','.th-activity-panel','.th-queue','.th-send-error-banner']){const el=document.querySelector(selector);const b=el?.getBoundingClientRect();frame[selector]=b?{top:b.top,bottom:b.bottom,left:b.left,right:b.right,width:b.width,height:b.height,scrollHeight:el.scrollHeight}:null;}rows.push(frame);if(rows.length===24){clearTimeout(timer);resolve(rows);}else requestAnimationFrame(sample);}requestAnimationFrame(sample);}));}
 async function capture(key){results[key]=await geometry();stable(results[key],key);await page.screenshot({path:join(directory,`${key}.png`)});await save('results.json',results);return results[key].at(-1);}
-async function shelves(order='goal-activity'){for(const key of order.split('-'))await page.locator(key==='goal'?'.th-goal-bar':'.th-activity-shelf .th-activity-bar').click();}
+async function native(commands,method,selector,key){const receipt={method,...(selector?{selector}:{}),...(key?{key}:{})};commands.push(receipt);if(method==='page.reload')await page.reload();else await page.locator(selector)[method](...(key?[key]:[]));receipt.complete=true;}
+async function shelves(order='goal-activity',commands=[]){for(const key of order.split('-'))await native(commands,'click',key==='goal'?'.th-goal-bar':'.th-activity-shelf .th-activity-bar');}
 async function titleCapture(key,count){if(count===2)results[`${key}-rows`]=await settledRows(page);results[key]=await page.evaluate(()=>{const toggle=document.querySelector('.th-sidebar-toggle'),b=toggle.getBoundingClientRect();return [...document.querySelectorAll('.th-termhead-name')].map(title=>{const a=title.getBoundingClientRect(),hit=document.elementFromPoint(a.left+1,a.top+a.height/2);return {text:title.textContent,title:a.toJSON(),toggle:b.toJSON(),overlapArea:Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)),titleHit:title===hit||title.contains(hit)};});});titles(results[key],count);await page.screenshot({path:join(directory,`${key}.png`)});}
 async function toggleSidebar(){await page.evaluate(()=>{const el=document.querySelector('.th-sidebar');window.__qaSidebar=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('sidebar transition deadline')),6000);el.addEventListener('transitionend',function done(e){if(e.target===el&&e.propertyName==='width'){clearTimeout(timer);el.removeEventListener('transitionend',done);resolve(true);}});});});await page.locator('.th-sidebar-toggle').click();await page.evaluate(()=>window.__qaSidebar);}
 let failure;
 try{
- await context.addInitScript(()=>localStorage.setItem('th-activity-panel-height','480'));
  if(!focused){
+ // Read-only document/native-event and CDP storage observers: no preference seed,
+ // storage shim, or reload-time repair can stand in for the application's write.
+ await page.addInitScript(()=>{
+  window.__qaPersistence={documentId:crypto.randomUUID(),storageAtInit:localStorage.getItem('th-activity-panel-height'),events:[]};
+  for(const type of ['click','focusin','keydown'])document.addEventListener(type,event=>{
+   const selector=['.th-goal-bar','.th-activity-shelf .th-activity-bar','.th-activity-resize'].find(s=>event.target.closest?.(s));
+   if(selector)window.__qaPersistence.events.push({type,selector,trusted:event.isTrusted,...(type==='keydown'?{key:event.key}:{})});
+  },true);
+ });
+ const storage=await context.newCDPSession(page),storageEvents=[];
+ for(const event of ['domStorageItemAdded','domStorageItemUpdated','domStorageItemRemoved','domStorageItemsCleared'])storage.on(`DOMStorage.${event}`,row=>{
+  if(row.storageId.securityOrigin===origin&&row.storageId.isLocalStorage&&(row.key==='th-activity-panel-height'||event==='domStorageItemsCleared'))storageEvents.push({event,...row});
+ });
+ await storage.send('DOMStorage.enable');
+ const snapshot=()=>page.evaluate(()=>({origin:location.origin,port:Number(location.port),viewport:{width:innerWidth,height:innerHeight},stored:localStorage.getItem('th-activity-panel-height'),preference:document.querySelector('.th-activity-resize')?.getAttribute('aria-valuenow'),focused:document.activeElement?.matches('.th-activity-resize'),navigation:performance.getEntriesByType('navigation')[0].type,...window.__qaPersistence}));
+ const storageBarrier=()=>storage.send('DOMStorage.getDOMStorageItems',{storageId:{securityOrigin:origin,isLocalStorage:true}});
  await action('render restored application',load);
  await page.screenshot({path:join(directory,'render.png')});
  for(const order of ['activity-goal','goal-activity','resize-goal-activity']){
   if(order.startsWith('resize'))await page.setViewportSize({width:1280,height:860});
-  await load();await shelves(order.replace('resize-',''));if(order.startsWith('resize'))await page.setViewportSize({width:1280,height:800});await capture(order);
+  await load();
+  if(order.startsWith('resize')){await shelves('goal-activity');await page.setViewportSize({width:1280,height:800});await capture(order);continue;}
+  const r=(results.persistence??=[])[results.persistence.length]={order,commands:[]};
+  await shelves(order,r.commands);
+  await native(r.commands,'focus','.th-activity-resize');
+  await expectDOM("document.querySelector('.th-activity-resize')?.getAttribute('aria-valuenow')==='120'",()=>native(r.commands,'press','.th-activity-resize','Home'));
+  await capture(`${order}-before`);r.before=await snapshot();await storageBarrier();const endStart=storageEvents.length;
+  await expectDOM("document.querySelector('.th-activity-resize')?.getAttribute('aria-valuenow')==='480' && localStorage.getItem('th-activity-panel-height')==='480'",()=>native(r.commands,'press','.th-activity-resize','End'));
+  await capture(order);r.end=await snapshot();await storageBarrier();r.endWrites=storageEvents.slice(endStart);const reloadStart=storageEvents.length;
+  await native(r.commands,'page.reload');await page.evaluate(()=>window.__qaHydrated);
+  await shelves(order,r.commands);await capture(`${order}-restored`);r.restored=await snapshot();await storageBarrier();r.reloadWrites=storageEvents.slice(reloadStart);
+  r.screenshots={before:`${order}-before.png`,end:`${order}.png`,restored:`${order}-restored.png`};
  }
  await titleCapture('single-expanded',1);await toggleSidebar();await titleCapture('single-collapsed',1);await toggleSidebar();
  // Tiny restore retains the requested preference on this mount, not just storage.
@@ -126,6 +157,10 @@ try{
  await page.setViewportSize({width:1280,height:1000});await load();await shelves();
  await page.locator('.th-activity-resize').press('Home');await capture('growth-home');await page.locator('.th-activity-resize').press('ArrowUp');await capture('growth-up');
  assert.equal(results['growth-up'].at(-1)['.th-activity-panel'].height,144);
+ // Restore the original 480 floor/short/split precondition by a real gesture,
+ // rather than the former reload-time storage seed.
+ await page.setViewportSize({width:1280,height:800});
+ await expectDOM("document.querySelector('.th-activity-resize')?.getAttribute('aria-valuenow')==='480'",()=>page.locator('.th-activity-resize').press('End'));
  for(const order of ['goal','activity']){
   await page.setViewportSize({width:1280,height:800});await load();await shelves(order==='goal'?'goal-activity':'activity-goal');
   for(const floor of [48,49,50,51]){

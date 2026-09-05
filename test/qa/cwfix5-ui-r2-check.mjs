@@ -36,6 +36,52 @@ export function acknowledgements(sends, traffic) {
     assert.equal(acks[0].frame.phase,undefined,'real bridge admission ack is unphased');
   }
 }
+// A scoped positive control, also required by the full fail-closed matrix.
+// This does not waive native-keyboard/pan acceptance or accept failed run folders.
+export function persistenceEvidence(manifest, result, cleanup, names) {
+  const origin='http://127.0.0.1:25015',grip='.th-activity-resize';
+  assert.equal(manifest.requestedPort,25015);assert.equal(manifest.port,25015);assert.equal(manifest.origin,origin);
+  assert.ok(manifest.command.executable.endsWith('/bun'));
+  assert.ok(manifest.command.argv[0].endsWith('/cwfix5-ui-r2.mjs'));
+  assert.equal(manifest.command.argv[1],`/tmp/cwfix5-ui-r2/${manifest.runId}`);
+  assert.equal(manifest.command.argv[2],manifest.dist);
+  assert.equal(manifest.command.cwd,'/Volumes/storage/workspace/cli-webchat-cw5-ui');
+  assert.ok(!manifest.command.argv.includes('--capture-r3'));
+  assert.equal(cleanup.port,25015);assert.equal(cleanup.browserClosed,true);assert.equal(cleanup.serverStopped,true);assert.equal(cleanup.pendingWebSockets,0);
+  assert.deepEqual(result.persistence.map(r=>r.order),['activity-goal','goal-activity']);
+  for(const [index,r] of result.persistence.entries()) {
+    const selectors=r.order.split('-').map(key=>key==='goal'?'.th-goal-bar':'.th-activity-shelf .th-activity-bar');
+    const clicks=selectors.map(selector=>({method:'click',selector,complete:true}));
+    assert.deepEqual(r.commands,[...clicks,{method:'focus',selector:grip,complete:true},{method:'press',selector:grip,key:'Home',complete:true},{method:'press',selector:grip,key:'End',complete:true},{method:'page.reload',complete:true},...clicks]);
+    assert.equal(r.before.storageAtInit,index===0?null:'480');
+    assert.equal(r.before.navigation,'navigate');assert.equal(r.end.navigation,'navigate');assert.equal(r.restored.navigation,'reload');
+    assert.ok(r.before.documentId);assert.equal(r.end.documentId,r.before.documentId);
+    assert.ok(r.restored.documentId&&r.restored.documentId!==r.end.documentId);
+    assert.equal(r.restored.storageAtInit,'480');
+    for(const [phase,value] of [['before','120'],['end','480'],['restored','480']]) {
+      const row=r[phase];assert.equal(row.origin,origin);assert.equal(row.port,25015);assert.deepEqual(row.viewport,{width:1280,height:800});
+      assert.equal(row.stored,value);assert.equal(row.preference,value);
+      assert.ok(row.events.every(event=>event.trusted===true));
+      assert.deepEqual(row.events.filter(event=>event.type==='click').map(event=>event.selector),selectors);
+      const key=phase==='end'?r.order:`${r.order}-${phase}`;
+      assert.equal(r.screenshots[phase],`${key}.png`);assert.ok(names.includes(r.screenshots[phase]));
+      const frame=stable(result[key],key);contained(frame,key);
+      assert.ok(frame['.th-chat-scrollport'].height>=119.9);
+      assert.ok(frame['.th-goal-panel'].bottom<=frame['.th-activity-panel'].top);
+      assert.ok(frame['.th-activity-panel'].bottom<=frame['.th-chat-input'].top);
+    }
+    assert.equal(r.before.focused,true);assert.equal(r.end.focused,true);
+    assert.ok(r.before.events.some(event=>event.type==='focusin'&&event.selector===grip));
+    assert.deepEqual(r.end.events.filter(event=>event.type==='keydown').map(({selector,key})=>({selector,key})),[{selector:grip,key:'Home'},{selector:grip,key:'End'}]);
+    assert.deepEqual(r.restored.events.filter(event=>event.type==='keydown'),[]);
+    assert.equal(result[`${r.order}-before`].at(-1)['.th-activity-panel'].height,120);
+    assert.equal(result[`${r.order}-restored`].at(-1)['.th-activity-panel'].height,result[r.order].at(-1)['.th-activity-panel'].height);
+    assert.equal(r.endWrites.length,1);
+    const write=r.endWrites[0];assert.equal(write.event,'domStorageItemUpdated');assert.equal(write.key,'th-activity-panel-height');assert.equal(write.oldValue,'120');assert.equal(write.newValue,'480');
+    assert.equal(write.storageId.securityOrigin,origin);assert.equal(write.storageId.isLocalStorage,true);
+    assert.deepEqual(r.reloadWrites,[]);
+  }
+}
 export async function check(directory) {
   const names = await readdir(directory);
   assert.ok(!names.some(name => /failure|failed/i.test(name)), 'failed/mixed run directory');
@@ -44,6 +90,8 @@ export async function check(directory) {
   assert.equal(manifest.status, 'complete');
   assert.ok(manifest.runId && manifest.assets.length >= 3);
   const result = await read('results.json');
+  persistenceEvidence(manifest,result,await read('cleanup.json'),names);
+  for(const r of result.persistence)for(const name of Object.values(r.screenshots))assert.equal((await readFile(resolve(directory,name))).subarray(0,8).toString('hex'),'89504e470d0a1a0a');
   for (const order of ['activity-goal', 'goal-activity', 'resize-goal-activity']) {
     const frame = stable(result[order], order);
     contained(frame, order);
