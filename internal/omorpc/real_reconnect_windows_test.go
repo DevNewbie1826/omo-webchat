@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,28 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	})
 	home := filepath.Join(dir, "h")
 	agent := filepath.Join(home, ".omo", "agent")
+	// This actual extension reports machine-consumed context from the session
+	// host, not the public supervisor. No secrets or raw command lines leave it.
+	extensions := filepath.Join(agent, "extensions")
+	if err := os.MkdirAll(extensions, 0700); err != nil {
+		t.Fatal(err)
+	}
+	const contextExtension = `import { fstatSync } from "node:fs";
+export default function(pi) {
+  let fd3 = false;
+  try { fstatSync(3); fd3 = true; } catch (error) { fd3 = error.code; }
+  pi.registerCommand("win65-context", {
+    description: JSON.stringify({pid:process.pid, ppid:process.ppid,
+      watchPpid:Number(process.env.SENPI_RPC_HOST_WATCH_PPID), fd3,
+      brand:process.title, runtime:process.versions.bun ? "bun" : "node",
+      native:/[\\/]senpi[\\/]dist[\\/]cli(?:-main)?\.js$/.test(process.argv[1])}),
+    handler:async () => {}
+  });
+}
+`
+	if err := os.WriteFile(filepath.Join(extensions, "context.js"), []byte(contextExtension), 0600); err != nil {
+		t.Fatal(err)
+	}
 	env := os.Environ()
 	for key, value := range map[string]string{
 		"HOME": home, "USERPROFILE": home,
@@ -220,6 +243,7 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 		opened.Command != "open_session" || session.SessionID == "" {
 		t.Fatal("real session did not open successfully in the recovered epoch")
 	}
+	assertReconnectHostContext(t, ctx, shared.Client, current, session.SessionID, pipe.pid, requestedRuntime)
 	closed, closeEpoch, err := shared.Client.CallInEpochToken(ctx, current, CloseSession{SessionID: session.SessionID})
 	if err != nil || closeEpoch != current || closed == nil || !closed.Success ||
 		closed.ID == "" || closed.Command != "close_session" {
@@ -244,6 +268,72 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	}
 	t.Logf("real reconnect: shared owned=false Stop preserved peer=%d owner-epoch=%d protocol-id=%s success=true",
 		pipe.pid, ownerEpoch.epoch.number, preserved.ID)
+}
+
+// get_commands observes the real loaded extensions and the native session host.
+func assertReconnectHostContext(t *testing.T, ctx context.Context, client *Client, epoch EpochToken, session string, supervisor uint32, requested string) {
+	t.Helper()
+	response, gotEpoch, err := client.CallInEpochToken(ctx, epoch, GetCommands{SessionID: session})
+	if err != nil || gotEpoch != epoch || response == nil || !response.Success || response.ID == "" || response.Command != "get_commands" {
+		t.Fatalf("recovered get_commands correlation: %v", err)
+	}
+	var data struct {
+		Commands []struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Source      string `json:"source"`
+			SourceInfo  struct {
+				Source string `json:"source"`
+			} `json:"sourceInfo"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(response.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	found := false
+	for _, command := range data.Commands {
+		if command.Source == "extension" && command.SourceInfo.Source == "cli" {
+			names = append(names, command.Name)
+		}
+		if command.Name != "win65-context" {
+			continue
+		}
+		found = true
+		var host struct {
+			PID       uint32
+			PPID      uint32
+			WatchPPID uint32
+			FD3       any
+			Brand     string
+			Runtime   string
+			Native    bool
+		}
+		if err := json.Unmarshal([]byte(command.Description), &host); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("native host contract: pid=%d parent=%d supervisor=%d watch-ppid=%d fd3=%v brand=%s runtime=%s native=%t", host.PID, host.PPID, supervisor, host.WatchPPID, host.FD3, host.Brand, host.Runtime, host.Native)
+		if host.PPID != supervisor || host.WatchPPID != supervisor || host.FD3 != true || host.Brand != "OmO" || !host.Native {
+			t.Errorf("native host lost direct parent, FD3, or brand context")
+		}
+		if requested != "" && host.Runtime != requested {
+			t.Errorf("native host runtime=%s, requested=%s", host.Runtime, requested)
+		}
+	}
+	if !found {
+		t.Fatal("native session did not load context extension")
+	}
+	slices.Sort(names)
+	for _, name := range []string{"doctor", "memory", "dag", "tasks", "task-kill"} {
+		if !slices.Contains(names, name) {
+			t.Errorf("packaged CLI extension command %s missing", name)
+		}
+	}
+	encoded, err := json.Marshal(names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("extension command parity: %s", encoded)
 }
 
 // Native image observations avoid confusing the requested environment with the
@@ -276,6 +366,21 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 	t.Logf("runtime comparison: requested=%s role=public-pipe-server pid=%d image=%s effective=%s", requested, pipe.pid, image, effective)
 	if requested != "automatic" && effective != requested {
 		t.Fatalf("requested %s but actual public server image is %s", requested, image)
+	}
+	queryCtx, queryCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer queryCancel()
+	query := exec.CommandContext(queryCtx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '[\\/]senpi[\\/]dist[\\/]cli(?:-main)?\.js' -and $_.CommandLine -match '--multi-session' -and $_.CommandLine -match '--listen' } | ForEach-Object { [pscustomobject]@{pid=$_.ProcessId;parent=$_.ParentProcessId} })`)
+	query.WaitDelay = time.Second
+	output, err := query.Output()
+	if err != nil {
+		t.Fatalf("bounded native host-role query: %v", err)
+	}
+	var hosts []struct {
+		PID    uint32
+		Parent uint32
+	}
+	if err := json.Unmarshal(output, &hosts); err != nil {
+		t.Fatalf("native host-role result: %v", err)
 	}
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -318,6 +423,14 @@ func recordReconnectRuntime(t *testing.T, owner *EnsuredDaemon, pipe *identified
 		}
 		owned, memberErr := domain.ContainsProcess(uintptr(h))
 		if memberErr == nil && owned {
+			for _, host := range hosts {
+				if host.PID == entry.ProcessID {
+					t.Logf("native command role: host=%d parent=%d public-supervisor=%d direct=%t", host.PID, host.Parent, pipe.pid, host.Parent == pipe.pid)
+					if host.Parent != pipe.pid {
+						t.Errorf("native session host parent=%d, supervisor requires %d", host.Parent, pipe.pid)
+					}
+				}
+			}
 			image, memberErr = imageName(h)
 			if memberErr == nil {
 				t.Logf("runtime comparison: requested=%s role=owned-descendant pid=%d parent=%d image=%s", requested, entry.ProcessID, entry.ParentProcessID, image)
