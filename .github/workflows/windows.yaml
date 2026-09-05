@@ -107,6 +107,7 @@ jobs:
           exit $probeExit
 
       - name: Real omo transport loss and reconnect
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnect$' -count=1 -v -timeout=2m 2>&1 | Tee-Object -FilePath probe-reconnect.txt
