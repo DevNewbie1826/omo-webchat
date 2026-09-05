@@ -52,10 +52,9 @@ const GO_MODULE_PATH = './cmd/server'
  * Token cheat sheet — osNode/cpuNode use NODE values, goos/goarch use GO
  * values, and they are NOT the same vocabulary (npm "x64" == Go "amd64").
  *
- * Windows rows are ready to uncomment. .goreleaser.yaml currently lists no
- * windows targets, so no archive will exist for them; the generator then uses
- * the `go build` fallback automatically. To serve them from goreleaser
- * archives instead, add `windows` to the goos list in .goreleaser.yaml.
+ * windows/amd64 ships as a zip (see the goreleaser format_overrides), so its
+ * archive is extracted with the zip reader below. windows/arm64 is absent on
+ * purpose: .goreleaser.yaml ignores it, so there is no release to package.
  */
 // prettier-ignore
 const TARGETS = [
@@ -63,8 +62,7 @@ const TARGETS = [
   { osNode: 'darwin', cpuNode: 'x64',   goos: 'darwin',  goarch: 'amd64'  },
   { osNode: 'linux',  cpuNode: 'x64',   goos: 'linux',   goarch: 'amd64'  },
   { osNode: 'linux',  cpuNode: 'arm64', goos: 'linux',   goarch: 'arm64'  },
-  // { osNode: 'win32', cpuNode: 'x64',   goos: 'windows', goarch: 'amd64', ext: '.exe' },
-  // { osNode: 'win32', cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe' },
+  { osNode: 'win32',  cpuNode: 'x64',   goos: 'windows', goarch: 'amd64', ext: '.exe' },
 ]
 
 // Deliberately not `omo-webchat` and not under `bin/` — both are gitignored
@@ -121,8 +119,22 @@ function buildFrontend() {
 }
 
 function archiveFor(target) {
-  // goreleaser archive name template: omo-webchat_<os>_<arch> (Go tokens).
-  return path.join(DIST_DIR, `omo-webchat_${target.goos}_${target.goarch}.tar.gz`)
+  // goreleaser archive name template: omo-webchat_<os>_<arch> (Go tokens),
+  // tar.gz everywhere except windows, which format_overrides to zip.
+  const ext = target.goos === 'windows' ? '.zip' : '.tar.gz'
+  return path.join(DIST_DIR, `omo-webchat_${target.goos}_${target.goarch}${ext}`)
+}
+
+// bsdtar (macOS, Windows 10+) reads zip; GNU tar does not, so prefer unzip
+// wherever it exists and keep tar as the fallback.
+function unpack(archive, destDir) {
+  if (archive.endsWith('.zip')) {
+    const unzipped = spawnSync('unzip', ['-q', '-o', archive, '-d', destDir], { stdio: 'inherit' })
+    if (unzipped.status === 0) return
+    sh('tar', ['-xf', archive, '-C', destDir])
+    return
+  }
+  sh('tar', ['-xzf', archive, '-C', destDir])
 }
 
 /**
@@ -135,8 +147,9 @@ function extractBinary(target) {
   if (!fs.existsSync(archive)) return null
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-'))
   try {
-    sh('tar', ['-xzf', archive, '-C', tmpDir])
-    return { binary: findFile(tmpDir, 'omo-webchat'), tmpDir } // goreleaser `binary: omo-webchat`
+    unpack(archive, tmpDir)
+    // goreleaser `binary: omo-webchat` (+ .exe on windows).
+    return { binary: findFile(tmpDir, `omo-webchat${target.ext ?? ''}`), tmpDir }
   } catch (err) {
     fs.rmSync(tmpDir, { recursive: true, force: true })
     throw err
@@ -164,7 +177,7 @@ function findFile(dir, name) {
 function goBuild(target) {
   buildFrontend()
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-'))
-  const dest = path.join(tmpDir, `omo-webchat_${target.goos}_${target.goarch}`)
+  const dest = path.join(tmpDir, `omo-webchat_${target.goos}_${target.goarch}${target.ext ?? ''}`)
   try {
     sh('go', ['build', '-trimpath', '-ldflags', '-s -w', '-o', dest, GO_MODULE_PATH], {
       env: { CGO_ENABLED: '0', GOOS: target.goos, GOARCH: target.goarch },

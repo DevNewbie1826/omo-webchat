@@ -27,7 +27,7 @@
 - macOS·Linux (amd64/arm64), Windows (amd64, zip 릴리스).
 - Windows 주의: 서버 자체는 Windows에서 빌드되고 부팅되며 Windows CI를 통과하고, 이미 실행 중인 omo RPC 데몬에 연결됩니다. 다만 Windows에서 omo RPC 데몬을 직접 실행하는 것은 현재 업스트림 CLI 이슈(code-yeongyu/senpi#1370)로 막혀 있습니다.
 
-### 설치
+### 설치 (macOS · Linux)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
@@ -38,6 +38,24 @@ curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/inst
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
 ```
+
+### 설치 (Windows)
+
+PowerShell 5.1 이상에서 실행하세요. 관리자 권한은 필요 없습니다.
+
+```powershell
+irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
+```
+
+릴리스 zip(`omo-webchat_windows_amd64.zip`)을 내려받아 `checksums.txt`의 SHA-256과 대조한 뒤 `%LOCALAPPDATA%\Programs\omo-webchat`에 설치하고, 그 경로를 사용자 PATH에 추가합니다(새 터미널부터 적용).
+
+특정 버전·경로를 지정하거나 PATH를 건드리지 않으려면 인자를 넘기세요:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
+```
+
+지원 대상은 Windows x64입니다. arm64 릴리스는 아직 없으니 소스에서 빌드하세요.
 
 ### npx / bunx
 
@@ -104,6 +122,7 @@ Go 1.26, Node 22가 필요합니다. 로컬 실행은 `make run` (개발용 비�
 go test ./...
 cd frontend && npx vitest run
 sh test/install_checksum_test.sh
+pwsh -NoProfile -File test/install_ps1_test.ps1   # Windows installer
 ```
 
 ---
@@ -118,7 +137,7 @@ sh test/install_checksum_test.sh
 - macOS / Linux (amd64, arm64), Windows (amd64, zip release).
 - Windows caveat: the server itself builds, boots, and passes its Windows CI, and connects to an already-running omo RPC daemon. Running the real omo RPC daemon on Windows is currently blocked by an upstream CLI issue (code-yeongyu/senpi#1370).
 
-### Install
+### Install (macOS / Linux)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | sh
@@ -129,6 +148,24 @@ Pin a version or install path:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.sh | VERSION=vX.Y.Z INSTALL_DIR=~/.local/bin sh
 ```
+
+### Install (Windows)
+
+Run in PowerShell 5.1 or newer; no administrator rights required.
+
+```powershell
+irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
+```
+
+It downloads the release zip (`omo-webchat_windows_amd64.zip`), verifies its SHA-256 against `checksums.txt`, installs into `%LOCALAPPDATA%\Programs\omo-webchat`, and adds that directory to your user PATH (effective in new terminals).
+
+Pass arguments to pin a version, choose a directory, or leave PATH alone:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1))) -Version vX.Y.Z -InstallDir C:\tools\omo-webchat -NoPathUpdate
+```
+
+Windows x64 only; there is no arm64 release yet, so build from source on arm64.
 
 ### npx / bunx
 
@@ -195,4 +232,5 @@ Binds to loopback (`127.0.0.1`) by default and has no in-process TLS — put a T
 go test ./...
 cd frontend && npx vitest run
 sh test/install_checksum_test.sh
+pwsh -NoProfile -File test/install_ps1_test.ps1   # Windows installer
 ```
