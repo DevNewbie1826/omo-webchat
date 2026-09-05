@@ -142,6 +142,7 @@ func (q *queueTest) holdAndStartRun() (release func()) {
 	q.d.SetPromptScript(q.path,
 		map[string]any{"type": EventAgentStart},
 		map[string]any{"type": EventAgentEnd},
+		map[string]any{"type": EventAgentSettled},
 	)
 	hold := q.d.HoldPrompt(q.path)
 	q.call(omorpc.Prompt{SessionID: q.rpc, Message: "run"})
@@ -153,6 +154,7 @@ func (q *queueTest) finishRun(hold func()) {
 	hold()
 	q.expectEvent(EventAgentStart)
 	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventAgentSettled)
 }
 
 // TestDaemonQueueInitialStateAndFollowUp: a fresh session's queue is empty,
@@ -274,6 +276,79 @@ func TestDaemonQueueSteerDuringRunAbortAndClear(t *testing.T) {
 // TestDaemonQueueFollowUpConsumedOneAtATime: after a run's agent_end the
 // mock consumes exactly ONE head follow-up item as the next run, emitting
 // queue_update; the remaining item stays queued.
+func TestDaemonQueueOrderedByEnqueueOrderAcrossQueues(t *testing.T) {
+	q := newQueueTest(t)
+	hold := q.holdAndStartRun()
+
+	q.call(omorpc.FollowUp{SessionID: q.rpc, Message: "f1"})
+	q.expectQueueUpdate()
+	q.call(omorpc.Steer{SessionID: q.rpc, Message: "s1"})
+	q.expectQueueUpdate()
+	q.call(omorpc.FollowUp{SessionID: q.rpc, Message: "f2"})
+	q.expectQueueUpdate()
+
+	st := q.state()
+	want := []omorpc.QueuedMessage{
+		{Text: "f1", Mode: "followUp", EnqueueOrder: 1},
+		{Text: "s1", Mode: "steer", EnqueueOrder: 2},
+		{Text: "f2", Mode: "followUp", EnqueueOrder: 3},
+	}
+	if len(st.Ordered) != len(want) {
+		t.Fatalf("ordered = %+v, want %+v", st.Ordered, want)
+	}
+	for i := range want {
+		if st.Ordered[i] != want[i] {
+			t.Fatalf("ordered[%d] = %+v, want %+v", i, st.Ordered[i], want[i])
+		}
+	}
+	hold()
+	q.expectEvent(EventAgentStart)
+	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventAgentSettled)
+}
+
+func TestDaemonQueueNonterminalScriptDoesNotConsumeFollowUp(t *testing.T) {
+	q := newQueueTest(t)
+	q.call(omorpc.FollowUp{SessionID: q.rpc, Message: "f1"})
+	q.expectQueueUpdate()
+	q.d.SetPromptScript(q.path, map[string]any{"type": EventMessageDelta, "delta": "partial"})
+	q.call(omorpc.Prompt{SessionID: q.rpc, Message: "run"})
+	q.expectEvent(EventMessageDelta)
+
+	if msgs := q.followUpMessages(); len(msgs) != 1 || msgs[0] != "f1" {
+		t.Fatalf("follow-up after nonterminal script = %v, want [f1]", msgs)
+	}
+	if st := q.state(); st.PendingMessageCount != 1 {
+		t.Fatalf("pending after nonterminal script = %d, want 1", st.PendingMessageCount)
+	}
+}
+
+func TestDaemonQueueSettlesOnlyAfterAgentSettled(t *testing.T) {
+	q := newQueueTest(t)
+	q.call(omorpc.FollowUp{SessionID: q.rpc, Message: "f1"})
+	q.expectQueueUpdate()
+	q.d.SetPromptScript(q.path,
+		map[string]any{"type": EventAgentStart},
+		map[string]any{"type": EventAgentEnd},
+		map[string]any{"type": EventMessageDelta, "delta": "after end"},
+		map[string]any{"type": EventAgentSettled},
+	)
+	q.call(omorpc.Prompt{SessionID: q.rpc, Message: "run"})
+	q.expectEvent(EventAgentStart)
+	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventMessageDelta)
+	// No queue_update may occur before the true terminal marker; expectEvent
+	// reads the stream in order, so settlement must be observed next.
+	q.expectEvent(EventAgentSettled)
+
+	qu := q.expectQueueUpdate()
+	if len(qu.FollowUp) != 0 || qu.PendingMessageCount != 0 {
+		t.Fatalf("settlement queue_update = %+v, want empty queue", qu)
+	}
+	q.expectEvent(EventAgentStart)
+	q.expectEvent(EventAgentEnd)
+}
+
 func TestDaemonQueueFollowUpConsumedOneAtATime(t *testing.T) {
 	q := newQueueTest(t)
 

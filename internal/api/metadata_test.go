@@ -13,6 +13,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
@@ -43,6 +44,39 @@ func newChatCreateTestServer(t *testing.T) (*Server, *testMetadataStore, cursors
 	server := New(context.Background(), &config.Config{Root: root}, st, sessions, nil, wsbridge.Unavailable("test"), logger)
 	return server, &testMetadataStore{st}, ws
 }
+func TestDeleteChatRemovesOwnedQueueFromDisk(t *testing.T) {
+	server, store, ws := newChatCreateTestServer(t)
+	chat := cursorstore.Chat{ID: "chat-delete-queue", WorkspaceID: ws.ID, CWD: ws.Path, Name: "delete"}
+	if err := store.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	queuePath := filepath.Join(t.TempDir(), "queue-v1.json")
+	queue, err := sendqueue.Load(queuePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := queue.Append(chat.ID, sendqueue.Item{Text: "unsent", Images: []map[string]string{{"data": "image"}}}); err != nil {
+		t.Fatal(err)
+	}
+	server.queue = queue
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces/"+ws.ID+"/chats/"+chat.ID, nil)
+	req.SetPathValue("wsId", ws.ID)
+	req.SetPathValue("chatId", chat.ID)
+	rec := httptest.NewRecorder()
+	server.handleDeleteChat(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	restarted, err := sendqueue.Load(queuePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.Snapshot(chat.ID); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("chat queue survived deletion: %+v", got)
+	}
+}
+
 func TestProviderListIsDaemonBackedOmoOnly(t *testing.T) {
 	s, _, _ := newChatCreateTestServer(t)
 	req, rec := httptest.NewRequest(http.MethodGet, "/api/providers", nil), httptest.NewRecorder()

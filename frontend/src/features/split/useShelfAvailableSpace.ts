@@ -6,6 +6,7 @@ export const TRANSCRIPT_MIN_BAND_PX = 120;
 const MEASURED_INPUT_SELECTOR = [
   ".th-chat-input",
   ".th-chat-status",
+  ".th-queue",
   ".th-activity-bar-row",
   ".th-goal-panel",
   ".th-activity-panel",
@@ -30,7 +31,8 @@ function outerHeight(element: Element | null): number {
  */
 export function computeShelfAvailableSpace(column: HTMLElement, selfPanel: Element | null): number {
   let fixed = outerHeight(column.querySelector(".th-chat-input"))
-    + outerHeight(column.querySelector(".th-chat-status"));
+    + outerHeight(column.querySelector(".th-chat-status"))
+    + outerHeight(column.querySelector(".th-queue"));
 
   for (const bar of column.querySelectorAll(".th-activity-bar-row")) {
     fixed += outerHeight(bar);

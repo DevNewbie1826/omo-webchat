@@ -572,6 +572,62 @@ describe("ActivityShelf resize", () => {
       expect(shelf.style.flexShrink).toBe("");
     });
 
+    it("recomputes the clamp when the queue slot appears, grows, expands, collapses, and disappears", () => {
+      const fixture = mountInColumn();
+      window.localStorage.setItem(STORAGE_KEY, "450");
+      renderShelf();
+      openShelf();
+      fixtureRects(fixture);
+      const observer = HeadroomResizeObserver.instances.at(-1);
+      observer?.fireAt(fixture.column, 800);
+      // 800 − 120 − 24 − 30 − 30 − 120 = 476 available; the 60vh cap wins.
+      expect(panelOf().style.maxHeight).toBe(`${PANEL_MAX}px`);
+
+      // A collapsed queue appears between the shelves and the composer.
+      const queue = document.createElement("section");
+      queue.className = "th-queue";
+      fixture.column.insertBefore(queue, fixture.status);
+      mockRect(queue, 28);
+      ShelfMutationObserver.instances.at(-1)?.fire();
+      expect(observer?.observed).toContain(queue);
+      // 476 − 28 queue = 448 available, below the 60vh cap.
+      expect(panelOf().style.maxHeight).toBe("448px");
+
+      // The queue grows (queued rows) without a column resize.
+      mockRect(queue, 100);
+      observer?.fireAt(queue, 100);
+      expect(panelOf().style.maxHeight).toBe("376px");
+
+      // Expanding mounts a body inside the slot: the mutation refreshes the
+      // measured set and the larger slot height feeds the clamp.
+      const body = document.createElement("div");
+      body.className = "th-queue-body";
+      queue.append(body);
+      mockRect(queue, 220);
+      ShelfMutationObserver.instances.at(-1)?.fire();
+      expect(panelOf().style.maxHeight).toBe("256px");
+
+      // Collapsing unmounts the body and the slot shrinks again.
+      body.remove();
+      mockRect(queue, 28);
+      ShelfMutationObserver.instances.at(-1)?.fire();
+      expect(panelOf().style.maxHeight).toBe("448px");
+
+      // The queue empties and the slot disappears entirely.
+      queue.remove();
+      ShelfMutationObserver.instances.at(-1)?.fire();
+      expect(observer?.observed).not.toContain(queue);
+      expect(panelOf().style.maxHeight).toBe(`${PANEL_MAX}px`);
+    });
+
+    it("bounds the expanded queue body with an internal scrollport", () => {
+      const css = readFileSync("src/styles/chat-pane.css", "utf8");
+      const rule = css.match(/\.th-queue-body\s*\{[^}]*\}/)?.[0] ?? "";
+      expect(rule).not.toBe("");
+      expect(rule).toMatch(/max-height:/);
+      expect(rule).toMatch(/overflow:\s*auto/);
+    });
+
     it("never applies a clamp without a chat column (standalone render keeps CSS caps)", () => {
       renderShelf();
       openShelf();
