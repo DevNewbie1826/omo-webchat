@@ -642,3 +642,64 @@ func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *t
 		}
 	}
 }
+
+func TestFailedWorkspaceScanPreservesDiscoveredObservation(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+
+	// A fresh sighting is recorded while a dangling stored chat gates the cwd.
+	dangling := cursorstore.Chat{ID: "chat-dangling", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "missing.jsonl"), Name: "dangling", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(dangling); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-kept", "Kept", fixedNow)
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-dangling" {
+		t.Fatalf("fresh session must stay hidden within the window: %+v", page.Items)
+	}
+
+	// Force a genuine scan failure (not a valid empty workspace): the
+	// sessions directory becomes a regular file, so ReadDir fails with
+	// ENOTDIR and the completed-scan contract must not apply.
+	sessionsDir := filepath.Join(agent, "sessions", sessionDirNameForCwd(ws.Path))
+	if err := os.RemoveAll(sessionsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionsDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	midWindow := fixedNow.Add(DiscoveredStabilityWindow / 2)
+	now = func() time.Time { return midWindow }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-dangling" {
+		t.Fatalf("failed scan must not expose or invent rows: %+v", page.Items)
+	}
+
+	// Restore the session with a FRESH mtime beside the dangling chat. The
+	// failed scan must have preserved the original sighting, so once the
+	// window elapses from that sighting the session becomes visible despite
+	// its fresh mtime - a successful empty scan would have reset the tracker
+	// and kept it hidden instead.
+	restored := fixedNow.Add(DiscoveredStabilityWindow/2 + time.Second)
+	now = func() time.Time { return restored }
+	if err := os.Remove(sessionsDir); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-kept", "Kept", restored)
+
+	settled := fixedNow.Add(DiscoveredStabilityWindow + 2*time.Second)
+	now = func() time.Time { return settled }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	var discovered *sessionHistoryItem
+	for i := range page.Items {
+		if page.Items[i].ID == "disk-kept" {
+			discovered = &page.Items[i]
+		}
+	}
+	if discovered == nil || discovered.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("failed scan must preserve the prior sighting so the restored session becomes stable: %+v", page.Items)
+	}
+}
