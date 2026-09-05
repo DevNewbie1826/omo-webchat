@@ -163,7 +163,12 @@ func (s *Server) handleDeleteChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.chatLifecycleMu.Lock()
-	err = s.cursors.DeleteChat(id)
+	if s.queue != nil {
+		err = s.queue.Delete(id)
+	}
+	if err == nil {
+		err = s.cursors.DeleteChat(id)
+	}
 	delete(s.chatDeleting, id)
 	s.chatLifecycleMu.Unlock()
 	if err != nil && !errors.Is(err, cursorstore.ErrNotFound) {

@@ -136,6 +136,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 		ChatVersion: func(id string) uint64 { return apiServer.chatLifecycleVersion(id) }})
 	sessions := auth.NewSessionStore(ctx, cfg.Password, logger)
 	apiServer = New(ctx, cfg, cursors, sessions, manager, bridge, logger)
+	apiServer.queue = queue
 
 	var cleanup sync.Once
 	cleanupAll := func() {

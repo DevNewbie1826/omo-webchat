@@ -17,6 +17,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
@@ -35,6 +36,7 @@ type workspaceDeleteHarness struct {
 	server  *Server
 	store   *cursorstore.Store
 	manager *session.Manager
+	queue   *sendqueue.Store
 	daemon  *omorpctest.Daemon
 	ws      cursorstore.Workspace
 	chats   []cursorstore.Chat
@@ -64,9 +66,14 @@ func newWorkspaceDeleteHarness(t *testing.T, count int) *workspaceDeleteHarness 
 		t.Fatal(err)
 	}
 	manager := session.NewManager(session.Config{Client: client, Store: (*wsbridge.CursorStore)(store)})
+	queue, err := sendqueue.Load(filepath.Join(dir, "queue-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := New(context.Background(), &config.Config{Root: dir}, store, auth.NewSessionStore(t.Context(), "pw", logger), manager, wsbridge.Unavailable("test"), logger)
-	h := &workspaceDeleteHarness{server: server, store: store, manager: manager, daemon: d, ws: ws}
+	server.queue = queue
+	h := &workspaceDeleteHarness{server: server, store: store, manager: manager, queue: queue, daemon: d, ws: ws}
 	for i := 0; i < count; i++ {
 		chat := cursorstore.Chat{ID: "chat-" + itoa(i+1), WorkspaceID: ws.ID, CWD: dir, Name: "chat", CreatedAt: int64(i + 1)}
 		if err := store.SaveChat(chat); err != nil {
@@ -95,6 +102,30 @@ func (h *workspaceDeleteHarness) delete(ctx context.Context) *httptest.ResponseR
 	rec := httptest.NewRecorder()
 	h.server.handleDeleteWorkspace(rec, req)
 	return rec
+}
+
+func TestDeleteWorkspaceRemovesOwnedQueuesFromDisk(t *testing.T) {
+	h := newWorkspaceDeleteHarness(t, 2)
+	for _, chat := range h.chats {
+		if _, _, err := h.queue.Append(chat.ID, sendqueue.Item{Text: "unsent"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuePath := filepath.Join(h.ws.Path, "queue-v1.json")
+
+	rec := h.delete(context.Background())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	restarted, err := sendqueue.Load(queuePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chat := range h.chats {
+		if got := restarted.Snapshot(chat.ID); got.Dispatching != nil || len(got.Items) != 0 {
+			t.Fatalf("queue for %s survived workspace deletion: %+v", chat.ID, got)
+		}
+	}
 }
 
 func TestDeleteWorkspaceStopsLiveUnsupportedProviderSession(t *testing.T) {

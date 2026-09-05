@@ -17,6 +17,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
@@ -33,6 +34,7 @@ type Server struct {
 	cursors  *cursorstore.Store
 	sessions *auth.SessionStore
 	manager  *session.Manager
+	queue    *sendqueue.Store
 	bridge   http.Handler
 	logger   *slog.Logger
 	ctx      context.Context

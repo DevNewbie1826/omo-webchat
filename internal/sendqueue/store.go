@@ -16,22 +16,25 @@ import (
 var ErrItemNotFound = errors.New("sendqueue: item not found")
 
 type Item struct {
-	ID        string              `json:"id"`
-	Text      string              `json:"text"`
-	HasImage  bool                `json:"hasImage"`
-	CreatedAt int64               `json:"createdAt"`
-	RequestID string              `json:"requestId,omitempty"`
-	Images    []map[string]string `json:"images,omitempty"`
+	ID         string              `json:"id"`
+	Text       string              `json:"text"`
+	HasImage   bool                `json:"hasImage"`
+	CreatedAt  int64               `json:"createdAt"`
+	RequestID  string              `json:"requestId,omitempty"`
+	DeliveryID string              `json:"deliveryId,omitempty"`
+	Images     []map[string]string `json:"images,omitempty"`
 }
 
 type Snapshot struct {
-	Revision int64
-	Items    []Item
+	Revision    int64
+	Items       []Item
+	Dispatching *Item
 }
 
 type chatQueue struct {
-	Revision int64  `json:"revision"`
-	Items    []Item `json:"items"`
+	Revision    int64  `json:"revision"`
+	Items       []Item `json:"items"`
+	Dispatching *Item  `json:"dispatching,omitempty"`
 }
 
 type diskState struct {
@@ -40,10 +43,10 @@ type diskState struct {
 }
 
 type Store struct {
-	mu      sync.Mutex
-	path    string
-	chats   map[string]chatQueue
-	lastErr error
+	mu          sync.Mutex
+	path        string
+	chats       map[string]chatQueue
+	persistHook func(stage string) error
 }
 
 func Load(path string) (*Store, error) {
@@ -67,12 +70,13 @@ func Load(path string) (*Store, error) {
 	}
 	for chatID, queue := range s.chats {
 		queue.Items = cloneItems(queue.Items)
+		queue.Dispatching = cloneItemPtr(queue.Dispatching)
 		s.chats[chatID] = queue
 	}
 	return s, nil
 }
 
-func (s *Store) Append(chatID string, item Item) (string, int64) {
+func (s *Store) Append(chatID string, item Item) (string, int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
@@ -90,11 +94,9 @@ func (s *Store) Append(chatID string, item Item) (string, int64) {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return "", prior.Revision
+		return "", prior.Revision, fmt.Errorf("append send queue: %w", err)
 	}
-	s.lastErr = nil
-	return item.ID, queue.Revision
+	return item.ID, queue.Revision, nil
 }
 
 func (s *Store) Remove(chatID, id string) error {
@@ -111,10 +113,8 @@ func (s *Store) Remove(chatID, id string) error {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return err
+		return fmt.Errorf("remove from send queue: %w", err)
 	}
-	s.lastErr = nil
 	return nil
 }
 
@@ -147,39 +147,108 @@ func (s *Store) Move(chatID, id string, toIndex int) error {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return err
+		return fmt.Errorf("move send queue item: %w", err)
 	}
-	s.lastErr = nil
 	return nil
 }
 
-func (s *Store) Clear(chatID string) {
+func (s *Store) Clear(chatID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
-	if len(queue.Items) == 0 {
-		s.lastErr = nil
-		return
+	if len(queue.Items) == 0 && queue.Dispatching == nil {
+		return nil
 	}
 	prior := queue
 	queue.Items = []Item{}
+	queue.Dispatching = nil
 	queue.Revision++
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return
+		return fmt.Errorf("clear send queue: %w", err)
 	}
-	s.lastErr = nil
+	return nil
 }
 
-func (s *Store) ClaimHead(chatID string) (Item, bool) {
+// BeginDispatch durably reserves the queue head for delivery. A dispatch left
+// behind by a process exit is returned unchanged, including its stable delivery
+// identity, so restart recovery retries exactly that item before later entries.
+func (s *Store) BeginDispatch(chatID string) (Item, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queue := s.chats[chatID]
+	if queue.Dispatching != nil {
+		return cloneItem(*queue.Dispatching), true, nil
+	}
+	if len(queue.Items) == 0 {
+		return Item{}, false, nil
+	}
+	prior := queue
+	item := cloneItem(queue.Items[0])
+	if item.DeliveryID == "" {
+		item.DeliveryID = newID()
+	}
+	queue.Items = cloneItems(queue.Items[1:])
+	queue.Dispatching = cloneItemPtr(&item)
+	queue.Revision++
+	s.chats[chatID] = queue
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return Item{}, false, fmt.Errorf("begin send queue dispatch: %w", err)
+	}
+	return item, true, nil
+}
+
+// CompleteDispatch removes a dispatch only after the provider accepted it.
+func (s *Store) CompleteDispatch(chatID, deliveryID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queue := s.chats[chatID]
+	if queue.Dispatching == nil || queue.Dispatching.DeliveryID != deliveryID {
+		return queue.Revision, ErrItemNotFound
+	}
+	prior := queue
+	queue.Dispatching = nil
+	queue.Revision++
+	s.chats[chatID] = queue
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return prior.Revision, fmt.Errorf("complete send queue dispatch: %w", err)
+	}
+	return queue.Revision, nil
+}
+
+// RestoreDispatch puts a definitely-unsent dispatch back before every item
+// admitted since it was reserved.
+func (s *Store) RestoreDispatch(chatID, deliveryID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queue := s.chats[chatID]
+	if queue.Dispatching == nil || queue.Dispatching.DeliveryID != deliveryID {
+		return queue.Revision, ErrItemNotFound
+	}
+	prior := queue
+	item := cloneItem(*queue.Dispatching)
+	queue.Dispatching = nil
+	queue.Items = append([]Item{item}, cloneItems(queue.Items)...)
+	queue.Revision++
+	s.chats[chatID] = queue
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return prior.Revision, fmt.Errorf("restore send queue dispatch: %w", err)
+	}
+	return queue.Revision, nil
+}
+
+// ClaimHead and RestoreHead remain for callers that need a destructive queue
+// pop. Delivery code must use the dispatch transition above.
+func (s *Store) ClaimHead(chatID string) (Item, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
 	if len(queue.Items) == 0 {
-		return Item{}, false
+		return Item{}, false, nil
 	}
 	prior := queue
 	item := cloneItem(queue.Items[0])
@@ -188,15 +257,12 @@ func (s *Store) ClaimHead(chatID string) (Item, bool) {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return Item{}, false
+		return Item{}, false, fmt.Errorf("claim send queue head: %w", err)
 	}
-	s.lastErr = nil
-	return item, true
+	return item, true, nil
 }
 
-// RestoreHead puts a failed flush back before every item admitted since it was claimed.
-func (s *Store) RestoreHead(chatID string, item Item) int64 {
+func (s *Store) RestoreHead(chatID string, item Item) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
@@ -206,15 +272,29 @@ func (s *Store) RestoreHead(chatID string, item Item) int64 {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return prior.Revision
+		return prior.Revision, fmt.Errorf("restore send queue head: %w", err)
 	}
-	s.lastErr = nil
-	return queue.Revision
+	return queue.Revision, nil
+}
+
+// Delete removes all state owned by one chat.
+func (s *Store) Delete(chatID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior, ok := s.chats[chatID]
+	if !ok {
+		return nil
+	}
+	delete(s.chats, chatID)
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return fmt.Errorf("delete send queue: %w", err)
+	}
+	return nil
 }
 
 // Bump advances the shared queue-frame revision for an engine-side change.
-func (s *Store) Bump(chatID string) int64 {
+func (s *Store) Bump(chatID string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
@@ -223,24 +303,23 @@ func (s *Store) Bump(chatID string) int64 {
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
 		s.chats[chatID] = prior
-		s.lastErr = err
-		return prior.Revision
+		return prior.Revision, fmt.Errorf("bump send queue revision: %w", err)
 	}
-	s.lastErr = nil
-	return queue.Revision
+	return queue.Revision, nil
 }
 
 func (s *Store) Snapshot(chatID string) Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
-	return Snapshot{Revision: queue.Revision, Items: cloneItems(queue.Items)}
+	return Snapshot{Revision: queue.Revision, Items: cloneItems(queue.Items), Dispatching: cloneItemPtr(queue.Dispatching)}
 }
 
-func (s *Store) LastError() error {
+func (s *Store) HasBacklog(chatID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.lastErr
+	queue := s.chats[chatID]
+	return queue.Dispatching != nil || len(queue.Items) != 0
 }
 
 func (s *Store) persistLocked() error {
@@ -257,25 +336,63 @@ func (s *Store) persistLocked() error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
+	closeTempOnFailure := func(op string, opErr error) error {
+		if closeErr := tmp.Close(); closeErr != nil {
+			opErr = errors.Join(opErr, fmt.Errorf("close send queue temp file: %w", closeErr))
+		}
+		return fmt.Errorf("%s send queue: %w", op, opErr)
+	}
 	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
+		return closeTempOnFailure("chmod", err)
+	}
+	if err := s.runPersistHook("write"); err != nil {
+		return closeTempOnFailure("write", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write send queue: %w", err)
+		return closeTempOnFailure("write", err)
+	}
+	if err := s.runPersistHook("sync-file"); err != nil {
+		return closeTempOnFailure("sync", err)
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("sync send queue: %w", err)
+		return closeTempOnFailure("sync", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close send queue: %w", err)
 	}
+	if err := s.runPersistHook("rename"); err != nil {
+		return fmt.Errorf("replace send queue: %w", err)
+	}
 	if err := os.Rename(tmpName, s.path); err != nil {
 		return fmt.Errorf("replace send queue: %w", err)
 	}
+	dir, err := os.Open(filepath.Dir(s.path))
+	if err != nil {
+		return fmt.Errorf("open send queue directory: %w", err)
+	}
+	closeDirOnFailure := func(opErr error) error {
+		if closeErr := dir.Close(); closeErr != nil {
+			opErr = errors.Join(opErr, fmt.Errorf("close send queue directory: %w", closeErr))
+		}
+		return fmt.Errorf("sync send queue directory: %w", opErr)
+	}
+	if err := s.runPersistHook("sync-dir"); err != nil {
+		return closeDirOnFailure(err)
+	}
+	if err := dir.Sync(); err != nil {
+		return closeDirOnFailure(err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("close send queue directory: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) runPersistHook(stage string) error {
+	if s.persistHook == nil {
+		return nil
+	}
+	return s.persistHook(stage)
 }
 
 func itemIndex(items []Item, id string) int {
@@ -298,6 +415,14 @@ func cloneItems(items []Item) []Item {
 func cloneItem(item Item) Item {
 	item.Images = cloneImages(item.Images)
 	return item
+}
+
+func cloneItemPtr(item *Item) *Item {
+	if item == nil {
+		return nil
+	}
+	cloned := cloneItem(*item)
+	return &cloned
 }
 
 func cloneImages(images []map[string]string) []map[string]string {

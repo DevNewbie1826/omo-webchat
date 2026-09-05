@@ -116,6 +116,7 @@ type Handler struct {
 	cfg                Config
 	upgrader           *gws.Upgrader
 	conns              sync.Map // *gws.Conn -> *connection
+	dispatching        sync.Map // chat ID -> delivery ID admitted by this process
 	shutdownGeneration atomic.Uint64
 	shuttingDown       atomic.Bool
 }
@@ -215,7 +216,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, cancel := context.WithCancel(h.cfg.Context)
-	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel, work: make(chan []byte, 64)}
+	c := &connection{bridge: h, socket: sock, ctx: ctx, cancel: cancel, work: make(chan []byte, 64), queueWork: make(chan queuePublication, 64)}
 	c.sub = newSubscriber(c)
 	h.conns.Store(sock, c)
 	if h.shuttingDown.Load() || h.cfg.Context.Err() != nil || h.shutdownGeneration.Load() != generation {
@@ -223,6 +224,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go c.run()
+	go c.runQueuePublications()
 	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.cfg.ServerVersion}); err != nil {
 		c.shutdown()
 		return
@@ -265,6 +267,11 @@ type chatSendOperation struct {
 	requestID         string
 }
 
+type queuePublication struct {
+	binding queryBinding
+	frame   wscontract.QueueFrame
+}
+
 type connection struct {
 	bridge            *Handler
 	socket            *gws.Conn
@@ -285,6 +292,7 @@ type connection struct {
 	activity          *activitySubscription
 	hello             bool
 	work              chan []byte
+	queueWork         chan queuePublication
 	closed            atomic.Bool
 }
 
@@ -420,6 +428,26 @@ func (c *connection) run() {
 		case raw := <-c.work:
 			c.route(raw)
 		}
+	}
+}
+
+func (c *connection) runQueuePublications() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case publication := <-c.queueWork:
+			_ = c.writeIfCurrent(publication.binding, publication.frame)
+		}
+	}
+}
+
+func (c *connection) enqueueQueuePublication(publication queuePublication) {
+	select {
+	case c.queueWork <- publication:
+	case <-c.ctx.Done():
+	default:
+		go c.shutdown()
 	}
 }
 
@@ -640,16 +668,20 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 		return
 	}
 	run := sess.RunSnapshot()
-	if op.kind != "steer" && (run.Streaming || run.Compacting) && c.bridge.cfg.SendQueue != nil {
-		id, _ := c.bridge.cfg.SendQueue.Append(op.chatID, sendqueue.Item{Text: op.message, Images: op.images, RequestID: op.requestID})
-		if id == "" {
+	backlog := c.bridge.cfg.SendQueue != nil && c.bridge.cfg.SendQueue.HasBacklog(op.chatID)
+	if op.kind != "steer" && (run.Streaming || run.Compacting || backlog) && c.bridge.cfg.SendQueue != nil {
+		_, _, err := c.bridge.cfg.SendQueue.Append(op.chatID, sendqueue.Item{Text: op.message, Images: op.images, RequestID: op.requestID})
+		if err != nil {
 			release()
-			c.sendError("persist_failed", c.bridge.cfg.SendQueue.LastError().Error(), "chat.send", op.requestID)
+			c.sendError("persist_failed", err.Error(), "chat.send", op.requestID)
 			return
 		}
 		release()
 		c.sendAck("chat.send", op.requestID)
 		c.bridge.publishQueue(op.chatID, sess)
+		if backlog && !run.Streaming && !run.Compacting {
+			c.bridge.scheduleIdleDrain(op.chatID, sess)
+		}
 		return
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
@@ -762,6 +794,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 		op.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", op.chatID, "error", touchErr)
 	}
 	op.bridge.publishQueueToConnection(op.conn, acquired)
+	op.bridge.scheduleIdleDrain(op.chatID, acquired)
 	op.conn.queryState(ctx, acquired)
 	op.conn.queryModels(ctx, acquired)
 	op.conn.queryCommands(ctx, acquired)
@@ -1007,6 +1040,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
 		}
 		c.bridge.publishQueueToConnection(c, acquired)
+		c.bridge.scheduleIdleDrain(f.ChatID, acquired)
 		c.queryState(ctx, acquired)
 		c.queryModels(ctx, acquired)
 		c.queryCommands(ctx, acquired)
@@ -1127,7 +1161,10 @@ func (c *connection) handleQueueClear(ctx context.Context, chatID string, sess *
 			return
 		}
 		if c.bridge.cfg.SendQueue != nil {
-			c.bridge.cfg.SendQueue.Bump(chatID)
+			if _, err := c.bridge.cfg.SendQueue.Bump(chatID); err != nil {
+				c.sendError("persist_failed", err.Error(), f.Type, deref(f.RequestID))
+				return
+			}
 		}
 	}
 	if f.Scope == "webchat" || f.Scope == "all" {
@@ -1135,8 +1172,7 @@ func (c *connection) handleQueueClear(ctx context.Context, chatID string, sess *
 			c.sendError("provider_error", "send queue is not configured", f.Type, deref(f.RequestID))
 			return
 		}
-		c.bridge.cfg.SendQueue.Clear(chatID)
-		if err := c.bridge.cfg.SendQueue.LastError(); err != nil {
+		if err := c.bridge.cfg.SendQueue.Clear(chatID); err != nil {
 			c.sendError("persist_failed", err.Error(), f.Type, deref(f.RequestID))
 			return
 		}
@@ -1178,12 +1214,31 @@ func (h *Handler) publishQueue(chatID string, sess *session.Session) {
 	if h.cfg.SendQueue == nil {
 		return
 	}
+	if h.cfg.Manager == nil {
+		h.publishQueueNow(chatID, sess)
+		return
+	}
+	h.cfg.Manager.EnqueueChat(chatID, func() { h.publishQueueNow(chatID, sess) })
+}
+
+// publishQueueNow takes one generation snapshot while the chat sequencer is
+// owned, then hands the same immutable frame to each connection's independent
+// ordered writer. A blocked socket cannot delay another socket or another chat.
+func (h *Handler) publishQueueNow(chatID string, sess *session.Session) {
+	if h.cfg.Manager != nil {
+		if current, ok := h.cfg.Manager.Get(chatID); ok {
+			sess = current
+		}
+	}
+	frame := h.queueFrame(chatID, sess)
 	h.conns.Range(func(_, value any) bool {
 		conn := value.(*connection)
 		_, bound, generation, current := conn.bindingSnapshot()
 		if bound == chatID && current != nil {
-			claim := queryBinding{chatID: bound, generation: generation, session: current}
-			_ = conn.writeIfCurrent(claim, h.queueFrame(chatID, current))
+			conn.enqueueQueuePublication(queuePublication{
+				binding: queryBinding{chatID: bound, generation: generation, session: current},
+				frame:   frame,
+			})
 		}
 		return true
 	})
@@ -1195,16 +1250,22 @@ func (h *Handler) publishQueueToConnection(conn *connection, sess *session.Sessi
 	}
 	binding, ok := conn.beginQuery(sess)
 	if ok {
-		_ = conn.writeIfCurrent(binding, h.queueFrame(binding.chatID, sess))
+		conn.enqueueQueuePublication(queuePublication{binding: binding, frame: h.queueFrame(binding.chatID, sess)})
 	}
 }
 
 // SessionQueueUpdated publishes the latest engine-owned queue mirror.
 func (h *Handler) SessionQueueUpdated(chatID string, sess *session.Session) {
-	if h.cfg.SendQueue != nil {
-		h.cfg.SendQueue.Bump(chatID)
+	if h.cfg.SendQueue == nil || h.cfg.Manager == nil {
+		return
 	}
-	h.publishQueue(chatID, sess)
+	h.cfg.Manager.EnqueueChat(chatID, func() {
+		if _, err := h.cfg.SendQueue.Bump(chatID); err != nil {
+			h.cfg.Logger.Error("persisting send queue revision", "chat_id", chatID, "error", err)
+			return
+		}
+		h.publishQueueNow(chatID, sess)
+	})
 }
 
 // SessionRunSettled schedules one persistent queue head for the next run.
@@ -1215,29 +1276,100 @@ func (h *Handler) SessionRunSettled(chatID string, sess *session.Session) {
 	h.cfg.Manager.EnqueueChat(chatID, func() { h.flushHead(chatID, sess) })
 }
 
+func (h *Handler) scheduleIdleDrain(chatID string, sess *session.Session) {
+	if h.cfg.SendQueue == nil || h.cfg.Manager == nil || !h.cfg.SendQueue.HasBacklog(chatID) {
+		return
+	}
+	h.cfg.Manager.EnqueueChat(chatID, func() { h.flushHead(chatID, sess) })
+}
+
 func (h *Handler) flushHead(chatID string, sess *session.Session) {
+	if _, inFlight := h.dispatching.Load(chatID); inFlight {
+		return
+	}
 	if current, ok := h.cfg.Manager.Get(chatID); ok {
 		sess = current
 	}
-	item, ok := h.cfg.SendQueue.ClaimHead(chatID)
+	if run := sess.RunSnapshot(); run.Streaming || run.Compacting {
+		return
+	}
+	wasDispatching := h.cfg.SendQueue.Snapshot(chatID).Dispatching != nil
+	item, ok, err := h.cfg.SendQueue.BeginDispatch(chatID)
+	if err != nil {
+		h.cfg.Logger.Error("beginning send queue dispatch", "chat_id", chatID, "error", err)
+		return
+	}
 	if !ok {
 		return
 	}
-	restored := atomic.Bool{}
-	restore := func(err error) {
-		if err == nil || !restored.CompareAndSwap(false, true) {
+	h.dispatching.Store(chatID, item.DeliveryID)
+	var retryToken session.DetachedSendRetryToken
+	if wasDispatching {
+		if token, prepared := sess.PrepareDetachedSendRetry(item.RequestID, false); prepared {
+			retryToken = token
+			defer sess.RetireDetachedSendRetry(retryToken)
+		}
+	}
+	complete := func(completionErr error) {
+		if completionErr == nil {
+			_, completeErr := h.cfg.SendQueue.CompleteDispatch(chatID, item.DeliveryID)
+			if completeErr != nil {
+				h.cfg.Logger.Error("completing send queue dispatch", "chat_id", chatID, "item_id", item.ID, "error", completeErr)
+				h.publishDispatchUncertain(chatID, item)
+			} else {
+				h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+				h.publishQueue(chatID, sess)
+				h.scheduleIdleDrain(chatID, sess)
+			}
+			sess.CompleteDetachedSend(item.RequestID, nil)
 			return
 		}
-		h.cfg.SendQueue.RestoreHead(chatID, item)
-		h.publishQueue(chatID, sess)
-		h.publishChatFrame(chatID, sessionErrorFrame(err, "chat.send", item.RequestID, chatID))
+		if deliveryUncertain(completionErr) {
+			h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+			h.publishDispatchUncertain(chatID, item)
+			return
+		}
+		_, restoreErr := h.cfg.SendQueue.RestoreDispatch(chatID, item.DeliveryID)
+		h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+		if restoreErr != nil {
+			h.cfg.Logger.Error("restoring rejected send queue dispatch", "chat_id", chatID, "item_id", item.ID, "error", restoreErr)
+		} else {
+			h.publishQueue(chatID, sess)
+		}
+		h.publishChatFrame(chatID, sessionErrorFrame(completionErr, "chat.send", item.RequestID, chatID))
 	}
-	err := sess.SendPromptDetachedWithRequestIDAndCompletion(h.cfg.Context, item.Text, item.Images, "", restore)
+	err = sess.SendPromptDetachedWithRequestIDAndCompletion(h.cfg.Context, item.Text, item.Images, item.RequestID, complete)
 	if err != nil {
-		restore(err)
+		defer h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+		if deliveryUncertain(err) {
+			h.publishDispatchUncertain(chatID, item)
+			return
+		}
+		if _, restoreErr := h.cfg.SendQueue.RestoreDispatch(chatID, item.DeliveryID); restoreErr != nil {
+			h.cfg.Logger.Error("restoring send queue dispatch", "chat_id", chatID, "item_id", item.ID, "error", restoreErr)
+		} else {
+			h.publishQueue(chatID, sess)
+		}
+		h.publishChatFrame(chatID, sessionErrorFrame(err, "chat.send", item.RequestID, chatID))
 		return
 	}
 	h.publishQueue(chatID, sess)
+}
+
+func deliveryUncertain(err error) bool {
+	if errors.Is(err, omorpc.ErrDisconnected) || errors.Is(err, omorpc.ErrWrittenUnanswered) {
+		return true
+	}
+	var stable *omorpc.StableError
+	return !errors.As(err, &stable) && (errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed))
+}
+
+func (h *Handler) publishDispatchUncertain(chatID string, item sendqueue.Item) {
+	payload, _ := json.Marshal(map[string]any{"itemId": item.ID, "requestId": item.RequestID})
+	h.publishChatFrame(chatID, wscontract.NoticeFrame{
+		Type: "notice", SessionID: chatID, Kind: "queue_delivery_uncertain",
+		At: time.Now().UTC().Format(time.RFC3339Nano), Payload: payload,
+	})
 }
 
 func (h *Handler) publishChatFrame(chatID string, frame any) {

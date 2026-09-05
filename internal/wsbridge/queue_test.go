@@ -92,25 +92,25 @@ func TestSendDuringRunQueuesAndSettleFlushesOneHead(t *testing.T) {
 
 func TestQueueCommandsAndEngineMirror(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "queue-commands")
-	path := t.TempDir() + "/queue-v1.json"
-	queue, err := sendqueue.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, _ := queue.Append("queue-commands", sendqueue.Item{Text: "first"})
-	second, _ := queue.Append("queue-commands", sendqueue.Item{Text: "second"})
-	queue, err = sendqueue.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.bridge.cfg.SendQueue = queue
+	queue := configureSendQueue(t, h)
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "queue-commands"})
 	frames.next(t, "ready")
-	if frame := frames.next(t, "queue"); len(frame["items"].([]any)) != 2 {
-		t.Fatalf("persisted queue attach frame = %v", frame)
-	}
+	frames.next(t, "queue")
 	frames.next(t, "queue") // refreshed from get_state
+
+	first, _, err := queue.Append("queue-commands", sendqueue.Item{Text: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := queue.Append("queue-commands", sendqueue.Item{Text: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bridge.publishQueue("queue-commands", nil)
+	if frame := frames.next(t, "queue"); len(frame["items"].([]any)) != 2 {
+		t.Fatalf("queue frame = %v", frame)
+	}
 
 	writeClient(t, conn, map[string]any{"type": "chat.queue.move", "sessionId": "queue-commands", "itemId": second, "toIndex": 0, "requestId": "move"})
 	if ack := frames.next(t, "ack"); ack["command"] != "chat.queue.move" || ack["requestId"] != "move" {
@@ -149,6 +149,139 @@ func TestQueueCommandsAndEngineMirror(t *testing.T) {
 	}
 	if got := h.daemon.RequestCount(omorpc.CmdClearQueue); got != 1 {
 		t.Fatalf("clear_queue requests = %d, want 1", got)
+	}
+}
+
+func TestDispatchingHeadReattemptsOnceAfterRestartAndCarriesRequestID(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-restart")
+	path := t.TempDir() + "/queue-v1.json"
+	queue, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := queue.Append("dispatch-restart", sendqueue.Item{Text: "queued", RequestID: "browser-request"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := queue.BeginDispatch("dispatch-restart")
+	if err != nil || !ok || claimed.DeliveryID == "" {
+		t.Fatalf("begin dispatch = (%+v, %v, %v)", claimed, ok, err)
+	}
+	restarted, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bridge.cfg.SendQueue = restarted
+	release := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer release()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-restart"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("restart did not reattempt the dispatching head")
+	}
+	h.bridge.SessionRunSettled("dispatch-restart", nil)
+	releaseChat, err := h.manager.EnterChat(t.Context(), "dispatch-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseChat()
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("dispatching head requests = %d, want exactly 1", got)
+	}
+
+	release()
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) >= 3 {
+			break
+		}
+	}
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
+	frames.next(t, "run.done")
+	sess, ok := h.manager.Get("dispatch-restart")
+	if !ok {
+		t.Fatal("attached session disappeared")
+	}
+	if err := sess.SendPromptDetachedWithRequestID(t.Context(), "duplicate", nil, "browser-request"); err != nil {
+		t.Fatalf("replaying accepted browser request: %v", err)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("accepted browser request was sent again: %d prompt requests", got)
+	}
+	reloaded, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := reloaded.Snapshot("dispatch-restart"); snapshot.Dispatching != nil || len(snapshot.Items) != 0 {
+		t.Fatalf("accepted dispatch remained durable: %+v", snapshot)
+	}
+}
+
+func TestDisconnectedDispatchRemainsDurableAndPublishesNotice(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-uncertain")
+	queue := configureSendQueue(t, h)
+	if _, _, err := queue.Append("dispatch-uncertain", sendqueue.Item{Text: "possibly accepted", RequestID: "uncertain-request"}); err != nil {
+		t.Fatal(err)
+	}
+	release := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer release()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-uncertain"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("dispatch did not reach provider transport")
+	}
+	h.daemon.DropConnections()
+	if notice := frames.next(t, "notice"); notice["kind"] != "queue_delivery_uncertain" {
+		t.Fatalf("uncertain delivery notice = %v", notice)
+	}
+	if got := queue.Snapshot("dispatch-uncertain"); got.Dispatching == nil || got.Dispatching.RequestID != "uncertain-request" {
+		t.Fatalf("uncertain dispatch was not retained: %+v", got)
+	}
+}
+
+func TestIdleBacklogOrdersRestoredHeadBeforeNewPrompt(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "idle-backlog")
+	queue := configureSendQueue(t, h)
+	if _, _, err := queue.Append("idle-backlog", sendqueue.Item{Text: "A", RequestID: "request-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	releaseA := h.daemon.BlockHandler(omorpc.CmdPrompt)
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "idle-backlog"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("idle attach did not drain A")
+	}
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "idle-backlog", "requestId": "request-b",
+		"run": map[string]any{"kind": "prompt", "message": "B"},
+	})
+	nextSuccessfulSendAcks(t, frames, "request-b")
+	if got := queue.Snapshot("idle-backlog"); len(got.Items) != 1 || got.Items[0].Text != "B" {
+		t.Fatalf("new prompt did not park behind dispatching A: %+v", got)
+	}
+
+	releaseA()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("B was not dispatched after A settled")
+	}
+	var prompts []string
+	for _, request := range h.daemon.Requests() {
+		if request["type"] == omorpc.CmdPrompt {
+			prompts = append(prompts, request["message"].(string))
+		}
+	}
+	if len(prompts) != 2 || prompts[0] != "A" || prompts[1] != "B" {
+		t.Fatalf("prompt order = %v, want [A B]", prompts)
 	}
 }
 
