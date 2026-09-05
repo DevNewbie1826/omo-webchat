@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computeShelfAvailableSpace, TRANSCRIPT_MIN_BAND_PX } from "./useShelfAvailableSpace";
+import { allocateShelfSpace, computeShelfAvailableSpace, TRANSCRIPT_MIN_BAND_PX } from "./useShelfAvailableSpace";
 
 function mockHeight(element: Element, height: number): void {
   vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
@@ -29,24 +29,33 @@ describe("computeShelfAvailableSpace", () => {
     vi.restoreAllMocks();
   });
 
-  it("subtracts every fixed band, panel lifecycle peer, grip, margin, and transcript reserve", () => {
+  it("budgets fixed bands and margins without reading either rendered allocation", () => {
     const column = measured("th-chat-main", 800);
     const composer = measured("th-chat-input", 100, "5px");
     const status = measured("th-chat-status", 20);
-    const goalShelf = measured("th-goal-shelf", 0, "6px");
+    const goalShelf = measured("th-goal-shelf", 0, "9px");
     const goalBar = measured("th-activity-bar-row", 30);
-    const goalPanel = measured("th-goal-panel", 80, "3px");
+    const goalPanel = measured("th-goal-panel", 80);
     goalShelf.append(goalBar, goalPanel);
     const activityShelf = measured("th-activity-shelf", 0, "8px");
     const activityBar = measured("th-activity-bar-row", 30);
     const grip = measured("th-activity-resize", 10, "2px");
-    const selfPanel = measured("th-activity-panel", 200, "4px");
+    grip.style.marginBottom = "4px";
+    const selfPanel = measured("th-activity-panel", 200);
     activityShelf.append(activityBar, grip, selfPanel);
     column.append(composer, status, goalShelf, activityShelf);
     document.body.appendChild(column);
 
     expect(TRANSCRIPT_MIN_BAND_PX).toBe(120);
-    expect(computeShelfAvailableSpace(column, selfPanel)).toBe(382);
+    expect(computeShelfAvailableSpace(column, selfPanel)).toBe(462);
+    mockHeight(goalPanel, 140);
+    mockHeight(selfPanel, 320);
+    expect(computeShelfAvailableSpace(column, selfPanel)).toBe(462);
+    const banner = measured("th-send-error-banner", 45);
+    column.prepend(banner);
+    expect(computeShelfAvailableSpace(column, selfPanel)).toBe(417);
+    banner.remove();
+    expect(computeShelfAvailableSpace(column, selfPanel)).toBe(462);
   });
 
   it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
@@ -62,5 +71,21 @@ describe("computeShelfAvailableSpace", () => {
     // Expanded queue grows the slot; the same band shrinks the shelf budget.
     mockHeight(queue, 200);
     expect(computeShelfAvailableSpace(column, null)).toBe(336);
+  });
+});
+
+
+describe("allocateShelfSpace", () => {
+  it("allocates saved preferences together without exceeding the budget", () => {
+    expect(allocateShelfSpace(454, 174.5, 480)).toEqual({ goal: 174.5, activity: 279.5 });
+    expect(allocateShelfSpace(514, 174.5, 480)).toEqual({ goal: 174.5, activity: 339.5 });
+    expect(allocateShelfSpace(454, 174.5, 480)).toEqual({ goal: 174.5, activity: 279.5 });
+    expect(allocateShelfSpace(454, 0, 480)).toEqual({ goal: 0, activity: 454 });
+    expect(allocateShelfSpace(454, 174.5, 0)).toEqual({ goal: 174.5, activity: 0 });
+  });
+  it("collapses an unreadable goal and never assigns negative space", () => {
+    expect(allocateShelfSpace(80, 174.5, 480)).toEqual({ goal: 0, activity: 80 });
+    expect(allocateShelfSpace(-20, 174.5, 480)).toEqual({ goal: 0, activity: 0 });
+    expect(allocateShelfSpace(96, 174.5, 480)).toEqual({ goal: 48, activity: 48 });
   });
 });

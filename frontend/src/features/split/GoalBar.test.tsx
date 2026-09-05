@@ -268,7 +268,8 @@ describe("GoalBar", () => {
       expect(observer?.observed).toContain(panelOf());
       expect(observer?.observed).toContain(column.querySelector(".th-chat-input"));
       expect(observer?.observed).toContain(column.querySelector(".th-chat-status"));
-      expect(panelOf().style.maxHeight).toBe("");
+      // Registration measures immediately, without waiting for an observer.
+      expect(panelOf().style.maxHeight).toBe(`${GOAL_CAP}px`);
       // 800 − 324 = 476 available > the 40vh cap, so the cap wins.
       observer?.fire(800);
       expect(panelOf().style.maxHeight).toBe(`${GOAL_CAP}px`);
@@ -297,8 +298,9 @@ describe("GoalBar", () => {
       mockRect(column, 371);
       initialObserver?.fireAt(column, 371);
       expect(container.querySelector(".th-goal-panel")).toBeNull();
-      expect(initialObserver?.disconnected).toBe(true);
+      expect(initialObserver?.disconnected).toBe(false);
       const collapsedObserver = GoalColumnObserver.instances.at(-1);
+      expect(collapsedObserver).toBe(initialObserver);
       expect(collapsedObserver?.observed).not.toContain(firstPanel);
       const bar = container.querySelector<HTMLButtonElement>("button.th-goal-bar");
       if (!bar) throw new Error("missing goal bar button");
@@ -322,7 +324,21 @@ describe("GoalBar", () => {
       expect(bar.getAttribute("aria-expanded")).toBe("true");
     });
 
-    it("counts another expanded shelf panel in the fixed band", () => {
+    it("keeps a short intrinsic goal open instead of cycling through the floor", () => {
+      const column = mountInColumn();
+      renderBar({ objective: "short goal", status: "active" });
+      openGoal();
+      const content = container.querySelector(".th-goal-content")!;
+      mockRect(content, 18);
+      const observer = GoalColumnObserver.instances.at(-1);
+      observer?.fireAt(column, 800);
+      expect(container.querySelector(".th-goal-bar")?.getAttribute("aria-expanded")).toBe("true");
+      expect(panelOf().style.maxHeight).toBe("48px");
+      observer?.fireAt(content, 18);
+      expect(panelOf().style.maxHeight).toBe("48px");
+    });
+
+    it("never counts a peer panel allocation as a fixed band", () => {
       const column = mountInColumn();
       renderBar({ objective: "hold the line", status: "active" });
       openGoal();
@@ -331,13 +347,13 @@ describe("GoalBar", () => {
       column.appendChild(activityPanel);
       mockRect(activityPanel, 100);
       const observer = GoalColumnObserver.instances.at(-1);
-      // 800 − 324 − 100 activity panel = 376 available > the 40vh cap.
+      // Peer panels remain allocation outputs regardless of their mount position.
       observer?.fire(800);
       expect(panelOf().style.maxHeight).toBe(`${GOAL_CAP}px`);
-      // 500 − 324 − 100 = 76: above the floor, so shown clamped.
+      // 500 − 324 = 176: peer rendered height is not an input.
       mockRect(column, 500);
       observer?.fire(500);
-      expect(panelOf().style.maxHeight).toBe("76px");
+      expect(panelOf().style.maxHeight).toBe("176px");
     });
 
     it("resets the clamp state on close", () => {

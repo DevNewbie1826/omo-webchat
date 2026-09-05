@@ -69,7 +69,7 @@ describe("useChatSession paged entries", () => {
 		expect(current?.messages.map(messageText)).toEqual(["one", "two", "three"]);
 	});
 
-	it("consumes buffered cold pages when external-write is their terminal marker", () => {
+	it("discards uncommitted cold pages when external-write rejects hydration", () => {
 		act(() => {
 			deliver({ type: "entries", sessionId: "chat-1", entries: [entry("disk", "user", "from disk")], final: false });
 			deliver({
@@ -79,9 +79,56 @@ describe("useChatSession paged entries", () => {
 				message: "external write detected",
 			});
 		});
-		expect(current?.messages.map(messageText)).toEqual(["from disk"]);
-		expect(current?.historyStatus).toBe("loaded");
+		expect(current?.messages.map(messageText)).toEqual([]);
+		expect(current?.historyStatus).toBe("failed");
 		expect(current?.externalWriteDetected).toBe(true);
+	});
+
+	it.each([false, true])("preserves completed history on rejected resync (partial pages: %s)", (partial) => {
+		act(() => {
+			deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
+			deliver({ type: "entries", sessionId: "chat-1", entries: [entry("old", "user", "retained transcript")], final: true });
+		});
+		const completed = current?.messages;
+		act(() => { expect(current?.resync()).toBe(true); });
+		expect(sent.slice(-2)).toEqual([
+			{ type: "chat.close", sessionId: "chat-1" },
+			{ type: "chat.create", wsId: "workspace-1", chatId: "chat-1" },
+		]);
+		act(() => {
+			deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-2", resumed: true });
+			if (partial) deliver({ type: "entries", sessionId: "chat-1", entries: [entry("rejected", "user", "rejected disk page")], final: false });
+			deliver({ type: "error", sessionId: "chat-1", code: "external-write-detected", message: "changed" });
+		});
+		expect(current?.messages).toBe(completed);
+		expect(current?.messages.map(messageText)).toEqual(["retained transcript"]);
+		expect(current?.historyStatus).toBe("failed");
+		expect(current?.historyLoaded).toBe(false);
+		expect(current?.resyncBusy).toBe(false);
+		expect(current?.externalWriteDetected).toBe(true);
+		act(() => { expect(current?.reloadExternalWrite()).toBe(true); });
+		act(() => {
+			deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-3", resumed: true });
+			deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+		});
+		expect(current?.messages).toEqual([]);
+		expect(current?.historyStatus).toBe("loaded");
+		expect(current?.externalWriteDetected).toBe(false);
+	});
+
+	it("accepts authoritative empty success during normal resync", () => {
+		act(() => {
+			deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
+			deliver({ type: "entries", sessionId: "chat-1", entries: [entry("old", "user", "old branch")], final: true });
+		});
+		act(() => { expect(current?.resync()).toBe(true); });
+		act(() => {
+			deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-2", resumed: true });
+			deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
+		});
+		expect(current?.messages).toEqual([]);
+		expect(current?.historyStatus).toBe("loaded");
+		expect(current?.externalWriteDetected).toBe(false);
 	});
 
 	it("reconciles immediately for a single final frame (backward compatible)", () => {

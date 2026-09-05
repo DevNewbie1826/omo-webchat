@@ -215,11 +215,30 @@ Choose a tested foreground/background token pair instead.
 
 ## Geometry
 
-- Sidebar: fixed shell width from `--th-sidebar-w`; mobile uses a dismissible
-  overlay drawer.
+- Sidebar: fixed shell width from `--th-sidebar-w`; desktop keeps a 44px
+  navigation rail (`--th-space-11`) for the toggle in both expanded and
+  collapsed states, outside every pane title. Mobile retains its dismissible
+  overlay drawer without the rail.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
+- Goal and activity panels share one column allocator. Fixed bands include
+  dynamically mounted queue, recovery/error banners, status and composer.
+  Neither rendered panel allocation is an input to the other. The goal uses
+  its intrinsic content preference; activity retains its saved height or the
+  280px default preference. Reserve 120px for conversation when feasible,
+  allocate goal first while retaining a 48px activity row, and collapse a goal
+  allocation below 48px without losing the user's expansion intent. Activity
+  likewise hides an unreadable panel while retaining its resize grip and saved
+  preference, restoring the panel automatically when space returns. The grip
+  owns the activity panel gap for the entire open intent, including hidden
+  panels. Registration and preference changes recompute the complete shelf
+  set; saved/requested sizes remain independent of viewport allocations.
+- The content shell between header and composer owns auxiliary overflow only
+  when fixed bands exceed the column. Banners, shelves, queue and recovery
+  actions remain reachable by scrolling; the transcript retains its normal
+  independent scrollport when space permits. No auxiliary band is clipped to
+  make the composer fit.
 - Reading column: `min(760px, 100%)`, horizontally centered. Structural
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
@@ -230,7 +249,10 @@ Choose a tested foreground/background token pair instead.
   is the only focus surface — its border strengthens and a ring appears on
   `:focus-within`; the textarea itself is bare and borderless.
 - The input grows from one line to a 160px cap; controls stay bottom-anchored
-  while it grows.
+  while it grows. The actual column further bounds the editor to its height
+  minus 200px, with a 44px usable floor. This leaves room for composer chrome
+  and the auxiliary scroll band in short/split columns; taller columns recover
+  the normal cap without losing the multiline draft.
 - File browser: absolute right-side overlay on desktop and full-pane overlay on
   narrow screens. Opening it must not change the chat pane flex axis.
 - Split panes: each pane independently obeys this geometry down to 420px. Below
@@ -345,7 +367,12 @@ invocation.
 At 390x844 and comparable narrow sizes:
 
 - the conversation and composer remain at least 320px wide;
-- the workspace path and optional model selector may hide;
+- the workspace path may hide; the current model name and thinking level stay
+  visible in a compact control inside the measured composer band;
+- the narrow model picker opens a viewport-contained sheet without focusing
+  search or summoning its keyboard. Current model/provider identity stays pinned
+  above the scrolling options. Selection uses exact provider/model identity,
+  independent of navigation focus, and the current row is visible on opening;
 - header controls remain reachable with 44px touch targets;
 - the composer's plus action and send/stop circle grow to 44px hit areas, and
   the input keeps a 44px minimum height;

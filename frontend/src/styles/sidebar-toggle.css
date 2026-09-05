@@ -1,11 +1,14 @@
+.th-sidebar-rail {
+  flex: 0 0 var(--th-space-11);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: var(--th-space-2);
+}
+
 
 .th-sidebar-toggle {
-  position: absolute;
-  top: 8px;
-  right: -13px;
-  /* --collapse-x slides the toggle from the sidebar seam to its pinned
-     collapsed position in lockstep with the sidebar width transition, so it
-     tracks the collapsing edge instead of teleporting. */
+  position: relative;
   --collapse-x: 0px;
   transform: translateX(var(--collapse-x));
   width: 26px;
@@ -42,12 +45,8 @@
   transform: rotate(0deg);
 }
 
-/* When collapsed the sidebar is zero-width, so an edge-mounted toggle (right:
-   -13px) would sit off-screen. Slide it to left:8 via --collapse-x (translateX of
-   21px) rather than swapping the right/left anchor — that swap is not
-   transitionable and made the toggle jump ahead of the width animation. */
 .th-sidebar--collapsed .th-sidebar-toggle {
-  --collapse-x: 21px;
+  --collapse-x: 0px;
   color: var(--th-text-dim);
   background: var(--th-surface);
   border-color: var(--th-border-strong);
@@ -58,7 +57,7 @@
 }
 
 @media (max-width: 768px) {
-  .th-sidebar-toggle {
+  .th-sidebar-rail {
     display: none;
   }
 }

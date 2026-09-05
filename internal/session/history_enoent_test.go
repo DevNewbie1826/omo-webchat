@@ -33,7 +33,7 @@ func hydrateAbsentPath(t *testing.T, sess *Session, d *omorpctest.Daemon) (*reco
 		t.Fatal(err)
 	}
 	t.Cleanup(detach)
-	sess.hydrateEntries(context.Background(), path, target)
+	sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 	if got := d.RequestCount(omorpc.CmdGetEntries); got != before+1 {
 		t.Fatalf("get_entries request count = %d, want %d", got, before+1)
 	}
@@ -267,7 +267,7 @@ func TestHistoryInPlaceFileRemovedBeforeOpenQuarantines(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer subDetach()
-	sess.hydrateEntries(context.Background(), path, target)
+	sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 	prior, frame := sub.awaitError(t, "external-write-detected")
 	for _, got := range prior {
 		if got.Kind == FrameEntries {
@@ -303,7 +303,7 @@ func TestHistoryRetainedDiskCursorUnretainedByDaemonStillIncomplete(t *testing.T
 		t.Fatal(err)
 	}
 	defer subDetach()
-	sess.hydrateEntries(context.Background(), path, target)
+	sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 	if got := d.RequestCount(omorpc.CmdGetEntries); got != before+1 {
 		t.Fatalf("get_entries request count = %d, want %d", got, before+1)
 	}

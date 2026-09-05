@@ -611,15 +611,15 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			c.sendSessionError(err, "approval.respond", deref(f.RequestID))
 		}
 	case *wscontract.ChatCommandsFrame:
-		c.queryCommands(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_commands", run: c.queryCommands})
 	case *wscontract.ChatCompactFrame:
 		if err := sess.CompactDetached(ctx); err != nil {
 			c.sendSessionError(err, "chat.compact", "")
 		}
 	case *wscontract.ChatModelsFrame:
-		c.queryModels(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_available_models", run: c.queryModels})
 	case *wscontract.ChatStatsFrame:
-		c.queryStats(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_session_stats", run: c.queryStats})
 	case *wscontract.ActivityRefreshFrame:
 		if sess != nil {
 			for _, x := range sess.ActivitySnapshot() {
@@ -627,7 +627,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			}
 		}
 	case *wscontract.ChatResumeFrame:
-		c.queryState(ctx, sess)
+		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_state", run: c.queryState})
 	case *wscontract.ChatCloseFrame:
 		c.unbind()
 	case *wscontract.ChatDisconnectFrame:
@@ -899,6 +899,12 @@ func (op *chatSendOperation) resumeAndRetry(stale *session.Session, admitted boo
 			break
 		}
 	}
+	// A rebind can deliberately detach the replay while this already-owned
+	// send remains valid. Re-enter the same flight without a transport target;
+	// manager mutation revalidation still precedes the exactly-once retry.
+	if errors.Is(err, session.ErrSubscriberDetached) && sub == nil && outcomeOwner != nil && !callbackRan {
+		resumed, _, detach, err = op.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(ctx, chatRef{id: rec.ID, cwd: rec.CWD}, nil, nil, validate, nil, retry)
+	}
 	_ = detach // the live binding or manager owns the acquired route
 	if errors.Is(err, session.ErrNoDurableCursor) {
 		stale.CompleteDetachedSend(op.requestID, originalErr)
@@ -1034,7 +1040,10 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		c.stateMu.Unlock()
 		if !sub.activate(ctx, !started) {
 			c.unbind()
-			return nil
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return session.ErrSubscriberDetached
 		}
 		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
 			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
@@ -1047,40 +1056,40 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		c.queryStats(ctx, acquired)
 		return nil
 	}
-	initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
-		_ = commitBinding(acquired, started, acquiredDetach)
-	}
 	var sess *session.Session
 	var detach func()
 	recovery := f.Recovery != nil && *f.Recovery
-	if guarded {
-		validate := func() error {
-			if c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
-				return ErrChatDeleted
-			}
-			return nil
+	validate := func() error {
+		if guarded && c.bridge.cfg.ChatVersion(f.ChatID) != preparedGeneration {
+			return ErrChatDeleted
 		}
-		var stagedSession *session.Session
-		var stagedStarted bool
-		var stagedDetach func()
-		stage := func(acquired *session.Session, started bool, acquiredDetach func()) {
-			stagedSession, stagedStarted, stagedDetach = acquired, started, acquiredDetach
+		return nil
+	}
+	var stagedSession *session.Session
+	var stagedStarted bool
+	var stagedDetach func()
+	stage := func(acquired *session.Session, started bool, acquiredDetach func()) {
+		stagedSession, stagedStarted, stagedDetach = acquired, started, acquiredDetach
+	}
+	commit := func(acquired *session.Session) error {
+		if stagedSession != acquired || stagedDetach == nil {
+			return errors.New("session binding was not initialized")
 		}
-		commit := func(acquired *session.Session) error {
-			if stagedSession != acquired || stagedDetach == nil {
-				return errors.New("session binding was not initialized")
-			}
-			return commitBinding(acquired, stagedStarted, stagedDetach)
+		return commitBinding(acquired, stagedStarted, stagedDetach)
+	}
+	if !guarded {
+		initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
+			_ = commitBinding(acquired, started, acquiredDetach)
 		}
 		if recovery {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
 		} else {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRun(ctx, ref, sub, stage, validate, commit)
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
 		}
 	} else if recovery {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
 	} else {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitialized(ctx, ref, sub, initialize)
+		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
 	}
 	if err != nil {
 		c.unbind()
@@ -1577,15 +1586,15 @@ func sessionErrorFrame(err error, command, requestID, sessionID string) any {
 	return frame
 }
 
-func (c *connection) queryState(ctx context.Context, s *session.Session) {
+func (c *connection) queryState(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	x, err := s.QueryState(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_state", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_state")
+		return err
 	}
 	var model map[string]any
 	if len(x.Model) > 0 {
@@ -1598,16 +1607,18 @@ func (c *connection) queryState(ctx context.Context, s *session.Session) {
 	run := s.RunSnapshot()
 	_ = c.writeIfCurrent(binding, map[string]any{"type": "state", "sessionId": binding.chatID, "model": model, "thinkingLevel": x.ThinkingLevel, "isStreaming": run.Streaming, "isCompacting": run.Compacting})
 	c.bridge.publishQueue(binding.chatID, s)
+	return nil
 }
-func (c *connection) queryModels(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryModels(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	xs, err := s.Models(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_available_models", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_available_models")
+		return err
 	}
 	sid := binding.chatID
 	out := make([]wscontract.ModelInfo, len(xs))
@@ -1618,16 +1629,18 @@ func (c *connection) queryModels(ctx context.Context, s *session.Session) {
 		}
 	}
 	_ = c.writeIfCurrent(binding, wscontract.ModelsFrame{Type: "models", SessionID: sid, Models: out})
+	return nil
 }
-func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryCommands(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	xs, err := s.Commands(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_commands", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_commands")
+		return err
 	}
 	sid := binding.chatID
 	out := make([]wscontract.CommandEntry, len(xs))
@@ -1635,16 +1648,18 @@ func (c *connection) queryCommands(ctx context.Context, s *session.Session) {
 		out[i] = commandEntry(x)
 	}
 	_ = c.writeIfCurrent(binding, wscontract.CommandsFrame{Type: "commands", SessionID: sid, Commands: out})
+	return nil
 }
-func (c *connection) queryStats(ctx context.Context, s *session.Session) {
+
+func (c *connection) queryStats(ctx context.Context, s *session.Session) error {
 	binding, ok := c.beginQuery(s)
 	if !ok {
-		return
+		return nil
 	}
 	x, err := s.Stats(ctx)
 	if err != nil {
-		_ = c.writeIfCurrent(binding, sessionErrorFrame(err, "get_session_stats", "", binding.chatID))
-		return
+		c.publishQueryError(binding, err, "get_session_stats")
+		return err
 	}
 	sid := binding.chatID
 	frame := map[string]any{"type": "stats", "sessionId": sid, "cost": x.Cost}
@@ -1655,6 +1670,14 @@ func (c *connection) queryStats(ctx context.Context, s *session.Session) {
 		frame["contextUsage"] = contextUsageWithPercent(x.ContextUsage)
 	}
 	_ = c.writeIfCurrent(binding, frame)
+	return nil
+}
+
+func (c *connection) publishQueryError(binding queryBinding, err error, command string) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, session.ErrSessionResumable) || errors.Is(err, session.ErrSessionClosed) {
+		return
+	}
+	_ = c.writeIfCurrent(binding, sessionErrorFrame(err, command, "", binding.chatID))
 }
 
 func contextUsageWithPercent(raw json.RawMessage) json.RawMessage {

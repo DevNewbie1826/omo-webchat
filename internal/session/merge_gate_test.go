@@ -1058,10 +1058,6 @@ func TestMergeGateMalformedIncrementalHistoryPublishesIncompleteError(t *testing
 	if request["since"] != leafID {
 		t.Fatalf("incremental cursor = %v, want %q", request["since"], leafID)
 	}
-	_, cold := sub.await(t, FrameEntries)
-	if entries := cold.Data.(EntriesFrame); entries.Final || entries.LeafID != "" {
-		t.Fatalf("cold history page must await the live tail: %+v", entries)
-	}
 	id, _ := request["id"].(string)
 	sid, _ := request["sessionId"].(string)
 	d.WriteRaw([]byte(fmt.Sprintf(`{"id":%q,"type":"response","command":"get_entries","sessionId":%q,"success":true,"data":{"entries":[{"x":1}],"leafId":123}}`+"\n", id, sid)))
@@ -1075,6 +1071,9 @@ func TestMergeGateMalformedIncrementalHistoryPublishesIncompleteError(t *testing
 	}
 	release()
 	prior, frame := sub.awaitError(t, "decode_failed")
+	if frameIndex(prior, FrameEntries) >= 0 {
+		t.Fatalf("malformed terminal history leaked partial entries: %+v", prior)
+	}
 	if !strings.Contains(frame.Data.(ErrorInfo).Message, "invalid get_entries response") {
 		t.Fatalf("history error = %+v", frame.Data)
 	}

@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { MOBILE_QUERY } from "../../components/Sidebar";
 import type { CommandEntry } from "../../lib/chatWs";
 import { useT } from "../../i18n";
@@ -15,6 +16,7 @@ import { useFileMention } from "./useFileMention";
 import { useImageAttachment } from "./useImageAttachment";
 
 interface ChatComposerProps {
+  readonly modelControl?: ReactNode;
   readonly commands: readonly CommandEntry[];
   readonly running: boolean;
   readonly isCompacting: boolean;
@@ -28,7 +30,7 @@ interface ChatComposerProps {
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ modelControl, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
   const [input, setInput] = useState("");
   const [draftCommand, setDraftCommand] = useState<CommandEntry | null>(null);
@@ -183,6 +185,7 @@ export function ChatComposer({ commands, running, disabled = false, retryDraft, 
         submit();
       }}
     >
+      {modelControl && <div className="th-composer-model">{modelControl}</div>}
       <ChatComposerAttachmentPreview
         pendingImage={pendingImage}
         removeLabel={t("chat.removeAttach")}

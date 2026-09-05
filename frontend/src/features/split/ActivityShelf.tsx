@@ -75,7 +75,7 @@ function detectPanelHeight(): number | null {
   try {
     const raw = window.localStorage.getItem(PANEL_STORAGE_KEY);
     const parsed = raw === null ? Number.NaN : Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? clampPanelHeight(parsed) : null;
+    return Number.isFinite(parsed) ? Math.max(PANEL_MIN, parsed) : null;
   } catch {
     return null;
   }
@@ -125,7 +125,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   const {
     availableSpacePx: columnClampPx,
     selfPanelHeightPx,
-  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement);
+  } = useShelfAvailableSpace(open && hasActivity, shelfElement, panelElement, height);
   const naturalFloorActive = height === null
     && columnClampPx !== null
     && columnClampPx >= PANEL_NATURAL_MIN_PX;
@@ -133,14 +133,16 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     && selfPanelHeightPx < PANEL_HEADLESS_BELOW_PX
     && !naturalFloorActive;
 
+  const expanded = open && (columnClampPx === null || columnClampPx >= PANEL_NATURAL_MIN_PX);
+
   if (!hasActivity) return null;
 
   const applyHeight = (px: number | null): void => {
     setHeight(px);
     try {
       if (px === null) window.localStorage.removeItem(PANEL_STORAGE_KEY);
-      // Re-clamp against the live viewport at save time so a height stored
-      // here can never exceed the current window (restore re-clamps too).
+      // Explicit resize gestures are viewport-bounded; restoring a preference
+      // never truncates it to the current allocation.
       else window.localStorage.setItem(PANEL_STORAGE_KEY, String(clampPanelHeight(px)));
     } catch {
       // Private modes may throw; the choice simply will not persist.
@@ -219,7 +221,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
         <button
           type="button"
           className="th-activity-bar"
-          aria-expanded={open}
+          aria-expanded={expanded}
           aria-controls={panelId}
           onClick={() => setOpen((value) => !value)}
         >
@@ -258,7 +260,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             onKeyDown={onKeyResize}
             onDoubleClick={() => applyHeight(null)}
           />
-          <div
+          {expanded && <div
             ref={setPanelRef}
             id={panelId}
             role="group"
@@ -291,7 +293,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
               <DagSection dags={dags} t={t} view={view} onViewChange={setView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} />
             )}
             {activities.todo !== null && <TodoSection phases={activities.todo} t={t} />}
-          </div>
+          </div>}
         </>
       )}
     </section>

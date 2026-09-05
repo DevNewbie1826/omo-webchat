@@ -139,17 +139,17 @@ func TestEdgeEventForUnownedSessionDroppedQuietly(t *testing.T) {
 		t.Fatalf("late event for stopped session delivered: %+v", got)
 	}
 
-	// (iii) Routing id of an unloaded (resumable) session: dispatch drops
-	// everything after the single session_unloaded terminal.
+	// (iii) Routing id of an unloaded (resumable) session: dispatch marks it
+	// silently and everything after the lifecycle boundary is dropped.
 	d.UnloadSession(sessB.SessionFile())
-	prior, _ := subB.awaitError(t, "session_unloaded")
-	for _, f := range prior {
-		if f.Kind == FrameError {
-			t.Fatalf("session_unloaded not exactly once: %+v", prior)
-		}
+	if _, err := sessB.QueryState(context.Background()); !errors.Is(err, ErrSessionResumable) {
+		t.Fatalf("unloaded route query = %v, want ErrSessionResumable", err)
 	}
 	if !sessB.Resumable() {
-		t.Fatal("session B was not resumable after session_unloaded delivery")
+		t.Fatal("session B was not marked resumable")
+	}
+	if got := subB.drain(); len(got) != 0 {
+		t.Fatalf("silent unload published frames: %+v", got)
 	}
 	d.EmitSession(sessB.SessionFile(), map[string]any{"type": "message_delta", "delta": "post-unload"})
 	// Marker: re-acquire A (resume) and mark on its live route.

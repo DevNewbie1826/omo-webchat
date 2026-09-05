@@ -239,6 +239,7 @@ func (m *Manager) eventLoop() {
 	backoff := time.Millisecond
 	for {
 		token, ch := m.cfg.Client.CurrentEpoch()
+		m.invalidateDisconnectedEpochs()
 		m.observeEpoch(token)
 		select {
 		case <-m.done:
@@ -277,6 +278,45 @@ func (m *Manager) eventLoop() {
 	}
 }
 
+// invalidateDisconnectedEpochs reconciles retained ownership, not just the
+// client's latest snapshot: CurrentEpoch can already be zero (or a successor)
+// when the observer first starts or returns from dispatch. Snapshot the stream
+// before reconciliation so a disconnect after these checks still closes the
+// stream selected by this iteration.
+func (m *Manager) invalidateDisconnectedEpochs() {
+	m.mu.Lock()
+	epochs := make(map[omorpc.EpochToken]struct{})
+	// A restarted daemon can overwrite a route with another chat's holder.
+	// byChat retains ownership even when that routing index no longer does.
+	retained := make([]*Session, 0, len(m.byChat))
+	for _, s := range m.byChat {
+		retained = append(retained, s)
+	}
+	for _, s := range m.byRoute {
+		epochs[s.epoch] = struct{}{}
+	}
+	for _, entry := range m.overviewCache {
+		epochs[entry.epoch] = struct{}{}
+	}
+	m.mu.Unlock()
+	for _, s := range retained {
+		// Never nest lifecycleMu under Manager.mu. Resumable sessions remain
+		// in byChat, but must not recreate an already-drained epoch barrier.
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.resumable {
+			epochs[s.epoch] = struct{}{}
+		}
+		s.lifecycleMu.Unlock()
+	}
+	for epoch := range epochs {
+		// Do not compare against the earlier snapshot: acquisition may have
+		// registered a live successor since then. Tokens never become live again.
+		if !m.cfg.Client.EpochCurrent(epoch) {
+			m.invalidateEpoch(epoch)
+		}
+	}
+}
+
 // invalidateEpoch only retires sessions opened on the token that died. A
 // delayed failure from an older request therefore cannot invalidate sessions
 // registered after reconnect.
@@ -298,7 +338,9 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	for _, s := range m.byChat {
 		if s.epoch == token {
 			all = append(all, s)
-			delete(m.byRoute, s.routingID)
+			if m.byRoute[s.routingID] == s {
+				delete(m.byRoute, s.routingID)
+			}
 		}
 	}
 	delete(m.byDurableEpoch, token)
@@ -486,12 +528,25 @@ type ReplayBackpressureSubscriber interface {
 	EndReplay()
 }
 
-func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription) {
+type hydrationAttemptResetter interface {
+	DiscardHydrationAttempt()
+}
+
+func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription, onValidated func() error) error {
 	if target == nil {
-		return
+		if onValidated != nil {
+			return onValidated()
+		}
+		return nil
 	}
 	target.beginReplay()
-	s.hydrateEntries(ctx, path, target)
+	return s.hydrateEntriesValidated(ctx, path, target, onValidated)
+}
+
+func discardHydrationAttempt(sub Subscriber) {
+	if resetter, ok := sub.(hydrationAttemptResetter); ok {
+		resetter.DiscardHydrationAttempt()
+	}
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
@@ -563,6 +618,39 @@ func (m *Manager) ResumeInitializedCheckedAndRun(ctx context.Context, chat ChatR
 // until replay has finished and the route has been revalidated.
 func (m *Manager) ResumeInitializedCheckedAndRunInFlight(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, published func(*Session) error, run func(*Session) error) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, initialize, validate, published, run, false, true, true)
+}
+
+// AcquireInitializedCheckedAndRunRecovering keeps one per-chat flight across
+// one bounded replacement when terminal hydration proves the route absent.
+func (m *Manager) AcquireInitializedCheckedAndRunRecovering(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
+	if chat == nil || chat.ChatID() == "" {
+		return nil, false, nil, errors.New("session: empty chat id")
+	}
+	unlock, err := m.chats.enter(ctx, chat.ChatID())
+	if err != nil {
+		return nil, false, nil, err
+	}
+	defer unlock()
+	resumeOnly := false
+	if m.cfg.Store != nil {
+		cur, err := m.cfg.Store.CursorFor(ctx, chat.ChatID())
+		if err != nil {
+			return nil, false, nil, err
+		}
+		resumeOnly = cur.SessionFile != ""
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		s, started, detach, acquireErr := m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, resumeOnly, true)
+		if !errors.Is(acquireErr, ErrSessionResumable) || attempt == 1 {
+			return s, started, detach, acquireErr
+		}
+		if detach != nil {
+			detach()
+		}
+		discardHydrationAttempt(sub)
+		resumeOnly = true
+	}
+	return nil, false, nil, ErrSessionResumable
 }
 
 func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, afterHydration func(*Session) error, recoveryAuthorized, resumeOnly, permitHeld bool) (*Session, bool, func(), error) {
@@ -670,15 +758,18 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 						return nil, false, nil, err
 					}
 				}
-				if after != nil {
-					if err := after(existing); err != nil {
+				validated := func() error {
+					if after == nil {
+						return nil
+					}
+					return after(existing)
+				}
+				if existing.sessionFile != "" {
+					if err := hydrateForSubscriber(ctx, existing, existing.sessionFile, target, validated); err != nil {
 						return existing, false, detach, err
 					}
-				}
-				// Checked callers publish and activate their validated binding in
-				// after before history can fill a transport's staging buffer.
-				if existing.sessionFile != "" {
-					hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
+				} else if err := validated(); err != nil {
+					return existing, false, detach, err
 				}
 				if afterHydration != nil {
 					if err := revalidateMutation(existing); err != nil {
@@ -874,7 +965,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		_, cleanupInFlight := m.routeCleanup[data.SessionID]
 		if valid && epochLive && !cleanupInFlight {
 			sendOwnerAdopted = true
-			if existing != nil {
+			if existing != nil && m.byRoute[existing.routingID] == existing {
 				delete(m.byRoute, existing.routingID)
 			}
 			m.byChat[chatID] = s
@@ -898,16 +989,21 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return nil, false, nil, ErrSessionResumable
 		}
-		if after != nil {
-			if err := after(s); err != nil {
-				if replaced != nil {
-					replaced.retireReplaced()
-				}
-				return s, true, detach, err
+		validated := func() error {
+			if after == nil {
+				return nil
 			}
+			return after(s)
 		}
 		if resumed {
-			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
+			if err := hydrateForSubscriber(ctx, s, cur.SessionFile, target, validated); err != nil {
+				return s, true, detach, err
+			}
+		} else if err := validated(); err != nil {
+			if replaced != nil {
+				replaced.retireReplaced()
+			}
+			return s, true, detach, err
 		}
 		if afterHydration != nil {
 			if err := revalidateMutation(s); err != nil {
@@ -941,7 +1037,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	_, cleanupInFlight := m.routeCleanup[data.SessionID]
 	if valid {
 		sendOwnerAdopted = true
-		if existing != nil {
+		if existing != nil && m.byRoute[existing.routingID] == existing {
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
@@ -1004,13 +1100,18 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if initialize != nil {
 		initialize(s, true, detach)
 	}
-	if resumed {
-		hydrateForSubscriber(ctx, s, cur.SessionFile, target)
+	validated := func() error {
+		if after == nil {
+			return nil
+		}
+		return after(s)
 	}
-	if after != nil {
-		if err := after(s); err != nil {
+	if resumed {
+		if err := hydrateForSubscriber(ctx, s, cur.SessionFile, target, validated); err != nil {
 			return s, true, detach, err
 		}
+	} else if err := validated(); err != nil {
+		return s, true, detach, err
 	}
 	if afterHydration != nil {
 		if err := revalidateMutation(s); err != nil {

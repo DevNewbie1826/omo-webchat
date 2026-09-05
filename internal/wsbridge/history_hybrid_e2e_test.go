@@ -30,6 +30,12 @@ import (
 
 const historyE2ETestBudget = 30 * time.Second
 
+var (
+	errHistoryTerminalTimeout  = errors.New("timed out waiting for history terminal")
+	errHistoryActivityOvertake = errors.New("activity overtook history replay terminal")
+	errHistoryStreamClosed     = errors.New("socket closed before history terminal")
+)
+
 type cappedReadConn struct {
 	net.Conn
 	maxRead int
@@ -115,7 +121,11 @@ func newHistoryBridgeHarness(t *testing.T, historyTimeout time.Duration) *histor
 
 func (h *historyBridgeHarness) connect(t *testing.T, maxRead int) (*gws.Conn, *collector) {
 	t.Helper()
-	frames := &collector{notify: make(chan struct{}, 256), timeout: historyE2ETestBudget}
+	frames := &collector{
+		notify:  make(chan struct{}, 256),
+		timeout: historyE2ETestBudget,
+		closed:  make(chan struct{}),
+	}
 	option := &gws.ClientOption{Addr: "ws" + strings.TrimPrefix(h.server.URL, "http")}
 	if maxRead > 0 {
 		option.NewDialer = func() (gws.Dialer, error) { return cappedDialer{maxRead: maxRead}, nil }
@@ -297,6 +307,53 @@ func (c *triggeredDeadlineContext) Err() error {
 }
 func (c *triggeredDeadlineContext) expire() { c.once.Do(func() { close(c.done) }) }
 
+type historyFrameStream interface {
+	takeDecoded(start int) ([]decodedFrame, bool, uint64)
+	waitAfter(gen uint64, timeout time.Duration) error
+}
+
+type historyReplayObservation struct {
+	terminal int
+	activity int
+}
+
+func awaitHistoryReplayTerminal(stream historyFrameStream, deadline time.Time) (historyReplayObservation, error) {
+	obs := historyReplayObservation{terminal: -1, activity: -1}
+	scanned := 0
+	for {
+		batch, closed, gen := stream.takeDecoded(scanned)
+		for i, frame := range batch {
+			idx := scanned + i
+			if frame.err != nil {
+				return obs, fmt.Errorf("malformed websocket frame at %d: %w", idx, frame.err)
+			}
+			switch {
+			case frame.typ == "error":
+				return obs, fmt.Errorf("history replay published an error: %s", frame.raw)
+			case frame.typ == "sessions.activity" && obs.activity < 0:
+				obs.activity = idx
+			case frame.typ == "entries" && frame.final:
+				obs.terminal = idx
+				if obs.activity >= 0 && obs.activity < obs.terminal {
+					return obs, errHistoryActivityOvertake
+				}
+				return obs, nil
+			}
+		}
+		scanned += len(batch)
+		if closed {
+			return obs, errHistoryStreamClosed
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return obs, errHistoryTerminalTimeout
+		}
+		if err := stream.waitAfter(gen, remaining); err != nil {
+			return obs, err
+		}
+	}
+}
+
 func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
 	h := newHistoryBridgeHarness(t, historyE2ETestBudget*2)
 	source := newTestActivitySource()
@@ -319,46 +376,124 @@ func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
 	releaseTail()
 
 	deadline := time.Now().Add(historyE2ETestBudget * 3)
-	for {
-		frames.mu.Lock()
-		terminal := -1
-		activity := -1
-		for i, raw := range frames.frames {
-			var frame map[string]any
-			_ = json.Unmarshal(raw, &frame)
-			if frame["type"] == "sessions.activity" && activity < 0 {
-				activity = i
-			}
-			if frame["type"] == "entries" && frame["final"] == true {
-				terminal = i
-				break
-			}
-		}
-		if terminal >= 0 {
-			if activity >= 0 && activity < terminal {
-				frames.mu.Unlock()
-				t.Fatal("activity overtook history replay terminal")
-			}
-			frames.mu.Unlock()
-			break
-		}
-		frames.mu.Unlock()
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			t.Fatal("timed out waiting for history terminal")
-		}
-		timer := time.NewTimer(remaining)
-		select {
-		case <-frames.notify:
-			timer.Stop()
-		case <-timer.C:
-			t.Fatal("timed out waiting for history terminal")
-		}
+	if _, err := awaitHistoryReplayTerminal(frames, deadline); err != nil {
+		t.Fatal(err)
 	}
 	activity := frames.nextWithin(t, "sessions.activity", time.Until(deadline))
 	if activity["sessionId"] != "activity-history" {
 		t.Fatalf("resumed activity frame = %v", activity)
 	}
+	// Keep the exact-terminal assertion through activity resumption without
+	// decoding the growing transcript under the socket receiver's lock.
+	pending, _, _ := frames.takeDecoded(0)
+	terminals := 0
+	for _, frame := range pending {
+		if frame.err != nil {
+			t.Fatal(frame.err)
+		}
+		if frame.typ == "error" {
+			t.Fatalf("history replay published an error: %s", frame.raw)
+		}
+		if frame.typ == "entries" && frame.final {
+			terminals++
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("terminal entries frames = %d, want 1", terminals)
+	}
+}
+
+type scriptedHistoryStream struct {
+	frames []decodedFrame
+	closed bool
+}
+
+func (s scriptedHistoryStream) takeDecoded(start int) ([]decodedFrame, bool, uint64) {
+	if start >= len(s.frames) {
+		return nil, s.closed, 1
+	}
+	return s.frames[start:], s.closed, 1
+}
+
+func (s scriptedHistoryStream) waitAfter(uint64, time.Duration) error {
+	return errHistoryTerminalTimeout
+}
+
+func TestHistoryReplayPriorityObserverRejectsOvertakeAndInvalidStreams(t *testing.T) {
+	deadline := time.Now().Add(historyE2ETestBudget)
+	tests := []struct {
+		name    string
+		frames  []string
+		closed  bool
+		wantErr error
+		contain string
+	}{
+		{
+			name: "activity-overtake",
+			frames: []string{
+				`{"type":"sessions.activity","sessionId":"activity-history"}`,
+				`{"type":"entries","entries":[],"final":true}`,
+			},
+			wantErr: errHistoryActivityOvertake,
+		},
+		{
+			name:    "malformed",
+			frames:  []string{`{`},
+			contain: "malformed websocket frame at 0:",
+		},
+		{
+			name:    "history-error",
+			frames:  []string{`{"type":"error","code":"incomplete_history"}`},
+			contain: "history replay published an error:",
+		},
+		{
+			name:    "closed-stream",
+			closed:  true,
+			wantErr: errHistoryStreamClosed,
+		},
+		{
+			name:    "no-terminal",
+			frames:  []string{`{"type":"hello"}`, `{"type":"entries","entries":[],"final":false}`},
+			wantErr: errHistoryTerminalTimeout,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decoded := make([]decodedFrame, len(tt.frames))
+			for i, raw := range tt.frames {
+				decoded[i] = decodeFrameMeta(json.RawMessage(raw))
+			}
+			_, err := awaitHistoryReplayTerminal(scriptedHistoryStream{frames: decoded, closed: tt.closed}, deadline)
+			if err == nil {
+				t.Fatal("got success, want failure")
+			}
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if tt.contain != "" && !strings.Contains(err.Error(), tt.contain) {
+				t.Fatalf("err = %v, want substring %q", err, tt.contain)
+			}
+		})
+	}
+
+	t.Run("terminal-before-activity", func(t *testing.T) {
+		stream := scriptedHistoryStream{frames: []decodedFrame{
+			decodeFrameMeta(json.RawMessage(`{"type":"hello"}`)),
+			decodeFrameMeta(json.RawMessage(`{"type":"entries","entries":[],"final":false}`)),
+			decodeFrameMeta(json.RawMessage(`{"type":"entries","entries":[],"final":true}`)),
+			decodeFrameMeta(json.RawMessage(`{"type":"sessions.activity","sessionId":"activity-history"}`)),
+		}}
+		obs, err := awaitHistoryReplayTerminal(stream, deadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if obs.terminal != 2 {
+			t.Fatalf("terminal index = %d, want 2", obs.terminal)
+		}
+		if obs.activity != -1 {
+			t.Fatalf("activity index = %d, want unseen after terminal", obs.activity)
+		}
+	})
 }
 
 func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testing.T) {

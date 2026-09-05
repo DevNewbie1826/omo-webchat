@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatSession, renderChatPane } from "./chatPaneTestHarness";
+import { chatSession, ControlledResizeObserver, renderChatPane } from "./chatPaneTestHarness";
 
 describe("ChatPane thinking level selector", () => {
   let container: HTMLDivElement;
@@ -27,6 +27,31 @@ describe("ChatPane thinking level selector", () => {
     if (!select) throw new Error("thinking select missing");
     return select;
   }
+
+  it("includes the narrow model and thinking control inside the measured composer", () => {
+    vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+    const { deliver } = renderChatPane(root, chatSession);
+    const pane = container.querySelector(".th-chat-pane")!;
+    const observer = ControlledResizeObserver.instances.find((item) => item.targets.has(pane))!;
+    const resizePane = (width: number): void => {
+      act(() => observer.callback([{ target: pane, contentRect: { width, height: 740 } } as ResizeObserverEntry],
+        observer as unknown as ResizeObserver));
+    };
+    act(() => {
+      deliver({ type: "models", sessionId: "chat-1", models: [{ provider: "openai", modelId: "gpt-5", name: "GPT-5" }] });
+      deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false,
+        model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "high" });
+    });
+    resizePane(375);
+    const picker = container.querySelector(".th-model-picker");
+    expect(picker?.closest(".th-chat-input")).not.toBeNull();
+    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+    expect(picker?.textContent).toContain("GPT-5");
+    expect(picker?.textContent).toContain("high");
+    resizePane(800);
+    expect(container.querySelector(".th-model-picker")?.closest(".th-termhead")).not.toBeNull();
+    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+  });
 
   it("offers every Omo thinking level", () => {
     renderChatPane(root, chatSession);
