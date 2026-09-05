@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -26,6 +27,7 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	t.Cleanup(func() {
 		if err := os.RemoveAll(dir); err != nil {
 			t.Errorf("remove isolated profile: %v", err)
+			reconnectDirectoryHolders(t, dir)
 			return
 		}
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -222,4 +224,54 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 	}
 	t.Logf("real reconnect: shared owned=false Stop preserved peer=%d owner-epoch=%d protocol-id=%s success=true",
 		pipe.pid, ownerEpoch.epoch.number, preserved.ID)
+}
+
+// Failure-only native diagnosis of a sharing violation. Do not kill or wait on
+// arbitrary processes: this reports numeric owners and image basenames only.
+func reconnectDirectoryHolders(t *testing.T, dir string) {
+	t.Helper()
+	path, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	h, err := windows.CreateFile(path, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Errorf("open directory holder diagnostic: %v", err)
+		return
+	}
+	defer func() {
+		if err := windows.CloseHandle(h); err != nil {
+			t.Error(err)
+		}
+	}()
+	var info struct {
+		Count uint32
+		IDs   [128]uintptr
+	}
+	var status windows.IO_STATUS_BLOCK
+	const fileProcessIdsUsingFileInformation = 47
+	if err := windows.NtQueryInformationFile(h, &status, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), fileProcessIdsUsingFileInformation); err != nil {
+		t.Errorf("query directory holder diagnostic: %v", err)
+		return
+	}
+	if info.Count > uint32(len(info.IDs)) {
+		t.Errorf("directory holder diagnostic overflow: %d", info.Count)
+		return
+	}
+	for _, pid := range info.IDs[:info.Count] {
+		p, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+		if err != nil {
+			t.Logf("failure: directory-holder pid=%d open-error=%v", pid, err)
+			continue
+		}
+		var image [windows.MAX_PATH]uint16
+		size := uint32(len(image))
+		err = windows.QueryFullProcessImageName(p, 0, &image[0], &size)
+		t.Logf("failure: directory-holder pid=%d self=%t image=%s query-error=%v", pid, pid == uintptr(os.Getpid()), filepath.Base(windows.UTF16ToString(image[:size])), err)
+		if err := windows.CloseHandle(p); err != nil {
+			t.Error(err)
+		}
+	}
 }
