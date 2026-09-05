@@ -1,9 +1,10 @@
 /** Validate the same real-browser observations as RED, with repaired behavior. */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 const directory = process.argv[2] || "/tmp/cwfix5-ui-evidence/green";
 async function read(name) { return JSON.parse(await readFile(resolve(directory, name), "utf8")); }
+assert.ok(!(await readdir(directory)).some(name => /failure|failed/i.test(name)), "failed/mixed run cannot be GREEN");
 assert.equal((await read("saved-height.json")).saved, "480");
 for (const order of ["resize-goal-activity", "activity-goal", "goal-activity"]) {
   const frames = await read(`shelves-red-${order}.json`);
@@ -40,6 +41,7 @@ for (const width of [375, 320]) {
 for (const width of [1280, 320]) {
   const frames = await read(`short-${width}.json`);
   assert.equal(frames.length, 120);
+  for (const frame of frames.slice(-60)) assert.deepEqual(frame, frames.at(-1), "short-height settled geometry");
   for (const frame of frames) {
     assert.equal(frame.goal, undefined);
     assert.equal(frame.activity, undefined);
@@ -50,10 +52,11 @@ for (const width of [1280, 320]) {
 }
 const shortGoal = await read("short-goal.json");
 assert.equal(shortGoal.length, 120);
+for (const frame of shortGoal.slice(-60)) assert.deepEqual(frame, shortGoal.at(-1), "short-goal settled geometry");
 for (const frame of shortGoal) { assert.equal(frame.expanded, "true"); assert.ok(frame.height > 0); }
 for (const state of ["collapsed", "expanded"]) {
   const titles = await read(`split-${state}.json`);
-  assert.ok(titles.length > 0);
+  assert.equal(titles.length, 2, "split must contain TWO active conversations");
   for (const title of titles) { assert.equal(title.overlapArea, 0); assert.equal(title.intercepted, false); }
 }
 assert.equal((await read("traffic.json")).filter(row => row.frame?.type === "chat.set").length, 2);
@@ -63,4 +66,4 @@ const cleanup = await read("cleanup.json");
 assert.equal(cleanup.browserClosed, true);
 assert.equal(cleanup.serverStopped, true);
 assert.equal(cleanup.pendingWebSockets, 0);
-console.log("GREEN: stable shelves in both orders/resize, unobstructed single/split titles, named mobile model with truthful selection and no search autofocus, short-height composer contained; cleanup passed.");
+console.log("Legacy subset validated only; full R2 acceptance requires cwfix5-ui-r2-check.mjs plus the Go backend channel.");
