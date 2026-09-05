@@ -120,16 +120,19 @@ func sessionsDirForCwd(cwd string) string {
 	return filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
 }
 
-func listDiskSessions(cwd string) []diskSession {
+func listDiskSessions(cwd string) ([]diskSession, bool) {
 	agentDir := codingAgentDir()
 	canonicalCWD, ok := canonicalSessionCWD(cwd)
 	if agentDir == "" || !ok {
-		return nil
+		return nil, false
 	}
 	dir := filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, true
+		}
+		return nil, false
 	}
 	out := make([]diskSession, 0, len(entries))
 	for _, entry := range entries {
@@ -146,14 +149,15 @@ func listDiskSessions(cwd string) []diskSession {
 		}
 		out = append(out, sess)
 	}
-	return out
+	return out, true
 }
 
 // resolveDiskSessionPath accepts only an exact path or session ID returned by
 // the disk-session lister for cwd. It returns the lister's path so the provider
 // always receives a workspace-owned sessionPath, even when the client used an ID.
 func resolveDiskSessionPath(cwd, identity string) (string, bool) {
-	for _, sess := range listDiskSessions(cwd) {
+	sessions, _ := listDiskSessions(cwd)
+	for _, sess := range sessions {
 		if identity == sess.Path || identity == sess.ID {
 			return sess.Path, true
 		}
@@ -346,11 +350,6 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 		}
 	}
 	for _, ch := range chats {
-		// The chats' workspace directories are the scans whose completed
-		// result resets absent identities, even when a scan returns no files.
-		if dir := sessionsDirForCwd(ch.CWD); dir != "" {
-			scanDirs[dir] = struct{}{}
-		}
 		danglingRow := storedIdentityDangling(ch.SessionFile)
 		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); danglingRow && ok {
 			danglingCWDs[canonicalCWD] = struct{}{}
@@ -604,7 +603,12 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), ws.Path)
+	disk, scanned := listDiskSessions(ws.Path)
+	var scannedCWD []string
+	if scanned {
+		scannedCWD = []string{ws.Path}
+	}
+	items := mergeSessionHistory(chats, disk, scannedCWD...)
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

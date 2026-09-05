@@ -140,8 +140,9 @@ func TestListDiskSessionsRejectsCollidingDirectoryFromAnotherWorkspace(t *testin
 		t.Fatal("test paths do not reproduce the non-injective directory encoding")
 	}
 	writeDiskSession(t, agent, workspaceB, "foreign", "Foreign", time.Now())
-	if got := listDiskSessions(workspaceA); len(got) != 0 {
-		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v", got)
+	got, scanned := listDiskSessions(workspaceA)
+	if !scanned || len(got) != 0 {
+		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v (scanned=%v)", got, scanned)
 	}
 }
 

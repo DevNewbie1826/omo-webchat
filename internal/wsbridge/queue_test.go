@@ -289,11 +289,12 @@ func TestClearDuringDispatchPreservesCompletionAndReleasesGuard(t *testing.T) {
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
 		t.Fatal("later dispatch remained blocked by stale process guard")
 	}
-	// The dispatch observation is published before its completion callback. Wait
-	// for the subsequent queue revision, which is the callback's settlement frame.
+	// The dispatch observation is published before its completion callback.
+	// This item's append, attempt, and completion transitions are consecutive;
+	// wait for this item's exact completion revision before asserting quiescence.
 	for {
 		frame := frames.next(t, "queue")
-		if frame["revision"].(float64) >= float64(laterRevision+2) {
+		if frame["revision"].(float64) == float64(laterRevision+3) {
 			break
 		}
 	}
