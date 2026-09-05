@@ -336,10 +336,15 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 	return cursorstore.RecencyMillis(ch)
 }
 
-func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
+func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCWD ...string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	danglingCWDs := make(map[string]struct{})
 	scanDirs := make(map[string]struct{})
+	for _, cwd := range scannedCWD {
+		if dir := sessionsDirForCwd(cwd); dir != "" {
+			scanDirs[dir] = struct{}{}
+		}
+	}
 	for _, ch := range chats {
 		// The chats' workspace directories are the scans whose completed
 		// result resets absent identities, even when a scan returns no files.
@@ -599,7 +604,7 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	chats := s.cursors.ListChats(ws.ID)
-	items := mergeSessionHistory(chats, listDiskSessions(ws.Path))
+	items := mergeSessionHistory(chats, listDiskSessions(ws.Path), ws.Path)
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")

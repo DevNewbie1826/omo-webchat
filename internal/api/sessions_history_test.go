@@ -451,6 +451,30 @@ func TestListWorkspaceSessionsHidesRecreatedSessionUntilConsecutivelyPresentForW
 	}
 }
 
+func TestEmptyCompletedWorkspaceScanResetsDiscoveredObservation(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	workspace := t.TempDir()
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	path := filepath.Join(agent, "sessions", sessionDirNameForCwd(workspace), "disk-recreated.jsonl")
+	disk := diskSession{ID: "disk-recreated", Path: path, CWD: workspace, ModTime: fixedNow}
+	mergeSessionHistory(nil, []diskSession{disk}, workspace)
+	// A successful empty scan must reset the prior sighting.
+	absent := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return absent }
+	mergeSessionHistory(nil, nil, workspace)
+
+	dangling := cursorstore.Chat{CWD: workspace, SessionFile: filepath.Join(t.TempDir(), "missing.jsonl")}
+	recreated := absent.Add(time.Second)
+	now = func() time.Time { return recreated }
+	disk.ModTime = recreated
+	items := mergeSessionHistory([]cursorstore.Chat{dangling}, []diskSession{disk}, workspace)
+	if got := discoveredSessionIDs(items); len(got) != 0 {
+		t.Fatalf("recreated session was immediately stable after an empty scan: %+v", items)
+	}
+}
+
 func TestDiscoveredObservationTrackingIsBounded(t *testing.T) {
 	stubSessionClock(t, time.Unix(1_800_000_000, 0))
 	for i := 0; i < discoveredObservationMaxEntries*2; i++ {

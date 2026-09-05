@@ -278,12 +278,27 @@ func TestClearDuringDispatchPreservesCompletionAndReleasesGuard(t *testing.T) {
 	if got := queue.Snapshot("dispatch-clear"); got.Dispatching != nil || len(got.Items) != 0 {
 		t.Fatalf("completed dispatch did not settle after clear: %+v", got)
 	}
-	if _, _, err := queue.Append("dispatch-clear", sendqueue.Item{Text: "later", RequestID: "later"}); err != nil {
+	laterID, laterRevision, err := queue.Append("dispatch-clear", sendqueue.Item{Text: "later", RequestID: "later"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if laterID == "" {
+		t.Fatal("later dispatch item has no ID")
 	}
 	h.bridge.SessionRunSettled("dispatch-clear", nil)
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
 		t.Fatal("later dispatch remained blocked by stale process guard")
+	}
+	// The dispatch observation is published before its completion callback. Wait
+	// for the subsequent queue revision, which is the callback's settlement frame.
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) >= float64(laterRevision+2) {
+			break
+		}
+	}
+	if got := queue.Snapshot("dispatch-clear"); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("later dispatch did not settle: %+v", got)
 	}
 }
 
