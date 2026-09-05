@@ -74,14 +74,6 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 			var code uint32
 			codeErr := windows.GetExitCodeProcess(peer, &code)
 			t.Logf("failure: real peer exit state=%d wait-error=%v code=%d code-error=%v", state, waitErr, code, codeErr)
-			data, err := os.ReadFile(filepath.Join(cfg.StateDir, "daemon-spawn.log"))
-			if err != nil {
-				t.Errorf("read bounded runtime diagnostics: %v", err)
-			} else {
-				for _, marker := range []string{"EPIPE", "ENOENT", "ERR_STREAM_DESTROYED", "TypeError:", "ReferenceError:", "panic:", "Segmentation fault", "shutting down", "Bun v", "Node.js v"} {
-					t.Logf("failure: runtime marker=%q present=%t", marker, strings.Contains(string(data), marker))
-				}
-			}
 		}
 		if shared != nil {
 			if err := shared.StopBounded(10 * time.Second); err != nil {
@@ -92,6 +84,17 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 			t.Errorf("cleanup owned daemon: %v", err)
 		} else {
 			t.Log("cleanup: owned Stop completed; tracked job drained/closed and client workers joined")
+		}
+		// Stop joins cmd.Wait and publishes the bounded log before it is read.
+		if t.Failed() {
+			data, err := os.ReadFile(filepath.Join(cfg.StateDir, "daemon-spawn.log"))
+			if err != nil {
+				t.Errorf("read bounded runtime diagnostics: %v", err)
+			} else {
+				for _, marker := range []string{"EPIPE", "ENOENT", "ERR_STREAM_DESTROYED", "TypeError:", "ReferenceError:", "panic:", "Segmentation fault", "shutting down", "rpc host child exit observed by identity watchdog", "supervisor pid", "supervisor pipe fd", "Bun v", "Node.js v"} {
+					t.Logf("failure: runtime marker=%q present=%t", marker, strings.Contains(string(data), marker))
+				}
+			}
 		}
 		if peer != 0 {
 			state, err := windows.WaitForSingleObject(peer, 5000)
