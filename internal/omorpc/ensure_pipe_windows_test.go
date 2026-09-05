@@ -96,6 +96,7 @@ func TestWindowsEnsureFreshSecretReuseAndOwnedStop(t *testing.T) {
 }
 
 func TestWindowsReconnectReadsReplacementSecret(t *testing.T) {
+	controlCleanupReceipt(t)
 	d := newMockDaemon(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -120,6 +121,6 @@ func TestWindowsReconnectReadsReplacementSecret(t *testing.T) {
 		t.Fatal("fixture did not replace secret")
 	}
 	if _, err := c.Call(ctx, GetProtocolInfo{}); err != nil {
-		t.Fatalf("reconnect with changed secret: %v", err)
+		t.Fatalf("CONTROL_ASSERT replacement_secret reconnect with changed secret: %v", err)
 	}
 }

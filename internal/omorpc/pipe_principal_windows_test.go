@@ -20,6 +20,7 @@ import (
 // retained process handle, and observed wire remain real, so either bypassing
 // identity validation or writing credentials before it makes this test fail.
 func TestWindowsForeignPrincipalRejectedBeforeSecretWrite(t *testing.T) {
+	controlCleanupReceipt(t)
 	path := filepath.Join(t.TempDir(), "rpc.sock")
 	secret := bytes.Repeat([]byte{0x5a}, 32)
 	if err := os.WriteFile(path+".secret", secret, 0600); err != nil {
@@ -73,19 +74,21 @@ func TestWindowsForeignPrincipalRejectedBeforeSecretWrite(t *testing.T) {
 	defer cancel()
 	c, err := Dial(ctx, path)
 	if c != nil {
-		c.Close()
-		t.Fatal("foreign principal accepted")
-	}
-	if !errors.Is(err, os.ErrPermission) {
-		t.Fatalf("foreign principal error=%v", err)
+		if closeErr := c.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		t.Error("CONTROL_ASSERT foreign_peer foreign principal accepted")
 	}
 	select {
 	case n := <-received:
 		if n != 0 {
-			t.Fatalf("disclosed %d auth bytes before identity validation", n)
+			t.Errorf("CONTROL_ASSERT foreign_peer disclosed %d auth bytes before identity validation", n)
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("CONTROL_ASSERT foreign_peer permission rejection missing: %v", err)
 	}
 }
 

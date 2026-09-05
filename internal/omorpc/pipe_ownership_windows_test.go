@@ -12,13 +12,14 @@ import (
 )
 
 func TestWindowsWrongHandshakeRejected(t *testing.T) {
+	controlCleanupReceipt(t)
 	path := productionPipeFixtureAt(t, filepath.Join(t.TempDir(), "rpc.sock"), bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	c, err := Dial(ctx, path)
 	if c != nil {
 		c.Close()
-		t.Fatal("wrong raw handshake accepted")
+		t.Fatal("CONTROL_ASSERT wrong_secret wrong raw handshake accepted")
 	}
 	if err == nil || isSpawnableProbeError(err) {
 		t.Fatalf("wrong auth should fail without permission to spawn: %v", err)
@@ -26,6 +27,7 @@ func TestWindowsWrongHandshakeRejected(t *testing.T) {
 }
 
 func TestWindowsOwnedStopPreservesReplacementEndpoint(t *testing.T) {
+	controlCleanupReceipt(t)
 	cfg := pipeEnsureConfig(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -45,6 +47,10 @@ func TestWindowsOwnedStopPreservesReplacementEndpoint(t *testing.T) {
 	productionPipeFixtureAt(t, cfg.SocketPath, secret, secret)
 	if err := owner.StopBounded(5 * time.Second); err != nil {
 		t.Fatal(err)
+	}
+	preserved, readErr := os.ReadFile(cfg.SocketPath + ".secret")
+	if readErr != nil || !bytes.Equal(preserved, secret) {
+		t.Fatal("CONTROL_ASSERT replacement_endpoint owned Stop damaged replacement secret")
 	}
 	replacement, err := EnsureDaemon(ctx, cfg)
 	if err != nil {
