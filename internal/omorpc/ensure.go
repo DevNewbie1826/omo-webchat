@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -230,7 +231,15 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	}
 	automaticArgs := nativeArgs
 	if cfg.ArgsTemplate == nil && cfg.ChildCommand == "" {
-		if childAdapter != "" {
+		if runtime.GOOS == "windows" {
+			// A Windows launcher cannot exec-replace itself. Keep the native
+			// supervisor child so its PPID and inherited FD3 remain intact.
+			cfg.Env, childAdapter, err = windowsNativeChildContext(cfg)
+			if err != nil {
+				return nil, err
+			}
+			nodeEnv = setEnv(setEnv(cfg.Env, "OMO_RUNTIME", "node"), "SENPI_RUNTIME", "node")
+		} else if childAdapter != "" {
 			// Both runtime attempts use the same direct-native adapter and child
 			// arguments. Only the attempt environment selects the runtime.
 			automaticArgs = nodeArgs
@@ -785,6 +794,9 @@ func EnsureExtensionEventsCapability(env []string) []string {
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, string, error) {
 	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
 	env = EnsureExtensionEventsCapability(setEnv(env, "SENPI_RUNTIME", "node"))
+	if runtime.GOOS == "windows" || cfg.ChildCommand != "" || cfg.ArgsTemplate != nil {
+		return nativeArgs, env, "", nil
+	}
 	installation, recognized, err := resolveLauncherInstallation(command, env)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)

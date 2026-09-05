@@ -143,6 +143,22 @@ jobs:
           }
           exit $probeExit
 
+      - name: Compare actual packaged extension commands across runtimes
+        shell: pwsh
+        run: |
+          $baseline = $null
+          foreach ($file in @('probe-reconnect.txt', 'probe-reconnect-node.txt', 'probe-reconnect-bun.txt')) {
+            $found = [regex]::Matches((Get-Content -LiteralPath $file -Raw), 'extension command parity: (\[.*\])')
+            if ($found.Count -ne 1) { throw "Expected one correlated command inventory in $file" }
+            $commands = @($found[0].Groups[1].Value | ConvertFrom-Json)
+            if ($commands.Count -eq 0) { throw "No packaged extension commands in $file" }
+            if ($null -ne $baseline -and @(Compare-Object $baseline $commands).Count -ne 0) {
+              throw "Packaged extension command mismatch in $file"
+            }
+            $baseline = $commands
+          }
+          Write-Output "extension parity: automatic/node/bun identical ($($baseline.Count) packaged commands)"
+
       - name: Production named-pipe contracts
         shell: pwsh
         run: go test ./internal/omorpc -count=1 -v -timeout=2m
