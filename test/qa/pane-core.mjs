@@ -62,9 +62,11 @@ let browser;
 const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + "\n");
 try {
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.on("pageerror", error => errors.push(String(error)));
-  await page.addInitScript(() => {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  let page;
+  context.on('page', opened => opened.on('pageerror', error => errors.push(String(error))));
+  await context.addInitScript(origin => {
+    if (location.origin !== origin) return; // The fresh about:blank document has no fixture storage.
     localStorage.setItem("th-lang", "en"); localStorage.setItem("th-ws-expanded", '["ws"]');
     window.qaSignal = predicate => new Promise((done, fail) => {
       const observer = new MutationObserver(check);
@@ -73,10 +75,14 @@ try {
       observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true }); check();
     });
     window.qaReady = window.qaSignal(() => document.querySelectorAll('.th-picker-pane-item').length > 0);
-  });
+  }, `http://127.0.0.1:${fixturePort}`);
   const arm = predicate => page.evaluate(source => { window.qaPending = window.qaSignal(new Function(`return (${source})`)()); }, predicate);
   const complete = () => page.evaluate(() => window.qaPending);
   async function reset(tree = split("root", "h", leaf("left", stored.id), leaf("right")), narrow = false) {
+    // Dispose the previous document before seeding: its pending debounce must
+    // not PUT an old layout over the next scenario while navigation is loading.
+    if (page) await page.close();
+    page = await context.newPage();
     layout = tree; await page.setViewportSize({ width: narrow ? 390 : 1440, height: narrow ? 844 : 900 });
     await page.goto(`http://127.0.0.1:${server.port}`); await page.evaluate(() => window.qaReady);
   }
