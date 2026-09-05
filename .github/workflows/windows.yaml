@@ -69,6 +69,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Production transport RED contracts
+        shell: pwsh
+        run: go test ./internal/omorpc -count=1 -v -run TestWindowsProductionRED
+
       - name: Windows lock tests
         shell: pwsh
         run: go test ./internal/omorpc/ -count=1 -run TestEnsureLock
