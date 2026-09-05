@@ -5,6 +5,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
+import { startFixture } from "./pane-workspace-ui.mjs";
+import { shortMenuScenarios } from "./pane-workspace-short-menus.mjs";
 const { chromium } = await import(process.env.QA_PLAYWRIGHT);
 const evidence = resolve(process.argv[2]);
 await mkdir(evidence, { recursive: true });
@@ -12,7 +14,7 @@ const leaf = (id, sessionId = null) => ({ kind: "leaf", id, sessionId });
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
 const catalog = [{ provider: "provider-a", modelId: "model-a", name: "Model A" },
   { provider: "provider-b", modelId: "model-b", name: "Model B" }];
-let layout, persistLayout = true;
+let layout;
 const requests = [], frames = [], results = [], errors = [];
 const sockets = new Set();
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -23,7 +25,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     if (path === "/api/auth/check") return new Response(null, { status: 204 });
     if (path === "/api/providers") return Response.json([{ id: "omo", label: "omo", available: true }]);
     if (path === "/api/workspaces") return Response.json([{ id: "ws", name: "Workspace", path: "/fixture", chats: [stored] }]);
-    if (path === "/api/layout") { if (req.method === "PUT" && persistLayout) layout = await req.json(); return Response.json({ layout }); }
+    if (path === "/api/layout") { if (req.method === "PUT") layout = await req.json(); return Response.json({ layout }); }
     if (path === "/api/workspaces/ws/sessions") return Response.json({ items: [], nextCursor: "" });
     if (path.startsWith("/api/sessions/")) return Response.json({ sessions: [] });
     if (path.endsWith("/goal")) return Response.json({ goal: null });
@@ -59,6 +61,15 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on("pageerror", error => errors.push(String(error)));
   await page.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    window.WebSocket = class extends NativeWebSocket {
+      set onmessage(handler) {
+        super.onmessage = handler ? event => {
+          handler.call(this, event);
+          window.dispatchEvent(new CustomEvent('qa:wire', { detail: JSON.parse(event.data) }));
+        } : null;
+      }
+    };
     localStorage.setItem("th-lang", "en"); localStorage.setItem("th-ws-expanded", '["ws"]');
     window.qaSignal = predicate => new Promise((done, fail) => {
       const observer = new MutationObserver(check);
@@ -145,7 +156,12 @@ try {
       "current provider/model identity pinned in the popup");
     await page.screenshot({ path: resolve(evidence, `model-popup-${narrow ? "narrow" : "desktop"}.png`) });
     const high = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^high$/ });
-    await high.click();
+    for (let i = 0; i < 12; i++) {
+      await page.keyboard.press("Tab");
+      if (await high.evaluate(e => e === document.activeElement)) break;
+    }
+    assert(await high.evaluate(e => e === document.activeElement), "thinking high reachable from trigger using Tab");
+    await page.keyboard.press("Enter");
     await page.evaluate(() => window.qaSignal(() => !document.querySelector(".th-model-picker-popover")
       || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("high")));
     assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["high"],
@@ -179,74 +195,22 @@ try {
   }
   assert.deepEqual(errors, []);
 
-  // Short-pane clipping: a real persisted vertical split gives a wide
-  // (>=601px) pane a ~225-300px tall band. The upward desktop popup must keep
-  // its chrome (current identity, thinking controls, search) visible and every
-  // model option reachable by scrolling and pointer hit-testing inside the
-  // clipping .th-chat-main band.
-  // Vertical split minimum pane spans lock the inner ratio under deficit, so
-  // the band height is driven by the viewport: 900px yields ~297px, 700px
-  // yields ~223px for the hosted top pane.
-  const v3 = { kind: "split", id: "root", dir: "v", ratio: 0.7,
-    first: { kind: "split", id: "inner", dir: "v", ratio: 0.5,
-      first: leaf("top-a", stored.id), second: leaf("mid-b") },
-    second: leaf("bottom-c") };
-  for (const viewportHeight of [900, 700]) {
-    layout = v3;
-    // The App PUTs its loaded layout back on change; keep the seeded tree
-    // authoritative for this scenario.
-    persistLayout = false;
-    await page.setViewportSize({ width: 1440, height: viewportHeight });
-    await page.goto(`http://127.0.0.1:${server.port}`);
-    await page.evaluate(() => window.qaSignal(() =>
-      !!document.querySelector('[data-pane-id="top-a"] .th-model-picker-btn')));
-    const paneRect = await page.locator('[data-pane-id="top-a"]').evaluate(e => e.getBoundingClientRect().toJSON());
-    assert(paneRect.width >= 601, `short-pane scenario needs a wide pane, got ${paneRect.width}`);
-    assert(paneRect.height <= 300 && paneRect.height >= 150, `short-pane band height, got ${paneRect.height}`);
-    const trigger = page.locator('[data-pane-id="top-a"] .th-composer-model .th-model-picker-btn');
-    // Pointer hit-testing must work in the valid layout: a real click opens the picker.
-    await trigger.click();
-    await page.evaluate(() => window.qaSignal(() => !!document.querySelector(".th-model-picker-popover")));
-    const short = await page.evaluate(() => {
-      const pane = document.querySelector('[data-pane-id="top-a"]').getBoundingClientRect();
-      const popup = document.querySelector(".th-model-picker-popover").getBoundingClientRect();
-      const hit = (el) => {
-        const rect = el.getBoundingClientRect();
-        const point = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        return point === el || el.contains(point);
-      };
-      const search = document.querySelector(".th-model-picker-search");
-      const current = document.querySelector(".th-model-picker-current");
-      const thinking = document.querySelector(".th-thinking-in-picker");
-      const list = document.querySelector(".th-model-picker-list");
-      return { pane: pane.toJSON(), popup: popup.toJSON(),
-        searchHit: hit(search), currentHit: hit(current), thinkingHit: hit(thinking),
-        listScroll: { scrollHeight: list.scrollHeight, clientHeight: list.clientHeight } };
+  // Shared strengthened checker replaces pane-only bounds and forced ancestor scrolling.
+  // It checks all six short layouts plus 53 models, OPEN captures, ordinary wheel
+  // and raw pointer selection, including complete search/thinking access.
+  const fixture = startFixture({ port: 0 });
+  try {
+    await shortMenuScenarios({ fixture, save,
+      async reset(seed, viewport) {
+        fixture.reset(seed); await page.setViewportSize(viewport); await page.goto(fixture.url); return page;
+      },
+      shot: name => page.screenshot({ path: resolve(evidence, name) }),
+      async scenario(name, action) { results.push({ scenario: name, pass: true, detail: await action() }); },
     });
-    assert(short.popup.height > 0, "popup has usable height in a short pane");
-    assert(short.popup.top >= short.pane.top - 1,
-      `popup clipped by the pane header: ${JSON.stringify({ popup: short.popup, pane: short.pane })}`);
-    assert(short.popup.bottom <= short.pane.bottom + 1,
-      `popup exceeds the pane band: ${JSON.stringify({ popup: short.popup, pane: short.pane })}`);
-    for (const name of ["searchHit", "currentHit", "thinkingHit"]) {
-      assert(short[name], `popup chrome ${name} not pointer-reachable: ${JSON.stringify(short)}`);
-    }
-    // Every model option is reachable: scroll the list so the target row is
-    // visible, prove hit-testing, and click it for an exact chat.set.
-    const shortSets = modelSets().length;
-    const target = page.locator('[data-pane-id="top-a"] .th-model-picker-popover [role="option"]', { hasText: "Model B" });
-    await target.scrollIntoViewIfNeeded();
-    assert(await target.evaluate(el => {
-      const rect = el.getBoundingClientRect();
-      const point = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-      return point === el || el.contains(point);
-    }), "target option not pointer-reachable after scrolling");
-    await target.click();
-    await page.evaluate(() => window.qaSignal(() => !document.querySelector(".th-model-picker-popover")));
-    assert.deepEqual(modelSets().slice(shortSets).map(f => f.model),
-      [{ provider: "provider-b", modelId: "model-b" }], "short-pane selection sends exact identity");
-    await page.screenshot({ path: resolve(evidence, `model-short-pane-${Math.round(paneRect.height)}.png`) });
-    results.push({ scenario: `model-short-pane-${Math.round(paneRect.height)}`, pass: true, paneRect, short });
+    assert.deepEqual(fixture.unexpected, []);
+  } finally {
+    await save('bounded-menu-traffic.json', { frames: fixture.frames, requests: fixture.requests });
+    await save('bounded-menu-cleanup.json', { url: fixture.url, ...await fixture.stop() });
   }
   assert.deepEqual(errors, []);
 } catch (error) {
