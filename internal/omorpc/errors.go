@@ -27,13 +27,18 @@ const openFailedPrefix = ErrCodeOpenFailed + ":"
 
 // StableError is a parsed stable error code from a failed response. Detail
 // carries the free-form suffix of "open_failed: <detail>" and is empty for
-// the seven exact codes. Error() reproduces the original wire string.
+// the seven exact codes. Error() returns the original wire string when the
+// value was parsed, and otherwise reconstructs "open_failed: " + Detail.
 type StableError struct {
 	Code   string
 	Detail string
+	wire   string
 }
 
 func (e *StableError) Error() string {
+	if e.wire != "" {
+		return e.wire
+	}
 	if e.Detail == "" {
 		return e.Code
 	}
@@ -58,7 +63,7 @@ func ParseStableError(wire string) (*StableError, bool) {
 	if strings.HasPrefix(wire, openFailedPrefix) {
 		detail := strings.TrimPrefix(wire, openFailedPrefix)
 		detail = strings.TrimLeft(detail, " ")
-		return &StableError{Code: ErrCodeOpenFailed, Detail: detail}, true
+		return &StableError{Code: ErrCodeOpenFailed, Detail: detail, wire: wire}, true
 	}
 	return nil, false
 }

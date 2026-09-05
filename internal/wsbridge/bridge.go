@@ -1067,6 +1067,11 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		case isSessionActiveError(err):
 			code = "session-active"
 			message = "session is active in another process"
+		default:
+			var stable *omorpc.StableError
+			if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeOpenFailed && strings.TrimSpace(stable.Detail) != "" {
+				message = stable.Error()
+			}
 		}
 		c.sendError(code, message, "", "")
 		return

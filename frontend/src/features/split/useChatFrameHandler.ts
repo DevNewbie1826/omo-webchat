@@ -115,18 +115,22 @@ const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
 // message or restore its draft.
 const UNCORRELATED_OPERATION_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"]);
 
-// Backend error frames carry a stable English fallback. Codes in this map
-// show localized copy on the transient error surface instead.
-const LOCALIZED_ERROR_KEYS: Readonly<Record<string, string>> = {
-  start_failed: "chat.startFailed",
-};
+const OPEN_FAILED_PREFIX = "open_failed:";
+
+function isOpenFailedDetail(message: string): boolean {
+  if (!message.startsWith(OPEN_FAILED_PREFIX)) return false;
+  return message.slice(OPEN_FAILED_PREFIX.length).trim() !== "";
+}
 
 function errorSurfaceMessage(
   frame: Extract<ChatServerFrame, { readonly type: "error" }>,
   t: Translate,
 ): string {
-  const key = frame.code !== undefined ? LOCALIZED_ERROR_KEYS[frame.code] : undefined;
-  return key !== undefined ? t(key) : frame.message;
+  if (frame.code !== "start_failed") return frame.message;
+  if (isOpenFailedDetail(frame.message)) {
+    return `${t("chat.startFailedHeading")}\n${frame.message}`;
+  }
+  return t("chat.startFailed");
 }
 
 /**
