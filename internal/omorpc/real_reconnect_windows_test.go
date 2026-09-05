@@ -5,6 +5,8 @@ package omorpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,9 +27,11 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
+		if err := waitReconnectDirectoryHolders(t, dir); err != nil {
+			t.Errorf("join isolated directory holders: %v", err)
+		}
 		if err := os.RemoveAll(dir); err != nil {
 			t.Errorf("remove isolated profile: %v", err)
-			reconnectDirectoryHolders(t, dir)
 			return
 		}
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
@@ -226,26 +230,22 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 		pipe.pid, ownerEpoch.epoch.number, preserved.ID)
 }
 
-// Failure-only native diagnosis of a sharing violation. Do not kill or wait on
-// arbitrary processes: this reports numeric owners and image basenames only.
-func reconnectDirectoryHolders(t *testing.T, dir string) {
+// Real Windows runtime identity probes can still retain the sandbox cwd after
+// the daemon's tracked job has drained. Observe exactly those native directory
+// holders and join their process-exit events before removing the profile once.
+// This never terminates a process, retries removal, or polls for elapsed time.
+func waitReconnectDirectoryHolders(t *testing.T, dir string) (resultErr error) {
 	t.Helper()
 	path, err := windows.UTF16PtrFromString(dir)
 	if err != nil {
-		t.Error(err)
-		return
+		return err
 	}
 	h, err := windows.CreateFile(path, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
 	if err != nil {
-		t.Errorf("open directory holder diagnostic: %v", err)
-		return
+		return err
 	}
-	defer func() {
-		if err := windows.CloseHandle(h); err != nil {
-			t.Error(err)
-		}
-	}()
+	defer func() { resultErr = errors.Join(resultErr, windows.CloseHandle(h)) }()
 	var info struct {
 		Count uint32
 		IDs   [128]uintptr
@@ -253,25 +253,34 @@ func reconnectDirectoryHolders(t *testing.T, dir string) {
 	var status windows.IO_STATUS_BLOCK
 	const fileProcessIdsUsingFileInformation = 47
 	if err := windows.NtQueryInformationFile(h, &status, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), fileProcessIdsUsingFileInformation); err != nil {
-		t.Errorf("query directory holder diagnostic: %v", err)
-		return
+		return err
 	}
 	if info.Count > uint32(len(info.IDs)) {
-		t.Errorf("directory holder diagnostic overflow: %d", info.Count)
-		return
+		return fmt.Errorf("directory holder list overflow: %d", info.Count)
 	}
 	for _, pid := range info.IDs[:info.Count] {
-		p, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
-		if err != nil {
-			t.Logf("failure: directory-holder pid=%d open-error=%v", pid, err)
+		if pid == uintptr(os.Getpid()) {
+			continue // The query itself owns h; its checked close precedes removal.
+		}
+		p, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			t.Logf("cleanup: directory-holder pid=%d already exited before native handle open", pid)
 			continue
 		}
-		var image [windows.MAX_PATH]uint16
-		size := uint32(len(image))
-		err = windows.QueryFullProcessImageName(p, 0, &image[0], &size)
-		t.Logf("failure: directory-holder pid=%d self=%t image=%s query-error=%v", pid, pid == uintptr(os.Getpid()), filepath.Base(windows.UTF16ToString(image[:size])), err)
-		if err := windows.CloseHandle(p); err != nil {
-			t.Error(err)
+		if err != nil {
+			return err
 		}
+		var code uint32
+		codeErr := windows.GetExitCodeProcess(p, &code)
+		state, waitErr := windows.WaitForSingleObject(p, 5000)
+		closeErr := windows.CloseHandle(p)
+		if err := errors.Join(codeErr, waitErr, closeErr); err != nil {
+			return err
+		}
+		if state != windows.WAIT_OBJECT_0 {
+			return fmt.Errorf("directory-holder pid=%d exit event did not signal: %d", pid, state)
+		}
+		t.Logf("cleanup: directory-holder pid=%d initial-exit-code=%d process-exit-signaled=true handle-closed=true", pid, code)
 	}
+	return nil
 }
