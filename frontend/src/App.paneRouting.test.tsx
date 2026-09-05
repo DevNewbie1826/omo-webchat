@@ -3,16 +3,43 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { deferred } from "./App.testHarness";
-import type { ChatClientFrame, ChatHandlers } from "./lib/chatWs";
+import type { ChatClientFrame, ChatHandlers, ChatServerFrame } from "./lib/chatWs";
 import type { Terminal } from "./features/workspace/workspace";
+import { requireElement, setTextareaValue } from "./features/split/chatPaneTestHarness";
+import { notifyUnauthorized } from "./lib/api";
 
 const transport = vi.hoisted(() => {
   const frames: ChatClientFrame[] = [];
-  return { frames };
+  const running = new Set<string>();
+  const subscribers = new Map<ChatHandlers, string>();
+  const deliver = (frame: ChatServerFrame) => {
+    if (frame.sessionId && frame.type === "run.started") running.add(frame.sessionId);
+    if (frame.sessionId && frame.type === "run.done") running.delete(frame.sessionId);
+    for (const [handlers, sessionId] of subscribers) {
+      if (sessionId === frame.sessionId) handlers.onFrame(frame);
+    }
+  };
+  return { frames, running, subscribers, deliver };
 });
 vi.mock("./lib/chatWs", () => ({ connectChat: vi.fn((handlers: ChatHandlers) => {
   handlers.onOpen?.();
-  return { send: vi.fn((frame: ChatClientFrame) => { transport.frames.push(frame); return true; }), close: vi.fn() };
+  return {
+    send: vi.fn((frame: ChatClientFrame) => {
+      transport.frames.push(frame);
+      if (frame.type === "chat.create") {
+        transport.subscribers.set(handlers, frame.chatId);
+        queueMicrotask(() => {
+          if (!transport.subscribers.has(handlers)) return;
+          handlers.onFrame({ type: "ready", sessionId: frame.chatId, piSessionId: frame.chatId, resumed: true });
+          handlers.onFrame({ type: "state", sessionId: frame.chatId, isStreaming: transport.running.has(frame.chatId), isCompacting: false });
+          handlers.onFrame({ type: "entries", sessionId: frame.chatId, entries: [], final: true });
+        });
+      }
+      return true;
+    }),
+    // Closing a subscriber does not stop the provider run.
+    close: vi.fn(() => transport.subscribers.delete(handlers)),
+  };
 }) }));
 
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
@@ -35,7 +62,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     narrow = false; empty = false; failPage = false; failMore = false; activeConflict = false;
-    requests = []; transport.frames.length = 0;
+    requests = []; transport.frames.length = 0; transport.running.clear(); transport.subscribers.clear();
     opening = deferred<Terminal>();
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
@@ -51,6 +78,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
       const path = url.pathname;
       requests.push({ path: path + url.search, method: init?.method ?? "GET", body: String(init?.body ?? "") });
       if (path === "/api/auth/check") return new Response(null, { status: 204 });
+      if (path === "/api/login" || (path === "/api/workspaces/ws/chats/stored-a" && init?.method === "DELETE")) return new Response(null, { status: 204 });
       if (path === "/api/providers") return Response.json([{ id: "omo", available: true }]);
       if (path === "/api/workspaces") return Response.json([{ id: "ws", name: "Workspace", path: "/fixture", chats: [stored, newer] }]);
       if (path === "/api/layout") return Response.json({ layout: narrow
@@ -100,6 +128,30 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     return result;
   }
   function title(index: number) { return pane(index).querySelector(".th-termhead-name")?.textContent ?? null; }
+  function editor(index: number) {
+    return requireElement(pane(index).querySelector<HTMLTextAreaElement>("textarea"), "Missing composer");
+  }
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+  async function draftWithImage(index: number, text: string) {
+    act(() => setTextareaValue(editor(index), text));
+    const loaded = deferred<void>();
+    const read = FileReader.prototype.readAsDataURL;
+    const reader = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (this: FileReader, file) {
+      this.addEventListener("loadend", () => loaded.resolve(), { once: true });
+      read.call(this, file);
+    });
+    const input = requireElement(pane(index).querySelector<HTMLInputElement>('input[type="file"]'), "Missing image picker");
+    const file = new File([Uint8Array.from(atob(png), c => c.charCodeAt(0))], "draft.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await loaded.promise;
+    });
+    reader.mockRestore();
+  }
+  function draft(index: number) {
+    return { text: editor(index).value, image: pane(index).querySelector(".th-chat-attach-thumb")?.getAttribute("src") ?? null };
+  }
   function assertNoDestructiveCalls() {
     expect(requests.filter(r => r.method === "DELETE" || /stop|disconnect/.test(r.path))).toEqual([]);
     expect(transport.frames.filter(frame => ["chat.abort", "chat.disconnect", "chat.close"].includes(frame.type))).toEqual([]);
@@ -122,6 +174,90 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect([title(0), title(1)]).toEqual(["Newer", null]);
     expect(transport.frames.filter(frame => frame.type === "chat.create").map(frame => frame.chatId)).toEqual([stored.id, newer.id]);
     assertNoDestructiveCalls();
+  });
+  it("moves the mounted session's unsent text and PNG to the selected empty pane, then submits and resets once", async () => {
+    await mount();
+    await draftWithImage(0, "Unsent draft must follow Stored A");
+    const expected = { text: "Unsent draft must follow Stored A", image: `data:image/png;base64,${png}` };
+    expect(draft(0)).toEqual(expected);
+    await act(async () => requireElement(pane(1).querySelector("select"), "Missing workspace selector").focus());
+    await click(sidebar("Stored A"));
+    expect([title(0), title(1)]).toEqual([null, "Stored A"]);
+    expect(draft(1)).toEqual(expected);
+    expect(container.querySelectorAll(".th-chat-input")).toHaveLength(1);
+    expect(transport.frames.filter(frame => frame.type === "chat.send")).toEqual([]);
+    assertNoDestructiveCalls();
+    await click(button(pane(1), ".th-chat-send-btn"));
+    expect(transport.frames.filter(frame => frame.type === "chat.send")).toEqual([
+      expect.objectContaining({ sessionId: stored.id, run: { kind: "prompt", message: expected.text, images: [{ data: png, mimeType: "image/png" }] } }),
+    ]);
+    expect(draft(1)).toEqual({ text: "", image: null });
+    await focusPane(0); await click(sidebar("Stored A"));
+    expect(draft(0)).toEqual({ text: "", image: null });
+  });
+  it("keeps independent drafts with replaced sessions rather than the hosting pane", async () => {
+    await mount(); await draftWithImage(0, "Stored A draft");
+    await click(sidebar("Newer"));
+    expect(draft(0)).toEqual({ text: "", image: null });
+    act(() => setTextareaValue(editor(0), "Newer draft"));
+    await focusPane(1); await click(sidebar("Stored A"));
+    expect(draft(1)).toEqual({ text: "Stored A draft", image: `data:image/png;base64,${png}` });
+    expect(draft(0)).toEqual({ text: "Newer draft", image: null });
+    assertNoDestructiveCalls();
+  });
+  it("reattaches a running session after move and replacement, retaining Stop and later provider events", async () => {
+    transport.running.add(stored.id);
+    await mount();
+    expect(button(pane(0), ".th-chat-send-btn").type).toBe("button");
+    expect(pane(0).querySelector(".th-chat-status-item--live")).not.toBeNull();
+    await focusPane(1); await click(sidebar("Stored A"));
+    expect(button(pane(1), ".th-chat-send-btn").textContent).toBe("Stop");
+    await click(sidebar("Newer"));
+    expect(button(pane(1), ".th-chat-send-btn").type).toBe("submit");
+    expect(transport.running.has(stored.id)).toBe(true);
+    await focusPane(0); await click(sidebar("Stored A"));
+    expect(button(pane(0), ".th-chat-send-btn").textContent).toBe("Stop");
+    expect([...transport.subscribers.values()].filter(id => id === stored.id)).toHaveLength(1);
+    await act(async () => transport.deliver({ type: "messageDelta", sessionId: stored.id, delta: { kind: "text_delta", delta: "The original run continues after reattachment" } }));
+    expect(pane(0).textContent).toContain("The original run continues after reattachment");
+    await act(async () => transport.deliver({ type: "run.done", sessionId: stored.id, reason: "stop" }));
+    expect(button(pane(0), ".th-chat-send-btn").type).toBe("submit");
+    expect(pane(0).querySelector(".th-chat-status-item--live")).toBeNull();
+    assertNoDestructiveCalls();
+  });
+  it("does not share drafts with a second App instance", async () => {
+    await mount(); await draftWithImage(0, "Private to the first App");
+    const other = document.createElement("div"); document.body.append(other);
+    const otherRoot = createRoot(other);
+    try {
+      await act(async () => otherRoot.render(<App />));
+      expect(requireElement(other.querySelector("textarea"), "Missing second App composer").value).toBe("");
+      expect(other.querySelector(".th-chat-attach-chip")).toBeNull();
+      expect(draft(0).text).toBe("Private to the first App");
+    } finally {
+      await act(async () => otherRoot.unmount()); other.remove();
+    }
+  });
+  it("clears session drafts at the authentication boundary", async () => {
+    await mount(); await draftWithImage(0, "Private to this login");
+    await act(async () => notifyUnauthorized());
+    const password = requireElement(container.querySelector<HTMLInputElement>('input[type="password"]'), "Missing login");
+    const set = requireElement(Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set, "Missing input setter");
+    act(() => { set.call(password, "fixture"); password.dispatchEvent(new Event("input", { bubbles: true })); });
+    await click(button(container, '.th-login button[type="submit"]'));
+    expect(draft(0)).toEqual({ text: "", image: null });
+  });
+  it("forgets a deleted session's draft before the same identity is opened again", async () => {
+    await mount(); await draftWithImage(0, "Deleted draft");
+    const storedRow = requireElement(sidebar("Stored A").parentElement, "Missing session row");
+    await click(button(storedRow, '.th-tree-actions .th-btn-icon--danger'));
+    await click(button(document, '.th-confirm-actions .th-btn--danger'));
+    expect(title(0)).toBeNull();
+    await click(row(pane(0), "Discovered B"));
+    await act(async () => opening.resolve({ ...stored, provider: "omo" }));
+    expect(title(0)).toBe("Stored A");
+    expect(draft(0)).toEqual({ text: "", image: null });
+    expect(requests.filter(r => r.method === "DELETE")).toHaveLength(1);
   });
   it.each(["older-first", "newer-first"])("keeps the newest same-source pane intent when responses arrive %s", async order => {
     empty = true; await mount();
@@ -210,6 +346,22 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     else await click(button(pane(1), '[aria-label="Close pane"]'));
     await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
     expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
+  });
+  it("lands deferred New Chat in its captured pane while later active and DOM focus stay authoritative", async () => {
+    await mount();
+    await act(async () => button(pane(1), ".th-picker-pane-create button").focus());
+    await click(button(pane(1), ".th-picker-pane-create button"));
+    const files = button(pane(0), ".th-files-toggle");
+    await act(async () => files.focus());
+    expect(pane(0).querySelector(".th-pane--focused")).not.toBeNull();
+    expect(document.activeElement).toBe(files);
+    await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
+    expect([title(0), title(1)]).toEqual(["Stored A", "Created"]);
+    expect(document.activeElement).toBe(files);
+    expect(pane(0).querySelector(".th-pane--focused")).not.toBeNull();
+    expect(container.querySelectorAll(".th-pane--focused")).toHaveLength(1);
+    await click(sidebar("Newer"));
+    expect([title(0), title(1)]).toEqual(["Newer", "Created"]);
   });
   it("opens an unresolved stored row without a preparation request", async () => {
     await mount(); await click(row(pane(1), "Union row"));

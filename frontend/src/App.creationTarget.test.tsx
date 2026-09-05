@@ -108,6 +108,6 @@ describe("App empty-state creation targeting", () => {
     await act(async () => {
       request.resolve({ id: "tm-pane-2", name: "chat-pane-2", provider: "omo" });
     });
-    expect(emptyState.assignSession).toHaveBeenCalledWith("pane-2", "tm-pane-2");
+    expect(emptyState.assignSession).toHaveBeenCalledWith("pane-2", "tm-pane-2", false);
   });
 });

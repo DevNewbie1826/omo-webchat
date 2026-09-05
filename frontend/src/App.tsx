@@ -30,6 +30,7 @@ import { useConfirm } from "./components/ConfirmDialog";
 import { NewChatDialog } from "./components/NewChatDialog";
 import { SessionPicker } from "./features/split/SessionPicker";
 import { ChatEmptyState } from "./components/ChatEmptyState";
+import { SessionDraftProvider } from "./features/split/sessionDraft";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
 
@@ -208,7 +209,7 @@ export function App() {
       if (target.paneId) {
         // A pane may close while the request is pending; the chat remains in the sidebar.
         if (layout.hasPane(target.paneId) && paneIntents.current.get(target.paneId) === target.generation) {
-          layout.assignSession(target.paneId, tm.id);
+          layout.assignSession(target.paneId, tm.id, false);
         }
       } else {
         layout.assignSession(layout.focusedPaneId, tm.id);
@@ -262,6 +263,7 @@ export function App() {
         <LoginPage onLogin={handleLogin} />
       )}
       {authed === true && (
+        <SessionDraftProvider sessions={sessions}>
         <div className="th-app">
           <Sidebar
             collapsed={sidebarCollapsed}
@@ -351,6 +353,7 @@ export function App() {
             }}
           />
         </div>
+        </SessionDraftProvider>
       )}
       {confirmDialog}
     </I18nContext.Provider>

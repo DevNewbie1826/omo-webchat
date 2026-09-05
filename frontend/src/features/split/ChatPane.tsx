@@ -263,6 +263,7 @@ export function ChatPane({
         )}
         </div>
         <ChatComposer
+          session={chatSession}
           modelControl={modelPicker}
           commands={chat.commands}
           running={chat.running}
