@@ -568,6 +568,89 @@ func TestChatCreateFailureUsesStableUserMessage(t *testing.T) {
 	}
 }
 
+func TestChatCreateOpenFailedPreservesOriginalErrorText(t *testing.T) {
+	const original = "open_failed: QA_CONTEXT_LIMIT 311799 > 272000"
+	h := newInPlaceBridgeHarness(t, "create-open-failed-detail")
+	h.daemon.FailNext(omorpc.CmdOpenSession, original)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "create-open-failed-detail"})
+	got := frames.next(t, "error")
+	if got["code"] != "start_failed" || got["message"] != original {
+		t.Fatalf("open_failed create = %#v", got)
+	}
+}
+
+func TestChatCreateOpenFailedPreservesNoncanonicalWireSpelling(t *testing.T) {
+	tests := []struct {
+		name string
+		wire string
+	}{
+		{name: "no-space", wire: "open_failed:no-space detail"},
+		{name: "multiple-leading-space", wire: "open_failed:  multiple-space detail"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chatID := "create-open-failed-wire-" + test.name
+			h := newInPlaceBridgeHarness(t, chatID)
+			h.daemon.FailNext(omorpc.CmdOpenSession, test.wire)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			got := frames.next(t, "error")
+			if got["code"] != "start_failed" || got["message"] != test.wire {
+				t.Fatalf("noncanonical open_failed = %#v", got)
+			}
+		})
+	}
+}
+
+func TestChatCreateOpenFailedWhitespaceFallsBackToGeneric(t *testing.T) {
+	tests := []struct {
+		name string
+		wire string
+	}{
+		{name: "empty-suffix", wire: "open_failed:"},
+		{name: "spaces", wire: "open_failed:   "},
+		{name: "tab", wire: "open_failed:\t"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			chatID := "create-open-failed-ws-" + test.name
+			h := newInPlaceBridgeHarness(t, chatID)
+			h.daemon.FailNext(omorpc.CmdOpenSession, test.wire)
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
+			got := frames.next(t, "error")
+			if got["code"] != "start_failed" || got["message"] != "could not open the session; please retry" {
+				t.Fatalf("whitespace open_failed = %#v", got)
+			}
+		})
+	}
+}
+
+func TestChatCreateOpenFailedPreservesMultilineMarkupLikeText(t *testing.T) {
+	token := strings.Repeat("T", 600)
+	original := "open_failed: QA_CONTEXT_LIMIT 311799 > 272000\n" + token + "\n<img src=x onerror=alert(1)>"
+	h := newInPlaceBridgeHarness(t, "create-open-failed-long")
+	h.daemon.FailNext(omorpc.CmdOpenSession, original)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "create-open-failed-long"})
+	got := frames.next(t, "error")
+	if got["code"] != "start_failed" || got["message"] != original {
+		t.Fatalf("multiline open_failed = %#v", got)
+	}
+}
+
+func TestChatCreateArbitraryProviderErrorKeepsGenericMessage(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "create-arbitrary-error")
+	h.daemon.FailNext(omorpc.CmdOpenSession, "sensitive internal boom")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "create-arbitrary-error"})
+	got := frames.next(t, "error")
+	if got["code"] != "start_failed" || got["message"] != "could not open the session; please retry" {
+		t.Fatalf("arbitrary create error = %#v", got)
+	}
+}
+
 func TestChatCreatePreparationFailuresUseStableUserMessage(t *testing.T) {
 	for _, guarded := range []bool{true, false} {
 		name := "prepare"

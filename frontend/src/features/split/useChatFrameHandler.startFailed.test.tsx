@@ -33,12 +33,16 @@ function i18nFor(lang: "en" | "ko"): I18nValue {
   };
 }
 
-function startFailedFrame(): ChatServerFrame {
+const GENERIC_START_FAILED = "could not open the session; please retry";
+const OPEN_FAILED_DETAIL = "open_failed: QA_CONTEXT_LIMIT 311799 > 272000";
+const OPEN_FAILED_LONG = `open_failed: QA_CONTEXT_LIMIT 311799 > 272000\n${"T".repeat(600)}\n<img src=x onerror=alert(1)>`;
+
+function startFailedFrame(message = GENERIC_START_FAILED): ChatServerFrame {
   return {
     type: "error",
     sessionId: "chat-1",
     code: "start_failed",
-    message: "could not open the session; please retry",
+    message,
   };
 }
 
@@ -73,9 +77,9 @@ describe("start_failed error surface localization", () => {
     });
   };
 
-  const deliverStartFailed = (): void => {
+  const deliverStartFailed = (message?: string): void => {
     act(() => {
-      captured?.handleFrame(startFailedFrame());
+      captured?.handleFrame(startFailedFrame(message));
     });
   };
 
@@ -98,5 +102,65 @@ describe("start_failed error surface localization", () => {
     expect(captured?.error).not.toBe(translate("en", "chat.startFailed"));
     expect(captured?.error).not.toBe(translate(detectLang(), "chat.startFailed"));
     expect(captured?.error).not.toBe("could not open the session; please retry");
+  });
+
+  it("keeps English heading and exact open_failed raw text when the translator is English", () => {
+    window.localStorage.setItem("th-lang", "en");
+    renderProbe(i18nFor("en"));
+    deliverStartFailed(OPEN_FAILED_DETAIL);
+
+    const heading = translate("en", "chat.startFailedHeading");
+    expect(heading).not.toBe("chat.startFailedHeading");
+    expect(heading).not.toBe(translate("en", "chat.startFailed"));
+    expect(captured?.error).toBe(`${heading}\n${OPEN_FAILED_DETAIL}`);
+    expect(captured?.error).toContain(OPEN_FAILED_DETAIL);
+    expect(captured?.error).not.toBe(translate("en", "chat.startFailed"));
+  });
+
+  it("keeps Korean heading and exact open_failed raw text from the active translator", () => {
+    window.localStorage.setItem("th-lang", "en");
+    renderProbe(i18nFor("ko"));
+    deliverStartFailed(OPEN_FAILED_DETAIL);
+
+    expect(detectLang()).toBe("en");
+    const heading = translate("ko", "chat.startFailedHeading");
+    expect(heading).not.toBe("chat.startFailedHeading");
+    expect(heading).not.toBe(translate("en", "chat.startFailedHeading"));
+    expect(heading).not.toBe(translate("ko", "chat.startFailed"));
+    expect(captured?.error).toBe(`${heading}\n${OPEN_FAILED_DETAIL}`);
+    expect(captured?.error).not.toBe(translate("en", "chat.startFailed"));
+    expect(captured?.error).not.toBe(translate(detectLang(), "chat.startFailed"));
+  });
+
+  it("falls back to localized generic copy when open_failed detail is empty or whitespace", () => {
+    window.localStorage.setItem("th-lang", "en");
+    renderProbe(i18nFor("ko"));
+    const generic = translate("ko", "chat.startFailed");
+
+    for (const message of ["open_failed:", "open_failed:   ", "open_failed:\t", "", "   "]) {
+      deliverStartFailed(message);
+      expect(captured?.error, message).toBe(generic);
+      expect(captured?.error, message).not.toContain("open_failed:");
+    }
+  });
+
+  it("preserves HTML-like multiline open_failed text after the localized heading", () => {
+    window.localStorage.setItem("th-lang", "en");
+    renderProbe(i18nFor("en"));
+    deliverStartFailed(OPEN_FAILED_LONG);
+
+    const heading = translate("en", "chat.startFailedHeading");
+    expect(captured?.error).toBe(`${heading}\n${OPEN_FAILED_LONG}`);
+    expect(captured?.error.endsWith("<img src=x onerror=alert(1)>")).toBe(true);
+    expect(captured?.error).toContain("T".repeat(600));
+  });
+
+  it("does not leak an arbitrary start_failed message", () => {
+    window.localStorage.setItem("th-lang", "en");
+    renderProbe(i18nFor("en"));
+    deliverStartFailed("sensitive internal boom");
+
+    expect(captured?.error).toBe(translate("en", "chat.startFailed"));
+    expect(captured?.error).not.toBe("sensitive internal boom");
   });
 });

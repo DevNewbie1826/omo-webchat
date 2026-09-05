@@ -632,3 +632,12 @@ describe("sidebar density and top-bar hierarchy contracts", () => {
     expect(error).toMatch(/color:\s*var\(--th-error\)/);
   });
 });
+
+describe("transcript error readability", () => {
+  it("keeps raw error text wrapping, pre-wrapped, and selectable", () => {
+    const body = ruleBody(chatTranscript, ".th-chat-error");
+    expect(declarationValue(body, "white-space")).toBe("pre-wrap");
+    expect(declarationValue(body, "overflow-wrap")).toBe("anywhere");
+    expect(declarationValue(body, "user-select")).toBe("text");
+  });
+});
