@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LayoutApi } from "../split/useLayout";
 import { deleteTerminal, renameTerminal } from "../terminal/terminal";
-import { applyChatNameToWorkspaces, useWorkspaces } from "./useWorkspaces";
+import { CATALOG_REFRESH_DELAY_MS, applyChatNameToWorkspaces, useWorkspaces } from "./useWorkspaces";
 import { deleteWorkspace, listWorkspaceSessions, listWorkspaces } from "./workspace";
 import type { Workspace } from "./workspace";
 
@@ -684,6 +684,192 @@ describe("useWorkspaces paginated session history", () => {
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
       "chat-1", "chat-2", "chat-3", "chat-4", "chat-5",
     ]);
+  });
+
+  it("renders a same-path replacement session beside its in-place chat", async () => {
+    const source = {
+      id: "disk-session",
+      name: "Disk session",
+      source: "discovered" as const,
+      recencyMs: 5,
+      resumeIdentity: "/sessions/disk-session.jsonl",
+    };
+    vi.mocked(listWorkspaceSessions)
+      .mockResolvedValueOnce({
+        items: [
+          ...chats.slice(0, 4).map((chat, index) => ({
+            id: chat.id,
+            name: chat.name,
+            source: "stored" as const,
+            recencyMs: 10 - index,
+          })),
+          source,
+        ],
+        nextCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        // Observed engine behavior: the durable-id-authoritative catalog keeps
+        // exposing a same-path replacement session under its own durable id,
+        // next to the stored row the in-place chat became.
+        items: [
+          { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
+          source,
+          {
+            id: "disk-session-next",
+            name: "Replacement session",
+            source: "discovered",
+            recencyMs: 3,
+            resumeIdentity: "/sessions/disk-session.jsonl",
+          },
+        ],
+        nextCursor: "",
+      });
+
+    act(() => root.render(<PendingSessionsProbe />));
+    await act(async () => pendingLatest?.load());
+    act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
+    await act(async () => undefined);
+
+    act(() => pendingLatest?.addCreatedSession("ws-1", {
+      id: "chat-new",
+      name: "New chat",
+      provider: "omo",
+    }, source));
+
+    expect(container.querySelectorAll('[data-session-id="disk-session"]')).toHaveLength(0);
+
+    await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
+
+    // No fold across differing durable ids: the stored row and the discovered
+    // replacement both render; only the exact adopted source stays folded.
+    expect(container.querySelectorAll('[data-session-id="chat-new"]')).toHaveLength(1);
+    expect(container.querySelector('[data-session-id="disk-session-next"]')?.textContent)
+      .toBe("Replacement session");
+    expect(container.querySelectorAll('[data-session-id="disk-session"]')).toHaveLength(0);
+    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4", "disk-session-next",
+    ]);
+  });
+
+  it("folds by path only when the adopted source has no durable id", async () => {
+    const pathOnlySource = {
+      id: "",
+      name: "Legacy session",
+      source: "discovered" as const,
+      recencyMs: 5,
+      resumeIdentity: "/sessions/legacy.jsonl",
+    };
+    vi.mocked(listWorkspaceSessions)
+      .mockResolvedValueOnce({
+        items: [
+          ...chats.slice(0, 4).map((chat, index) => ({
+            id: chat.id,
+            name: chat.name,
+            source: "stored" as const,
+            recencyMs: 10 - index,
+          })),
+          pathOnlySource,
+        ],
+        nextCursor: "next-page",
+      })
+      .mockResolvedValueOnce({
+        items: [
+          { id: "chat-new", name: "New chat", source: "stored", recencyMs: 20 },
+          {
+            id: "legacy-file-session",
+            name: "Legacy file session",
+            source: "discovered",
+            recencyMs: 3,
+            resumeIdentity: "/sessions/legacy.jsonl",
+          },
+        ],
+        nextCursor: "",
+      });
+
+    act(() => root.render(<PendingSessionsProbe />));
+    await act(async () => pendingLatest?.load());
+    act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
+    await act(async () => undefined);
+
+    act(() => pendingLatest?.addCreatedSession("ws-1", {
+      id: "chat-new",
+      name: "New chat",
+      provider: "omo",
+    }, pathOnlySource));
+
+    await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
+
+    expect(container.querySelectorAll('[data-session-id="chat-new"]')).toHaveLength(1);
+    // Without a recorded durable id the resume path is the only source
+    // identity, so the same-path discovered row still folds.
+    expect(container.querySelectorAll('[data-session-id="legacy-file-session"]')).toHaveLength(0);
+    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4",
+    ]);
+  });
+
+  it("refreshes a ready page once so a later-visible session appears without a reload", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(listWorkspaceSessions)
+        .mockResolvedValueOnce({
+          items: chats.slice(0, 5).map((chat, index) => ({
+            id: chat.id,
+            name: chat.name,
+            source: "stored" as const,
+            recencyMs: 10 - index,
+          })),
+          nextCursor: "next-page",
+        })
+        .mockResolvedValueOnce({
+          // Observed engine behavior: a freshly written session is held out of
+          // the discovered catalog behind a stabilization window, so it only
+          // shows up when the page is fetched again after that horizon.
+          items: [
+            ...chats.slice(0, 5).map((chat, index) => ({
+              id: chat.id,
+              name: chat.name,
+              source: "stored" as const,
+              recencyMs: 10 - index,
+            })),
+            {
+              id: "late-session",
+              name: "Late session",
+              source: "discovered",
+              recencyMs: 9,
+              resumeIdentity: "/sessions/late-session.jsonl",
+            },
+          ],
+          nextCursor: "next-page",
+        });
+
+      act(() => root.render(<PendingSessionsProbe />));
+      await act(async () => pendingLatest?.load());
+      act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
+      await act(async () => undefined);
+
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-session-id="late-session"]')).toBeNull();
+
+      await act(async () => vi.advanceTimersByTimeAsync(CATALOG_REFRESH_DELAY_MS));
+
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
+      expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "");
+      expect(container.querySelector('[data-session-id="late-session"]')?.textContent)
+        .toBe("Late session");
+      expect(pendingLatest?.sessionPages.get("ws-1")).toMatchObject({
+        ready: true,
+        loading: false,
+        hasMore: true,
+      });
+
+      // Bounded: the refresh consumed its one shot per staleness signal, so no
+      // polling loop follows it.
+      await act(async () => vi.advanceTimersByTimeAsync(CATALOG_REFRESH_DELAY_MS));
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

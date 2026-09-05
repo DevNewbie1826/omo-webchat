@@ -65,6 +65,14 @@ export function applyChatNameToWorkspaces(
   );
 }
 
+// Observed engine behavior: a freshly written session is held out of the
+// discovered catalog behind a short stabilization window, so a ready first
+// page can be missing a session that only becomes visible shortly after.
+// Once a page becomes ready, schedule exactly one refetch past that horizon;
+// the scheduled refresh never re-arms itself, so the picker never turns into
+// a polling loop.
+export const CATALOG_REFRESH_DELAY_MS = 120_000;
+
 const WORKSPACE_EXPANDED_STORAGE_KEY = "th-ws-expanded";
 
 function readExpandedWorkspaces(): ReadonlySet<string> {
@@ -110,13 +118,36 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // so a stale server page cannot briefly project both rows.
   const inPlaceBindingsRef = useRef<Map<string, Map<string, { readonly chatId: string; readonly path: string }>>>(new Map());
 
+  // Observed engine behavior: a recorded durable id is authoritative — the
+  // same resume path under a different id is a distinct replacement session
+  // that must stay visible. The fold therefore matches the exact source
+  // identity and falls back to the path only when the adopted source recorded
+  // no durable id at all.
   const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
     const bindings = inPlaceBindingsRef.current.get(wsId);
     if (!bindings) return items;
     return items.filter((item) => item.source !== "discovered"
-      || !bindings.has(item.id)
-      && (item.resumeIdentity === undefined || ![...bindings.values()].some((binding) => binding.path === item.resumeIdentity)));
+      || ![...bindings.entries()].some(([durableId, binding]) =>
+        durableId !== ""
+          ? item.id === durableId
+          : binding.path !== "" && item.resumeIdentity === binding.path));
   };
+
+  // One armed eventual refresh per workspace: a bound timer means the ready
+  // first page still owes its single post-stabilization refetch.
+  const catalogRefreshTimersRef = useRef<Map<string, number>>(new Map());
+
+  const disarmCatalogRefresh = useCallback((wsId: string): void => {
+    const timer = catalogRefreshTimersRef.current.get(wsId);
+    if (timer === undefined) return;
+    catalogRefreshTimersRef.current.delete(wsId);
+    window.clearTimeout(timer);
+  }, []);
+
+  const disarmAllCatalogRefreshes = useCallback((): void => {
+    for (const timer of catalogRefreshTimersRef.current.values()) window.clearTimeout(timer);
+    catalogRefreshTimersRef.current.clear();
+  }, []);
 
   const removePendingCreatedSession = (wsId: string, chatId: string): void => {
     const pending = pendingCreatedSessionsRef.current.get(wsId);
@@ -157,8 +188,8 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     [replaceSessionPages],
   );
 
-  const fetchSessionPage = useCallback(
-    async (wsId: string, cursor: string, append: boolean): Promise<void> => {
+  const fetchSessionPage: (wsId: string, cursor: string, append: boolean, scheduled?: boolean) => Promise<void> = useCallback(
+    async (wsId, cursor, append, scheduled = false): Promise<void> => {
       const before = sessionPagesRef.current.get(wsId);
       if (before?.loading) return;
       patchSessionPaging(wsId, {
@@ -187,6 +218,16 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           hasMore: page.nextCursor !== "",
           nextCursor: page.nextCursor,
         });
+        if (!append && !scheduled) {
+          disarmCatalogRefresh(wsId);
+          // One bounded refresh per staleness signal: arm exactly once per
+          // first-page readiness; the scheduled pass below never re-arms.
+          const timer = window.setTimeout(() => {
+            catalogRefreshTimersRef.current.delete(wsId);
+            void fetchSessionPage(wsId, "", false, true);
+          }, CATALOG_REFRESH_DELAY_MS);
+          catalogRefreshTimersRef.current.set(wsId, timer);
+        }
       } catch {
         // Restore the pre-fetch state so a failed page can be retried.
         patchSessionPaging(wsId, {
@@ -197,8 +238,11 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         });
       }
     },
-    [patchSessionPaging, replaceSessionLists],
+    [disarmCatalogRefresh, patchSessionPaging, replaceSessionLists],
   );
+
+  // Pending eventual refreshes die with the hook.
+  useEffect(() => () => disarmAllCatalogRefreshes(), [disarmAllCatalogRefreshes]);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -207,12 +251,13 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       const loadedIds = new Set(loadedWorkspaces.map((workspace) => workspace.id));
       setExpanded((previous) => new Set([...previous].filter((id) => loadedIds.has(id))));
       // A fresh canonical list invalidates the independently paged sidebar view.
+      disarmAllCatalogRefreshes();
       replaceSessionLists(new Map());
       replaceSessionPages(new Map());
     } catch {
       /* transient failure — tree stays empty until next mutation */
     }
-  }, [replaceSessionLists, replaceSessionPages, setExpanded]);
+  }, [disarmAllCatalogRefreshes, replaceSessionLists, replaceSessionPages, setExpanded]);
 
   // The first page loads whenever a loaded workspace becomes expanded,
   // whichever action (chevron toggle, session select, chat creation) expanded it.
@@ -345,6 +390,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         replaceSessionPages(next);
       }
       pendingCreatedSessionsRef.current.delete(ws.id);
+      disarmCatalogRefresh(ws.id);
       inPlaceBindingsRef.current.delete(ws.id);
       notify(t("toast.workspaceDeleted"), "success");
     } catch {

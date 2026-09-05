@@ -58,10 +58,13 @@ const decodeCssIdentifier = (identifier: string): string =>
 // - --th-chat-max caps the chat content lane independently of theme.
 // - --th-chat-gutter adapts the chat lane's inline gutter at container breakpoints.
 // - --th-chat-scrollbar sizes chat-specific scrollbar accommodation.
+// - --th-queue-body-max caps the queue slot's scrollport so a long pending
+//   queue scrolls internally instead of pushing the composer.
 const COMPONENT_OWNED_CUSTOM_PROPERTIES = new Map([
   ["--th-chat-max", "chat-pane.css"],
   ["--th-chat-gutter", "chat-pane.css"],
   ["--th-chat-scrollbar", "chat-pane.css"],
+  ["--th-queue-body-max", "chat-pane.css"],
 ]);
 
 const isProtectedDesignTokenName = (name: string, file: string): boolean =>
