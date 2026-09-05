@@ -33,14 +33,15 @@ describe("computeShelfAvailableSpace", () => {
     const column = measured("th-chat-main", 800);
     const composer = measured("th-chat-input", 100, "5px");
     const status = measured("th-chat-status", 20);
-    const goalShelf = measured("th-goal-shelf", 0, "6px");
+    const goalShelf = measured("th-goal-shelf", 0, "9px");
     const goalBar = measured("th-activity-bar-row", 30);
-    const goalPanel = measured("th-goal-panel", 80, "3px");
+    const goalPanel = measured("th-goal-panel", 80);
     goalShelf.append(goalBar, goalPanel);
     const activityShelf = measured("th-activity-shelf", 0, "8px");
     const activityBar = measured("th-activity-bar-row", 30);
     const grip = measured("th-activity-resize", 10, "2px");
-    const selfPanel = measured("th-activity-panel", 200, "4px");
+    grip.style.marginBottom = "4px";
+    const selfPanel = measured("th-activity-panel", 200);
     activityShelf.append(activityBar, grip, selfPanel);
     column.append(composer, status, goalShelf, activityShelf);
     document.body.appendChild(column);

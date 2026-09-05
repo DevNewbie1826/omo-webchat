@@ -268,7 +268,8 @@ describe("GoalBar", () => {
       expect(observer?.observed).toContain(panelOf());
       expect(observer?.observed).toContain(column.querySelector(".th-chat-input"));
       expect(observer?.observed).toContain(column.querySelector(".th-chat-status"));
-      expect(panelOf().style.maxHeight).toBe("");
+      // Registration measures immediately, without waiting for an observer.
+      expect(panelOf().style.maxHeight).toBe(`${GOAL_CAP}px`);
       // 800 − 324 = 476 available > the 40vh cap, so the cap wins.
       observer?.fire(800);
       expect(panelOf().style.maxHeight).toBe(`${GOAL_CAP}px`);
@@ -297,8 +298,9 @@ describe("GoalBar", () => {
       mockRect(column, 371);
       initialObserver?.fireAt(column, 371);
       expect(container.querySelector(".th-goal-panel")).toBeNull();
-      expect(initialObserver?.disconnected).toBe(true);
+      expect(initialObserver?.disconnected).toBe(false);
       const collapsedObserver = GoalColumnObserver.instances.at(-1);
+      expect(collapsedObserver).toBe(initialObserver);
       expect(collapsedObserver?.observed).not.toContain(firstPanel);
       const bar = container.querySelector<HTMLButtonElement>("button.th-goal-bar");
       if (!bar) throw new Error("missing goal bar button");

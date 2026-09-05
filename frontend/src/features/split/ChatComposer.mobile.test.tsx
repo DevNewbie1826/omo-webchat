@@ -127,6 +127,6 @@ describe("ChatComposer capsule geometry contracts", () => {
 	it("keeps textarea multiline growth capped at 160px inside the capsule", () => {
 		const textarea = css.match(/(?:^|\})\s*\.th-chat-input textarea\s*\{([^}]*)\}/)?.[1] ?? "";
 		expect(textarea).toMatch(/min-height:\s*36px/);
-		expect(textarea).toMatch(/max-height:\s*160px/);
+		expect(textarea).toMatch(/max-height:\s*min\(160px,\s*max\(44px,\s*calc\(100cqh - 200px\)\)\)/);
 	});
 });

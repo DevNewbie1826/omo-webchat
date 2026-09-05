@@ -15,9 +15,10 @@ function outerHeight(element: Element): number {
 /** Both panel boxes are outputs, never fixed-band inputs. */
 export function computeShelfAvailableSpace(column: HTMLElement, _selfPanel?: Element | null): number {
   let fixed = 0;
-  for (const child of column.children) {
-    if (child.matches(".th-chat-scrollport, .th-goal-shelf, .th-activity-shelf")) continue;
-    if (child.matches(".th-goal-panel, .th-activity-panel")) { fixed += verticalMargins(child); continue; }
+  const content = column.querySelector(":scope > .th-chat-main-content");
+  const bands = [...column.children, ...(content?.children ?? [])];
+  for (const child of bands) {
+    if (child === content || child.matches(".th-chat-scrollport, .th-goal-shelf, .th-activity-shelf, .th-goal-panel, .th-activity-panel")) continue;
     // A nested shelf mount is structural, not a fixed band.
     if (child.querySelector(".th-goal-shelf, .th-activity-shelf")) continue;
     fixed += outerHeight(child);
@@ -25,7 +26,6 @@ export function computeShelfAvailableSpace(column: HTMLElement, _selfPanel?: Ele
   for (const shelf of column.querySelectorAll(".th-goal-shelf, .th-activity-shelf")) {
     fixed += verticalMargins(shelf);
     for (const band of shelf.querySelectorAll(".th-activity-bar-row, .th-activity-resize")) fixed += outerHeight(band);
-    for (const panel of shelf.querySelectorAll(".th-goal-panel, .th-activity-panel")) fixed += verticalMargins(panel);
   }
   return column.getBoundingClientRect().height - fixed - TRANSCRIPT_MIN_BAND_PX;
 }
@@ -52,13 +52,15 @@ interface Registration {
 /** One measurement/allocation owner per column, shared by both subscribers. */
 const columns = new WeakMap<HTMLElement, ReturnType<typeof createColumnAllocator>>();
 function createColumnAllocator(column: HTMLElement) {
-  const registrations = new Set<Registration>();
+  const registrations = new Map<HTMLElement, Registration>();
   const observed = new Set<Element>();
   let goalPreference = Math.round(window.innerHeight * 0.4);
   const measure = (entries: readonly ResizeObserverEntry[] = []): void => {
     let goal: Registration | undefined;
     let activity: Registration | undefined;
-    for (const item of registrations) {
+    // A hidden/unlaid-out column has no usable measurement yet.
+    if (column.getBoundingClientRect().height === 0) return;
+    for (const item of registrations.values()) {
       if (item.shelf.matches(".th-goal-shelf")) goal = item;
       else activity = item;
     }
@@ -72,7 +74,7 @@ function createColumnAllocator(column: HTMLElement) {
     const allocation = allocateShelfSpace(computeShelfAvailableSpace(column),
       goal ? Math.min(goalPreference, Math.round(window.innerHeight * 0.4)) : 0,
       activity ? Math.min(activity.preferred ?? 280, Math.round(window.innerHeight * 0.6)) : 0);
-    for (const item of registrations) {
+    for (const item of registrations.values()) {
       const entry = entries.find((entry) => entry.target === item.panel);
       item.update({ availableSpacePx: item === goal ? allocation.goal : allocation.activity,
         selfPanelHeightPx: entry?.contentRect.height ?? null });
@@ -81,7 +83,7 @@ function createColumnAllocator(column: HTMLElement) {
   const resize = new ResizeObserver((entries) => measure(entries));
   const refresh = (): void => {
     const next = new Set<Element>([column, ...column.children,
-      ...column.querySelectorAll(".th-activity-bar-row, .th-activity-resize, .th-goal-content, .th-goal-panel, .th-activity-panel, .th-goal-shelf, .th-activity-shelf")]);
+      ...column.querySelectorAll(".th-chat-main-content > *, .th-activity-bar-row, .th-activity-resize, .th-goal-content, .th-goal-panel, .th-activity-panel, .th-goal-shelf, .th-activity-shelf")]);
     for (const item of observed) if (!next.has(item)) { resize.unobserve(item); observed.delete(item); }
     for (const item of next) if (!observed.has(item)) { resize.observe(item); observed.add(item); }
   };
@@ -90,9 +92,11 @@ function createColumnAllocator(column: HTMLElement) {
   window.addEventListener("resize", measureViewport);
   function measureViewport(): void { measure(); }
   return {
-    add(item: Registration): void { registrations.add(item); refresh(); },
-    remove(item: Registration): void {
-      registrations.delete(item);
+    // Replace preferences in place: never allocate against a temporarily
+    // unregistered peer just because its panel ref or requested size changed.
+    add(item: Registration): void { registrations.set(item.shelf, item); refresh(); measure(); },
+    remove(shelf: HTMLElement): void {
+      registrations.delete(shelf);
       if (registrations.size) { refresh(); measure(); }
       else { resize.disconnect(); mutation.disconnect(); window.removeEventListener("resize", measureViewport); columns.delete(column); }
     },
@@ -106,6 +110,10 @@ export function useShelfAvailableSpace(
   preferred: number | null = null,
 ): ShelfAvailableSpace {
   const [value, setValue] = useState<ShelfAvailableSpace>({ availableSpacePx: null, selfPanelHeightPx: null });
+  useEffect(() => {
+    const column = shelf?.closest<HTMLElement>(".th-chat-main");
+    return () => { if (column && shelf) columns.get(column)?.remove(shelf); };
+  }, [active, shelf]);
   useEffect(() => {
     const column = shelf?.closest<HTMLElement>(".th-chat-main");
     if (!active || !shelf || typeof ResizeObserver === "undefined") {
@@ -129,7 +137,6 @@ export function useShelfAvailableSpace(
         ? previous : { ...next, selfPanelHeightPx: height };
     }) };
     owner.add(registration);
-    return () => owner.remove(registration);
   }, [active, shelf, selfPanel, preferred]);
   return value;
 }

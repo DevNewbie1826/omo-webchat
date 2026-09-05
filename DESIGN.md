@@ -230,7 +230,15 @@ Choose a tested foreground/background token pair instead.
   allocate goal first while retaining a 48px activity row, and collapse a goal
   allocation below 48px without losing the user's expansion intent. Activity
   likewise hides an unreadable panel while retaining its resize grip and saved
-  preference, restoring the panel automatically when space returns.
+  preference, restoring the panel automatically when space returns. The grip
+  owns the activity panel gap for the entire open intent, including hidden
+  panels. Registration and preference changes recompute the complete shelf
+  set; saved/requested sizes remain independent of viewport allocations.
+- The content shell between header and composer owns auxiliary overflow only
+  when fixed bands exceed the column. Banners, shelves, queue and recovery
+  actions remain reachable by scrolling; the transcript retains its normal
+  independent scrollport when space permits. No auxiliary band is clipped to
+  make the composer fit.
 - Reading column: `min(760px, 100%)`, horizontally centered. Structural
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
@@ -241,7 +249,10 @@ Choose a tested foreground/background token pair instead.
   is the only focus surface — its border strengthens and a ring appears on
   `:focus-within`; the textarea itself is bare and borderless.
 - The input grows from one line to a 160px cap; controls stay bottom-anchored
-  while it grows.
+  while it grows. The actual column further bounds the editor to its height
+  minus 200px, with a 44px usable floor. This leaves room for composer chrome
+  and the auxiliary scroll band in short/split columns; taller columns recover
+  the normal cap without losing the multiline draft.
 - File browser: absolute right-side overlay on desktop and full-pane overlay on
   narrow screens. Opening it must not change the chat pane flex axis.
 - Split panes: each pane independently obeys this geometry down to 420px. Below

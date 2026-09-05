@@ -319,11 +319,14 @@ describe("ActivityShelf resize", () => {
     }
   });
 
-  it("clamps an out-of-range persisted height on restore", () => {
+  it("retains a tall persisted request while the sized-panel CSS bounds its output", () => {
     window.localStorage.setItem(STORAGE_KEY, "99999");
     renderShelf();
     openShelf();
-    expect(panelOf().style.height).toBe(`${PANEL_MAX}px`);
+    expect(panelOf().style.height).toBe("99999px");
+    expect(panelOf().classList.contains("th-activity-panel--sized")).toBe(true);
+    const css = readFileSync("src/styles/activity-shelf.css", "utf8");
+    expect(css.match(/\.th-activity-panel--sized\s*\{([^}]*)\}/)?.[1]).toMatch(/max-height:\s*60vh/);
   });
 
   it("ignores a garbage persisted value and keeps the default sizing", () => {
@@ -572,11 +575,11 @@ describe("ActivityShelf resize", () => {
       act(() => {
         bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       });
-      // Reopened: the clamp resets until the column is measured again.
-      expect(panelOf().style.maxHeight).toBe("");
+      // Reopening computes immediately from the current column.
+      expect(panelOf().style.maxHeight).toBe("176px");
       const shelf = container.querySelector<HTMLElement>(".th-activity-shelf");
       if (!shelf) throw new Error("missing activity shelf");
-      expect(shelf.style.flexShrink).toBe("");
+      expect(shelf.style.flexShrink).toBe("0");
     });
 
     it("recomputes the clamp when the queue slot appears, grows, expands, collapses, and disappears", () => {

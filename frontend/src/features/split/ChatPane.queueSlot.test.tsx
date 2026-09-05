@@ -48,11 +48,11 @@ describe("ChatPane queue slot placement", () => {
 		// Slot order: after the shelves, before the composer.
 		const main = panel.closest(".th-chat-main");
 		if (!main) throw new Error("missing chat main");
-		const children = [...main.children];
-		const panelIndex = children.indexOf(panel);
-		const composerIndex = children.findIndex((child) => child.matches("form.th-chat-input") || child.querySelector("form.th-chat-input") !== null);
-		expect(panelIndex).toBeGreaterThan(0);
-		expect(panelIndex).toBeLessThan(composerIndex);
+		const transcript = requireElement(main.querySelector(".th-chat-scrollport"), "transcript");
+		const composer = requireElement(main.querySelector("form.th-chat-input"), "composer");
+		expect(transcript.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+		expect(panel.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+		expect(panel.closest(".th-chat-main-content")).not.toBeNull();
 		// The queued item must not appear as a transcript row.
 		expect(container.querySelectorAll(".th-chat-scrollport .th-chat-msg--user")).toHaveLength(0);
 	});

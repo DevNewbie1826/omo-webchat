@@ -18,12 +18,29 @@
 }
 
 .th-chat-main {
+  container: chat-column / size;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Normally only the transcript scrolls. In a fixed-band deficit this shell
+   scrolls the auxiliary controls instead of clipping them below the composer. */
+.th-chat-main-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.th-chat-main-content > :not(.th-chat-scrollport) {
+  flex-shrink: 0;
 }
 
 .th-chat-pane .th-termhead {

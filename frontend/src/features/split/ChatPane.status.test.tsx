@@ -48,7 +48,8 @@ describe("ChatPane status row", () => {
     expect(status?.textContent).toContain("chat.cacheHit70%");
     expect(header?.querySelector(".th-context-badge")).toBeNull();
     expect(status?.previousElementSibling).toBe(transcript);
-    expect(status?.nextElementSibling).toBe(composer);
+    expect(status?.parentElement?.className).toBe("th-chat-main-content");
+    expect(status?.parentElement?.nextElementSibling).toBe(composer);
   });
 
   it("keeps the status row free of a top divider", () => {

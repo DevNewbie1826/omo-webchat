@@ -126,7 +126,6 @@
   gap: var(--th-space-3);
   min-height: 0;
   max-height: 280px;
-  margin-top: var(--th-space-1);
   padding: var(--th-space-2);
   overflow: auto;
   border: 1px solid var(--th-border);
@@ -158,7 +157,8 @@
   justify-content: center;
   width: 100%;
   height: 10px;
-  margin: var(--th-space-0-5) auto 0;
+  /* Open-intent spacing survives even when the allocated panel is hidden. */
+  margin: var(--th-space-0-5) auto var(--th-space-1);
   cursor: row-resize;
   touch-action: none;
   transition: background-color var(--th-dur-fast) var(--th-ease);

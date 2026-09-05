@@ -179,6 +179,7 @@ export function ChatPane({
         )}
       </header>
       <div className="th-chat-main">
+        <div className="th-chat-main-content">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
         {chat.sendError && (
@@ -256,6 +257,7 @@ export function ChatPane({
             ))}
           </div>
         )}
+        </div>
         <ChatComposer
           modelControl={narrow ? modelPicker : null}
           commands={chat.commands}

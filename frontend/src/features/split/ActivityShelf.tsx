@@ -75,7 +75,7 @@ function detectPanelHeight(): number | null {
   try {
     const raw = window.localStorage.getItem(PANEL_STORAGE_KEY);
     const parsed = raw === null ? Number.NaN : Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? clampPanelHeight(parsed) : null;
+    return Number.isFinite(parsed) ? Math.max(PANEL_MIN, parsed) : null;
   } catch {
     return null;
   }
@@ -141,8 +141,8 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     setHeight(px);
     try {
       if (px === null) window.localStorage.removeItem(PANEL_STORAGE_KEY);
-      // Re-clamp against the live viewport at save time so a height stored
-      // here can never exceed the current window (restore re-clamps too).
+      // Explicit resize gestures are viewport-bounded; restoring a preference
+      // never truncates it to the current allocation.
       else window.localStorage.setItem(PANEL_STORAGE_KEY, String(clampPanelHeight(px)));
     } catch {
       // Private modes may throw; the choice simply will not persist.
