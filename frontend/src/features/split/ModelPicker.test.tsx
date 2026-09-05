@@ -52,6 +52,8 @@ describe("ModelPicker", () => {
     expect(options[1]!.getAttribute("aria-selected")).toBe("true");
     expect(options[0]!.getAttribute("aria-selected")).toBe("false");
     expect(search.getAttribute("aria-activedescendant")).toBe(options[1]!.id);
+    act(() => options[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    expect(search.getAttribute("aria-activedescendant")).toBe(options[1]!.id);
     act(() => pressKey(search, "ArrowDown"));
     expect(options[1]!.getAttribute("aria-selected")).toBe("true");
     expect(options[2]!.getAttribute("aria-selected")).toBe("false");
@@ -60,6 +62,21 @@ describe("ModelPicker", () => {
     expect(selected).toEqual([]);
     act(() => pressKey(search, "Enter"));
     expect(selected).toEqual(["other/gpt-5"]);
+  });
+
+  it("opens compact controls without focusing search and pins current provider", () => {
+    act(() => root.render(<ModelPicker models={models} currentModelKey="openai/gpt-5"
+      placeholder="Model" searchPlaceholder="Search" compact thinkingLevel="high"
+      onSelect={(value) => selected.push(value)} />));
+    const trigger = container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!;
+    act(() => trigger.click());
+    const search = document.querySelector<HTMLInputElement>(".th-model-picker-search")!;
+    expect(document.activeElement).not.toBe(search);
+    expect(document.querySelector(".th-model-picker-current")?.textContent).toContain("openai");
+    expect(trigger.textContent).toContain("high");
+    act(() => pressKey(document.activeElement as HTMLElement, "Escape"));
+    expect(document.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("lists all models when opened and selects via keyboard", () => {

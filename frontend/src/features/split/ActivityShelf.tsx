@@ -133,6 +133,8 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     && selfPanelHeightPx < PANEL_HEADLESS_BELOW_PX
     && !naturalFloorActive;
 
+  const expanded = open && (columnClampPx === null || columnClampPx >= PANEL_NATURAL_MIN_PX);
+
   if (!hasActivity) return null;
 
   const applyHeight = (px: number | null): void => {
@@ -219,7 +221,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
         <button
           type="button"
           className="th-activity-bar"
-          aria-expanded={open}
+          aria-expanded={expanded}
           aria-controls={panelId}
           onClick={() => setOpen((value) => !value)}
         >
@@ -258,7 +260,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
             onKeyDown={onKeyResize}
             onDoubleClick={() => applyHeight(null)}
           />
-          <div
+          {expanded && <div
             ref={setPanelRef}
             id={panelId}
             role="group"
@@ -291,7 +293,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
               <DagSection dags={dags} t={t} view={view} onViewChange={setView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} />
             )}
             {activities.todo !== null && <TodoSection phases={activities.todo} t={t} />}
-          </div>
+          </div>}
         </>
       )}
     </section>

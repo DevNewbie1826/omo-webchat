@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { KeyboardEvent } from "react";
-import { IconChevron, IconSettings } from "../../components/icons";
+import { useT } from "../../i18n";
+import { IconCheck, IconChevron, IconSettings, IconX } from "../../components/icons";
 
 export interface ModelOption {
   readonly provider: string;
@@ -10,6 +12,7 @@ export interface ModelOption {
 }
 
 interface ModelPickerProps {
+  readonly compact?: boolean;
   readonly models: readonly ModelOption[];
   readonly currentModelKey: string;
   readonly placeholder: string;
@@ -24,11 +27,14 @@ interface ModelPickerProps {
 const keyOf = (model: ModelOption): string => `${model.provider}/${model.modelId}`;
 const labelOf = (model: ModelOption): string => model.name || model.modelId;
 
-export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceholder, onSelect, thinkingLevels, thinkingLevel, thinkingLabel, onThinkingChange }: ModelPickerProps) {
+export function ModelPicker({ compact = false, models, currentModelKey, placeholder, searchPlaceholder, onSelect, thinkingLevels, thinkingLevel, thinkingLabel, onThinkingChange }: ModelPickerProps) {
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const reactId = useId();
@@ -52,8 +58,9 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
     setQuery("");
     const currentIndex = models.findIndex((model) => keyOf(model) === currentModelKey);
     setActiveIndex(currentIndex >= 0 ? currentIndex : models.length > 0 ? 0 : -1);
-    searchRef.current?.focus();
-  }, [open, models, currentModelKey]);
+    if (compact) popoverRef.current?.focus();
+    else searchRef.current?.focus();
+  }, [open, models, currentModelKey, compact]);
 
   useEffect(() => {
     optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
@@ -63,23 +70,24 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
     if (!open) return;
     const onPointerDown = (event: PointerEvent): void => {
       const target = event.target;
-      if (target instanceof Node && rootRef.current && !rootRef.current.contains(target)) setOpen(false);
+      if (target instanceof Node && rootRef.current && !rootRef.current.contains(target) && !popoverRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
 
+  const close = (): void => { setOpen(false); triggerRef.current?.focus(); };
+
   const select = (model: ModelOption): void => {
     onSelect(keyOf(model));
-    setOpen(false);
+    close();
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.nativeEvent.isComposing) return;
-    if (matches.length === 0) {
-      if (event.key === "Escape") setOpen(false);
-      return;
-    }
+    if (event.key === "Escape") { event.preventDefault(); close(); return; }
+    if (event.target !== searchRef.current && event.target !== popoverRef.current) return;
+    if (matches.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setActiveIndex((index) => (index < 0 ? 0 : (index + 1) % matches.length));
@@ -92,17 +100,82 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
       if (model) select(model);
     } else if (event.key === "Tab") {
       setOpen(false);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setOpen(false);
     }
   };
 
   const buttonLabel = current ? labelOf(current) : placeholder;
 
+  const popover = (
+    <div ref={popoverRef} tabIndex={-1} onKeyDown={onKeyDown}
+      className={`th-model-picker-popover${compact ? " th-model-picker-popover--sheet" : ""}`}>
+      <div className="th-model-picker-current">
+        <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
+        {compact && <button type="button" className="th-btn-icon" aria-label={t("common.close")} onClick={close}><IconX size={16} /></button>}
+      </div>
+      {thinkingLevels && onThinkingChange ? (
+        <div className="th-thinking-in-picker" role="group" aria-label={thinkingLabel}>
+          <span className="th-thinking-in-picker-label">{thinkingLabel}</span>
+          <div className="th-thinking-in-picker-levels">
+            {thinkingLevels.map((level) => (
+              <button
+                key={level}
+                type="button"
+                className={`th-thinking-level${level === thinkingLevel ? " th-thinking-level--active" : ""}`}
+                aria-pressed={level === thinkingLevel}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => onThinkingChange(level)}
+              >
+                {level}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <input
+        ref={searchRef}
+        className="th-model-picker-search"
+        type="text"
+        role="combobox"
+        aria-controls={listboxId}
+        aria-expanded={matches.length > 0}
+        aria-autocomplete="list"
+        aria-activedescendant={activeIndex >= 0 ? `${optionIdPrefix}-${activeIndex}` : undefined}
+        placeholder={searchPlaceholder}
+        value={query}
+        onChange={(event) => {
+          setQuery(event.target.value);
+          setActiveIndex(0);
+        }}
+      />
+      <div className="th-model-picker-list" id={listboxId} role="listbox">
+        {matches.map((model, index) => {
+          const active = index === activeIndex;
+          return (
+            <button
+              key={keyOf(model)}
+              ref={(element) => { optionRefs.current[index] = element; }}
+              id={`${optionIdPrefix}-${index}`}
+              type="button"
+              role="option"
+              aria-selected={keyOf(model) === currentModelKey}
+              data-active={active || undefined}
+              onMouseMove={() => setActiveIndex(index)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => select(model)}
+            >
+              <strong>{labelOf(model)}{keyOf(model) === currentModelKey && <IconCheck size={14} />}</strong>
+              <span>{model.provider}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <div className="th-model-picker" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         className="th-model-picker-btn"
         aria-haspopup="listbox"
@@ -115,71 +188,10 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
           <IconSettings size={14} />
         </span>
         <span className="th-model-picker-label">{buttonLabel}</span>
+        {compact && thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
         <IconChevron size={14} />
       </button>
-      {open && (
-        <div className="th-model-picker-popover">
-          {thinkingLevels && onThinkingChange ? (
-            <div className="th-thinking-in-picker" role="group" aria-label={thinkingLabel}>
-              <span className="th-thinking-in-picker-label">{thinkingLabel}</span>
-              <div className="th-thinking-in-picker-levels">
-                {thinkingLevels.map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    className={`th-thinking-level${level === thinkingLevel ? " th-thinking-level--active" : ""}`}
-                    aria-pressed={level === thinkingLevel}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => onThinkingChange(level)}
-                  >
-                    {level}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          <input
-            ref={searchRef}
-            className="th-model-picker-search"
-            type="text"
-            role="combobox"
-            aria-controls={listboxId}
-            aria-expanded={matches.length > 0}
-            aria-autocomplete="list"
-            aria-activedescendant={activeIndex >= 0 ? `${optionIdPrefix}-${activeIndex}` : undefined}
-            placeholder={searchPlaceholder}
-            value={query}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setActiveIndex(0);
-            }}
-            onKeyDown={onKeyDown}
-          />
-          <div className="th-model-picker-list" id={listboxId} role="listbox">
-            {matches.map((model, index) => {
-              const active = index === activeIndex;
-              return (
-                <button
-                  key={keyOf(model)}
-                  ref={(element) => { optionRefs.current[index] = element; }}
-                  id={`${optionIdPrefix}-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={keyOf(model) === currentModelKey}
-                  data-active={active || undefined}
-                  onMouseMove={() => setActiveIndex(index)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => select(model)}
-                >
-                  <strong>{labelOf(model)}</strong>
-                  <span>{model.provider}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {open && (compact ? createPortal(popover, document.body) : popover)}
     </div>
   );
 }

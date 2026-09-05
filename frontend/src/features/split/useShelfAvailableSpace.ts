@@ -17,7 +17,8 @@ export function computeShelfAvailableSpace(column: HTMLElement, _selfPanel?: Ele
   let fixed = 0;
   for (const child of column.children) {
     if (child.matches(".th-chat-scrollport, .th-goal-shelf, .th-activity-shelf")) continue;
-    // A component test may wrap its shelf mount; that wrapper is not a band.
+    if (child.matches(".th-goal-panel, .th-activity-panel")) { fixed += verticalMargins(child); continue; }
+    // A nested shelf mount is structural, not a fixed band.
     if (child.querySelector(".th-goal-shelf, .th-activity-shelf")) continue;
     fixed += outerHeight(child);
   }
@@ -65,8 +66,8 @@ function createColumnAllocator(column: HTMLElement) {
     if (intrinsic && goal?.panel) {
       const style = getComputedStyle(goal.panel);
       const natural = intrinsic.getBoundingClientRect().height;
-      if (natural > 0) goalPreference = natural + (parseFloat(style.paddingTop) || 0)
-        + (parseFloat(style.paddingBottom) || 0) + (parseFloat(style.borderBottomWidth) || 0);
+      if (natural > 0) goalPreference = Math.max(48, natural + (parseFloat(style.paddingTop) || 0)
+        + (parseFloat(style.paddingBottom) || 0) + (parseFloat(style.borderBottomWidth) || 0));
     }
     const allocation = allocateShelfSpace(computeShelfAvailableSpace(column),
       goal ? Math.min(goalPreference, Math.round(window.innerHeight * 0.4)) : 0,

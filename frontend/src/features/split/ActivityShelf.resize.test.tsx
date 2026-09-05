@@ -531,7 +531,7 @@ describe("ActivityShelf resize", () => {
       expect(panelOf().hasAttribute("data-headless")).toBe(false);
     });
 
-    it("keeps the unsized panel at its CSS cap with surplus, and bottoms out at 0px", () => {
+    it("keeps the natural cap and collapses unreadable panels without losing open intent", () => {
       const fixture = mountInColumn();
       renderShelf();
       openShelf();
@@ -542,10 +542,14 @@ describe("ActivityShelf resize", () => {
       mockRect(fixture.column, 800);
       observer?.fireAt(fixture.column, 800);
       expect(panel.style.maxHeight).toBe("280px");
-      // 300 − 204 − 120 = −24 clamps to 0 rather than a negative height.
       mockRect(fixture.column, 300);
       observer?.fireAt(fixture.column, 300);
-      expect(panel.style.maxHeight).toBe("0px");
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+      expect(container.querySelector(".th-activity-bar")?.getAttribute("aria-expanded")).toBe("false");
+      mockRect(fixture.column, 800);
+      HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
+      expect(container.querySelector(".th-activity-panel")).not.toBeNull();
+      expect(container.querySelector(".th-activity-bar")?.getAttribute("aria-expanded")).toBe("true");
     });
 
     it("clears the inline clamp and the shelf's no-yield shrink when the shelf closes", () => {

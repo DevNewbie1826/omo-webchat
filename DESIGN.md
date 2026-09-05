@@ -228,7 +228,9 @@ Choose a tested foreground/background token pair instead.
   its intrinsic content preference; activity retains its saved height or the
   280px default preference. Reserve 120px for conversation when feasible,
   allocate goal first while retaining a 48px activity row, and collapse a goal
-  allocation below 48px without losing the user's expansion intent.
+  allocation below 48px without losing the user's expansion intent. Activity
+  likewise hides an unreadable panel while retaining its resize grip and saved
+  preference, restoring the panel automatically when space returns.
 - Reading column: `min(760px, 100%)`, horizontally centered. Structural
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
@@ -354,7 +356,12 @@ invocation.
 At 390x844 and comparable narrow sizes:
 
 - the conversation and composer remain at least 320px wide;
-- the workspace path and optional model selector may hide;
+- the workspace path may hide; the current model name and thinking level stay
+  visible in a compact control inside the measured composer band;
+- the narrow model picker opens a viewport-contained sheet without focusing
+  search or summoning its keyboard. Current model/provider identity stays pinned
+  above the scrolling options. Selection uses exact provider/model identity,
+  independent of navigation focus, and the current row is visible on opening;
 - header controls remain reachable with 44px touch targets;
 - the composer's plus action and send/stop circle grow to 44px hit areas, and
   the input keeps a 44px minimum height;

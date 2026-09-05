@@ -328,7 +328,7 @@ describe("visual accessibility contracts", () => {
     expect(mobileRules).toMatch(/\.th-files-dl\s*\{[^}]*opacity:\s*1/);
   });
 
-  it("switches model/provider prose at the 600px expanded boundary while retaining Files", () => {
+  it("retains model prose and Files while compacting header provider metadata", () => {
     // Above the actual narrow/expanded breakpoint, provider and model prose use
     // their base display and the settings icon stays hidden.
     const wide = chatPane.slice(0, chatPane.indexOf("@container"));
@@ -336,17 +336,15 @@ describe("visual accessibility contracts", () => {
     expect(wide).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
     expect(wide).not.toMatch(/\.th-model-picker-label\s*\{[^}]*display:\s*none/);
 
-    // At and below 600px, prose yields to the icon-only model control. This is
-    // the same boundary that introduces all other narrow header treatment, so
-    // widths from 341px through 600px cannot fall back to the overflowing form.
+    // At and below 600px, the named model control moves into the composer.
+    // Its responsive width can shrink without hiding its name.
     const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(compact).toMatch(
-      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+      /\.th-chat-pane \.th-provider-badge\s*\{[^}]*display:\s*none/,
     );
     expect(compact).toMatch(/\.th-chat-pane \.th-model-picker-icon\s*\{[^}]*display:\s*inline-flex/);
-    expect(compact).toMatch(
-      /\.th-chat-pane \.th-model-picker-btn\s*\{[^}]*width:\s*44px[^}]*max-width:\s*44px[^}]*min-width:\s*44px[^}]*min-height:\s*44px/,
-    );
+    expect(declarationValue(ruleBody(compact, ".th-chat-pane .th-model-picker-btn"), "min-height")).toBe("var(--th-space-11)");
+    expect(compact).not.toMatch(/\.th-model-picker-label\s*\{[^}]*display:\s*none/);
 
     // Files is an independently labelled action, not prose to discard. No
     // responsive rule may remove its entry point on either compact tier.
@@ -416,7 +414,7 @@ describe("visual accessibility contracts", () => {
   it("fits the header minimum on both sides of the 600px breakpoint", () => {
     const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(compact).toMatch(
-      /\.th-chat-pane \.th-provider-badge,\s*\.th-chat-pane \.th-model-picker-label\s*\{[^}]*display:\s*none/,
+      /\.th-chat-pane \.th-provider-badge\s*\{[^}]*display:\s*none/,
     );
 
     const header = ruleBody(chatPane, ".th-chat-pane .th-termhead");
@@ -425,7 +423,6 @@ describe("visual accessibility contracts", () => {
       /\.th-chat-pane \.th-mobile-menu,[\s\S]*?\.th-chat-pane \.th-termhead-actions \.th-btn-icon\s*\{([^}]*)\}/,
     )?.[1] ?? "";
     const compactResync = ruleBody(compact, ".th-chat-pane .th-chat-resync-btn");
-    const compactModel = ruleBody(compact, ".th-chat-pane .th-model-picker-btn");
     const expandedResync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
     const expandedModel = ruleBody(chatPane, ".th-model-picker");
     const pixels = (value: string): number => {
@@ -442,11 +439,11 @@ describe("visual accessibility contracts", () => {
     const iconWidth = pixels(declarationValue(iconControls, "width"));
 
     // Compact has one edge action (the viewport menu or split close), Files,
-    // model, resync, and disconnect. Provider/model prose remains hidden.
+    // resync, and disconnect. The model control belongs to the composer.
     const compactWidths =
-      titleMinimum + iconWidth * 3 + pixels(declarationValue(compactModel, "width")) +
+      titleMinimum + iconWidth * 3 +
       pixels(declarationValue(compactResync, "width"));
-    const compactAggregate = horizontalPadding + compactWidths + gap * 5;
+    const compactAggregate = horizontalPadding + compactWidths + gap * 4;
     for (const paneWidth of [320, 600]) expect(compactAggregate).toBeLessThanOrEqual(paneWidth);
 
     // Expanded mode may show all three split actions plus the viewport edge
