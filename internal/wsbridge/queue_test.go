@@ -76,6 +76,47 @@ func TestSendDuringRunQueuesAndSettleFlushesOneHead(t *testing.T) {
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
 		t.Fatal("settle did not flush the queue head")
 	}
+	// The request observation precedes its detached persistence callback.
+	// Subscribe while the flush is held, then join its completion and queued
+	// publications before socket/harness/TempDir cleanup (including Fatal paths).
+	sess, ok := h.manager.Get("webchat-queue")
+	if !ok {
+		t.Fatal("attached session disappeared")
+	}
+	completion := &cancelSignalSubscriber{frames: make(chan session.Frame, 64), cancelled: make(chan struct{})}
+	detach := sess.Attach(completion)
+	t.Cleanup(func() {
+		defer detach()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		releaseFlush()
+		pending := map[string]bool{"running": true, "queued-1": true}
+		for {
+			select {
+			case outcome := <-completion.frames:
+				if outcome.Kind != session.FrameAck || outcome.Phase != "completed" {
+					continue
+				}
+				delete(pending, outcome.RequestID)
+				if len(pending) != 0 {
+					continue
+				}
+				// CompleteDetachedSend publishes the flush ack after enqueueing both
+				// the queue publication and idle drain. Join their FIFO position.
+				release, err := h.manager.EnterChat(ctx, "webchat-queue")
+				if err != nil {
+					t.Fatal(err)
+				}
+				release()
+				if got := queue.Snapshot("webchat-queue"); got.Dispatching != nil {
+					t.Fatal("queue dispatch completion still owns a persistence write at teardown")
+				}
+				return
+			case <-ctx.Done():
+				t.Fatal("timed out joining flushed queue head completion")
+			}
+		}
+	})
 	frame := frames.next(t, "queue")
 	for len(frame["items"].([]any)) != 1 {
 		frame = frames.next(t, "queue")
