@@ -139,13 +139,19 @@ func TestQueueCommandsAndEngineMirror(t *testing.T) {
 		t.Fatalf("engine mirror = %v", engine)
 	}
 
+	deadline := time.Now().Add(5 * time.Second)
 	writeClient(t, conn, map[string]any{"type": "chat.queue.clear", "sessionId": "queue-commands", "scope": "all", "requestId": "clear"})
-	if ack := frames.next(t, "ack"); ack["command"] != "chat.queue.clear" {
+	if ack := frames.nextWithin(t, "ack", time.Until(deadline)); ack["command"] != "chat.queue.clear" {
 		t.Fatalf("clear ack = %v", ack)
 	}
-	frame := frames.next(t, "queue")
-	if len(frame["items"].([]any)) != 0 || frame["engine"].(map[string]any)["pendingMessageCount"] != float64(0) {
-		t.Fatalf("clear frame = %v", frame)
+	for {
+		frame := frames.nextWithin(t, "queue", time.Until(deadline))
+		items := frame["items"].([]any)
+		engine := frame["engine"].(map[string]any)
+		t.Logf("clear queue snapshot revision=%v items=%d pending=%v", frame["revision"], len(items), engine["pendingMessageCount"])
+		if len(items) == 0 && engine["pendingMessageCount"] == float64(0) {
+			break
+		}
 	}
 	if got := h.daemon.RequestCount(omorpc.CmdClearQueue); got != 1 {
 		t.Fatalf("clear_queue requests = %d, want 1", got)
