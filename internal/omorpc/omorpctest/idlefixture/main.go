@@ -86,6 +86,10 @@ func (c *controls) handler() http.Handler {
 	mux.HandleFunc("POST /open-barrier/arm", c.armOpen)
 	mux.HandleFunc("POST /open-barrier/await", c.awaitBarrier)
 	mux.HandleFunc("POST /open-barrier/release", c.releaseBarrier)
+	mux.HandleFunc("POST /read-barrier/arm", c.armRead)
+	mux.HandleFunc("POST /read-barrier/await", c.awaitBarrier)
+	mux.HandleFunc("POST /read-barrier/release", c.releaseBarrier)
+	mux.HandleFunc("POST /read-barrier/evict", c.evictAtBarrier)
 	return mux
 }
 

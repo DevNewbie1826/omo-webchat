@@ -21,12 +21,32 @@ func (c *controls) armBarrier(w http.ResponseWriter, r *http.Request, command st
 	if !decode(w, r, &request) {
 		return
 	}
+	c.installBarrier(w, request.Path, command, evict)
+}
+
+func (c *controls) armRead(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Path    string `json:"path"`
+		Command string `json:"command"`
+	}
+	if !decode(w, r, &request) {
+		return
+	}
+	switch request.Command {
+	case omorpc.CmdGetCommands, omorpc.CmdGetState:
+		c.installBarrier(w, request.Path, request.Command, true)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "command must be get_commands or get_state"})
+	}
+}
+
+func (c *controls) installBarrier(w http.ResponseWriter, path, command string, evict bool) {
 	c.mu.Lock()
 	c.next++
 	token := "barrier-" + strconv.FormatUint(c.next, 10)
 	c.barriers[token] = finalBarrier{
-		path: request.Path, command: command, baseline: c.daemon.RequestCountForPath(command, request.Path), evict: evict,
-		release: c.daemon.BlockHandlerForPath(command, request.Path),
+		path: path, command: command, baseline: c.daemon.RequestCountForPath(command, path), evict: evict,
+		release: c.daemon.BlockHandlerForPath(command, path),
 	}
 	c.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"armed": true, "token": token})

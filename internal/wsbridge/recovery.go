@@ -30,8 +30,15 @@ func (c *connection) queryRecovering(ctx context.Context, binding recoveryBindin
 	if !errors.Is(err, session.ErrSessionResumable) && !errors.Is(err, session.ErrSessionClosed) {
 		return
 	}
-	recovered, recoverErr := c.recoverBindingInFlight(ctx, binding)
-	if recoverErr != nil {
+	recovered, recoverErr := c.recoverBindingInFlight(ctx, &binding)
+	if recoverErr == nil {
+		err = query.run(ctx, recovered)
+		if !errors.Is(err, session.ErrSessionResumable) && !errors.Is(err, session.ErrSessionClosed) {
+			return
+		}
+		recoverErr = err
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
 		info := resumeFailureInfo(recoverErr)
 		frame, mapErr := mapError("error", binding.stale.chatID, session.Frame{Kind: session.FrameError, Command: query.command, Data: info})
 		if mapErr == nil {
@@ -39,10 +46,9 @@ func (c *connection) queryRecovering(ctx context.Context, binding recoveryBindin
 		}
 		return
 	}
-	_ = query.run(ctx, recovered)
 }
 
-func (c *connection) recoverBindingInFlight(ctx context.Context, binding recoveryBinding) (*session.Session, error) {
+func (c *connection) recoverBindingInFlight(ctx context.Context, binding *recoveryBinding) (*session.Session, error) {
 	var preparedGeneration uint64
 	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
 	if guarded {
@@ -86,18 +92,17 @@ func (c *connection) recoverBindingInFlight(ctx context.Context, binding recover
 		resumed, _, detach, resumeErr := c.bridge.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(
 			ctx, chatRef{id: rec.ID, cwd: rec.CWD}, staged.sub, initialize, validate, bind, nil,
 		)
+		if resumeErr != nil && detach != nil {
+			staged.sub.wrapDetach(detach)()
+		}
 		if !errors.Is(resumeErr, session.ErrSessionResumable) || attempt == 1 {
 			return resumed, resumeErr
 		}
-		if detach != nil {
-			detach()
-		}
-		staged.sub.DiscardHydrationAttempt()
 	}
 	return nil, session.ErrSessionResumable
 }
 
-func (c *connection) bindRecovered(ctx context.Context, binding recoveryBinding, staged *stagedRecovery) bool {
+func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding, staged *stagedRecovery) bool {
 	wrappedDetach := staged.sub.wrapDetach(staged.detach)
 	c.stateMu.Lock()
 	if c.closed.Load() || c.wsID != binding.workspaceID || c.chatID != binding.stale.chatID ||
@@ -106,13 +111,19 @@ func (c *connection) bindRecovered(ctx context.Context, binding recoveryBinding,
 		wrappedDetach()
 		return false
 	}
-	oldDetach := c.detach
+	oldSession, oldDetach, oldSub := c.sess, c.detach, c.sub
 	c.sess, c.detach, c.sub = staged.session, wrappedDetach, staged.sub
 	c.stateMu.Unlock()
 	if !staged.sub.activate(ctx, !staged.started) {
+		c.stateMu.Lock()
+		if c.sess == staged.session && c.sub == staged.sub && c.bindingGeneration == binding.stale.generation {
+			c.sess, c.detach, c.sub = oldSession, oldDetach, oldSub
+		}
+		c.stateMu.Unlock()
 		wrappedDetach()
 		return false
 	}
+	binding.stale.session = staged.session
 	if oldDetach != nil {
 		oldDetach()
 	}

@@ -589,8 +589,16 @@ func (m *Manager) AcquireInitializedCheckedAndRunRecovering(ctx context.Context,
 		return nil, false, nil, err
 	}
 	defer unlock()
+	resumeOnly := false
+	if m.cfg.Store != nil {
+		cur, err := m.cfg.Store.CursorFor(ctx, chat.ChatID())
+		if err != nil {
+			return nil, false, nil, err
+		}
+		resumeOnly = cur.SessionFile != ""
+	}
 	for attempt := 0; attempt < 2; attempt++ {
-		s, started, detach, acquireErr := m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, false, true)
+		s, started, detach, acquireErr := m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, resumeOnly, true)
 		if !errors.Is(acquireErr, ErrSessionResumable) || attempt == 1 {
 			return s, started, detach, acquireErr
 		}
@@ -598,6 +606,7 @@ func (m *Manager) AcquireInitializedCheckedAndRunRecovering(ctx context.Context,
 			detach()
 		}
 		discardHydrationAttempt(sub)
+		resumeOnly = true
 	}
 	return nil, false, nil, ErrSessionResumable
 }

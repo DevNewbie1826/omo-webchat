@@ -3,7 +3,6 @@ package session
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -239,41 +238,13 @@ func (s *blockingHistoryRecorder) EndReplay()    { s.replayEvents <- "end" }
 func (s *blockingHistoryRecorder) Cancel() error { return nil }
 
 func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *testing.T) {
-	path, _ := writeHistorySession(t, entriesPageMaxCount*2+1, 0)
+	sess, path := newValidatedHistorySession(t, "quarantine-race", 1)
 	identity, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess := &Session{
-		manager:              &Manager{},
-		chatID:               "quarantine-race",
-		durableID:            "unused",
-		routingID:            "route",
-		sessionFile:          path,
-		sessionFileIdentity:  identity,
-		inPlace:              true,
-		queueSize:            1,
-		activitySnapshots:    make(map[string]json.RawMessage),
-		activityOversized:    make(map[string]bool),
-		completedCompactions: make(map[string]struct{}),
-	}
-	// Match the generated file's durable identity so hydration reaches its
-	// second identity check after streaming the disk pages.
-	var header struct {
-		ID string `json:"id"`
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.NewDecoder(file).Decode(&header); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	sess.durableID = header.ID
+	sess.sessionFileIdentity = identity
+	sess.inPlace = true
 
 	observer := newRecorder(8)
 	detachObserver, _, err := sess.attachCheckedTarget(observer)
@@ -297,7 +268,7 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 
 	hydrated := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(context.Background(), path, target)
+		sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 		close(hydrated)
 	}()
 	select {

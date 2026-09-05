@@ -318,46 +318,55 @@ func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
 	source.publish(activitySummary("activity-history"))
 	releaseTail()
 
-	deadline := time.Now().Add(historyE2ETestBudget * 3)
-	for {
+	timer := time.NewTimer(historyE2ETestBudget * 3)
+	defer timer.Stop()
+	scanned, terminals := 0, 0
+	activitySeen := false
+	for !activitySeen {
+		// Snapshot only new immutable frames. Decoding the growing transcript
+		// under the collector lock blocks the socket reader and can stall the
+		// replay writer itself, especially under the race detector.
 		frames.mu.Lock()
-		terminal := -1
-		activity := -1
-		for i, raw := range frames.frames {
-			var frame map[string]any
-			_ = json.Unmarshal(raw, &frame)
-			if frame["type"] == "sessions.activity" && activity < 0 {
-				activity = i
+		pending := append([]json.RawMessage(nil), frames.frames[scanned:]...)
+		scanned = len(frames.frames)
+		frames.mu.Unlock()
+		for _, raw := range pending {
+			var frame struct {
+				Type      string `json:"type"`
+				SessionID string `json:"sessionId"`
+				Final     bool   `json:"final"`
 			}
-			if frame["type"] == "entries" && frame["final"] == true {
-				terminal = i
-				break
+			if err := json.Unmarshal(raw, &frame); err != nil {
+				t.Fatal(err)
+			}
+			switch frame.Type {
+			case "error":
+				t.Fatalf("history replay published an error: %s", raw)
+			case "entries":
+				if frame.Final {
+					terminals++
+					if terminals != 1 {
+						t.Fatal("history replay published multiple terminals")
+					}
+				}
+			case "sessions.activity":
+				if terminals != 1 {
+					t.Fatal("activity overtook history replay terminal")
+				}
+				if frame.SessionID != "activity-history" {
+					t.Fatalf("resumed activity frame = %s", raw)
+				}
+				activitySeen = true
 			}
 		}
-		if terminal >= 0 {
-			if activity >= 0 && activity < terminal {
-				frames.mu.Unlock()
-				t.Fatal("activity overtook history replay terminal")
-			}
-			frames.mu.Unlock()
+		if activitySeen {
 			break
 		}
-		frames.mu.Unlock()
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			t.Fatal("timed out waiting for history terminal")
-		}
-		timer := time.NewTimer(remaining)
 		select {
 		case <-frames.notify:
-			timer.Stop()
 		case <-timer.C:
-			t.Fatal("timed out waiting for history terminal")
+			t.Fatal("timed out waiting for history terminal and activity")
 		}
-	}
-	activity := frames.nextWithin(t, "sessions.activity", time.Until(deadline))
-	if activity["sessionId"] != "activity-history" {
-		t.Fatalf("resumed activity frame = %v", activity)
 	}
 }
 

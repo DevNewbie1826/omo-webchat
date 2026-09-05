@@ -63,15 +63,16 @@ func (s *subscriber) EndReplay() {
 	}
 }
 
-// DiscardHydrationAttempt drops frames staged by a route generation that was
-// proven absent before transport binding. The subscriber remains reusable by
-// the bounded replacement attempt under the same per-chat flight.
+// DiscardHydrationAttempt runs after the failed session subscription has been
+// detached and drained. A retry must activate again with its new binding claim,
+// even when the failed attempt had already published ready and partial pages.
 func (s *subscriber) DiscardHydrationAttempt() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.active {
-		return
+	if s.active && s.replaying {
+		s.conn.endReplay(s)
 	}
+	s.active = false
 	s.pending = nil
 	s.overflowed = false
 	s.replaying = false

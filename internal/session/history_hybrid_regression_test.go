@@ -451,20 +451,16 @@ func replayState(target *subscription) (bool, int) {
 }
 
 func TestHistoryHybridEpochDeathDuringReplayRetiresTarget(t *testing.T) {
-	d := newDaemon(t)
-	client := dial(t, d)
-	mgr := testManager(t, client, newMemStore(), 1)
-	sess, _, _ := acquire(t, mgr, testChat{id: "epoch-death-history", cwd: t.TempDir()}, nil)
+	sess, path := newValidatedHistorySession(t, "epoch-death-history", 1)
+	mgr := sess.manager
 	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
 	_, target, err := sess.attachCheckedReplayTarget(stuck)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "epoch-death-history.jsonl")
-	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
 	done := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(context.Background(), path, target)
+		sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 		close(done)
 	}()
 	select {
@@ -489,21 +485,16 @@ func TestHistoryHybridEpochDeathDuringReplayRetiresTarget(t *testing.T) {
 }
 
 func TestHistoryHybridContextCancelDuringReplayRetiresTarget(t *testing.T) {
-	d := newDaemon(t)
-	client := dial(t, d)
-	mgr := testManager(t, client, newMemStore(), 1)
-	sess, _, _ := acquire(t, mgr, testChat{id: "cancel-history", cwd: t.TempDir()}, nil)
+	sess, path := newValidatedHistorySession(t, "cancel-history", 1)
 	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
 	_, target, err := sess.attachCheckedReplayTarget(stuck)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "cancel-history.jsonl")
-	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(ctx, path, target)
+		sess.hydrateEntriesValidated(ctx, path, target, nil)
 		close(done)
 	}()
 	select {
@@ -527,10 +518,7 @@ func TestHistoryHybridContextCancelDuringReplayRetiresTarget(t *testing.T) {
 }
 
 func TestHistoryHybridReplayAdmissionObservesDeadlineWithoutLifecycleLock(t *testing.T) {
-	d := newDaemon(t)
-	client := dial(t, d)
-	mgr := testManager(t, client, newMemStore(), 1)
-	sess, _, _ := acquire(t, mgr, testChat{id: "deadline-history", cwd: t.TempDir()}, nil)
+	sess, path := newValidatedHistorySession(t, "deadline-history", 1)
 	stuck := &stuckHistorySubscriber{ready: make(chan struct{}), entered: make(chan struct{}), release: make(chan struct{})}
 	detach, target, err := sess.attachCheckedTarget(stuck)
 	if err != nil {
@@ -540,13 +528,11 @@ func TestHistoryHybridReplayAdmissionObservesDeadlineWithoutLifecycleLock(t *tes
 	defer stuck.unblock()
 	target.beginReplay()
 
-	path := filepath.Join(t.TempDir(), "large-session.jsonl")
-	path, _ = writeHistorySessionAt(t, path, sess.ID(), entriesPageMaxCount*2+1, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(ctx, path, target)
+		sess.hydrateEntriesValidated(ctx, path, target, nil)
 		close(done)
 	}()
 	select {
@@ -585,7 +571,7 @@ func TestHistoryHybridExpiredContextPublishesHydrationError(t *testing.T) {
 	path, _ := writeHistorySession(t, 3, 0)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	sess.hydrateEntries(ctx, path)
+	sess.hydrateEntriesValidated(ctx, path, nil, nil)
 	prior, frame := sub.awaitError(t, "provider_timeout")
 	if !strings.Contains(frame.Data.(ErrorInfo).Message, context.DeadlineExceeded.Error()) {
 		t.Fatalf("history error = %+v", frame.Data)

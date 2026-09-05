@@ -1806,157 +1806,6 @@ func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget 
 	return true
 }
 
-// hydrateEntries serves disk pages and the validated live tail only to target.
-// A nil target is retained for direct callers and publishes through the normal
-// broadcaster, but manager-driven attachment always supplies its subscription.
-func (s *Session) hydrateEntries(ctx context.Context, sessionPath string, targets ...*subscription) error {
-	s.hydrateEntriesLegacy(ctx, sessionPath, targets...)
-	return nil
-}
-
-func (s *Session) hydrateEntriesLegacy(ctx context.Context, sessionPath string, targets ...*subscription) {
-	var target *subscription
-	if len(targets) != 0 {
-		target = targets[0]
-	}
-	emit := func(frame Frame, terminal bool) error {
-		if target != nil {
-			return target.enqueueReplay(ctx, frame, terminal)
-		}
-		s.lifecycleMu.Lock()
-		defer s.lifecycleMu.Unlock()
-		if s.closed || s.resumable {
-			return ErrSessionResumable
-		}
-		s.publishLocked(frame)
-		return nil
-	}
-	publishErr := func(err error) {
-		var drift *ExternalWriteError
-		if errors.As(err, &drift) {
-			if !s.quarantineExternalWrite(drift, target) {
-				if target != nil {
-					if barrierErr := target.enqueueReplayBarrier(ctx); barrierErr != nil {
-						target.retire(barrierErr)
-					}
-				}
-				return
-			}
-			if target == nil {
-				return
-			}
-		}
-		if target != nil {
-			// A history-context deadline is an expected, user-visible outcome:
-			// the terminal error must still be delivered (non-blocking; the
-			// pump ends replay after delivery) so the socket stays usable for
-			// live frames. Only cancellation or a lost route retires the target,
-			// because there terminal delivery cannot be acknowledged reliably
-			// and retiring tears down replay instead of trapping live frames.
-			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
-				target.retire(err)
-				return
-			}
-		} else if errors.Is(err, ErrSessionClosed) || errors.Is(err, ErrSessionResumable) || errors.Is(err, context.Canceled) {
-			return
-		}
-		info := historyErrorInfo(err)
-		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: info}
-		if target != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			if !target.enqueueReplayTerminalNow(frame) {
-				target.retire(ErrSubscriberDetached)
-			}
-			return
-		}
-		if emitErr := emit(frame, true); emitErr != nil && target != nil {
-			target.retire(emitErr)
-		}
-	}
-
-	if err := s.verifySessionFileIdentity(sessionPath, ""); err != nil {
-		publishErr(err)
-		return
-	}
-
-	metadata, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
-		PageEntries: entriesPageMaxCount,
-	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
-		if metadata.Header.ID != s.durableID {
-			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
-		}
-		if metadata.LeafID == "" {
-			return nil
-		}
-		for _, entries := range chunkEntries(page.Entries) {
-			if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries}}, false); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	// Every stream outcome except an absent path proves the file existed on
-	// disk; only a first-ever absent path stays eligible for root hydration.
-	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		s.lifecycleMu.Lock()
-		s.sessionFileObserved = true
-		s.lifecycleMu.Unlock()
-	}
-	if err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			publishErr(err)
-			return
-		}
-		if s.inPlace || s.sessionFileIdentity != nil {
-			publishErr(externalIdentityReadError(err))
-			return
-		}
-		s.lifecycleMu.Lock()
-		rootHydrationAllowed := !s.resumed && !s.sessionFileObserved
-		s.lifecycleMu.Unlock()
-		if !rootHydrationAllowed {
-			publishErr(err)
-			return
-		}
-		// A newly opened session may report a path that is absent on disk.
-		// In that state, get_entries without since returns the entries visible
-		// from the root, and an empty response yields one terminal page.
-		wire, rootErr := s.fetchEntriesAfter(ctx, "")
-		if rootErr != nil {
-			publishErr(rootErr)
-			return
-		}
-		s.emitTailEntries(wire, emit, target)
-		return
-	}
-	if err := s.verifySessionFileIdentity(sessionPath, metadata.LeafID); err != nil {
-		publishErr(err)
-		return
-	}
-
-	// A header is a durable identity but not an entry cursor. Probe the live
-	// route so ignored/rejected cursor behavior is observed, then report the
-	// history as incomplete rather than falling back to an unbounded dump.
-	cursor := metadata.LeafID
-	if cursor == "" {
-		cursor = metadata.Header.ID
-		if _, probeErr := s.fetchEntriesAfter(ctx, cursor); probeErr != nil && !errors.Is(probeErr, errIncompleteHistory) {
-			publishErr(probeErr)
-		} else {
-			publishErr(fmt.Errorf("%w: durable session has no entry cursor", errIncompleteHistory))
-		}
-		return
-	}
-	wire, err := s.fetchEntriesAfter(ctx, cursor)
-	if err != nil {
-		publishErr(err)
-		return
-	}
-	s.emitTailEntries(wire, emit, target)
-}
-
 // hydrateEntriesValidated validates the live tail before publishing any disk
 // page. onValidated binds a transport after the terminal query is known-good
 // and before streaming starts, so a failed generation cannot leak partial
@@ -1997,6 +1846,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				if target != nil {
 					if barrierErr := target.enqueueReplayBarrier(ctx); barrierErr != nil {
 						target.retire(barrierErr)
+						return barrierErr
 					}
 				}
 				return nil
@@ -2008,20 +1858,24 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if target != nil {
 			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrSessionClosed) || errors.Is(err, context.Canceled) {
 				target.retire(err)
-				return nil
+				return err
 			}
 		} else if errors.Is(err, ErrSessionClosed) || errors.Is(err, context.Canceled) {
-			return nil
+			return err
 		}
 		frame := Frame{Kind: FrameError, SessionID: s.durableID, Data: historyErrorInfo(err)}
 		if target != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			if !target.enqueueReplayTerminalNow(frame) {
 				target.retire(ErrSubscriberDetached)
+				return ErrSubscriberDetached
 			}
 			return nil
 		}
-		if emitErr := emit(frame, true); emitErr != nil && target != nil {
-			target.retire(emitErr)
+		if emitErr := emit(frame, true); emitErr != nil {
+			if target != nil && (onValidated == nil || (!errors.Is(emitErr, ErrSessionResumable) && !errors.Is(emitErr, ErrSessionClosed))) {
+				target.retire(emitErr)
+			}
+			return emitErr
 		}
 		return nil
 	}
@@ -2124,19 +1978,23 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if validateErr := validated(); validateErr != nil {
 			return validateErr
 		}
-		s.emitTailEntries(wire, emit, target)
+		if err := s.emitTailEntries(wire, emit); err != nil {
+			return publishErr(err)
+		}
 		return nil
 	}
 	if routeErr := s.acquisitionError(); routeErr != nil {
 		return publishErr(routeErr)
 	}
-	s.emitTailEntries(tail, emit, target)
+	if err := s.emitTailEntries(tail, emit); err != nil {
+		return publishErr(err)
+	}
 	return nil
 }
 
 // emitTailEntries emits bounded pages with exactly one final page, including
 // an empty final page when no entries are returned.
-func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error, target *subscription) {
+func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error) error {
 	pages := chunkEntries(wire.Entries)
 	if len(pages) == 0 {
 		pages = [][]json.RawMessage{{}}
@@ -2148,12 +2006,10 @@ func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error
 			leaf = wire.LeafID
 		}
 		if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries, LeafID: leaf, Final: terminal}}, terminal); err != nil {
-			if target != nil {
-				target.retire(err)
-			}
-			return
+			return err
 		}
 	}
+	return nil
 }
 
 type entriesTail struct {

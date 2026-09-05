@@ -430,16 +430,16 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // reason, running state, active response, streamed text, thinking,
         // tools, activity flight, compaction, and pending approval.
         if (frame.code === "external-write-detected") {
-          // Cold rehydration pages deliberately remain non-final because the
-          // live tail could not be trusted. The drift error is their terminal
-          // marker: consume the snapshot before surfacing persistent recovery.
+          const generation = bindings.claimHistoryGeneration(connectionGeneration, true);
+          if (bindings.resyncGenerationRef.current !== null
+            && bindings.resyncGenerationRef.current !== generation) return;
+          // Rejection is not authoritative empty history. Drop only this
+          // attempt's uncommitted pages, retaining the completed transcript
+          // and pending input without running success reconciliation.
           bindings.externalRecoveryPendingRef.current = false;
-          handleFrame({
-            type: "entries",
-            sessionId: frame.sessionId ?? "",
-            entries: [],
-            final: true,
-          }, connectionGeneration);
+          bindings.pageBuffer.reset();
+          bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
+          bindings.endResync(generation, true);
           bindings.setExternalWriteDetected(true);
           bindings.setError("");
           return;

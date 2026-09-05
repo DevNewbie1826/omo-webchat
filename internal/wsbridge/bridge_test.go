@@ -1463,7 +1463,8 @@ func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
 
 	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
 	releaseARaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, h.path)
-	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, otherPath)
+	beforeState := h.daemon.RequestCount(omorpc.CmdGetState)
+	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetState, otherPath)
 	var releaseAOnce, releaseBOnce sync.Once
 	releaseA := func() { releaseAOnce.Do(releaseARaw) }
 	releaseB := func() { releaseBOnce.Do(releaseBRaw) }
@@ -1477,26 +1478,60 @@ func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
 		t.Fatal("recovery did not enter staged history replay")
 	}
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": otherID})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+2, 5*time.Second) {
-		t.Fatal("concurrent rebind did not enter history replay")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetState, beforeState+1, 5*time.Second) {
+		t.Fatal("concurrent rebind did not validate and activate before its state barrier")
 	}
+	server := h.soleServerConnection(t)
+	assertOwner := func() {
+		server.stateMu.Lock()
+		current := server.sub
+		boundChat := server.chatID
+		server.stateMu.Unlock()
+		server.outboundMu.Lock()
+		owned := server.replayActive && server.replayOwner == current
+		server.outboundMu.Unlock()
+		if boundChat != otherID || !owned {
+			t.Fatal("B's activated replay is not owned by the current subscriber")
+		}
+	}
+	assertOwner()
+	activityDone := make(chan error, 1)
+	go func() { activityDone <- server.writeActivity(map[string]any{"type": "activity-owner-probe"}) }()
 	releaseA()
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
 		t.Fatal("recovery retry did not settle its replay")
 	}
+	assertOwner()
 	releaseB()
-	for {
-		if ready := frames.next(t, "ready"); ready["sessionId"] == otherID {
-			break
+	select {
+	case err := <-activityDone:
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	for {
-		if got := frames.next(t, "entries"); got["sessionId"] == otherID && got["final"] == true {
-			break
-		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("activity did not complete after terminal")
 	}
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	terminals, activities := 0, 0
+	for _, raw := range frames.frames {
+		var f map[string]any
+		_ = json.Unmarshal(raw, &f)
+		if f["type"] == "entries" && f["sessionId"] == otherID && f["final"] == true {
+			terminals++
+		}
+		if f["type"] == "activity-owner-probe" {
+			activities++
+			if terminals != 1 {
+				t.Fatalf("activity overtook B terminal: %s", frames.frames)
+			}
+		}
+	}
+	if terminals != 1 || activities != 1 {
+		t.Fatalf("terminals=%d activities=%d", terminals, activities)
+	}
 }
 
 func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T) {

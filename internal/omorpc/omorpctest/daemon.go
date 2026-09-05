@@ -144,6 +144,7 @@ type Daemon struct {
 	handlerGateByPath map[string]map[string]<-chan struct{}
 	failNext          map[string]string
 	pathFailures      map[string]int
+	nextOpenIdentity  string
 	evictUsedSession  bool
 	refuse            bool
 	connections       int
@@ -652,10 +653,14 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	}
 	// Snapshot all response fields while the registry lock protects the session.
 	// A concurrent resume can otherwise replace rec.rpcID before the response is encoded.
+	durableID := rec.durableID
+	if d.nextOpenIdentity != "" {
+		durableID, d.nextOpenIdentity = d.nextOpenIdentity, ""
+	}
 	response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
 		"sessionId": rec.rpcID,
 		"state": map[string]any{
-			"sessionId":     rec.durableID,
+			"sessionId":     durableID,
 			"sessionFile":   rec.path,
 			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
 			"thinkingLevel": "off",
@@ -671,6 +676,14 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	d.mu.Unlock()
 
 	d.write(conn, response)
+}
+
+// OverrideNextOpenIdentity corrupts only the next successful open response,
+// leaving the stored conversation and provider registry identity untouched.
+func (d *Daemon) OverrideNextOpenIdentity(identity string) {
+	d.mu.Lock()
+	d.nextOpenIdentity = identity
+	d.mu.Unlock()
 }
 
 // durableForPath derives a stable durable id for an unknown resumed path:
