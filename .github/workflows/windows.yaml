@@ -85,6 +85,15 @@ jobs:
             Get-Content -LiteralPath probe-g1.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
 
+      - name: Named-pipe diag (G3)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value "## G3_NAMED_PIPE"
+          & go run ./test/windowsdiag bare 2>&1 | Tee-Object -FilePath probe-g3-bare.txt
+          & go run ./test/windowsdiag pipe 2>&1 | Tee-Object -FilePath probe-g3-pipe.txt
+          Get-Content probe-g3-bare.txt,probe-g3-pipe.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+
   smoke-windows:
     runs-on: windows-latest
     timeout-minutes: 20
