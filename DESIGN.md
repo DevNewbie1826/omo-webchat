@@ -308,10 +308,16 @@ Choose a tested foreground/background token pair instead.
 - A session occupies at most one pane. Assigning a session that is already
   placed moves it: the old host becomes empty. Assigning over an occupied
   pane only unplaces the previous session — it is never deleted or stopped.
+  Unsent text, pending image and selected command belong to that session, not
+  its pane; moving or reopening it retains the draft and active-run Stop state.
+  Drafts remain in the authenticated App's memory and clear with session removal
+  or authentication loss, never in a process-global or persistent cache.
 - A delayed open (discovered-session load, deferred fetch) is bound to the
   pane captured at click time. It must not target a different or since-closed
   pane, and a newer user selection in the same pane supersedes it; stale
   completions are dropped, never applied.
+  Deferred New Chat follows the same captured destination contract. Completion
+  does not steal a later active-pane or DOM-focus choice.
 - Closing the active pane moves the active destination to a valid remaining
   pane. MRU ordering, sidebar highlight, and normal session-active handling
   are preserved without extra import steps.
@@ -346,6 +352,14 @@ Choose a tested foreground/background token pair instead.
   (Raised elevation, bounded to `min(280px, 50dvh)`), so the list never
   covers the composer or send action. On narrow screens the existing
   viewport-contained sheet behavior is retained.
+  Measured space inside the actual clipping chat column can only tighten the
+  desktop height cap; no minimum may exceed that space. Desktop chrome and
+  options share one scrollport. Even short v3/v4/mixed panes retain a complete
+  readable pointer-selectable row, with one-line model/provider rows below 60px
+  of available space. Popup navigation never scrolls hidden ancestors or moves
+  the composer. Mobile keeps its pinned current identity and list scrollport.
+  Desktop Tab from search visits thinking controls, Shift+Tab reverses, forward
+  exit reaches attachment, and Escape or reverse exit restores the trigger.
 - Search, exact provider/model identity, thinking-level controls, keyboard
   selection, file/attachment/send actions, and responsive composer height
   contracts are unchanged by the move; the control renders the exact active
