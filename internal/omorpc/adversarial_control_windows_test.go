@@ -134,8 +134,19 @@ func TestWindowsAdversarialControls(t *testing.T) {
 				// Anchor each slash-delimited component (Go interprets them separately).
 				pattern := "^" + strings.ReplaceAll(tc.test, "/", "$/^") + "$"
 				cmd := exec.CommandContext(t.Context(), exe, "-test.run="+pattern, "-test.v", "-test.timeout=25s")
-				cmd.Env = append(os.Environ(), "OMORPC_ADVERSARIAL_CONTROL="+mode)
+				sandbox := filepath.Join(dir, tc.mode+"-"+mode)
+				if err := os.Mkdir(sandbox, 0700); err != nil {
+					t.Fatal(err)
+				}
+				cmd.Env = append(os.Environ(), "OMORPC_ADVERSARIAL_CONTROL="+mode, "TMP="+sandbox, "TEMP="+sandbox, "TMPDIR="+sandbox)
 				output, err := cmd.CombinedOutput()
+				// The existing mock fixture ignores RemoveAll errors. Enclose
+				// it here and check removal after the exact child exit, so its
+				// cleanup cannot silently leak files or rely on a retry.
+				if cleanupErr := os.RemoveAll(sandbox); cleanupErr != nil {
+					t.Fatal(cleanupErr)
+				}
+				t.Logf("CONTROL_SANDBOX_REMOVED control=%s mode=%s child joined; temporary root removed", tc.mode, mode)
 				t.Logf("CONTROL_RESULT control=%s mode=%s exit=%v\n%s", tc.mode, mode, err, output)
 				text := string(output)
 				if mode == "restored" {
