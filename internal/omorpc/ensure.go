@@ -217,13 +217,7 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 		return nil, fmt.Errorf("omorpc: probe daemon after startup lock: %w", dialErr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0o700); err != nil {
-		return nil, fmt.Errorf("omorpc: create socket directory: %w", err)
-	}
-	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("omorpc: create daemon state directory: %w", err)
-	}
-	if err := prepareEndpoint(cfg); err != nil {
+	if err := prepareEndpoint(ctx, cfg); err != nil {
 		return nil, fmt.Errorf("omorpc: prepare endpoint: %w", err)
 	}
 	command, nativeArgs, err := supervisorCommand(cfg)

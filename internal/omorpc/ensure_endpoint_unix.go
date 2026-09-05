@@ -8,12 +8,21 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 )
 
-func prepareEndpoint(EnsureConfig) error { return nil }
+func prepareEndpoint(_ context.Context, cfg EnsureConfig) error {
+	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0700); err != nil {
+		return fmt.Errorf("omorpc: create socket directory: %w", err)
+	}
+	if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
+		return fmt.Errorf("omorpc: create daemon state directory: %w", err)
+	}
+	return nil
+}
 
 func currentSocketIdentity(path string) (socketIdentity, bool) {
 	return fileid.FromPath(path)

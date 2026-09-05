@@ -29,7 +29,11 @@ func dialEndpoint(ctx context.Context, path string) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	secret, err := readEndpointSecret(path)
+	// A reconnect may have only a lifecycle context. Bound secret/ancestor
+	// acquisition as well as busy-pipe dialing and the raw authentication write.
+	authCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	secret, err := readEndpointSecret(authCtx, path)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +41,6 @@ func dialEndpoint(ctx context.Context, path string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A reconnect uses a lifecycle context, not necessarily a deadline. Bound
-	// both busy-pipe dialing and the raw auth write even for that caller.
-	authCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
 	raw, err := winio.DialPipeContext(authCtx, address)
 	if err != nil {
 		return nil, err

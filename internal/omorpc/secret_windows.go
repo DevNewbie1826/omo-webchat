@@ -3,12 +3,14 @@
 package omorpc
 
 import (
+	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unsafe"
 
@@ -16,6 +18,58 @@ import (
 )
 
 const socketSecretBytes = 32
+
+var cancelSynchronousIO = windows.NewLazySystemDLL("kernel32.dll").NewProc("CancelSynchronousIo")
+
+// Synchronous filesystem operations (including CreateFile and GetSecurityInfo)
+// cannot use CancelIoEx on a handle that has not been returned yet. Keep the
+// entire acquisition/publication and cleanup on one retained native thread.
+// Cancellation repeatedly targets that thread until work has joined: a single
+// CancelSynchronousIo has a check-to-syscall race and does not cancel future I/O.
+// The thread is not returned to Go's pool until the cancellation callback joins.
+func endpointIO(ctx context.Context, work func() error) (resultErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	thread, err := windows.OpenThread(windows.THREAD_TERMINATE, false, windows.GetCurrentThreadId())
+	if err != nil {
+		return err
+	}
+	finished := make(chan struct{})
+	canceled := make(chan error, 1)
+	stop := context.AfterFunc(ctx, func() {
+		for {
+			select {
+			case <-finished:
+				canceled <- nil
+				return
+			default:
+			}
+			ok, _, err := cancelSynchronousIO.Call(uintptr(thread))
+			// NOT_FOUND means the thread is between native operations. Retry until
+			// joined so cancellation cannot miss the next synchronous syscall.
+			if ok == 0 && !errors.Is(err, windows.ERROR_NOT_FOUND) {
+				<-finished
+				canceled <- fmt.Errorf("omorpc: CancelSynchronousIo: %w", err)
+				return
+			}
+			runtime.Gosched()
+		}
+	})
+	defer func() {
+		close(finished)
+		if !stop() {
+			resultErr = errors.Join(resultErr, <-canceled)
+		}
+		resultErr = errors.Join(ctx.Err(), resultErr, windows.CloseHandle(thread))
+	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return work()
+}
 
 // A narrow native-metadata seam for adversarial owner/ACL tests.
 var secretSecurityInfo = windows.GetSecurityInfo
@@ -31,7 +85,7 @@ func logicalEndpoint(path string) (string, error) {
 
 // pinSecretParents rejects reparse traversal and holds each existing parent
 // against rename until the secret handle has been validated/read or published.
-func pinSecretParents(path string) (func() error, error) {
+func pinSecretParents(ctx context.Context, path string) (func() error, error) {
 	var dirs []string
 	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
 		dirs = append(dirs, dir)
@@ -48,6 +102,9 @@ func pinSecretParents(path string) (func() error, error) {
 		return err
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, closeAll())
+		}
 		ptr, err := windows.UTF16PtrFromString(dirs[i])
 		if err != nil {
 			return nil, errors.Join(err, closeAll())
@@ -70,18 +127,31 @@ func pinSecretParents(path string) (func() error, error) {
 	return closeAll, nil
 }
 
-func readEndpointSecret(path string) (secret []byte, resultErr error) {
+func readEndpointSecret(ctx context.Context, path string) (secret []byte, err error) {
+	err = endpointIO(ctx, func() error {
+		var readErr error
+		secret, readErr = readEndpointSecretSync(ctx, path)
+		return readErr
+	})
+	return secret, err
+}
+
+// Called on endpointIO's locked thread, including all handle cleanup.
+func readEndpointSecretSync(ctx context.Context, path string) (secret []byte, resultErr error) {
 	path, err := logicalEndpoint(path)
 	if err != nil {
 		return nil, err
 	}
-	release, err := pinSecretParents(path)
+	release, err := pinSecretParents(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { resultErr = errors.Join(resultErr, release()) }()
 	ptr, err := windows.UTF16PtrFromString(path + ".secret")
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	h, err := windows.CreateFile(ptr, windows.GENERIC_READ|windows.READ_CONTROL,
@@ -93,6 +163,9 @@ func readEndpointSecret(path string) (secret []byte, resultErr error) {
 	file := os.NewFile(uintptr(h), path+".secret")
 	defer func() { resultErr = errors.Join(resultErr, file.Close()) }()
 	if err := validateSecretHandle(h); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	secret, err = io.ReadAll(io.LimitReader(file, socketSecretBytes+1))
@@ -163,13 +236,31 @@ func validateSecretHandle(h windows.Handle) error {
 // Called only under the endpoint lock. Publish a complete, private secret
 // without replacing any existing entry. Keep it after Stop: other daemons or
 // clients may still hold this endpoint's credentials.
-func prepareEndpoint(cfg EnsureConfig) (resultErr error) {
-	if _, err := readEndpointSecret(cfg.SocketPath); err == nil {
+func prepareEndpoint(ctx context.Context, cfg EnsureConfig) error {
+	return endpointIO(ctx, func() error {
+		if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0700); err != nil {
+			return fmt.Errorf("omorpc: create socket directory: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(cfg.StateDir, 0700); err != nil {
+			return fmt.Errorf("omorpc: create daemon state directory: %w", err)
+		}
+		return prepareEndpointSync(ctx, cfg)
+	})
+}
+
+func prepareEndpointSync(ctx context.Context, cfg EnsureConfig) (resultErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := readEndpointSecretSync(ctx, cfg.SocketPath); err == nil {
 		return os.MkdirAll(filepath.Join(cfg.AgentDir, "rpc-host-daemon"), 0700)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	release, err := pinSecretParents(cfg.SocketPath)
+	release, err := pinSecretParents(ctx, cfg.SocketPath)
 	if err != nil {
 		return err
 	}
@@ -188,6 +279,9 @@ func prepareEndpoint(cfg EnsureConfig) (resultErr error) {
 		return err
 	}
 	sa := windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	h, err := windows.CreateFile(ptr, windows.GENERIC_WRITE, 0, &sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL, 0)
 	if err != nil {
 		return err
@@ -206,6 +300,9 @@ func prepareEndpoint(cfg EnsureConfig) (resultErr error) {
 	if err != nil {
 		return errors.Join(err, os.Remove(temp))
 	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(err, os.Remove(temp))
+	}
 	if err := windows.MoveFileEx(ptr, target, 0); err != nil {
 		removeErr := os.Remove(temp)
 		if !errors.Is(err, windows.ERROR_ALREADY_EXISTS) && !errors.Is(err, windows.ERROR_FILE_EXISTS) {
@@ -215,7 +312,7 @@ func prepareEndpoint(cfg EnsureConfig) (resultErr error) {
 			return removeErr
 		}
 	}
-	if _, err := readEndpointSecret(cfg.SocketPath); err != nil {
+	if _, err := readEndpointSecretSync(ctx, cfg.SocketPath); err != nil {
 		return err
 	}
 	return os.MkdirAll(filepath.Join(cfg.AgentDir, "rpc-host-daemon"), 0700)

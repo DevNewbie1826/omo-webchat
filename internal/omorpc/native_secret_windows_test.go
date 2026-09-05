@@ -108,7 +108,7 @@ func TestWindowsSecretOpenCancellation(t *testing.T) {
 				case <-time.After(5 * time.Second):
 					t.Fatal("epoch did not close")
 				}
-			} else if err := prepareEndpoint(cfg); err != nil {
+			} else if err := prepareEndpoint(t.Context(), cfg); err != nil {
 				t.Fatal(err)
 			}
 			f := holdSecretOpen(t, cfg.SocketPath)
