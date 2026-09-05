@@ -215,8 +215,10 @@ Choose a tested foreground/background token pair instead.
 
 ## Geometry
 
-- Sidebar: fixed shell width from `--th-sidebar-w`; mobile uses a dismissible
-  overlay drawer.
+- Sidebar: fixed shell width from `--th-sidebar-w`; desktop keeps a 44px
+  navigation rail (`--th-space-11`) for the toggle in both expanded and
+  collapsed states, outside every pane title. Mobile retains its dismissible
+  overlay drawer without the rail.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
