@@ -114,6 +114,10 @@ jobs:
         shell: pwsh
         run: go test ./test/smoke/ -count=1 -v
 
-      - name: Installer script (install.ps1)
+      - name: Installer contracts (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell.exe -NoProfile -File test/install_ps1_test.ps1
+
+      - name: Installer contracts (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File test/install_ps1_test.ps1
