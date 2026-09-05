@@ -62,6 +62,22 @@ func (s *subscriber) EndReplay() {
 		s.conn.endReplay(s)
 	}
 }
+
+// DiscardHydrationAttempt runs after the failed session subscription has been
+// detached and drained. A retry must activate again with its new binding claim,
+// even when the failed attempt had already published ready and partial pages.
+func (s *subscriber) DiscardHydrationAttempt() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active && s.replaying {
+		s.conn.endReplay(s)
+	}
+	s.active = false
+	s.pending = nil
+	s.overflowed = false
+	s.replaying = false
+	s.claim = queryBinding{}
+}
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

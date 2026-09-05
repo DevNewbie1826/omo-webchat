@@ -3,7 +3,6 @@ package session
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -239,41 +238,13 @@ func (s *blockingHistoryRecorder) EndReplay()    { s.replayEvents <- "end" }
 func (s *blockingHistoryRecorder) Cancel() error { return nil }
 
 func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *testing.T) {
-	path, _ := writeHistorySession(t, entriesPageMaxCount*2+1, 0)
+	sess, path := newValidatedHistorySession(t, "quarantine-race", 1)
 	identity, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess := &Session{
-		manager:              &Manager{},
-		chatID:               "quarantine-race",
-		durableID:            "unused",
-		routingID:            "route",
-		sessionFile:          path,
-		sessionFileIdentity:  identity,
-		inPlace:              true,
-		queueSize:            1,
-		activitySnapshots:    make(map[string]json.RawMessage),
-		activityOversized:    make(map[string]bool),
-		completedCompactions: make(map[string]struct{}),
-	}
-	// Match the generated file's durable identity so hydration reaches its
-	// second identity check after streaming the disk pages.
-	var header struct {
-		ID string `json:"id"`
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.NewDecoder(file).Decode(&header); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	sess.durableID = header.ID
+	sess.sessionFileIdentity = identity
+	sess.inPlace = true
 
 	observer := newRecorder(8)
 	detachObserver, _, err := sess.attachCheckedTarget(observer)
@@ -297,7 +268,7 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 
 	hydrated := make(chan struct{})
 	go func() {
-		sess.hydrateEntries(context.Background(), path, target)
+		sess.hydrateEntriesValidated(context.Background(), path, target, nil)
 		close(hydrated)
 	}()
 	select {
@@ -425,8 +396,8 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 			t.Fatalf("%s subscriber received %d quarantine transitions, want 1: %+v", name, count, frames)
 		}
 	}
-	if entries, transition := frameIndex(priorB, FrameEntries), frameIndex(priorB, FrameError); entries < 0 || transition <= entries {
-		t.Fatalf("detecting subscriber replay order = %+v", priorB)
+	if entries := frameIndex(priorB, FrameEntries); entries >= 0 {
+		t.Fatalf("failed hydration leaked partial disk history: %+v", priorB)
 	}
 }
 
@@ -497,20 +468,15 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 	if !ok || info.KnownLeaf != "root" || info.ObservedLeaf != "external-leaf" {
 		t.Fatalf("external-write state = %#v", frame.Data)
 	}
-	foundExternal := false
 	for _, candidate := range prior {
 		if candidate.Kind != FrameEntries {
 			continue
 		}
-		entries := candidate.Data.(EntriesFrame).Entries
-		for _, entry := range entries {
+		for _, entry := range candidate.Data.(EntriesFrame).Entries {
 			if bytes.Contains(entry, []byte("external-leaf")) {
-				foundExternal = true
+				t.Fatalf("failed hydration leaked external disk entry: %+v", prior)
 			}
 		}
-	}
-	if !foundExternal {
-		t.Fatalf("cold re-hydration did not emit external disk entry before state: %+v", prior)
 	}
 
 	beforePrompts := daemon.RequestCount(omorpc.CmdPrompt)

@@ -342,6 +342,17 @@ func (b *broadcaster) publishExcept(f Frame, except *subscription) {
 }
 
 func (b *broadcaster) close(reason error) {
+	b.finishAll(reason, true)
+}
+
+// retire ends subscriptions without closing their transports. A connection
+// still bound to a replaced route can then enter the per-chat recovery flight
+// on its next user-required operation.
+func (b *broadcaster) retireAll(reason error) {
+	b.finishAll(reason, false)
+}
+
+func (b *broadcaster) finishAll(reason error, cancel bool) {
 	b.mu.Lock()
 	all := make([]*subscription, 0, len(b.subs))
 	for id, x := range b.subs {
@@ -350,7 +361,7 @@ func (b *broadcaster) close(reason error) {
 	}
 	b.mu.Unlock()
 	for _, x := range all {
-		b.finish(x, reason, true, true)
+		b.finish(x, reason, true, cancel)
 	}
 }
 

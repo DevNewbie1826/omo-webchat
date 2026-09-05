@@ -528,12 +528,25 @@ type ReplayBackpressureSubscriber interface {
 	EndReplay()
 }
 
-func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription) {
+type hydrationAttemptResetter interface {
+	DiscardHydrationAttempt()
+}
+
+func hydrateForSubscriber(ctx context.Context, s *Session, path string, target *subscription, onValidated func() error) error {
 	if target == nil {
-		return
+		if onValidated != nil {
+			return onValidated()
+		}
+		return nil
 	}
 	target.beginReplay()
-	s.hydrateEntries(ctx, path, target)
+	return s.hydrateEntriesValidated(ctx, path, target, onValidated)
+}
+
+func discardHydrationAttempt(sub Subscriber) {
+	if resetter, ok := sub.(hydrationAttemptResetter); ok {
+		resetter.DiscardHydrationAttempt()
+	}
 }
 
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
@@ -605,6 +618,39 @@ func (m *Manager) ResumeInitializedCheckedAndRun(ctx context.Context, chat ChatR
 // until replay has finished and the route has been revalidated.
 func (m *Manager) ResumeInitializedCheckedAndRunInFlight(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, published func(*Session) error, run func(*Session) error) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, initialize, validate, published, run, false, true, true)
+}
+
+// AcquireInitializedCheckedAndRunRecovering keeps one per-chat flight across
+// one bounded replacement when terminal hydration proves the route absent.
+func (m *Manager) AcquireInitializedCheckedAndRunRecovering(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, run func(*Session) error) (*Session, bool, func(), error) {
+	if chat == nil || chat.ChatID() == "" {
+		return nil, false, nil, errors.New("session: empty chat id")
+	}
+	unlock, err := m.chats.enter(ctx, chat.ChatID())
+	if err != nil {
+		return nil, false, nil, err
+	}
+	defer unlock()
+	resumeOnly := false
+	if m.cfg.Store != nil {
+		cur, err := m.cfg.Store.CursorFor(ctx, chat.ChatID())
+		if err != nil {
+			return nil, false, nil, err
+		}
+		resumeOnly = cur.SessionFile != ""
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		s, started, detach, acquireErr := m.acquire(ctx, chat, sub, initialize, validate, run, nil, false, resumeOnly, true)
+		if !errors.Is(acquireErr, ErrSessionResumable) || attempt == 1 {
+			return s, started, detach, acquireErr
+		}
+		if detach != nil {
+			detach()
+		}
+		discardHydrationAttempt(sub)
+		resumeOnly = true
+	}
+	return nil, false, nil, ErrSessionResumable
 }
 
 func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, initialize func(*Session, bool, func()), validate func() error, after func(*Session) error, afterHydration func(*Session) error, recoveryAuthorized, resumeOnly, permitHeld bool) (*Session, bool, func(), error) {
@@ -712,15 +758,18 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 						return nil, false, nil, err
 					}
 				}
-				if after != nil {
-					if err := after(existing); err != nil {
+				validated := func() error {
+					if after == nil {
+						return nil
+					}
+					return after(existing)
+				}
+				if existing.sessionFile != "" {
+					if err := hydrateForSubscriber(ctx, existing, existing.sessionFile, target, validated); err != nil {
 						return existing, false, detach, err
 					}
-				}
-				// Checked callers publish and activate their validated binding in
-				// after before history can fill a transport's staging buffer.
-				if existing.sessionFile != "" {
-					hydrateForSubscriber(ctx, existing, existing.sessionFile, target)
+				} else if err := validated(); err != nil {
+					return existing, false, detach, err
 				}
 				if afterHydration != nil {
 					if err := revalidateMutation(existing); err != nil {
@@ -940,16 +989,21 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			}
 			return nil, false, nil, ErrSessionResumable
 		}
-		if after != nil {
-			if err := after(s); err != nil {
-				if replaced != nil {
-					replaced.retireReplaced()
-				}
-				return s, true, detach, err
+		validated := func() error {
+			if after == nil {
+				return nil
 			}
+			return after(s)
 		}
 		if resumed {
-			hydrateForSubscriber(ctx, s, cur.SessionFile, target)
+			if err := hydrateForSubscriber(ctx, s, cur.SessionFile, target, validated); err != nil {
+				return s, true, detach, err
+			}
+		} else if err := validated(); err != nil {
+			if replaced != nil {
+				replaced.retireReplaced()
+			}
+			return s, true, detach, err
 		}
 		if afterHydration != nil {
 			if err := revalidateMutation(s); err != nil {
@@ -1046,13 +1100,18 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	if initialize != nil {
 		initialize(s, true, detach)
 	}
-	if resumed {
-		hydrateForSubscriber(ctx, s, cur.SessionFile, target)
+	validated := func() error {
+		if after == nil {
+			return nil
+		}
+		return after(s)
 	}
-	if after != nil {
-		if err := after(s); err != nil {
+	if resumed {
+		if err := hydrateForSubscriber(ctx, s, cur.SessionFile, target, validated); err != nil {
 			return s, true, detach, err
 		}
+	} else if err := validated(); err != nil {
+		return s, true, detach, err
 	}
 	if afterHydration != nil {
 		if err := revalidateMutation(s); err != nil {

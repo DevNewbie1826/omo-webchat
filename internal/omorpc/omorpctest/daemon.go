@@ -75,6 +75,9 @@ type daemonSession struct {
 	history   []any  // durable transcript returned by get_entries
 	leafID    string
 	name      string
+	cwd       string
+	opens     int
+	prompts   []string
 
 	// Pending queue model (observed engine behavior): steer during an
 	// active run parks the message in the steering queue; follow_up parks
@@ -141,6 +144,7 @@ type Daemon struct {
 	handlerGateByPath map[string]map[string]<-chan struct{}
 	failNext          map[string]string
 	pathFailures      map[string]int
+	nextOpenIdentity  string
 	evictUsedSession  bool
 	refuse            bool
 	connections       int
@@ -150,12 +154,14 @@ type Daemon struct {
 	closes            int
 	rpcCounter        int
 	registry          map[string]*daemonSession
+	rpcPaths          map[string]string // every minted routing id -> durable path
 	promptScripts     map[string][]map[string]any
 	compactScripts    map[string][]map[string]any
 	promptHolds       map[string]chan struct{}
 	requests          []map[string]any
 
-	writeMu sync.Mutex
+	defaultPromptScript []map[string]any
+	writeMu             sync.Mutex
 
 	requestFeed   chan map[string]any
 	handshakeFeed chan struct{}
@@ -180,6 +186,7 @@ func New(dir string) *Daemon {
 		pathFailures:      map[string]int{},
 		conns:             map[net.Conn]struct{}{},
 		registry:          map[string]*daemonSession{},
+		rpcPaths:          map[string]string{},
 		promptScripts:     map[string][]map[string]any{},
 		compactScripts:    map[string][]map[string]any{},
 		promptHolds:       map[string]chan struct{}{},
@@ -435,9 +442,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdPrompt:
 		d.mu.Lock()
 		script = takeScript(d.promptScripts, recPath)
+		if script == nil && d.defaultPromptScript != nil {
+			script = append([]map[string]any(nil), d.defaultPromptScript...)
+		}
 		hold = d.promptHolds[recPath]
 		rpcID := rec.rpcID // read under mu: handleOpenSession may reassign it concurrently (resume)
 		if message, _ := req["message"].(string); message != "" {
+			rec.prompts = append(rec.prompts, message)
 			d.appendHistoryEntryLocked(rec, map[string]any{"role": "user", "content": message})
 		}
 		// The run is observably active from the accepted response until its
@@ -595,6 +606,7 @@ func takeScript(m map[string][]map[string]any, key string) []map[string]any {
 
 func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any) {
 	path, _ := req["sessionPath"].(string)
+	cwd, _ := req["cwd"].(string)
 
 	d.mu.Lock()
 	d.opens++
@@ -632,14 +644,23 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	}
 	d.rpcCounter++
 	rec.rpcID = fmt.Sprintf("rpc-%d", d.rpcCounter)
+	d.rpcPaths[rec.rpcID] = rec.path
 	rec.live = true
 	rec.used = false
-	d.mu.Unlock()
-
-	d.write(conn, d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
+	rec.opens++
+	if cwd != "" {
+		rec.cwd = cwd
+	}
+	// Snapshot all response fields while the registry lock protects the session.
+	// A concurrent resume can otherwise replace rec.rpcID before the response is encoded.
+	durableID := rec.durableID
+	if d.nextOpenIdentity != "" {
+		durableID, d.nextOpenIdentity = d.nextOpenIdentity, ""
+	}
+	response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
 		"sessionId": rec.rpcID,
 		"state": map[string]any{
-			"sessionId":     rec.durableID,
+			"sessionId":     durableID,
 			"sessionFile":   rec.path,
 			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
 			"thinkingLevel": "off",
@@ -651,7 +672,18 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"ordered":             []any{},
 			"pendingMessageCount": 0,
 		},
-	}))
+	})
+	d.mu.Unlock()
+
+	d.write(conn, response)
+}
+
+// OverrideNextOpenIdentity corrupts only the next successful open response,
+// leaving the stored conversation and provider registry identity untouched.
+func (d *Daemon) OverrideNextOpenIdentity(identity string) {
+	d.mu.Lock()
+	d.nextOpenIdentity = identity
+	d.mu.Unlock()
 }
 
 // durableForPath derives a stable durable id for an unknown resumed path:
@@ -685,12 +717,16 @@ func (d *Daemon) appendHistoryEntryLocked(rec *daemonSession, payload map[string
 	if rec.leafID != "" {
 		parent = rec.leafID
 	}
-	entry := map[string]any{"type": "message", "id": id, "parentId": parent}
-	for key, value := range payload {
-		if key != "type" && key != "id" && key != "parentId" {
-			entry[key] = value
+	message, _ := payload["message"].(map[string]any)
+	if message == nil {
+		message = map[string]any{}
+		for key, value := range payload {
+			if key != "type" && key != "id" && key != "parentId" {
+				message[key] = value
+			}
 		}
 	}
+	entry := map[string]any{"type": "message", "id": id, "parentId": parent, "message": message}
 	rec.history = append(rec.history, entry)
 	rec.leafID = id
 	file, err := os.OpenFile(rec.path, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -818,6 +854,51 @@ func (d *Daemon) UnloadSession(path string) {
 	d.mu.Unlock()
 	if rpcID != "" {
 		d.Emit(map[string]any{"type": EventSessionUnloaded, "sessionId": rpcID})
+	}
+}
+
+// EvictSessionSilently forgets the live routing handle without emitting a
+// lifecycle record. The next addressed command observes unknown_session.
+func (d *Daemon) EvictSessionSilently(path string) {
+	d.mu.Lock()
+	if rec := d.registry[path]; rec != nil {
+		rec.live = false
+	}
+	d.mu.Unlock()
+}
+
+// EvictSessionWithEvent forgets the live route and emits the observed
+// lifecycle event shape with its routing handle.
+func (d *Daemon) EvictSessionWithEvent(path, eventType string) {
+	d.mu.Lock()
+	rec := d.registry[path]
+	rpcID := ""
+	if rec != nil {
+		rec.live = false
+		rpcID = rec.rpcID
+	}
+	d.mu.Unlock()
+	if rpcID != "" {
+		d.Emit(map[string]any{"type": eventType, "sessionId": rpcID})
+	}
+}
+
+// EmitCloseSessionResponse emits an unmatched close_session response. A
+// successful response also forgets the route; a negative response leaves it
+// live so consumers can prove that success is required for lifecycle marking.
+func (d *Daemon) EmitCloseSessionResponse(path string, success bool) {
+	d.mu.Lock()
+	rec := d.registry[path]
+	rpcID := ""
+	if rec != nil {
+		rpcID = rec.rpcID
+		if success {
+			rec.live = false
+		}
+	}
+	d.mu.Unlock()
+	if rpcID != "" {
+		d.Emit(map[string]any{"id": "external-close", "type": "response", "command": omorpc.CmdCloseSession, "sessionId": rpcID, "success": success})
 	}
 }
 
@@ -974,6 +1055,15 @@ func (d *Daemon) FailOpenPath(path, code string, times int) {
 	d.mu.Unlock()
 }
 
+// SetDefaultPromptScript configures the lifecycle used when a prompt has no
+// per-session script. The shared test daemon remains unscripted by default;
+// standalone fixtures can opt in without changing existing callers.
+func (d *Daemon) SetDefaultPromptScript(events ...map[string]any) {
+	d.mu.Lock()
+	d.defaultPromptScript = append([]map[string]any(nil), events...)
+	d.mu.Unlock()
+}
+
 // SetPromptScript arms ONE prompt's worth of unsolicited events for the
 // session identified by its durable sessionFile path. Events are emitted,
 // in order, after the prompt's accepted response; the session's routing id
@@ -1062,6 +1152,99 @@ func (d *Daemon) LiveSessions() []string {
 		}
 	}
 	return paths
+}
+
+// SessionSnapshot is the deterministic control-plane view used by isolated
+// integration fixtures. It exposes only observed protocol identities/counts.
+type SessionSnapshot struct {
+	Path       string   `json:"path"`
+	DurableID  string   `json:"durableId"`
+	RoutingID  string   `json:"routingId"`
+	CWD        string   `json:"cwd"`
+	LeafID     string   `json:"leafId"`
+	Live       bool     `json:"live"`
+	OpenCount  int      `json:"openCount"`
+	Prompts    []string `json:"prompts"`
+	EntryCount int      `json:"entryCount"`
+}
+
+// SessionSnapshots returns every known durable session ordered by path.
+func (d *Daemon) SessionSnapshots() []SessionSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]SessionSnapshot, 0, len(d.registry))
+	for _, rec := range d.registry {
+		out = append(out, SessionSnapshot{
+			Path: rec.path, DurableID: rec.durableID, RoutingID: rec.rpcID, CWD: rec.cwd,
+			LeafID: rec.leafID, Live: rec.live, OpenCount: rec.opens,
+			Prompts: append([]string(nil), rec.prompts...), EntryCount: len(rec.history),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+// AppendHistory adds a durable entry through the same mock persistence path
+// used by accepted prompts.
+func (d *Daemon) AppendHistory(path, role, content string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rec := d.registry[path]
+	if rec == nil {
+		return false
+	}
+	d.appendHistoryEntryLocked(rec, map[string]any{"role": role, "content": content})
+	return true
+}
+
+// RequestCountForPath counts commands targeting one durable path, including
+// requests addressed by historical routing ids after a later resume open.
+func (d *Daemon) RequestCountForPath(cmd, path string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.requestCountForPathLocked(cmd, path)
+}
+
+func (d *Daemon) requestCountForPathLocked(cmd, path string) int {
+	count := 0
+	for _, request := range d.requests {
+		if command, _ := request["type"].(string); command != cmd {
+			continue
+		}
+		if sessionPath, _ := request["sessionPath"].(string); sessionPath == path {
+			count++
+			continue
+		}
+		sid, _ := request["sessionId"].(string)
+		if sid == "" {
+			continue
+		}
+		if d.rpcPaths[sid] == path {
+			count++
+			continue
+		}
+		if rec := d.sessionByRPC(sid); rec != nil && rec.path == path {
+			count++
+		}
+	}
+	return count
+}
+
+// AwaitRequestCountForPath waits on the request feed until a command targeting
+// path reaches n. It uses an event signal rather than polling or sleeps.
+func (d *Daemon) AwaitRequestCountForPath(cmd, path string, n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if d.RequestCountForPath(cmd, path) >= n {
+			return true
+		}
+		select {
+		case <-d.requestFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
 }
 
 // Requests snapshots every received request, oldest first.

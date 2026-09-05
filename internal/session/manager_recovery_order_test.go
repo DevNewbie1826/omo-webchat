@@ -39,7 +39,9 @@ func prepareResumableSession(t *testing.T) (*Manager, testChat) {
 	t.Cleanup(detach)
 	observer.await(t, FrameReady)
 	d.UnloadSession(sess.SessionFile())
-	observer.awaitError(t, "session_unloaded")
+	if _, err := sess.QueryState(context.Background()); !errors.Is(err, ErrSessionResumable) {
+		t.Fatalf("unloaded route query = %v, want ErrSessionResumable", err)
+	}
 	return mgr, chat
 }
 

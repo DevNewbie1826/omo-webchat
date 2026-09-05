@@ -383,6 +383,24 @@ func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
 	if activity["sessionId"] != "activity-history" {
 		t.Fatalf("resumed activity frame = %v", activity)
 	}
+	// Keep the exact-terminal assertion through activity resumption without
+	// decoding the growing transcript under the socket receiver's lock.
+	pending, _, _ := frames.takeDecoded(0)
+	terminals := 0
+	for _, frame := range pending {
+		if frame.err != nil {
+			t.Fatal(frame.err)
+		}
+		if frame.typ == "error" {
+			t.Fatalf("history replay published an error: %s", frame.raw)
+		}
+		if frame.typ == "entries" && frame.final {
+			terminals++
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("terminal entries frames = %d, want 1", terminals)
+	}
 }
 
 type scriptedHistoryStream struct {

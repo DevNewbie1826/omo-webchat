@@ -647,6 +647,17 @@ func (h *inPlaceBridgeHarness) soleServerConnectionDone(t *testing.T) <-chan str
 	return h.soleServerConnection(t).ctx.Done()
 }
 
+func (h *inPlaceBridgeHarness) markSessionResumable(t *testing.T) {
+	t.Helper()
+	_, stale := h.soleServerConnection(t).binding()
+	if stale == nil {
+		t.Fatal("server connection was not bound")
+	}
+	if _, err := stale.QueryState(context.Background()); !errors.Is(err, session.ErrSessionResumable) {
+		t.Fatalf("unloaded route query = %v, want ErrSessionResumable", err)
+	}
+}
+
 func (h *inPlaceBridgeHarness) connect(t *testing.T) (*gws.Conn, *collector) {
 	t.Helper()
 	frames := &collector{notify: make(chan struct{}, 64)}
@@ -847,7 +858,7 @@ func TestBlockedQueryDoesNotDeliverAcrossBindingGeneration(t *testing.T) {
 	}
 }
 
-func TestCheckedBindingActivatesBeforeHistoryHydration(t *testing.T) {
+func TestCheckedBindingActivatesAfterTerminalHistoryValidation(t *testing.T) {
 	h := newInPlaceBridgeHarnessWithHistory(t, "checked-large-history", (preActivationBufferCapacity+1)*100)
 	conn, frames := h.connect(t)
 	release := h.daemon.BlockHandler(omorpc.CmdGetEntries)
@@ -856,14 +867,17 @@ func TestCheckedBindingActivatesBeforeHistoryHydration(t *testing.T) {
 	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, 5*time.Second) {
 		t.Fatal("checked acquisition did not reach history hydration")
 	}
+	if sess, ok := h.manager.Get("checked-large-history"); !ok || sess == nil {
+		t.Fatal("provider route was not published before terminal history validation")
+	}
+	release()
 	if ready := frames.next(t, "ready"); ready["sessionId"] != "checked-large-history" {
-		t.Fatalf("binding was not activated before hydration: %#v", ready)
+		t.Fatalf("binding was not activated after terminal validation: %#v", ready)
 	}
 	chatID, sess := h.soleServerConnection(t).binding()
 	if chatID != "checked-large-history" || sess == nil {
-		t.Fatalf("validated route was not published before hydration: chat=%q session=%p", chatID, sess)
+		t.Fatalf("validated route was not bound: chat=%q session=%p", chatID, sess)
 	}
-	release()
 	for {
 		if got := frames.next(t, "entries"); got["final"] == true {
 			break
@@ -975,7 +989,7 @@ func TestChatSendResumesIdleUnloadedSessionBeforeOriginalPrompt(t *testing.T) {
 	frames.next(t, "pong")
 
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error") // observed unload transition
+	h.markSessionResumable(t)
 	h.daemon.SetPromptScript(h.path,
 		map[string]any{"type": omorpctest.EventAgentStart},
 		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
@@ -1020,7 +1034,7 @@ func TestAdmissionTimeFollowUpRecoveryRemainsGatedWhenIdle(t *testing.T) {
 	frames.next(t, "pong")
 
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 	writeClient(t, conn, map[string]any{
 		"type": "chat.send", "sessionId": "idle-follow-up-recovery", "requestId": "idle-follow-up",
 		"run": map[string]any{"kind": "follow_up", "message": "must remain gated"},
@@ -1080,7 +1094,7 @@ func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
 			writeClient(t, conn, map[string]any{"type": "ping"})
 			frames.next(t, "pong")
 			h.daemon.UnloadSession(h.path)
-			frames.next(t, "error")
+			h.markSessionResumable(t)
 			beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
 			test.prepare(t, h)
 
@@ -1289,7 +1303,7 @@ func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) 
 		t.Fatal("initial prompt was not observed")
 	}
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 	releasePrompt()
 
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
@@ -1337,7 +1351,7 @@ func TestDetachedInRunSendResumesAndRetriesWithOriginalAdmission(t *testing.T) {
 				t.Fatalf("initial %s was not observed", tc.name)
 			}
 			h.daemon.UnloadSession(h.path)
-			frames.next(t, "error")
+			h.markSessionResumable(t)
 			release()
 
 			if !h.daemon.AwaitRequestCount(tc.command, 2, 5*time.Second) {
@@ -1358,7 +1372,7 @@ func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	writeClient(t, firstConn, map[string]any{"type": "ping"})
 	first.next(t, "pong")
 	h.daemon.UnloadSession(h.path)
-	first.next(t, "error")
+	h.markSessionResumable(t)
 	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
 	releaseOpenRaw := h.daemon.BlockHandler(omorpc.CmdOpenSession)
 	var releaseOpenOnce sync.Once
@@ -1401,7 +1415,7 @@ func TestQueuedControlsRefreshRecoveredBindingAfterAdmissionWait(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 
 	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
 	beforeCommands := h.daemon.RequestCount(omorpc.CmdGetCommands)
@@ -1455,7 +1469,7 @@ func TestPostHydrationMetadataChangeSettlesRecoveredSend(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 
 	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
 	releaseEntriesRaw := h.daemon.BlockHandler(omorpc.CmdGetEntries)
@@ -1488,7 +1502,7 @@ func TestPostHydrationQuarantineSettlesRecoveredSend(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 
 	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
 	releaseEntriesRaw := h.daemon.BlockHandler(omorpc.CmdGetEntries)
@@ -1549,11 +1563,12 @@ func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 
 	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
 	releaseARaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, h.path)
-	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, otherPath)
+	beforeState := h.daemon.RequestCount(omorpc.CmdGetState)
+	releaseBRaw := h.daemon.BlockHandlerForPath(omorpc.CmdGetState, otherPath)
 	var releaseAOnce, releaseBOnce sync.Once
 	releaseA := func() { releaseAOnce.Do(releaseARaw) }
 	releaseB := func() { releaseBOnce.Do(releaseBRaw) }
@@ -1567,33 +1582,60 @@ func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
 		t.Fatal("recovery did not enter staged history replay")
 	}
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": otherID})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, beforeEntries+2, 5*time.Second) {
-		t.Fatal("concurrent rebind did not enter history replay")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdGetState, beforeState+1, 5*time.Second) {
+		t.Fatal("concurrent rebind did not validate and activate before its state barrier")
 	}
-	for {
-		if ready := frames.next(t, "ready"); ready["sessionId"] == otherID {
-			break
+	server := h.soleServerConnection(t)
+	assertOwner := func() {
+		server.stateMu.Lock()
+		current := server.sub
+		boundChat := server.chatID
+		server.stateMu.Unlock()
+		server.outboundMu.Lock()
+		owned := server.replayActive && server.replayOwner == current
+		server.outboundMu.Unlock()
+		if boundChat != otherID || !owned {
+			t.Fatal("B's activated replay is not owned by the current subscriber")
 		}
 	}
+	assertOwner()
+	activityDone := make(chan error, 1)
+	go func() { activityDone <- server.writeActivity(map[string]any{"type": "activity-owner-probe"}) }()
 	releaseA()
 	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
 		t.Fatal("recovery retry did not settle its replay")
 	}
-	serverConn := h.soleServerConnection(t)
-	serverConn.outboundMu.Lock()
-	replayOwnedByCurrent := serverConn.replayActive && serverConn.replayOwner == serverConn.sub
-	serverConn.outboundMu.Unlock()
-	if !replayOwnedByCurrent {
-		t.Fatal("stale recovery replay terminated the concurrent binding replay")
-	}
+	assertOwner()
 	releaseB()
-	for {
-		if got := frames.next(t, "entries"); got["sessionId"] == otherID && got["final"] == true {
-			break
+	select {
+	case err := <-activityDone:
+		if err != nil {
+			t.Fatal(err)
 		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("activity did not complete after terminal")
 	}
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	terminals, activities := 0, 0
+	for _, raw := range frames.frames {
+		var f map[string]any
+		_ = json.Unmarshal(raw, &f)
+		if f["type"] == "entries" && f["sessionId"] == otherID && f["final"] == true {
+			terminals++
+		}
+		if f["type"] == "activity-owner-probe" {
+			activities++
+			if terminals != 1 {
+				t.Fatalf("activity overtook B terminal: %s", frames.frames)
+			}
+		}
+	}
+	if terminals != 1 || activities != 1 {
+		t.Fatalf("terminals=%d activities=%d", terminals, activities)
+	}
 }
 
 func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T) {
@@ -1618,7 +1660,7 @@ func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T)
 		t.Fatal("initial prompt was not observed")
 	}
 	h.daemon.UnloadSession(h.path)
-	frames.next(t, "error")
+	h.markSessionResumable(t)
 	serverDone := h.soleServerConnectionDone(t)
 	if err := conn.WriteClose(1000, nil); err != nil {
 		t.Fatal(err)
