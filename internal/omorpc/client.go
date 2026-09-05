@@ -136,7 +136,7 @@ func (s *eventStream) close() {
 	s.mu.Unlock()
 }
 
-// Client is one multiplexed connection to the omo agent's Unix-socket RPC
+// Client is one multiplexed connection to the omo agent's local RPC
 // endpoint.
 type Client struct {
 	socketPath string
@@ -231,8 +231,7 @@ func normalizeConfig(cfg Config) Config {
 }
 
 func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", c.socketPath)
+	conn, err := dialEndpoint(ctx, c.socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: dial %s: %w", ErrDisconnected, c.socketPath, err)
 	}

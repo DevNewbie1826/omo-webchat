@@ -3,32 +3,31 @@
 package omorpc
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"net"
-	"os"
-	"syscall"
+	"golang.org/x/sys/windows"
 	"testing"
 )
 
-func TestSpawnableProbeErrorWindowsWinsockNetworkDown(t *testing.T) {
-	err := &net.OpError{
-		Op:  "dial",
-		Net: "unix",
-		Err: &os.SyscallError{Syscall: "connect", Err: syscall.Errno(10050)},
-	}
-	if !isSpawnableProbeError(err) {
-		t.Fatalf("isSpawnableProbeError(%v) = false, want true for Winsock WSAENETDOWN", err)
-	}
-}
-
-func TestSpawnableProbeErrorWindowsRejectsOtherErrors(t *testing.T) {
-	for _, err := range []error{
-		errors.New("dial failed"),
-		fmt.Errorf("dial unix: connect: %w", syscall.EACCES),
+func TestWindowsNamedPipeProbeErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		absent bool
+	}{
+		{"missing", windows.ERROR_FILE_NOT_FOUND, true},
+		{"missing_parent", windows.ERROR_PATH_NOT_FOUND, true},
+		{"busy", windows.ERROR_PIPE_BUSY, false},
+		{"denied", windows.ERROR_ACCESS_DENIED, false},
+		{"timeout", context.DeadlineExceeded, false},
+		{"canceled", context.Canceled, false},
+		{"legacy_winsock", windows.WSAENETDOWN, false},
 	} {
-		if isSpawnableProbeError(err) {
-			t.Errorf("isSpawnableProbeError(%v) = true, want false", err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			err := fmt.Errorf("dial: %w", tc.err)
+			if isSpawnableProbeError(err) != tc.absent || isDialAbsentError(err) != tc.absent {
+				t.Fatalf("wrong endpoint classification for %v", err)
+			}
+		})
 	}
 }

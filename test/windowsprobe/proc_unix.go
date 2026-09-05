@@ -4,23 +4,41 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
+	"sync"
 	"syscall"
+	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
-// configureSpawn puts the supervisor in its own process group so teardown
-// can signal the whole tree via killpg(2) (kill(-pid)).
-func configureSpawn(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-}
-
-func killProcessTree(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
+func startProbeServer(cmd *exec.Cmd) (<-chan error, func() error, error) {
+	procexec.SetupCommand(cmd)
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
 	}
-	err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	if err != nil && !errors.Is(err, syscall.ESRCH) {
-		return err
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	var once sync.Once
+	var stopErr error
+	stop := func() error {
+		once.Do(func() {
+			signalErr := cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case err := <-done:
+				stopErr = err
+			case <-time.After(10 * time.Second):
+				killErr := procexec.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
+				stopErr = errors.Join(fmt.Errorf("server did not shut down gracefully"), signalErr, killErr)
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					stopErr = errors.Join(stopErr, fmt.Errorf("server did not exit after kill"))
+				}
+			}
+		})
+		return stopErr
 	}
-	return nil
+	return done, stop, nil
 }

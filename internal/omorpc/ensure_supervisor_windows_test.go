@@ -5,6 +5,7 @@ package omorpc
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"slices"
 	"testing"
@@ -56,7 +57,7 @@ func TestStartSupervisorUsesTrackedProcess(t *testing.T) {
 func TestFinishSupervisorWaitLeavesCloseForTreeDrain(t *testing.T) {
 	tracked := &mockTrackedSupervisor{}
 	sentinel := errors.New("leader wait")
-	handle := &supervisorHandle{tracked: tracked}
+	handle := &supervisorHandle{process: &os.Process{Pid: 42}, tracked: tracked}
 
 	if err := finishSupervisorWait(handle, sentinel); !errors.Is(err, sentinel) {
 		t.Fatalf("finishSupervisorWait = %v, want leader wait error", err)
@@ -70,7 +71,7 @@ func TestTerminateSupervisorTerminatesTrackedTree(t *testing.T) {
 	tracked := &mockTrackedSupervisor{}
 	waitCh := make(chan error)
 	close(waitCh)
-	handle := &supervisorHandle{tracked: tracked}
+	handle := &supervisorHandle{process: &os.Process{Pid: 42}, tracked: tracked}
 
 	if err := terminateSupervisor(context.Background(), handle, waitCh, time.Second, time.Second); err != nil {
 		t.Fatalf("terminateSupervisor: %v", err)
@@ -88,7 +89,7 @@ func TestTerminateSupervisorPropagatesTreeDrainTimeout(t *testing.T) {
 	tracked := &mockTrackedSupervisor{waitTreeGoneErr: drainTimeout}
 	waitCh := make(chan error)
 	close(waitCh)
-	handle := &supervisorHandle{tracked: tracked}
+	handle := &supervisorHandle{process: &os.Process{Pid: 42}, tracked: tracked}
 
 	err := terminateSupervisor(context.Background(), handle, waitCh, time.Second, time.Second)
 	if !errors.Is(err, drainTimeout) {
