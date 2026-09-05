@@ -284,7 +284,23 @@ export function useChatFrameState() {
   const claimReadyGeneration = (connectionGeneration: number): number => {
     const replay = replayQueueRef.current.find((candidate) =>
       candidate.connectionGeneration === connectionGeneration && !candidate.ready);
-    if (!replay) return connectionGeneration;
+    if (!replay) {
+      const interrupted = replayQueueRef.current.find((candidate) =>
+        candidate.connectionGeneration === connectionGeneration && !candidate.terminal);
+      if (interrupted) {
+        // Another binding ready before terminal replaces this attempt, not
+        // the logical replay. Only its uncommitted pages are retractable.
+        // Preserve the resync fence and its original live-message snapshot.
+        if (resyncGenerationRef.current === null
+          || resyncGenerationRef.current === interrupted.generation) pageBuffer.reset();
+        return interrupted.generation;
+      }
+      // A user query can recover on the same socket without beginResync.
+      // Track its first ready so a replacement can retire its partial pages.
+      const generation = ++replayGenerationRef.current;
+      replayQueueRef.current.push({ generation, connectionGeneration, ready: true, terminal: false });
+      return generation;
+    }
     replay.ready = true;
     replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
     return replay.generation;

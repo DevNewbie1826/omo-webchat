@@ -8,6 +8,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
@@ -95,10 +96,26 @@ func TestTransparentIdleRecoveryTailOutcome(t *testing.T) {
 
 type resetHistoryRecorder struct {
 	*recorder
-	resets int
+	resets   int
+	mu       sync.Mutex
+	received []Frame
 }
 
-func (r *resetHistoryRecorder) DiscardHydrationAttempt() { r.drain(); r.resets++ }
+func (r *resetHistoryRecorder) Deliver(f Frame) {
+	r.mu.Lock()
+	r.received = append(r.received, f)
+	r.mu.Unlock()
+	r.recorder.Deliver(f)
+}
+
+func (r *resetHistoryRecorder) snapshot() []Frame {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Frame(nil), r.received...)
+}
+
+// A receiver cannot retract delivered pages. Keep all frames across resets.
+func (r *resetHistoryRecorder) DiscardHydrationAttempt() { r.resets++ }
 
 func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 	for _, boundary := range []string{"disk", "tail", "exhausted"} {
@@ -107,7 +124,7 @@ func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 			client := dial(t, d)
 			store := newMemStore()
 			const count = entriesPageMaxCount*2 + 1
-			path, _ := writeHistorySession(t, count, 0)
+			path, _ := writeHistorySession(t, count, 1)
 			if err := d.LoadSessionFile(path); err != nil {
 				t.Fatal(err)
 			}
@@ -124,6 +141,14 @@ func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 			lose := func() {
 				if validations == 0 || current == nil {
 					t.Fatal("emission reached before binding validation")
+				}
+				// Emission enqueues to the broadcaster. Await actual receiver delivery
+				// before loss; the immutable record is never drained on retry.
+				sub.await(t, FrameEntries)
+				if boundary == "tail" {
+					for received := entriesPageMaxCount; received < count; received += entriesPageMaxCount {
+						sub.await(t, FrameEntries)
+					}
 				}
 				d.EvictSessionSilently(path)
 				if _, err := current.QueryState(context.Background()); !errors.Is(err, ErrSessionResumable) {
@@ -154,6 +179,32 @@ func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 			if detach != nil {
 				defer detach()
 			}
+			defer func() {
+				// Compare the full delivered stream, including failed pages. This
+				// fixture is also consumed by the mounted frontend receiver test.
+				var wire []map[string]any
+				for _, f := range sub.snapshot() {
+					switch f.Kind {
+					case FrameReady:
+						wire = append(wire, map[string]any{"type": "ready", "sessionId": "chat-1", "piSessionId": "durable-chat-1", "resumed": f.Resumed})
+					case FrameEntries:
+						p := f.Data.(EntriesFrame)
+						wire = append(wire, map[string]any{"type": "entries", "sessionId": "chat-1", "entries": p.Entries, "final": p.Final})
+					}
+				}
+				data, marshalErr := json.Marshal(wire)
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				fixture := filepath.Join("testdata", "receiver-"+boundary+".json")
+				want, err := os.ReadFile(fixture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(want) != string(append(data, '\n')) {
+					t.Fatalf("immutable receiver stream differs: %s", fixture)
+				}
+			}()
 			if boundary == "exhausted" {
 				if !errors.Is(err, ErrSessionResumable) || validations != 2 || losses != 2 {
 					t.Fatalf("exhaustion err=%v validations=%d losses=%d", err, validations, losses)
@@ -161,7 +212,7 @@ func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 				if d.OpenCount()-before != 1 {
 					t.Fatalf("unbounded opens=%d", d.OpenCount()-before)
 				}
-				for _, f := range sub.drain() {
+				for _, f := range sub.snapshot() {
 					if f.Kind == FrameEntries && f.Data.(EntriesFrame).Final {
 						t.Fatal("failed generation published terminal")
 					}
@@ -174,7 +225,29 @@ func TestTransparentIdleRecoveryEmissionBarriers(t *testing.T) {
 			if got == original || got.ID() != original.ID() || got.SessionFile() != path || d.OpenCount()-before != 1 || sub.resets != 1 || validations != 2 {
 				t.Fatalf("retry identity/budget/reset failed: opens=%d resets=%d validations=%d", d.OpenCount()-before, sub.resets, validations)
 			}
-			pages := collectHydrationPages(t, got, sub.recorder)
+			// Await the terminal then a FIFO marker before inspecting immutable
+			// delivery. Separate attempts by their actual ready frames, never by
+			// mutating the receiver's history when the server discards a binding.
+			collectHydrationPages(t, got, sub.recorder)
+			var pages []EntriesFrame
+			attempts, terminals := 0, 0
+			for _, f := range sub.snapshot() {
+				if f.Kind == FrameReady {
+					attempts++
+				}
+				if f.Kind == FrameEntries {
+					p := f.Data.(EntriesFrame)
+					if p.Final {
+						terminals++
+					}
+					if attempts == 2 {
+						pages = append(pages, p)
+					}
+				}
+			}
+			if attempts != 2 || terminals != 1 {
+				t.Fatalf("attempts=%d terminals=%d", attempts, terminals)
+			}
 			assertSingleTerminalHistory(t, pages, count)
 			i := 0
 			for _, page := range pages {
