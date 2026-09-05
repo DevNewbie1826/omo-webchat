@@ -238,7 +238,7 @@ export function Sidebar({
               >
                 <IconPlus size={15} />
               </button>
-              {isMobile && (
+              {isMobile ? (
                 <button
                   type="button"
                   className="th-btn-icon"
@@ -246,6 +246,16 @@ export function Sidebar({
                   onClick={onToggleCollapse}
                 >
                   <IconX size={15} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="th-btn-icon th-sidebar-toggle"
+                  title={t("sidebar.collapse")}
+                  aria-label={t("sidebar.collapse")}
+                  onClick={onToggleCollapse}
+                >
+                  <IconChevron size={15} />
                 </button>
               )}
             </div>
@@ -307,17 +317,19 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className="th-sidebar-rail">
-        <button
-          type="button"
-          className="th-sidebar-toggle"
-          title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
-          aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
-          onClick={onToggleCollapse}
-        >
-          <IconChevron size={13} />
-        </button>
-        </div>
+        {collapsed && (
+          <div className="th-sidebar-rail">
+            <button
+              type="button"
+              className="th-sidebar-toggle"
+              title={t("sidebar.expand")}
+              aria-label={t("sidebar.expand")}
+              onClick={onToggleCollapse}
+            >
+              <IconChevron size={13} />
+            </button>
+          </div>
+        )}
       </aside>
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
       <OverviewPanel

@@ -573,6 +573,36 @@ describe("chat reading rhythm and tool width contracts", () => {
   });
 });
 
+describe("compact sidebar shell contracts", () => {
+  // Approved pane-workspace contract (DESIGN.md "Geometry"): the expanded
+  // sidebar is one content column at --th-sidebar-w (264px) with collapse
+  // living inside .th-sidebar-nav; only the collapsed state keeps a 44px
+  // rail whose sole job is the reopen toggle. --th-space-11 stays the shared
+  // 44px coarse-pointer touch size.
+  it("starts the sidebar shell at 264px while the shared touch token stays 44px", () => {
+    expect(tokenValue("--th-sidebar-w")).toBe("264px");
+    expect(tokenValue("--th-space-11")).toBe("44px");
+  });
+
+  it("allocates zero expanded rail width and keeps the rail collapsed-only", () => {
+    expect(sidebarToggle).not.toMatch(/(?:^|\})\s*\.th-sidebar-rail\s*\{/);
+    const rail = ruleBody(sidebarToggle, ".th-sidebar--collapsed .th-sidebar-rail");
+    expect(declarationValue(rail, "display")).toBe("flex");
+    expect(declarationValue(rail, "flex")).toBe("0 0 var(--th-space-11)");
+    expect(declarationValue(ruleBody(sidebar, ".th-sidebar--collapsed"), "width")).toBe("var(--th-space-11)");
+  });
+
+  it("gives the expanded inner column the full shell width", () => {
+    expect(declarationValue(ruleBody(sidebar, ".th-sidebar-inner"), "width")).toBe("var(--th-sidebar-w)");
+  });
+
+  it("carries the collapse toggle as a toolbar icon action", () => {
+    const toggle = ruleBody(sidebarToggle, ".th-sidebar-toggle");
+    expect(declarationValue(toggle, "width")).toBe("28px");
+    expect(declarationValue(toggle, "height")).toBe("28px");
+  });
+});
+
 describe("sidebar density and top-bar hierarchy contracts", () => {
   it("packs sidebar rows at 36px with 8px inline padding, 8px icon gap, and 2px between rows", () => {
     const node = sessionTree.match(/\.th-tree-node\s*\{([^}]*)\}/)?.[1] ?? "";

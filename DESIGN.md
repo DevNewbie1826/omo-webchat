@@ -219,8 +219,9 @@ Choose a tested foreground/background token pair instead.
   scale; validate that rows, badges, and pagination fit without clipping at
   this width). The shell follows the fixed-sidenav-shell pattern: the sidebar
   column stays stable while the pane work area scrolls independently, and the
-  grid columns are the sidebar width plus `minmax(0, 1fr)` so panes never
-  inherit horizontal overflow. The expanded sidebar has no separate navigation
+  work area is a shrinkable `minmax(0, 1fr)`-style track beside the fixed
+  sidebar column so panes never inherit horizontal overflow. The expanded
+  sidebar has no separate navigation
   rail: collapse lives inside the sidebar toolbar (`.th-sidebar-nav`) as one
   of its trailing actions, so the expanded shell allocates zero width outside
   the content column. The collapsed state keeps a 44px rail
