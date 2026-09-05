@@ -25,6 +25,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 	"net"
 	"os"
 	"path/filepath"
@@ -102,7 +103,7 @@ func (d *mockDaemon) start() {
 		return
 	}
 	_ = os.Remove(d.sockPath) // stale socket from a previous lifetime
-	ln, err := net.Listen("unix", d.sockPath)
+	ln, err := transport.Listen(d.sockPath)
 	if err != nil {
 		d.t.Fatalf("mock daemon listen: %v", err)
 	}

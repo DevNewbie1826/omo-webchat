@@ -6,10 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -218,11 +218,8 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 		return nil, fmt.Errorf("omorpc: probe daemon after startup lock: %w", dialErr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.SocketPath), 0o700); err != nil {
-		return nil, fmt.Errorf("omorpc: create socket directory: %w", err)
-	}
-	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("omorpc: create daemon state directory: %w", err)
+	if err := prepareEndpoint(ctx, cfg); err != nil {
+		return nil, fmt.Errorf("omorpc: prepare endpoint: %w", err)
 	}
 	command, nativeArgs, err := supervisorCommand(cfg)
 	if err != nil {
@@ -234,7 +231,15 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 	}
 	automaticArgs := nativeArgs
 	if cfg.ArgsTemplate == nil && cfg.ChildCommand == "" {
-		if childAdapter != "" {
+		if runtime.GOOS == "windows" {
+			// A Windows launcher cannot exec-replace itself. Keep the native
+			// supervisor child so its PPID and inherited FD3 remain intact.
+			cfg.Env, childAdapter, err = windowsNativeChildContext(cfg)
+			if err != nil {
+				return nil, err
+			}
+			nodeEnv = setEnv(setEnv(cfg.Env, "OMO_RUNTIME", "node"), "SENPI_RUNTIME", "node")
+		} else if childAdapter != "" {
 			// Both runtime attempts use the same direct-native adapter and child
 			// arguments. Only the attempt environment selects the runtime.
 			automaticArgs = nodeArgs
@@ -344,12 +349,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 		client, identity, stable, peer, dialErr := probeAuthenticatedDaemon(readyCtx, cfg, supervisor.process.Pid)
 		if dialErr == nil && client != nil {
 			provenance.observe(identity, stable, peer)
-			// peerUnknown rejects on unix, where LOCAL_PEERPID / SO_PEERCRED make
-			// the credential lookup definitive. Windows exposes no peer-PID
-			// credential for a connected socket, so every classification is
-			// unknown there; peerpolicy_windows.go accepts it and leaves the
-			// launch guard to fileid socket-identity stability plus the protocol
-			// capability probe below.
+			// Unverified peers never provide launch-ownership evidence.
 			if !stable || (peer == peerUnknown && !peerUnknownAccepted()) {
 				_ = client.Close()
 			} else {
@@ -406,10 +406,6 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 // bookkeeping reads identically on every platform while keeping its local name.
 type socketIdentity = fileid.Identity
 
-func currentSocketIdentity(path string) (socketIdentity, bool) {
-	return fileid.FromPath(path)
-}
-
 type peerProvenance uint8
 
 const (
@@ -456,53 +452,6 @@ func (p *endpointProvenance) owns(identity socketIdentity) bool {
 	return p.provenance(identity) == peerOwned
 }
 
-// cleanupAfterReap is the only path that promotes an unacknowledged endpoint
-// to owned. Once the complete launch process group is gone, a stable refusal
-// proves that a novel pathname is launch debris rather than a live peer.
-func (p *endpointProvenance) cleanupAfterReap(timeout time.Duration) error {
-	identity, exists := currentSocketIdentity(p.path)
-	if !exists {
-		return nil
-	}
-	if p.provenance(identity) != peerForeign && (!p.baselineExists || identity != p.baseline) {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		var dialer net.Dialer
-		conn, err := dialer.DialContext(ctx, "unix", p.path)
-		if conn != nil {
-			_ = conn.Close()
-			p.peers[identity] = peerForeign
-		} else if after, stable := currentSocketIdentity(p.path); stable && after == identity && isSpawnableProbeError(err) {
-			p.peers[identity] = peerOwned
-		}
-	}
-	if !p.owns(identity) {
-		return nil
-	}
-	return removeOwnedSocket(p.path, &identity)
-}
-
-// probeAuthenticatedDaemon binds peer authentication to the pathname inode:
-// the path must name the same socket immediately before and after the dial.
-// A replacement after the first readiness handshake therefore cannot lend its
-// inode to the old authenticated connection.
-func probeAuthenticatedDaemon(ctx context.Context, cfg EnsureConfig, processGroup int) (*Client, socketIdentity, bool, peerProvenance, error) {
-	before, exists := currentSocketIdentity(cfg.SocketPath)
-	if !exists {
-		return nil, socketIdentity{}, false, peerUnknown, os.ErrNotExist
-	}
-	client, err := probeDaemon(ctx, cfg)
-	if err != nil {
-		return nil, socketIdentity{}, false, peerUnknown, err
-	}
-	after, exists := currentSocketIdentity(cfg.SocketPath)
-	stable := exists && before == after
-	if !stable {
-		return client, before, false, peerUnknown, nil
-	}
-	return client, before, true, clientPeerProvenance(client, processGroup), nil
-}
-
 func clientPeerProvenance(client *Client, processGroup int) peerProvenance {
 	client.mu.Lock()
 	defer client.mu.Unlock()
@@ -518,49 +467,6 @@ func clientPeerProvenance(client *Client, processGroup int) peerProvenance {
 // producer from our supervisor's process group.
 func authenticateSocketPath(ctx context.Context, path string, processGroup int) (socketIdentity, bool, peerProvenance, error) {
 	return authenticateSocketPathWithPeerPID(ctx, path, processGroup, connectionPeerPID)
-}
-
-func authenticateSocketPathWithPeerPID(ctx context.Context, path string, processGroup int, peerPID func(net.Conn) (int, error)) (socketIdentity, bool, peerProvenance, error) {
-	before, exists := currentSocketIdentity(path)
-	if !exists {
-		return socketIdentity{}, false, peerUnknown, os.ErrNotExist
-	}
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "unix", path)
-	if err != nil {
-		after, stillExists := currentSocketIdentity(path)
-		return before, stillExists && before == after, peerUnknown, err
-	}
-	defer conn.Close()
-	after, exists := currentSocketIdentity(path)
-	stable := exists && before == after
-	if !stable {
-		return before, false, peerUnknown, nil
-	}
-	peer, peerErr := peerPID(conn)
-	return before, true, classifyPeerProvenance(peer, peerErr, processGroup), peerErr
-}
-
-func connectionPeerProvenance(conn net.Conn, processGroup int) peerProvenance {
-	pid, err := connectionPeerPID(conn)
-	return classifyPeerProvenance(pid, err, processGroup)
-}
-
-// removeOwnedSocket runs while EnsureDaemon holds the endpoint lock. The
-// identity comparison prevents cleanup from unlinking an endpoint that
-// replaced the one observed during this attempt.
-func removeOwnedSocket(path string, owned *socketIdentity) error {
-	if owned == nil {
-		return nil
-	}
-	current, exists := currentSocketIdentity(path)
-	if !exists || current != *owned {
-		return nil
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("omorpc: remove failed daemon socket: %w", err)
-	}
-	return nil
 }
 
 func lookupEnv(env []string, key string) (string, bool) {
@@ -888,6 +794,9 @@ func EnsureExtensionEventsCapability(env []string) []string {
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, string, error) {
 	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
 	env = EnsureExtensionEventsCapability(setEnv(env, "SENPI_RUNTIME", "node"))
+	if runtime.GOOS == "windows" || cfg.ChildCommand != "" || cfg.ArgsTemplate != nil {
+		return nativeArgs, env, "", nil
+	}
 	installation, recognized, err := resolveLauncherInstallation(command, env)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("omorpc: resolve node fallback launcher context: %w", err)

@@ -34,6 +34,18 @@ func TestEnsureHelperProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
+	if mode == "await-control" {
+		conn, err := net.Dial("unix", os.Getenv("OMORPC_ENSURE_CONTROL"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		command := make([]byte, 1)
+		if _, err := io.ReadFull(conn, command); err != nil {
+			return
+		}
+		os.Exit(int(command[0]))
+	}
 	if mode == "die" {
 		os.Exit(7)
 	}
@@ -919,89 +931,27 @@ func TestEnsureDaemonNegotiatedReplacementIsUnowned(t *testing.T) {
 func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "foreign.sock")
-	startedFIFO := filepath.Join(dir, "supervisor-started")
-	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
-	cfg := helperEnsureConfig(dir, socket, script, "die")
-	cfg.ReadyTimeout = 300 * time.Millisecond
-	cfg.ProbeTimeout = 50 * time.Millisecond
-
-	resultCh := make(chan error, 1)
-	go func() {
-		daemon, err := EnsureDaemon(context.Background(), cfg)
-		if daemon != nil {
-			_ = daemon.Close()
+	gate := startEnsureGate(t, dir, socket)
+	observed := serveForeignEndpoint(t, socket, func(conn net.Conn) {
+		if _, err := io.Copy(io.Discard, conn); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Error(err)
 		}
-		resultCh <- err
-	}()
-	// Closable handshake: the FIFO is opened as a RAW syscall fd with
-	// O_RDWR|O_NONBLOCK. os.File must not wrap it — Go's poller registers
-	// FIFOs with epoll on Linux and would silently block in Read on
-	// EAGAIN (O_RDWR keeps a write end, so no EOF ever arrives), defeating
-	// the deadline. Raw syscall.Read returns EAGAIN straight to this loop.
-	fd, err := syscall.Open(startedFIFO, syscall.O_RDWR|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("open start fifo: %v", err)
-	}
-	defer syscall.Close(fd)
-	deadline := time.Now().Add(10 * time.Second)
-	var started []byte
-	for time.Now().Before(deadline) {
-		buf := make([]byte, 32)
-		n, rerr := syscall.Read(fd, buf)
-		if n > 0 {
-			started = append(started, buf[:n]...)
-			if strings.Contains(string(started), "started") {
-				break
-			}
-			continue
-		}
-		if rerr == nil {
-			continue
-		}
-		if errors.Is(rerr, syscall.EAGAIN) || errors.Is(rerr, syscall.EWOULDBLOCK) || errors.Is(rerr, syscall.EINTR) {
-			time.Sleep(2 * time.Millisecond)
-			continue
-		}
-		t.Fatalf("read start fifo: %v", rerr)
-	}
-	// Final drain: a signal that landed during the last sleep must not be
-	// misread as starvation.
-	{
-		buf := make([]byte, 32)
-		if n, _ := syscall.Read(fd, buf); n > 0 {
-			started = append(started, buf[:n]...)
-		}
-	}
-	if !strings.Contains(string(started), "started") {
-		t.Skip("supervisor never scheduled under load; preservation interleaving unobservable")
-	}
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				_, _ = io.Copy(io.Discard, conn)
-			}()
-		}
-	}()
+	})
 	select {
-	case err := <-resultCh:
-		if err == nil {
-			t.Fatal("failed attempt unexpectedly succeeded")
-		}
-	case <-time.After(testAwaitTimeout):
+	case <-observed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ensure did not connect to foreign endpoint")
+	}
+	if _, err := gate.control.Write([]byte{7}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.done:
+	case <-time.After(10 * time.Second):
 		t.Fatal("failed attempt did not finish")
+	}
+	if gate.err == nil {
+		t.Fatal("failed attempt unexpectedly succeeded")
 	}
 	if _, exists := currentSocketIdentity(socket); !exists {
 		t.Fatal("failed cleanup unlinked the live foreign listener")
@@ -1010,84 +960,43 @@ func TestEnsureDaemonFailedAttemptPreservesLiveForeignListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("foreign listener is no longer reachable: %v", err)
 	}
-	_ = conn.Close()
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestEnsureDaemonDoesNotClaimCompetingCompatibleProducer(t *testing.T) {
 	dir := shortEnsureTempDir(t)
 	socket := filepath.Join(dir, "competitor.sock")
-	startedFIFO := filepath.Join(dir, "supervisor-started")
-	if err := syscall.Mkfifo(startedFIFO, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	script := writeFakeSupervisor(t, fmt.Sprintf("printf started > %q\nsleep 60", startedFIFO))
-	cfg := helperEnsureConfig(dir, socket, script, "serve")
-
-	resultCh := make(chan struct {
-		daemon *EnsuredDaemon
-		err    error
-	}, 1)
-	go func() {
-		daemon, err := EnsureDaemon(context.Background(), cfg)
-		resultCh <- struct {
-			daemon *EnsuredDaemon
-			err    error
-		}{daemon, err}
-	}()
-	fifo, err := os.Open(startedFIFO)
-	if err != nil {
-		t.Fatal(err)
-	}
-	started, err := io.ReadAll(fifo)
-	_ = fifo.Close()
-	if err != nil || string(started) != "started" {
-		t.Fatalf("supervisor start signal = %q, err = %v", started, err)
-	}
-
 	t.Setenv("SENPI_RPC_CLIENT_CAPABILITIES", capExtensionEvents)
-	competitor, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer competitor.Close()
-	go func() {
-		for {
-			conn, err := competitor.Accept()
-			if err != nil {
-				return
-			}
-			go serveEnsureHelper(conn)
-		}
-	}()
-
-	var result struct {
-		daemon *EnsuredDaemon
-		err    error
-	}
+	gate := startEnsureGate(t, dir, socket)
+	serveForeignEndpoint(t, socket, serveEnsureHelper)
 	select {
-	case result = <-resultCh:
-	case <-time.After(testAwaitTimeout):
+	case <-gate.done:
+	case <-time.After(10 * time.Second):
 		t.Fatal("EnsureDaemon did not accept competing producer")
 	}
-	if result.err != nil {
-		t.Fatalf("EnsureDaemon: %v", result.err)
+	if gate.err != nil {
+		t.Fatalf("EnsureDaemon: %v", gate.err)
 	}
-	if result.daemon.Owned {
+	if gate.daemon.Owned {
 		t.Fatal("competing producer was reported as owned")
 	}
-	if err := result.daemon.Stop(context.Background()); err != nil {
+	if err := gate.daemon.StopBounded(testAwaitTimeout); err != nil {
 		t.Fatalf("Stop unowned daemon: %v", err)
 	}
 	if _, exists := currentSocketIdentity(socket); !exists {
 		t.Fatal("Stop unlinked the competing producer socket")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), testAwaitTimeout)
+	ctx, cancel := context.WithTimeout(t.Context(), testAwaitTimeout)
 	defer cancel()
 	client, err := Dial(ctx, socket)
 	if err != nil {
 		t.Fatalf("competing producer is not live after Stop: %v", err)
 	}
-	_ = client.Close()
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAuthenticatedPeerCannotClaimAfterConnectReplacementInode(t *testing.T) {
@@ -1682,6 +1591,10 @@ func shortEnsureTempDir(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("ensure temp dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error(err)
+		}
+	})
 	return dir
 }

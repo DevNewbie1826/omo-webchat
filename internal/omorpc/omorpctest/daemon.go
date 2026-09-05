@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 	"net"
 	"os"
 	"path/filepath"
@@ -220,7 +221,7 @@ func (d *Daemon) Start() error {
 		return nil
 	}
 	_ = os.Remove(d.sockPath) // stale socket from a previous lifetime
-	ln, err := net.Listen("unix", d.sockPath)
+	ln, err := transport.Listen(d.sockPath)
 	if err != nil {
 		return fmt.Errorf("omorpctest: listen %s: %w", d.sockPath, err)
 	}

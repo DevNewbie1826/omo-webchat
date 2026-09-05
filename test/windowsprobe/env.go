@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -15,6 +16,10 @@ func isolatedEnv(home, agent string) []string {
 	env := os.Environ()
 	env = setEnv(env, "HOME", home)
 	env = setEnv(env, "USERPROFILE", home)
+	env = setEnv(env, "APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	env = setEnv(env, "LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	env = setEnv(env, "XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	env = setEnv(env, "XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	env = setEnv(env, "OMO_CODING_AGENT_DIR", agent)
 	env = setEnv(env, "SENPI_CODING_AGENT_DIR", agent)
 	env = setEnv(env, "SENPI_RPC_CLIENT_CAPABILITIES", "extension_events")

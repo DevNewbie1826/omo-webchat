@@ -163,11 +163,11 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 			logger.Error("graceful shutdown failed", "err", e)
 		}
 	}()
-	logger.Info("listening", "addr", srv.Addr, "root", cfg.Root)
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		return fmt.Errorf("http server: %w", err)
 	}
+	logger.Info("listening", "addr", ln.Addr().String(), "root", cfg.Root)
 	if onReady != nil {
 		if err := onReady(); err != nil {
 			_ = ln.Close()
