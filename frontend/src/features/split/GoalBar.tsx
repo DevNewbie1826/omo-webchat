@@ -92,6 +92,7 @@ export function GoalBar({ goal }: GoalBarProps) {
           className="th-goal-panel"
           style={panelMaxPx === null ? undefined : { maxHeight: `${panelMaxPx}px` }}
         >
+          <div className="th-goal-content">
           <p className="th-goal-objective-full">
             {goal.objective}
             {goal.objectiveTruncated ? " …" : ""}
@@ -99,6 +100,7 @@ export function GoalBar({ goal }: GoalBarProps) {
           {goal.blockedReason && (
             <p className="th-goal-blocked-reason">{t("chat.goal.blockedReason")}: {goal.blockedReason}</p>
           )}
+          </div>
         </div>
       )}
     </section>

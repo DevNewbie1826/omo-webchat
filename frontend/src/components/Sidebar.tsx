@@ -307,6 +307,7 @@ export function Sidebar({
           </div>
         </div>
 
+        <div className="th-sidebar-rail">
         <button
           type="button"
           className="th-sidebar-toggle"
@@ -316,6 +317,7 @@ export function Sidebar({
         >
           <IconChevron size={13} />
         </button>
+        </div>
       </aside>
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
       <OverviewPanel

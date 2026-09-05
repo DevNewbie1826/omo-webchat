@@ -18,12 +18,29 @@
 }
 
 .th-chat-main {
+  container: chat-column / size;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+}
+
+/* Normally only the transcript scrolls. In a fixed-band deficit this shell
+   scrolls the auxiliary controls instead of clipping them below the composer. */
+.th-chat-main-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.th-chat-main-content > :not(.th-chat-scrollport) {
+  flex-shrink: 0;
 }
 
 .th-chat-pane .th-termhead {
@@ -383,7 +400,7 @@
 
 .th-model-picker-popover {
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--th-space-1));
   right: 0;
   z-index: 30;
   width: min(260px, 80vw);
@@ -442,7 +459,7 @@
 }
 
 .th-model-picker-list > button:hover,
-.th-model-picker-list > button[aria-selected="true"] {
+.th-model-picker-list > button[data-active="true"] {
   background: var(--th-hover);
 }
 
@@ -682,19 +699,16 @@
     display: inline-flex;
   }
 
-  /* SplitView keeps horizontal panes at 320px minimum and this 600px query
-     is the real narrow/expanded boundary. Keep prose hidden throughout that
-     whole range so there is no intermediate overflow window. */
-  .th-chat-pane .th-provider-badge,
-  .th-chat-pane .th-model-picker-label {
+  /* Provider metadata yields to the named composer model control. */
+  .th-chat-pane .th-provider-badge {
     display: none;
   }
 
   .th-chat-pane .th-model-picker-btn {
-    width: 44px;
-    max-width: 44px;
-    min-width: 44px;
-    min-height: 44px;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    min-height: var(--th-space-11);
     justify-content: center;
   }
 
@@ -733,4 +747,77 @@
   .th-chat-main {
     --th-chat-gutter: 8px;
   }
+}
+
+
+.th-composer-model {
+  width: min(var(--th-chat-max), 100%);
+  margin-inline: auto;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.th-composer-model .th-model-picker {
+  flex: 0 1 auto;
+  max-width: 100%;
+}
+
+.th-model-picker-thinking {
+  flex: none;
+  color: var(--th-text-dim);
+}
+
+.th-model-picker-current {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--th-space-0-5);
+  padding: var(--th-space-2);
+  border-bottom: 1px solid var(--th-border);
+  color: var(--th-text);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  overflow-wrap: anywhere;
+}
+
+.th-model-picker-current > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--th-space-0-5);
+}
+
+.th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon {
+  flex: none;
+  width: var(--th-space-11);
+  height: var(--th-space-11);
+}
+
+.th-model-picker-current span {
+  color: var(--th-muted);
+}
+
+.th-model-picker-popover--sheet {
+  position: fixed;
+  right: auto;
+  left: calc(var(--th-vv-left, 0px) + var(--th-space-2));
+  bottom: auto;
+  top: calc(var(--th-vv-top, 0px) + var(--th-space-2));
+  width: calc(100% - var(--th-space-4));
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4));
+  z-index: 60;
+  background: var(--th-surface-overlay);
+  border-color: var(--th-border-overlay);
+  box-shadow: var(--th-shadow-overlay);
+}
+
+.th-model-picker-popover--sheet .th-thinking-in-picker {
+  display: flex;
+}
+
+.th-model-picker-popover--sheet .th-model-picker-list > button {
+  flex: none;
+  min-height: var(--th-space-11);
 }

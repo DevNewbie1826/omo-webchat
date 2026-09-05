@@ -3,7 +3,7 @@
   width: var(--th-sidebar-w);
   flex: none;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--th-surface);
   border-right: 1px solid var(--th-border-surface);
   box-shadow: var(--th-shadow-surface);
@@ -13,12 +13,13 @@
 }
 
 .th-sidebar--collapsed {
-  width: 0;
+  width: var(--th-space-11);
   border-right-color: transparent;
 }
 
 .th-sidebar-inner {
-  width: var(--th-sidebar-w);
+  width: calc(var(--th-sidebar-w) - var(--th-space-11));
+  min-width: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -129,6 +130,10 @@
        carve the insets out here too. */
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .th-sidebar-inner {
+    width: var(--th-sidebar-w);
   }
 
   .th-sidebar--collapsed {

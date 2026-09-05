@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -50,6 +50,16 @@ export function ChatPane({
   onChatName,
 }: ChatPaneProps) {
   const { t } = useT();
+  const [pane, setPane] = useState<HTMLElement | null>(null);
+  const [narrow, setNarrow] = useState(() => window.innerWidth <= 600);
+  useLayoutEffect(() => {
+    if (!pane || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setNarrow(entry.contentRect.width <= 600);
+    });
+    observer.observe(pane);
+    return () => observer.disconnect();
+  }, [pane]);
   const [showFiles, setShowFiles] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
@@ -68,8 +78,24 @@ export function ChatPane({
     ? [...THINKING_LEVELS, chat.thinkingLevel]
     : THINKING_LEVELS;
 
+  const modelPicker = chat.models.length > 0 ? (
+    <ModelPicker
+      compact={narrow}
+      models={chat.models}
+      currentModelKey={chat.currentModelKey}
+      placeholder={t("chat.model")}
+      searchPlaceholder={t("chat.searchModels")}
+      onSelect={chat.changeModel}
+      thinkingLevels={thinkingOptions}
+      thinkingLevel={chat.thinkingLevel}
+      thinkingLabel={t("chat.thinkingLevel")}
+      onThinkingChange={chat.changeThinkingLevel}
+    />
+  ) : null;
+
   return (
     <section
+      ref={setPane}
       className={`th-stage th-pane th-chat-pane${focused ? " th-pane--focused" : ""}`}
       onPointerDown={onFocus}
     >
@@ -106,19 +132,7 @@ export function ChatPane({
             <option key={level} value={level}>{t("chat.thinkingLevel")}: {level}</option>
           ))}
         </select>
-        {chat.models.length > 0 && (
-          <ModelPicker
-            models={chat.models}
-            currentModelKey={chat.currentModelKey}
-            placeholder={t("chat.model")}
-            searchPlaceholder={t("chat.searchModels")}
-            onSelect={chat.changeModel}
-            thinkingLevels={thinkingOptions}
-            thinkingLevel={chat.thinkingLevel}
-            thinkingLabel={t("chat.thinkingLevel")}
-            onThinkingChange={chat.changeThinkingLevel}
-          />
-        )}
+        {!narrow && modelPicker}
         <button
           type="button"
           className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
@@ -165,6 +179,7 @@ export function ChatPane({
         )}
       </header>
       <div className="th-chat-main">
+        <div className="th-chat-main-content">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
         {chat.sendError && (
@@ -242,7 +257,9 @@ export function ChatPane({
             ))}
           </div>
         )}
+        </div>
         <ChatComposer
+          modelControl={narrow ? modelPicker : null}
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}
