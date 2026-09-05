@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,8 +59,12 @@ func TestWindowsProduction(t *testing.T) {
 
 func productionPipeFixture(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "rpc.sock")
 	secret := bytes.Repeat([]byte{0x7b}, 32)
+	return productionPipeFixtureAt(t, filepath.Join(t.TempDir(), "rpc.sock"), secret, secret)
+}
+
+func productionPipeFixtureAt(t *testing.T, path string, secret, accepted []byte) string {
+	t.Helper()
 	if err := os.WriteFile(path+".secret", secret, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +77,18 @@ func productionPipeFixture(t *testing.T) string {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
+	var mu sync.Mutex
+	var active net.Conn
+	closed := false
 	t.Cleanup(func() {
+		mu.Lock()
+		closed = true
+		if active != nil {
+			if err := active.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+		mu.Unlock()
 		if err := listener.Close(); err != nil {
 			t.Error(err)
 		}
@@ -89,7 +105,18 @@ func productionPipeFixture(t *testing.T) string {
 			if err != nil {
 				return
 			}
-			serveProductionPipe(conn, secret)
+			mu.Lock()
+			if closed {
+				conn.Close()
+				mu.Unlock()
+				return
+			}
+			active = conn
+			mu.Unlock()
+			serveProductionPipe(conn, accepted)
+			mu.Lock()
+			active = nil
+			mu.Unlock()
 		}
 	}()
 	return path
@@ -97,9 +124,6 @@ func productionPipeFixture(t *testing.T) string {
 
 func serveProductionPipe(conn net.Conn, secret []byte) {
 	defer conn.Close()
-	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		return
-	}
 	got := make([]byte, 32)
 	if _, err := io.ReadFull(conn, got); err != nil || !bytes.Equal(got, secret) {
 		return

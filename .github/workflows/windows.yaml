@@ -73,10 +73,32 @@ jobs:
         with:
           go-version: "1.26.7"
 
-      - name: Real production daemon lifecycle
+      - name: Build real server with embedded frontend
         shell: pwsh
         run: |
-          & go run ./test/windowsprobe 2>&1 | Tee-Object -FilePath probe-production.txt
+          Push-Location frontend
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          go build -o omo-webchat.exe ./cmd/server
+          exit $LASTEXITCODE
+
+      - name: Record pinned runtimes
+        shell: pwsh
+        run: |
+          go version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          bun --version
+          exit $LASTEXITCODE
+
+      - name: Real production daemon lifecycle and server HTTP
+        shell: pwsh
+        run: |
+          & go run ./test/windowsprobe -server .\omo-webchat.exe 2>&1 | Tee-Object -FilePath probe-production.txt
           $probeExit = $LASTEXITCODE
           if (Test-Path -LiteralPath probe-production.txt) {
             Get-Content -LiteralPath probe-production.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
@@ -88,10 +110,20 @@ jobs:
         shell: pwsh
         run: go test ./internal/omorpc -count=1 -v -timeout=2m
 
+      - name: Production server readiness contract
+        shell: pwsh
+        run: go test ./test/windowsprobe -count=1 -v -timeout=2m
+
       - name: Windows lock tests
         shell: pwsh
         run: go test ./internal/omorpc/ -count=1 -timeout=2m -run TestEnsureLock
 
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-production-evidence
+          path: probe-production.txt
 
   smoke-windows:
     runs-on: windows-latest

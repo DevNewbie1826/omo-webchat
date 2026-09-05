@@ -16,10 +16,19 @@ import (
 
 func main() {
 	binary := flag.String("omo", "omo", "pinned omo launcher path")
+	server := flag.String("server", "", "built server binary for real HTTP startup under node and bun")
 	flag.Parse()
 	if err := runProbe(*binary); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if *server != "" {
+		for _, runtimeName := range []string{"node", "bun"} {
+			if err := runServerProbe(*server, runtimeName); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
 	}
 }
 

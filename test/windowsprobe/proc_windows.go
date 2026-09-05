@@ -3,41 +3,38 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
-	"strconv"
-	"strings"
-	"syscall"
+	"sync"
+	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
 )
 
-// CREATE_NEW_PROCESS_GROUP (0x200) starts a new Win32 process group.
-// CREATE_NO_WINDOW (0x8000000) skips allocating a console on interactive hosts.
-const (
-	createNewProcessGroup = 0x00000200
-	createNoWindow        = 0x08000000
-)
-
-func configureSpawn(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: createNewProcessGroup | createNoWindow,
-		HideWindow:    true,
-	}
-}
-
-func killProcessTree(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	// taskkill /T walks the child tree via CreateToolhelp32Snapshot /
-	// Process32First, the public Win32 process-tree walk.
-	kill := exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid))
-	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := kill.CombinedOutput()
+func startProbeServer(cmd *exec.Cmd) (<-chan error, func() error, error) {
+	tracked, err := procexec.StartTracked(cmd)
 	if err != nil {
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return nil
-		}
-		return fmt.Errorf("taskkill: %v: %s", err, strings.TrimSpace(string(out)))
+		return nil, nil, err
 	}
-	return nil
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait(); close(done) }()
+	var once sync.Once
+	var stopErr error
+	stop := func() error {
+		once.Do(func() {
+			stopErr = errors.Join(tracked.TerminateTree(), tracked.WaitTreeGone(10*time.Second), tracked.Close())
+			select {
+			case err := <-done:
+				var exitErr *exec.ExitError
+				if err != nil && !errors.As(err, &exitErr) {
+					stopErr = errors.Join(stopErr, err)
+				}
+			case <-time.After(10 * time.Second):
+				stopErr = errors.Join(stopErr, fmt.Errorf("server leader did not exit after job drain"))
+			}
+		})
+		return stopErr
+	}
+	return done, stop, nil
 }
