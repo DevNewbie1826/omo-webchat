@@ -239,6 +239,7 @@ func (m *Manager) eventLoop() {
 	backoff := time.Millisecond
 	for {
 		token, ch := m.cfg.Client.CurrentEpoch()
+		m.invalidateDisconnectedEpochs()
 		m.observeEpoch(token)
 		select {
 		case <-m.done:
@@ -277,6 +278,45 @@ func (m *Manager) eventLoop() {
 	}
 }
 
+// invalidateDisconnectedEpochs reconciles retained ownership, not just the
+// client's latest snapshot: CurrentEpoch can already be zero (or a successor)
+// when the observer first starts or returns from dispatch. Snapshot the stream
+// before reconciliation so a disconnect after these checks still closes the
+// stream selected by this iteration.
+func (m *Manager) invalidateDisconnectedEpochs() {
+	m.mu.Lock()
+	epochs := make(map[omorpc.EpochToken]struct{})
+	// A restarted daemon can overwrite a route with another chat's holder.
+	// byChat retains ownership even when that routing index no longer does.
+	retained := make([]*Session, 0, len(m.byChat))
+	for _, s := range m.byChat {
+		retained = append(retained, s)
+	}
+	for _, s := range m.byRoute {
+		epochs[s.epoch] = struct{}{}
+	}
+	for _, entry := range m.overviewCache {
+		epochs[entry.epoch] = struct{}{}
+	}
+	m.mu.Unlock()
+	for _, s := range retained {
+		// Never nest lifecycleMu under Manager.mu. Resumable sessions remain
+		// in byChat, but must not recreate an already-drained epoch barrier.
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.resumable {
+			epochs[s.epoch] = struct{}{}
+		}
+		s.lifecycleMu.Unlock()
+	}
+	for epoch := range epochs {
+		// Do not compare against the earlier snapshot: acquisition may have
+		// registered a live successor since then. Tokens never become live again.
+		if !m.cfg.Client.EpochCurrent(epoch) {
+			m.invalidateEpoch(epoch)
+		}
+	}
+}
+
 // invalidateEpoch only retires sessions opened on the token that died. A
 // delayed failure from an older request therefore cannot invalidate sessions
 // registered after reconnect.
@@ -298,7 +338,9 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 	for _, s := range m.byChat {
 		if s.epoch == token {
 			all = append(all, s)
-			delete(m.byRoute, s.routingID)
+			if m.byRoute[s.routingID] == s {
+				delete(m.byRoute, s.routingID)
+			}
 		}
 	}
 	delete(m.byDurableEpoch, token)
@@ -923,7 +965,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		_, cleanupInFlight := m.routeCleanup[data.SessionID]
 		if valid && epochLive && !cleanupInFlight {
 			sendOwnerAdopted = true
-			if existing != nil {
+			if existing != nil && m.byRoute[existing.routingID] == existing {
 				delete(m.byRoute, existing.routingID)
 			}
 			m.byChat[chatID] = s
@@ -995,7 +1037,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	_, cleanupInFlight := m.routeCleanup[data.SessionID]
 	if valid {
 		sendOwnerAdopted = true
-		if existing != nil {
+		if existing != nil && m.byRoute[existing.routingID] == existing {
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s

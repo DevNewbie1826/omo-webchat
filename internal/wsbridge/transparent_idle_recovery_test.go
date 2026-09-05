@@ -187,6 +187,7 @@ func assertTerminalHistory(t *testing.T, frames *collector, wantEntries int) {
 func clearCollector(frames *collector) {
 	frames.mu.Lock()
 	frames.frames = nil
+	frames.decoded = nil
 	frames.mu.Unlock()
 }
 
