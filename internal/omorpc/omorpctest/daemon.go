@@ -35,6 +35,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -96,7 +97,9 @@ func queueSnapshotLocked(rec *daemonSession) (followUp []string, ordered []any, 
 	}
 	ordered = []any{}
 	pending = len(rec.steering) + len(rec.followUp)
-	for _, it := range append(append([]queuedItem(nil), rec.steering...), rec.followUp...) {
+	items := append(append([]queuedItem(nil), rec.steering...), rec.followUp...)
+	sort.SliceStable(items, func(i, j int) bool { return items[i].order < items[j].order })
+	for _, it := range items {
 		ordered = append(ordered, map[string]any{
 			"text": it.text, "mode": it.mode, "enqueueOrder": it.order,
 		})
@@ -724,6 +727,7 @@ func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {
 // agent_end the run is over: the runActive flag drops and one head
 // follow-up item is consumed as the next run.
 func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, script []map[string]any) {
+	terminal := false
 	for _, ev := range script {
 		e := make(map[string]any, len(ev)+1)
 		for k, v := range ev {
@@ -732,12 +736,15 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 		e["sessionId"] = rpcID
 		d.write(conn, e)
 		if typ, _ := ev["type"].(string); typ == EventAgentEnd {
+			terminal = true
 			d.mu.Lock()
 			rec.runActive = false
 			d.mu.Unlock()
 		}
 	}
-	d.consumeNextFollowUp(conn, rec)
+	if terminal {
+		d.consumeNextFollowUp(conn, rec)
+	}
 }
 
 // consumeNextFollowUp runs the head follow-up item after the current run's
