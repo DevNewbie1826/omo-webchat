@@ -11,7 +11,8 @@ $ErrorActionPreference = 'Stop'
 
 $repoDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $installer = Join-Path $repoDir 'install.ps1'
-$asset = 'omo-webchat_windows_amd64.zip'
+$hostArch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
+$asset = "omo-webchat_windows_${hostArch}.zip"
 $exeName = 'omo-webchat.exe'
 $validContents = 'verified fixture'
 $tamperedContents = 'tampered fixture'

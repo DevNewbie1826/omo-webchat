@@ -53,8 +53,8 @@ function Get-TargetArch {
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
     switch ($arch) {
         'x64' { return 'amd64' }
-        'arm64' { Stop-WithError 'Windows arm64 has no published release yet. Build from source: see README "Build from source".' }
-        default { Stop-WithError "unsupported architecture: $arch (supported: x64)" }
+        'arm64' { return 'arm64' }
+        default { Stop-WithError "unsupported architecture: $arch (supported: x64, arm64)" }
     }
 }
 
