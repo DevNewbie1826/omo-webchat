@@ -3,11 +3,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { deferred } from "./App.testHarness";
+import type { ChatClientFrame, ChatHandlers } from "./lib/chatWs";
 import type { Terminal } from "./features/workspace/workspace";
 
-vi.mock("./lib/chatWs", () => ({ connectChat: vi.fn((handlers) => {
+const transport = vi.hoisted(() => {
+  const frames: ChatClientFrame[] = [];
+  return { frames };
+});
+vi.mock("./lib/chatWs", () => ({ connectChat: vi.fn((handlers: ChatHandlers) => {
   handlers.onOpen?.();
-  return { send: vi.fn(), close: vi.fn() };
+  return { send: vi.fn((frame: ChatClientFrame) => { transport.frames.push(frame); return true; }), close: vi.fn() };
 }) }));
 
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
@@ -30,7 +35,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     narrow = false; empty = false; failPage = false; failMore = false; activeConflict = false;
-    requests = [];
+    requests = []; transport.frames.length = 0;
     opening = deferred<Terminal>();
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
@@ -97,6 +102,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   function title(index: number) { return pane(index).querySelector(".th-termhead-name")?.textContent ?? null; }
   function assertNoDestructiveCalls() {
     expect(requests.filter(r => r.method === "DELETE" || /stop|disconnect/.test(r.path))).toEqual([]);
+    expect(transport.frames.filter(frame => ["chat.abort", "chat.disconnect", "chat.close"].includes(frame.type))).toEqual([]);
   }
 
   it("moves a hosted session to the pointer-selected empty destination without import, stop or delete", async () => {
@@ -109,6 +115,56 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect(requests.filter(r => r.path.endsWith("/sessions/open"))).toHaveLength(0);
     expect(sidebar("Stored A").getAttribute("aria-current")).toBe("true");
     expect(container.querySelector(".th-tree-children .th-tree-activation")?.textContent).toBe("Stored A");
+    assertNoDestructiveCalls();
+  });
+  it("replaces an occupied pane without aborting or disconnecting its session", async () => {
+    await mount(); await click(sidebar("Newer"));
+    expect([title(0), title(1)]).toEqual(["Newer", null]);
+    expect(transport.frames.filter(frame => frame.type === "chat.create").map(frame => frame.chatId)).toEqual([stored.id, newer.id]);
+    assertNoDestructiveCalls();
+  });
+  it.each(["older-first", "newer-first"])("keeps the newest same-source pane intent when responses arrive %s", async order => {
+    empty = true; await mount();
+    const oldRequest = opening;
+    await click(row(pane(1), "Discovered B"));
+    opening = deferred<Terminal>();
+    await click(row(pane(0), "Discovered B"));
+    const shared: Terminal = { id: "shared", name: "Shared", provider: "omo" };
+    const first = order === "older-first" ? oldRequest : opening;
+    const last = order === "older-first" ? opening : oldRequest;
+    await act(async () => first.resolve(shared));
+    const intermediate = [title(0), title(1)];
+    await act(async () => last.resolve(shared));
+    expect(intermediate).toEqual(order === "older-first" ? [null, null] : ["Shared", null]);
+    expect([title(0), title(1)]).toEqual(["Shared", null]);
+    assertNoDestructiveCalls();
+  });
+  it("does not steal a canonical chat selected elsewhere while its discovered alias was opening", async () => {
+    await mount(); await click(row(pane(1), "Discovered B"));
+    await focusPane(0); await click(sidebar("Stored A"));
+    await act(async () => opening.resolve({ ...stored, provider: "omo" }));
+    expect([title(0), title(1)]).toEqual(["Stored A", null]);
+    expect(sidebar("Stored A").getAttribute("aria-current")).toBe("true");
+    assertNoDestructiveCalls();
+  });
+  it("compares canonical placement intents even when two discovered aliases differ", async () => {
+    empty = true; await mount();
+    const oldRequest = opening;
+    await click(row(pane(1), "Discovered B"));
+    await click(button(pane(0), ".th-picker-load-more"));
+    opening = deferred<Terminal>(); await click(row(pane(0), "Discovered C"));
+    const shared: Terminal = { id: "shared", name: "Shared", provider: "omo" };
+    await act(async () => opening.resolve(shared));
+    expect([title(0), title(1)]).toEqual(["Shared", null]);
+    await act(async () => oldRequest.resolve(shared));
+    expect([title(0), title(1)]).toEqual(["Shared", null]);
+    assertNoDestructiveCalls();
+  });
+  it("allows independent session choices in other panes while a discovered open completes", async () => {
+    await mount(); await click(row(pane(1), "Discovered B"));
+    await focusPane(0); await click(sidebar("Newer"));
+    await act(async () => opening.resolve({ id: "opened-b", name: "Opened B", provider: "omo" }));
+    expect([title(0), title(1)]).toEqual(["Newer", "Opened B"]);
     assertNoDestructiveCalls();
   });
   it("activates occupied and empty panes by keyboard while portal focus preserves the active destination", async () => {

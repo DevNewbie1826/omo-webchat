@@ -32,7 +32,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
       : { items: catalog, nextCursor: "page2" });
     if (path.endsWith("/sessions/open")) {
       const body = await req.json(); openStarted?.(body);
-      return Response.json(await new Promise(done => { releaseOpen = () => done({ id: `opened-${body.id}`, name: `Opened ${body.id}`, provider: "omo" }); }));
+      return Response.json(await new Promise(done => { releaseOpen = (chat = { id: `opened-${body.id}`, name: `Opened ${body.id}`, provider: "omo" }) => done(chat); }));
     }
     if (path.startsWith("/api/sessions/")) return Response.json({ sessions: [] });
     if (path.endsWith("/goal")) return Response.json({ goal: null });
@@ -85,9 +85,9 @@ try {
     const started = new Promise(done => { openStarted = done; });
     await locator.click(); await started; openStarted = undefined;
   }
-  async function resolveOpen() {
+  async function resolveOpen(chat, release = releaseOpen) {
     const done = page.waitForResponse(response => response.url().endsWith("/sessions/open"));
-    releaseOpen(); await done;
+    release(chat); await done;
   }
   await reset();
   await page.locator('[data-pane-id="right"] select').focus();
@@ -118,6 +118,32 @@ try {
     assert.deepEqual(await titles(), mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
     results.push({ scenario: `deferred-${mode}`, pass: true });
   }
+  await reset(split("root", "h", leaf("left"), leaf("right")));
+  await startOpen(page.locator('[data-pane-id="right"] .th-picker-pane-item').filter({ hasText: "Discovered B" }));
+  const oldSourceRelease = releaseOpen;
+  await startOpen(page.locator('[data-pane-id="left"] .th-picker-pane-item').filter({ hasText: "Discovered B" }));
+  await arm(`() => document.querySelector('[data-pane-id="left"] .th-termhead-name')?.textContent === 'Shared'`);
+  await resolveOpen({ id: 'shared', name: 'Shared', provider: 'omo' }); await complete();
+  // Distinct response metadata gives an exact DOM commit signal even when the
+  // stale placement is correctly ignored and no chat reconnect should happen.
+  await arm(`() => [...document.querySelectorAll('.th-tree-activation')].some(e => e.textContent === 'Older alias response')`);
+  await resolveOpen({ id: 'shared', name: 'Older alias response', provider: 'omo' }, oldSourceRelease); await complete();
+  assert.deepEqual(await titles(), ['Shared']);
+  assert.equal(await page.locator('[data-pane-id="left"] .th-termhead-name').textContent(), 'Shared');
+  assert.equal(await page.locator('[data-pane-id="right"] .th-picker-pane').count(), 1);
+  results.push({ scenario: 'cross-pane-same-source-newer-intent', pass: true });
+
+  await reset();
+  await startOpen(page.locator('[data-pane-id="right"] .th-picker-pane-item').filter({ hasText: "Discovered B" }));
+  await page.locator('[data-pane-id="left"] .th-files-toggle').focus();
+  await page.locator('.th-tree-activation').filter({ hasText: /^Stored A$/ }).click();
+  await arm(`() => [...document.querySelectorAll('.th-tree-activation')].some(e => e.textContent === 'Canonical alias response')`);
+  await resolveOpen({ id: stored.id, name: 'Canonical alias response', provider: 'omo' }); await complete();
+  assert.deepEqual(await titles(), ['Stored A']);
+  assert.equal(await page.locator('[data-pane-id="left"] .th-termhead-name').textContent(), 'Stored A');
+  assert.equal(await page.locator('[data-pane-id="right"] .th-picker-pane').count(), 1);
+  results.push({ scenario: 'cross-pane-canonical-stored-intent', pass: true });
+
   for (const narrow of [false, true]) {
     await reset(narrow ? leaf("left") : split("root", "h", leaf("left", stored.id), leaf("right")), narrow);
     const scope = narrow ? '.th-empty' : '[data-pane-id="right"]';
@@ -229,7 +255,7 @@ try {
   }
   await save('resize.json', results.filter(result => result.scenario?.startsWith('resize-')));
   assert.equal(requests.filter(r => r.method === "DELETE").length, 0);
-  assert.equal(frames.filter(f => /stop|disconnect/.test(f.type)).length, 0);
+  assert.equal(frames.filter(f => ["chat.abort", "chat.disconnect", "chat.close"].includes(f.type)).length, 0);
   assert.deepEqual(errors, []);
 } catch (error) {
   results.push({ pass: false, error: String(error), stack: error.stack }); process.exitCode = 1;

@@ -24,6 +24,7 @@ import type {
 } from "./features/workspace/workspace";
 import { useLiveSessions } from "./features/workspace/useLiveSessions";
 import { useWorkspaces } from "./features/workspace/useWorkspaces";
+import { sessionOpenAttemptKey } from "./features/workspace/useSessionOpenAttempts";
 import { useProviderDiscovery } from "./features/workspace/useProviderDiscovery";
 import { useConfirm } from "./components/ConfirmDialog";
 import { NewChatDialog } from "./components/NewChatDialog";
@@ -67,7 +68,9 @@ export function App() {
 
   const layout = useLayout(authed === true);
 
+  const intentGeneration = useRef(0);
   const paneIntents = useRef(new Map<string, number>());
+  const sessionIntents = useRef(new Map<string, number>());
   const toastId = useRef(0);
   const createChatInFlightRef = useRef(false);
   const notify = useCallback((msg: string, kind: ToastKind = "info") => {
@@ -129,7 +132,7 @@ export function App() {
   const defaultWorkspace = workspaces[0] ?? null;
 
   const captureTarget = (paneId = layout.focusedPaneId) => {
-    const generation = (paneIntents.current.get(paneId) ?? 0) + 1;
+    const generation = ++intentGeneration.current;
     paneIntents.current.set(paneId, generation);
     return { paneId, generation };
   };
@@ -138,6 +141,7 @@ export function App() {
 
   const selectTerminal = (ws: Workspace, tm: Terminal): void => {
     const target = captureTarget();
+    sessionIntents.current.set(sessionOpenAttemptKey(ws.id, tm.id), target.generation);
     setExpanded((prev) => new Set(prev).add(ws.id));
     markSessionUsed(ws.id, tm.id);
     if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
@@ -151,6 +155,8 @@ export function App() {
     paneId = layout.focusedPaneId,
   ): Promise<"opened" | "session-active"> => {
     const target = captureTarget(paneId);
+    const sourceKey = sessionOpenAttemptKey(ws.id, session.id);
+    sessionIntents.current.set(sourceKey, target.generation);
     layout.focusPane(target.paneId);
     try {
       // Stored union rows are already chat identities, even before ws.chats
@@ -165,7 +171,13 @@ export function App() {
         ? { ...workspace, chats: workspace.chats.some(chat => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
         : workspace));
       addCreatedSession(ws.id, tm, session.source === "discovered" ? session : undefined);
-      if (targetCurrent(target)) {
+      const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
+      // Source intent protects concurrent opens before the canonical chat id
+      // is known. Canonical intent also protects newer stored/alias placement
+      // in another pane; per-pane generations alone cannot prevent that move.
+      const latestSessionIntent = Math.max(sessionIntents.current.get(sourceKey) ?? 0, sessionIntents.current.get(chatKey) ?? 0);
+      if (targetCurrent(target) && latestSessionIntent <= target.generation) {
+        sessionIntents.current.set(chatKey, target.generation);
         setExpanded((prev) => new Set(prev).add(ws.id));
         markSessionUsed(ws.id, tm.id);
         layout.assignSession(target.paneId, tm.id, false);
