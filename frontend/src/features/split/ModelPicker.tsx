@@ -50,9 +50,10 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
       return;
     }
     setQuery("");
-    setActiveIndex(models.length > 0 ? 0 : -1);
+    const currentIndex = models.findIndex((model) => keyOf(model) === currentModelKey);
+    setActiveIndex(currentIndex >= 0 ? currentIndex : models.length > 0 ? 0 : -1);
     searchRef.current?.focus();
-  }, [open, models.length]);
+  }, [open, models, currentModelKey]);
 
   useEffect(() => {
     optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
@@ -164,7 +165,8 @@ export function ModelPicker({ models, currentModelKey, placeholder, searchPlaceh
                   id={`${optionIdPrefix}-${index}`}
                   type="button"
                   role="option"
-                  aria-selected={active}
+                  aria-selected={keyOf(model) === currentModelKey}
+                  data-active={active || undefined}
                   onMouseMove={() => setActiveIndex(index)}
                   onMouseEnter={() => setActiveIndex(index)}
                   onMouseDown={(event) => event.preventDefault()}

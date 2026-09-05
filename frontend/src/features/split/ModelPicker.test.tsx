@@ -42,6 +42,26 @@ describe("ModelPicker", () => {
     container.remove();
   });
 
+  it("keeps exact current selection separate from navigation and search", () => {
+    const catalog = [...models, { provider: "other", modelId: "gpt-5", name: "GPT-5" }];
+    act(() => root.render(<ModelPicker models={catalog} currentModelKey="openai/gpt-5"
+      placeholder="Model" searchPlaceholder="Search" onSelect={(value) => selected.push(value)} />));
+    act(() => container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!.click());
+    const search = container.querySelector<HTMLInputElement>("input")!;
+    const options = container.querySelectorAll('[role="option"]');
+    expect(options[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(options[0]!.getAttribute("aria-selected")).toBe("false");
+    expect(search.getAttribute("aria-activedescendant")).toBe(options[1]!.id);
+    act(() => pressKey(search, "ArrowDown"));
+    expect(options[1]!.getAttribute("aria-selected")).toBe("true");
+    expect(options[2]!.getAttribute("aria-selected")).toBe("false");
+    act(() => setInputValue(search, "other"));
+    expect(container.querySelector('[aria-selected="true"]')).toBeNull();
+    expect(selected).toEqual([]);
+    act(() => pressKey(search, "Enter"));
+    expect(selected).toEqual(["other/gpt-5"]);
+  });
+
   it("lists all models when opened and selects via keyboard", () => {
     act(() => {
       root.render(
