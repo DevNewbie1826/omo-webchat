@@ -398,9 +398,22 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(popup, "right")).toBe("0");
     expect(declarationValue(popup, "max-height")).toBe("min(280px, 50dvh)");
     expect(popup).not.toMatch(/(?:^|;)\s*top\s*:/);
-    // The clamped popup keeps its chrome fixed and scrolls only the list.
+    // Mobile keeps its pinned chrome and list scrollport. Desktop lets the
+    // chrome scroll too, so it cannot squeeze options to an unreadable strip.
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list"), "overflow-y")).toBe("auto");
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-search"), "flex")).toBe("none");
+    const desktop = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet)");
+    expect(declarationValue(desktop, "overflow-y")).toBe("auto");
+    expect(declarationValue(desktop, "overscroll-behavior")).toBe("contain");
+    const desktopList = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list");
+    expect(declarationValue(desktopList, "flex")).toBe("none");
+    expect(declarationValue(desktopList, "overflow-y")).toBe("visible");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list > button"), "flex")).toBe("none");
+    const shortRow = ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-list > button");
+    expect(declarationValue(shortRow, "flex-direction")).toBe("row");
+    expect(declarationValue(shortRow, "padding")).toBe("var(--th-space-1) var(--th-space-2)");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-search"), "padding-block"))
+      .toBe("var(--th-space-1)");
     const sheet = ruleBody(chatPane, ".th-model-picker-popover--sheet");
     expect(declarationValue(sheet, "position")).toBe("fixed");
     expect(sheet).toMatch(/(?:^|;)\s*top\s*:/);

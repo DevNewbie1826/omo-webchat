@@ -444,6 +444,7 @@
 
 .th-model-picker-list > button {
   display: flex;
+  flex: none;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--th-space-0-5);
@@ -478,6 +479,44 @@
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
+}
+
+/* One desktop scroll owner: fixed chrome must not consume the entire bound.
+   The narrow sheet retains its separate list scrollport and pinned identity. */
+.th-model-picker-popover:not(.th-model-picker-popover--sheet) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list {
+  flex: none;
+  overflow-y: visible;
+}
+
+/* At the real v4/700 bound a two-line option is taller than the whole menu.
+   Keep both model and provider on one readable row, without shrinking type. */
+.th-model-picker-popover--short .th-model-picker-list {
+  padding: var(--th-space-0-5);
+}
+
+.th-model-picker-popover--short .th-model-picker-list > button {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--th-space-1);
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+.th-model-picker-popover--short .th-model-picker-list strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.th-model-picker-popover--short .th-model-picker-list span {
+  flex: none;
+}
+
+.th-model-picker-popover--short .th-model-picker-search {
+  padding-block: var(--th-space-1);
 }
 
 .th-files-toggle {

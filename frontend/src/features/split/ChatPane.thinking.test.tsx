@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatSession, ControlledResizeObserver, renderChatPane } from "./chatPaneTestHarness";
+import { chatSession, ControlledResizeObserver, pressKey, renderChatPane, requireElement } from "./chatPaneTestHarness";
 
 describe("ChatPane thinking level selector", () => {
   let container: HTMLDivElement;
@@ -62,6 +62,38 @@ describe("ChatPane thinking level selector", () => {
     renderChatPane(root, chatSession);
     const options = Array.from(thinkingSelect().querySelectorAll("option")).map((option) => option.value);
     expect(options).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("reaches desktop thinking high from the trigger through Tab and sends exactly one request", () => {
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => deliver({ type: "models", sessionId: "chat-1",
+      models: [{ provider: "provider-b", modelId: "model-b", name: "Model B" }] }));
+    const trigger = requireElement(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"), "trigger");
+    act(() => {
+      trigger.focus();
+      expect(pressKey(trigger, "Enter").defaultPrevented).toBe(false);
+      trigger.click(); // jsdom does not perform native Enter activation.
+    });
+    const search = requireElement(container.querySelector<HTMLInputElement>(".th-model-picker-search"), "search");
+    expect(document.activeElement).toBe(search);
+    const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
+    for (const level of levels.slice(0, 5)) {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement)) throw new Error("missing keyboard focus");
+      act(() => pressKey(focused, "Tab"));
+      expect(document.activeElement).toBe(level);
+    }
+    const high = requireElement(levels[4], "high");
+    act(() => {
+      expect(pressKey(high, "Enter").defaultPrevented).toBe(false);
+      high.click(); // Native activation only, not a substitute for focus navigation.
+    });
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([
+      expect.objectContaining({ type: "chat.set", sessionId: "chat-1", thinkingLevel: "high" }),
+    ]);
+    act(() => pressKey(high, "Escape"));
+    expect(container.querySelector(".th-model-picker-popover")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("retains an authoritative unknown thinking level as an option", () => {
