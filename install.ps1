@@ -21,7 +21,7 @@
   the resolved tag; override it to install from a mirror.
 
 .PARAMETER NoPathUpdate
-  Skip modifying the user PATH.
+  Skip modifying both the current process and user PATH.
 
 .EXAMPLE
   irm https://raw.githubusercontent.com/DevNewbie1826/omo-webchat/main/install.ps1 | iex
@@ -37,6 +37,8 @@ param(
     [switch]$NoPathUpdate
 )
 
+# Keep preferences, strict mode and helpers private even through irm | iex.
+& {
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -47,12 +49,15 @@ $ExeName = "$Binary.exe"
 
 function Write-Info { param([string]$Message) Write-Host "==> $Message" -ForegroundColor Blue }
 function Write-Warn { param([string]$Message) Write-Host "warning: $Message" -ForegroundColor Yellow }
-function Stop-WithError { param([string]$Message) Write-Host "error: $Message" -ForegroundColor Red; exit 1 }
+function Stop-WithError { param([string]$Message) throw $Message }
 
 function Get-TargetArch {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
+    # Windows 5.1 does not guarantee RuntimeInformation. WOW64 exposes the
+    # native architecture separately from the emulated process architecture.
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $env:PROCESSOR_ARCHITECTURE }
     switch ($arch) {
-        'x64' { return 'amd64' }
+        'AMD64' { return 'amd64' }
         'arm64' { return 'arm64' }
         default { Stop-WithError "unsupported architecture: $arch (supported: x64, arm64)" }
     }
@@ -71,6 +76,8 @@ function Get-LatestTag {
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\omo-webchat'
 }
+
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 
 $arch = Get-TargetArch
 $tag = if ([string]::IsNullOrWhiteSpace($Version)) { Get-LatestTag } else { $Version }
@@ -128,7 +135,7 @@ try {
         Stop-WithError "could not extract ${asset}: $($_.Exception.Message)"
     }
 
-    $extracted = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter $ExeName | Select-Object -First 1
+    $extracted = Get-ChildItem -LiteralPath $extractDir -Recurse -File -Filter $ExeName | Select-Object -First 1
     if (-not $extracted) {
         Stop-WithError "archive did not contain $ExeName"
     }
@@ -153,15 +160,15 @@ finally {
     Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$processPath = ($env:PATH -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $InstallDir.TrimEnd('\')) }
-if (-not $processPath) {
-    $env:PATH = "$InstallDir;$env:PATH"
-}
-
 if ($NoPathUpdate) {
     Write-Warn "-NoPathUpdate given; add $InstallDir to your PATH yourself."
 }
 else {
+    $processPath = ($env:PATH -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $InstallDir.TrimEnd('\')) }
+    if (-not $processPath) {
+        $env:PATH = "$InstallDir;$env:PATH"
+    }
+
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $onUserPath = ($userPath -split ';') | Where-Object { $_ -and ($_.TrimEnd('\') -ieq $InstallDir.TrimEnd('\')) }
     if (-not $onUserPath) {
@@ -182,3 +189,4 @@ Write-Host ''
 Write-Host "  $Binary --password <secret>"
 Write-Host ''
 Write-Host 'then open http://localhost:8080 in your browser.'
+}
