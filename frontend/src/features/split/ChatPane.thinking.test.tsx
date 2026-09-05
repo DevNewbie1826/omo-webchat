@@ -28,7 +28,7 @@ describe("ChatPane thinking level selector", () => {
     return select;
   }
 
-  it("includes the narrow model and thinking control inside the measured composer", () => {
+  it("keeps the model and thinking control above the composer at every pane width", () => {
     vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
     const { deliver } = renderChatPane(root, chatSession);
     const pane = container.querySelector(".th-chat-pane")!;
@@ -42,15 +42,20 @@ describe("ChatPane thinking level selector", () => {
       deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false,
         model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "high" });
     });
+    const expectComposerPlacement = (): void => {
+      const picker = container.querySelector(".th-model-picker");
+      expect(picker?.closest(".th-composer-model")).not.toBeNull();
+      expect(picker?.closest(".th-chat-input")).not.toBeNull();
+      expect(picker?.closest(".th-termhead")).toBeNull();
+      expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+      expect(picker?.textContent).toContain("GPT-5");
+    };
     resizePane(375);
-    const picker = container.querySelector(".th-model-picker");
-    expect(picker?.closest(".th-chat-input")).not.toBeNull();
-    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
-    expect(picker?.textContent).toContain("GPT-5");
-    expect(picker?.textContent).toContain("high");
+    expectComposerPlacement();
+    // The compact trigger keeps the active thinking level visible.
+    expect(container.querySelector(".th-model-picker")?.textContent).toContain("high");
     resizePane(800);
-    expect(container.querySelector(".th-model-picker")?.closest(".th-termhead")).not.toBeNull();
-    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+    expectComposerPlacement();
   });
 
   it("offers every Omo thinking level", () => {

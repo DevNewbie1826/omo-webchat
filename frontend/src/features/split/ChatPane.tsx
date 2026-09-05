@@ -137,7 +137,6 @@ export function ChatPane({
             <option key={level} value={level}>{t("chat.thinkingLevel")}: {level}</option>
           ))}
         </select>
-        {!narrow && modelPicker}
         <button
           type="button"
           className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
@@ -264,7 +263,7 @@ export function ChatPane({
         )}
         </div>
         <ChatComposer
-          modelControl={narrow ? modelPicker : null}
+          modelControl={modelPicker}
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}

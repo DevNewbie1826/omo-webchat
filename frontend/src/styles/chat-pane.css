@@ -357,9 +357,6 @@
 
 .th-model-picker {
   position: relative;
-  flex: 0 1 160px;
-  min-width: 0;
-  max-width: 160px;
 }
 
 .th-model-picker-btn {
@@ -398,9 +395,13 @@
   flex: none;
 }
 
+/* The control lives in the composer band, so the desktop popup opens
+   upward and never covers the composer or send action. Short panes clamp the
+   popup further with a measured inline max-height (ModelPicker), so the whole
+   popup stays inside the clipping .th-chat-main band. */
 .th-model-picker-popover {
   position: absolute;
-  top: calc(100% + var(--th-space-1));
+  bottom: calc(100% + var(--th-space-1));
   right: 0;
   z-index: 30;
   width: min(260px, 80vw);
@@ -503,8 +504,11 @@
   color: var(--th-text);
 }
 
+/* Thinking controls are part of the picker in both placements: the desktop
+   popup and the narrow sheet both show them (DESIGN.md "Model control
+   placement"). */
 .th-thinking-in-picker {
-  display: none;
+  display: flex;
   flex: none;
   flex-direction: column;
   gap: var(--th-space-1);
@@ -759,6 +763,7 @@
 
 .th-composer-model .th-model-picker {
   flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -811,10 +816,6 @@
   background: var(--th-surface-overlay);
   border-color: var(--th-border-overlay);
   box-shadow: var(--th-shadow-overlay);
-}
-
-.th-model-picker-popover--sheet .th-thinking-in-picker {
-  display: flex;
 }
 
 .th-model-picker-popover--sheet .th-model-picker-list > button {
