@@ -3,11 +3,14 @@
 package omorpc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,12 +25,13 @@ import (
 // The build tag keeps this required integration entry separate from the normal
 // fixture suite, without skips or a public production fault-injection API.
 func TestWindowsRealOmoReconnect(t *testing.T) {
+	t.Run("native_holder_cleanup", testWindowsReconnectDirectoryHolderCleanup)
 	dir, err := os.MkdirTemp("", "wr")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := waitReconnectDirectoryHolders(t, dir); err != nil {
+		if err := waitReconnectDirectoryHolders(t, dir, nil); err != nil {
 			t.Errorf("join isolated directory holders: %v", err)
 		}
 		if err := os.RemoveAll(dir); err != nil {
@@ -233,57 +237,224 @@ func TestWindowsRealOmoReconnect(t *testing.T) {
 		pipe.pid, ownerEpoch.epoch.number, preserved.ID)
 }
 
-// Real Windows runtime identity probes can still retain the sandbox cwd after
-// the daemon's tracked job has drained. Observe exactly those native directory
-// holders and join their process-exit events before removing the profile once.
-// This never terminates a process, retries removal, or polls for elapsed time.
-func waitReconnectDirectoryHolders(t *testing.T, dir string) (resultErr error) {
+// A native query observed an external PowerShell holder after tracked-job drain.
+// Its ancestry was not established. Confirm only the relationship we can prove:
+// the retained process still holds this sandbox directory. Join that process's
+// exit event under one overall bound, without termination, polling or retries.
+func waitReconnectDirectoryHolders(t *testing.T, dir string, observed func(uint32)) error {
 	t.Helper()
-	path, err := windows.UTF16PtrFromString(dir)
-	if err != nil {
-		return err
-	}
-	h, err := windows.CreateFile(path, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
-		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
-	if err != nil {
-		return err
-	}
-	defer func() { resultErr = errors.Join(resultErr, windows.CloseHandle(h)) }()
-	var info struct {
-		Count uint32
-		IDs   [128]uintptr
-	}
-	var status windows.IO_STATUS_BLOCK
-	const fileProcessIdsUsingFileInformation = 47
-	if err := windows.NtQueryInformationFile(h, &status, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), fileProcessIdsUsingFileInformation); err != nil {
-		return err
-	}
-	if info.Count > uint32(len(info.IDs)) {
-		return fmt.Errorf("directory holder list overflow: %d", info.Count)
-	}
-	for _, pid := range info.IDs[:info.Count] {
-		if pid == uintptr(os.Getpid()) {
-			continue // The query itself owns h; its checked close precedes removal.
-		}
-		p, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
-		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
-			t.Logf("cleanup: directory-holder pid=%d already exited before native handle open", pid)
-			continue
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	return endpointIO(ctx, func() (resultErr error) {
+		path, err := windows.UTF16PtrFromString(dir)
 		if err != nil {
 			return err
 		}
-		var code uint32
-		codeErr := windows.GetExitCodeProcess(p, &code)
-		state, waitErr := windows.WaitForSingleObject(p, 5000)
-		closeErr := windows.CloseHandle(p)
-		if err := errors.Join(codeErr, waitErr, closeErr); err != nil {
+		h, err := windows.CreateFile(path, windows.FILE_READ_ATTRIBUTES, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+			nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+		if err != nil {
 			return err
 		}
-		if state != windows.WAIT_OBJECT_0 {
-			return fmt.Errorf("directory-holder pid=%d exit event did not signal: %d", pid, state)
+		defer func() { resultErr = errors.Join(resultErr, windows.CloseHandle(h)) }()
+		query := func() ([]uintptr, error) {
+			var info struct {
+				Count uint32
+				IDs   [128]uintptr
+			}
+			var status windows.IO_STATUS_BLOCK
+			const fileProcessIdsUsingFileInformation = 47
+			if err := windows.NtQueryInformationFile(h, &status, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), fileProcessIdsUsingFileInformation); err != nil {
+				return nil, err
+			}
+			if info.Count > uint32(len(info.IDs)) {
+				return nil, fmt.Errorf("directory holder list overflow: %d", info.Count)
+			}
+			return info.IDs[:info.Count], nil
 		}
-		t.Logf("cleanup: directory-holder pid=%d initial-exit-code=%d process-exit-signaled=true handle-closed=true", pid, code)
+		ids, err := query()
+		if err != nil {
+			return err
+		}
+		type holder struct {
+			pid    uintptr
+			handle windows.Handle
+		}
+		var holders []holder
+		defer func() {
+			for _, holder := range holders {
+				if holder.handle != 0 {
+					resultErr = errors.Join(resultErr, windows.CloseHandle(holder.handle))
+				}
+			}
+		}()
+		for _, pid := range ids {
+			if pid == uintptr(os.Getpid()) {
+				continue // The query owns h; self-only output proves no application leak.
+			}
+			p, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+			if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+				t.Logf("cleanup: directory-holder pid=%d already exited before native handle open", pid)
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			holders = append(holders, holder{pid, p})
+		}
+		// Confirm membership AFTER retaining the process handles; the first PID
+		// snapshot alone is not a safe identity across process exit/PID reuse.
+		confirmed, err := query()
+		if err != nil {
+			return err
+		}
+		for i, holder := range holders {
+			stillHolds := false
+			for _, pid := range confirmed {
+				stillHolds = stillHolds || pid == holder.pid
+			}
+			if !stillHolds {
+				continue // Native confirmation shows this process released the resource.
+			}
+			var code uint32
+			if err := windows.GetExitCodeProcess(holder.handle, &code); err != nil {
+				return err
+			}
+			t.Logf("cleanup: directory-holder pid=%d native-membership-confirmed=true exit-handle-retained=true", holder.pid)
+			if observed != nil {
+				observed(uint32(holder.pid))
+			}
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return context.DeadlineExceeded
+			}
+			milliseconds := uint32((remaining + time.Millisecond - 1) / time.Millisecond)
+			state, waitErr := windows.WaitForSingleObject(holder.handle, milliseconds)
+			closeErr := windows.CloseHandle(holder.handle)
+			holders[i].handle = 0
+			if err := errors.Join(waitErr, closeErr); err != nil {
+				return err
+			}
+			if state != windows.WAIT_OBJECT_0 {
+				return fmt.Errorf("directory-holder pid=%d exit event did not signal: %d: %w", holder.pid, state, context.DeadlineExceeded)
+			}
+			t.Logf("cleanup: directory-holder pid=%d initial-exit-code=%d process-exit-signaled=true handle-closed=true", holder.pid, code)
+		}
+		return nil
+	})
+}
+
+// This child owns no descendants. Its cwd retains the directory until stdin EOF
+// releases it; the parent releases only after native holder/handle observation.
+func TestWindowsReconnectHolderProcess(t *testing.T) {
+	if os.Getenv("OMORPC_RECONNECT_HOLDER") != "1" {
+		return
 	}
-	return nil
+	if _, err := fmt.Fprintln(os.Stdout, "HOLDER_READY"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testWindowsReconnectDirectoryHolderCleanup(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsReconnectHolderProcess$")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "OMORPC_RECONNECT_HOLDER=1")
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ready := make(chan error, 1)
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		line, err := bufio.NewReader(output).ReadString('\n')
+		if err == nil && strings.TrimSpace(line) != "HOLDER_READY" {
+			err = errors.New("invalid holder readiness sentinel")
+		}
+		ready <- err
+	}()
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+	}()
+	release := func() {
+		if input != nil {
+			if err := input.Close(); err != nil {
+				t.Error(err)
+			}
+			input = nil
+		}
+	}
+	t.Cleanup(func() {
+		release()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("owned holder fixture failed to exit after release")
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Error(err)
+			}
+			// Only this explicitly started fixture can be terminated on failure.
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("owned holder fixture failed to join after termination")
+				return
+			}
+		}
+		select {
+		case <-readerDone:
+		case <-time.After(5 * time.Second):
+			t.Error("holder readiness reader failed to join")
+		}
+		if waitErr != nil {
+			t.Errorf("join holder fixture: %v", waitErr)
+		}
+	})
+	select {
+	case err := <-ready:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder fixture readiness did not arrive")
+	}
+	observed := false
+	if err := waitReconnectDirectoryHolders(t, dir, func(pid uint32) {
+		if pid != uint32(cmd.Process.Pid) {
+			return
+		}
+		observed = true
+		release()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !observed {
+		t.Fatal("native query did not confirm the owned sandbox holder before release")
+	}
+	select {
+	case <-done:
+		if waitErr != nil {
+			t.Fatalf("join holder fixture before removal: %v", waitErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("holder cmd.Wait did not join before removal")
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("cleanup fixture: exact owned holder observed before release; native exit joined; single RemoveAll passed")
 }
