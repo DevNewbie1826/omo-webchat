@@ -21,7 +21,7 @@ untouched.
 - `optionalDependencies` pulls in exactly one matching binary package
   (`omo-webchat-darwin-arm64`, `omo-webchat-darwin-x64`,
   `omo-webchat-linux-x64`, `omo-webchat-linux-arm64`,
-  `omo-webchat-win32-x64`) at the **same version**
+  `omo-webchat-win32-x64`, `omo-webchat-win32-arm64`) at the **same version**
   as this wrapper. npm skips the ones for other platforms.
 - The shim resolves the platform package via `require.resolve`, loads its
   `index.js` entrypoint to obtain the absolute binary path, and execs it with
@@ -34,10 +34,9 @@ Platform package contract (for maintainers): package named
 `omo-webchat-<os>-<arch>`, versioned in lockstep with this wrapper, shipping
 the goreleaser artifact (`omo-webchat_<os>_<arch>.tar.gz` -> `omo-webchat`
 binary) under `exe/omo-webchat-bin`. Its `index.js` exports that binary's
-absolute path. Windows x64 follows the same contract with the goreleaser zip
-(`omo-webchat_windows_amd64.zip` -> `omo-webchat.exe`) shipped as
-`omo-webchat-win32-x64` / `exe/omo-webchat-bin.exe`; windows/arm64 has no
-release yet, so no package exists for it.
+absolute path. Windows follows the same contract with the goreleaser zip
+(`omo-webchat_windows_<arch>.zip` -> `omo-webchat.exe`) shipped as
+`omo-webchat-win32-<arch>` / `exe/omo-webchat-bin.exe`.
 
 ## Agent resolution (`CHAT_PI_BINARY`)
 

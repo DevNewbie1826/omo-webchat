@@ -52,9 +52,8 @@ const GO_MODULE_PATH = './cmd/server'
  * Token cheat sheet — osNode/cpuNode use NODE values, goos/goarch use GO
  * values, and they are NOT the same vocabulary (npm "x64" == Go "amd64").
  *
- * windows/amd64 ships as a zip (see the goreleaser format_overrides), so its
- * archive is extracted with the zip reader below. windows/arm64 is absent on
- * purpose: .goreleaser.yaml ignores it, so there is no release to package.
+ * Windows ships as a zip (see the goreleaser format_overrides), so those
+ * archives go through the zip reader below.
  */
 // prettier-ignore
 const TARGETS = [
@@ -63,6 +62,7 @@ const TARGETS = [
   { osNode: 'linux',  cpuNode: 'x64',   goos: 'linux',   goarch: 'amd64'  },
   { osNode: 'linux',  cpuNode: 'arm64', goos: 'linux',   goarch: 'arm64'  },
   { osNode: 'win32',  cpuNode: 'x64',   goos: 'windows', goarch: 'amd64', ext: '.exe' },
+  { osNode: 'win32',  cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe' },
 ]
 
 // Deliberately not `omo-webchat` and not under `bin/` — both are gitignored

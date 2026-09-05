@@ -21,6 +21,7 @@
     "omo-webchat-darwin-x64": "0.1.0",
     "omo-webchat-linux-arm64": "0.1.0",
     "omo-webchat-linux-x64": "0.1.0",
+    "omo-webchat-win32-arm64": "0.1.0",
     "omo-webchat-win32-x64": "0.1.0"
   }
 }
