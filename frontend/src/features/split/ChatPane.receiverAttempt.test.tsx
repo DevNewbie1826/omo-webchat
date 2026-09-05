@@ -89,4 +89,59 @@ describe("ChatPane receiver attempt preservation", () => {
       }
     },
   );
+
+  it("keeps drafts and the sibling intact when a later same-socket query succeeds after exhaustion", () => {
+    const siblingContainer = document.createElement("div");
+    document.body.appendChild(siblingContainer);
+    const siblingRoot = createRoot(siblingContainer);
+    try {
+      const primary = renderChatPane(root);
+      const sibling = renderChatPane(siblingRoot, { ...chatSession, id: "chat-2" });
+      act(() => {
+        for (const [pane, sessionId] of [[primary, "chat-1"], [sibling, "chat-2"]] as const) {
+          pane.deliver({ type: "ready", sessionId, piSessionId: `pi-${sessionId}`, resumed: true });
+          pane.deliver({ type: "entries", sessionId, entries: [{ id: sessionId, type: "message", message: { role: "user", content: "retained transcript" } }], final: true });
+        }
+      });
+      const draft = requireElement(container.querySelector<HTMLTextAreaElement>(".th-chat-input textarea"), "primary composer");
+      const siblingDraft = requireElement(siblingContainer.querySelector<HTMLTextAreaElement>(".th-chat-input textarea"), "sibling composer");
+      act(() => {
+        setTextareaValue(draft, "primary unsent draft");
+        setTextareaValue(siblingDraft, "sibling unsent draft");
+      });
+      const siblingBefore = siblingContainer.innerHTML;
+      const siblingSent = [...sibling.sent];
+      const deliverRecorded = (value: unknown) => {
+        const frame = parseChatServerFrame(value);
+        if (frame === null) throw new Error("Invalid recorded receiver frame");
+        act(() => primary.deliver(frame));
+      };
+      for (const value of exhausted) deliverRecorded(value);
+      act(() => primary.deliver({ type: "error", sessionId: "chat-1", code: "resume_failed", command: "get_commands", message: "Automatic recovery failed" }));
+      expect(container.textContent).toContain("retained transcript");
+      expect(container.querySelector(".th-chat-error")).not.toBeNull();
+      // Later successful user query on the same socket: no resync, reconnect,
+      // or loss between the terminal failure and this replay.
+      const replacement = disk.findIndex((frame, i) =>
+        i > 0 && parseChatServerFrame(frame)?.type === "ready");
+      for (const value of disk.slice(replacement)) deliverRecorded(value);
+      expect(container.querySelector(".th-chat-history")).not.toBeNull();
+      expect(draft.value).toBe("primary unsent draft");
+      expect(siblingDraft.value).toBe("sibling unsent draft");
+      expect(siblingDraft.disabled).toBe(false);
+      expect(siblingContainer.innerHTML).toBe(siblingBefore);
+      expect(sibling.sent).toEqual(siblingSent);
+      deliverRecorded({ type: "message", sessionId: "chat-1", message: { role: "assistant", blocks: [{ kind: "text", text: "subsequent live delivery" }] } });
+      const body = requireElement(container.querySelector<HTMLDivElement>(".th-chat-body"), "scroll body");
+      const history = requireElement(container.querySelector<HTMLDivElement>(".th-chat-history"), "history");
+      act(() => {
+        body.scrollTop = Number.parseFloat(history.style.height) - body.offsetHeight;
+        body.dispatchEvent(new Event("scroll"));
+      });
+      expect(container.textContent).toContain("subsequent live delivery");
+    } finally {
+      act(() => siblingRoot.unmount());
+      siblingContainer.remove();
+    }
+  });
 });

@@ -116,4 +116,30 @@ describe("receiver hydration attempt boundary", () => {
     deliver(terminal);
     expect(ids()).toEqual(["saved-1", "saved-2"]);
   });
+
+  it("discards terminally failed pages when a later same-socket query succeeds without resync", () => {
+    settle();
+    // Bounded exhaustion on the still-bound socket: two replacement attempts
+    // deliver nonfinal pages, then the meaningful current command error lands.
+    frames(exhausted).forEach(deliver);
+    deliver({ type: "error", sessionId: session.id, code: "resume_failed", command: "get_commands", message: "Automatic recovery failed" });
+    // The completed transcript stays visible across the failure.
+    expect(harness.current?.historyStatus).toBe("loaded");
+    expect(harness.current?.error).not.toBe("");
+    expect(ids()).toEqual(["saved-1", "saved-2"]);
+    // A later successful user query replays on the same socket: no resync,
+    // reconnect, loss, or record deletion between the failure and this ready.
+    const stream = frames(disk);
+    const replacement = stream.findIndex((frame, i) => i > 0 && frame.type === "ready");
+    expect(replacement).toBe(2);
+    stream.slice(replacement).forEach(deliver);
+    expect(ids()).toEqual(expectedIds);
+    expect(harness.current?.messages.map(messageText)).toEqual(Array<string>(201).fill("x"));
+    expect(harness.current?.historyStatus).toBe("loaded");
+    expect(harness.current?.historyLoaded).toBe(true);
+    // The receiver stays usable for subsequent live delivery.
+    deliver({ type: "message", sessionId: session.id, message: { role: "assistant", blocks: [{ kind: "text", text: "subsequent live" }] } });
+    expect(ids()?.slice(0, 201)).toEqual(expectedIds);
+    expect(harness.current?.messages.map(messageText).at(-1)).toBe("subsequent live");
+  });
 });

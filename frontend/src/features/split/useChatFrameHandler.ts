@@ -458,6 +458,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (bindings.resyncGenerationRef.current !== null
             && bindings.resyncGenerationRef.current !== generation) return;
           bindings.externalRecoveryPendingRef.current = false;
+          // This replay terminally failed: retire only its uncommitted pages
+          // so a later same-socket query cannot commit the rejected prefix.
+          // Reached only when no other resync owns the fence (checked above),
+          // and the queue item is already retired by the terminal claim.
+          bindings.pageBuffer.reset();
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
           bindings.endResync(generation, true);
         }
