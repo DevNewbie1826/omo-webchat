@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const root = process.argv[2];
 const cli = JSON.parse(fs.readFileSync(path.join(root, 'npm/cli/package.json')));
-const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'];
+const platforms = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
 for (const platform of platforms) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'npm/platform', platform, 'package.json')));
   assert.equal(manifest.version, cli.version, `${manifest.name} version is not in lockstep`);
