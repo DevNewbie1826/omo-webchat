@@ -111,3 +111,7 @@ jobs:
       - name: Server smoke
         shell: pwsh
         run: go test ./test/smoke/ -count=1 -v
+
+      - name: Installer script (install.ps1)
+        shell: pwsh
+        run: pwsh -NoProfile -File test/install_ps1_test.ps1

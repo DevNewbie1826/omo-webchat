@@ -17,8 +17,9 @@ const os = require('os');
 const path = require('path');
 
 // Platform package names, keyed by process.platform then process.arch.
-// win32 entries are additive: no windows targets are built yet, but the
-// naming and .exe layout are already wired for them.
+// win32-x64 ships a real platform package; win32-arm64 has no release yet
+// (goreleaser ignores windows/arm64), so it resolves to an actionable
+// "not installed" error instead of a silent fallback.
 const PLATFORM_PACKAGES = {
   darwin: { arm64: 'omo-webchat-darwin-arm64', x64: 'omo-webchat-darwin-x64' },
   linux: { arm64: 'omo-webchat-linux-arm64', x64: 'omo-webchat-linux-x64' },
