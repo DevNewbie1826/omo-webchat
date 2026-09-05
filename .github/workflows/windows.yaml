@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.22.0"
+          node-version: "24.15.0"
 
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build
@@ -43,7 +43,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.22.0"
+          node-version: "24.15.0"
 
       - name: Install omo CLI
         run: bun install -g omo-ai@5.0.0-0.beta.43
@@ -118,7 +118,6 @@ jobs:
         shell: pwsh
         run: go test ./internal/omorpc/ -count=1 -timeout=2m -run TestEnsureLock
 
-
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -137,7 +136,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.22.0"
+          node-version: "24.15.0"
 
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build
