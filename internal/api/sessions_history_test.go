@@ -15,15 +15,15 @@ import (
 )
 
 // stubSessionClock pins the catalog clock for the duration of the test and
-// clears first-seen observations so prior tests cannot leak stability.
+// clears observation tracking so prior tests cannot leak stability.
 func stubSessionClock(t *testing.T, at time.Time) {
 	t.Helper()
 	previous := now
 	now = func() time.Time { return at }
-	resetDiscoveredSessionFirstSeen()
+	resetDiscoveredObservations()
 	t.Cleanup(func() {
 		now = previous
-		resetDiscoveredSessionFirstSeen()
+		resetDiscoveredObservations()
 	})
 }
 
@@ -393,6 +393,79 @@ func TestMergeSessionHistoryExposesContinuouslyTouchedSessionAfterWindow(t *test
 	got := discoveredSessionIDs(exposed)
 	if len(got) != 1 || got[0] != "disk-active" {
 		t.Fatalf("touched session must be visible after the window, new session must stay hidden: %+v", exposed)
+	}
+}
+
+func TestListWorkspaceSessionsHidesRecreatedSessionUntilConsecutivelyPresentForWindow(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-1", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	path := writeDiskSession(t, agent, ws.Path, "disk-recreated", "Recreated", fixedNow)
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" {
+		t.Fatalf("fresh session must stay hidden within the window: %+v", page.Items)
+	}
+
+	// Absent for the whole window: a completed scan without the identity must
+	// reset its observation tracking.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	absent := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return absent }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 {
+		t.Fatalf("absent session must not appear: %+v", page.Items)
+	}
+
+	// Recreated just after the window elapses. The new file is consecutively
+	// present for one second only — the pre-absence sighting must not count.
+	recreated := absent.Add(time.Second)
+	now = func() time.Time { return recreated }
+	writeDiskSession(t, agent, ws.Path, "disk-recreated", "Recreated", recreated)
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" {
+		t.Fatalf("recreated session must stay hidden until consecutively present for the window: %+v", page.Items)
+	}
+
+	// Once the recreated file has been consecutively present (and its mtime
+	// aged) for the window it becomes visible.
+	settled := recreated.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return settled }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	var discovered *sessionHistoryItem
+	for i := range page.Items {
+		if page.Items[i].ID == "disk-recreated" {
+			discovered = &page.Items[i]
+		}
+	}
+	if discovered == nil || discovered.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("recreated session must be discovered after its own window: %+v", page.Items)
+	}
+}
+
+func TestDiscoveredObservationTrackingIsBounded(t *testing.T) {
+	stubSessionClock(t, time.Unix(1_800_000_000, 0))
+	for i := 0; i < discoveredObservationMaxEntries*2; i++ {
+		observeDiscoveredSession(diskSession{
+			ID:      fmt.Sprintf("durable-%d", i),
+			Path:    fmt.Sprintf("/catalog/session-%d.jsonl", i),
+			CWD:     "/w",
+			ModTime: now(),
+		})
+	}
+	discoveredObservations.mu.Lock()
+	size := len(discoveredObservations.m)
+	discoveredObservations.mu.Unlock()
+	if size > discoveredObservationMaxEntries {
+		t.Fatalf("observation map holds %d entries, want at most %d", size, discoveredObservationMaxEntries)
 	}
 }
 

@@ -136,17 +136,23 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // One armed eventual refresh per workspace: a bound timer means the ready
   // first page still owes its single post-stabilization refetch.
   const catalogRefreshTimersRef = useRef<Map<string, number>>(new Map());
+  // A stale refresh whose timer fired while another page was loading is
+  // deferred here (never dropped) and rerun once that load settles.
+  const pendingStaleRefreshRef = useRef<Set<string>>(new Set());
 
   const disarmCatalogRefresh = useCallback((wsId: string): void => {
     const timer = catalogRefreshTimersRef.current.get(wsId);
-    if (timer === undefined) return;
-    catalogRefreshTimersRef.current.delete(wsId);
-    window.clearTimeout(timer);
+    if (timer !== undefined) {
+      catalogRefreshTimersRef.current.delete(wsId);
+      window.clearTimeout(timer);
+    }
+    pendingStaleRefreshRef.current.delete(wsId);
   }, []);
 
   const disarmAllCatalogRefreshes = useCallback((): void => {
     for (const timer of catalogRefreshTimersRef.current.values()) window.clearTimeout(timer);
     catalogRefreshTimersRef.current.clear();
+    pendingStaleRefreshRef.current.clear();
   }, []);
 
   const removePendingCreatedSession = (wsId: string, chatId: string): void => {
@@ -191,7 +197,12 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   const fetchSessionPage: (wsId: string, cursor: string, append: boolean, scheduled?: boolean) => Promise<void> = useCallback(
     async (wsId, cursor, append, scheduled = false): Promise<void> => {
       const before = sessionPagesRef.current.get(wsId);
-      if (before?.loading) return;
+      if (before?.loading) {
+        // A stale refresh landing mid-load is queued, not dropped: it reruns
+        // right after the in-flight page settles.
+        if (scheduled) pendingStaleRefreshRef.current.add(wsId);
+        return;
+      }
       patchSessionPaging(wsId, {
         ready: before?.ready ?? false,
         loading: true,
@@ -204,10 +215,17 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         const previousItems = sessionListsRef.current.get(wsId) ?? [];
         const pendingCreated = append ? [] : (pendingCreatedSessionsRef.current.get(wsId) ?? []);
         const leadingItems = append ? previousItems : pendingCreated;
-        const items = [
-          ...leadingItems,
-          ...canonicalItems.filter((item) => !leadingItems.some((listed) => listed.id === item.id)),
-        ];
+        const fresh = canonicalItems.filter((item) => !leadingItems.some((listed) => listed.id === item.id));
+        // A stale page-one refresh must not discard already-loaded
+        // continuation rows: retain anything previously listed that the fresh
+        // page did not return. A later load-more re-requests those pages and
+        // dedupes against them.
+        const retained = append
+          ? []
+          : previousItems.filter((item) =>
+              !fresh.some((freshItem) => freshItem.id === item.id)
+              && !leadingItems.some((listed) => listed.id === item.id));
+        const items = [...leadingItems, ...fresh, ...retained];
         const nextLists = new Map(sessionListsRef.current);
         nextLists.set(wsId, items);
         replaceSessionLists(nextLists);
@@ -228,6 +246,9 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           }, CATALOG_REFRESH_DELAY_MS);
           catalogRefreshTimersRef.current.set(wsId, timer);
         }
+        if (pendingStaleRefreshRef.current.delete(wsId)) {
+          void fetchSessionPage(wsId, "", false, true);
+        }
       } catch {
         // Restore the pre-fetch state so a failed page can be retried.
         patchSessionPaging(wsId, {
@@ -236,6 +257,9 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           hasMore: before?.hasMore ?? false,
           nextCursor: before?.nextCursor ?? "",
         });
+        if (pendingStaleRefreshRef.current.delete(wsId)) {
+          void fetchSessionPage(wsId, "", false, true);
+        }
       }
     },
     [disarmCatalogRefresh, patchSessionPaging, replaceSessionLists],

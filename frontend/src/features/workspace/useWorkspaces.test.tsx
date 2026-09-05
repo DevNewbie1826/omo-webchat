@@ -871,6 +871,140 @@ describe("useWorkspaces paginated session history", () => {
       vi.useRealTimers();
     }
   });
+
+  it("runs a scheduled refresh deferred behind an in-flight continuation load", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(listWorkspaceSessions).mockResolvedValueOnce({
+        items: chats.slice(0, 5).map((chat, index) => ({
+          id: chat.id,
+          name: chat.name,
+          source: "stored" as const,
+          recencyMs: 10 - index,
+        })),
+        nextCursor: "next-page",
+      });
+      const continuation = deferred<Awaited<ReturnType<typeof listWorkspaceSessions>>>();
+      const staleRefresh = deferred<Awaited<ReturnType<typeof listWorkspaceSessions>>>();
+      vi.mocked(listWorkspaceSessions)
+        .mockReturnValueOnce(continuation.promise)
+        .mockReturnValueOnce(staleRefresh.promise);
+
+      act(() => root.render(<PendingSessionsProbe />));
+      await act(async () => pendingLatest?.load());
+      act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
+      await act(async () => undefined);
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+
+      // The staleness timer fires while the continuation page is in flight.
+      act(() => {
+        void pendingLatest?.loadMoreSessions("ws-1");
+      });
+      await act(async () => undefined);
+      expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "next-page");
+      expect(pendingLatest?.sessionPages.get("ws-1")).toMatchObject({ loading: true });
+      await act(async () => vi.advanceTimersByTimeAsync(CATALOG_REFRESH_DELAY_MS));
+
+      continuation.resolve({
+        items: [{ id: "chat-6", name: "Chat 6", source: "stored", recencyMs: 4 }],
+        nextCursor: "",
+      });
+      await act(async () => undefined);
+
+      // The deferred refresh must run after the in-flight load completes,
+      // never dropped.
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(3);
+      expect(listWorkspaceSessions).toHaveBeenLastCalledWith("ws-1", "");
+
+      staleRefresh.resolve({
+        items: [
+          ...chats.slice(0, 5).map((chat, index) => ({
+            id: chat.id,
+            name: chat.name,
+            source: "stored" as const,
+            recencyMs: 10 - index,
+          })),
+          {
+            id: "late-session",
+            name: "Late session",
+            source: "discovered",
+            recencyMs: 9,
+            resumeIdentity: "/sessions/late-session.jsonl",
+          },
+        ],
+        nextCursor: "",
+      });
+      await act(async () => undefined);
+
+      const ids = (pendingLatest?.sessionLists.get("ws-1") ?? []).map((item) => item.id);
+      expect(ids.filter((id) => id === "chat-6")).toHaveLength(1);
+      expect(ids).toContain("late-session");
+
+      // Bounded: the deferred refresh was still the single scheduled shot.
+      await act(async () => vi.advanceTimersByTimeAsync(CATALOG_REFRESH_DELAY_MS));
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps loaded continuation pages when the scheduled refresh applies page one", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(listWorkspaceSessions)
+        .mockResolvedValueOnce({
+          items: chats.slice(0, 5).map((chat, index) => ({
+            id: chat.id,
+            name: chat.name,
+            source: "stored" as const,
+            recencyMs: 10 - index,
+          })),
+          nextCursor: "next-page",
+        })
+        .mockResolvedValueOnce({
+          items: [{ id: "chat-6", name: "Chat 6", source: "stored", recencyMs: 4 }],
+          nextCursor: "",
+        })
+        .mockResolvedValueOnce({
+          // The stale canonical page-one snapshot knows nothing about the
+          // already-loaded continuation rows.
+          items: [
+            ...chats.slice(0, 5).map((chat, index) => ({
+              id: chat.id,
+              name: chat.name,
+              source: "stored" as const,
+              recencyMs: 10 - index,
+            })),
+            {
+              id: "late-session",
+              name: "Late session",
+              source: "discovered",
+              recencyMs: 9,
+              resumeIdentity: "/sessions/late-session.jsonl",
+            },
+          ],
+          nextCursor: "",
+        });
+
+      act(() => root.render(<PendingSessionsProbe />));
+      await act(async () => pendingLatest?.load());
+      act(() => pendingLatest?.setExpanded(new Set(["ws-1"])));
+      await act(async () => undefined);
+      await act(async () => pendingLatest?.loadMoreSessions("ws-1"));
+      expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+        "chat-1", "chat-2", "chat-3", "chat-4", "chat-5", "chat-6",
+      ]);
+
+      await act(async () => vi.advanceTimersByTimeAsync(CATALOG_REFRESH_DELAY_MS));
+
+      const ids = (pendingLatest?.sessionLists.get("ws-1") ?? []).map((item) => item.id);
+      expect(ids).toContain("late-session");
+      expect(ids.filter((id) => id === "chat-6")).toHaveLength(1);
+      expect(pendingLatest?.sessionPages.get("ws-1")).toMatchObject({ ready: true, loading: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("applyChatNameToWorkspaces", () => {

@@ -78,9 +78,8 @@ type daemonSession struct {
 
 	// Pending queue model (observed engine behavior): steer during an
 	// active run parks the message in the steering queue; follow_up parks
-	// it in the follow-up queue. abort leaves both intact. After a run's
-	// agent_end exactly one head follow-up item is consumed as the next
-	// run. enqueueSeq assigns each entry its enqueueOrder.
+	// it in the follow-up queue. abort leaves both intact. After a run's agent_settled exactly one head follow-up item is consumed
+	// as the next run. enqueueSeq assigns each entry its enqueueOrder.
 	steering   []queuedItem
 	followUp   []queuedItem
 	enqueueSeq int
@@ -724,10 +723,9 @@ func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {
 
 // emitScript writes each scripted event to conn with the session's current
 // rpc id injected, in order, on the handler goroutine. After the script's
-// agent_end the run is over: the runActive flag drops and one head
-// follow-up item is consumed as the next run.
+// agent_end and settles at agent_settled, which consumes one head follow-up
+// item as the next run.
 func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, script []map[string]any) {
-	terminal := false
 	for _, ev := range script {
 		e := make(map[string]any, len(ev)+1)
 		for k, v := range ev {
@@ -735,20 +733,17 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 		}
 		e["sessionId"] = rpcID
 		d.write(conn, e)
-		if typ, _ := ev["type"].(string); typ == EventAgentEnd {
-			terminal = true
+		if typ, _ := ev["type"].(string); typ == EventAgentSettled {
 			d.mu.Lock()
 			rec.runActive = false
 			d.mu.Unlock()
+			d.consumeNextFollowUp(conn, rec)
 		}
-	}
-	if terminal {
-		d.consumeNextFollowUp(conn, rec)
 	}
 }
 
 // consumeNextFollowUp runs the head follow-up item after the current run's
-// agent_end: exactly ONE item is consumed per run end, announced by a
+// agent_settled: exactly ONE item is consumed per run end, announced by a
 // queue_update followed by the next run's agent_start/agent_end.
 func (d *Daemon) consumeNextFollowUp(conn net.Conn, rec *daemonSession) {
 	d.mu.Lock()

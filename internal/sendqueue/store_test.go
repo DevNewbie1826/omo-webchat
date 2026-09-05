@@ -236,8 +236,11 @@ func TestDispatchStateSurvivesRestartUntilAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, ok, err := store.BeginDispatch("chat")
-	if err != nil || !ok || item.DeliveryID == "" {
+	if err != nil || !ok || item.DeliveryID == "" || item.DispatchState != DispatchReserved {
 		t.Fatalf("begin dispatch = (%+v, %v, %v)", item, ok, err)
+	}
+	if _, err := store.MarkDispatchAttempted("chat", item.DeliveryID, "entry-before"); err != nil {
+		t.Fatal(err)
 	}
 
 	restarted, err := Load(path)
@@ -245,8 +248,8 @@ func TestDispatchStateSurvivesRestartUntilAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 	retried, ok, err := restarted.BeginDispatch("chat")
-	if err != nil || !ok || retried.ID != item.ID || retried.DeliveryID != item.DeliveryID || retried.RequestID != item.RequestID {
-		t.Fatalf("restart dispatch = (%+v, %v, %v), want same item and delivery ID", retried, ok, err)
+	if err != nil || !ok || retried.ID != item.ID || retried.DeliveryID != item.DeliveryID || retried.RequestID != item.RequestID || retried.DispatchState != DispatchAttempted || retried.HistoryCursor != "entry-before" {
+		t.Fatalf("restart dispatch = (%+v, %v, %v), want same attempted item, delivery ID, and history cursor", retried, ok, err)
 	}
 	if _, err := restarted.CompleteDispatch("chat", item.DeliveryID); err != nil {
 		t.Fatal(err)
@@ -257,6 +260,39 @@ func TestDispatchStateSurvivesRestartUntilAccepted(t *testing.T) {
 	}
 	if got := accepted.Snapshot("chat"); got.Dispatching != nil || len(got.Items) != 0 {
 		t.Fatalf("accepted dispatch survived restart: %+v", got)
+	}
+}
+
+func TestClearPreservesDispatchAndRemovesOnlyPendingItems(t *testing.T) {
+	store, err := Load(filepath.Join(t.TempDir(), "queue-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Append("chat", Item{Text: "in flight"}); err != nil {
+		t.Fatal(err)
+	}
+	dispatching, _, err := store.BeginDispatch("chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkDispatchAttempted("chat", dispatching.DeliveryID, "root"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Append("chat", Item{Text: "pending"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Clear("chat"); err != nil {
+		t.Fatal(err)
+	}
+	got := store.Snapshot("chat")
+	if got.Dispatching == nil || got.Dispatching.DeliveryID != dispatching.DeliveryID || len(got.Items) != 0 {
+		t.Fatalf("cleared queue = %+v, want retained dispatch and no pending items", got)
+	}
+	if _, err := store.CompleteDispatch("chat", dispatching.DeliveryID); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Snapshot("chat"); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("completed queue after clear = %+v", got)
 	}
 }
 

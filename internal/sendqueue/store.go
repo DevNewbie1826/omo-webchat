@@ -16,14 +16,21 @@ import (
 var ErrItemNotFound = errors.New("sendqueue: item not found")
 
 type Item struct {
-	ID         string              `json:"id"`
-	Text       string              `json:"text"`
-	HasImage   bool                `json:"hasImage"`
-	CreatedAt  int64               `json:"createdAt"`
-	RequestID  string              `json:"requestId,omitempty"`
-	DeliveryID string              `json:"deliveryId,omitempty"`
-	Images     []map[string]string `json:"images,omitempty"`
+	ID            string              `json:"id"`
+	Text          string              `json:"text"`
+	HasImage      bool                `json:"hasImage"`
+	CreatedAt     int64               `json:"createdAt"`
+	RequestID     string              `json:"requestId,omitempty"`
+	DeliveryID    string              `json:"deliveryId,omitempty"`
+	DispatchState string              `json:"dispatchState,omitempty"`
+	HistoryCursor string              `json:"historyCursor,omitempty"`
+	Images        []map[string]string `json:"images,omitempty"`
 }
+
+const (
+	DispatchReserved  = "reserved"
+	DispatchAttempted = "attempted"
+)
 
 type Snapshot struct {
 	Revision    int64
@@ -156,12 +163,11 @@ func (s *Store) Clear(chatID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	queue := s.chats[chatID]
-	if len(queue.Items) == 0 && queue.Dispatching == nil {
+	if len(queue.Items) == 0 {
 		return nil
 	}
 	prior := queue
 	queue.Items = []Item{}
-	queue.Dispatching = nil
 	queue.Revision++
 	s.chats[chatID] = queue
 	if err := s.persistLocked(); err != nil {
@@ -189,6 +195,8 @@ func (s *Store) BeginDispatch(chatID string) (Item, bool, error) {
 	if item.DeliveryID == "" {
 		item.DeliveryID = newID()
 	}
+	item.DispatchState = DispatchReserved
+	item.HistoryCursor = ""
 	queue.Items = cloneItems(queue.Items[1:])
 	queue.Dispatching = cloneItemPtr(&item)
 	queue.Revision++
@@ -198,6 +206,29 @@ func (s *Store) BeginDispatch(chatID string) (Item, bool, error) {
 		return Item{}, false, fmt.Errorf("begin send queue dispatch: %w", err)
 	}
 	return item, true, nil
+}
+
+// MarkDispatchAttempted records the durable history boundary before the
+// provider call can begin. Recovery reconciles against entries after cursor.
+func (s *Store) MarkDispatchAttempted(chatID, deliveryID, cursor string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queue := s.chats[chatID]
+	if queue.Dispatching == nil || queue.Dispatching.DeliveryID != deliveryID {
+		return queue.Revision, ErrItemNotFound
+	}
+	prior := queue
+	item := cloneItem(*queue.Dispatching)
+	item.DispatchState = DispatchAttempted
+	item.HistoryCursor = cursor
+	queue.Dispatching = &item
+	queue.Revision++
+	s.chats[chatID] = queue
+	if err := s.persistLocked(); err != nil {
+		s.chats[chatID] = prior
+		return prior.Revision, fmt.Errorf("mark send queue dispatch attempted: %w", err)
+	}
+	return queue.Revision, nil
 }
 
 // CompleteDispatch removes a dispatch only after the provider accepted it.

@@ -142,6 +142,7 @@ func (q *queueTest) holdAndStartRun() (release func()) {
 	q.d.SetPromptScript(q.path,
 		map[string]any{"type": EventAgentStart},
 		map[string]any{"type": EventAgentEnd},
+		map[string]any{"type": EventAgentSettled},
 	)
 	hold := q.d.HoldPrompt(q.path)
 	q.call(omorpc.Prompt{SessionID: q.rpc, Message: "run"})
@@ -153,6 +154,7 @@ func (q *queueTest) finishRun(hold func()) {
 	hold()
 	q.expectEvent(EventAgentStart)
 	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventAgentSettled)
 }
 
 // TestDaemonQueueInitialStateAndFollowUp: a fresh session's queue is empty,
@@ -302,6 +304,7 @@ func TestDaemonQueueOrderedByEnqueueOrderAcrossQueues(t *testing.T) {
 	hold()
 	q.expectEvent(EventAgentStart)
 	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventAgentSettled)
 }
 
 func TestDaemonQueueNonterminalScriptDoesNotConsumeFollowUp(t *testing.T) {
@@ -318,6 +321,32 @@ func TestDaemonQueueNonterminalScriptDoesNotConsumeFollowUp(t *testing.T) {
 	if st := q.state(); st.PendingMessageCount != 1 {
 		t.Fatalf("pending after nonterminal script = %d, want 1", st.PendingMessageCount)
 	}
+}
+
+func TestDaemonQueueSettlesOnlyAfterAgentSettled(t *testing.T) {
+	q := newQueueTest(t)
+	q.call(omorpc.FollowUp{SessionID: q.rpc, Message: "f1"})
+	q.expectQueueUpdate()
+	q.d.SetPromptScript(q.path,
+		map[string]any{"type": EventAgentStart},
+		map[string]any{"type": EventAgentEnd},
+		map[string]any{"type": EventMessageDelta, "delta": "after end"},
+		map[string]any{"type": EventAgentSettled},
+	)
+	q.call(omorpc.Prompt{SessionID: q.rpc, Message: "run"})
+	q.expectEvent(EventAgentStart)
+	q.expectEvent(EventAgentEnd)
+	q.expectEvent(EventMessageDelta)
+	// No queue_update may occur before the true terminal marker; expectEvent
+	// reads the stream in order, so settlement must be observed next.
+	q.expectEvent(EventAgentSettled)
+
+	qu := q.expectQueueUpdate()
+	if len(qu.FollowUp) != 0 || qu.PendingMessageCount != 0 {
+		t.Fatalf("settlement queue_update = %+v, want empty queue", qu)
+	}
+	q.expectEvent(EventAgentStart)
+	q.expectEvent(EventAgentEnd)
 }
 
 func TestDaemonQueueFollowUpConsumedOneAtATime(t *testing.T) {

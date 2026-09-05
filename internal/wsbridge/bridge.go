@@ -1303,6 +1303,57 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 		return
 	}
 	h.dispatching.Store(chatID, item.DeliveryID)
+	park := func(err error) {
+		h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+		if err != nil {
+			h.cfg.Logger.Warn("reconciling send queue dispatch", "chat_id", chatID, "item_id", item.ID, "error", err)
+		}
+		h.publishDispatchUncertain(chatID, item)
+	}
+	if wasDispatching {
+		switch item.DispatchState {
+		case sendqueue.DispatchAttempted:
+			reconcileCtx, cancel := context.WithTimeout(h.cfg.Context, h.cfg.HistoryTimeout)
+			accepted, reconcileErr := sess.DurableUserMessageAfter(reconcileCtx, item.HistoryCursor, item.Text)
+			cancel()
+			if reconcileErr != nil {
+				park(reconcileErr)
+				return
+			}
+			if accepted {
+				if _, completeErr := h.cfg.SendQueue.CompleteDispatch(chatID, item.DeliveryID); completeErr != nil {
+					park(completeErr)
+					return
+				}
+				h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
+				h.publishQueue(chatID, sess)
+				h.scheduleIdleDrain(chatID, sess)
+				return
+			}
+		case sendqueue.DispatchReserved:
+			// The durable reservation proves no provider call began.
+		default:
+			// Records written before the reservation/attempt boundary existed
+			// are ambiguous and cannot be retried automatically.
+			park(nil)
+			return
+		}
+	}
+	if item.DispatchState == sendqueue.DispatchReserved {
+		checkpointCtx, cancel := context.WithTimeout(h.cfg.Context, h.cfg.HistoryTimeout)
+		cursor, checkpointErr := sess.DurableHistoryLeaf(checkpointCtx)
+		cancel()
+		if checkpointErr != nil {
+			park(checkpointErr)
+			return
+		}
+		if _, markErr := h.cfg.SendQueue.MarkDispatchAttempted(chatID, item.DeliveryID, cursor); markErr != nil {
+			park(markErr)
+			return
+		}
+		item.DispatchState = sendqueue.DispatchAttempted
+		item.HistoryCursor = cursor
+	}
 	var retryToken session.DetachedSendRetryToken
 	if wasDispatching {
 		if token, prepared := sess.PrepareDetachedSendRetry(item.RequestID, false); prepared {

@@ -47,13 +47,29 @@ const (
 // instead of sleeping.
 var now = time.Now
 
-// discoveredFirstSeen is the first catalog observation of each disk session in
-// this process, keyed by durable id (or path if id is empty). It does not move
-// when the file is rewritten.
-var discoveredFirstSeen = struct {
+// discoveredSighting is the current consecutive-presence streak of a disk
+// session in this process: since is when the present streak started, lastSeen
+// the most recent completed scan that contained it, and dir the sessions
+// directory whose scans track it.
+type discoveredSighting struct {
+	since    time.Time
+	lastSeen time.Time
+	dir      string
+}
+
+// discoveredObservationMaxEntries bounds the tracking state: at most one
+// entry per tracked disk session across all workspaces. Beyond the cap the
+// least recently seen entries are evicted and simply re-observe from zero.
+const discoveredObservationMaxEntries = 4096
+
+// discoveredObservations tracks consecutive catalog observations per disk
+// session in this process, keyed by durable id (or path if id is empty).
+// Identities absent from a completed scan are reset, so a recreated file must
+// be present again for the full window before it stabilizes.
+var discoveredObservations = struct {
 	mu sync.Mutex
-	m  map[string]time.Time
-}{m: make(map[string]time.Time)}
+	m  map[string]discoveredSighting
+}{m: make(map[string]discoveredSighting)}
 
 type sessionHistoryItem struct {
 	ID             string `json:"id"`
@@ -92,6 +108,17 @@ func codingAgentDir() string { return session.CodingAgentDir() }
 // sessionDirNameForCwd delegates to the shared session-package encoder so the
 // disk-session lister and the goal-state reader agree on one layout.
 func sessionDirNameForCwd(cwd string) string { return session.SessionDirNameForCwd(cwd) }
+
+func sessionsDirForCwd(cwd string) string {
+	agentDir := codingAgentDir()
+	if agentDir == "" {
+		return ""
+	}
+	if _, ok := canonicalSessionCWD(cwd); !ok {
+		return ""
+	}
+	return filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
+}
 
 func listDiskSessions(cwd string) []diskSession {
 	agentDir := codingAgentDir()
@@ -312,7 +339,13 @@ func chatRecencyMs(ch cursorstore.Chat) int64 {
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	danglingCWDs := make(map[string]struct{})
+	scanDirs := make(map[string]struct{})
 	for _, ch := range chats {
+		// The chats' workspace directories are the scans whose completed
+		// result resets absent identities, even when a scan returns no files.
+		if dir := sessionsDirForCwd(ch.CWD); dir != "" {
+			scanDirs[dir] = struct{}{}
+		}
 		danglingRow := storedIdentityDangling(ch.SessionFile)
 		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); danglingRow && ok {
 			danglingCWDs[canonicalCWD] = struct{}{}
@@ -327,8 +360,13 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 			Dangling: danglingRow,
 		})
 	}
+	present := make(map[string]struct{}, len(disk))
 	for _, sess := range disk {
-		noteDiscoveredSessionObservation(sess)
+		observeDiscoveredSession(sess)
+		if key := discoveredSessionIdentity(sess); key != "" {
+			present[key] = struct{}{}
+			scanDirs[filepath.Dir(sess.Path)] = struct{}{}
+		}
 		suppress := false
 		for _, chat := range chats {
 			// The stored row already represents this durable session regardless
@@ -341,11 +379,11 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 		// While a stored chat in the same cwd still dangles, a freshly written
 		// disk session may be that chat's lazy first persist rather than a
 		// distinct session. Hold it out of the catalog until it has been
-		// stable for the window — mtime aged or observed that long — or no
-		// same-cwd dangling chat remains, so the user sees one row instead of
-		// a transient duplicate. Once the chat's identity is updated onto the
-		// file — takeover or adoption — the identity match above merges it
-		// into the stored row immediately.
+		// stable for the window — mtime aged or consecutively observed that
+		// long — or no same-cwd dangling chat remains, so the user sees one
+		// row instead of a transient duplicate. Once the chat's identity is
+		// updated onto the file — takeover or adoption — the identity match
+		// above merges it into the stored row immediately.
 		canonicalCWD, canonical := canonicalSessionCWD(sess.CWD)
 		_, sameCWDDangling := danglingCWDs[canonicalCWD]
 		if suppress || (canonical && sameCWDDangling && discoveredSessionUnstable(sess)) {
@@ -359,6 +397,9 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 			ResumeIdentity: sess.Path,
 		})
 	}
+	// Completed scan: identities this directory's scans no longer see lose
+	// their streak, so a session deleted and recreated starts over.
+	sweepDiscoveredObservations(scanDirs, present)
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].RecencyMs != items[j].RecencyMs {
 			return items[i].RecencyMs > items[j].RecencyMs
@@ -459,11 +500,12 @@ func storedIdentityDangling(path string) bool {
 
 // discoveredSessionUnstable reports whether a disk session is still too new to
 // expose as a discovered catalog row while a same-cwd stored chat dangles.
-// A row is unstable only while BOTH its file mtime AND its first catalog
-// observation are within DiscoveredStabilityWindow of now. First-seen does not
-// move when the file is rewritten, so a legitimate active session whose mtime
-// keeps refreshing still becomes visible once it has been observed for the
-// window. Rows with an unknown modification time are never treated as unstable.
+// A row is unstable only while BOTH its file mtime AND its current consecutive
+// observation streak are within DiscoveredStabilityWindow of now. The streak
+// start does not move while the session keeps appearing in completed scans, so
+// a legitimate active session whose mtime keeps refreshing still becomes
+// visible once it has been present for the window. Rows with an unknown
+// modification time are never treated as unstable.
 func discoveredSessionUnstable(sess diskSession) bool {
 	if sess.ModTime.IsZero() {
 		return false
@@ -472,7 +514,7 @@ func discoveredSessionUnstable(sess diskSession) bool {
 	if current.Sub(sess.ModTime) >= DiscoveredStabilityWindow {
 		return false
 	}
-	return current.Sub(noteDiscoveredSessionObservation(sess)) < DiscoveredStabilityWindow
+	return current.Sub(observeDiscoveredSession(sess)) < DiscoveredStabilityWindow
 }
 
 func discoveredSessionIdentity(sess diskSession) string {
@@ -482,25 +524,67 @@ func discoveredSessionIdentity(sess diskSession) string {
 	return strings.TrimSpace(sess.Path)
 }
 
-func noteDiscoveredSessionObservation(sess diskSession) time.Time {
+func observeDiscoveredSession(sess diskSession) time.Time {
 	key := discoveredSessionIdentity(sess)
-	seen := now()
+	stamp := now()
 	if key == "" {
-		return seen
+		return stamp
 	}
-	discoveredFirstSeen.mu.Lock()
-	defer discoveredFirstSeen.mu.Unlock()
-	if t, ok := discoveredFirstSeen.m[key]; ok {
-		return t
+	discoveredObservations.mu.Lock()
+	defer discoveredObservations.mu.Unlock()
+	if sighting, ok := discoveredObservations.m[key]; ok {
+		sighting.lastSeen = stamp
+		discoveredObservations.m[key] = sighting
+		return sighting.since
 	}
-	discoveredFirstSeen.m[key] = seen
-	return seen
+	discoveredObservations.m[key] = discoveredSighting{since: stamp, lastSeen: stamp, dir: filepath.Dir(sess.Path)}
+	pruneDiscoveredObservationsLocked()
+	return stamp
 }
 
-func resetDiscoveredSessionFirstSeen() {
-	discoveredFirstSeen.mu.Lock()
-	discoveredFirstSeen.m = make(map[string]time.Time)
-	discoveredFirstSeen.mu.Unlock()
+// sweepDiscoveredObservations resets the streak of every identity tracked for
+// a scanned sessions directory that the completed scan no longer contains.
+func sweepDiscoveredObservations(scanDirs map[string]struct{}, present map[string]struct{}) {
+	if len(scanDirs) == 0 {
+		return
+	}
+	discoveredObservations.mu.Lock()
+	defer discoveredObservations.mu.Unlock()
+	for key, sighting := range discoveredObservations.m {
+		if _, scanned := scanDirs[sighting.dir]; !scanned {
+			continue
+		}
+		if _, ok := present[key]; !ok {
+			delete(discoveredObservations.m, key)
+		}
+	}
+}
+
+// pruneDiscoveredObservationsLocked evicts least-recently-seen entries once
+// the tracking map exceeds its bound.
+func pruneDiscoveredObservationsLocked() {
+	over := len(discoveredObservations.m) - discoveredObservationMaxEntries
+	if over <= 0 {
+		return
+	}
+	type aged struct {
+		key      string
+		lastSeen time.Time
+	}
+	ages := make([]aged, 0, len(discoveredObservations.m))
+	for key, sighting := range discoveredObservations.m {
+		ages = append(ages, aged{key: key, lastSeen: sighting.lastSeen})
+	}
+	sort.Slice(ages, func(i, j int) bool { return ages[i].lastSeen.Before(ages[j].lastSeen) })
+	for _, entry := range ages[:over] {
+		delete(discoveredObservations.m, entry.key)
+	}
+}
+
+func resetDiscoveredObservations() {
+	discoveredObservations.mu.Lock()
+	discoveredObservations.m = make(map[string]discoveredSighting)
+	discoveredObservations.mu.Unlock()
 }
 
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
