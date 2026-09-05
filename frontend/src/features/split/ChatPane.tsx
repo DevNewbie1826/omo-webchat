@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
@@ -27,6 +28,7 @@ const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "
 export interface ChatPaneProps {
   readonly chatSession: ChatSessionRef;
   readonly focused: boolean;
+  readonly resizeControl?: ReactNode;
   readonly splitEnabled: boolean;
   readonly onFocus: () => void;
   readonly onSplit: (dir: SplitDir) => void;
@@ -40,6 +42,7 @@ export interface ChatPaneProps {
 export function ChatPane({
   chatSession,
   focused,
+  resizeControl,
   splitEnabled,
   onFocus,
   onSplit,
@@ -101,6 +104,7 @@ export function ChatPane({
       onFocus={event => { if (event.currentTarget.contains(event.target)) onFocus(); }}
     >
       <header className="th-termhead">
+        {resizeControl}
         <button
           type="button"
           className="th-btn-icon th-mobile-menu"

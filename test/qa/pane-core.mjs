@@ -57,6 +57,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     },
   },
 });
+const fixturePort = server.port;
 let browser;
 const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + "\n");
 try {
@@ -132,6 +133,101 @@ try {
     results.push({ scenario: `paged-discovered-narrow-${narrow}`, pass: true, geometry });
     await page.screenshot({ path: resolve(evidence, `session-open-${narrow ? "narrow" : "split"}.png`) });
   }
+  const resizeLayouts = {
+    h3: split("root", "h", split("inner", "h", leaf("a", stored.id), leaf("b")), leaf("c")),
+    h4: split("root", "h", split("inner", "h", leaf("a", stored.id), leaf("b")), split("other", "h", leaf("c"), leaf("d"))),
+    v3: split("root", "v", split("inner", "v", leaf("a", stored.id), leaf("b")), leaf("c")),
+    v4: split("root", "v", split("inner", "v", leaf("a", stored.id), leaf("b")), split("other", "v", leaf("c"), leaf("d"))),
+    mixed: split("root", "h", split("inner", "v", leaf("a", stored.id), leaf("b")), leaf("c")),
+  };
+  async function measureResize() {
+    return page.evaluate(() => {
+      const area = document.querySelector('.th-session-workarea').getBoundingClientRect();
+      return { area: area.toJSON(), documentWidth: document.documentElement.scrollWidth, viewportWidth: innerWidth,
+        panes: [...document.querySelectorAll('.th-pane-wrap')].map(pane => {
+          const rect = pane.getBoundingClientRect(), overlay = pane.querySelector('.th-pane-size');
+          return { rect: rect.toJSON(), width: Number(overlay?.dataset.widthPercent), height: Number(overlay?.dataset.heightPercent),
+            text: overlay?.textContent, pointerEvents: overlay && getComputedStyle(overlay).pointerEvents,
+            controls: [...pane.querySelectorAll('.th-termhead button')].map(control => ({ label: control.getAttribute('aria-label') ?? control.title, rect: control.getBoundingClientRect().toJSON() })).filter(control => control.rect.width > 0) };
+        }) };
+    });
+  }
+  async function geometryMatches() {
+    await page.evaluate(() => new Promise((done, fail) => {
+      const timer = setTimeout(() => { ro.disconnect(); mo.disconnect(); fail(new Error('Overlay geometry deadline')); }, 8000);
+      const area = document.querySelector('.th-session-workarea');
+      const ro = new ResizeObserver(check), mo = new MutationObserver(check);
+      function check() {
+        const denominator = area.getBoundingClientRect();
+        const panes = [...area.querySelectorAll('.th-pane-wrap')];
+        if (panes.every(pane => {
+          const rect = pane.getBoundingClientRect(), overlay = pane.querySelector('.th-pane-size');
+          return overlay && Number(overlay.dataset.widthPercent) === Math.round(rect.width / denominator.width * 100)
+            && Number(overlay.dataset.heightPercent) === Math.round(rect.height / denominator.height * 100);
+        })) { clearTimeout(timer); ro.disconnect(); mo.disconnect(); done(true); }
+      }
+      ro.observe(area); for (const pane of area.querySelectorAll('.th-pane-wrap')) ro.observe(pane);
+      mo.observe(area, { subtree: true, attributes: true, childList: true, characterData: true }); check();
+    }));
+  }
+  for (const [width, height] of [[1440, 900], [1900, 1500]]) {
+  for (const [name, tree] of Object.entries(resizeLayouts)) {
+    await reset(tree);
+    await page.setViewportSize({ width, height });
+    assert.equal(await page.locator('.th-session-workarea').count(), 1);
+    const origin = page.locator('[data-pane-id="a"] .th-pane-resize');
+    await origin.focus(); await page.keyboard.press('Enter');
+    // Header action exposes both the local and outer boundary without entering
+    // any transcript. Choose the root boundary using only menu keyboard input.
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await page.locator('.th-pane-resize-menu [data-split-target="root"]').evaluate(e => document.activeElement === e), true);
+    await page.keyboard.press('Enter');
+    const divider = page.locator('[data-split-id="root"] > .th-divider');
+    assert.equal(await divider.evaluate(e => document.activeElement === e), true);
+    const samples = [];
+    const previousRatio = Number(await divider.getAttribute('aria-valuenow'));
+    for (const key of [name.startsWith('v') ? 'ArrowDown' : 'ArrowRight', name.startsWith('v') ? 'ArrowUp' : 'ArrowLeft', 'Home', 'End']) {
+      await divider.press(key); await geometryMatches();
+      const sample = await measureResize();
+      if (width === 1900 && key.startsWith('Arrow')) {
+        assert.equal(Number(await divider.getAttribute('aria-valuenow')), previousRatio + (key === 'ArrowDown' || key === 'ArrowRight' ? 5 : 0));
+      }
+      assert.equal(sample.panes.length, name.endsWith('4') ? 4 : 3);
+      assert(sample.area.width < sample.viewportWidth); assert(sample.area.x >= 264);
+      assert(sample.documentWidth <= sample.viewportWidth);
+      for (const pane of sample.panes) {
+        assert.equal(pane.pointerEvents, 'none');
+        assert.deepEqual([...pane.text.matchAll(/(\d+)%/g)].map(match => Number(match[1])),
+          [Math.round(pane.rect.width / sample.area.width * 100), Math.round(pane.rect.height / sample.area.height * 100)]);
+        assert.equal(pane.width, Math.round(pane.rect.width / sample.area.width * 100));
+        assert.equal(pane.height, Math.round(pane.rect.height / sample.area.height * 100));
+        assert(pane.rect.left >= sample.area.left - 1 && pane.rect.right <= sample.area.right + 1);
+        assert(pane.rect.top >= sample.area.top - 1 && pane.rect.bottom <= sample.area.bottom + 1);
+        for (const control of pane.controls) assert(control.rect.left >= pane.rect.left - .5 && control.rect.right <= pane.rect.right + .5,
+          `${name}/${key}: ${control.label} clipped: ${JSON.stringify({ control: control.rect, pane: pane.rect })}`);
+      }
+      samples.push({ key, ...sample });
+    }
+    await page.screenshot({ path: resolve(evidence, `resize-${name}-${width}.png`) });
+    const ratio = await divider.getAttribute('aria-valuenow');
+    await divider.press('Escape');
+    assert.equal(await origin.evaluate(e => document.activeElement === e), true);
+    assert.equal(await divider.getAttribute('aria-valuenow'), ratio);
+    assert.equal(await page.locator('.th-pane-size').count(), 0);
+    const rect = await divider.boundingBox();
+    await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height / 2); await page.mouse.down();
+    await geometryMatches();
+    if (width === 1900) await arm(`() => document.querySelector('[data-split-id="root"] > .th-divider').getAttribute('aria-valuenow') !== '${ratio}'`);
+    await page.mouse.move(rect.x + rect.width / 2 - (name.startsWith('v') ? 0 : 60), rect.y + rect.height / 2 - (name.startsWith('v') ? 60 : 0));
+    await page.mouse.up();
+    if (width === 1900) await complete();
+    await geometryMatches();
+    assert.equal(await page.locator('.th-pane-size').count(), name.endsWith('4') ? 4 : 3);
+    await divider.press('Escape'); assert.equal(await page.locator('.th-pane-size').count(), 0);
+    results.push({ scenario: `resize-${name}-${width}`, pass: true, samples });
+  }
+  }
+  await save('resize.json', results.filter(result => result.scenario?.startsWith('resize-')));
   assert.equal(requests.filter(r => r.method === "DELETE").length, 0);
   assert.equal(frames.filter(f => /stop|disconnect/.test(f.type)).length, 0);
   assert.deepEqual(errors, []);
@@ -141,6 +237,6 @@ try {
   if (browser) await browser.close();
   for (const socket of sockets) socket.close(); await server.stop(true);
   await save("routing.json", results); await save("traffic.json", { requests, frames }); await save("errors.json", errors);
-  await save("cleanup.json", { browserClosed: !!browser, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: server.port, fixtureInMemoryOnly: true });
+  await save("cleanup.json", { browserClosed: !!browser, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: fixturePort, fixtureInMemoryOnly: true });
 }
 console.log(JSON.stringify(results, null, 2));

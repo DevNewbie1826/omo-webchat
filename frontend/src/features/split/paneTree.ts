@@ -15,8 +15,8 @@ export type PaneNode =
 
 export const DEFAULT_RATIO = 0.5;
 /** Divider drag limits so neither pane collapses to nothing. */
-const RATIO_MIN = 0.1;
-const RATIO_MAX = 0.9;
+export const RATIO_MIN = 0.1;
+export const RATIO_MAX = 0.9;
 
 let fallbackPaneId = 0;
 
@@ -128,3 +128,11 @@ export function firstLeafId(node: PaneNode): string {
   return cur.id;
 }
 
+
+export const PANE_DIVIDER_SIZE = 4;
+/** Intrinsic span along one axis, including nested dividers on that axis. */
+export function minimumPaneSpan(node: PaneNode, axis: SplitDir): number {
+  if (node.kind === "leaf") return 320;
+  const first = minimumPaneSpan(node.first, axis), second = minimumPaneSpan(node.second, axis);
+  return node.dir === axis ? first + PANE_DIVIDER_SIZE + second : Math.max(first, second);
+}
