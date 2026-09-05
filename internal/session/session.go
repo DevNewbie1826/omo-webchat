@@ -1968,6 +1968,67 @@ type entriesTail struct {
 	LeafID  string            `json:"leafId"`
 }
 
+// DurableHistoryLeaf returns the authoritative transcript boundary used to
+// fence a queue delivery before its provider call begins.
+func (s *Session) DurableHistoryLeaf(ctx context.Context) (string, error) {
+	wire, err := s.fetchEntriesAfter(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	return wire.LeafID, nil
+}
+
+// DurableUserMessageAfter reports whether the authoritative transcript after
+// cursor contains the dispatched user message.
+func (s *Session) DurableUserMessageAfter(ctx context.Context, cursor, text string) (bool, error) {
+	wire, err := s.fetchEntriesAfter(ctx, cursor)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range wire.Entries {
+		var entry struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(raw, &entry) != nil {
+			continue
+		}
+		role, content := entry.Role, entry.Content
+		if entry.Message.Role != "" {
+			role, content = entry.Message.Role, entry.Message.Content
+		}
+		if role == "user" && durableMessageText(content) == text {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func durableMessageText(content json.RawMessage) string {
+	var text string
+	if json.Unmarshal(content, &text) == nil {
+		return text
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) != nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		if part.Type == "text" || part.Type == "" {
+			out.WriteString(part.Text)
+		}
+	}
+	return out.String()
+}
+
 func (s *Session) fetchEntriesAfter(ctx context.Context, since string) (entriesTail, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()

@@ -1,6 +1,8 @@
 package wsbridge
 
 import (
+	"context"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -92,25 +94,25 @@ func TestSendDuringRunQueuesAndSettleFlushesOneHead(t *testing.T) {
 
 func TestQueueCommandsAndEngineMirror(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "queue-commands")
-	path := t.TempDir() + "/queue-v1.json"
-	queue, err := sendqueue.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, _ := queue.Append("queue-commands", sendqueue.Item{Text: "first"})
-	second, _ := queue.Append("queue-commands", sendqueue.Item{Text: "second"})
-	queue, err = sendqueue.Load(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.bridge.cfg.SendQueue = queue
+	queue := configureSendQueue(t, h)
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "queue-commands"})
 	frames.next(t, "ready")
-	if frame := frames.next(t, "queue"); len(frame["items"].([]any)) != 2 {
-		t.Fatalf("persisted queue attach frame = %v", frame)
-	}
+	frames.next(t, "queue")
 	frames.next(t, "queue") // refreshed from get_state
+
+	first, _, err := queue.Append("queue-commands", sendqueue.Item{Text: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := queue.Append("queue-commands", sendqueue.Item{Text: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bridge.publishQueue("queue-commands", nil)
+	if frame := frames.next(t, "queue"); len(frame["items"].([]any)) != 2 {
+		t.Fatalf("queue frame = %v", frame)
+	}
 
 	writeClient(t, conn, map[string]any{"type": "chat.queue.move", "sessionId": "queue-commands", "itemId": second, "toIndex": 0, "requestId": "move"})
 	if ack := frames.next(t, "ack"); ack["command"] != "chat.queue.move" || ack["requestId"] != "move" {
@@ -149,6 +151,294 @@ func TestQueueCommandsAndEngineMirror(t *testing.T) {
 	}
 	if got := h.daemon.RequestCount(omorpc.CmdClearQueue); got != 1 {
 		t.Fatalf("clear_queue requests = %d, want 1", got)
+	}
+}
+
+func restartInPlaceBridge(t *testing.T, prior *inPlaceBridgeHarness, queue *sendqueue.Store) *inPlaceBridgeHarness {
+	t.Helper()
+	client, err := omorpc.Dial(t.Context(), prior.daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(prior.store), RetryBackoff: time.Millisecond})
+	bridge := New(Config{Manager: manager, Store: prior.store, SendQueue: queue})
+	server := httptest.NewServer(bridge)
+	h := &inPlaceBridgeHarness{daemon: prior.daemon, store: prior.store, manager: manager, bridge: bridge, server: server, path: prior.path}
+	t.Cleanup(func() {
+		server.Close()
+		_ = manager.CloseAll(context.Background())
+		_ = client.Close()
+	})
+	return h
+}
+
+func TestAcceptedDispatchReconcilesAfterProcessRestartWithoutResend(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-accepted-crash")
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-accepted-crash"})
+	frames.next(t, "ready")
+
+	path := t.TempDir() + "/queue-v1.json"
+	queue, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := queue.Append("dispatch-accepted-crash", sendqueue.Item{Text: "accepted before crash", RequestID: "accepted-request"}); err != nil {
+		t.Fatal(err)
+	}
+	item, ok, err := queue.BeginDispatch("dispatch-accepted-crash")
+	if err != nil || !ok {
+		t.Fatalf("begin dispatch = (%+v, %v, %v)", item, ok, err)
+	}
+	if _, err := queue.MarkDispatchAttempted("dispatch-accepted-crash", item.DeliveryID, "root"); err != nil {
+		t.Fatal(err)
+	}
+	queue, err = sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, ok := h.manager.Get("dispatch-accepted-crash")
+	if !ok {
+		t.Fatal("attached session disappeared")
+	}
+	accepted := make(chan error, 1)
+	acceptedCtx, cancelAccepted := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancelAccepted()
+	if err := sess.SendPromptDetachedWithRequestIDAndCompletion(acceptedCtx, item.Text, nil, item.RequestID, func(err error) { accepted <- err }); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-acceptedCtx.Done():
+		t.Fatal(acceptedCtx.Err())
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("accepted prompt requests = %d, want 1", got)
+	}
+
+	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	restarted := restartInPlaceBridge(t, h, queue)
+	restartConn, restartFrames := restarted.connect(t)
+	writeClient(t, restartConn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-accepted-crash"})
+	restartFrames.next(t, "ready")
+	for {
+		frame := restartFrames.next(t, "queue")
+		if frame["revision"].(float64) >= 4 {
+			break
+		}
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("accepted dispatch was resent after restart: %d prompt requests", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdGetEntries); got < beforeEntries+2 {
+		t.Fatalf("durable reconciliation requests = %d, want at least %d", got, beforeEntries+2)
+	}
+	if got := queue.Snapshot("dispatch-accepted-crash"); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("reconciled dispatch remained queued: %+v", got)
+	}
+}
+
+func TestClearDuringDispatchPreservesCompletionAndReleasesGuard(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-clear")
+	queue := configureSendQueue(t, h)
+	if _, _, err := queue.Append("dispatch-clear", sendqueue.Item{Text: "in flight", RequestID: "in-flight"}); err != nil {
+		t.Fatal(err)
+	}
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	release := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer release()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-clear"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("dispatch did not reach provider transport")
+	}
+	writeClient(t, conn, map[string]any{"type": "chat.queue.clear", "sessionId": "dispatch-clear", "scope": "webchat", "requestId": "clear"})
+	frames.next(t, "ack")
+	if got := queue.Snapshot("dispatch-clear"); got.Dispatching == nil || len(got.Items) != 0 {
+		t.Fatalf("clear removed in-flight dispatch: %+v", got)
+	}
+
+	release()
+	frames.next(t, "run.done")
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) >= 4 {
+			break
+		}
+	}
+	if got := queue.Snapshot("dispatch-clear"); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("completed dispatch did not settle after clear: %+v", got)
+	}
+	laterID, laterRevision, err := queue.Append("dispatch-clear", sendqueue.Item{Text: "later", RequestID: "later"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if laterID == "" {
+		t.Fatal("later dispatch item has no ID")
+	}
+	h.bridge.SessionRunSettled("dispatch-clear", nil)
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("later dispatch remained blocked by stale process guard")
+	}
+	// The dispatch observation is published before its completion callback.
+	// This item's append, attempt, and completion transitions are consecutive;
+	// wait for this item's exact completion revision before asserting quiescence.
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) == float64(laterRevision+3) {
+			break
+		}
+	}
+	if got := queue.Snapshot("dispatch-clear"); got.Dispatching != nil || len(got.Items) != 0 {
+		t.Fatalf("later dispatch did not settle: %+v", got)
+	}
+}
+
+func TestDispatchingHeadReattemptsOnceAfterRestartAndCarriesRequestID(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-restart")
+	path := t.TempDir() + "/queue-v1.json"
+	queue, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := queue.Append("dispatch-restart", sendqueue.Item{Text: "queued", RequestID: "browser-request"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := queue.BeginDispatch("dispatch-restart")
+	if err != nil || !ok || claimed.DeliveryID == "" {
+		t.Fatalf("begin dispatch = (%+v, %v, %v)", claimed, ok, err)
+	}
+	restarted, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bridge.cfg.SendQueue = restarted
+	release := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer release()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-restart"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("restart did not reattempt the dispatching head")
+	}
+	h.bridge.SessionRunSettled("dispatch-restart", nil)
+	releaseChat, err := h.manager.EnterChat(t.Context(), "dispatch-restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseChat()
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("dispatching head requests = %d, want exactly 1", got)
+	}
+
+	release()
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) >= 4 {
+			break
+		}
+	}
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
+	frames.next(t, "run.done")
+	sess, ok := h.manager.Get("dispatch-restart")
+	if !ok {
+		t.Fatal("attached session disappeared")
+	}
+	if err := sess.SendPromptDetachedWithRequestID(t.Context(), "duplicate", nil, "browser-request"); err != nil {
+		t.Fatalf("replaying accepted browser request: %v", err)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdPrompt); got != 1 {
+		t.Fatalf("accepted browser request was sent again: %d prompt requests", got)
+	}
+	reloaded, err := sendqueue.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := reloaded.Snapshot("dispatch-restart"); snapshot.Dispatching != nil || len(snapshot.Items) != 0 {
+		t.Fatalf("accepted dispatch remained durable: %+v", snapshot)
+	}
+}
+
+func TestDisconnectedDispatchRemainsDurableAndPublishesNotice(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "dispatch-uncertain")
+	queue := configureSendQueue(t, h)
+	if _, _, err := queue.Append("dispatch-uncertain", sendqueue.Item{Text: "possibly accepted", RequestID: "uncertain-request"}); err != nil {
+		t.Fatal(err)
+	}
+	release := h.daemon.BlockHandler(omorpc.CmdPrompt)
+	defer release()
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "dispatch-uncertain"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("dispatch did not reach provider transport")
+	}
+	h.daemon.DropConnections()
+	if notice := frames.next(t, "notice"); notice["kind"] != "queue_delivery_uncertain" {
+		t.Fatalf("uncertain delivery notice = %v", notice)
+	}
+	if got := queue.Snapshot("dispatch-uncertain"); got.Dispatching == nil || got.Dispatching.RequestID != "uncertain-request" {
+		t.Fatalf("uncertain dispatch was not retained: %+v", got)
+	}
+}
+
+func TestIdleBacklogOrdersRestoredHeadBeforeNewPrompt(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "idle-backlog")
+	queue := configureSendQueue(t, h)
+	if _, _, err := queue.Append("idle-backlog", sendqueue.Item{Text: "A", RequestID: "request-a"}); err != nil {
+		t.Fatal(err)
+	}
+	h.daemon.SetPromptScript(h.path,
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+	releaseA := h.daemon.BlockHandler(omorpc.CmdPrompt)
+
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "idle-backlog"})
+	frames.next(t, "ready")
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 1, 5*time.Second) {
+		t.Fatal("idle attach did not drain A")
+	}
+	writeClient(t, conn, map[string]any{
+		"type": "chat.send", "sessionId": "idle-backlog", "requestId": "request-b",
+		"run": map[string]any{"kind": "prompt", "message": "B"},
+	})
+	nextSuccessfulSendAcks(t, frames, "request-b")
+	if got := queue.Snapshot("idle-backlog"); len(got.Items) != 1 || got.Items[0].Text != "B" {
+		t.Fatalf("new prompt did not park behind dispatching A: %+v", got)
+	}
+
+	releaseA()
+	if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, 2, 5*time.Second) {
+		t.Fatal("B was not dispatched after A settled")
+	}
+	var prompts []string
+	for _, request := range h.daemon.Requests() {
+		if request["type"] == omorpc.CmdPrompt {
+			prompts = append(prompts, request["message"].(string))
+		}
+	}
+	if len(prompts) != 2 || prompts[0] != "A" || prompts[1] != "B" {
+		t.Fatalf("prompt order = %v, want [A B]", prompts)
+	}
+	for {
+		frame := frames.next(t, "queue")
+		if frame["revision"].(float64) >= 8 {
+			break
+		}
 	}
 }
 

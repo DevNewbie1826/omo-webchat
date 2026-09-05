@@ -14,12 +14,17 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 )
 
-// stubSessionClock pins the catalog clock for the duration of the test.
+// stubSessionClock pins the catalog clock for the duration of the test and
+// clears observation tracking so prior tests cannot leak stability.
 func stubSessionClock(t *testing.T, at time.Time) {
 	t.Helper()
 	previous := now
 	now = func() time.Time { return at }
-	t.Cleanup(func() { now = previous })
+	resetDiscoveredObservations()
+	t.Cleanup(func() {
+		now = previous
+		resetDiscoveredObservations()
+	})
 }
 
 func writeDiskSession(t *testing.T, agentDir, cwd, id, name string, at time.Time) string {
@@ -135,8 +140,9 @@ func TestListDiskSessionsRejectsCollidingDirectoryFromAnotherWorkspace(t *testin
 		t.Fatal("test paths do not reproduce the non-injective directory encoding")
 	}
 	writeDiskSession(t, agent, workspaceB, "foreign", "Foreign", time.Now())
-	if got := listDiskSessions(workspaceA); len(got) != 0 {
-		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v", got)
+	got, scanned := listDiskSessions(workspaceA)
+	if !scanned || len(got) != 0 {
+		t.Fatalf("foreign workspace sessions leaked through colliding directory: %+v (scanned=%v)", got, scanned)
 	}
 }
 
@@ -320,6 +326,184 @@ func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *te
 	}
 }
 
+func TestListWorkspaceSessionsExposesContinuouslyTouchedDiskSessionAfterWindow(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-1", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	diskPath := writeDiskSession(t, agent, ws.Path, "disk-touched", "Touched", time.UnixMilli(10))
+	young := fixedNow.Add(-time.Second)
+	if err := os.Chtimes(diskPath, young, young); err != nil {
+		t.Fatal(err)
+	}
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" {
+		t.Fatalf("new session must stay hidden within the window: %+v", page.Items)
+	}
+
+	later := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return later }
+	if err := os.Chtimes(diskPath, later, later); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-brand-new", "Brand new", later)
+
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	var discovered []string
+	for _, item := range page.Items {
+		if item.Source == sessionHistorySourceDiscovered {
+			discovered = append(discovered, item.ID)
+		}
+	}
+	if len(discovered) != 1 || discovered[0] != "disk-touched" {
+		t.Fatalf("touched session must be visible after the window, new session must stay hidden: %+v", page.Items)
+	}
+}
+
+func TestMergeSessionHistoryExposesContinuouslyTouchedSessionAfterWindow(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	sameCWD := t.TempDir()
+	danglingChat := cursorstore.Chat{ID: "chat-dangling", CWD: sameCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
+	active := diskSession{ID: "disk-active", Path: "/catalog/active.jsonl", CWD: sameCWD, Name: "Active", ModTime: fixedNow}
+
+	hidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active})
+	if got := discoveredSessionIDs(hidden); len(got) != 0 {
+		t.Fatalf("new session must stay hidden within the window: %+v", hidden)
+	}
+
+	mid := fixedNow.Add(DiscoveredStabilityWindow - time.Second)
+	now = func() time.Time { return mid }
+	active.ModTime = mid
+	stillHidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active})
+	if got := discoveredSessionIDs(stillHidden); len(got) != 0 {
+		t.Fatalf("touched session must stay hidden before the window elapses: %+v", stillHidden)
+	}
+
+	later := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return later }
+	active.ModTime = later
+	brandNew := diskSession{ID: "disk-brand-new", Path: "/catalog/brand-new.jsonl", CWD: sameCWD, Name: "Brand new", ModTime: later}
+	exposed := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active, brandNew})
+	got := discoveredSessionIDs(exposed)
+	if len(got) != 1 || got[0] != "disk-active" {
+		t.Fatalf("touched session must be visible after the window, new session must stay hidden: %+v", exposed)
+	}
+}
+
+func TestListWorkspaceSessionsHidesRecreatedSessionUntilConsecutivelyPresentForWindow(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	stored := cursorstore.Chat{ID: "chat-1", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"), Name: "stored", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(stored); err != nil {
+		t.Fatal(err)
+	}
+	path := writeDiskSession(t, agent, ws.Path, "disk-recreated", "Recreated", fixedNow)
+
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" {
+		t.Fatalf("fresh session must stay hidden within the window: %+v", page.Items)
+	}
+
+	// Absent for the whole window: a completed scan without the identity must
+	// reset its observation tracking.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	absent := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return absent }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 {
+		t.Fatalf("absent session must not appear: %+v", page.Items)
+	}
+
+	// Recreated just after the window elapses. The new file is consecutively
+	// present for one second only — the pre-absence sighting must not count.
+	recreated := absent.Add(time.Second)
+	now = func() time.Time { return recreated }
+	writeDiskSession(t, agent, ws.Path, "disk-recreated", "Recreated", recreated)
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-1" {
+		t.Fatalf("recreated session must stay hidden until consecutively present for the window: %+v", page.Items)
+	}
+
+	// Once the recreated file has been consecutively present (and its mtime
+	// aged) for the window it becomes visible.
+	settled := recreated.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return settled }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	var discovered *sessionHistoryItem
+	for i := range page.Items {
+		if page.Items[i].ID == "disk-recreated" {
+			discovered = &page.Items[i]
+		}
+	}
+	if discovered == nil || discovered.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("recreated session must be discovered after its own window: %+v", page.Items)
+	}
+}
+
+func TestEmptyCompletedWorkspaceScanResetsDiscoveredObservation(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	workspace := t.TempDir()
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+	path := filepath.Join(agent, "sessions", sessionDirNameForCwd(workspace), "disk-recreated.jsonl")
+	disk := diskSession{ID: "disk-recreated", Path: path, CWD: workspace, ModTime: fixedNow}
+	mergeSessionHistory(nil, []diskSession{disk}, workspace)
+	// A successful empty scan must reset the prior sighting.
+	absent := fixedNow.Add(DiscoveredStabilityWindow)
+	now = func() time.Time { return absent }
+	mergeSessionHistory(nil, nil, workspace)
+
+	dangling := cursorstore.Chat{CWD: workspace, SessionFile: filepath.Join(t.TempDir(), "missing.jsonl")}
+	recreated := absent.Add(time.Second)
+	now = func() time.Time { return recreated }
+	disk.ModTime = recreated
+	items := mergeSessionHistory([]cursorstore.Chat{dangling}, []diskSession{disk}, workspace)
+	if got := discoveredSessionIDs(items); len(got) != 0 {
+		t.Fatalf("recreated session was immediately stable after an empty scan: %+v", items)
+	}
+}
+
+func TestDiscoveredObservationTrackingIsBounded(t *testing.T) {
+	stubSessionClock(t, time.Unix(1_800_000_000, 0))
+	for i := 0; i < discoveredObservationMaxEntries*2; i++ {
+		observeDiscoveredSession(diskSession{
+			ID:      fmt.Sprintf("durable-%d", i),
+			Path:    fmt.Sprintf("/catalog/session-%d.jsonl", i),
+			CWD:     "/w",
+			ModTime: now(),
+		})
+	}
+	discoveredObservations.mu.Lock()
+	size := len(discoveredObservations.m)
+	discoveredObservations.mu.Unlock()
+	if size > discoveredObservationMaxEntries {
+		t.Fatalf("observation map holds %d entries, want at most %d", size, discoveredObservationMaxEntries)
+	}
+}
+
+func discoveredSessionIDs(items []sessionHistoryItem) []string {
+	var ids []string
+	for _, item := range items {
+		if item.Source == sessionHistorySourceDiscovered {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
 func TestListWorkspaceSessionsShowsFreshDiskSessionWithDanglingChatInAnotherCWD(t *testing.T) {
 	fixedNow := time.Unix(1_800_000_000, 0)
 	stubSessionClock(t, fixedNow)
@@ -441,9 +625,9 @@ func TestAdoptionIdentityTransitionMergesDiskSessionIntoStoredRow(t *testing.T) 
 func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *testing.T) {
 	chats := []cursorstore.Chat{{
 		ID: "chat-1", WorkspaceID: "ws-1", CWD: "/w",
-		SessionFile:        "/sessions/replacement.jsonl",
-		DurableSessionID:   "durable-old",
-		SessionProvenance:  cursorstore.SessionProvenanceNative,
+		SessionFile:       "/sessions/replacement.jsonl",
+		DurableSessionID:  "durable-old",
+		SessionProvenance: cursorstore.SessionProvenanceNative,
 	}}
 	disk := []diskSession{{
 		ID: "durable-new", Path: "/sessions/replacement.jsonl", Name: "replacement",
@@ -456,5 +640,66 @@ func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *t
 		if item.Source == sessionHistorySourceDiscovered && item.ID != "durable-new" {
 			t.Fatalf("discovered row id = %q, want durable-new", item.ID)
 		}
+	}
+}
+
+func TestFailedWorkspaceScanPreservesDiscoveredObservation(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	s, st, ws := newChatCreateTestServer(t)
+	agent := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agent)
+
+	// A fresh sighting is recorded while a dangling stored chat gates the cwd.
+	dangling := cursorstore.Chat{ID: "chat-dangling", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: filepath.Join(t.TempDir(), "missing.jsonl"), Name: "dangling", NameSource: "auto", CreatedAt: 20}
+	if err := st.SaveChat(dangling); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-kept", "Kept", fixedNow)
+	page := listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-dangling" {
+		t.Fatalf("fresh session must stay hidden within the window: %+v", page.Items)
+	}
+
+	// Force a genuine scan failure (not a valid empty workspace): the
+	// sessions directory becomes a regular file, so ReadDir fails with
+	// ENOTDIR and the completed-scan contract must not apply.
+	sessionsDir := filepath.Join(agent, "sessions", sessionDirNameForCwd(ws.Path))
+	if err := os.RemoveAll(sessionsDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sessionsDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	midWindow := fixedNow.Add(DiscoveredStabilityWindow / 2)
+	now = func() time.Time { return midWindow }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	if len(page.Items) != 1 || page.Items[0].ID != "chat-dangling" {
+		t.Fatalf("failed scan must not expose or invent rows: %+v", page.Items)
+	}
+
+	// Restore the session with a FRESH mtime beside the dangling chat. The
+	// failed scan must have preserved the original sighting, so once the
+	// window elapses from that sighting the session becomes visible despite
+	// its fresh mtime - a successful empty scan would have reset the tracker
+	// and kept it hidden instead.
+	restored := fixedNow.Add(DiscoveredStabilityWindow/2 + time.Second)
+	now = func() time.Time { return restored }
+	if err := os.Remove(sessionsDir); err != nil {
+		t.Fatal(err)
+	}
+	writeDiskSession(t, agent, ws.Path, "disk-kept", "Kept", restored)
+
+	settled := fixedNow.Add(DiscoveredStabilityWindow + 2*time.Second)
+	now = func() time.Time { return settled }
+	page = listWorkspaceSessions(t, s, ws.ID, "")
+	var discovered *sessionHistoryItem
+	for i := range page.Items {
+		if page.Items[i].ID == "disk-kept" {
+			discovered = &page.Items[i]
+		}
+	}
+	if discovered == nil || discovered.Source != sessionHistorySourceDiscovered {
+		t.Fatalf("failed scan must preserve the prior sighting so the restored session becomes stable: %+v", page.Items)
 	}
 }

@@ -143,6 +143,15 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to stop workspace chats")
 		return
 	}
+	if s.queue != nil {
+		for _, c := range chats {
+			if err := s.queue.Delete(c.ID); err != nil {
+				clearDeleting()
+				s.writeStoreError(w, err)
+				return
+			}
+		}
+	}
 	if err := s.cursors.DeleteWorkspace(id); err != nil {
 		clearDeleting()
 		s.writeStoreError(w, err)

@@ -48,4 +48,19 @@ describe("computeShelfAvailableSpace", () => {
     expect(TRANSCRIPT_MIN_BAND_PX).toBe(120);
     expect(computeShelfAvailableSpace(column, selfPanel)).toBe(382);
   });
+
+  it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
+    const column = measured("th-chat-main", 800);
+    const composer = measured("th-chat-input", 120);
+    const status = measured("th-chat-status", 24);
+    const queue = measured("th-queue", 28);
+    column.append(composer, status, queue);
+    document.body.appendChild(column);
+
+    // Collapsed queue: 800 − 120 composer − 24 status − 28 queue − 120 reserve.
+    expect(computeShelfAvailableSpace(column, null)).toBe(508);
+    // Expanded queue grows the slot; the same band shrinks the shelf budget.
+    mockHeight(queue, 200);
+    expect(computeShelfAvailableSpace(column, null)).toBe(336);
+  });
 });

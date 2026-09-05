@@ -337,7 +337,8 @@ func findDiskSession(cwd, id, path string) (diskSession, bool) {
 	if id == "" && path == "" {
 		return diskSession{}, false
 	}
-	for _, session := range listDiskSessions(cwd) {
+	sessions, _ := listDiskSessions(cwd)
+	for _, session := range sessions {
 		if id != "" && id != session.ID {
 			continue
 		}
