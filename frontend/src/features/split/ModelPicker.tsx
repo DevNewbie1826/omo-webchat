@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { KeyboardEvent } from "react";
 import { useT } from "../../i18n";
 import { IconCheck, IconChevron, IconSettings, IconX } from "../../components/icons";
+import { MODAL_FOCUSABLE } from "../../components/modalStack";
 
 export interface ModelOption {
   readonly provider: string;
@@ -31,7 +32,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const { t } = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [activeIndex, setActiveIndex] = useState(-1);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -50,21 +51,24 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     );
   }, [models, query]);
 
-  useEffect(() => {
-    if (!open) {
-      setActiveIndex(-1);
-      return;
-    }
-    setQuery("");
-    const currentIndex = models.findIndex((model) => keyOf(model) === currentModelKey);
-    setActiveIndex(currentIndex >= 0 ? currentIndex : models.length > 0 ? 0 : -1);
-    if (compact) popoverRef.current?.focus();
-    else searchRef.current?.focus();
-  }, [open, models, currentModelKey, compact]);
+  const activeIndex = matches.length === 0 ? -1 : Math.max(0, matches.findIndex((model) => keyOf(model) === activeKey));
+  const activeModel = matches[activeIndex];
+  const resolvedActiveKey = activeModel ? keyOf(activeModel) : null;
 
   useEffect(() => {
-    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
-  }, [activeIndex]);
+    // Commit the fallback so a removed key cannot become active again on hydration.
+    setActiveKey(resolvedActiveKey);
+  }, [resolvedActiveKey, activeKey]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (compact) popoverRef.current?.focus();
+    else searchRef.current?.focus();
+  }, [open, compact]);
+
+  useEffect(() => {
+    if (open) optionRefs.current[activeIndex]?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex, resolvedActiveKey, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -86,14 +90,24 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") { event.preventDefault(); close(); return; }
+    if (compact && event.key === "Tab") {
+      event.preventDefault();
+      const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE));
+      const index = controls.findIndex((control) => control === document.activeElement);
+      const next = event.shiftKey
+        ? (index <= 0 ? controls.length - 1 : index - 1)
+        : (index + 1) % controls.length;
+      controls[next]?.focus();
+      return;
+    }
     if (event.target !== searchRef.current && event.target !== popoverRef.current) return;
     if (matches.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveIndex((index) => (index < 0 ? 0 : (index + 1) % matches.length));
+      setActiveKey(keyOf(matches[(activeIndex + 1) % matches.length]!));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActiveIndex((index) => (index <= 0 ? matches.length - 1 : index - 1));
+      setActiveKey(keyOf(matches[activeIndex <= 0 ? matches.length - 1 : activeIndex - 1]!));
     } else if (event.key === "Enter") {
       event.preventDefault();
       const model = matches[activeIndex] ?? matches[0];
@@ -107,6 +121,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
 
   const popover = (
     <div ref={popoverRef} tabIndex={-1} onKeyDown={onKeyDown}
+      role={compact ? "dialog" : undefined} aria-label={compact ? buttonLabel : undefined}
       className={`th-model-picker-popover${compact ? " th-model-picker-popover--sheet" : ""}`}>
       <div className="th-model-picker-current">
         <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
@@ -122,7 +137,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
                 type="button"
                 className={`th-thinking-level${level === thinkingLevel ? " th-thinking-level--active" : ""}`}
                 aria-pressed={level === thinkingLevel}
-                onMouseDown={(event) => event.preventDefault()}
+                onMouseDown={compact ? undefined : (event) => event.preventDefault()}
                 onClick={() => onThinkingChange(level)}
               >
                 {level}
@@ -144,7 +159,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
-          setActiveIndex(0);
+          setActiveKey(null);
         }}
       />
       <div className="th-model-picker-list" id={listboxId} role="listbox">
@@ -159,7 +174,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
               role="option"
               aria-selected={keyOf(model) === currentModelKey}
               data-active={active || undefined}
-              onMouseMove={() => setActiveIndex(index)}
+              onMouseMove={() => setActiveKey(keyOf(model))}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => select(model)}
             >
@@ -178,11 +193,17 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         ref={triggerRef}
         type="button"
         className="th-model-picker-btn"
-        aria-haspopup="listbox"
+        aria-haspopup={compact ? "dialog" : "listbox"}
         aria-expanded={open}
         aria-label={buttonLabel}
         title={buttonLabel}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          if (!open) {
+            setQuery("");
+            setActiveKey(currentModelKey);
+          }
+          setOpen((value) => !value);
+        }}
       >
         <span className="th-model-picker-icon" aria-hidden="true">
           <IconSettings size={14} />
