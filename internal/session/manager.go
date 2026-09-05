@@ -916,7 +916,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		_, cleanupInFlight := m.routeCleanup[data.SessionID]
 		if valid && epochLive && !cleanupInFlight {
 			sendOwnerAdopted = true
-			if existing != nil {
+			if existing != nil && m.byRoute[existing.routingID] == existing {
 				delete(m.byRoute, existing.routingID)
 			}
 			m.byChat[chatID] = s
@@ -983,7 +983,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	_, cleanupInFlight := m.routeCleanup[data.SessionID]
 	if valid {
 		sendOwnerAdopted = true
-		if existing != nil {
+		if existing != nil && m.byRoute[existing.routingID] == existing {
 			delete(m.byRoute, existing.routingID)
 		}
 		m.byChat[chatID] = s
