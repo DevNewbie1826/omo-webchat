@@ -121,3 +121,11 @@ jobs:
       - name: Installer contracts (PowerShell 7)
         shell: pwsh
         run: pwsh -NoProfile -File test/install_ps1_test.ps1
+
+      - name: Installer Windows-only mutation proof (5.1 and 7)
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -File test/installer_mutation_test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File test/installer_mutation_test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

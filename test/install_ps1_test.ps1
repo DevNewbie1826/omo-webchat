@@ -1,9 +1,9 @@
 # Local release fixtures; run with BOTH Windows PowerShell 5.1 and PowerShell 7.
-param([string]$ServerExecutable)
+param([string]$ServerExecutable, [string]$CaseName, [string]$Installer)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repoDir = Split-Path -Parent $PSScriptRoot
-$installer = Join-Path $repoDir 'install.ps1'
+if (-not $Installer) { $Installer = Join-Path $repoDir 'install.ps1' }
 $windows = $env:OS -eq 'Windows_NT'
 $shell = (Get-Process -Id $PID).Path
 Write-Host "ENGINE=$shell VERSION=$($PSVersionTable.PSVersion) OS=$([Environment]::OSVersion) PROCESS_ARCH=$env:PROCESSOR_ARCHITECTURE NATIVE_ARCH=$env:PROCESSOR_ARCHITEW6432"
@@ -18,7 +18,7 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $failures = New-Object 'System.Collections.Generic.List[string]'
 try {
-    if ($windows -and -not $ServerExecutable) {
+    if ($windows -and -not $ServerExecutable -and -not $CaseName) {
         $ServerExecutable = Join-Path $work 'release-server.exe'
         Push-Location $repoDir
         $oldCGO = $env:CGO_ENABLED
@@ -55,9 +55,14 @@ try {
     }
     if ($windows) { $cases += @{ Name='held-lock'; Kind='locked'; Existing=$true; Failure=$true } }
     if ($windows) {
+        $cases += @{ Name='reinstall-equivalent-path'; Kind='reinstall' }
         $cases += @{ Name='native-engine'; Arch=$env:PROCESSOR_ARCHITECTURE; NativeArch=$env:PROCESSOR_ARCHITEW6432; NoPath=$true }
     }
     if ($ServerExecutable) { $cases += @{ Name='real-server'; Kind='real-server'; NoPath=$true } }
+    if ($CaseName) {
+        $cases = @($cases | Where-Object { $_.Name -eq $CaseName })
+        if ($cases.Count -ne 1) { throw "unknown or unavailable case: $CaseName" }
+    }
     foreach ($spec in $cases) {
         $root = Join-Path $work $spec.Name
         $release = Join-Path $root 'release'
@@ -109,6 +114,9 @@ try {
         $stdout = Join-Path $root 'stdout.log'
         $stderr = Join-Path $root 'stderr.log'
         $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile','-File', ('"' + (Join-Path $PSScriptRoot 'installer_case.ps1') + '"'), '-Config', ('"' + $config + '"')) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        # Retain the process handle before exit: .NET Framework otherwise
+        # loses ExitCode after Start-Process returns (Windows PowerShell 5.1).
+        $null = $process.Handle
         if (-not $process.WaitForExit(60000)) { $process.Kill(); throw "case timeout: $($c.Name)" }
         $process.WaitForExit()
         $output = (Get-Content -LiteralPath $stdout -Raw) + (Get-Content -LiteralPath $stderr -Raw)
@@ -122,10 +130,16 @@ try {
     $stdout = Join-Path $work 'standalone.stdout'
     $stderr = Join-Path $work 'standalone.stderr'
     $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile','-File', ('"' + $installer + '"'), '-Version','v-test','-BaseUrl','file:///installer-contract-does-not-exist','-InstallDir', ('"' + (Join-Path $work 'standalone') + '"'), '-NoPathUpdate') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    # Retain the process handle before exit: .NET Framework otherwise
+    # loses ExitCode after Start-Process returns (Windows PowerShell 5.1).
+    $null = $process.Handle
     if (-not $process.WaitForExit(30000)) { $process.Kill(); throw 'standalone timeout' }
     $process.WaitForExit()
     Write-Host "STANDALONE_REJECTION_EXIT=$($process.ExitCode)"
-    if ($process.ExitCode -eq 0) { $failures.Add('standalone rejection') }
+    if ($null -eq $process.ExitCode -or $process.ExitCode -eq 0) { $failures.Add('standalone rejection') }
+    if (@(Get-ChildItem -LiteralPath $scratch -Filter 'omo-webchat-install-*').Count -ne 0) { $failures.Add('standalone cleanup') }
+    if (Test-Path -LiteralPath (Join-Path $work 'standalone/omo-webchat.exe')) { $failures.Add('standalone installed rejected payload') }
+    if ([Environment]::GetEnvironmentVariable('Path','User') -cne $originalUserPath) { $failures.Add('standalone User PATH preservation') }
     if ($failures.Count) { throw "Failed cases: $($failures -join ', ')" }
 } finally {
     foreach ($key in $oldTemp.Keys) { [Environment]::SetEnvironmentVariable($key, $oldTemp[$key]) }

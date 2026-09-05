@@ -61,6 +61,13 @@ try {
         $arguments.Remove('Version'); $arguments.Remove('InstallDir')
     }
     if ($c.Mode -eq 'iex') { $env:INSTALL_DIR = $c.Target }
+    if ($c.Kind -eq 'reinstall') {
+        & $c.Installer @arguments
+        Assert ((Get-FileHash -LiteralPath $target).Hash -eq $c.Digest) 'first installation bytes'
+        $beforePath = $env:PATH
+        $beforeUser = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $arguments.InstallDir = $c.Target.ToUpperInvariant() + '\'
+    }
     Set-StrictMode -Off
     $ErrorActionPreference = 'Continue'
     $ProgressPreference = 'Continue'
@@ -103,7 +110,7 @@ try {
         }
     }
     $afterUser = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($c.NoPath -or $c.Failure -or $c.Kind -eq 'dedupe') {
+    if ($c.NoPath -or $c.Failure -or $c.Kind -in @('dedupe', 'reinstall')) {
         Assert ($env:PATH -ceq $beforePath) 'process PATH changed'
         Assert ($afterUser -ceq $beforeUser) 'User PATH changed'
     } else {
