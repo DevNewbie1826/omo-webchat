@@ -1,0 +1,32 @@
+name: windows-npm
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  windows-npm-package-contract:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Record host
+        shell: pwsh
+        run: |
+          node -p "JSON.stringify({ platform: process.platform, arch: process.arch, node: process.version })"
+          go env GOOS GOARCH GOVERSION
+
+      - name: CLI resolver tests
+        run: node --test npm/cli/cli.test.js
+
+      - name: Windows npm archive-to-npx contract
+        run: node --test test/npm_windows_package_test.js
