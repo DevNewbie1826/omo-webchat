@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
@@ -36,12 +37,23 @@ const (
 	// half of a dangling stored chat rather than a distinct session. Exposing
 	// it immediately makes one user-perceived chat flicker between one and
 	// two rows for as long as the persist takes (seconds to minutes).
+	// A row clears the gate once its mtime has aged this long or it has been
+	// observed in this process for this long, whichever comes first, so a
+	// legitimate session whose mtime keeps refreshing does not stay hidden.
 	DiscoveredStabilityWindow = 90 * time.Second
 )
 
 // now is the catalog clock. Tests replace it to age sessions deterministically
 // instead of sleeping.
 var now = time.Now
+
+// discoveredFirstSeen is the first catalog observation of each disk session in
+// this process, keyed by durable id (or path if id is empty). It does not move
+// when the file is rewritten.
+var discoveredFirstSeen = struct {
+	mu sync.Mutex
+	m  map[string]time.Time
+}{m: make(map[string]time.Time)}
 
 type sessionHistoryItem struct {
 	ID             string `json:"id"`
@@ -316,6 +328,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 		})
 	}
 	for _, sess := range disk {
+		noteDiscoveredSessionObservation(sess)
 		suppress := false
 		for _, chat := range chats {
 			// The stored row already represents this durable session regardless
@@ -327,11 +340,12 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession) []session
 		}
 		// While a stored chat in the same cwd still dangles, a freshly written
 		// disk session may be that chat's lazy first persist rather than a
-		// distinct session. Hold it out of the catalog until the file has aged
-		// past the stability window (or no same-cwd dangling chat remains) so
-		// the user sees one row instead of a transient duplicate. Once the
-		// chat's identity is updated onto the file — takeover or adoption —
-		// the identity match above merges it into the stored row immediately.
+		// distinct session. Hold it out of the catalog until it has been
+		// stable for the window — mtime aged or observed that long — or no
+		// same-cwd dangling chat remains, so the user sees one row instead of
+		// a transient duplicate. Once the chat's identity is updated onto the
+		// file — takeover or adoption — the identity match above merges it
+		// into the stored row immediately.
 		canonicalCWD, canonical := canonicalSessionCWD(sess.CWD)
 		_, sameCWDDangling := danglingCWDs[canonicalCWD]
 		if suppress || (canonical && sameCWDDangling && discoveredSessionUnstable(sess)) {
@@ -443,15 +457,50 @@ func storedIdentityDangling(path string) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
-// discoveredSessionUnstable reports whether the disk session file was written
-// within DiscoveredStabilityWindow of now, i.e. it may still be the lazy first
-// persist backing a dangling stored chat. Rows with an unknown modification
-// time are never treated as unstable.
+// discoveredSessionUnstable reports whether a disk session is still too new to
+// expose as a discovered catalog row while a same-cwd stored chat dangles.
+// A row is unstable only while BOTH its file mtime AND its first catalog
+// observation are within DiscoveredStabilityWindow of now. First-seen does not
+// move when the file is rewritten, so a legitimate active session whose mtime
+// keeps refreshing still becomes visible once it has been observed for the
+// window. Rows with an unknown modification time are never treated as unstable.
 func discoveredSessionUnstable(sess diskSession) bool {
 	if sess.ModTime.IsZero() {
 		return false
 	}
-	return now().Sub(sess.ModTime) < DiscoveredStabilityWindow
+	current := now()
+	if current.Sub(sess.ModTime) >= DiscoveredStabilityWindow {
+		return false
+	}
+	return current.Sub(noteDiscoveredSessionObservation(sess)) < DiscoveredStabilityWindow
+}
+
+func discoveredSessionIdentity(sess diskSession) string {
+	if id := strings.TrimSpace(sess.ID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(sess.Path)
+}
+
+func noteDiscoveredSessionObservation(sess diskSession) time.Time {
+	key := discoveredSessionIdentity(sess)
+	seen := now()
+	if key == "" {
+		return seen
+	}
+	discoveredFirstSeen.mu.Lock()
+	defer discoveredFirstSeen.mu.Unlock()
+	if t, ok := discoveredFirstSeen.m[key]; ok {
+		return t
+	}
+	discoveredFirstSeen.m[key] = seen
+	return seen
+}
+
+func resetDiscoveredSessionFirstSeen() {
+	discoveredFirstSeen.mu.Lock()
+	discoveredFirstSeen.m = make(map[string]time.Time)
+	discoveredFirstSeen.mu.Unlock()
 }
 
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
