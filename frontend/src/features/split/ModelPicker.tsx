@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { KeyboardEvent } from "react";
 import { useT } from "../../i18n";
@@ -43,6 +43,26 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const optionIdPrefix = `${reactId}-option`;
 
   const current = models.find((model) => keyOf(model) === currentModelKey);
+  // Desktop popup fit: the upward popup must stay inside the clipping
+  // .th-chat-main band, so its bound is the measured space above the trigger
+  // within that column, not the viewport. The list inside scrolls when the
+  // band is shorter than the full picker chrome.
+  const [fitMaxHeight, setFitMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (compact || !open || typeof ResizeObserver === "undefined") return;
+    const trigger = triggerRef.current;
+    const column = trigger?.closest<HTMLElement>(".th-chat-main");
+    if (!trigger || !column) return;
+    const measure = (): void => {
+      const above = trigger.getBoundingClientRect().top - column.getBoundingClientRect().top - 8;
+      setFitMaxHeight(Math.max(120, Math.floor(above)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(column);
+    observer.observe(trigger);
+    return () => observer.disconnect();
+  }, [compact, open]);
   const matches = useMemo(() => {
     if (query === "") return models;
     const needle = query.toLowerCase();
@@ -122,6 +142,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const popover = (
     <div ref={popoverRef} tabIndex={-1} onKeyDown={onKeyDown}
       role={compact ? "dialog" : undefined} aria-label={compact ? buttonLabel : undefined}
+      style={!compact && fitMaxHeight !== null ? { maxHeight: `${fitMaxHeight}px` } : undefined}
       className={`th-model-picker-popover${compact ? " th-model-picker-popover--sheet" : ""}`}>
       <div className="th-model-picker-current">
         <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
