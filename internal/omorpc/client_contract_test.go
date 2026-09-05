@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 	"net"
 	"slices"
 	"sync"
@@ -740,7 +741,7 @@ func clientAtTransportSeam(t *testing.T, d *mockDaemon, conn net.Conn) (*Client,
 // only protocol.go primitives.
 func TestMockDaemonWireSmoke(t *testing.T) {
 	d := newMockDaemon(t)
-	conn, err := net.Dial("unix", d.SocketPath())
+	conn, err := transport.Dial(t.Context(), d.SocketPath())
 	if err != nil {
 		t.Fatalf("dial mock daemon: %v", err)
 	}

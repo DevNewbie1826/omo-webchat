@@ -13,11 +13,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.7"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.22.0"
 
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build
@@ -40,6 +40,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
 
       - name: Install omo CLI
         run: bun install -g omo-ai@5.0.0-0.beta.43
@@ -67,23 +71,23 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.7"
 
-      - name: Production transport RED contracts
+      - name: Production named-pipe contracts
         shell: pwsh
-        run: go test ./internal/omorpc -count=1 -v -run TestWindowsProductionRED
+        run: go test ./internal/omorpc -count=1 -v
 
       - name: Windows lock tests
         shell: pwsh
         run: go test ./internal/omorpc/ -count=1 -run TestEnsureLock
 
-      - name: Capture production startup RED
+      - name: Real production daemon lifecycle
         shell: pwsh
         run: |
-          & go run ./test/windowsprobe -expect-startup-failure 2>&1 | Tee-Object -FilePath probe-g1.txt
+          & go run ./test/windowsprobe 2>&1 | Tee-Object -FilePath probe-production.txt
           $probeExit = $LASTEXITCODE
-          if (Test-Path -LiteralPath probe-g1.txt) {
-            Get-Content -LiteralPath probe-g1.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          if (Test-Path -LiteralPath probe-production.txt) {
+            Get-Content -LiteralPath probe-production.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
           }
 
           exit $probeExit
@@ -96,11 +100,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: "1.26.7"
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.22.0"
 
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build

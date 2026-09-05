@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/procexec"
@@ -24,6 +25,8 @@ type supervisorHandle struct {
 	tracked trackedSupervisor
 }
 
+var windowsSupervisorDomains sync.Map // supervisor PID -> tracked job domain
+
 var startTrackedSupervisor = func(cmd *exec.Cmd) (trackedSupervisor, error) {
 	return procexec.StartTracked(cmd)
 }
@@ -33,6 +36,7 @@ func startSupervisor(cmd *exec.Cmd) (*supervisorHandle, error) {
 	if err != nil {
 		return nil, err
 	}
+	windowsSupervisorDomains.Store(cmd.Process.Pid, tracked)
 	return &supervisorHandle{process: cmd.Process, tracked: tracked}, nil
 }
 
@@ -45,6 +49,7 @@ func finishSupervisorWait(_ *supervisorHandle, waitErr error) error {
 
 func terminateSupervisor(ctx context.Context, supervisor *supervisorHandle, waitCh <-chan error, _ time.Duration, killWait time.Duration) (resultErr error) {
 	defer func() {
+		windowsSupervisorDomains.Delete(supervisor.process.Pid)
 		resultErr = errors.Join(resultErr, supervisor.tracked.Close())
 	}()
 	if err := supervisor.tracked.TerminateTree(); err != nil {

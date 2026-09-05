@@ -15,15 +15,15 @@ import (
 )
 
 func main() {
-	expectFailure := flag.Bool("expect-startup-failure", false, "capture the pre-fix production startup failure")
+	binary := flag.String("omo", "omo", "pinned omo launcher path")
 	flag.Parse()
-	if err := runProbe(*expectFailure); err != nil {
+	if err := runProbe(*binary); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func runProbe(expectFailure bool) (resultErr error) {
+func runProbe(binary string) (resultErr error) {
 	dir, err := os.MkdirTemp("", "wp")
 	if err != nil {
 		return err
@@ -38,15 +38,11 @@ func runProbe(expectFailure bool) (resultErr error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cfg := omorpc.EnsureConfig{
-		AgentDir: agent, StateDir: filepath.Join(dir, "state"), WorkingDir: dir,
+		BinaryPath: binary, AgentDir: agent, StateDir: filepath.Join(dir, "state"), WorkingDir: dir,
 		Env: isolatedEnv(home, agent), ReadyTimeout: 35 * time.Second,
 	}
 	daemon, err := omorpc.EnsureDaemon(ctx, cfg)
 	if err != nil {
-		if expectFailure {
-			fmt.Printf("WINDOWS_PRODUCTION_RED: EnsureDaemon failed: %v\n", err)
-			return nil
-		}
 		return fmt.Errorf("production EnsureDaemon: %w", err)
 	}
 	defer func() {
@@ -54,11 +50,11 @@ func runProbe(expectFailure bool) (resultErr error) {
 		fmt.Printf("cleanup: daemon owned=%t error=%v\n", daemon.Owned, err)
 		resultErr = errors.Join(resultErr, err)
 	}()
-	if expectFailure {
-		return errors.New("production startup unexpectedly passed; RED not reproduced")
-	}
 	if !daemon.Owned {
 		return errors.New("fresh isolated daemon was not owned")
+	}
+	if daemon.ProtocolInfo.ServerVersion != "2026.9.5" {
+		return fmt.Errorf("unexpected runtime version %q, want 2026.9.5", daemon.ProtocolInfo.ServerVersion)
 	}
 	fmt.Printf("production: fresh owned=%t protocol=%d serverVersion=%s\n", daemon.Owned, daemon.ProtocolInfo.ProtocolVersion, daemon.ProtocolInfo.ServerVersion)
 	resp, err := daemon.Client.Call(ctx, omorpc.OpenSession{CWD: dir})

@@ -19,21 +19,21 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
-// This diagnostic asserts the old production defects before the transport fix.
-// The same live pipe fixture becomes the positive regression in the fix commit.
-func TestWindowsProductionRED(t *testing.T) {
+// These contracts first ran as explicit defect diagnostics on the old transport.
+func TestWindowsProduction(t *testing.T) {
 	t.Run("client_transport", func(t *testing.T) {
 		path := productionPipeFixture(t)
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
 		c, err := Dial(ctx, path)
 		if c != nil {
-			c.Close()
+			if err := c.Close(); err != nil {
+				t.Error(err)
+			}
 		}
-		if err == nil {
-			t.Fatal("RED not reproduced: production Dial unexpectedly passed")
+		if err != nil {
+			t.Fatalf("production Dial: %v", err)
 		}
-		t.Logf("RED: production Dial against authenticated named pipe: %v", err)
 	})
 	t.Run("readiness_without_socket_file", func(t *testing.T) {
 		path := productionPipeFixture(t)
@@ -41,18 +41,18 @@ func TestWindowsProductionRED(t *testing.T) {
 		defer cancel()
 		c, _, stable, peer, err := probeAuthenticatedDaemon(ctx, EnsureConfig{SocketPath: path, ProbeTimeout: time.Second}, os.Getpid())
 		if c != nil {
-			c.Close()
+			if err := c.Close(); err != nil {
+				t.Error(err)
+			}
 		}
-		if err == nil && stable && peer == peerOwned {
-			t.Fatal("RED not reproduced: pipe readiness unexpectedly passed")
+		if err != nil || !stable || peer != peerForeign {
+			t.Fatalf("readiness stable=%t peer=%d error=%v; fixture is not in a launched job", stable, peer, err)
 		}
-		t.Logf("RED: production readiness stable=%t peer=%d error=%v", stable, peer, err)
 	})
 	t.Run("unknown_peer", func(t *testing.T) {
-		if !peerUnknownAccepted() {
-			t.Fatal("RED not reproduced: unknown peer already rejected")
+		if peerUnknownAccepted() {
+			t.Fatal("unverified peer accepted as launch ownership evidence")
 		}
-		t.Log("RED: unverified peer is accepted as launch ownership evidence")
 	})
 }
 
