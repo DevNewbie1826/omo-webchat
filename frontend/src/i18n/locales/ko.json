@@ -115,6 +115,7 @@
   "split.v": "아래로 분할",
   "split.close": "페인 닫기",
   "split.resize": "페인 크기 조절",
+  "split.pickError": "세션을 불러오지 못했습니다.",
   "split.pickTitle": "세션 선택",
   "split.pickEmpty": "배치되지 않은 세션이 없습니다",
   "split.pickEmptyFiltered": "이 워크스페이스에 배치되지 않은 세션이 없습니다",

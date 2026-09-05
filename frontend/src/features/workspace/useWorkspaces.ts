@@ -27,6 +27,8 @@ export interface WorkspaceSessionPaging {
   readonly hasMore: boolean;
   /** Cursor for the next page; empty once the last page has loaded. */
   readonly nextCursor: string;
+  /** The last page request failed; cleared by the next explicit attempt. */
+  readonly error?: boolean;
 }
 
 export interface UseWorkspacesResult {
@@ -256,6 +258,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           loading: false,
           hasMore: before?.hasMore ?? false,
           nextCursor: before?.nextCursor ?? "",
+          error: true,
         });
         if (pendingStaleRefreshRef.current.delete(wsId)) {
           void fetchSessionPage(wsId, "", false, true);

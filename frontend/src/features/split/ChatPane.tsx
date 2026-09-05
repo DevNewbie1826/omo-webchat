@@ -97,7 +97,8 @@ export function ChatPane({
     <section
       ref={setPane}
       className={`th-stage th-pane th-chat-pane${focused ? " th-pane--focused" : ""}`}
-      onPointerDown={onFocus}
+      onPointerDown={event => { if (event.target instanceof Node && event.currentTarget.contains(event.target)) onFocus(); }}
+      onFocus={event => { if (event.currentTarget.contains(event.target)) onFocus(); }}
     >
       <header className="th-termhead">
         <button

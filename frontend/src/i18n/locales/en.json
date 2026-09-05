@@ -115,6 +115,7 @@
   "split.v": "Split down",
   "split.close": "Close pane",
   "split.resize": "Resize panes",
+  "split.pickError": "Could not load sessions.",
   "split.pickTitle": "Choose a session",
   "split.pickEmpty": "No unplaced sessions",
   "split.pickEmptyFiltered": "No unplaced sessions in this workspace",

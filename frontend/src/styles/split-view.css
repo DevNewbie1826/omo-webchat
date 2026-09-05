@@ -168,3 +168,9 @@
   align-items: center;
   gap: var(--th-space-2);
 }
+
+/* Active destination is independent of input, menu and divider focus. */
+.th-pane--focused {
+  outline: 1px solid var(--th-border-strong);
+  outline-offset: -1px;
+}

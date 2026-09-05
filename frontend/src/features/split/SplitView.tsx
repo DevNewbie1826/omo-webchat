@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useT } from "../../i18n";
 import { ChatPane } from "./ChatPane";
+import { SessionPicker } from "./SessionPicker";
 import { connectChat } from "../../lib/chatWs";
 import { IconX } from "../../components/icons";
 import type { PaneNode, SplitDir } from "./paneTree";
@@ -11,7 +12,8 @@ import type { WorkspaceSessionPaging } from "../workspace/useWorkspaces";
 
 export interface SplitActions {
   readonly onFocusPane: (paneId: string) => void;
-  readonly onAssign: (paneId: string, tmId: string, wsId?: string) => void;
+  readonly onOpenSession: (paneId: string, ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active">;
+  readonly onLoadMoreSessions: (wsId: string) => Promise<void>;
   readonly onCreateTerminal: (paneId: string, wsId: string) => void;
   readonly onSplit: (paneId: string, dir: SplitDir) => void;
   readonly onClosePane: (paneId: string) => void;
@@ -53,31 +55,14 @@ function clampRatio(ratio: number, bounds: { readonly min: number; readonly max:
   return Math.min(bounds.max, Math.max(bounds.min, ratio));
 }
 
-function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName }: SplitViewProps & { readonly node: LeafData }) {
+function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName }: SplitViewProps & { readonly node: LeafData }) {
   const { t } = useT();
-  const [selectedWorkspace, setSelectedWorkspace] = useState("");
   const session = node.sessionId !== null ? sessions.get(node.sessionId) : undefined;
-  const workspaceID = workspaces.some((workspace) => workspace.id === selectedWorkspace)
-    ? selectedWorkspace
-    : (workspaces[0]?.id ?? "");
-  const paging = workspaceID !== "" ? sessionPages.get(workspaceID) : undefined;
-  const pageLoading = paging?.loading === true && paging.ready !== true;
-
-  // The picker reads the sidebar's paged MRU source; make sure the selected
-  // workspace's first page is on its way. Repeat suppression lives in the
-  // hook (ready/in-flight guard), so re-renders cannot loop fetches.
-  useEffect(() => {
-    if (session || workspaceID === "") return;
-    onEnsureSessions(workspaceID);
-  }, [session, workspaceID, onEnsureSessions]);
-
   if (!session) {
-    const activeWorkspace = workspaces.find((workspace) => workspace.id === workspaceID);
-    const unplaced = (sessionLists.get(workspaceID) ?? []).filter(
-      (entry) => entry.source === "stored" && !placed.has(entry.id) && sessions.has(entry.id),
-    );
     return (
-      <div className="th-pane-wrap">
+      <div className={`th-pane-wrap${focusedPaneId === node.id ? " th-pane--focused" : ""}`} data-pane-id={node.id}
+        onPointerDown={event => { if (event.target instanceof Node && event.currentTarget.contains(event.target)) actions.onFocusPane(node.id); }}
+        onFocus={event => { if (event.currentTarget.contains(event.target)) actions.onFocusPane(node.id); }}>
         {splitEnabled && (
           <button
             type="button"
@@ -89,57 +74,15 @@ function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPag
             <IconX size={14} />
           </button>
         )}
-        <div className="th-picker-pane">
-          <div className="th-picker-pane-title">{t("split.pickTitle")}</div>
-          <select
-            aria-label={t("split.pickWorkspace")}
-            value={workspaceID}
-            disabled={workspaces.length === 0}
-            onChange={(event) => setSelectedWorkspace(event.target.value)}
-          >
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-            ))}
-          </select>
-          {pageLoading ? (
-            <div className="th-picker-pane-empty">{t("split.pickLoading")}</div>
-          ) : unplaced.length > 0 ? (
-            <div className="th-picker-pane-list">
-              {unplaced.map((entry) => {
-                const label = `${activeWorkspace?.name ?? ""} / ${entry.name}`;
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className="th-picker-pane-item"
-                    title={label}
-                    aria-label={label}
-                    onClick={() => actions.onAssign(node.id, entry.id, workspaceID)}
-                  >
-                    <span className="th-picker-pane-name">{entry.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="th-picker-pane-empty">{t(workspaces.length === 0 ? "split.pickEmpty" : "split.pickEmptyFiltered")}</div>
-          )}
-          <div className="th-picker-pane-create">
-            <button
-              type="button"
-              className="th-btn th-btn--primary"
-              disabled={!workspaceID}
-              onClick={() => actions.onCreateTerminal(node.id, workspaceID)}
-            >
-              {t("split.pickNew")}
-            </button>
-          </div>
-        </div>
+        <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
+          onEnsureSessions={onEnsureSessions} onLoadMoreSessions={actions.onLoadMoreSessions}
+          onOpenSession={(ws, entry, force) => actions.onOpenSession(node.id, ws, entry, force)}
+          onNewChat={wsId => actions.onCreateTerminal(node.id, wsId)} />
       </div>
     );
   }
   return (
-    <div className="th-pane-wrap">
+    <div className="th-pane-wrap" data-pane-id={node.id}>
       <ChatPane
         key={session.id}
         chatSession={session}

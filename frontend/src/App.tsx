@@ -27,6 +27,7 @@ import { useWorkspaces } from "./features/workspace/useWorkspaces";
 import { useProviderDiscovery } from "./features/workspace/useProviderDiscovery";
 import { useConfirm } from "./components/ConfirmDialog";
 import { NewChatDialog } from "./components/NewChatDialog";
+import { SessionPicker } from "./features/split/SessionPicker";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
@@ -42,6 +43,7 @@ interface Toast {
 interface NewChatTarget {
   readonly wsId: string;
   readonly paneId?: string;
+  readonly generation?: number;
 }
 
 function omoAvailable(discovery: ProviderDiscoveryState): boolean {
@@ -65,6 +67,7 @@ export function App() {
 
   const layout = useLayout(authed === true);
 
+  const paneIntents = useRef(new Map<string, number>());
   const toastId = useRef(0);
   const createChatInFlightRef = useRef(false);
   const notify = useCallback((msg: string, kind: ToastKind = "info") => {
@@ -125,39 +128,49 @@ export function App() {
   const activeSession = focusedSessionId !== null ? sessions.get(focusedSessionId) : undefined;
   const defaultWorkspace = workspaces[0] ?? null;
 
+  const captureTarget = (paneId = layout.focusedPaneId) => {
+    const generation = (paneIntents.current.get(paneId) ?? 0) + 1;
+    paneIntents.current.set(paneId, generation);
+    return { paneId, generation };
+  };
+  const targetCurrent = (target: { readonly paneId: string; readonly generation: number }) =>
+    layout.hasPane(target.paneId) && paneIntents.current.get(target.paneId) === target.generation;
+
   const selectTerminal = (ws: Workspace, tm: Terminal): void => {
+    const target = captureTarget();
     setExpanded((prev) => new Set(prev).add(ws.id));
-    // Opening a session is a recency event for both the sidebar and the picker.
     markSessionUsed(ws.id, tm.id);
     if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
-    if (!layout.focusSession(tm.id)) {
-      layout.assignSession(layout.focusedPaneId, tm.id);
-    }
+    layout.assignSession(target.paneId, tm.id);
   };
 
-  const openDiscoveredSession = async (
+  const openSession = async (
     ws: Workspace,
     session: WorkspaceSession,
     force = false,
+    paneId = layout.focusedPaneId,
   ): Promise<"opened" | "session-active"> => {
+    const target = captureTarget(paneId);
+    layout.focusPane(target.paneId);
     try {
-      const result = await openWorkspaceSession(ws.id, session, force);
+      // Stored union rows are already chat identities, even before ws.chats
+      // contains them. Only discovered entries need the existing open request.
+      const result = session.source === "stored"
+        ? { state: "opened" as const, chat: ws.chats.find(chat => chat.id === session.id)
+          ?? { id: session.id, name: session.name, provider: "omo" as const } }
+        : await openWorkspaceSession(ws.id, session, force);
       if (result.state === "session-active") return result.state;
       const tm = result.chat;
-      setWorkspaces((prev) =>
-        prev.map((workspace) =>
-          workspace.id === ws.id
-            ? {
-                ...workspace,
-                chats: workspace.chats.some((chat) => chat.id === tm.id)
-                  ? workspace.chats
-                  : [...workspace.chats, tm],
-              }
-            : workspace,
-        ),
-      );
-      addCreatedSession(ws.id, tm, session);
-      selectTerminal(ws, tm);
+      setWorkspaces((prev) => prev.map(workspace => workspace.id === ws.id
+        ? { ...workspace, chats: workspace.chats.some(chat => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
+        : workspace));
+      addCreatedSession(ws.id, tm, session.source === "discovered" ? session : undefined);
+      if (targetCurrent(target)) {
+        setExpanded((prev) => new Set(prev).add(ws.id));
+        markSessionUsed(ws.id, tm.id);
+        layout.assignSession(target.paneId, tm.id, false);
+        if (window.matchMedia(MOBILE_QUERY).matches) setSidebarCollapsed(true);
+      }
       return "opened";
     } catch (error) {
       notify(t("toast.error"), "error");
@@ -182,7 +195,9 @@ export function App() {
       setExpanded((prev) => new Set(prev).add(target.wsId));
       if (target.paneId) {
         // A pane may close while the request is pending; the chat remains in the sidebar.
-        if (layout.hasPane(target.paneId)) layout.assignSession(target.paneId, tm.id);
+        if (layout.hasPane(target.paneId) && paneIntents.current.get(target.paneId) === target.generation) {
+          layout.assignSession(target.paneId, tm.id);
+        }
       } else {
         layout.assignSession(layout.focusedPaneId, tm.id);
       }
@@ -196,12 +211,13 @@ export function App() {
 
   const requestNewChat = useCallback((target: NewChatTarget): void => {
     if (createChatInFlightRef.current) return;
+    const captured = { ...target, ...captureTarget(target.paneId) };
     if (omoAvailable(providerDiscovery)) {
-      void createOmoChat(target);
+      void createOmoChat(captured);
       return;
     }
-    setNewChatTarget(target);
-  }, [createOmoChat, providerDiscovery]);
+    setNewChatTarget(captured);
+  }, [createOmoChat, providerDiscovery, layout.focusedPaneId]);
 
   useEffect(() => {
     if (!newChatTarget || !omoAvailable(providerDiscovery)) return;
@@ -218,10 +234,8 @@ export function App() {
 
   const splitActions: SplitActions = {
     onFocusPane: layout.focusPane,
-    onAssign: (paneId, tmId, wsId) => {
-      layout.assignSession(paneId, tmId);
-      if (wsId) markSessionUsed(wsId, tmId);
-    },
+    onOpenSession: (paneId, ws, session, force) => openSession(ws, session, force, paneId),
+    onLoadMoreSessions: loadMoreSessions,
     onCreateTerminal: createTerminalInPane,
     onSplit: layout.split,
     onClosePane: layout.closePane,
@@ -250,7 +264,7 @@ export function App() {
             onToggleExpanded={toggleExpanded}
             onLoadMoreSessions={loadMoreSessions}
             onSelectTerminal={selectTerminal}
-            onOpenSession={openDiscoveredSession}
+            onOpenSession={openSession}
             onAddWorkspace={() => setWizardOpen(true)}
             onAddTerminal={(ws) => requestNewChat({ wsId: ws.id })}
             onDeleteWorkspace={(ws) => void handleDeleteWorkspace(ws)}
@@ -301,6 +315,11 @@ export function App() {
                 onOpenSidebar={() => setSidebarCollapsed(false)}
                 onNewWorkspace={() => setWizardOpen(true)}
                 onNewChat={openNewChat}
+                sessionPicker={workspaces.length > 0 ? (
+                  <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
+                    onEnsureSessions={ensureSessionsLoaded} onLoadMoreSessions={loadMoreSessions}
+                    onOpenSession={openSession} onNewChat={wsId => requestNewChat({ wsId })} />
+                ) : undefined}
               />
             )}
           </main>

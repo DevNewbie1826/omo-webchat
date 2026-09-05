@@ -192,6 +192,8 @@ export const useWorkspacesMock = {
       load,
       addCreatedSession,
       loadMoreSessions: noopAsync,
+      ensureSessionsLoaded: toggleExpanded,
+      markSessionUsed: toggleExpanded,
       toggleExpanded,
       handleDeleteWorkspace: noopAsync,
       handleDeleteTerminal: noopAsync,
