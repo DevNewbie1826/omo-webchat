@@ -51,6 +51,20 @@ type finalBarrier struct {
 	release  func()
 }
 
+const qaPromptReply = "fixture response"
+
+func configureQAPromptLifecycle(d *omorpctest.Daemon) {
+	d.SetDefaultPromptScript(
+		map[string]any{"type": omorpctest.EventAgentStart},
+		map[string]any{
+			"type":    omorpctest.EventMessage,
+			"message": map[string]any{"role": "assistant", "content": qaPromptReply},
+		},
+		map[string]any{"type": omorpctest.EventAgentEnd, "willRetry": false},
+		map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"},
+	)
+}
+
 type controls struct {
 	daemon *omorpctest.Daemon
 	root   string
@@ -100,6 +114,7 @@ func main() {
 		}
 	}
 	d := omorpctest.NewAt(filepath.Join(absolute, "engine"), filepath.Join(agentDir, "rpc", "rpc.sock"))
+	configureQAPromptLifecycle(d)
 	if err := d.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

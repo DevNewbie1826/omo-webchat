@@ -159,7 +159,8 @@ type Daemon struct {
 	promptHolds       map[string]chan struct{}
 	requests          []map[string]any
 
-	writeMu sync.Mutex
+	defaultPromptScript []map[string]any
+	writeMu             sync.Mutex
 
 	requestFeed   chan map[string]any
 	handshakeFeed chan struct{}
@@ -440,6 +441,9 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdPrompt:
 		d.mu.Lock()
 		script = takeScript(d.promptScripts, recPath)
+		if script == nil && d.defaultPromptScript != nil {
+			script = append([]map[string]any(nil), d.defaultPromptScript...)
+		}
 		hold = d.promptHolds[recPath]
 		rpcID := rec.rpcID // read under mu: handleOpenSession may reassign it concurrently (resume)
 		if message, _ := req["message"].(string); message != "" {
@@ -1035,6 +1039,15 @@ func (d *Daemon) FailOpenPath(path, code string, times int) {
 	}
 	d.mu.Lock()
 	d.pathFailures[path] = times
+	d.mu.Unlock()
+}
+
+// SetDefaultPromptScript configures the lifecycle used when a prompt has no
+// per-session script. The shared test daemon remains unscripted by default;
+// standalone fixtures can opt in without changing existing callers.
+func (d *Daemon) SetDefaultPromptScript(events ...map[string]any) {
+	d.mu.Lock()
+	d.defaultPromptScript = append([]map[string]any(nil), events...)
 	d.mu.Unlock()
 }
 

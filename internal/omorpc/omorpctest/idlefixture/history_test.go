@@ -91,6 +91,37 @@ func TestHistorySeedGetEntriesEmitsNestedMessageContent(t *testing.T) {
 	}
 }
 
+func TestQAPromptCompletesWithCanonicalLifecycle(t *testing.T) {
+	// Given: the standalone QA fixture's prompt behavior and an event subscriber
+	// are active before the prompt is sent.
+	f := startFixture(t)
+	configureQAPromptLifecycle(f.daemon)
+	seen := f.subscribeEvents(f.lead)
+
+	// When: a normal QA prompt is accepted without a per-session test script.
+	f.call(f.lead, omorpc.Prompt{SessionID: f.rpcA, Message: "idle-resume-once"})
+
+	// Then: it follows the observed provider lifecycle through the sole terminal
+	// event instead of leaving the fixture permanently streaming.
+	for index, want := range []string{
+		omorpctest.EventAgentStart,
+		omorpctest.EventMessage,
+		omorpctest.EventAgentEnd,
+		omorpctest.EventAgentSettled,
+	} {
+		if event := f.recvEvent(seen, "QA prompt lifecycle"); event.Type != want {
+			t.Fatalf("event[%d] type=%q want %q", index, event.Type, want)
+		}
+	}
+
+	entries, leafID := f.getEntries(f.rpcA)
+	if len(entries) != 2 || leafID != "entry-2" {
+		t.Fatalf("completed prompt history count=%d leaf=%q want 2, entry-2", len(entries), leafID)
+	}
+	requireRenderableHistoryEntry(t, entries[0], "entry-1", nil, "user", "idle-resume-once")
+	requireRenderableHistoryEntry(t, entries[1], "entry-2", "entry-1", "assistant", qaPromptReply)
+}
+
 func TestPromptAppendsNestedMessageContent(t *testing.T) {
 	// Given: one seeded user turn already on the durable transcript.
 	f := startFixture(t)
