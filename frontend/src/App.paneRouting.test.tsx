@@ -58,7 +58,8 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   let failMore: boolean;
   let activeConflict: boolean;
   let requests: { path: string; method: string; body: string }[];
-  let touch: ReturnType<typeof deferred<{ readonly recencyMs: number }>>;
+  let touch: ReturnType<typeof deferred<{ readonly recencyMs: number }>> | undefined;
+  let outstandingTouches: number;
   let continuation: WorkspaceSessionPage;
 
   beforeEach(() => {
@@ -66,7 +67,8 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     narrow = false; empty = false; failPage = false; failMore = false; activeConflict = false;
     requests = []; transport.frames.length = 0; transport.running.clear(); transport.subscribers.clear();
     opening = deferred<Terminal>();
-    touch = deferred<{ readonly recencyMs: number }>();
+    touch = undefined;
+    outstandingTouches = 0;
     continuation = { items: [{ ...paged, source: "discovered" }], nextCursor: "" };
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
@@ -90,7 +92,14 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
         : { kind: "split", id: "split", dir: "h", ratio: 0.5,
             first: { kind: "leaf", id: "left", sessionId: empty ? null : stored.id },
             second: { kind: "leaf", id: "right", sessionId: null } } });
-      if (path.endsWith("/touch")) return Response.json(await touch.promise);
+      if (path.endsWith("/touch")) {
+        outstandingTouches += 1;
+        try {
+          return Response.json(touch ? await touch.promise : { recencyMs: 200 });
+        } finally {
+          outstandingTouches -= 1;
+        }
+      }
       if (path.endsWith("/sessions/open")) {
         if (activeConflict && !String(init?.body).includes('"force":true')) return Response.json({ state: "session-active" }, { status: 409 });
         return Response.json(await opening.promise);
@@ -110,8 +119,12 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   });
   afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+    try {
+      expect(outstandingTouches, "HTTP touches still pending before unmount").toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove(); localStorage.clear(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+    }
   });
   async function mount() { await act(async () => root.render(<App />)); }
   function pane(index: number) {
@@ -164,6 +177,9 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
 
   it("records explicit sidebar use without waiting for persistence or touching restored layout", async () => {
     // Given: a restored pane has already attached automatically.
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    const pendingTouch = deferred<{ readonly recencyMs: number }>();
+    touch = pendingTouch;
     await mount();
     expect(requests.filter(r => r.path.endsWith("/touch"))).toEqual([]);
     // When: the user activates a stored row while persistence remains pending.
@@ -173,8 +189,15 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect(requests.filter(r => r.path.endsWith("/touch"))).toEqual([
       { method: "POST", path: "/api/workspaces/ws/chats/stored-a/touch", body: "" },
     ]);
-    await act(async () => touch.resolve({ recencyMs: 200 }));
+    expect(outstandingTouches).toBe(1);
     expect(container.querySelector(".th-tree-children .th-tree-activation")?.textContent).toBe("Stored A");
+    await act(async () => {
+      pendingTouch.resolve({ recencyMs: 25 });
+      await pendingTouch.promise;
+    });
+    expect([...container.querySelectorAll(".th-tree-children .th-tree-activation")]
+      .slice(0, 2).map(element => element.textContent)).toEqual(["Discovered B", "Stored A"]);
+    expect([title(0), title(1)]).toEqual([null, "Stored A"]);
   });
 
   it("moves a hosted session to the pointer-selected empty destination without import, stop or delete", async () => {
@@ -366,7 +389,6 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect(requests.filter(r => r.method === "POST" && r.path.endsWith("/chats"))).toHaveLength(1);
     if (mode === "newer") {
       await focusPane(1); await click(sidebar("Newer"));
-      await act(async () => touch.resolve({ recencyMs: 200 }));
     }
     else await click(button(pane(1), '[aria-label="Close pane"]'));
     await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
