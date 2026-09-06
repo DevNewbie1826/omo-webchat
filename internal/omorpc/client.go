@@ -281,8 +281,12 @@ func (c *Client) negotiate(ctx context.Context, ep *connectionEpoch) error {
 func (c *Client) readLoop(ep *connectionEpoch) {
 	decoder := NewDecoderWithLimit(ep.conn, c.cfg.MaxLineBytes)
 	for {
-		in, err := decoder.Decode()
+		in, err := decoder.decode(true)
 		if err != nil {
+			var oversized *oversizedHistoryError
+			if errors.As(err, &oversized) && c.settleOversizedHistory(ep, oversized) {
+				continue
+			}
 			if errors.Is(err, io.EOF) {
 				c.invalidate(ep, errors.New("peer closed the socket"))
 			} else {
@@ -449,7 +453,9 @@ func (c *Client) Call(ctx context.Context, cmd Command) (*Response, error) {
 }
 
 // CallInEpoch is Call plus the exact connection epoch that settled the
-// correlated response. The zero token is returned when no response settled.
+// correlated response, including a validated oversized history response whose
+// body was discarded (nil Response and ErrFrameTooLarge). The zero token is
+// returned when no response settled.
 func (c *Client) CallInEpoch(ctx context.Context, cmd Command) (*Response, EpochToken, error) {
 	ep, err := c.connection(ctx)
 	if err != nil {
@@ -705,7 +711,8 @@ func (c *Client) Notify(ctx context.Context, notification Notification) error {
 }
 
 // DroppedEvents returns the number of events discarded by the drop-oldest
-// overflow policy across all connection epochs.
+// overflow policy across all connection epochs, plus unsolicited validated
+// oversized history responses (including late and duplicate replies).
 func (c *Client) DroppedEvents() uint64 { return c.dropped.Load() }
 
 // Events returns the stream for the current connection epoch.
