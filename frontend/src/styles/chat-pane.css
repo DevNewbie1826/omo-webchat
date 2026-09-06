@@ -158,13 +158,14 @@
 
 .th-chat-send-status,
 .th-chat-status-item--steer {
-  flex: 0 1 24ch;
+  flex: 0 1 auto;
   max-width: 100%;
   align-items: center;
 }
 
 /* Keep state labels/actions intact; only original previews yield space.
-   The strip still scrolls when even those fixed parts cannot fit. */
+   Previews widen into free strip width and shrink only under pressure;
+   the strip still scrolls when even those fixed parts cannot fit. */
 .th-chat-status-label,
 .th-chat-send-status > button {
   flex: none;
@@ -174,7 +175,6 @@
   flex: 1 1 auto;
   width: 3ch;
   min-width: 3ch;
-  max-width: 24ch;
   overflow: hidden;
   text-overflow: ellipsis;
 }
