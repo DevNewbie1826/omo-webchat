@@ -129,7 +129,7 @@ describe("ChatPane optimistic runs", () => {
 		expect(chatSends()).toHaveLength(1);
 		expect(
 			container.querySelectorAll(".th-chat-history .th-chat-msg--user"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 	});
 
 	it("reconciles one matching live user echo with its optimistic row", () => {
@@ -170,9 +170,9 @@ describe("ChatPane optimistic runs", () => {
 		]);
 		expect(textarea().value).toBe("");
 		expect(container.querySelector(".th-chat-queued")).toBeNull();
-		// Only the active prompt owns a transcript row; the queued submission
+		// Neither submission owns a transcript row; the queued submission
 		// surfaces in the queue panel instead.
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 	});
 
 	it("leaves pending operations intact for an uncorrelated send failure", () => {
@@ -185,7 +185,8 @@ describe("ChatPane optimistic runs", () => {
 			command: "chat.send",
 			message: "Uncorrelated failure",
 		}));
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+    expect(container.querySelectorAll("[data-send-phase=sending]")).toHaveLength(2);
 		expect(textarea().value).toBe("");
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain("Uncorrelated failure");
 	});
@@ -209,13 +210,13 @@ describe("ChatPane optimistic runs", () => {
 		}));
 		// The rejected send was never enqueued; the surviving queue feedback is
 		// the still-accepted second placeholder count, and the prompt row is intact.
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		expect(container.querySelector(".th-queue-header")?.textContent).toContain("queue.count");
 	});
 
-	it("rolls back an optimistic prompt on its correlated chat.send failure", async () => {
+	it("recovers an original prompt on its correlated chat.send failure", async () => {
 		submit("retry this");
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		const frame = chatSends()[0];
 		if (frame?.type !== "chat.send" || !frame.requestId) throw new Error("missing chat.send");
 		const requestId = frame.requestId;

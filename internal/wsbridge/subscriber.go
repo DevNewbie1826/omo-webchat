@@ -235,9 +235,9 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		}
 		return out, nil
 	case session.FrameAck:
-		// chat.send is acknowledged at admission by the bridge. The session's
-		// retained completion is internal lifecycle state, not a second client ack.
-		if f.Command == "chat.send" {
+		// The bridge owns admission. Forward only the request-identified
+		// terminal success, including retained outcomes replayed on attach.
+		if f.Command == "chat.send" && f.Phase != "completed" {
 			return nil, nil
 		}
 		out := wscontract.AckFrame{Type: typ, Command: f.Command}

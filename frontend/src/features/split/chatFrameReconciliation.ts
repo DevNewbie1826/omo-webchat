@@ -7,40 +7,26 @@ import type { SteerMark } from "./chatSteerMarks";
 interface ReconcileFrameHistoryInput {
   readonly entries: unknown;
   readonly current: readonly UiMessage[];
-  readonly pending: readonly chatState.PendingOptimistic[];
-  readonly active: chatState.PendingOptimistic | null;
-  readonly uncertain: chatState.PendingOptimistic | null;
-  readonly awaitingReconnectHistory: boolean;
   readonly preserveCurrent: boolean;
-  readonly serverStreaming: boolean;
   readonly hasLiveTodo: boolean;
   /** Stable canonical user-message occurrences admitted as steers. */
   readonly steerMarks?: readonly SteerMark[];
 }
 
 interface ReconcileFrameHistoryResult {
-  readonly history: chatState.ReconcileHistoryResult;
-  readonly uncertain: chatState.PendingOptimistic | null;
-  readonly outcome: chatState.ReconcileOutcome;
+  readonly history: ReturnType<typeof chatState.reconcileHistory>;
   readonly todo: readonly TodoPhase[] | null;
 }
 
 export function reconcileFrameHistory(input: ReconcileFrameHistoryInput): ReconcileFrameHistoryResult {
-  const uncertain = input.awaitingReconnectHistory ? input.uncertain : null;
   const history = chatState.reconcileHistory({
     entries: input.entries,
     current: input.current,
-    pending: input.pending,
-    active: input.active,
-    uncertain,
     preserveCurrent: input.preserveCurrent,
-    serverStreaming: input.serverStreaming,
     ...(input.steerMarks !== undefined ? { steerMarks: input.steerMarks } : {}),
   });
   return {
     history,
-    uncertain,
-    outcome: chatState.reconcileOutcome(history, uncertain, input.serverStreaming),
     todo: input.hasLiveTodo ? null : extractTodoPhases(input.entries),
   };
 }

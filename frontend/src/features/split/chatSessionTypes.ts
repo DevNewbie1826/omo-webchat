@@ -11,6 +11,18 @@ export interface ChatDraft {
   readonly command?: CommandEntry;
 }
 
+export interface RecoveredChatDraft extends ChatDraft {
+  readonly version: number;
+  /** Ownership of automatic recovery; absent on standalone legacy drafts. */
+  readonly requestId?: string;
+  /** Explicit recovery may replace input; automatic recovery may not. */
+  readonly explicit?: boolean;
+}
+
+export interface FailedDraft extends ChatDraft {
+  readonly requestId: string;
+}
+
 export interface ToolEntry {
   readonly toolName: string;
   readonly phase: "start" | "update" | "end";
@@ -40,14 +52,14 @@ export interface QueueEngineSummary {
   readonly ordered: readonly QueueEngineItem[];
 }
 
-/** Local echo of a queued submission until the matching queue frame lands. */
+/** Local request placeholder for a queued submission until the matching queue frame lands. */
 export interface QueuePlaceholder {
   readonly requestId: string;
   readonly text: string;
   readonly hasImage: boolean;
 }
 
-/** A steer the server accepted but whose user echo has not rendered yet. */
+/** A steer summary awaiting its request outcome or the current run terminal. */
 export interface SteerPendingItem {
   readonly requestId: string;
   readonly text: string;

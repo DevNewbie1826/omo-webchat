@@ -156,6 +156,52 @@
   white-space: nowrap;
 }
 
+.th-chat-send-status,
+.th-chat-status-item--steer {
+  flex: 0 1 24ch;
+  max-width: 100%;
+  align-items: center;
+}
+
+/* Keep state labels/actions intact; only original previews yield space.
+   The strip still scrolls when even those fixed parts cannot fit. */
+.th-chat-status-label,
+.th-chat-send-status > button {
+  flex: none;
+}
+
+.th-chat-send-preview {
+  flex: 1 1 auto;
+  width: 3ch;
+  min-width: 3ch;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.th-failed-drafts {
+  flex: none;
+  display: flex;
+  gap: var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: 0 auto;
+  overflow-x: auto;
+}
+
+.th-failed-draft-item {
+  display: inline-flex;
+  flex: none;
+  max-width: 100%;
+}
+
+.th-failed-draft {
+  min-width: 0;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .th-chat-status-num {
   font-family: var(--th-font-mono);
   color: var(--th-muted);
@@ -172,6 +218,7 @@
 }
 
 .th-chat-status-spinner {
+  flex: none;
   width: 9px;
   height: 9px;
   border: 1px solid currentColor;
