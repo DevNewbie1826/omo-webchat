@@ -127,9 +127,6 @@ func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding
 	if oldDetach != nil {
 		oldDetach()
 	}
-	if err := c.bridge.cfg.Store.TouchLastUsed(binding.stale.chatID); err != nil {
-		c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", binding.stale.chatID, "error", err)
-	}
 	c.bridge.publishQueueToConnection(c, staged.session)
 	return true
 }
