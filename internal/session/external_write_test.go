@@ -339,7 +339,7 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 	}
 }
 
-func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
+func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriberLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-broadcast.jsonl")
 	body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-broadcast\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
@@ -348,6 +348,7 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := newDaemon(t)
+	daemon.UseLegacyEmptyUnknownHistory()
 	if err := daemon.LoadSessionFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +417,7 @@ func TestDetachedCompletionKeepsExternalWriteQuarantineAfterDisconnect(t *testin
 	}
 }
 
-func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
+func TestInPlaceReattachRehydratesDiskAndReportsExternalLeafLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	cwd := t.TempDir()
 	path := filepath.Join(cwd, "durable-external.jsonl")
 	body := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-external\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%q}\n", cwd) +
@@ -425,6 +426,7 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := newDaemon(t)
+	daemon.UseLegacyEmptyUnknownHistory()
 	if err := daemon.LoadSessionFile(path); err != nil {
 		t.Fatal(err)
 	}

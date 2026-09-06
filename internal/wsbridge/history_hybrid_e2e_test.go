@@ -716,6 +716,7 @@ func writeHeaderOnlyHistory(t *testing.T, dir string) string {
 
 func TestHistoryHybridIncompleteHistoryCodeThroughWebSocket(t *testing.T) {
 	h := newHistoryBridgeHarness(t, historyE2ETestBudget/3)
+	h.daemon.UseLegacyEmptyUnknownHistory()
 	tests := []struct {
 		name string
 		path string
