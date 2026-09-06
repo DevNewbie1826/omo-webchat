@@ -66,16 +66,26 @@ describe("ModelPicker", () => {
     expect(selected).toEqual(["other/gpt-5"]);
   });
 
-  it("opens compact controls without focusing search and pins current provider", () => {
+  it.each([false, true])("shows model and reported thinking with reasoning before search (compact=%s)", compact => {
+    // Given the same identity and reasoning state in each presentation.
     act(() => root.render(<ModelPicker models={models} currentModelKey="openai/gpt-5"
-      placeholder="Model" searchPlaceholder="Search" compact thinkingLevel="high"
+      placeholder="Model" searchPlaceholder="Search" compact={compact} thinkingLevel="high"
+      thinkingLevels={["off", "high", "max"]} onThinkingChange={() => undefined}
       onSelect={(value) => selected.push(value)} />));
     const trigger = container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!;
     act(() => trigger.click());
     const search = document.querySelector<HTMLInputElement>(".th-model-picker-search")!;
+    // Then both presentations begin outside text input and share source order.
     expect(document.activeElement).not.toBe(search);
+    const popup = document.querySelector(".th-model-picker-popover");
+    expect(document.activeElement).toBe(popup);
+    expect(Array.from(popup?.children ?? []).map(child => child.className)).toEqual([
+      "th-model-picker-current", "th-thinking-in-picker", "th-model-picker-search", "th-model-picker-list",
+    ]);
     expect(document.querySelector(".th-model-picker-current")?.textContent).toContain("openai");
     expect(trigger.textContent).toContain("high");
+    expect(trigger.getAttribute("aria-label")).toContain("GPT-5");
+    expect(trigger.getAttribute("aria-label")).toContain("high");
     act(() => pressKey(document.activeElement as HTMLElement, "Escape"));
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
@@ -283,6 +293,11 @@ describe("ModelPicker", () => {
 
     const search = container.querySelector<HTMLInputElement>(".th-model-picker-search");
     if (!search) throw new Error("missing search input");
+    const popup = container.querySelector<HTMLElement>(".th-model-picker-popover");
+    if (!popup) throw new Error("missing picker popup");
+    expect(document.activeElement).toBe(popup);
+    act(() => pressKey(popup, "Tab"));
+    expect(document.activeElement).toBe(search);
     let tabEvent: KeyboardEvent | undefined;
     act(() => {
       tabEvent = pressKey(search, "Tab");

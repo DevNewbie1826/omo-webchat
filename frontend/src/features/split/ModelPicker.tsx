@@ -44,6 +44,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const navigationKey = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -85,6 +86,9 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const activeModel = matches[activeIndex];
   const resolvedActiveKey = activeModel ? keyOf(activeModel) : null;
 
+  // A no-op key update cannot leave intent for a later passive reconciliation.
+  const navigate = (key: string): void => { navigationKey.current = key === resolvedActiveKey ? null : key; setActiveKey(key); };
+
   useEffect(() => {
     // Commit the fallback so a removed key cannot become active again on hydration.
     setActiveKey(resolvedActiveKey);
@@ -92,15 +96,17 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
 
   useEffect(() => {
     if (!open) return;
-    if (compact) popoverRef.current?.focus();
-    else searchRef.current?.focus({ preventScroll: true });
+    popoverRef.current?.focus({ preventScroll: true });
   }, [open, compact]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const deliberateNavigation = navigationKey.current === resolvedActiveKey && resolvedActiveKey !== null;
+    navigationKey.current = null;
     const option = optionRefs.current[activeIndex];
-    if (!open || !option) return;
-    if (compact) option.scrollIntoView?.({ block: "nearest" });
-    else if (popoverRef.current) revealInPopup(popoverRef.current, option);
+    if (!open) return;
+    const target = deliberateNavigation ? option : popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus") ?? option;
+    if (compact) option?.scrollIntoView?.({ block: "nearest" });
+    else if (popoverRef.current && target) revealInPopup(popoverRef.current, target);
   }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight]);
 
   useEffect(() => {
@@ -154,10 +160,10 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     if (matches.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveKey(keyOf(matches[(activeIndex + 1) % matches.length]!));
+      navigate(keyOf(matches[(activeIndex + 1) % matches.length]!));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActiveKey(keyOf(matches[activeIndex <= 0 ? matches.length - 1 : activeIndex - 1]!));
+      navigate(keyOf(matches[activeIndex <= 0 ? matches.length - 1 : activeIndex - 1]!));
     } else if (event.key === "Enter") {
       event.preventDefault();
       const model = matches[activeIndex] ?? matches[0];
@@ -165,7 +171,8 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     }
   };
 
-  const buttonLabel = current ? labelOf(current) : placeholder;
+  const buttonLabel = current ? labelOf(current) : currentModelKey || placeholder;
+  const triggerLabel = thinkingLevel ? `${buttonLabel}, ${thinkingLevel}` : buttonLabel;
   const thinking = thinkingLevels && onThinkingChange ? (
     <div className="th-thinking-in-picker" role="group" aria-label={thinkingLabel}>
       <span className="th-thinking-in-picker-label">{thinkingLabel}</span>
@@ -195,7 +202,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
         {compact && <button type="button" className="th-btn-icon" aria-label={t("common.close")} onClick={close}><IconX size={16} /></button>}
       </div>
-      {compact && thinking}
+      {thinking}
       <input
         ref={searchRef}
         className="th-model-picker-search"
@@ -208,11 +215,11 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         placeholder={searchPlaceholder}
         value={query}
         onChange={(event) => {
+          navigationKey.current = null;
           setQuery(event.target.value);
           setActiveKey(null);
         }}
       />
-      {!compact && thinking}
       <div className="th-model-picker-list" id={listboxId} role="listbox">
         {matches.map((model, index) => {
           const active = index === activeIndex;
@@ -226,7 +233,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
               tabIndex={compact ? 0 : -1}
               aria-selected={keyOf(model) === currentModelKey}
               data-active={active || undefined}
-              onMouseMove={() => setActiveKey(keyOf(model))}
+              onMouseMove={() => navigate(keyOf(model))}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => select(model)}
             >
@@ -247,8 +254,8 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         className="th-model-picker-btn"
         aria-haspopup={compact ? "dialog" : "listbox"}
         aria-expanded={open}
-        aria-label={buttonLabel}
-        title={buttonLabel}
+        aria-label={triggerLabel}
+        title={triggerLabel}
         onClick={() => {
           if (!open) {
             setQuery("");
@@ -261,7 +268,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
           <IconSettings size={14} />
         </span>
         <span className="th-model-picker-label">{buttonLabel}</span>
-        {compact && thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
+        {thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
         <IconChevron size={14} />
       </button>
       {open && (compact ? createPortal(popover, document.body) : popover)}

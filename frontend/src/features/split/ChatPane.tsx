@@ -81,7 +81,7 @@ export function ChatPane({
     ? [...THINKING_LEVELS, chat.thinkingLevel]
     : THINKING_LEVELS;
 
-  const modelPicker = chat.models.length > 0 ? (
+  const modelPicker = (
     <ModelPicker
       compact={narrow}
       models={chat.models}
@@ -94,7 +94,7 @@ export function ChatPane({
       thinkingLabel={t("chat.thinkingLevel")}
       onThinkingChange={chat.changeThinkingLevel}
     />
-  ) : null;
+  );
 
   return (
     <section
@@ -127,16 +127,6 @@ export function ChatPane({
         >
           {t("chat.files")}
         </button>
-        <select
-          className="th-thinking-select"
-          aria-label={t("chat.thinkingLevel")}
-          value={chat.thinkingLevel}
-          onChange={(event) => chat.changeThinkingLevel(event.target.value)}
-        >
-          {thinkingOptions.map((level) => (
-            <option key={level} value={level}>{t("chat.thinkingLevel")}: {level}</option>
-          ))}
-        </select>
         <button
           type="button"
           className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
