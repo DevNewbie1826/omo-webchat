@@ -65,7 +65,8 @@ export async function shortMenuScenarios(q) {
     assert(open.popup.bottom <= open.trigger.top, `${name}: upward anchor`);
     assert(open.rows.some(row => row.complete && row.hit), `${name}: complete row on open`);
     assert.equal(open.rows.length, 53);
-    const shot = suffix => q.shot(`model-${name}-${suffix}.png`);
+    const shot = suffix => q.shot(`model-${name}-${suffix}.png`,
+      { scenario: `bounded-open-menu-${name}`, state: suffix });
     await shot('OPEN');
 
     async function wheel(delta) {

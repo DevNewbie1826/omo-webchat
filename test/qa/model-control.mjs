@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { startFixture } from "./pane-workspace-ui.mjs";
 import { thinkingScenarios } from "./model-control-thinking.mjs";
 import { shortMenuScenarios } from "./pane-workspace-short-menus.mjs";
+import { createModelEvidence } from "./model-control-evidence.mjs";
 const { chromium } = await import(process.env.QA_PLAYWRIGHT);
 const evidence = resolve(process.argv[2]);
 await mkdir(evidence, { recursive: true });
@@ -60,13 +61,15 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
   },
 });
 const fixturePort = server.port;
-let browser;
+let browser, captureEvidence;
 const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + "\n");
 const modelSets = () => frames.filter(f => f.type === "chat.set" && f.model);
 const thinkingSets = () => frames.filter(f => f.type === "chat.set" && f.thinkingLevel);
 try {
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  captureEvidence = await createModelEvidence(page, evidence);
+  const { shot } = captureEvidence;
   page.on("pageerror", error => errors.push(String(error)));
   await page.addInitScript(() => {
     if (location.protocol !== "http:") return; // The reset document has an opaque origin.
@@ -119,6 +122,7 @@ try {
   });
 
   for (const narrow of [false, true]) {
+    const scenario = `model-control-${narrow ? "narrow" : "desktop"}`;
     const width = narrow ? 390 : 1440, height = narrow ? 844 : 900;
     await reset(width, height);
     const before = modelSets().length, beforeThinking = thinkingSets().length;
@@ -138,6 +142,7 @@ try {
     assert(closed.control.right >= closed.capsule.right - 1.5, "control reaches the reading-column right edge");
     assert(closed.control.right <= closed.form.right + 1, "control stays inside the composer band");
     if (narrow) assert(closed.control.height >= 44, "compact control keeps its 44px touch target");
+    await shot(`${scenario}-initial-closed.png`, { scenario, state: "initial-closed-high" });
 
     // Keyboard-only: open, traverse reasoning before search, select, then thinking max.
     await trigger.focus();
@@ -145,6 +150,7 @@ try {
     await page.keyboard.press("Enter"); await complete();
     assert(await page.locator(".th-model-picker-popover").evaluate(e => document.activeElement === e),
       "both presentations open with non-text container focus");
+    await shot(`${scenario}-initial-open.png`, { scenario, state: "initial-open-high" });
     if (narrow) {
       await page.keyboard.press("Tab");
       assert(await page.locator(".th-model-picker-current .th-btn-icon").evaluate(e => document.activeElement === e));
@@ -179,7 +185,7 @@ try {
     assert(open.popup.bottom <= open.capsule.top + 1, "popup does not cover the composer capsule or send action");
     assert.equal(await page.locator(".th-model-picker-current").evaluate(e => e.textContent.includes("provider-b")), true,
       "current provider/model identity pinned in the popup");
-    await page.screenshot({ path: resolve(evidence, `model-popup-${narrow ? "narrow" : "desktop"}.png`) });
+    await shot(`model-popup-${narrow ? "narrow" : "desktop"}.png`, { scenario, state: "model-b-confirmed-open-high" });
     const max = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^max$/ });
     for (let i = 0; i < 12; i++) {
       await page.keyboard.press("Tab");
@@ -193,6 +199,7 @@ try {
       || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("max")));
     assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["max"],
       "exactly one thinking request for max");
+    await shot(`${scenario}-confirmed-max.png`, { scenario, state: "keyboard-confirmed-max" });
     // The picker stays open after a thinking change; dismiss and verify focus restoration.
     if (narrow) {
       await page.locator(".th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon").click();
@@ -218,13 +225,13 @@ try {
     assert(after.scrollWidth <= after.viewport.width, "no horizontal overflow");
     results.push({ scenario: `model-control-${narrow ? "narrow" : "desktop"}`, pass: true,
       closed, open, sendCount: sends.length });
-    await page.screenshot({ path: resolve(evidence, `model-after-${narrow ? "narrow" : "desktop"}.png`) });
+    await shot(`model-after-${narrow ? "narrow" : "desktop"}.png`, { scenario, state: "closed-max-after-send" });
   }
   assert.deepEqual(errors, []);
 
   await thinkingScenarios({ page, frames, results, reset,
     deliver: frame => { for (const socket of sockets) socket.send(JSON.stringify({ sessionId: stored.id, ...frame })); },
-    shot: name => page.screenshot({ path: resolve(evidence, name) }),
+    shot,
   });
 
   // Shared strengthened checker replaces pane-only bounds and forced ancestor scrolling.
@@ -236,7 +243,7 @@ try {
       async reset(seed, viewport) {
         fixture.reset(seed); await page.setViewportSize(viewport); await page.goto(fixture.url); return page;
       },
-      shot: name => page.screenshot({ path: resolve(evidence, name) }),
+      shot,
       async scenario(name, action) { results.push({ scenario: name, pass: true, detail: await action() }); },
     });
     assert.deepEqual(fixture.unexpected, []);
@@ -252,5 +259,6 @@ try {
   for (const socket of sockets) socket.close(); await server.stop(true);
   await save("model.json", results); await save("traffic.json", { requests, frames }); await save("errors.json", errors);
   await save("cleanup.json", { browserClosed: !!browser, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: fixturePort, fixtureInMemoryOnly: true });
+  if (captureEvidence) await captureEvidence.finish();
 }
 console.log(JSON.stringify(results, null, 2));
