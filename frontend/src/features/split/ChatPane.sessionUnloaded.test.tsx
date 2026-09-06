@@ -132,7 +132,7 @@ describe("ChatPane session_unloaded quiet handling", () => {
 			type: "chat.send",
 			run: { kind: "prompt", message: "after the unload" },
 		});
-		expect(container.textContent).toContain("chat.responding");
+		expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
 
 		// The observed response frames clear the visible running state.
 		act(() => {
@@ -164,7 +164,7 @@ describe("ChatPane session_unloaded quiet handling", () => {
 		const send = chatSends(sent)[0];
 		if (!send?.requestId) throw new Error("missing chat.send request id");
 		const requestId = send.requestId;
-		expect(container.textContent).toContain("chat.responding");
+		expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
 
 		act(() => {
 			deliver(parsedFrame({

@@ -5,13 +5,13 @@ import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, applyTodoToolDetails, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
-import { messageText, type UiMessage } from "./chatEntries";
+import { type UiMessage } from "./chatEntries";
 import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
-import { isPromptTerminalError } from "./chatErrorState";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
 import * as chatState from "./chatSessionState";
-import type { QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
+import type { ChatSendStore, ChatSendRequest } from "./chatSendState";
+import type { QueueEngineSummary, QueueSlotItem, ToolEntry } from "./chatSessionTypes";
 import type { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import type { useStreamingBuffer } from "./useStreamingBuffer";
 
@@ -27,12 +27,9 @@ interface ChatFrameHandlerBindings {
   readonly messagesRef: Current<readonly UiMessage[]>;
   readonly runningRef: Current<boolean>;
   readonly submitLatchRef: Current<boolean>;
-  readonly pendingRef: Current<chatState.PendingOptimistic[]>;
-  readonly ownedSendRequestIdsRef: Current<Set<string>>;
-  readonly retiredSteerIdsRef: Current<Set<number>>;
-  readonly activeRunRef: Current<chatState.PendingOptimistic | null>;
-  readonly uncertainRunRef: Current<chatState.PendingOptimistic | null>;
-  readonly awaitingReconnectHistoryRef: Current<boolean>;
+  readonly sends: ChatSendStore;
+  readonly offerFailedDraft: (request: ChatSendRequest) => void;
+  readonly cancelQueuedRecovery: (requestIds: ReadonlySet<string>) => void;
   readonly messageVersionRef: Current<number>;
   readonly snapshotVersionRef: Current<number>;
   readonly snapshotMessagesRef: Current<readonly UiMessage[]>;
@@ -51,7 +48,6 @@ interface ChatFrameHandlerBindings {
   readonly replaceToolCalls: (next: Readonly<Record<string, ToolEntry>>) => void;
   readonly applyActivities: (next: ActivityState) => void;
   readonly clearLiveSurfaces: () => void;
-  readonly recoverLostRun: (run: chatState.PendingOptimistic) => void;
   readonly armHistoryStall: (refresh: boolean) => void;
   readonly setThinking: StateSetter<string>;
   readonly setRunning: StateSetter<boolean>;
@@ -68,14 +64,7 @@ interface ChatFrameHandlerBindings {
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setSendError: StateSetter<JsonObject | null>;
-  readonly consumeOutcome: (requestId: string) => boolean;
-  readonly notifyPendingChanged: () => void;
-  readonly retainFailedDrafts: (runs: readonly chatState.PendingOptimistic[]) => void;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
-  readonly steerPendingRef: Current<readonly SteerPendingItem[]>;
-  readonly replaceSteerPending: (next: readonly SteerPendingItem[]) => void;
-  readonly queuePlaceholdersRef: Current<readonly QueuePlaceholder[]>;
-  readonly replaceQueuePlaceholders: (next: readonly QueuePlaceholder[]) => void;
   readonly setQueueItems: StateSetter<readonly QueueSlotItem[]>;
   readonly setQueueEngine: StateSetter<QueueEngineSummary>;
 }
@@ -110,10 +99,6 @@ const SEND_ERROR_COMMANDS: ReadonlySet<string> = new Set([
 const SEND_ERROR_CODES: ReadonlySet<string> = new Set([
   "prompt_in_flight", "compaction_in_flight", "bad_send", "send_failed", "compact_failed", "send_backpressure",
 ]);
-
-// Without a matching requestId, these codes do not remove an optimistic
-// message or restore its draft.
-const UNCORRELATED_OPERATION_ERROR_CODES: ReadonlySet<string> = new Set(["bad_send", "send_failed"]);
 
 const OPEN_FAILED_PREFIX = "open_failed:";
 
@@ -151,26 +136,6 @@ export function sendErrorDetail(payload: JsonObject | null): string {
   return typeof message === "string" ? message : "";
 }
 
-export function retirePendingSteers(
-  pending: readonly chatState.PendingOptimistic[],
-  retiredSteerIds: Set<number>,
-): void {
-  for (const operation of pending) {
-    if (operation.kind === "steer") retiredSteerIds.add(operation.id);
-  }
-}
-
-export function settleCompletedSendPending(
-  pending: chatState.PendingOptimistic[],
-  requestId: string,
-  retiredSteerIds: Set<number>,
-): chatState.PendingOptimistic[] {
-  const operation = pending.find((candidate) => candidate.requestId === requestId);
-  if (operation?.kind !== "steer") return pending;
-  retiredSteerIds.delete(operation.id);
-  return pending.filter((candidate) => candidate.id !== operation.id);
-}
-
 function cacheHitRateOf(tokens: unknown): number | null {
   if (typeof tokens !== "object" || tokens === null || Array.isArray(tokens)) return null;
   const input = "input" in tokens ? tokens.input : undefined;
@@ -198,24 +163,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
   const clearLiveSurfaces = (): void => {
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
-  };
-  const settleFailedPending = (pending: chatState.PendingOptimistic, sessionId: string): void => {
-    bindings.ownedSendRequestIdsRef.current.delete(pending.requestId);
-    bindings.messageVersionRef.current += 1;
-    bindings.pendingRef.current = bindings.pendingRef.current.filter((operation) => operation.id !== pending.id);
-    bindings.retiredSteerIdsRef.current.delete(pending.id);
-    if (pending.kind === "steer") {
-      // A rejected steer never persisted engine-side: drop its exact request
-      // identity without touching another occurrence with the same text.
-      forgetSteerMark(sessionId, pending.requestId);
-      bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((item) => item.requestId !== pending.requestId));
-    }
-    bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== pending.id));
-    bindings.retainFailedDrafts([pending]);
-    if (pending.kind === "prompt" && bindings.activeRunRef.current?.id === pending.id) {
-      bindings.submitLatchRef.current = false;
-      clearLiveSurfaces();
-    }
   };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
@@ -293,42 +240,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "message": {
         if (frame.message.role === "toolResult") return;
         bindings.messageVersionRef.current += 1;
-        if (frame.message.role === "user") {
-          const echoText = messageText(frame.message);
-          const pendingMatch = bindings.pendingRef.current.find((pending) => pending.text === echoText);
-          // The steer summary clears the moment its echo renders; the appended
-          // echo carries the steer mark so the transcript keeps showing it
-          // until the run settles (finalizeRunMessages strips it then).
-          const steerSummaryIndex = bindings.steerPendingRef.current.findIndex((item) => item.text === echoText);
-          const reconciled = chatState.reconcileLiveUserMessage(
-            frame.message,
-            bindings.messagesRef.current,
-            bindings.pendingRef.current,
-            bindings.activeRunRef.current,
-          );
-          if (reconciled === null) return;
-          if (reconciled) {
-            const markerWasRetired = pendingMatch?.kind === "steer"
-              && bindings.retiredSteerIdsRef.current.delete(pendingMatch.id);
-            if (!markerWasRetired && pendingMatch?.kind === "steer") {
-              bindings.replaceMessages([...reconciled, { ...frame.message, customType: "steer" }]);
-            } else {
-              bindings.replaceMessages(markerWasRetired ? [...reconciled, frame.message] : reconciled);
-            }
-            if (steerSummaryIndex >= 0) {
-              bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((_, index) => index !== steerSummaryIndex));
-            }
-            return;
-          }
-          if (steerSummaryIndex >= 0) {
-            bindings.replaceSteerPending(bindings.steerPendingRef.current.filter((_, index) => index !== steerSummaryIndex));
-            bindings.replaceMessages([...bindings.messagesRef.current, { ...frame.message, customType: "steer" }]);
-            bindings.streaming.clear();
-            bindings.setThinking("");
-            return;
-          }
-        }
-        bindings.replaceMessages([...bindings.messagesRef.current, frame.message]);
+        bindings.replaceMessages(chatState.applySteerMarks(
+          [...bindings.messagesRef.current, frame.message], steerMarks(frame.sessionId),
+        ));
         bindings.streaming.clear();
         bindings.setThinking("");
         return;
@@ -345,11 +259,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "run.done": {
         bindings.setDoneReason(frame.reason);
         const finalized = bindings.toolCallsRef.current;
-        // The run terminal retires the transient steer transcript marker via
-        // finalizeRunMessages below, and drops every steer summary: without an
-        // echo (or after one) there is nothing left to wait for.
-        bindings.replaceSteerPending([]);
-        retirePendingSteers(bindings.pendingRef.current, bindings.retiredSteerIdsRef.current);
+        // Only marks attached to canonical occurrences survive a run boundary.
+        // A no-message steer must not decorate an unrelated later same-text turn.
+        const userCount = bindings.messagesRef.current.filter(message => message.role === "user").length;
+        for (const mark of steerMarks(frame.sessionId)) {
+          if (mark.ordinal > userCount) forgetSteerMark(frame.sessionId, mark.requestId);
+        }
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {
@@ -360,31 +275,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       }
       case "ack":
         if (frame.command === "chat.send" && frame.requestId) {
-          if (frame.phase !== "completed") {
-            const pending = bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId);
-            if (pending) pending.admitted = true;
-            return;
-          }
-          // Completion belongs only to the pane that originated this send.
-          // Once consumed, replayed terminal acks have no local state to touch.
-          if (!bindings.ownedSendRequestIdsRef.current.has(frame.requestId)
-            || !bindings.consumeOutcome(frame.requestId)) return;
-          bindings.ownedSendRequestIdsRef.current.delete(frame.requestId);
-          // Completion is stronger than admission. Preserve an unechoed
-          // follow-up for canonical reconciliation, but never recover it as an
-          // unsent operation if an attach replay omitted the admission ack.
-          const pending = bindings.pendingRef.current;
-          const completed = pending.find((operation) => operation.requestId === frame.requestId);
-          if (completed) completed.admitted = true;
-          // Settle a steer and its exact optimistic marker in the same frame.
-          // run.done may not have arrived (or may have been missed), so retiring
-          // only the correlation would leave a duplicate/permanent marker.
-          const settled = settleCompletedSendPending(pending, frame.requestId, bindings.retiredSteerIdsRef.current);
-          if (settled !== pending) {
-            bindings.pendingRef.current = settled;
-            bindings.replaceMessages(bindings.messagesRef.current.filter((message) => message.optimisticId !== completed?.id));
-            bindings.notifyPendingChanged();
-          }
+          if (frame.phase === "completed") bindings.sends.complete(frame.requestId);
+          else bindings.sends.admit(frame.requestId);
         } else if (frame.requestId) {
           bindings.controls.ledger.commit(frame.requestId);
         }
@@ -403,32 +295,20 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.setError(frame.message);
           return;
         }
-        // Only chat.send terminal outcomes are ledger-backed across attaches.
-        // Claim those before banner or settlement side effects so replay cannot
-        // resurrect a dismissed failure.
-        if (frame.requestId && frame.command === "chat.send"
-          && !bindings.consumeOutcome(frame.requestId)) return;
-        // Settle an owned send before any specialized presentation branch can
-        // return. Resume and external-write failures still choose their own UI,
-        // but the optimistic prompt is already rolled back and recoverable.
-        const correlatedPending = frame.requestId
-          ? bindings.pendingRef.current.find((operation) => operation.requestId === frame.requestId)
-            ?? (bindings.activeRunRef.current?.requestId === frame.requestId ? bindings.activeRunRef.current : undefined)
-          : undefined;
-        if (correlatedPending) settleFailedPending(correlatedPending, frame.sessionId ?? "");
-        // A rejected queued send was never enqueued: retire its placeholder so
-        // the panel cannot keep showing a ghost item.
-        if (frame.requestId) {
-          const remainingPlaceholders = bindings.queuePlaceholdersRef.current
-            .filter((placeholder) => placeholder.requestId !== frame.requestId);
-          if (remainingPlaceholders.length !== bindings.queuePlaceholdersRef.current.length) {
-            bindings.replaceQueuePlaceholders(remainingPlaceholders);
+        // Ownership is looked up before replay handling or request-specific UI.
+        // Another pane observes this same logical-chat store, never a global ledger.
+        const receipt = frame.requestId ? bindings.sends.terminal(frame.requestId) : undefined;
+        if (receipt && receipt !== "queued") return;
+        const owned = frame.requestId ? bindings.sends.get(frame.requestId) : undefined;
+        if (frame.requestId && (owned || receipt === "queued")) {
+          const failed = bindings.sends.fail(frame.requestId);
+          if (failed) {
+            if (failed.kind === "steer") forgetSteerMark(frame.sessionId ?? "", failed.requestId);
+            bindings.offerFailedDraft(failed);
           }
+        } else if (frame.requestId && frame.command === "chat.send") {
+          return;
         }
-        // A session_unloaded error remains hidden and leaves the pane ready
-        // for another prompt. It clears the submission latch, completion
-        // reason, running state, active response, streamed text, thinking,
-        // tools, activity flight, compaction, and pending approval.
         if (frame.code === "external-write-detected") {
           const generation = bindings.claimHistoryGeneration(connectionGeneration, true);
           if (bindings.resyncGenerationRef.current !== null
@@ -445,6 +325,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         if (frame.code === "session_unloaded") {
+          // A correlated operation has already settled above. It is not a
+          // terminal for the current provider run (which may belong to B).
+          if (frame.requestId) return;
+          // Only a session-wide unload quietly clears all live surfaces.
           bindings.submitLatchRef.current = false;
           bindings.setDoneReason(null);
           clearLiveSurfaces();
@@ -481,13 +365,6 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (sendFailure === null) bindings.setError(errorSurfaceMessage(frame, bindings.t));
         else bindings.setSendError(sendFailure);
 
-        // Error frames without requestId may restore the active draft only
-        // for prompt-terminal fields; unrelated request ids leave it visible.
-        const pending = !frame.requestId && (frame.command === "prompt"
-          || (isPromptTerminalError(frame) && !UNCORRELATED_OPERATION_ERROR_CODES.has(frame.code ?? "")))
-            ? bindings.activeRunRef.current ?? undefined
-            : undefined;
-        if (pending) settleFailedPending(pending, frame.sessionId ?? "");
         return;
       }
       case "notice":
@@ -502,10 +379,8 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         const confirmed = new Set(
           frame.items.map((item) => item.requestId).filter((requestId): requestId is string => requestId !== undefined),
         );
-        const remaining = bindings.queuePlaceholdersRef.current.filter((placeholder) => !confirmed.has(placeholder.requestId));
-        if (remaining.length !== bindings.queuePlaceholdersRef.current.length) {
-          bindings.replaceQueuePlaceholders(remaining);
-        }
+        bindings.sends.handoff(confirmed);
+        bindings.cancelQueuedRecovery(confirmed);
         return;
       }
       case "approval":
@@ -528,6 +403,11 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.controls.absorbState(frame);
         if (frame.isStreaming && !bindings.runningRef.current) {
           bindings.setDoneReason(null);
+          bindings.replaceToolCalls({});
+        }
+        if (!frame.isStreaming) {
+          bindings.streaming.clear();
+          bindings.setThinking("");
           bindings.replaceToolCalls({});
         }
         bindings.runningRef.current = frame.isStreaming;
@@ -564,45 +444,19 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.endResync(generation, true);
         const entries = bindings.pageBuffer.consume(frame.entries);
         const preserveCurrent = bindings.messageVersionRef.current > bindings.snapshotVersionRef.current;
+        const suffix = preserveCurrent
+          ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
+          : [];
         const reconciliation = reconcileFrameHistory({
           entries,
-          current: preserveCurrent
-            ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
-            : bindings.messagesRef.current,
-          pending: bindings.pendingRef.current,
-          active: bindings.activeRunRef.current,
-          uncertain: bindings.uncertainRunRef.current,
-          awaitingReconnectHistory: bindings.awaitingReconnectHistoryRef.current,
+          current: suffix,
           preserveCurrent,
-          serverStreaming: bindings.runningRef.current,
           hasLiveTodo: bindings.activitiesRef.current.todo !== null,
           steerMarks: steerMarks(frame.sessionId),
         });
-        const unacknowledgedFollowUps = bindings.awaitingReconnectHistoryRef.current && !bindings.runningRef.current
-          ? reconciliation.history.pending.filter((pending) => pending.kind === "followUp" && !pending.admitted)
-          : [];
-        const recoveredIds = new Set(unacknowledgedFollowUps.map((pending) => pending.id));
-        bindings.pendingRef.current = reconciliation.history.pending.filter((pending) => !recoveredIds.has(pending.id));
-        if (unacknowledgedFollowUps.length > 0) bindings.retainFailedDrafts(unacknowledgedFollowUps);
-        if (bindings.awaitingReconnectHistoryRef.current) {
-          bindings.awaitingReconnectHistoryRef.current = false;
-          if (reconciliation.uncertain) bindings.uncertainRunRef.current = null;
-        }
-        if ((reconciliation.outcome === "missing" || reconciliation.outcome === "stalled") && reconciliation.uncertain) {
-          bindings.recoverLostRun(reconciliation.uncertain);
-          bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
-        } else if (reconciliation.outcome === "completed") {
-          bindings.submitLatchRef.current = false;
-          clearLiveSurfaces();
-        }
-        if (reconciliation.outcome === "completed") {
-          bindings.runningRef.current = false;
-          bindings.setDoneReason("stop");
-        }
-        bindings.replaceMessages(reconciliation.history.messages.filter((message) =>
-          message.optimisticId === undefined
-          || (!recoveredIds.has(message.optimisticId)
-            && !bindings.retiredSteerIdsRef.current.has(message.optimisticId))));
+        bindings.replaceMessages(reconciliation.history.messages);
+        // A committed snapshot is not another live receipt on a repeated terminal.
+        bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
         bindings.setRestoreVersion((version) => version + 1);
         if (reconciliation.todo !== null) {
           bindings.applyActivities({ ...bindings.activitiesRef.current, todo: reconciliation.todo });

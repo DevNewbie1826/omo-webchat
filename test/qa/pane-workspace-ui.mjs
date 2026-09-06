@@ -4,6 +4,8 @@
  * Layouts: single, empty, two, h3, h4, v3, v4, mixed. Seed through fixture.reset().
  * Deferred opens: await fixture.wait("open"); fixture.resolveOpen(index, chat).
  * Running: seed { running: ["stored-a"] }; deliver(id, frame) reaches current subscribers.
+ * Opt-in controlled: true holds sends; deliver(message) alone commits history.
+ * holdHistory(id), releaseHistory(token, page), disconnect(id), traffic and subscription events support canonical QA.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
  */
 import { EventEmitter } from "node:events";
@@ -33,17 +35,48 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map();
+  const runs = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
+  const traffic = [], heldReplaySessions = new Set(), replays = [];
+  let sequence = 0, socketSequence = 0, entrySequence = 0;
+  const record = (kind, detail) => {
+    const value = { sequence: ++sequence, kind, ...structuredClone(detail) };
+    traffic.push(value); events.emit(kind, value); return value;
+  };
+  function sendTo(socket, frame) {
+    socket.send(JSON.stringify(frame));
+    record('outgoing', { socketId: socketIds.get(socket), frame });
+  }
+  function subscribe(socket, id) {
+    const previous = sockets.get(socket);
+    sockets.set(socket, id);
+    record('subscription', { socketId: socketIds.get(socket), sessionId: id, previous, action: id ? 'attach' : 'detach' });
+  }
   let layout, workspace, stopped = false, pageFailures = 0, deferred = true, deferredCreate = false, shelves = false;
   function runFor(id) {
-    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: [] });
+    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: [],
+      ...(options.controlled ? { outcomes: [], queue: { revision: 0, items: [], engine: { pendingMessageCount: 0, ordered: [] } } } : {}) });
     return runs.get(id);
   }
   function deliver(id, frame) {
     const run = runFor(id);
     if (frame.type === 'run.started') run.running = true;
     if (frame.type === 'run.done') run.running = false;
-    for (const [socket, sessionId] of sockets) if (sessionId === id) socket.send(JSON.stringify({ sessionId: id, ...frame }));
+    if (options.controlled) {
+      if (frame.type === 'message') {
+        const entry = { id: `canonical-${++entrySequence}`, parentId: run.entries.at(-1)?.id ?? null,
+          type: 'message', message: structuredClone(frame.message) };
+        run.entries.push(entry); record('commit', { sessionId: id, entry });
+      }
+      if ((frame.type === 'ack' && frame.command === 'chat.send' && frame.phase === 'completed')
+        || (frame.type === 'error' && frame.command === 'chat.send' && frame.requestId)) {
+        if (!run.outcomes.some(outcome => outcome.requestId === frame.requestId)) {
+          run.outcomes.push(structuredClone(frame));
+          if (run.outcomes.length > 64) run.outcomes.shift();
+        }
+      }
+      if (frame.type === 'queue') run.queue = structuredClone({ revision: frame.revision, items: frame.items, engine: frame.engine });
+    }
+    for (const [socket, sessionId] of sockets) if (sessionId === id) sendTo(socket, { ...frame, sessionId: id });
   }
   function reset(seed = {}) {
     layout = structuredClone(typeof seed.layout === "object" ? seed.layout : layouts[seed.layout ?? "two"]);
@@ -52,7 +85,8 @@ export function startFixture(options = {}) {
     if (seed.longLabels) workspace.chats[0].name = "긴 세션 이름 verification with a deliberately long readable conversation identity";
     pageFailures = seed.pageFailures ?? 0; deferred = seed.deferred ?? true; shelves = seed.shelves ?? false;
     deferredCreate = seed.deferredCreate ?? false;
-    runs.clear();
+    runs.clear(); heldSessions.clear(); histories.length = 0; heldReplaySessions.clear(); replays.length = 0;
+    for (const id of seed.holdReplay ?? []) heldReplaySessions.add(id);
     for (const id of seed.running ?? []) runFor(id).running = true;
   }
   reset(options);
@@ -61,7 +95,7 @@ export function startFixture(options = {}) {
       const url = new URL(req.url), path = url.pathname;
       const body = ["POST", "PUT"].includes(req.method) ? await req.json() : undefined;
       const request = { method: req.method, path: path + url.search, body }; requests.push(request);
-      events.emit("request", request);
+      events.emit("request", request); record("http", request);
       if (path === "/api/v2/ws" && server.upgrade(req)) return;
       if (path === "/api/auth/check") return new Response(null, { status: 204 });
       if (path === "/api/providers") return Response.json([{ id: "omo", label: "omo", available: true }]);
@@ -107,24 +141,53 @@ export function startFixture(options = {}) {
       if (path.endsWith("/activity")) return Response.json(shelves ? activity : { history: {} });
       if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [] });
       if (path.startsWith("/api/")) { unexpected.push(request); return new Response(`Unexpected ${path}`, { status: 404 }); }
-      const file = Bun.file(resolve(import.meta.dir, "../../frontend/dist", path === "/" ? "index.html" : path.slice(1)));
+      const file = Bun.file(resolve(options.assetsDir ?? resolve(import.meta.dir, "../../frontend/dist"), path === "/" ? "index.html" : path.slice(1)));
       return await file.exists() ? new Response(file) : new Response("Not found", { status: 404 });
     },
     websocket: {
-      open(ws) { sockets.set(ws, null); ws.send(JSON.stringify({ type: "hello", version: 2, serverVersion: "qa" })); },
-      close(ws) { sockets.delete(ws); },
+      open(ws) {
+        sockets.set(ws, null); socketIds.set(ws, ++socketSequence);
+        record('connection', { socketId: socketIds.get(ws), action: 'open' });
+        sendTo(ws, { type: 'hello', version: 2, serverVersion: 'qa' });
+      },
+      close(ws) {
+        const sessionId = sockets.get(ws);
+        record('subscription', { socketId: socketIds.get(ws), sessionId, action: 'close' });
+        sockets.delete(ws); socketIds.delete(ws);
+      },
       message(ws, raw) {
         const frame = JSON.parse(String(raw)); frames.push(frame);
-        const send = body => ws.send(JSON.stringify({ sessionId: frame.sessionId ?? frame.chatId, ...body }));
+        record('incoming', { socketId: socketIds.get(ws), frame });
+        const send = body => sendTo(ws, { sessionId: frame.sessionId ?? frame.chatId, ...body });
         switch (frame.type) {
           case "chat.create": {
-            sockets.set(ws, frame.chatId);
+            subscribe(ws, frame.chatId);
             const run = runFor(frame.chatId);
             send({ type: "ready", resumed: true, piSessionId: frame.chatId });
-            send({ type: "state", isStreaming: run.running, isCompacting: false, model: run.model, thinkingLevel: run.thinkingLevel });
+            const state = { type: 'state', isStreaming: run.running, isCompacting: false, model: run.model, thinkingLevel: run.thinkingLevel };
+            if (!options.controlled || !heldReplaySessions.has(frame.chatId)) send(state);
             send({ type: "models", models }); send({ type: "commands", commands: [] });
+            if (options.controlled) {
+              send({ type: 'queue', ...run.queue });
+              if (heldReplaySessions.has(frame.chatId)) {
+                const pending = { token: replays.length, sessionId: frame.chatId, socket: ws,
+                  state: structuredClone(state), outcomes: structuredClone(run.outcomes), released: false };
+                replays.push(pending);
+                record('replay-held', { token: pending.token, sessionId: pending.sessionId, state: pending.state, outcomes: pending.outcomes });
+              } else for (const outcome of run.outcomes) send(outcome);
+              if (heldSessions.has(frame.chatId)) {
+                const pending = { token: histories.length, sessionId: frame.chatId, socket: ws,
+                  entries: structuredClone(run.entries), released: false };
+                histories.push(pending);
+                record('history-held', { token: pending.token, sessionId: pending.sessionId, entries: pending.entries });
+                break;
+              }
+            }
             send({ type: "entries", entries: shelves ? entries : run.entries, final: true }); break;
           }
+          case 'ping':
+            if (options.controlled) sendTo(ws, { type: 'pong' }); else unexpected.push({ frame });
+            break;
           case "chat.stats": send({ type: "stats", cost: 0 }); break;
           case "chat.models": send({ type: "models", models }); break;
           case "chat.set":
@@ -134,8 +197,27 @@ export function startFixture(options = {}) {
             send({ type: "control.result", requestId: frame.requestId,
               command: frame.model ? "set_model" : "set_thinking_level", success: true }); break;
           case "chat.send":
+            if (options.controlled) break;
             send({ type: "ack", requestId: frame.requestId, command: "chat.send" });
             deliver(frame.sessionId, { type: "run.started" }); break;
+          case 'chat.close':
+            if (!options.controlled) { unexpected.push({ frame }); break; }
+            subscribe(ws, null); break;
+          case 'chat.queue.remove': case 'chat.queue.move': case 'chat.queue.clear': {
+            if (!options.controlled) { unexpected.push({ frame }); break; }
+            const queue = structuredClone(runFor(frame.sessionId).queue);
+            if (frame.type === 'chat.queue.remove') queue.items = queue.items.filter(item => item.id !== frame.itemId);
+            if (frame.type === 'chat.queue.move') {
+              const index = queue.items.findIndex(item => item.id === frame.itemId);
+              if (index >= 0) queue.items.splice(frame.toIndex, 0, ...queue.items.splice(index, 1));
+            }
+            if (frame.type === 'chat.queue.clear') {
+              if (frame.scope !== 'engine') queue.items = [];
+              if (frame.scope !== 'webchat') queue.engine = { pendingMessageCount: 0, ordered: [] };
+            }
+            send({ type: 'ack', command: frame.type, requestId: frame.requestId });
+            deliver(frame.sessionId, { type: 'queue', ...queue, revision: queue.revision + 1 }); break;
+          }
           case "chat.abort": deliver(frame.sessionId, { type: "run.done", reason: "stop" }); break;
           case "hello": case "sessions.subscribe": case "activity.refresh": break;
           default: unexpected.push({ frame });
@@ -145,7 +227,30 @@ export function startFixture(options = {}) {
     },
   });
   return {
-    url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, reset, deliver,
+    url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, traffic, reset, deliver,
+    holdReplay(id, hold = true) { if (hold) heldReplaySessions.add(id); else heldReplaySessions.delete(id); },
+    releaseReplay(token, { stateFirst = true } = {}) {
+      const pending = replays[token];
+      if (!pending || pending.released) throw new Error(`Unknown or completed replay release ${token}`);
+      if (sockets.get(pending.socket) !== pending.sessionId) throw new Error(`Detached replay release ${token}`);
+      const frames = stateFirst ? [pending.state, ...pending.outcomes] : [...pending.outcomes, pending.state];
+      for (const frame of frames) sendTo(pending.socket, { ...frame, sessionId: pending.sessionId });
+      pending.released = true;
+      record('replay-released', { token, sessionId: pending.sessionId, frames });
+    },
+    holdHistory(id, hold = true) { if (hold) heldSessions.add(id); else heldSessions.delete(id); },
+    releaseHistory(token, page = {}) {
+      const pending = histories[token];
+      if (!pending || pending.released) throw new Error(`Unknown or completed history release ${token}`);
+      if (sockets.get(pending.socket) !== pending.sessionId) throw new Error(`Detached history release ${token}`);
+      const frame = { type: 'entries', entries: pending.entries, final: true, ...structuredClone(page), sessionId: pending.sessionId };
+      sendTo(pending.socket, frame);
+      pending.released = frame.final === true;
+      record('history-released', { token, frame });
+    },
+    disconnect(id) {
+      for (const [socket, sessionId] of sockets) if (sessionId === id) socket.close(1012, 'isolated QA reconnect');
+    },
     runState(id) { return structuredClone(runFor(id)); },
     subscribers(id) { return [...sockets.values()].filter(sessionId => sessionId === id).length; },
     resolveCreate(index, chat, status) { creates[index].release(chat, status); },
@@ -162,10 +267,12 @@ export function startFixture(options = {}) {
     async stop() {
       if (stopped) throw new Error("Fixture already stopped");
       stopped = true;
+      const boundPort = server.port;
       for (const pending of [...opens, ...creates]) if (pending.release) pending.release({ error: "fixture stopping" }, 503);
       for (const socket of sockets.keys()) socket.close();
       await server.stop(true);
-      return { serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: server.port,
+      record("shutdown", { pendingWebSockets: server.pendingWebSockets, port: boundPort });
+      return { serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: boundPort,
         fixtureInMemoryOnly: true, pendingOpens: opens.filter(open => open.release).length,
         pendingCreates: creates.filter(create => create.release).length };
     },

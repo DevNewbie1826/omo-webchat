@@ -217,15 +217,31 @@ export function ChatPane({
           onClear={chat.queueClear}
         />
         <div className="th-chat-status" role="status" aria-live="polite">
-          {chat.running && (
+          {chat.sendRequests.filter(request => !request.queueOwned && request.phase !== "failed").map(request => (
+            <span key={request.requestId} className="th-chat-status-item th-chat-send-status"
+              data-request-id={request.requestId} data-send-phase={request.phase}
+              title={request.draft.text || request.draft.image?.name}>
+              {request.phase !== "unknown" && <span className="th-chat-status-spinner" aria-hidden="true" />}
+              <span className="th-chat-status-label">{t(`chat.send.${request.phase}`)}:</span>
+              <span className="th-chat-send-preview">{request.draft.text || request.draft.image?.name}</span>
+              {request.phase === "unknown" && <>
+                <button type="button" className="th-btn th-btn--ghost th-send-restore"
+                  title={t("chat.send.unknownWarning")} onClick={() => chat.recoverFailedDraft(request.requestId)}>{t("chat.send.restore")}</button>
+                <button type="button" className="th-btn th-btn--ghost th-send-dismiss"
+                  onClick={() => chat.dismissSendRequest(request.requestId)}>{t("common.close")}</button>
+              </>}
+            </span>
+          ))}
+          {chat.serverRunning && (
             <span className="th-chat-status-item th-chat-status-item--live">
               <span className="th-chat-status-spinner" aria-hidden="true" />
               {t("chat.responding")}
             </span>
           )}
           {chat.steerPending.map((item) => (
-            <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer">
-              {t("chat.steerPending", { text: item.text.length > 40 ? `${item.text.slice(0, 40)}…` : item.text })}
+            <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
+              <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
+              <span className="th-chat-send-preview">{item.text.length > 40 ? `${item.text.slice(0, 40)}…` : item.text}</span>
             </span>
           ))}
           {chat.contextUsage && (
@@ -250,14 +266,21 @@ export function ChatPane({
         {chat.failedDrafts.length > 0 && (
           <div className="th-failed-drafts" role="group" aria-label={t("chat.failedSends")}>
             {chat.failedDrafts.map((draft) => (
+              <span key={draft.requestId} className="th-failed-draft-item">
               <button
-                key={draft.requestId}
                 type="button"
+                title={draft.text || draft.image?.name}
                 className="th-btn th-btn--ghost th-failed-draft"
+                data-request-id={draft.requestId}
+                data-send-phase="failed"
                 onClick={() => chat.recoverFailedDraft(draft.requestId)}
               >
                 {t("common.retry")}: {draft.text || draft.image?.name || t("chat.image")}
               </button>
+              <button type="button" className="th-btn th-btn--ghost th-send-dismiss"
+                data-dismiss-request-id={draft.requestId}
+                onClick={() => chat.dismissSendRequest(draft.requestId)}>{t("common.close")}</button>
+              </span>
             ))}
           </div>
         )}

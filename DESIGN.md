@@ -367,6 +367,16 @@ Choose a tested foreground/background token pair instead.
 
 ## Conversation anatomy
 
+- Conversation rows come only from canonical RPC/history messages. Original
+  submissions remain in request-identified feedback outside the scrollport.
+- The status strip distinguishes sending, admitted (awaiting result), and
+  unknown (outcome unconfirmed). Only sending/admitted animate. Unknown offers
+  explicit original-draft recovery with a duplicate-submission warning; it
+  never retries or fills the composer automatically. A completed send ACK
+  retires that request, not an independently running assistant response.
+- Failed originals follow their logical workspace/chat while panes move or
+  remount. Recovery restores text, image, and command identity without sending.
+
 - User messages align right in a restrained neutral bubble, maximum 80% of the
   reading column.
 - Assistant prose aligns left directly on the canvas, with no bubble border or

@@ -15,7 +15,7 @@ function render(root: Root, imageSupported: boolean, retryImage = false): void {
 					isCompacting={false}
 					retryDraft={retryImage ? { version: 1, text: "", image: { data: "YWJj", mimeType: "image/png", name: "p.png" } } : null}
 					onSubmit={() => true}
-					onSteer={() => undefined}
+					onSteer={() => true}
 					onStop={() => undefined}
 					provider="omo"
 					cwd="/tmp"

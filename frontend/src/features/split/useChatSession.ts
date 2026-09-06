@@ -14,7 +14,7 @@ export function useChatSession(
   connect: ChatConnector,
   onChatName?: (name: string, origin: "auto" | "user" | "provider") => void,
 ) {
-  const frameState = useChatFrameState();
+  const frameState = useChatFrameState(session);
   const { t } = useT();
   const [goal, setGoal] = useState<ChatGoal | null>(null);
   const bindingKey = `${session.wsId}\u0000${session.id}`;
@@ -88,6 +88,7 @@ export function useChatSession(
     clientRef.current = client;
     if (opened) sendInitialFrames(client);
     return () => {
+      markCloseRef.current();
       client.close();
       clientRef.current = null;
     };
@@ -314,6 +315,9 @@ export function useChatSession(
     thinking: frameState.thinking,
     toolCalls: frameState.toolCalls,
     running: frameState.running,
+    serverRunning: frameState.serverRunning,
+    sendRequests: frameState.sendRequests,
+    dismissSendRequest: frameState.dismissSendRequest,
     doneReason: frameState.doneReason,
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,

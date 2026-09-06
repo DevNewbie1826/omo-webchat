@@ -16,9 +16,12 @@ import {
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
-import { recordSteerMark, steerMarks } from "./chatSteerMarks";
+import { recordSteerMark, forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import * as chatState from "./chatSessionState";
-import type { ChatDraft, QueueEngineSummary, QueuePlaceholder, QueueSlotItem, SteerPendingItem, ToolEntry } from "./chatSessionTypes";
+import { useSessionDraft, useSessionSends } from "./sessionDraft";
+import type { ChatSendRequest } from "./chatSendState";
+import type { ChatSessionRef } from "../workspace/workspace";
+import type { ChatDraft, FailedDraft, RecoveredChatDraft, QueueEngineSummary, QueueSlotItem, ToolEntry } from "./chatSessionTypes";
 import { createChatFrameHandler } from "./useChatFrameHandler";
 
 /**
@@ -44,34 +47,8 @@ export interface ChatNotice {
   readonly nid?: string;
 }
 
-export interface FailedDraft extends ChatDraft {
-  readonly requestId: string;
-}
-
 /** Cap on retained advisories: wide enough for a durable server replay. */
 const NOTICE_LIMIT = 50;
-
-/**
- * chat.send outcomes are replayed on every attach. Keep their consumption
- * shared across panes so an outcome handled by one pane stays handled when a
- * replacement pane attaches, while bounding the process-lifetime registry.
- * Local control ids deliberately never enter this registry because their
- * sequences restart when a pane is replaced.
- */
-const CONSUMED_OUTCOME_LIMIT = 512;
-const consumedOutcomeKeys = new Set<string>();
-const consumedOutcomeOrder: string[] = [];
-
-function consumeOutcome(requestId: string): boolean {
-  if (consumedOutcomeKeys.has(requestId)) return false;
-  consumedOutcomeKeys.add(requestId);
-  consumedOutcomeOrder.push(requestId);
-  if (consumedOutcomeOrder.length > CONSUMED_OUTCOME_LIMIT) {
-    const expired = consumedOutcomeOrder.shift();
-    if (expired !== undefined) consumedOutcomeKeys.delete(expired);
-  }
-  return true;
-}
 
 export type HistoryStatus = "loading" | "loaded" | "failed";
 
@@ -115,7 +92,10 @@ export function mergeTranscriptItems(
   return items;
 }
 
-export function useChatFrameState() {
+export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">) {
+  const { store: sends, requests: sendRequests } = useSessionSends(session);
+  const { cancelRecovery } = useSessionDraft(session);
+  const socketRef = useRef(0);
   const { t } = useT();
   const controls = useConfirmedControls();
   const ledger = controls.ledger;
@@ -139,21 +119,21 @@ export function useChatFrameState() {
   const [models, setModels] = useState<readonly { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] }[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
   const [restoreVersion, setRestoreVersion] = useState(0);
-  const [retryDraft, setRetryDraft] = useState<(ChatDraft & { readonly version: number }) | null>(null);
-  const [failedDrafts, setFailedDrafts] = useState<readonly FailedDraft[]>([]);
-  const [, setPendingVersion] = useState(0);
+  const [retryDraft, setRetryDraft] = useState<RecoveredChatDraft | null>(null);
   const [sendError, setSendError] = useState<JsonObject | null>(null);
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
   const [notices, setNotices] = useState<readonly ChatNotice[]>([]);
   const [queueItems, setQueueItems] = useState<readonly QueueSlotItem[]>([]);
   const [queueEngine, setQueueEngine] = useState<QueueEngineSummary>({ pendingMessageCount: 0, ordered: [] });
-  const [queuePlaceholders, setQueuePlaceholders] = useState<readonly QueuePlaceholder[]>([]);
-  const [steerPending, setSteerPending] = useState<readonly SteerPendingItem[]>([]);
+  const failedDrafts: readonly FailedDraft[] = sendRequests.filter(request => request.phase === "failed" && !request.queueOwned)
+    .map(request => ({ ...request.draft, requestId: request.requestId }));
+  const queuePlaceholders = sendRequests.filter(request => request.kind === "queued" && !request.queueOwned && (request.phase === "sending" || request.phase === "admitted"))
+    .map(request => ({ requestId: request.requestId, text: request.text, hasImage: request.draft.image !== null }));
+  const steerPending = sendRequests.filter(request => request.showSteer).map(request => ({ requestId: request.requestId, text: request.text }));
   const messagesRef = useRef<readonly UiMessage[]>([]);
   const runningRef = useRef(false);
   const submitLatchRef = useRef(false);
-  const optimisticIdRef = useRef(0);
   const retryVersionRef = useRef(0);
   const externalRecoveryPendingRef = useRef(false);
   const externalRecoveryReadyRef = useRef(false);
@@ -169,14 +149,6 @@ export function useChatFrameState() {
   const resyncGenerationRef = useRef<number | null>(null);
   const resyncPendingRef = useRef(false);
   const [resyncBusy, setResyncBusy] = useState(false);
-  const pendingRef = useRef<chatState.PendingOptimistic[]>([]);
-  const queuePlaceholdersRef = useRef<readonly QueuePlaceholder[]>([]);
-  const steerPendingRef = useRef<readonly SteerPendingItem[]>([]);
-  const ownedSendRequestIdsRef = useRef(new Set<string>());
-  const retiredSteerIdsRef = useRef(new Set<number>());
-  const activeRunRef = useRef<chatState.PendingOptimistic | null>(null);
-  const uncertainRunRef = useRef<chatState.PendingOptimistic | null>(null);
-  const awaitingReconnectHistoryRef = useRef(false);
   const messageVersionRef = useRef(0);
   const snapshotVersionRef = useRef(0);
   const snapshotMessagesRef = useRef<readonly UiMessage[]>([]);
@@ -205,15 +177,6 @@ export function useChatFrameState() {
     setActivitiesVersion((version) => version + 1);
   };
 
-  const replaceQueuePlaceholders = (next: readonly QueuePlaceholder[]): void => {
-    queuePlaceholdersRef.current = next;
-    setQueuePlaceholders(next);
-  };
-  const replaceSteerPending = (next: readonly SteerPendingItem[]): void => {
-    steerPendingRef.current = next;
-    setSteerPending(next);
-  };
-
   // Notices are retained newest-first and capped: a chatty server cannot
   // flood the pane, and the wide limit admits a durable server replay on
   // attach.
@@ -232,48 +195,38 @@ export function useChatFrameState() {
     });
   };
 
-  const retainFailedDrafts = (runs: readonly chatState.PendingOptimistic[]): void => {
-    if (runs.length === 0) return;
-    setFailedDrafts((current) => {
-      const incoming = runs.map(({ requestId, text, image, command }) => ({
-        requestId,
-        text,
-        image,
-        ...(command ? { command } : {}),
-      }));
-      const ids = new Set(incoming.map((draft) => draft.requestId));
-      return [...incoming, ...current.filter((draft) => !ids.has(draft.requestId))].slice(0, 20);
-    });
-    const newest = runs[0]!;
-    setRetryDraft({ text: newest.text, image: newest.image, version: ++retryVersionRef.current });
+  const offerFailedDraft = (request: ChatSendRequest): void => {
+    // Preserve direct failure recovery. Even a local prompt can be queued by
+    // the server, so later handoff must cancel this request-owned offer/copy.
+    if (request.kind === "queued" || request.queueOwned) return;
+    setRetryDraft({ ...request.draft, requestId: request.requestId, version: ++retryVersionRef.current });
   };
-
+  const cancelQueuedRecovery = (requestIds: ReadonlySet<string>): void => {
+    setRetryDraft(current => current?.requestId && !current.explicit && requestIds.has(current.requestId) ? null : current);
+    cancelRecovery(requestIds);
+  };
+  // A sibling receiver can perform the handoff first. Its shared receipt also
+  // revokes this pane's unapplied offer, so remount cannot restore it again.
+  useEffect(() => {
+    if (!retryDraft?.requestId || retryDraft.explicit) return;
+    const receipt = sends.terminal(retryDraft.requestId);
+    if (receipt !== "queued" && receipt !== "queueFailed" && receipt !== "completed") return;
+    setRetryDraft(null);
+    cancelRecovery(new Set([retryDraft.requestId]));
+  }, [sendRequests, retryDraft, sends, cancelRecovery]);
   const recoverFailedDraft = (requestId: string): void => {
-    setFailedDrafts((current) => {
-      const failed = current.find((draft) => draft.requestId === requestId);
-      if (failed) setRetryDraft({ text: failed.text, image: failed.image, version: ++retryVersionRef.current });
-      return current.filter((draft) => draft.requestId !== requestId);
-    });
+    const request = sends.get(requestId);
+    if (!request || request.queueOwned || (request.phase !== "failed" && request.phase !== "unknown")) return;
+    const draft = sends.retire(requestId);
+    if (draft) setRetryDraft({ ...draft, requestId, version: ++retryVersionRef.current, explicit: true });
   };
-
-  // Clear every transient live surface; shared by run completion, terminal
-  // errors, and lost-run recovery.
   const clearLiveSurfaces = (): void => {
     runningRef.current = false;
-    activeRunRef.current = null;
+    sends.endRun();
     setRunning(false);
     streaming.clear();
     setThinking("");
     replaceToolCalls({});
-  };
-
-  // Clear every transient live surface and offer a retry for a run that a
-  // reconnect proved lost (missing user entry, or user entry without any
-  // assistant reply while the server is not streaming).
-  const recoverLostRun = (run: chatState.PendingOptimistic): void => {
-    messageVersionRef.current += 1;
-    clearLiveSurfaces();
-    retainFailedDrafts([run]);
   };
 
   const beginReplay = (connectionGeneration: number): number => {
@@ -297,9 +250,15 @@ export function useChatFrameState() {
       }
       // A user query can recover on the same socket without beginResync.
       // Track its first ready so a replacement can retire its partial pages.
+      snapshotVersionRef.current = messageVersionRef.current;
+      snapshotMessagesRef.current = messagesRef.current;
       const generation = ++replayGenerationRef.current;
       replayQueueRef.current.push({ generation, connectionGeneration, ready: true, terminal: false });
       return generation;
+    }
+    if (replay.terminal) {
+      snapshotVersionRef.current = messageVersionRef.current;
+      snapshotMessagesRef.current = messagesRef.current;
     }
     replay.ready = true;
     replayQueueRef.current = replayQueueRef.current.filter((candidate) => !candidate.ready || !candidate.terminal);
@@ -379,12 +338,9 @@ export function useChatFrameState() {
     messagesRef,
     runningRef,
     submitLatchRef,
-    pendingRef,
-    ownedSendRequestIdsRef,
-    retiredSteerIdsRef,
-    activeRunRef,
-    uncertainRunRef,
-    awaitingReconnectHistoryRef,
+    sends,
+    offerFailedDraft,
+    cancelQueuedRecovery,
     messageVersionRef,
     snapshotVersionRef,
     snapshotMessagesRef,
@@ -406,7 +362,6 @@ export function useChatFrameState() {
     replaceToolCalls,
     applyActivities,
     clearLiveSurfaces,
-    recoverLostRun,
     armHistoryStall,
     setThinking,
     setRunning,
@@ -423,14 +378,7 @@ export function useChatFrameState() {
     setPendingApproval,
     setRestoreVersion,
     setSendError,
-    consumeOutcome,
-    notifyPendingChanged: () => setPendingVersion((version) => version + 1),
-    retainFailedDrafts,
     pushNotice,
-    steerPendingRef,
-    replaceSteerPending,
-    queuePlaceholdersRef,
-    replaceQueuePlaceholders,
     setQueueItems,
     setQueueEngine,
   });
@@ -471,79 +419,51 @@ export function useChatFrameState() {
     if (next !== activitiesRef.current) applyActivities(next);
   };
 
-  const submit = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
+  const sendDraft = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null, kind: ChatSendRequest["kind"]): boolean => {
     const text = draft.text.trim();
-    if (submitLatchRef.current || runningRef.current || (!text && !draft.image) || !client) return false;
-    const pending = chatState.newPendingRun(draft, text, ++optimisticIdRef.current, requestId, historyLoadedRef.current, messagesRef.current);
-    pendingRef.current.push(pending);
+    if (submitLatchRef.current || (!text && !draft.image) || !client) return false;
+    if (kind === "prompt" && (runningRef.current || sends.getSnapshot().some(request => request.hold))) return false;
     submitLatchRef.current = true;
+    sends.register(requestId, kind, draft, socketRef.current);
+    if (kind === "prompt") {
+      setDoneReason(null);
+      streaming.clear();
+      setThinking("");
+      replaceToolCalls({});
+    }
+    if (kind === "steer") {
+      const marks = steerMarks(sessionId);
+      const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+      recordSteerMark(sessionId, { requestId, text, ordinal });
+    }
     let accepted = false;
     try {
-      accepted = client.send(chatState.promptSendFrame(pending, sessionId));
+      accepted = client.send(kind === "steer"
+        ? { type: "chat.send", sessionId, requestId, run: { kind: "steer", message: text } }
+        : chatState.queuedSendFrame({ text, image: draft.image }, requestId, sessionId));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
     } finally {
       submitLatchRef.current = false;
     }
+    // Incoming callbacks already advanced the registered operation. Never
+    // resurrect a terminal operation or undo independently received messages.
+    if (sends.terminal(requestId)) return true;
     if (!accepted) {
-      pendingRef.current = pendingRef.current.filter((item) => item !== pending);
-      return false;
+      sends.rollback(requestId);
+      if (kind === "steer") forgetSteerMark(sessionId, requestId);
     }
-    pending.accepted = true;
-    ownedSendRequestIdsRef.current.add(requestId);
-    messageVersionRef.current += 1;
-    activeRunRef.current = pending;
-    runningRef.current = true;
-    setRunning(true);
-    setDoneReason(null);
-    streaming.clear();
-    setThinking("");
-    replaceToolCalls({});
-    if (pending.echo) pendingRef.current = pendingRef.current.filter((item) => item !== pending);
-    replaceMessages([...messagesRef.current, chatState.optimisticMessage(pending)]);
-    return true;
+    return accepted;
   };
-
-  // While a run (or compaction) is active the server owns the queue: the send
-  // goes out as a plain prompt for the bridge to enqueue and ack. No transcript
-  // row is created; the panel keeps a request-id placeholder until the matching
-  // queue frame lands, and the queue survives reloads server-side.
-  const queueSend = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
-    const text = draft.text.trim();
-    if ((!text && !draft.image) || !client) return false;
-    const sent = client.send(chatState.queuedSendFrame({ text, image: draft.image }, requestId, sessionId));
-    if (!sent) return false;
-    ownedSendRequestIdsRef.current.add(requestId);
-    replaceQueuePlaceholders([...queuePlaceholdersRef.current, { requestId, text, hasImage: draft.image !== null }]);
-    return true;
-  };
-
-  const steer = (text: string, requestId: string, sessionId: string, client: ChatClient | null): boolean => {
-    const trimmed = text.trim();
-    if (!trimmed || !client) return false;
-    const priorMarks = steerMarks(sessionId);
-    const visibleUserCount = messagesRef.current.filter((message) => message.role === "user").length;
-    const canonicalUserOrdinal = Math.max(visibleUserCount, ...priorMarks.map((mark) => mark.ordinal)) + 1;
-    const pending = chatState.newPendingRun(
-      { text: trimmed, image: null }, trimmed, ++optimisticIdRef.current, requestId,
-      historyLoadedRef.current, messagesRef.current, "steer",
-    );
-    pendingRef.current.push(pending);
-    const sent = client.send(chatState.steerSendFrame(pending, sessionId));
-    if (!sent) {
-      pendingRef.current = pendingRef.current.filter((item) => item !== pending);
-      return false;
-    }
-    pending.accepted = true;
-    ownedSendRequestIdsRef.current.add(requestId);
-    // Persist the canonical occurrence identity so resync and reload can tag
-    // this user row without matching another row that happens to share text.
-    recordSteerMark(sessionId, { requestId, text: trimmed, ordinal: canonicalUserOrdinal });
-    // No optimistic transcript row: the strip shows the pending summary until
-    // the live echo (tagged as a steer) or run.done retires it.
-    replaceSteerPending([...steerPendingRef.current, { requestId, text: trimmed }]);
-    return true;
-  };
+  const submit = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean =>
+    sendDraft(draft, requestId, sessionId, client, "prompt");
+  const queueSend = (draft: ChatDraft, requestId: string, sessionId: string, client: ChatClient | null): boolean =>
+    sendDraft(draft, requestId, sessionId, client, "queued");
+  const steer = (text: string, requestId: string, sessionId: string, client: ChatClient | null): boolean =>
+    sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    socketRef.current = sends.nextSocket();
     const connectionGeneration = ++replayGenerationRef.current;
     connectionGenerationRef.current = connectionGeneration;
     replayQueueRef.current.push({
@@ -554,8 +474,6 @@ export function useChatFrameState() {
     });
     snapshotVersionRef.current = messageVersionRef.current;
     snapshotMessagesRef.current = messagesRef.current;
-    awaitingReconnectHistoryRef.current = uncertainRunRef.current !== null
-      || pendingRef.current.some((pending) => pending.kind === "followUp" && !pending.admitted);
     historyLoadedRef.current = false;
     setHistoryStatus("loading");
     setConnected(true);
@@ -568,8 +486,7 @@ export function useChatFrameState() {
       window.clearTimeout(historyStallTimerRef.current);
       historyStallTimerRef.current = null;
     }
-    uncertainRunRef.current = chatState.uncertainRun(activeRunRef.current, pendingRef.current);
-    awaitingReconnectHistoryRef.current = false;
+    sends.disconnect(socketRef.current);
     const closedGeneration = connectionGenerationRef.current;
     const closedReplays = replayQueueRef.current.filter((candidate) =>
       candidate.connectionGeneration === closedGeneration);
@@ -617,7 +534,10 @@ export function useChatFrameState() {
     streaming: streaming.streaming,
     thinking,
     toolCalls,
-    running,
+    running: running || sendRequests.some(request => request.hold),
+    serverRunning: running,
+    sendRequests,
+    dismissSendRequest: (requestId: string) => { sends.retire(requestId); },
     doneReason,
     error,
     missingOriginal,

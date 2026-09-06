@@ -1,4 +1,9 @@
 {
+  "chat.send.sending": "Sending",
+  "chat.send.admitted": "Awaiting result",
+  "chat.send.unknown": "Outcome unconfirmed",
+  "chat.send.restore": "Restore original",
+  "chat.send.unknownWarning": "The request may have succeeded. Sending again may duplicate it.",
   "app.title": "omo-webchat",
   "login.title": "omo-webchat",
   "login.subtitle": "Enter the password to unlock omo-webchat.",
