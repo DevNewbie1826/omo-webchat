@@ -220,6 +220,9 @@ describe("ActivityShelf", () => {
   });
 
   it("renders the quiet note localized for the active locale", () => {
+    // Match the fixture's module-level clock before the component samples Date.now().
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(iso(0)));
     const localized = (lang: "ko" | "en"): void => {
       act(() => {
         harness.root.render(

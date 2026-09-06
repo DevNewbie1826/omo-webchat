@@ -84,6 +84,48 @@ describe("ChatPane status row", () => {
     expect(container.querySelector(".th-chat-status-item--live")).not.toBeNull();
   });
 
+  it.each(["sending", "admitted", "unknown", "steer"] as const)("inspects the full %s original without mutating request, queue or draft state", async (phase) => {
+    const { deliver, sent } = renderChatPane(root);
+    const original = "same-request-prefix " + "readable-original ".repeat(10) + "TAIL-ALPHA";
+    expect(original).toHaveLength(210);
+    const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "composer");
+    if (phase === "steer") act(() => deliver({ type: "run.started", sessionId: chatSession.id }));
+    act(() => setTextareaValue(input, original));
+    act(() => phase === "steer"
+      ? input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }))
+      : container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    const request = sent.find(frame => frame.type === "chat.send");
+    if (request?.type !== "chat.send" || !request.requestId) throw new Error("missing request");
+    const requestId = request.requestId;
+    if (phase === "admitted") act(() => deliver({ type: "ack", command: "chat.send", sessionId: chatSession.id, requestId, phase }));
+    if (phase === "unknown") act(() => deliver({ type: "run.done", sessionId: chatSession.id, reason: "local_command" }));
+    act(() => setTextareaValue(input, "newer unsent draft"));
+    const status = requireElement(container.querySelector(phase === "steer" ? ".th-chat-status-item--steer" : `[data-request-id="${request.requestId}"]`), "status");
+    if (phase !== "steer") expect(status.getAttribute("data-send-phase")).toBe(phase);
+    expect(status.getAttribute("title")).toBe(original);
+    const before = { status: container.querySelector(".th-chat-status")!.innerHTML, queue: container.querySelector(".th-queue")?.innerHTML, frames: [...sent] };
+    const trigger = status.querySelector<HTMLButtonElement>("button.th-chat-send-preview");
+    expect(trigger, "original inspection must have a named, keyboard-focusable trigger").not.toBeNull();
+    expect(trigger!.getAttribute("aria-label")).toBe(i18n.t("chat.send.inspect"));
+    expect(trigger!.tabIndex).toBe(0);
+    for (const close of ["escape", "button"] as const) {
+      await act(async () => { trigger!.focus(); trigger!.click(); });
+      const dialog = requireElement(document.querySelector<HTMLElement>('[role="dialog"]'), "original dialog");
+      expect(document.getElementById(dialog.getAttribute("aria-labelledby")!)?.textContent).toBe(i18n.t("chat.send.original"));
+      expect(dialog.querySelector(".th-chat-original-text")?.textContent).toBe(original);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await act(async () => close === "escape"
+        ? document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+        : dialog.querySelector<HTMLButtonElement>(".th-modal-close")!.click());
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      expect(input.value).toBe("newer unsent draft");
+      expect(container.querySelector(".th-chat-status")!.innerHTML).toBe(before.status);
+      expect(container.querySelector(".th-queue")?.innerHTML).toBe(before.queue);
+      expect(sent).toEqual(before.frames);
+    }
+  });
+
   it("keeps the status row free of a top divider", () => {
     const css = readFileSync("src/styles/chat-pane.css", "utf8");
     const statusRule = css.match(/\.th-chat-status\s*\{([^}]*)\}/)?.[1] ?? "";

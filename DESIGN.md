@@ -72,6 +72,15 @@ must not substitute ad hoc `500`, `600`, or `700` values.
 | Label | `calc(var(--th-font-size) * 0.8571)` | 510 | 1.35 | `0.01em` | Control, field, and compact block labels |
 | Micro | `calc(var(--th-font-size) * 0.7857)` | 510 | 1.3 | `0.02em` | Status and terse metadata only |
 
+The base is user-owned and never restyled globally: app-config applies the
+user's font-size setting inline on `<html>` (default 13px, clamped 10-24),
+while the `--th-font-size: 14px` declared in `tokens.css` is only the
+pre-hydration fallback. The approved 14px-vs-15px prose comparison resolves
+through the tier system, not a base bump: raising the fallback or the app
+default would resize every chrome surface at once and fight the user's own
+scaling. A 15px user setting must move the entire hierarchy, which the
+scaling evidence scenario pins.
+
 Tracking tightens as text gets larger; uppercase does not create an additional
 tier. All user-readable text uses the existing `--th-font-sans` stack, except
 commands, code, paths, identifiers, and tool output, which use
@@ -348,6 +357,14 @@ Choose a tested foreground/background token pair instead.
   capsule and right-aligned within the reading column, on desktop and narrow
   layouts alike. It keeps its position across pane resizes; it does not move
   with header metadata and does not reflow as the transcript changes.
+- The model wrapper, composer capsule, status strip, and transcript rows all
+  resolve to one reading-column lane: containers outside the scrollport use
+  `min(var(--th-chat-max), 100% - 2 * var(--th-chat-gutter))`, transcript rows
+  add the scrollport's two reserved scrollbar gutters back to the same
+  formula, and every band centers in the same column. The outer edges of
+  model control, capsule, status, and live prose therefore agree within 1 CSS
+  px at every pane width -- the control ends at the capsule's edge, not at the
+  raw column edge -- with no document horizontal overflow.
 - One bottom trigger shows the current model and reported reasoning level in
   both its visible and accessible state at every pane width. There is no header
   thinking select. Before catalog hydration, the exact reported model key is
@@ -396,8 +413,16 @@ Choose a tested foreground/background token pair instead.
 - Assistant prose aligns left directly on the canvas, with no bubble border or
   fill.
 - Finalized and streaming assistant content occupy the same x-axis and width.
-- Tool calls use one compact bordered disclosure per tool. Status color is
-  secondary to the label and never the only signal.
+- A new user turn is distinguishable at a glance: transcript rows keep 8px
+  block padding, and the row that opens a user turn (the first user message
+  after other content, carrying the presentational `th-chat-row--turn-start`
+  hook) pads its top with `--th-space-5`, so spacing before a user turn
+  (28px total) visibly exceeds the 16px within-assistant rhythm without
+  reordering the transcript.
+- Tool calls use one compact disclosure per tool: collapsed records read as
+  quiet transcript rows with no enclosure, and expanded records take the
+  bounded Surface well. Status color is secondary to the label and never the
+  only signal.
 - Thinking uses a collapsed disclosure with a subtle left rule.
 - The completion status is metadata, not a separate message.
 - Long words, URLs, code, Korean, and mixed-width text wrap without causing
@@ -409,8 +434,13 @@ A tool invocation and all of its incremental or final output form one
 addressable transcript block keyed by `toolCallId`. Invocation and result must
 never render as detached rows or neighboring cards, and restored history and
 live execution must converge on the same structure. The block spans the
-available reading-column width and uses one disclosure control, one outline,
-and one shared state.
+available reading-column width and uses one disclosure control and one shared
+state. A collapsed record carries no enclosure of its own -- transparent
+background, no border, no shadow -- so consecutive executions read as
+inspectable transcript rows rather than a wall of cards; hover and keyboard
+focus keep a rounded treatment on the header itself. The Surface enclosure
+appears only when the expanded body is present, so running output is visibly
+bounded.
 
 Collapsed blocks show two compact lines inside the 48px disclosure header:
 
@@ -448,9 +478,11 @@ distinct but static.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
-captions use Micro. The block sits at Surface elevation with a `--th-border`
-outline, `--th-radius-sm`, and no independent shadow, while its expanded body
-uses Canvas as an inset. It recedes behind transparent Body-tier assistant
+captions use Micro. Collapsed records sit directly on Canvas at no elevation.
+An expanded block sits at Surface elevation with a `--th-border` outline,
+`--th-radius-sm`, and no independent shadow, while its expanded body
+uses Canvas as an inset, so the output boundary is unmistakable without
+re-enclosing the collapsed rows above it. It recedes behind transparent Body-tier assistant
 prose through smaller type, compact spacing, and dim or muted text tokens --
 never whole-block opacity -- but stays scannable through fixed alignment,
 monospace command text, the persistent status glyph and word, and one block per

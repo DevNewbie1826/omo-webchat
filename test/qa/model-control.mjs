@@ -18,7 +18,7 @@ const catalog = [{ provider: "provider-a", modelId: "model-a", name: "Model A" }
   { provider: "provider-b", modelId: "model-b", name: "Model B" }];
 let layout, seed = { reported: "high", catalog };
 const requests = [], frames = [], results = [], errors = [];
-const sockets = new Set();
+const sockets = new Set(), pendingSends = new Map();
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
   async fetch(req, server) {
     const url = new URL(req.url), path = url.pathname;
@@ -57,6 +57,17 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
           ? { type: "error", requestId: frame.requestId, command: "set_thinking_level", code: "provider_error", message: "fixture rejection" }
           : { type: "control.result", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking_level", success: true });
       }
+      if (frame.type === "chat.send") {
+        // Admission owns request status, not a transcript row. Release only after
+        // the browser has proved that boundary; echo once, then settle the request.
+        pendingSends.set(frame.requestId, () => {
+          pendingSends.delete(frame.requestId);
+          send({ type: "message", message: { role: "user",
+            blocks: [{ kind: "text", text: frame.run.message }], ts: 1 } });
+          send({ type: "ack", requestId: frame.requestId, command: "chat.send", phase: "completed" });
+        });
+        send({ type: "ack", requestId: frame.requestId, command: "chat.send", phase: "admitted" });
+      }
       if (frame.type === "chat.stats") send({ type: "stats", cost: 0 });
     },
   },
@@ -89,6 +100,15 @@ try {
       function listener(event) {
         if (event.detail.command !== command || !['control.result', 'error'].includes(event.detail.type)) return;
         clearTimeout(timer); window.removeEventListener('qa:wire', listener); done(event.detail);
+      }
+      window.addEventListener('qa:wire', listener);
+    });
+    window.qaSendAck = (phase, requestId) => new Promise((done, fail) => {
+      const timer = setTimeout(() => { window.removeEventListener('qa:wire', listener); fail(new Error('Send ACK deadline: ' + phase)); }, 8000);
+      function listener({ detail: frame }) {
+        if (frame.type !== 'ack' || frame.command !== 'chat.send' || frame.sessionId !== 'stored-a'
+          || frame.phase !== phase || (requestId && frame.requestId !== requestId)) return;
+        clearTimeout(timer); window.removeEventListener('qa:wire', listener); done(frame);
       }
       window.addEventListener('qa:wire', listener);
     });
@@ -214,18 +234,63 @@ try {
     // Mobile reserves Enter for newlines, so submission goes through the send action.
     const sendsBefore = frames.filter(f => f.type === "chat.send").length;
     await page.locator(".th-chat-input textarea").click();
-    await page.keyboard.type(`c4 ${narrow ? "narrow" : "desktop"} prompt`);
+    const prompt = `c4 ${narrow ? "narrow" : "desktop"} prompt`;
+    await page.keyboard.type(prompt);
+    // Subscribe before submit. Observe actual App DOM and delivered wire without
+    // intercepting sends or manufacturing production transcript state.
+    await page.evaluate(() => {
+      window.qaSendWire = [];
+      window.qaPrematureUsers = 0;
+      const sample = () => { window.qaPrematureUsers = Math.max(window.qaPrematureUsers,
+        document.querySelectorAll('.th-chat-scrollport .th-chat-msg--user').length); };
+      const observer = new MutationObserver(sample);
+      observer.observe(document, { subtree: true, childList: true }); sample();
+      window.qaSendListener = ({ detail: frame }) => {
+        if (frame.sessionId !== 'stored-a') return;
+        if (frame.type === 'message' && frame.message.role === 'user') {
+          sample(); observer.disconnect(); window.qaSendWire.push(frame);
+        } else if (frame.type === 'ack' && frame.command === 'chat.send') window.qaSendWire.push(frame);
+      };
+      window.addEventListener('qa:wire', window.qaSendListener);
+      window.qaAdmission = Promise.all([window.qaSendAck('admitted'), window.qaSignal(() =>
+        !!document.querySelector('.th-chat-send-status[data-send-phase="admitted"]'))]);
+    });
     if (narrow) await page.locator(".th-chat-input .th-chat-send-btn").click();
     else await page.keyboard.press("Enter");
-    await page.evaluate(() => window.qaSignal(() =>
-      [...document.querySelectorAll(".th-chat-msg")].some(row => row.textContent?.includes("c4"))));
+    const [admitted] = await page.evaluate(() => window.qaAdmission);
     const sends = frames.filter(f => f.type === "chat.send").slice(sendsBefore);
     assert.equal(sends.length, 1, "exactly one prompt transmitted");
-    assert.equal(sends[0].run?.message, `c4 ${narrow ? "narrow" : "desktop"} prompt`);
+    assert.equal(sends[0].run?.message, prompt);
+    assert.equal(typeof sends[0].requestId, "string");
+    assert(sends[0].requestId.length > 0, "request identity is present");
+    assert.equal(admitted.requestId, sends[0].requestId, "admission belongs to the transmitted request");
+    const requestId = admitted.requestId;
+    assert.equal(await page.locator('.th-chat-send-status[data-send-phase="admitted"]').getAttribute('data-request-id'), requestId);
+    assert.equal(await page.locator('.th-chat-scrollport .th-chat-msg--user').count(), 0, "admission creates no user row");
+    assert.equal(await page.evaluate(() => window.qaPrematureUsers), 0, "no premature user row since submit");
+    await page.evaluate(requestId => {
+      window.qaCompletion = Promise.all([window.qaSendAck('completed', requestId), window.qaSignal(() =>
+        document.querySelectorAll('.th-chat-scrollport .th-chat-msg--user').length === 1
+        && !document.querySelector('.th-chat-send-status'))]);
+    }, requestId);
+    pendingSends.get(requestId)();
+    const [completed] = await page.evaluate(() => window.qaCompletion);
+    const { wire, prematureUsers } = await page.evaluate(() => {
+      window.removeEventListener('qa:wire', window.qaSendListener);
+      return { wire: window.qaSendWire, prematureUsers: window.qaPrematureUsers };
+    });
+    assert.equal(prematureUsers, 0, "no user row before canonical delivery");
+    assert.deepEqual(wire, [admitted, { sessionId: stored.id, type: "message",
+      message: { role: "user", blocks: [{ kind: "text", text: prompt }], ts: 1 } }, completed],
+      "exactly one canonical message between correlated admitted/completed ACKs");
+    assert.equal(await page.locator('.th-chat-scrollport .th-chat-msg--user').count(), 1);
+    assert((await page.locator('.th-chat-scrollport .th-chat-msg--user').textContent()).includes(prompt));
+    assert.equal(frames.filter(f => f.type === "chat.send").length - sendsBefore, 1, "completion does not resend");
+    assert.equal(pendingSends.size, 0, "canonical release consumed exactly once");
     const after = await geometry();
     assert(after.scrollWidth <= after.viewport.width, "no horizontal overflow");
     results.push({ scenario: `model-control-${narrow ? "narrow" : "desktop"}`, pass: true,
-      closed, open, sendCount: sends.length });
+      closed, open, sendCount: sends.length, prematureUsers, canonicalCount: 1, wire });
     await shot(`model-after-${narrow ? "narrow" : "desktop"}.png`, { scenario, state: "closed-max-after-send" });
   }
   assert.deepEqual(errors, []);

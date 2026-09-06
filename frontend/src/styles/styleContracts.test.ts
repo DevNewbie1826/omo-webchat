@@ -557,9 +557,15 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(streaming).toMatch(/max-width:\s*min\(68ch,\s*100%\)/);
   });
 
-  it("separates conversation turns by 20px total via measured row padding", () => {
+  it("keeps within-turn rows at 16px and opens a new user turn at 28px total", () => {
+    // DESIGN.md "Conversation anatomy": rows keep 8px block padding, and a
+    // user turn-start row pads its top with --th-space-5, so spacing before a
+    // user turn (20px + previous row's 8px) visibly exceeds the 16px
+    // within-assistant rhythm.
     const row = chatTranscript.match(/\.th-chat-row\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(row).toMatch(/padding:\s*var\(--th-space-2\) 0/);
+    const turnStart = chatTranscript.match(/\.th-chat-row--turn-start\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(turnStart).toMatch(/padding-top:\s*var\(--th-space-5\)/);
   });
 
   it("keeps the 760px lane, user right alignment, and Body-tier message text", () => {
@@ -605,16 +611,39 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(io).toMatch(/font-family:\s*var\(--th-font-mono\)/);
   });
 
-  it("keeps the tool block at Surface elevation with an inset Canvas body and no shadow", () => {
+  it("keeps collapsed tool records unboxed and bounds expanded output in a Surface well", () => {
+    // DESIGN.md "Tool-execution block anatomy": a collapsed record carries no
+    // enclosure (transparent, borderless, shadowless) so executions read as
+    // transcript rows; the Surface well appears only with the expanded body.
     const block = toolCard.match(/\.th-tool\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(block).toMatch(/background:\s*var\(--th-surface\)/);
-    expect(block).toMatch(/border:\s*1px solid var\(--th-border\)/);
+    expect(block).toMatch(/overflow:\s*hidden/);
     expect(block).toMatch(/border-radius:\s*var\(--th-radius-sm\)/);
+    expect(block).not.toMatch(/(?:^|;)\s*background:/);
+    expect(block).not.toMatch(/(?:^|;)\s*border(?:-\w+)?:/);
     expect(block).not.toMatch(/box-shadow/);
+    const well = toolCard.match(/\.th-tool:has\(> \.th-tool-body\)\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(well).toMatch(/background:\s*var\(--th-surface\)/);
+    expect(well).toMatch(/border:\s*1px solid var\(--th-border\)/);
+    expect(well).not.toMatch(/box-shadow/);
     const body = toolCard.match(/\.th-tool-body\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(body).toMatch(/background:\s*var\(--th-bg\)/);
     expect(body).toMatch(/padding:\s*var\(--th-space-3/);
     expect(body).toMatch(/gap:\s*var\(--th-space-3/);
+  });
+
+  it("aligns model, composer, status, and transcript rows to one reading-column lane", () => {
+    // DESIGN.md "Model control placement": every band resolves to
+    // min(max, 100% - 2 gutters) in its own container; transcript rows add
+    // the scrollport's two reserved scrollbar gutters back so the resolved
+    // absolute lane is identical.
+    const lane =
+      /min\(var\(--th-chat-max\),\s*calc\(100% - var\(--th-chat-gutter\) - var\(--th-chat-gutter\)\)\)/;
+    expect(ruleBody(chatPane, ".th-composer-model")).toMatch(lane);
+    expect(ruleBody(chatPane, ".th-chat-status")).toMatch(lane);
+    const row = chatTranscript.match(/\.th-chat-row,\s*\n\.th-chat-live\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(row).toMatch(
+      /min\(\s*var\(--th-chat-max\),\s*calc\(100% \+ var\(--th-chat-scrollbar\) \+ var\(--th-chat-scrollbar\) - var\(--th-chat-gutter\) - var\(--th-chat-gutter\)\)\s*\)/,
+    );
   });
 
   it("gives every tool status a distinct non-colour glyph treatment", () => {
