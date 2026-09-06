@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { arm, complete, wheel, output, fileContent } from './design-workbench-fixture.mjs';
+import { arm, armShelf, complete, wheel, output, fileContent } from './design-workbench-fixture.mjs';
 import { measure, preservedGeometry, modelRows, contentAnchor, assertAnchor } from './design-workbench-measure.mjs';
 
 export async function exerciseControls(q, shot) {
@@ -64,20 +64,16 @@ export async function exerciseControls(q, shot) {
   assert.equal(await textarea.inputValue(), 'local draft');
   actions.push({ action: 'model-wheel-pointer-selection-draft', pass: true, rows, last, anchor, bottomAnchor, beforeScroll: before.scroll, openScroll: open.scroll, bottomScroll: bottom.scroll });
 
-  for (const [selector, panel] of [['.th-goal-bar', '.th-goal-panel'], ['.th-activity-shelf .th-activity-bar', '.th-activity-panel'], ['.th-queue-header', '.th-queue-body']]) {
-    const button = page.locator(selector);
-    const reachable = await revealAuxiliaryControl(page, button);
-    await page.mouse.click(reachable.x, reachable.y);
-    // Short columns intentionally refuse shelves which cannot fit; record that established behavior.
-    const expanded = await button.getAttribute('aria-expanded');
-    if (expanded === 'true') {
-      assert.equal(await page.locator(panel).count(), 1);
-      await shot(selector.includes('goal') ? 'goal' : selector.includes('activity') ? 'activity' : 'queue');
-      const collapse = await revealAuxiliaryControl(page, button);
-      await page.mouse.click(collapse.x, collapse.y);
-    } else assert.equal(await page.locator(panel).count(), 0, 'a collapsed shelf must not hide an expanded panel');
-    actions.push({ action: selector, expanded, reachable, pass: true });
-  }
+  actions.push(...await exerciseShelves(q, shot));
+  const queue = page.locator('.th-queue-header');
+  const queueHit = await revealAuxiliaryControl(page, queue);
+  await arm(page, () => document.querySelector('.th-queue-header')?.getAttribute('aria-expanded') === 'true' && !!document.querySelector('.th-queue-body'));
+  await page.mouse.click(queueHit.x, queueHit.y); await complete(page);
+  await shot('queue');
+  const queueClose = await revealAuxiliaryControl(page, queue);
+  await arm(page, () => document.querySelector('.th-queue-header')?.getAttribute('aria-expanded') === 'false' && !document.querySelector('.th-queue-body'));
+  await page.mouse.click(queueClose.x, queueClose.y); await complete(page);
+  actions.push({ action: '.th-queue-header', expanded: 'true', reachable: queueHit, pass: true });
   if (await page.locator('.th-divider').count()) {
     const divider = page.locator('.th-divider').first();
     const orientation = await divider.getAttribute('aria-orientation');
@@ -123,6 +119,41 @@ export async function exerciseControls(q, shot) {
   assert(await textarea.isDisabled(), 'external-write recovery retains input guard');
   await shot('recovery'); preservedGeometry(await measure(page));
   actions.push({ action: 'external-write-recovery-visible', pass: true });
+  return actions;
+}
+
+/** These scenarios open one shelf at a time, so it owns the entire usable budget. */
+export function assertShelfAllocation(state) {
+  assert(state.requestedOpen && state.allocationApplied, 'shelf intent and allocation must both be applied');
+  if (state.budget < 48) {
+    assert.equal(state.expanded, 'false', 'insufficient usable budget refuses expansion');
+    assert.equal(state.panel, null, 'refusal must not leave a hidden panel');
+  } else {
+    assert.equal(state.expanded, 'true', 'usable budget must retain normal expansion');
+    assert(state.panel && state.panel.height >= 48, 'expanded shelf retains a usable row');
+    assert(state.panel.height <= state.panelMax + 1 && state.panelMax <= state.budget + 1, 'applied panel fits the usable allocation');
+  }
+}
+
+export async function exerciseShelves({ page }, shot) {
+  const actions = [];
+  for (const kind of ['goal', 'activity']) {
+    const selector = kind === 'goal' ? '.th-goal-bar' : '.th-activity-shelf .th-activity-bar';
+    const button = page.locator(selector);
+    const reachable = await revealAuxiliaryControl(page, button);
+    await armShelf(page, kind, true);
+    await page.mouse.click(reachable.x, reachable.y);
+    const allocated = await complete(page);
+    assertShelfAllocation(allocated);
+    const outcome = allocated.expanded === 'true' ? 'expanded' : 'refused';
+    await shot(`${kind}-${outcome}`);
+    const closeHit = await revealAuxiliaryControl(page, button);
+    await armShelf(page, kind, false);
+    await page.mouse.click(closeHit.x, closeHit.y);
+    const collapsed = await complete(page);
+    assert.equal(collapsed.expanded, 'false'); assert.equal(collapsed.panel, null);
+    actions.push({ action: selector, expanded: allocated.expanded, outcome, allocated, collapsed, reachable, pass: true });
+  }
   return actions;
 }
 

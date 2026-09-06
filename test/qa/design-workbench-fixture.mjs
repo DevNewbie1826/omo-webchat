@@ -46,6 +46,40 @@ export const arm = (page, predicate) => page.evaluate(source => {
 }, String(predicate));
 export const complete = page => page.evaluate(() => window.qaPending);
 
+/** Observe intent separately from allocation: aria-expanded alone can be transient. */
+export const armShelf = (page, kind, open) => page.evaluate(({ kind, open }) => {
+  const shelf = document.querySelector(`.th-${kind}-shelf`);
+  const column = shelf.closest('.th-chat-main'), observations = [];
+  let state;
+  window.qaPending = window.qaSignal(() => {
+    const panel = shelf.querySelector(`.th-${kind}-panel`);
+    const margin = element => { const s = getComputedStyle(element); return (parseFloat(s.marginTop) || 0) + (parseFloat(s.marginBottom) || 0); };
+    const outer = element => element.getBoundingClientRect().height + margin(element);
+    const content = column.querySelector(':scope > .th-chat-main-content');
+    let fixed = 0;
+    // Match the shared allocator's inputs: panel boxes are outputs, not fixed bands.
+    for (const child of [...column.children, ...(content?.children ?? [])]) {
+      if (child === content || child.matches('.th-chat-scrollport, .th-goal-shelf, .th-activity-shelf, .th-goal-panel, .th-activity-panel') || child.querySelector('.th-goal-shelf, .th-activity-shelf')) continue;
+      fixed += outer(child);
+    }
+    for (const item of column.querySelectorAll('.th-goal-shelf, .th-activity-shelf')) {
+      fixed += margin(item);
+      for (const band of item.querySelectorAll('.th-activity-bar-row, .th-activity-resize')) fixed += outer(band);
+    }
+    state = { kind, requestedOpen: !!shelf.querySelector('.th-activity-caret--open'),
+      allocationApplied: shelf.style.flexShrink === '0',
+      expanded: shelf.querySelector('button').getAttribute('aria-expanded'),
+      panel: panel?.getBoundingClientRect().toJSON() ?? null,
+      panelMax: panel ? parseFloat(panel.style.maxHeight) : null,
+      columnHeight: column.getBoundingClientRect().height, fixed, reservedTranscript: 120,
+      budget: column.getBoundingClientRect().height - fixed - 120 };
+    if (JSON.stringify(observations.at(-1)) !== JSON.stringify(state)) observations.push(state);
+    // Wait for the effect's allocation on open, and its release on collapse.
+    // Otherwise a subsequent open could accept the previous allocation.
+    return state.requestedOpen === open && state.allocationApplied === open;
+  }).then(() => ({ ...state, observations }));
+}, { kind, open });
+
 export async function seedLive(page, fixture) {
   await arm(page, () => !!document.querySelector('[data-tool-call-id="design-running"]') && !!document.querySelector('.th-chat-msg--streaming'));
   fixture.deliver('stored-a', { type: 'tool', toolCallId: 'design-running', toolName: 'bash', phase: 'start', args: { command: 'go test ./...' } });
