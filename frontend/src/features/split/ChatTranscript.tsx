@@ -175,6 +175,9 @@ export function ChatTranscript({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 4,
+    // Finish compensation with the native gesture, not a later idle timer
+    // which can replay it after focus has moved to another scroll owner.
+    useScrollendEvent: true,
   });
 
   useEffect(() => {

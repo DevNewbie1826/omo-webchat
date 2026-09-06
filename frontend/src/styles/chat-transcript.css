@@ -3,7 +3,10 @@
   flex: 1 1 auto;
   width: 100%;
   min-width: 0;
-  min-height: 0;
+  /* Keep one tool target inspectable in a fixed-band deficit. The existing
+     auxiliary shell scrolls this minimum slot along with the shelves. */
+  min-height: var(--th-space-12);
+  overflow: clip;
 }
 
 .th-chat-body {
