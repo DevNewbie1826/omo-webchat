@@ -2,7 +2,6 @@ import type { AssistantMessage, ContentBlock } from "../../lib/chatWs";
 
 export interface UiMessage extends AssistantMessage {
   readonly id?: string;
-  readonly optimisticId?: number;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {

@@ -119,7 +119,7 @@ describe("ChatPane optimistic runs", () => {
 		return sent.filter((frame) => frame.type === "chat.send");
 	}
 
-	it("restores an uncertain draft once when reconnect history omits it", () => {
+	it("explicitly restores an uncertain draft once when reconnect history omits it", () => {
 		submit("lost in transit");
 
 		act(() => disconnect());
@@ -135,7 +135,12 @@ describe("ChatPane optimistic runs", () => {
 		act(() => deliver({ type: "entries", sessionId: "chat-1", entries: [] }));
 
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
-		expect(textarea().value).toBe("lost in transit");
+		expect(textarea().value).toBe("");
+    const recovery = container.querySelector<HTMLButtonElement>("[data-send-phase=unknown] .th-send-restore");
+    expect(recovery).not.toBeNull();
+    expect(container.querySelector("[data-send-phase=unknown] .th-chat-status-spinner")).toBeNull();
+    act(() => recovery!.click());
+    expect(textarea().value).toBe("lost in transit");
 		expect(
 			container.querySelector<HTMLButtonElement>('button[type="submit"]')
 				?.textContent,
@@ -148,7 +153,7 @@ describe("ChatPane optimistic runs", () => {
 		expect(chatSends()).toHaveLength(1);
 	});
 
-	it("reconciles an uncertain send once when reconnect history contains it", () => {
+	it("preserves an ambiguous canonical receipt without treating history as request evidence", () => {
 		submit("arrived once");
 
 		act(() => disconnect());
@@ -177,7 +182,8 @@ describe("ChatPane optimistic runs", () => {
 		);
 		act(() => deliver(history));
 
-		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(2);
+    expect(container.querySelector("[data-send-phase=unknown]")).not.toBeNull();
 		expect(textarea().value).toBe("");
 		expect(chatSends()).toHaveLength(1);
 	});

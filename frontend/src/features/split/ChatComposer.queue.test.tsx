@@ -48,7 +48,7 @@ describe("ChatComposer queue / steer / stop", () => {
 							submitted.push(draft);
 							return true;
 						}}
-						onSteer={(text) => steered.push(text)}
+						onSteer={(text) => { steered.push(text); return true; }}
 						onStop={() => stopped.push(true)}
 						provider="omo"
 						cwd="/tmp"

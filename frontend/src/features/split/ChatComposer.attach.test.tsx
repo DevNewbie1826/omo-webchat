@@ -34,7 +34,7 @@ describe("ChatComposer unified capsule controls", () => {
 					isCompacting={false}
 					retryDraft={null}
 					onSubmit={() => true}
-					onSteer={() => undefined}
+					onSteer={() => true}
 					onStop={() => undefined}
 					provider="omo"
 					cwd="/tmp"
@@ -129,7 +129,7 @@ describe("ChatComposer attachment chip", () => {
 						isCompacting={false}
 						retryDraft={null}
 						onSubmit={() => true}
-						onSteer={() => undefined}
+						onSteer={() => true}
 						onStop={() => undefined}
 						provider="omo"
 						cwd="/tmp"
@@ -142,10 +142,12 @@ describe("ChatComposer attachment chip", () => {
 			container.querySelector<HTMLInputElement>('input[type="file"]'),
 			"missing file input",
 		);
-		const chipInserted = new Promise<void>((resolve) => {
+		const chipInserted = new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => { observer.disconnect(); reject(new Error("attachment chip was not inserted")); }, 1000);
 			const observer = new MutationObserver(() => {
 				if (container.querySelector(".th-chat-attach-chip")) {
 					observer.disconnect();
+          window.clearTimeout(timeout);
 					resolve();
 				}
 			});
@@ -187,7 +189,7 @@ describe("ChatComposer attachment chip", () => {
 							},
 						}}
 						onSubmit={() => true}
-						onSteer={() => undefined}
+						onSteer={() => true}
 						onStop={() => undefined}
 						provider="omo"
 						cwd="/tmp"

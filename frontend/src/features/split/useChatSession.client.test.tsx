@@ -62,7 +62,8 @@ describe("useChatSession client send failures", () => {
 
 			expect(current?.error).not.toBe("");
 			expect(current?.running).toBe(true);
-			expect(current?.messages).toHaveLength(1);
+			expect(current?.messages).toHaveLength(0);
+    expect(current?.sendRequests).toMatchObject([{ draft: { text: "keep running" }, hold: true }]);
 		},
 	);
 
@@ -76,7 +77,8 @@ describe("useChatSession client send failures", () => {
 
 		expect(current?.error).toContain("socket write failed");
 		expect(current?.running).toBe(true);
-		expect(current?.messages).toHaveLength(1);
+		expect(current?.messages).toHaveLength(0);
+    expect(current?.sendRequests).toMatchObject([{ draft: { text: "keep running" }, hold: true }]);
 	});
 
 	it("keeps provider process ownership server-side when switching chat sessions", async () => {
@@ -133,7 +135,8 @@ describe("useChatSession client send failures", () => {
 		expect(current?.pendingApproval?.id).toBe("approval-1");
 		expect(current?.error).not.toBe("");
 		expect(current?.running).toBe(true);
-		expect(current?.messages).toHaveLength(1);
+		expect(current?.messages).toHaveLength(0);
+    expect(current?.sendRequests).toMatchObject([{ draft: { text: "keep running" }, hold: true }]);
 
 		send = () => {
 			throw new Error("approval write failed");

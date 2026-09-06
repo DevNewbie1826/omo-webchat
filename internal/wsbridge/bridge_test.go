@@ -179,6 +179,10 @@ func (c *collector) next(t *testing.T, typ string) map[string]any {
 }
 
 func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) map[string]any {
+	return c.nextMatching(t, typ, timeout, nil)
+}
+
+func (c *collector) nextMatching(t *testing.T, typ string, timeout time.Duration, match func(map[string]any) bool) map[string]any {
 	t.Helper()
 	if timeout <= 0 {
 		t.Fatalf("deadline elapsed waiting for %s", typ)
@@ -192,6 +196,16 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 		for i, decoded := range c.decoded {
 			if decoded.err != nil || decoded.typ != typ {
 				continue
+			}
+			if match != nil {
+				var candidate map[string]any
+				if err := json.Unmarshal(decoded.raw, &candidate); err != nil {
+					c.mu.Unlock()
+					t.Fatal(err)
+				}
+				if !match(candidate) {
+					continue
+				}
 			}
 			raw = decoded.raw
 			c.frames = append(c.frames[:i], c.frames[i+1:]...)
@@ -220,7 +234,9 @@ func (c *collector) nextWithin(t *testing.T, typ string, timeout time.Duration) 
 
 func nextSuccessfulSendAcks(t *testing.T, frames *collector, requestID string) {
 	t.Helper()
-	ack := frames.next(t, "ack")
+	ack := frames.nextMatching(t, "ack", 5*time.Second, func(frame map[string]any) bool {
+		return frame["requestId"] == requestID && frame["phase"] == nil
+	})
 	if ack["command"] != "chat.send" || ack["requestId"] != requestID || ack["phase"] != nil {
 		t.Fatalf("send admission ack = %v, want one unphased ack for %q", ack, requestID)
 	}
@@ -972,9 +988,7 @@ func TestChatSendAdmissionAckAndDetachedFailuresCarryRequestID(t *testing.T) {
 		"type": "chat.send", "sessionId": "send-identity", "requestId": "follow-1",
 		"run": map[string]any{"kind": "follow_up", "message": "later"},
 	})
-	if ack := frames.next(t, "ack"); ack["command"] != "chat.send" || ack["requestId"] != "follow-1" {
-		t.Fatalf("follow-up admission ack = %v", ack)
-	}
+	nextSuccessfulSendAcks(t, frames, "follow-1")
 	if failure := frames.next(t, "error"); failure["command"] != "chat.send" || failure["requestId"] != "follow-1" || failure["code"] != "provider_error" {
 		t.Fatalf("follow-up completion error = %v", failure)
 	}
@@ -1696,6 +1710,12 @@ func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
 		"run": map[string]any{"kind": "steer", "message": message},
 	})
 	nextSuccessfulSendAcks(t, frames, "steer-success")
+	completed := frames.nextMatching(t, "ack", 5*time.Second, func(frame map[string]any) bool {
+		return frame["requestId"] == "steer-success" && frame["phase"] == "completed"
+	})
+	if completed["command"] != "chat.send" {
+		t.Fatalf("steer completion = %v", completed)
+	}
 	if !h.daemon.AwaitRequestCount(omorpc.CmdSteer, 1, 5*time.Second) {
 		t.Fatal("successful steer was not forwarded")
 	}
@@ -1705,6 +1725,12 @@ func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
 		"run": map[string]any{"kind": "follow_up", "message": message},
 	})
 	nextSuccessfulSendAcks(t, frames, "follow-success")
+	completed = frames.nextMatching(t, "ack", 5*time.Second, func(frame map[string]any) bool {
+		return frame["requestId"] == "follow-success" && frame["phase"] == "completed"
+	})
+	if completed["command"] != "chat.send" {
+		t.Fatalf("follow-up completion = %v", completed)
+	}
 	if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, 1, 5*time.Second) {
 		t.Fatal("successful follow-up was not forwarded")
 	}

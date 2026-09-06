@@ -30,10 +30,10 @@ const chatSession = {
 describe("ChatPane virtualization", () => {
 	it("keeps logical row keys stable when a notice is inserted or dismissed", () => {
 		const first: TranscriptItem = { kind: "message", message: { id: "entry-1", role: "user", blocks: [] } };
-		const second: TranscriptItem = { kind: "message", message: { optimisticId: 7, role: "user", blocks: [] } };
+		const second: TranscriptItem = { kind: "message", message: { id: "entry-7", role: "user", blocks: [] } };
 		const notice: TranscriptItem = { kind: "notice", notice: { id: 9, kind: "retry_fallback_succeeded", payload: null, at: 2 } };
-		expect(transcriptItemKeys([first, second])).toEqual(["message:entry-1", "optimistic:7"]);
-		expect(transcriptItemKeys([first, notice, second])).toEqual(["message:entry-1", "notice:9", "optimistic:7"]);
+		expect(transcriptItemKeys([first, second])).toEqual(["message:entry-1", "message:entry-7"]);
+		expect(transcriptItemKeys([first, notice, second])).toEqual(["message:entry-1", "notice:9", "message:entry-7"]);
 	});
 
 	let container: HTMLDivElement;
