@@ -35,7 +35,7 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map(), files = new Map();
+  const runs = new Map(), files = new Map(), useTimes = new Map();
   let layout, workspace, stopped = false, pageFailures = 0, deferred = true, deferredCreate = false, shelves = false;
   function runFor(id) {
     if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: shelves ? structuredClone(entries) : [] });
@@ -58,7 +58,7 @@ export function startFixture(options = {}) {
     deferredCreate = seed.deferredCreate ?? false;
     files.clear();
     for (const [path, content] of Object.entries(seed.files ?? {})) files.set(path, content);
-    runs.clear();
+    runs.clear(); useTimes.clear();
     for (const [id, state] of Object.entries(seed.runs ?? {})) Object.assign(runFor(id), structuredClone(state));
     for (const id of seed.running ?? []) runFor(id).running = true;
   }
@@ -66,7 +66,7 @@ export function startFixture(options = {}) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 25173,
     async fetch(req, server) {
       const url = new URL(req.url), path = url.pathname;
-      const body = ["POST", "PUT"].includes(req.method) ? await req.json() : undefined;
+      const body = ["POST", "PUT"].includes(req.method) && req.headers.get("content-type")?.includes("application/json") ? await req.json() : undefined;
       const request = { method: req.method, path: path + url.search, body }; requests.push(request);
       events.emit("request", request);
       if (path === "/api/v2/ws" && server.upgrade(req)) return;
@@ -89,13 +89,22 @@ export function startFixture(options = {}) {
           creates.push(pending); events.emit('create', { index: creates.length - 1 });
         });
       }
+      const usage = /^\/api\/workspaces\/ws\/chats\/([^/]+)\/touch$/.exec(path);
+      if (usage && req.method === "POST") {
+        const id = decodeURIComponent(usage[1]);
+        if (id !== "union" && !workspace.chats.some(chat => chat.id === id)) return Response.json({ error: "not found" }, { status: 404 });
+        const recencyMs = (options.now ?? Date.now)();
+        useTimes.set(id, recencyMs);
+        return Response.json({ recencyMs });
+      }
       if (path === "/api/workspaces/ws/sessions") {
         if (pageFailures > 0) { pageFailures--; return Response.json({ error: "fixture page failure" }, { status: 503 }); }
         return Response.json(url.searchParams.has("cursor")
           ? { items: [{ id: "discovered-c", name: "Discovered C", source: "discovered", recencyMs: 10 }], nextCursor: "" }
           : { items: [{ id: "discovered-b", name: "Discovered B", source: "discovered", recencyMs: 50 },
-            ...workspace.chats.map((chat, i) => ({ ...chat, source: "stored", recencyMs: 40 - i })),
-            { id: "union", name: "Union stored row", source: "stored", recencyMs: 20 }], nextCursor: "page2" });
+            ...workspace.chats.map((chat, i) => ({ ...chat, source: "stored", recencyMs: useTimes.get(chat.id) ?? 40 - i })),
+            { id: "union", name: "Union stored row", source: "stored", recencyMs: useTimes.get("union") ?? 20 }]
+            .sort((a, b) => b.recencyMs - a.recencyMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), nextCursor: "page2" });
       }
       if (path.endsWith("/sessions/open")) {
         const chat = { id: `opened-${body.id}`, name: `Opened ${body.id}`, provider: "omo" };
