@@ -7,6 +7,8 @@ import (
 	"net"
 )
 
+var errFixtureWorkerCompleted = errors.New("fixture worker completed")
+
 // Shared only by the Windows pipe fixture and its real TCP shutdown regression.
 type fixtureListenerShutdown struct {
 	listener net.Listener
@@ -21,7 +23,30 @@ func (s fixtureListenerShutdown) stop(ctx context.Context) (err error) {
 	default:
 	}
 
-	wake, wakeErr := s.wake(ctx)
+	wakeCtx, cancelWake := context.WithCancelCause(ctx)
+	defer cancelWake(nil)
+	var wake net.Conn
+	var wakeErr error
+	wakeReturned := make(chan struct{})
+	go func() {
+		wake, wakeErr = s.wake(wakeCtx)
+		close(wakeReturned)
+	}()
+	select {
+	case <-wakeReturned:
+	case <-s.done:
+		cancelWake(errFixtureWorkerCompleted)
+		<-wakeReturned
+	}
+	if wake != nil {
+		defer func() {
+			err = errors.Join(err, wake.Close())
+		}()
+	}
+	if errors.Is(wakeErr, context.Canceled) &&
+		errors.Is(context.Cause(wakeCtx), errFixtureWorkerCompleted) {
+		wakeErr = nil
+	}
 	if wakeErr != nil {
 		err = fmt.Errorf("wake fixture accept: %w", wakeErr)
 		select {
@@ -31,10 +56,6 @@ func (s fixtureListenerShutdown) stop(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	defer func() {
-		err = errors.Join(err, wake.Close())
-	}()
-
 	select {
 	case <-s.done:
 		return s.listener.Close()
