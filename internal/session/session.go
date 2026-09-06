@@ -2020,24 +2020,6 @@ type entriesTail struct {
 // DurableHistoryLeaf returns the authoritative transcript boundary used to
 // fence a queue delivery before its provider call begins.
 func (s *Session) DurableHistoryLeaf(ctx context.Context) (string, error) {
-	if s.sessionFile != "" {
-		// Validate the active disk branch in bounded pages instead of requesting
-		// the entire transcript in one RPC frame on the shared connection.
-		metadata, err := streamSessionHistory(ctx, s.sessionFile, coldhistory.Options{
-			PageEntries: entriesPageMaxCount,
-		}, func(metadata coldhistory.Metadata, _ coldhistory.Page) error {
-			if metadata.Header.ID != s.durableID {
-				return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
-			}
-			return nil
-		})
-		if err == nil {
-			return metadata.LeafID, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, coldhistory.ErrIndexBudgetExceeded) {
-			return "", err
-		}
-	}
 	wire, err := s.fetchEntriesAfter(ctx, "")
 	if err != nil {
 		return "", err
