@@ -44,6 +44,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const navigationKey = useRef<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -85,6 +86,9 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const activeModel = matches[activeIndex];
   const resolvedActiveKey = activeModel ? keyOf(activeModel) : null;
 
+  // A no-op key update cannot leave intent for a later passive reconciliation.
+  const navigate = (key: string): void => { navigationKey.current = key === resolvedActiveKey ? null : key; setActiveKey(key); };
+
   useEffect(() => {
     // Commit the fallback so a removed key cannot become active again on hydration.
     setActiveKey(resolvedActiveKey);
@@ -95,10 +99,12 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     popoverRef.current?.focus({ preventScroll: true });
   }, [open, compact]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const deliberateNavigation = navigationKey.current === resolvedActiveKey && resolvedActiveKey !== null;
+    navigationKey.current = null;
     const option = optionRefs.current[activeIndex];
     if (!open || !option) return;
-    const focusedReasoning = popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus");
+    const focusedReasoning = deliberateNavigation ? null : popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus");
     if (compact) option.scrollIntoView?.({ block: "nearest" });
     else if (popoverRef.current) revealInPopup(popoverRef.current, focusedReasoning ?? option);
   }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight]);
@@ -154,10 +160,10 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     if (matches.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveKey(keyOf(matches[(activeIndex + 1) % matches.length]!));
+      navigate(keyOf(matches[(activeIndex + 1) % matches.length]!));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActiveKey(keyOf(matches[activeIndex <= 0 ? matches.length - 1 : activeIndex - 1]!));
+      navigate(keyOf(matches[activeIndex <= 0 ? matches.length - 1 : activeIndex - 1]!));
     } else if (event.key === "Enter") {
       event.preventDefault();
       const model = matches[activeIndex] ?? matches[0];
@@ -209,6 +215,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         placeholder={searchPlaceholder}
         value={query}
         onChange={(event) => {
+          navigationKey.current = null;
           setQuery(event.target.value);
           setActiveKey(null);
         }}
@@ -226,7 +233,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
               tabIndex={compact ? 0 : -1}
               aria-selected={keyOf(model) === currentModelKey}
               data-active={active || undefined}
-              onMouseMove={() => setActiveKey(keyOf(model))}
+              onMouseMove={() => navigate(keyOf(model))}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => select(model)}
             >

@@ -158,6 +158,52 @@ describe("bounded desktop ModelPicker", () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
+  it("keeps a hovered final model visible when reasoning retains keyboard focus", () => {
+    // Given high reached by Tab, then the popup scrolled to the final model.
+    const selected = vi.fn();
+    const changed = vi.fn();
+    act(() => root.render(<ModelPicker models={catalog} currentModelKey="provider-a/model-a"
+      placeholder="Model" searchPlaceholder="Search" onSelect={selected}
+      thinkingLevels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
+      thinkingLevel="high" onThinkingChange={changed} />));
+    const trigger = required(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"));
+    act(() => trigger.click());
+    const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
+    for (let index = 0; index < 5; index++) act(() => key("Tab"));
+    const high = required(popup.querySelector<HTMLButtonElement>('.th-thinking-level[aria-pressed="true"]'));
+    const last = required(popup.querySelector<HTMLButtonElement>('[role="option"]:last-child'));
+    const search = required(popup.querySelector<HTMLInputElement>("input"));
+    expect(document.activeElement).toBe(high);
+    expect(search.getAttribute("aria-activedescendant")).not.toBe(last.id);
+    vi.spyOn(popup, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 47, 260, 37));
+    vi.spyOn(popup, "clientHeight", "get").mockReturnValue(35);
+    vi.spyOn(popup, "clientTop", "get").mockReturnValue(1);
+    vi.spyOn(high, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 120 - popup.scrollTop, 40, 21),
+    );
+    vi.spyOn(last, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 1632 - popup.scrollTop, 250, 25.5),
+    );
+    // jsdom has no wheel layout; these scroll-relative rectangles reproduce
+    // the real browser's post-wheel geometry without mocking picker behavior.
+    popup.scrollTop = 1576;
+    expect(last.getBoundingClientRect().top).toBe(56);
+    expect(last.getBoundingClientRect().bottom).toBe(81.5);
+
+    // When pointer movement deliberately activates that complete model row.
+    act(() => last.dispatchEvent(new MouseEvent("mousemove", { bubbles: true })));
+
+    // Then navigation changes, but stale reasoning focus cannot displace it.
+    expect(search.getAttribute("aria-activedescendant")).toBe(last.id);
+    expect(popup.scrollTop).toBe(1576);
+    expect(last.getBoundingClientRect().top).toBeGreaterThanOrEqual(48);
+    expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(83);
+    expect(document.activeElement).toBe(high);
+    expect(container.scrollTop).toBe(0);
+    expect(selected).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it("opens with non-text focus and reaches reasoning before search through forward Tab", () => {
     // Given a desktop picker with reasoning controls.
     const trigger = render(true);
