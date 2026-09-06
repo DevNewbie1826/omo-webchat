@@ -367,10 +367,13 @@ Choose a tested foreground/background token pair instead.
   readable pointer-selectable row, with one-line model/provider rows below 60px
   of available space. Popup navigation never scrolls hidden ancestors or moves
   the composer. Mobile keeps its pinned current identity and list scrollport.
-  Desktop search retains initial focus. Shift+Tab visits reasoning controls in
-  reverse order; forward Tab follows reasoning controls to search, then exits
-  to attachment. Escape or reverse exit from the first control restores the
-  trigger. Mobile retains its sheet focus trap without focusing search on open.
+  Both presentations initially focus the non-text popup container. Forward Tab
+  reaches reasoning before search; the mobile close action precedes reasoning.
+  Search accepts text, Arrow navigation and Enter selection after it receives
+  focus. Desktop forward exit from search reaches attachment; reverse exit from
+  the first control restores the trigger. Mobile retains its sheet focus trap.
+  Escape restores the trigger in both presentations. Opening never focuses
+  search or summons the mobile keyboard.
 - Search, exact provider/model identity, thinking-level controls, keyboard
   selection, file/attachment/send actions, and responsive composer height
   contracts are unchanged by the move; the control renders the exact active

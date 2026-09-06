@@ -75,9 +75,10 @@ describe("ModelPicker", () => {
     const trigger = container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!;
     act(() => trigger.click());
     const search = document.querySelector<HTMLInputElement>(".th-model-picker-search")!;
-    // Then opening preserves the presentation's focus policy and common source order.
-    expect(document.activeElement === search).toBe(!compact);
+    // Then both presentations begin outside text input and share source order.
+    expect(document.activeElement).not.toBe(search);
     const popup = document.querySelector(".th-model-picker-popover");
+    expect(document.activeElement).toBe(popup);
     expect(Array.from(popup?.children ?? []).map(child => child.className)).toEqual([
       "th-model-picker-current", "th-thinking-in-picker", "th-model-picker-search", "th-model-picker-list",
     ]);
@@ -292,6 +293,11 @@ describe("ModelPicker", () => {
 
     const search = container.querySelector<HTMLInputElement>(".th-model-picker-search");
     if (!search) throw new Error("missing search input");
+    const popup = container.querySelector<HTMLElement>(".th-model-picker-popover");
+    if (!popup) throw new Error("missing picker popup");
+    expect(document.activeElement).toBe(popup);
+    act(() => pressKey(popup, "Tab"));
+    expect(document.activeElement).toBe(search);
     let tabEvent: KeyboardEvent | undefined;
     act(() => {
       tabEvent = pressKey(search, "Tab");

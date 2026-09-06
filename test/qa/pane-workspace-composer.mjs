@@ -10,11 +10,10 @@ export async function composerAndPersistenceScenarios(q) {
       const baseline = fixture.frames.length;
       await trigger.focus(); await arm(() => !!document.querySelector('.th-model-picker-popover'));
       await page.keyboard.press('Enter'); await done();
-      if (narrow) {
-        for (let i = 0; i < 15; i++) {
-          await page.keyboard.press('Tab');
-          if (await page.locator('.th-model-picker-search').evaluate(e => e === document.activeElement)) break;
-        }
+      assert(await page.locator('.th-model-picker-popover').evaluate(e => e === document.activeElement));
+      for (let i = 0; i < 15; i++) {
+        await page.keyboard.press('Tab');
+        if (await page.locator('.th-model-picker-search').evaluate(e => e === document.activeElement)) break;
       }
       assert(await page.locator('.th-model-picker-search').evaluate(e => e === document.activeElement));
       await page.keyboard.type('provider-b');
@@ -25,9 +24,10 @@ export async function composerAndPersistenceScenarios(q) {
       for (const level of levels) {
         await trigger.focus(); await arm(() => !!document.querySelector('.th-model-picker-popover'));
         await page.keyboard.press('Enter'); await done();
+        assert(await page.locator('.th-model-picker-popover').evaluate(e => e === document.activeElement));
         const button = page.locator('.th-thinking-level').filter({ hasText: new RegExp(`^${level}$`) });
         for (let i = 0; i < 12; i++) {
-          await page.keyboard.press(narrow ? 'Tab' : 'Shift+Tab');
+          await page.keyboard.press('Tab');
           if (await button.evaluate(e => e === document.activeElement)) break;
         }
         assert(await button.evaluate(e => e === document.activeElement), `Tab must reach thinking ${level}`);

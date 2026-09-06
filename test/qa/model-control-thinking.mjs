@@ -26,7 +26,7 @@ export async function thinkingScenarios(q) {
       assert.deepEqual(await popup.evaluate(e => [...e.children].map(child => child.className)), [
         'th-model-picker-current', 'th-thinking-in-picker', 'th-model-picker-search', 'th-model-picker-list',
       ]);
-      if (narrow) assert(await popup.evaluate(e => document.activeElement === e), 'no unwanted search keyboard');
+      assert(await popup.evaluate(e => document.activeElement === e), 'common non-text initial focus');
       const pressed = popup.locator('.th-thinking-level[aria-pressed="true"]');
       if (reported) assert.equal(await pressed.textContent(), reported);
       else assert.equal(await pressed.count(), 0);

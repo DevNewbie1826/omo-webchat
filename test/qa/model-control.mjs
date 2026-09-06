@@ -139,24 +139,23 @@ try {
     assert(closed.control.right <= closed.form.right + 1, "control stays inside the composer band");
     if (narrow) assert(closed.control.height >= 44, "compact control keeps its 44px touch target");
 
-    // Keyboard-only: open, filter to provider-b/model-b, select, then thinking high.
+    // Keyboard-only: open, traverse reasoning before search, select, then thinking max.
     await trigger.focus();
     await arm(`() => !!document.querySelector('.th-model-picker-popover')`);
     await page.keyboard.press("Enter"); await complete();
+    assert(await page.locator(".th-model-picker-popover").evaluate(e => document.activeElement === e),
+      "both presentations open with non-text container focus");
     if (narrow) {
-      // Sheet: search is not focused; Tab cycles sheet controls until search.
-      assert(!(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search"))),
-        "narrow sheet does not focus search on open");
-      for (let i = 0; i < 12; i++) {
-        await page.keyboard.press("Tab");
-        if (await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search"))) break;
-      }
-      assert(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search")),
-        "sheet Tab cycle reaches search");
-    } else {
-      assert(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search")),
-        "desktop popup focuses search on open");
+      await page.keyboard.press("Tab");
+      assert(await page.locator(".th-model-picker-current .th-btn-icon").evaluate(e => document.activeElement === e));
     }
+    for (const expected of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
+    }
+    await page.keyboard.press("Tab");
+    assert(await page.locator(".th-model-picker-search").evaluate(e => document.activeElement === e),
+      "forward Tab reaches search after reasoning");
     await page.keyboard.type("provider-b");
     await page.evaluate(() => { window.qaControlPending = window.qaControl('set_model'); });
     await page.keyboard.press("Enter");
@@ -170,6 +169,8 @@ try {
     await trigger.focus();
     await arm(`() => !!document.querySelector('.th-model-picker-popover')`);
     await page.keyboard.press("Enter"); await complete();
+    assert(await page.locator(".th-model-picker-popover").evaluate(e => document.activeElement === e),
+      "reopening restores non-text initial focus");
     const open = await geometry();
     assert(open.popup, "popup present");
     assert(open.popup.bottom <= open.control.top + 1, "popup opens upward above the control");
@@ -181,7 +182,7 @@ try {
     await page.screenshot({ path: resolve(evidence, `model-popup-${narrow ? "narrow" : "desktop"}.png`) });
     const max = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^max$/ });
     for (let i = 0; i < 12; i++) {
-      await page.keyboard.press(narrow ? "Tab" : "Shift+Tab");
+      await page.keyboard.press("Tab");
       if (await max.evaluate(e => e === document.activeElement)) break;
     }
     assert(await max.evaluate(e => e === document.activeElement), "thinking max reachable from trigger using Tab");

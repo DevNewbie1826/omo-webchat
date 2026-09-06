@@ -130,16 +130,17 @@ export async function shortMenuScenarios(q) {
     assert.deepEqual(controls.composer, before.composer);
     await page.keyboard.press('Escape');
 
-    // Only the trigger receives initial focus. All internal navigation and
-    // native Enter activation are real keyboard input, including reverse Tab.
+    // Start at the trigger; opening focuses the non-text popup container.
+    // All internal traversal and Enter activation use native keyboard input.
     await trigger.focus();
     await page.keyboard.press('Enter');
+    assert(await page.locator('.th-model-picker-popover').evaluate(e => document.activeElement === e));
     const keyboardStart = fixture.frames.length;
-    for (const expected of ['max', 'xhigh', 'high', 'medium']) {
-      await page.keyboard.press('Shift+Tab');
+    for (const expected of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
+      await page.keyboard.press('Tab');
       assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
     }
-    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
     assert.equal(await page.evaluate(() => document.activeElement.textContent), 'high');
     await shot('KEYBOARD-high');
     const high = fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === 'high');
@@ -151,15 +152,24 @@ export async function shortMenuScenarios(q) {
     await page.keyboard.press('Escape');
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');
+    assert(await page.locator('.th-model-picker-popover').evaluate(e => document.activeElement === e));
+    for (const expected of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
+    }
+    await page.keyboard.press('Tab');
+    assert(await page.locator('.th-model-picker-search').evaluate(e => document.activeElement === e));
     await page.keyboard.press('Tab');
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await page.locator('.th-chat-attach-btn').evaluate(e => e === document.activeElement));
     await trigger.focus();
     await page.keyboard.press('Enter');
-    for (let i = 0; i < 8; i++) await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Shift+Tab');
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');
+    for (let i = 0; i < 8; i++) await page.keyboard.press('Tab');
+    assert(await page.locator('.th-model-picker-search').evaluate(e => document.activeElement === e));
     await page.keyboard.type('provider-b');
     await page.keyboard.press('ArrowDown');
     const exactModel = fixture.wait('frame', frame => frame.type === 'chat.set' && frame.model);

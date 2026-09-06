@@ -92,8 +92,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
 
   useEffect(() => {
     if (!open) return;
-    if (compact) popoverRef.current?.focus();
-    else searchRef.current?.focus({ preventScroll: true });
+    popoverRef.current?.focus({ preventScroll: true });
   }, [open, compact]);
 
   useEffect(() => {

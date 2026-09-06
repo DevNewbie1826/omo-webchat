@@ -151,7 +151,7 @@ describe("ChatPane thinking level selector", () => {
     expect(level(expected === "max" ? "high" : "max").getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("reaches desktop max by reverse Tab from search and preserves native activation and Escape", () => {
+  it("reaches desktop max by forward Tab before search and preserves native activation and Escape", () => {
     // Given a desktop catalog and reported high state.
     const { deliver, sent } = renderChatPane(root, chatSession);
     act(() => {
@@ -159,10 +159,15 @@ describe("ChatPane thinking level selector", () => {
       deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false, thinkingLevel: "high" });
     });
     act(() => trigger().click());
-    const search = requireElement(container.querySelector<HTMLInputElement>(".th-model-picker-search"), "search");
-    expect(document.activeElement).toBe(search);
+    const popup = requireElement(container.querySelector<HTMLElement>(".th-model-picker-popover"), "popup");
+    expect(document.activeElement).toBe(popup);
     // When traversing in DOM order to max and activating the native button.
-    act(() => pressKey(search, "Tab", { shiftKey: true }));
+    for (const value of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement)) throw new Error("missing keyboard focus");
+      act(() => pressKey(focused, "Tab"));
+      expect(document.activeElement).toBe(level(value));
+    }
     expect(document.activeElement).toBe(level("max"));
     act(() => {
       expect(pressKey(level("max"), "Enter").defaultPrevented).toBe(false);

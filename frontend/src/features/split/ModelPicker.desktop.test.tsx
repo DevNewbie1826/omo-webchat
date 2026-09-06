@@ -110,14 +110,39 @@ describe("bounded desktop ModelPicker", () => {
     }
   });
 
-  it("follows reasoning-before-search Tab order in both directions and exits coherently", () => {
-    // Given an open desktop picker, with search initially focused.
+  it("opens with non-text focus and reaches reasoning before search through forward Tab", () => {
+    // Given a desktop picker with reasoning controls.
     const trigger = render(true);
+    // When opening the picker.
     act(() => trigger.click());
+    // Then focus starts on the container and forward Tab follows the control order.
+    const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
     const search = required(container.querySelector<HTMLInputElement>("input"));
     const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
-    expect(document.activeElement).toBe(search);
-    // When traversing backward to thinking, then forward to search.
+    expect(document.activeElement).toBe(popup);
+    expect(popup.tabIndex).toBe(-1);
+    for (const control of [...levels, search]) {
+      act(() => key("Tab"));
+      expect(document.activeElement).toBe(control);
+    }
+    act(() => key("Escape"));
+    expect(container.querySelector(".th-model-picker-popover")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("follows reasoning-before-search Tab order in both directions and exits coherently", () => {
+    // Given an open desktop picker, with its non-text container focused.
+    const trigger = render(true);
+    act(() => trigger.click());
+    const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
+    const search = required(container.querySelector<HTMLInputElement>("input"));
+    const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
+    expect(document.activeElement).toBe(popup);
+    // When traversing forward through reasoning to search, then reversing.
+    for (const control of [...levels, search]) {
+      act(() => key("Tab"));
+      expect(document.activeElement).toBe(control);
+    }
     for (const level of [...levels].reverse()) {
       act(() => key("Tab", true));
       expect(document.activeElement).toBe(level);
