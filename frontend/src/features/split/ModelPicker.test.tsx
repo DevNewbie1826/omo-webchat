@@ -66,16 +66,25 @@ describe("ModelPicker", () => {
     expect(selected).toEqual(["other/gpt-5"]);
   });
 
-  it("opens compact controls without focusing search and pins current provider", () => {
+  it.each([false, true])("shows model and reported thinking with reasoning before search (compact=%s)", compact => {
+    // Given the same identity and reasoning state in each presentation.
     act(() => root.render(<ModelPicker models={models} currentModelKey="openai/gpt-5"
-      placeholder="Model" searchPlaceholder="Search" compact thinkingLevel="high"
+      placeholder="Model" searchPlaceholder="Search" compact={compact} thinkingLevel="high"
+      thinkingLevels={["off", "high", "max"]} onThinkingChange={() => undefined}
       onSelect={(value) => selected.push(value)} />));
     const trigger = container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!;
     act(() => trigger.click());
     const search = document.querySelector<HTMLInputElement>(".th-model-picker-search")!;
-    expect(document.activeElement).not.toBe(search);
+    // Then opening preserves the presentation's focus policy and common source order.
+    expect(document.activeElement === search).toBe(!compact);
+    const popup = document.querySelector(".th-model-picker-popover");
+    expect(Array.from(popup?.children ?? []).map(child => child.className)).toEqual([
+      "th-model-picker-current", "th-thinking-in-picker", "th-model-picker-search", "th-model-picker-list",
+    ]);
     expect(document.querySelector(".th-model-picker-current")?.textContent).toContain("openai");
     expect(trigger.textContent).toContain("high");
+    expect(trigger.getAttribute("aria-label")).toContain("GPT-5");
+    expect(trigger.getAttribute("aria-label")).toContain("high");
     act(() => pressKey(document.activeElement as HTMLElement, "Escape"));
     expect(document.querySelector('[role="listbox"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);

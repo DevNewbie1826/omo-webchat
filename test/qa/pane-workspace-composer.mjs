@@ -27,7 +27,7 @@ export async function composerAndPersistenceScenarios(q) {
         await page.keyboard.press('Enter'); await done();
         const button = page.locator('.th-thinking-level').filter({ hasText: new RegExp(`^${level}$`) });
         for (let i = 0; i < 12; i++) {
-          await page.keyboard.press('Tab');
+          await page.keyboard.press(narrow ? 'Tab' : 'Shift+Tab');
           if (await button.evaluate(e => e === document.activeElement)) break;
         }
         assert(await button.evaluate(e => e === document.activeElement), `Tab must reach thinking ${level}`);

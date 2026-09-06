@@ -110,21 +110,26 @@ describe("bounded desktop ModelPicker", () => {
     }
   });
 
-  it("allows Tab through desktop thinking and Shift+Tab back to search, then exits coherently", () => {
+  it("follows reasoning-before-search Tab order in both directions and exits coherently", () => {
+    // Given an open desktop picker, with search initially focused.
     const trigger = render(true);
     act(() => trigger.click());
     const search = required(container.querySelector<HTMLInputElement>("input"));
     const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
     expect(document.activeElement).toBe(search);
-    for (const level of levels) {
-      act(() => key("Tab"));
+    // When traversing backward to thinking, then forward to search.
+    for (const level of [...levels].reverse()) {
+      act(() => key("Tab", true));
       expect(document.activeElement).toBe(level);
     }
-    for (const control of [...levels.slice(0, -1).reverse(), search]) {
-      act(() => key("Tab", true));
+    for (const control of [...levels.slice(1), search]) {
+      act(() => key("Tab"));
       expect(document.activeElement).toBe(control);
     }
-    act(() => key("Tab", true));
+    // Then forward exit stays native and returns through the trigger.
+    let exit: KeyboardEvent | undefined;
+    act(() => { exit = key("Tab"); });
+    expect(exit?.defaultPrevented).toBe(false);
     expect(container.querySelector(".th-model-picker-popover")).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });

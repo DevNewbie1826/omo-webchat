@@ -6,6 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
 import { startFixture } from "./pane-workspace-ui.mjs";
+import { thinkingScenarios } from "./model-control-thinking.mjs";
 import { shortMenuScenarios } from "./pane-workspace-short-menus.mjs";
 const { chromium } = await import(process.env.QA_PLAYWRIGHT);
 const evidence = resolve(process.argv[2]);
@@ -14,7 +15,7 @@ const leaf = (id, sessionId = null) => ({ kind: "leaf", id, sessionId });
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
 const catalog = [{ provider: "provider-a", modelId: "model-a", name: "Model A" },
   { provider: "provider-b", modelId: "model-b", name: "Model B" }];
-let layout;
+let layout, seed = { reported: "high", catalog };
 const requests = [], frames = [], results = [], errors = [];
 const sockets = new Set();
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -39,13 +40,20 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     close(ws) { sockets.delete(ws); },
     message(ws, raw) {
       const frame = JSON.parse(String(raw)); frames.push(frame);
-      const send = value => ws.send(JSON.stringify({ sessionId: frame.chatId, ...value }));
+      const send = value => ws.send(JSON.stringify({ sessionId: frame.sessionId ?? frame.chatId, ...value }));
       if (frame.type === "chat.create") {
         send({ type: "ready", resumed: true, piSessionId: frame.chatId });
         send({ type: "state", isStreaming: false, isCompacting: false,
-          model: { provider: "provider-a", modelId: "model-a" }, thinkingLevel: "low" });
-        send({ type: "models", models: catalog }); send({ type: "commands", commands: [] });
+          model: { provider: "provider-a", modelId: "model-a" }, thinkingLevel: seed.reported });
+        if (seed.catalog) send({ type: "models", models: seed.catalog });
+        if (seed.catalogFailure) send({ type: "error", code: "provider_error", command: "get_available_models", message: "fixture catalog failure" });
+        send({ type: "commands", commands: [] });
         send({ type: "entries", entries: [], final: true });
+      }
+      if (frame.type === "chat.set") {
+        send(seed.rejectThinking && frame.thinkingLevel
+          ? { type: "error", requestId: frame.requestId, command: "set_thinking_level", code: "provider_error", message: "fixture rejection" }
+          : { type: "control.result", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking_level", success: true });
       }
       if (frame.type === "chat.stats") send({ type: "stats", cost: 0 });
     },
@@ -61,6 +69,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on("pageerror", error => errors.push(String(error)));
   await page.addInitScript(() => {
+    if (location.protocol !== "http:") return; // The reset document has an opaque origin.
     const NativeWebSocket = window.WebSocket;
     window.WebSocket = class extends NativeWebSocket {
       set onmessage(handler) {
@@ -71,6 +80,14 @@ try {
       }
     };
     localStorage.setItem("th-lang", "en"); localStorage.setItem("th-ws-expanded", '["ws"]');
+    window.qaControl = command => new Promise((done, fail) => {
+      const timer = setTimeout(() => { window.removeEventListener('qa:wire', listener); fail(new Error('Control deadline')); }, 8000);
+      function listener(event) {
+        if (event.detail.command !== command || !['control.result', 'error'].includes(event.detail.type)) return;
+        clearTimeout(timer); window.removeEventListener('qa:wire', listener); done(event.detail);
+      }
+      window.addEventListener('qa:wire', listener);
+    });
     window.qaSignal = predicate => new Promise((done, fail) => {
       const observer = new MutationObserver(check);
       const timer = setTimeout(() => { observer.disconnect(); fail(new Error("DOM signal deadline")); }, 8000);
@@ -80,11 +97,14 @@ try {
   });
   const arm = predicate => page.evaluate(source => { window.qaPending = window.qaSignal(new Function(`return (${source})`)()); }, predicate);
   const complete = () => page.evaluate(() => window.qaPending);
-  async function reset(width, height) {
+  async function reset(width, height, next = { reported: "high", catalog }) {
+    await page.goto("about:blank");
+    seed = next;
     layout = leaf("only", stored.id);
     await page.setViewportSize({ width, height });
     await page.goto(`http://127.0.0.1:${server.port}`);
-    await page.evaluate(() => window.qaSignal(() => !!document.querySelector(".th-chat-pane .th-model-picker-btn")));
+    await page.evaluate(expected => window.qaSignal(() =>
+      document.querySelector(".th-model-picker-label")?.textContent === expected), seed.catalog?.length ? "Model A" : "provider-a/model-a");
   }
   const geometry = () => page.evaluate(() => {
     const control = document.querySelector(".th-composer-model .th-model-picker-btn").getBoundingClientRect();
@@ -106,7 +126,9 @@ try {
     assert.equal(await trigger.count(), 1, "model trigger inside the composer band");
     assert.equal(await page.locator(".th-termhead .th-model-picker").count(), 0, "no header model picker");
     assert((await trigger.textContent()).includes("Model A"), "exact current model identity on the trigger");
-    if (narrow) assert((await trigger.textContent()).includes("low"), "compact trigger shows the thinking level");
+    assert.equal(await page.locator(".th-thinking-select").count(), 0, "no duplicate header select");
+    assert((await trigger.textContent()).includes("high"), "trigger shows reported thinking at every width");
+    assert((await trigger.getAttribute("aria-label")).includes("high"), "accessible thinking state");
     const closed = await geometry();
     assert(closed.control.bottom <= closed.capsule.top + 1, "control above the capsule");
     assert(closed.control.bottom <= closed.textarea.top + 1, "control above the textarea");
@@ -136,7 +158,9 @@ try {
         "desktop popup focuses search on open");
     }
     await page.keyboard.type("provider-b");
+    await page.evaluate(() => { window.qaControlPending = window.qaControl('set_model'); });
     await page.keyboard.press("Enter");
+    await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() =>
       document.querySelector(".th-composer-model .th-model-picker-btn")?.textContent.includes("Model B")));
     assert.equal(await page.locator(".th-model-picker-popover").count(), 0, "popup closed after selection");
@@ -155,17 +179,19 @@ try {
     assert.equal(await page.locator(".th-model-picker-current").evaluate(e => e.textContent.includes("provider-b")), true,
       "current provider/model identity pinned in the popup");
     await page.screenshot({ path: resolve(evidence, `model-popup-${narrow ? "narrow" : "desktop"}.png`) });
-    const high = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^high$/ });
+    const max = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^max$/ });
     for (let i = 0; i < 12; i++) {
-      await page.keyboard.press("Tab");
-      if (await high.evaluate(e => e === document.activeElement)) break;
+      await page.keyboard.press(narrow ? "Tab" : "Shift+Tab");
+      if (await max.evaluate(e => e === document.activeElement)) break;
     }
-    assert(await high.evaluate(e => e === document.activeElement), "thinking high reachable from trigger using Tab");
+    assert(await max.evaluate(e => e === document.activeElement), "thinking max reachable from trigger using Tab");
+    await page.evaluate(() => { window.qaControlPending = window.qaControl("set_thinking_level"); });
     await page.keyboard.press("Enter");
+    await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() => !document.querySelector(".th-model-picker-popover")
-      || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("high")));
-    assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["high"],
-      "exactly one thinking request for high");
+      || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("max")));
+    assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["max"],
+      "exactly one thinking request for max");
     // The picker stays open after a thinking change; dismiss and verify focus restoration.
     if (narrow) {
       await page.locator(".th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon").click();
@@ -194,6 +220,11 @@ try {
     await page.screenshot({ path: resolve(evidence, `model-after-${narrow ? "narrow" : "desktop"}.png`) });
   }
   assert.deepEqual(errors, []);
+
+  await thinkingScenarios({ page, frames, results, reset,
+    deliver: frame => { for (const socket of sockets) socket.send(JSON.stringify({ sessionId: stored.id, ...frame })); },
+    shot: name => page.screenshot({ path: resolve(evidence, name) }),
+  });
 
   // Shared strengthened checker replaces pane-only bounds and forced ancestor scrolling.
   // It checks all six short layouts plus 53 models, OPEN captures, ordinary wheel

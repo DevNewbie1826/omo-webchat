@@ -13,7 +13,9 @@ export async function shortMenuScenarios(q) {
   ]) {
     await q.scenario(`bounded-open-menu-${name}`, async () => {
     const page = await q.reset({ layout }, { width, height });
-    await page.evaluate(() => window.qaSignal(() => document.querySelector('[data-pane-id="a"] .th-model-picker-btn')));
+    await page.evaluate(() => window.qaSignal(() =>
+      document.querySelector('[data-pane-id="a"] .th-model-picker-label')?.textContent === 'Model A'
+      && document.querySelector('[data-pane-id="a"] .th-model-picker-thinking')?.textContent === 'low'));
     const trigger = page.locator('[data-pane-id="a"] .th-model-picker-btn');
     const armControl = command => page.evaluate(command => {
       window.controlDone = new Promise((done, fail) => {
@@ -114,11 +116,11 @@ export async function shortMenuScenarios(q) {
         const e = document.querySelectorAll('.th-model-picker-search, .th-thinking-level')[index];
         const rect = e.getBoundingClientRect(), popup = document.querySelector('.th-model-picker-popover').getBoundingClientRect();
         const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        return { rect: rect.toJSON(), popup: popup.toJSON(), hit: e === hit || e.contains(hit), text: e.textContent };
+        return { rect: rect.toJSON(), popup: popup.toJSON(), hit: e === hit || e.contains(hit), text: e.textContent, thinking: e.classList.contains('th-thinking-level') };
       }, index);
       assert(control.hit && control.rect.top >= control.popup.top && control.rect.bottom <= control.popup.bottom,
         `${name}: complete pointer control ${index}`);
-      const changed = index ? fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === control.text) : null;
+      const changed = control.thinking ? fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === control.text) : null;
       if (changed) await armControl('set_thinking_level');
       await page.mouse.click(control.rect.x + control.rect.width / 2, control.rect.y + control.rect.height / 2);
       if (changed) { await changed; await controlDone(); }
@@ -133,11 +135,11 @@ export async function shortMenuScenarios(q) {
     await trigger.focus();
     await page.keyboard.press('Enter');
     const keyboardStart = fixture.frames.length;
-    for (const expected of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
-      await page.keyboard.press('Tab');
+    for (const expected of ['max', 'xhigh', 'high', 'medium']) {
+      await page.keyboard.press('Shift+Tab');
       assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
     }
-    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(() => document.activeElement.textContent), 'high');
     await shot('KEYBOARD-high');
     const high = fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === 'high');
@@ -149,12 +151,12 @@ export async function shortMenuScenarios(q) {
     await page.keyboard.press('Escape');
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');
-    for (let i = 0; i < 8; i++) await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await page.locator('.th-chat-attach-btn').evaluate(e => e === document.activeElement));
     await trigger.focus();
     await page.keyboard.press('Enter');
-    await page.keyboard.press('Shift+Tab');
+    for (let i = 0; i < 8; i++) await page.keyboard.press('Shift+Tab');
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');

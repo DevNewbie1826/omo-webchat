@@ -165,7 +165,8 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     }
   };
 
-  const buttonLabel = current ? labelOf(current) : placeholder;
+  const buttonLabel = current ? labelOf(current) : currentModelKey || placeholder;
+  const triggerLabel = thinkingLevel ? `${buttonLabel}, ${thinkingLevel}` : buttonLabel;
   const thinking = thinkingLevels && onThinkingChange ? (
     <div className="th-thinking-in-picker" role="group" aria-label={thinkingLabel}>
       <span className="th-thinking-in-picker-label">{thinkingLabel}</span>
@@ -195,7 +196,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
         {compact && <button type="button" className="th-btn-icon" aria-label={t("common.close")} onClick={close}><IconX size={16} /></button>}
       </div>
-      {compact && thinking}
+      {thinking}
       <input
         ref={searchRef}
         className="th-model-picker-search"
@@ -212,7 +213,6 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
           setActiveKey(null);
         }}
       />
-      {!compact && thinking}
       <div className="th-model-picker-list" id={listboxId} role="listbox">
         {matches.map((model, index) => {
           const active = index === activeIndex;
@@ -247,8 +247,8 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         className="th-model-picker-btn"
         aria-haspopup={compact ? "dialog" : "listbox"}
         aria-expanded={open}
-        aria-label={buttonLabel}
-        title={buttonLabel}
+        aria-label={triggerLabel}
+        title={triggerLabel}
         onClick={() => {
           if (!open) {
             setQuery("");
@@ -261,7 +261,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
           <IconSettings size={14} />
         </span>
         <span className="th-model-picker-label">{buttonLabel}</span>
-        {compact && thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
+        {thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
         <IconChevron size={14} />
       </button>
       {open && (compact ? createPortal(popover, document.body) : popover)}
