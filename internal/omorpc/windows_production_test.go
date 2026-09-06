@@ -89,13 +89,17 @@ func productionPipeFixtureAt(t *testing.T, path string, secret, accepted []byte)
 			}
 		}
 		mu.Unlock()
-		if err := listener.Close(); err != nil {
-			t.Error(err)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		shutdown := fixtureListenerShutdown{
+			listener: listener,
+			done:     done,
+			wake: func(ctx context.Context) (net.Conn, error) {
+				return winio.DialPipeContext(ctx, name)
+			},
 		}
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("pipe fixture did not stop")
+		if err := shutdown.stop(ctx); err != nil {
+			t.Error(err)
 		}
 	})
 	go func() {
