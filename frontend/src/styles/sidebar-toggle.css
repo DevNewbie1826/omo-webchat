@@ -1,4 +1,7 @@
-.th-sidebar-rail {
+/* The rail exists only while collapsed: its sole job is the reopen toggle.
+   The expanded shell allocates zero rail width; collapse lives in the
+   sidebar toolbar (.th-sidebar-nav) as a trailing icon action. */
+.th-sidebar--collapsed .th-sidebar-rail {
   flex: 0 0 var(--th-space-11);
   display: flex;
   justify-content: center;
@@ -6,31 +9,30 @@
   padding-top: var(--th-space-2);
 }
 
-
 .th-sidebar-toggle {
-  position: relative;
-  --collapse-x: 0px;
-  transform: translateX(var(--collapse-x));
-  width: 26px;
-  height: 26px;
-  display: flex;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  border: 1px solid var(--th-border-raised);
-  background: var(--th-surface-raised);
-  color: var(--th-muted);
-  box-shadow: var(--th-shadow-raised);
-  z-index: 50;
-  transition: color var(--th-dur-fast) var(--th-ease),
-    background var(--th-dur-fast) var(--th-ease),
-    transform var(--th-dur-slow) var(--th-ease);
 }
 
-.th-sidebar-toggle:hover {
+/* Collapsed reopen: a bordered Raised icon button so the rail's sole action
+   stays discoverable against the Surface shell. The expanded toolbar toggle
+   keeps the bare .th-btn-icon treatment of its neighbours. */
+.th-sidebar--collapsed .th-sidebar-toggle {
+  border-radius: var(--th-radius-sm);
+  border: 1px solid var(--th-border-raised);
+  background: var(--th-surface-raised);
+  color: var(--th-text-dim);
+  box-shadow: var(--th-shadow-raised);
+  transition: color var(--th-dur-fast) var(--th-ease),
+    background var(--th-dur-fast) var(--th-ease);
+}
+
+.th-sidebar--collapsed .th-sidebar-toggle:hover {
   color: var(--th-text);
   background: var(--th-hover);
-  transform: translateX(var(--collapse-x)) scale(1.08);
 }
 
 .th-sidebar-toggle svg {
@@ -45,19 +47,6 @@
   transform: rotate(0deg);
 }
 
-.th-sidebar--collapsed .th-sidebar-toggle {
-  --collapse-x: 0px;
-  color: var(--th-text-dim);
-  background: var(--th-surface);
-  border-color: var(--th-border-strong);
-}
-
 .th-sidebar--collapsed .th-sidebar-inner {
   visibility: hidden;
-}
-
-@media (max-width: 768px) {
-  .th-sidebar-rail {
-    display: none;
-  }
 }

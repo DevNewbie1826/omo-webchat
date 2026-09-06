@@ -336,8 +336,9 @@ describe("visual accessibility contracts", () => {
     expect(wide).not.toMatch(/\.th-provider-badge\s*\{[^}]*display:\s*none/);
     expect(wide).not.toMatch(/\.th-model-picker-label\s*\{[^}]*display:\s*none/);
 
-    // At and below 600px, the named model control moves into the composer.
-    // Its responsive width can shrink without hiding its name.
+    // The model control lives in the composer band at every width
+    // (DESIGN.md "Model control placement"); the named control keeps its
+    // label visible while the compact tier swaps in the settings affordance.
     const compact = chatPane.match(/@container chat-pane \(max-width: 600px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(compact).toMatch(
       /\.th-chat-pane \.th-provider-badge\s*\{[^}]*display:\s*none/,
@@ -359,6 +360,63 @@ describe("visual accessibility contracts", () => {
     });
     expect(hiddenResponsiveFilesRules).toEqual([]);
     expect(wide).toMatch(/\.th-chat-pane \.th-files-toggle,[\s\S]*?\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
+  });
+
+  it("anchors the model control above the composer with an upward bounded desktop popup", () => {
+    // DESIGN.md "Model control placement": the control lives in the composer
+    // band, directly above the capsule and right-aligned within the reading
+    // column, at every pane width.
+    const slot = ruleBody(chatPane, ".th-composer-model");
+    expect(declarationValue(slot, "justify-content")).toBe("flex-end");
+    expect(slot).toMatch(/margin-inline:\s*auto/);
+    const slotPicker = ruleBody(chatPane, ".th-composer-model .th-model-picker");
+    expect(declarationValue(slotPicker, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(slotPicker, "min-width")).toBe("0");
+    expect(declarationValue(slotPicker, "max-width")).toBe("100%");
+
+    // The header no longer sizes the picker; nothing may remove it from the
+    // composer band on either side of the 600px container breakpoint.
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker"), "max-width")).toBe("");
+    const hiddenPickerRules: string[] = [];
+    postcss.parse(chatPane).walkAtRules("container", (atRule) => {
+      atRule.walkRules((rule) => {
+        if (!rule.selector.includes(".th-model-picker")) return;
+        rule.walkDecls("display", (declaration) => {
+          if (declaration.value.trim().toLowerCase() === "none") hiddenPickerRules.push(rule.selector);
+        });
+      });
+    });
+    expect(hiddenPickerRules).toEqual([]);
+
+    // The desktop popup opens upward from the composer-band control and stays
+    // bounded to the pane/viewport; the narrow sheet keeps its own fixed,
+    // viewport-contained geometry. Short panes clamp the popup further with a
+    // measured inline max-height from ModelPicker, so the static bound stays
+    // viewport-based and the list scrolls inside the clamped popup.
+    const popup = ruleBody(chatPane, ".th-model-picker-popover");
+    expect(declarationValue(popup, "bottom")).toBe("calc(100% + var(--th-space-1))");
+    expect(declarationValue(popup, "right")).toBe("0");
+    expect(declarationValue(popup, "max-height")).toBe("min(280px, 50dvh)");
+    expect(popup).not.toMatch(/(?:^|;)\s*top\s*:/);
+    // Mobile keeps its pinned chrome and list scrollport. Desktop lets the
+    // chrome scroll too, so it cannot squeeze options to an unreadable strip.
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list"), "overflow-y")).toBe("auto");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-search"), "flex")).toBe("none");
+    const desktop = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet)");
+    expect(declarationValue(desktop, "overflow-y")).toBe("auto");
+    expect(declarationValue(desktop, "overscroll-behavior")).toBe("contain");
+    const desktopList = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list");
+    expect(declarationValue(desktopList, "flex")).toBe("none");
+    expect(declarationValue(desktopList, "overflow-y")).toBe("visible");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list > button"), "flex")).toBe("none");
+    const shortRow = ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-list > button");
+    expect(declarationValue(shortRow, "flex-direction")).toBe("row");
+    expect(declarationValue(shortRow, "padding")).toBe("var(--th-space-1) var(--th-space-2)");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-search"), "padding-block"))
+      .toBe("var(--th-space-1)");
+    const sheet = ruleBody(chatPane, ".th-model-picker-popover--sheet");
+    expect(declarationValue(sheet, "position")).toBe("fixed");
+    expect(sheet).toMatch(/(?:^|;)\s*top\s*:/);
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {
@@ -397,13 +455,10 @@ describe("visual accessibility contracts", () => {
     // control target while its long copy contributes no unbounded minimum.
     const provider = ruleBody(chatPane, ".th-provider-badge");
     const thinking = ruleBody(chatPane, ".th-thinking-select");
-    const modelPicker = ruleBody(chatPane, ".th-model-picker");
     const modelButton = ruleBody(chatPane, ".th-model-picker-btn");
     const resync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
     expect(declarationValue(provider, "flex")).toMatch(/^0 1 /);
     expect(declarationValue(thinking, "flex")).toMatch(/^0 1 /);
-    expect(declarationValue(modelPicker, "flex")).toMatch(/^0 1 /);
-    expect(declarationValue(modelPicker, "min-width")).toBe("0");
     expect(declarationValue(modelButton, "min-width")).toBe("0");
     expect(declarationValue(modelButton, "overflow")).toBe("hidden");
     expect(declarationValue(resync, "flex")).toMatch(/^0 1 /);
@@ -424,7 +479,6 @@ describe("visual accessibility contracts", () => {
     )?.[1] ?? "";
     const compactResync = ruleBody(compact, ".th-chat-pane .th-chat-resync-btn");
     const expandedResync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
-    const expandedModel = ruleBody(chatPane, ".th-model-picker");
     const pixels = (value: string): number => {
       const token = wholeVarToken(value);
       return Number.parseFloat((token ? tokenValue(token) : value).replace("px", ""));
@@ -449,10 +503,11 @@ describe("visual accessibility contracts", () => {
     // Expanded mode may show all three split actions plus the viewport edge
     // action. Count that conservative combination even though the app normally
     // makes the mobile menu and desktop split chrome mutually exclusive. Long
-    // provider/path/thinking/model/resync text contributes only its CSS minimum;
+    // provider/path/thinking/resync text contributes only its CSS minimum;
     // ellipsis absorbs the remaining width rather than increasing this sum.
+    // The model control lives in the composer band, not the header.
     const expandedWidths =
-      titleMinimum + iconWidth * 6 + pixels(declarationValue(expandedModel, "min-width")) +
+      titleMinimum + iconWidth * 6 +
       pixels(declarationValue(expandedResync, "min-width"));
     const expandedAggregate = horizontalPadding + expandedWidths + gap * 9;
     for (const paneWidth of [601, 640, 680]) expect(expandedAggregate).toBeLessThanOrEqual(paneWidth);
@@ -570,6 +625,36 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(running).toMatch(/animation:\s*th-tool-spin/);
     expect(toolCard).toContain(".th-tool-glyph--ok");
     expect(toolCard).toContain(".th-tool-glyph--error");
+  });
+});
+
+describe("compact sidebar shell contracts", () => {
+  // Approved pane-workspace contract (DESIGN.md "Geometry"): the expanded
+  // sidebar is one content column at --th-sidebar-w (264px) with collapse
+  // living inside .th-sidebar-nav; only the collapsed state keeps a 44px
+  // rail whose sole job is the reopen toggle. --th-space-11 stays the shared
+  // 44px coarse-pointer touch size.
+  it("starts the sidebar shell at 264px while the shared touch token stays 44px", () => {
+    expect(tokenValue("--th-sidebar-w")).toBe("264px");
+    expect(tokenValue("--th-space-11")).toBe("44px");
+  });
+
+  it("allocates zero expanded rail width and keeps the rail collapsed-only", () => {
+    expect(sidebarToggle).not.toMatch(/(?:^|\})\s*\.th-sidebar-rail\s*\{/);
+    const rail = ruleBody(sidebarToggle, ".th-sidebar--collapsed .th-sidebar-rail");
+    expect(declarationValue(rail, "display")).toBe("flex");
+    expect(declarationValue(rail, "flex")).toBe("0 0 var(--th-space-11)");
+    expect(declarationValue(ruleBody(sidebar, ".th-sidebar--collapsed"), "width")).toBe("var(--th-space-11)");
+  });
+
+  it("gives the expanded inner column the full shell width", () => {
+    expect(declarationValue(ruleBody(sidebar, ".th-sidebar-inner"), "width")).toBe("var(--th-sidebar-w)");
+  });
+
+  it("carries the collapse toggle as a toolbar icon action", () => {
+    const toggle = ruleBody(sidebarToggle, ".th-sidebar-toggle");
+    expect(declarationValue(toggle, "width")).toBe("28px");
+    expect(declarationValue(toggle, "height")).toBe("28px");
   });
 });
 

@@ -28,7 +28,8 @@ const i18n: I18nValue = {
 function makeActions(overrides: Partial<SplitActions> = {}): SplitActions {
 	return {
 		onFocusPane: () => undefined,
-		onAssign: () => undefined,
+		onOpenSession: async () => "opened",
+		onLoadMoreSessions: async () => undefined,
 		onCreateTerminal: () => undefined,
 		onSplit: () => undefined,
 		onClosePane: () => undefined,
@@ -275,7 +276,7 @@ describe("SplitView empty pane", () => {
 			).map((row) => row.textContent);
 		}
 
-		it("renders unplaced stored sessions in sessionLists (MRU) order, not ws.chats order", () => {
+		it("renders the full session inventory in MRU order, not ws.chats order", () => {
 			const mruChats = [
 				{ id: "s-1", name: "Session 1", provider: "omo" as const },
 				{ id: "s-2", name: "Session 2", provider: "omo" as const },
@@ -285,7 +286,7 @@ describe("SplitView empty pane", () => {
 				{ id: "ws-mru", name: "mru", path: "/repo/mru", chats: mruChats },
 			];
 			// Server MRU order deliberately differs from the ws.chats append order,
-			// and a discovered row must never surface in the picker.
+			// including discovered and already placed rows.
 			const mruLists = new Map<string, readonly WorkspaceSession[]>([
 				[
 					"ws-mru",
@@ -311,7 +312,7 @@ describe("SplitView empty pane", () => {
 				mruLists,
 				mruPages,
 			);
-			expect(rowNames()).toEqual(["Session 3", "Session 2"]);
+			expect(rowNames()).toEqual(["Discovered", "Session 3", "Session 1", "Session 2"]);
 		});
 
 		it("requests the first session page once and shows a loading note while it is in flight", () => {
@@ -375,14 +376,14 @@ describe("SplitView empty pane", () => {
 			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
 		});
 
-		it("hides chats already placed in other panes", () => {
+		it("includes sessions already placed in other panes so opening can move them", () => {
 			render(leaf(null), makeActions(), true, sessions, workspaces, new Set(["chat-a1"]), pickerLists, pickerPages);
-			expect(rowNames()).toEqual(["add picker tests"]);
+			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
 		});
 
-		it("hides stored session rows that are absent from the resolvable sessions map", () => {
+		it("includes stored session rows that are absent from the resolvable sessions map", () => {
 			render(leaf(null), makeActions(), true, new Map(), workspaces, new Set(), pickerLists, pickerPages);
-			expect(rowNames()).toEqual([]);
+			expect(rowNames()).toEqual(["fix login flow", "add picker tests"]);
 		});
 
 		it("falls back to the first workspace when the selected one disappears", () => {

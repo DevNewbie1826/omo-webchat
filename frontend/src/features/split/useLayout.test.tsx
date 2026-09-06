@@ -47,7 +47,19 @@ describe("useLayout assignment", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("does not let a late restore overwrite a local mutation", async () => {
+	it("cancels its pending persistence when unmounted", () => {
+    vi.useFakeTimers();
+    try {
+      act(() => root.render(<LayoutProbe onReady={layout => {
+        if (layout.placed.size === 0) layout.assignSession(layout.focusedPaneId, "session");
+      }} />));
+      expect(vi.getTimerCount()).toBe(1);
+      act(() => root.unmount());
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not let a late restore overwrite a local mutation", async () => {
 		let resolveRestore: (layout: unknown) => void = () => undefined;
 		layoutMocks.getLayout.mockReturnValue(new Promise((resolve) => {
 			resolveRestore = resolve;

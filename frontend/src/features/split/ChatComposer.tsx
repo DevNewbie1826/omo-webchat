@@ -14,8 +14,11 @@ import { detectFileTrigger, type FileMatch } from "./fileSearch";
 import type { ChatDraft } from "./chatSessionTypes";
 import { useFileMention } from "./useFileMention";
 import { useImageAttachment } from "./useImageAttachment";
+import { useSessionDraft } from "./sessionDraft";
+import type { ChatSessionRef } from "../workspace/workspace";
 
 interface ChatComposerProps {
+  readonly session?: Pick<ChatSessionRef, "wsId" | "id">;
   readonly modelControl?: ReactNode;
   readonly commands: readonly CommandEntry[];
   readonly running: boolean;
@@ -30,17 +33,16 @@ interface ChatComposerProps {
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ modelControl, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ session, modelControl, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
-  const [input, setInput] = useState("");
-  const [draftCommand, setDraftCommand] = useState<CommandEntry | null>(null);
+  const { input, setInput, draftCommand, setDraftCommand, pendingImage, setPendingImage } = useSessionDraft(session);
   const [paletteHidden, setPaletteHidden] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const paletteId = useId();
   const paletteListboxId = `${paletteId}-command-listbox`, paletteOptionIdPrefix = `${paletteId}-command-option`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isMobile = useMediaQuery(MOBILE_QUERY);
-  const { pendingImage, setPendingImage, clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers } = useImageAttachment();
+  const { clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers } = useImageAttachment(pendingImage, setPendingImage);
   const [caret, setCaret] = useState(0);
   const fileId = useId();
   const fileListboxId = `${fileId}-file-listbox`, fileOptionIdPrefix = `${fileId}-file-option`;

@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useT } from "../../i18n";
 import { ChatPane } from "./ChatPane";
+import { PaneResizeControl, PaneResizeSurface, PaneSizeOverlay, usePaneResize } from "./PaneResize";
+import { minimumPaneSpan, PANE_DIVIDER_SIZE, RATIO_MIN, RATIO_MAX } from "./paneTree";
+import { SessionPicker } from "./SessionPicker";
 import { connectChat } from "../../lib/chatWs";
 import { IconX } from "../../components/icons";
 import type { PaneNode, SplitDir } from "./paneTree";
@@ -11,7 +14,8 @@ import type { WorkspaceSessionPaging } from "../workspace/useWorkspaces";
 
 export interface SplitActions {
   readonly onFocusPane: (paneId: string) => void;
-  readonly onAssign: (paneId: string, tmId: string, wsId?: string) => void;
+  readonly onOpenSession: (paneId: string, ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active">;
+  readonly onLoadMoreSessions: (wsId: string) => Promise<void>;
   readonly onCreateTerminal: (paneId: string, wsId: string) => void;
   readonly onSplit: (paneId: string, dir: SplitDir) => void;
   readonly onClosePane: (paneId: string) => void;
@@ -39,45 +43,36 @@ export interface SplitViewProps {
 type LeafData = Extract<PaneNode, { readonly kind: "leaf" }>;
 type SplitData = Extract<PaneNode, { readonly kind: "split" }>;
 
-const DIVIDER_SIZE = 4;
-const MIN_PANE_SIZE = 320;
+type TreeProps = SplitViewProps & { readonly boundaries: readonly SplitData[] };
 
-function safeRatioBounds(containerSize: number): { readonly min: number; readonly max: number } {
-  const usableSize = Math.max(0, containerSize - DIVIDER_SIZE);
-  if (usableSize < MIN_PANE_SIZE * 2) return { min: 0.5, max: 0.5 };
-  const min = MIN_PANE_SIZE / usableSize;
-  return { min, max: 1 - min };
+function safeRatioBounds(containerSize: number, node: SplitData): { readonly min: number; readonly max: number } {
+  const usableSize = Math.max(0, containerSize - PANE_DIVIDER_SIZE);
+  const first = minimumPaneSpan(node.first, node.dir), second = minimumPaneSpan(node.second, node.dir);
+  // When the viewport cannot fit the intrinsic minima, distribute the deficit
+  // proportionally rather than overflowing or starving a nested subtree.
+  if (usableSize < first + second) {
+    const ratio = first / (first + second);
+    return { min: ratio, max: ratio };
+  }
+  return { min: Math.max(RATIO_MIN, first / usableSize), max: Math.min(RATIO_MAX, 1 - second / usableSize) };
 }
 
 function clampRatio(ratio: number, bounds: { readonly min: number; readonly max: number }): number {
   return Math.min(bounds.max, Math.max(bounds.min, ratio));
 }
 
-function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName }: SplitViewProps & { readonly node: LeafData }) {
+function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName, boundaries }: TreeProps & { readonly node: LeafData }) {
   const { t } = useT();
-  const [selectedWorkspace, setSelectedWorkspace] = useState("");
+  const [pane, setPane] = useState<HTMLDivElement | null>(null);
+  const resizeControl = <PaneResizeControl boundaries={boundaries} />;
   const session = node.sessionId !== null ? sessions.get(node.sessionId) : undefined;
-  const workspaceID = workspaces.some((workspace) => workspace.id === selectedWorkspace)
-    ? selectedWorkspace
-    : (workspaces[0]?.id ?? "");
-  const paging = workspaceID !== "" ? sessionPages.get(workspaceID) : undefined;
-  const pageLoading = paging?.loading === true && paging.ready !== true;
-
-  // The picker reads the sidebar's paged MRU source; make sure the selected
-  // workspace's first page is on its way. Repeat suppression lives in the
-  // hook (ready/in-flight guard), so re-renders cannot loop fetches.
-  useEffect(() => {
-    if (session || workspaceID === "") return;
-    onEnsureSessions(workspaceID);
-  }, [session, workspaceID, onEnsureSessions]);
-
   if (!session) {
-    const activeWorkspace = workspaces.find((workspace) => workspace.id === workspaceID);
-    const unplaced = (sessionLists.get(workspaceID) ?? []).filter(
-      (entry) => entry.source === "stored" && !placed.has(entry.id) && sessions.has(entry.id),
-    );
     return (
-      <div className="th-pane-wrap">
+      <div className={`th-pane-wrap${focusedPaneId === node.id ? " th-pane--focused" : ""}`} data-pane-id={node.id} ref={setPane}
+        onPointerDown={event => { if (event.target instanceof Node && event.currentTarget.contains(event.target)) actions.onFocusPane(node.id); }}
+        onFocus={event => { if (event.currentTarget.contains(event.target)) actions.onFocusPane(node.id); }}>
+        {resizeControl}
+        <PaneSizeOverlay pane={pane} />
         {splitEnabled && (
           <button
             type="button"
@@ -89,60 +84,20 @@ function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPag
             <IconX size={14} />
           </button>
         )}
-        <div className="th-picker-pane">
-          <div className="th-picker-pane-title">{t("split.pickTitle")}</div>
-          <select
-            aria-label={t("split.pickWorkspace")}
-            value={workspaceID}
-            disabled={workspaces.length === 0}
-            onChange={(event) => setSelectedWorkspace(event.target.value)}
-          >
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-            ))}
-          </select>
-          {pageLoading ? (
-            <div className="th-picker-pane-empty">{t("split.pickLoading")}</div>
-          ) : unplaced.length > 0 ? (
-            <div className="th-picker-pane-list">
-              {unplaced.map((entry) => {
-                const label = `${activeWorkspace?.name ?? ""} / ${entry.name}`;
-                return (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    className="th-picker-pane-item"
-                    title={label}
-                    aria-label={label}
-                    onClick={() => actions.onAssign(node.id, entry.id, workspaceID)}
-                  >
-                    <span className="th-picker-pane-name">{entry.name}</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="th-picker-pane-empty">{t(workspaces.length === 0 ? "split.pickEmpty" : "split.pickEmptyFiltered")}</div>
-          )}
-          <div className="th-picker-pane-create">
-            <button
-              type="button"
-              className="th-btn th-btn--primary"
-              disabled={!workspaceID}
-              onClick={() => actions.onCreateTerminal(node.id, workspaceID)}
-            >
-              {t("split.pickNew")}
-            </button>
-          </div>
-        </div>
+        <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
+          onEnsureSessions={onEnsureSessions} onLoadMoreSessions={actions.onLoadMoreSessions}
+          onOpenSession={(ws, entry, force) => actions.onOpenSession(node.id, ws, entry, force)}
+          onNewChat={wsId => actions.onCreateTerminal(node.id, wsId)} />
       </div>
     );
   }
   return (
-    <div className="th-pane-wrap">
+    <div className="th-pane-wrap" data-pane-id={node.id} ref={setPane}>
+      <PaneSizeOverlay pane={pane} />
       <ChatPane
         key={session.id}
         chatSession={session}
+        resizeControl={resizeControl}
         focused={focusedPaneId === node.id}
         splitEnabled={splitEnabled}
         onFocus={() => actions.onFocusPane(node.id)}
@@ -157,13 +112,15 @@ function LeafView({ node, workspaces, placed, sessions, sessionLists, sessionPag
   );
 }
 
-function SplitNodeView(props: SplitViewProps & { readonly node: SplitData }) {
+function SplitNodeView(props: TreeProps & { readonly node: SplitData }) {
   const { node, actions } = props;
   const { t } = useT();
   const containerRef = useRef<HTMLDivElement>(null);
+  const hintId = useId();
+  const resize = usePaneResize();
   const dragging = useRef(false);
   const [containerSize, setContainerSize] = useState(0);
-  const bounds = safeRatioBounds(containerSize);
+  const bounds = safeRatioBounds(containerSize, node);
   const displayedRatio = clampRatio(node.ratio, bounds);
 
   useEffect(() => {
@@ -177,9 +134,16 @@ function SplitNodeView(props: SplitViewProps & { readonly node: SplitData }) {
     return () => observer.disconnect();
   }, [node.dir]);
 
+  useEffect(() => () => {
+    resize.dragEnded(node.id);
+    resize.dividerBlurred(node.id);
+  }, [node.id, resize.dragEnded, resize.dividerBlurred]);
+
   const onPointerDown = (ev: ReactPointerEvent<HTMLHRElement>): void => {
     ev.preventDefault();
+    ev.currentTarget.focus();
     dragging.current = true;
+    resize.dragStarted(node.id);
     ev.currentTarget.setPointerCapture(ev.pointerId);
   };
 
@@ -190,37 +154,43 @@ function SplitNodeView(props: SplitViewProps & { readonly node: SplitData }) {
     const rect = el.getBoundingClientRect();
     const ratio =
       node.dir === "h"
-        ? (ev.clientX - rect.left) / rect.width
-        : (ev.clientY - rect.top) / rect.height;
+        ? (ev.clientX - rect.left - PANE_DIVIDER_SIZE / 2) / (rect.width - PANE_DIVIDER_SIZE)
+        : (ev.clientY - rect.top - PANE_DIVIDER_SIZE / 2) / (rect.height - PANE_DIVIDER_SIZE);
     actions.onRatioChange(node.id, clampRatio(ratio, bounds));
   };
 
   const endDrag = (ev: ReactPointerEvent<HTMLHRElement>): void => {
     if (!dragging.current) return;
     dragging.current = false;
+    resize.dragEnded(node.id);
     if (ev.currentTarget.hasPointerCapture(ev.pointerId)) {
       ev.currentTarget.releasePointerCapture(ev.pointerId);
     }
   };
 
   const onSeparatorKeyDown = (event: ReactKeyboardEvent<HTMLHRElement>): void => {
+    if (event.key === "Escape") { event.preventDefault(); resize.restoreFocus(); return; }
     let ratio = displayedRatio;
     if (event.key === "Home") ratio = bounds.min;
     else if (event.key === "End") ratio = bounds.max;
-    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") ratio -= 0.05;
-    else if (event.key === "ArrowRight" || event.key === "ArrowDown") ratio += 0.05;
+    else if (event.key === (node.dir === "h" ? "ArrowLeft" : "ArrowUp")) ratio -= 0.05;
+    else if (event.key === (node.dir === "h" ? "ArrowRight" : "ArrowDown")) ratio += 0.05;
     else return;
     event.preventDefault();
     actions.onRatioChange(node.id, clampRatio(ratio, bounds));
   };
 
   return (
-    <div ref={containerRef} className={`th-split th-split--${node.dir}`}>
+    <div ref={containerRef} className={`th-split th-split--${node.dir}`} data-split-id={node.id}>
       <div className="th-split-child" style={{ flexGrow: displayedRatio }}>
-        <SplitView {...props} node={node.first} />
+        <SplitTree {...props} node={node.first} boundaries={[node, ...props.boundaries]} />
       </div>
       <hr
-        className="th-divider"
+        className={`th-divider${resize.draggingId === node.id ? " th-divider--dragging" : ""}`}
+        role="separator"
+        onFocus={event => resize.dividerFocused(node.id, event.relatedTarget)}
+        onBlur={() => resize.dividerBlurred(node.id)}
+        aria-describedby={hintId}
         tabIndex={0}
         aria-orientation={node.dir === "h" ? "vertical" : "horizontal"}
         aria-label={t("split.resize")}
@@ -232,18 +202,24 @@ function SplitNodeView(props: SplitViewProps & { readonly node: SplitData }) {
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
       />
+      <span id={hintId} className="th-divider-hint">{t(node.dir === "h" ? "split.resizeHintH" : "split.resizeHintV")}</span>
       <div className="th-split-child" style={{ flexGrow: 1 - displayedRatio }}>
-        <SplitView {...props} node={node.second} />
+        <SplitTree {...props} node={node.second} boundaries={[node, ...props.boundaries]} />
       </div>
     </div>
   );
 }
 
-export function SplitView(props: SplitViewProps) {
+function SplitTree(props: TreeProps) {
   const { node } = props;
   if (node.kind === "split") {
     return <SplitNodeView {...props} node={node} />;
   }
   return <LeafView {...props} node={node} />;
+}
+
+export function SplitView(props: SplitViewProps) {
+  return <PaneResizeSurface><SplitTree {...props} boundaries={[]} /></PaneResizeSurface>;
 }

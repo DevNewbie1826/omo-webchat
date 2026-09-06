@@ -1,9 +1,11 @@
+import type { ReactNode } from "react";
 import { IconMenu } from "./icons";
 import { useT } from "../i18n";
 import type { Workspace } from "../features/workspace/workspace";
 
 export interface ChatEmptyStateProps {
   readonly mobile: boolean;
+  readonly sessionPicker?: ReactNode;
   readonly workspaces: readonly Workspace[];
   readonly onOpenSidebar: () => void;
   readonly onNewWorkspace: () => void;
@@ -12,6 +14,7 @@ export interface ChatEmptyStateProps {
 
 export function ChatEmptyState({
   mobile,
+  sessionPicker,
   workspaces,
   onOpenSidebar,
   onNewWorkspace,
@@ -33,6 +36,7 @@ export function ChatEmptyState({
           <IconMenu size={18} />
         </button>
       )}
+      {sessionPicker ?? <>
       <div className="th-empty-glyph">{t("app.title")}</div>
       <h2 className="th-empty-title">{t("empty.title")}</h2>
       <p className="th-empty-hint">{t("empty.hint")}</p>
@@ -43,6 +47,7 @@ export function ChatEmptyState({
       >
         {t(hasWorkspaces ? "empty.newChat" : "empty.newWorkspace")}
       </button>
+      </>}
     </div>
   );
 }

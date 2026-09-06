@@ -2,8 +2,7 @@ import { useRef, useState } from "react";
 import type { DragEvent } from "react";
 import type { PendingImage } from "./chatSessionTypes";
 
-export function useImageAttachment() {
-  const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
+export function useImageAttachment(pendingImage: PendingImage | null, setPendingImage: (image: PendingImage | null) => void) {
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 

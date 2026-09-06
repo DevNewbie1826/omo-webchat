@@ -1,10 +1,13 @@
 
 .th-empty {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
   gap: var(--th-space-3);
   color: var(--th-faint);
   padding: var(--th-space-6);
@@ -127,4 +130,11 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--th-border-strong);
+}
+
+.th-empty > .th-picker-pane {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
 }

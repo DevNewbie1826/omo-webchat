@@ -21,7 +21,7 @@ export interface LayoutApi {
   readonly focusPane: (paneId: string) => void;
   /** Whether the pane is still in the current tree (including unrendered ref updates). */
   readonly hasPane: (paneId: string) => boolean;
-  readonly assignSession: (paneId: string, tmId: string) => void;
+  readonly assignSession: (paneId: string, tmId: string, focus?: boolean) => void;
   readonly split: (paneId: string, dir: SplitDir) => void;
   readonly closePane: (paneId: string) => void;
   readonly changeRatio: (splitId: string, ratio: number) => void;
@@ -48,6 +48,7 @@ export function useLayout(authed: boolean): LayoutApi {
   const rootRef = useRef(root);
   const saveTimer = useRef(0);
   const mutationGeneration = useRef(0);
+  useEffect(() => () => window.clearTimeout(saveTimer.current), []);
 
   // Restore the persisted layout once authenticated. The layout lives behind
   // the auth middleware, so a fetch before login fails with 401; re-running
@@ -101,14 +102,14 @@ export function useLayout(authed: boolean): LayoutApi {
   const hasPane = useCallback((paneId: string): boolean => findLeaf(rootRef.current, paneId) !== null, []);
 
   const assignSession = useCallback(
-    (paneId: string, tmId: string) => {
+    (paneId: string, tmId: string, focus = true) => {
       // The pane may have closed while an async terminal creation was pending.
       // Do not unplace the session or move focus when its target no longer exists.
       if (!findLeaf(rootRef.current, paneId)) return;
       // A session lives in exactly one pane; unplace it elsewhere first.
       const cleared = removeSession(rootRef.current, tmId);
       commit(setLeafSession(cleared, paneId, tmId));
-      setFocusedPaneId(paneId);
+      if (focus) setFocusedPaneId(paneId);
     },
     [commit],
   );

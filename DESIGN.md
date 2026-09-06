@@ -215,10 +215,21 @@ Choose a tested foreground/background token pair instead.
 
 ## Geometry
 
-- Sidebar: fixed shell width from `--th-sidebar-w`; desktop keeps a 44px
-  navigation rail (`--th-space-11`) for the toggle in both expanded and
-  collapsed states, outside every pane title. Mobile retains its dismissible
-  overlay drawer without the rail.
+- Sidebar: fixed shell width from `--th-sidebar-w` (264px at the default
+  scale; validate that rows, badges, and pagination fit without clipping at
+  this width). The shell follows the fixed-sidenav-shell pattern: the sidebar
+  column stays stable while the pane work area scrolls independently, and the
+  work area is a shrinkable `minmax(0, 1fr)`-style track beside the fixed
+  sidebar column so panes never inherit horizontal overflow. The expanded
+  sidebar has no separate navigation
+  rail: collapse lives inside the sidebar toolbar (`.th-sidebar-nav`) as one
+  of its trailing actions, so the expanded shell allocates zero width outside
+  the content column. The collapsed state keeps a 44px rail
+  (`--th-space-11`) whose only job is the reopen toggle; the toggle never
+  overlaps pane titles in either state. Mobile retains its dismissible
+  overlay drawer without the rail. The shared `--th-space-11` token is the
+  coarse-pointer touch size and must not be re-valued to remove the expanded
+  rail; only the expanded shell's allocation changes.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
@@ -257,6 +268,102 @@ Choose a tested foreground/background token pair instead.
   narrow screens. Opening it must not change the chat pane flex axis.
 - Split panes: each pane independently obeys this geometry down to 420px. Below
   that width, low-priority header metadata collapses before controls overflow.
+- Pane dividers are 4px structural separators (`--th-border` fill) between
+  split children: `col-resize` on horizontal splits, `row-resize` on vertical
+  splits. A divider is a real focusable control (`separator` semantics with
+  `aria-orientation`, `aria-valuemin/max/now`), never a decorative hit strip.
+  Hover, active drag, and keyboard focus all strengthen the divider fill to
+  `--th-accent` and reveal a centered handle grip so the target reads as one
+  control; the focus treatment is the divider's own, distinct from the pane
+  active outline and from composer focus. The divider advertises an
+  axis-appropriate keyboard hint (its accessible description names the arrows
+  that move it: Left/Right on a horizontal split, Up/Down on a vertical one).
+  Keyboard geometry: Arrow keys move
+  5 percentage points along the split axis (Left/Up decrease, Right/Down
+  increase), Home and End jump to the clamped bounds, and Escape returns
+  focus to the pane control that opened divider adjustment. Keyboard-only
+  users reach the divider through the pane's resize action, never by walking
+  the transcript. There is no snapping and no numeric percentage input.
+- Resize overlays: while a divider is dragged OR holds keyboard focus, every
+  visible leaf pane — occupied and empty alike — shows a non-interactive
+  (`pointer-events: none`) overlay with its current size as a rounded integer
+  percentage. The denominator is always the whole session work area (the
+  split region excluding the sidebar), not the immediate split parent, so
+  three/four-pane horizontal, vertical, and mixed-nesting layouts all report
+  true clamped geometry on both axes. Overlays persist for the entire drag
+  or focus interval and disappear only after both have ended.
+
+## Pane focus and session routing
+
+- Exactly one pane is the active destination at a time. Pointer down anywhere
+  on a pane — occupied or empty — and keyboard focus within it both make it
+  active. The active pane carries exactly one subtle, geometry-neutral
+  visible outline (`.th-pane--focused`): an outline treatment, never an inset
+  box-shadow ring, never a border that shifts layout, and never a change to
+  pane geometry. Divider focus and portal/menu focus are separate states and
+  must not steal or imitate the pane active outline.
+- Sidebar interaction never moves the active destination by itself: the
+  sidebar captures the active pane at click time and assigns the selected
+  session there, instead of focusing whichever pane already hosts it.
+- A session occupies at most one pane. Assigning a session that is already
+  placed moves it: the old host becomes empty. Assigning over an occupied
+  pane only unplaces the previous session — it is never deleted or stopped.
+  Unsent text, pending image and selected command belong to that session, not
+  its pane; moving or reopening it retains the draft and active-run Stop state.
+  Drafts remain in the authenticated App's memory and clear with session removal
+  or authentication loss, never in a process-global or persistent cache.
+- A delayed open (discovered-session load, deferred fetch) is bound to the
+  pane captured at click time. It must not target a different or since-closed
+  pane, and a newer user selection in the same pane supersedes it; stale
+  completions are dropped, never applied.
+  Deferred New Chat follows the same captured destination contract. Completion
+  does not steal a later active-pane or DOM-focus choice.
+- Closing the active pane moves the active destination to a valid remaining
+  pane. MRU ordering, sidebar highlight, and normal session-active handling
+  are preserved without extra import steps.
+
+## Empty panes and session opening
+
+- An empty pane shows the same session inventory as the sidebar — stored
+  sessions plus discovered, not-yet-loaded entries — through one consistent
+  open flow. There is no separate import or preparation step in the user's
+  path: transparency means the disk/import/load preparation happens
+  invisibly behind the one open action, NOT translucent styling. Empty panes
+  and their overlays remain opaque Canvas (`--th-bg`).
+- The picker reads the sidebar's paged MRU data source with visible
+  loading, error, and retry states; a load-more action pages in further
+  discovered entries. Selecting a row opens that session in the pane the row
+  belongs to, exactly once, leaving every other pane unchanged.
+- The narrow/single-pane layout exposes the same empty state and open flow
+  at 390px-class widths, and the New Chat creation action is preserved in
+  every empty pane.
+- Session rows in picker and sidebar follow the badge-list pattern: label
+  and trailing metadata (badge, time, count) align on one row with
+  `justify-content: space-between`, the label truncates first, and the row
+  never wraps into a second line of chrome.
+
+## Model control placement
+
+- The model control lives in the composer band, directly above the composer
+  capsule and right-aligned within the reading column, on desktop and narrow
+  layouts alike. It keeps its position across pane resizes; it does not move
+  with header metadata and does not reflow as the transcript changes.
+- On desktop the picker opens as an upward popup anchored above the control
+  (Raised elevation, bounded to `min(280px, 50dvh)`), so the list never
+  covers the composer or send action. On narrow screens the existing
+  viewport-contained sheet behavior is retained.
+  Measured space inside the actual clipping chat column can only tighten the
+  desktop height cap; no minimum may exceed that space. Desktop chrome and
+  options share one scrollport. Even short v3/v4/mixed panes retain a complete
+  readable pointer-selectable row, with one-line model/provider rows below 60px
+  of available space. Popup navigation never scrolls hidden ancestors or moves
+  the composer. Mobile keeps its pinned current identity and list scrollport.
+  Desktop Tab from search visits thinking controls, Shift+Tab reverses, forward
+  exit reaches attachment, and Escape or reverse exit restores the trigger.
+- Search, exact provider/model identity, thinking-level controls, keyboard
+  selection, file/attachment/send actions, and responsive composer height
+  contracts are unchanged by the move; the control renders the exact active
+  model identity in both placements.
 
 ## Conversation anatomy
 
@@ -368,7 +475,8 @@ At 390x844 and comparable narrow sizes:
 
 - the conversation and composer remain at least 320px wide;
 - the workspace path may hide; the current model name and thinking level stay
-  visible in a compact control inside the measured composer band;
+  visible in the compact model control, which keeps its composer-band
+  placement above the capsule (see Model control placement);
 - the narrow model picker opens a viewport-contained sheet without focusing
   search or summoning its keyboard. Current model/provider identity stays pinned
   above the scrolling options. Selection uses exact provider/model identity,
@@ -380,6 +488,9 @@ At 390x844 and comparable narrow sizes:
   send/stop remain together;
 - the slash palette fits within the visible viewport and does not sit behind the
   software keyboard;
+- an empty pane shows the same session open flow as a desktop empty pane, and
+  pane dividers keep their 44px-effective touch target on coarse pointers even
+  though the visible separator stays 4px;
 - no element creates horizontal document overflow.
 
 ## Motion and accessibility
@@ -390,8 +501,12 @@ At 390x844 and comparable narrow sizes:
 - Every icon button has an accessible name.
 - Dialogs trap and restore focus.
 - Command list semantics follow combobox/listbox behavior.
+- Pane dividers expose `separator` semantics with value attributes; focus
+  visible on a divider is its own accent treatment, and Escape from a focused
+  divider restores focus to the originating pane control.
 - Keyboard-only operation covers session creation, availability recovery, command
-  selection, prompt submission, abort, and closing overlays.
+  selection, prompt submission, abort, pane focus movement, divider resize, and
+  closing overlays.
 
 ## Release checks
 
@@ -403,4 +518,17 @@ widths confirms:
 3. one prompt appears once and is transmitted once;
 4. every session carries the omo provider label;
 5. no clipping, overlap, detached controls, or horizontal overflow exists;
-6. keyboard and pointer paths both work.
+6. keyboard and pointer paths both work;
+7. the expanded sidebar allocates zero rail width, collapse is reachable from
+   its toolbar, and the collapsed rail reopens without covering pane titles;
+8. exactly one pane shows the active outline, sidebar selection lands in the
+   pane captured at click, and moving a session empties its old host without
+   deleting or stopping anything;
+9. an empty pane opens stored and discovered sessions through the one open
+   flow with loading/error/retry, and a delayed open never overwrites a newer
+   selection or a closed pane;
+10. the model control sits above the composer, right aligned, with the desktop
+    popup opening upward and the narrow sheet contained;
+11. during divider drag or focus every visible pane shows its whole-work-area
+    percentage overlay, Escape restores the originating control, and bounds
+    never overflow.

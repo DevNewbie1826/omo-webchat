@@ -7,6 +7,7 @@ import type { Terminal, WorkspaceSession } from "../features/workspace/workspace
 
 const appMocks = vi.hoisted(() => ({
   assignSession: vi.fn(),
+  focusPane: vi.fn(),
   checkAuth: vi.fn(async () => true),
   focusSession: vi.fn(() => false),
 }));
@@ -33,7 +34,7 @@ vi.mock("../features/split/useLayout", () => ({
     root: { kind: "leaf" as const, id: "pane-1", sessionId: null },
     focusedPaneId: "pane-1",
     placed: new Set<string>(),
-    focusPane: vi.fn(),
+    focusPane: appMocks.focusPane,
     hasPane: vi.fn(() => true),
     assignSession: appMocks.assignSession,
     split: vi.fn(),
@@ -163,7 +164,8 @@ describe("discovered-session in-place open wiring", () => {
       response.resolve(jsonResponse(openedChat, 201));
       await response.promise;
     });
-    expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", openedChat.id);
+    expect(appMocks.focusPane).toHaveBeenCalledWith("pane-1");
+    expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", openedChat.id, false);
     expect(container.textContent).not.toContain("Adopted");
   });
 
@@ -198,7 +200,8 @@ describe("discovered-session in-place open wiring", () => {
       forced.resolve(jsonResponse(openedChat, 201));
       await forced.promise;
     });
-    expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", openedChat.id);
+    expect(appMocks.focusPane).toHaveBeenCalledWith("pane-1");
+    expect(appMocks.assignSession).toHaveBeenCalledWith("pane-1", openedChat.id, false);
     expect(container.querySelector(".th-tree-session-active")).toBeNull();
   });
 

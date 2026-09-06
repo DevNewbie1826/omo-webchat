@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
@@ -27,6 +28,7 @@ const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "
 export interface ChatPaneProps {
   readonly chatSession: ChatSessionRef;
   readonly focused: boolean;
+  readonly resizeControl?: ReactNode;
   readonly splitEnabled: boolean;
   readonly onFocus: () => void;
   readonly onSplit: (dir: SplitDir) => void;
@@ -40,6 +42,7 @@ export interface ChatPaneProps {
 export function ChatPane({
   chatSession,
   focused,
+  resizeControl,
   splitEnabled,
   onFocus,
   onSplit,
@@ -97,9 +100,11 @@ export function ChatPane({
     <section
       ref={setPane}
       className={`th-stage th-pane th-chat-pane${focused ? " th-pane--focused" : ""}`}
-      onPointerDown={onFocus}
+      onPointerDown={event => { if (event.target instanceof Node && event.currentTarget.contains(event.target)) onFocus(); }}
+      onFocus={event => { if (event.currentTarget.contains(event.target)) onFocus(); }}
     >
       <header className="th-termhead">
+        {resizeControl}
         <button
           type="button"
           className="th-btn-icon th-mobile-menu"
@@ -132,7 +137,6 @@ export function ChatPane({
             <option key={level} value={level}>{t("chat.thinkingLevel")}: {level}</option>
           ))}
         </select>
-        {!narrow && modelPicker}
         <button
           type="button"
           className="th-btn th-btn--ghost th-btn-icon th-chat-resync-btn"
@@ -259,7 +263,8 @@ export function ChatPane({
         )}
         </div>
         <ChatComposer
-          modelControl={narrow ? modelPicker : null}
+          session={chatSession}
+          modelControl={modelPicker}
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}

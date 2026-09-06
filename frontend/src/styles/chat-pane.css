@@ -357,9 +357,6 @@
 
 .th-model-picker {
   position: relative;
-  flex: 0 1 160px;
-  min-width: 0;
-  max-width: 160px;
 }
 
 .th-model-picker-btn {
@@ -398,9 +395,13 @@
   flex: none;
 }
 
+/* The control lives in the composer band, so the desktop popup opens
+   upward and never covers the composer or send action. Short panes clamp the
+   popup further with a measured inline max-height (ModelPicker), so the whole
+   popup stays inside the clipping .th-chat-main band. */
 .th-model-picker-popover {
   position: absolute;
-  top: calc(100% + var(--th-space-1));
+  bottom: calc(100% + var(--th-space-1));
   right: 0;
   z-index: 30;
   width: min(260px, 80vw);
@@ -443,6 +444,7 @@
 
 .th-model-picker-list > button {
   display: flex;
+  flex: none;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--th-space-0-5);
@@ -479,6 +481,44 @@
   letter-spacing: var(--th-type-micro-tracking);
 }
 
+/* One desktop scroll owner: fixed chrome must not consume the entire bound.
+   The narrow sheet retains its separate list scrollport and pinned identity. */
+.th-model-picker-popover:not(.th-model-picker-popover--sheet) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list {
+  flex: none;
+  overflow-y: visible;
+}
+
+/* At the real v4/700 bound a two-line option is taller than the whole menu.
+   Keep both model and provider on one readable row, without shrinking type. */
+.th-model-picker-popover--short .th-model-picker-list {
+  padding: var(--th-space-0-5);
+}
+
+.th-model-picker-popover--short .th-model-picker-list > button {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--th-space-1);
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+.th-model-picker-popover--short .th-model-picker-list strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.th-model-picker-popover--short .th-model-picker-list span {
+  flex: none;
+}
+
+.th-model-picker-popover--short .th-model-picker-search {
+  padding-block: var(--th-space-1);
+}
+
 .th-files-toggle {
   padding: 0 var(--th-space-2);
   border: 0;
@@ -503,8 +543,11 @@
   color: var(--th-text);
 }
 
+/* Thinking controls are part of the picker in both placements: the desktop
+   popup and the narrow sheet both show them (DESIGN.md "Model control
+   placement"). */
 .th-thinking-in-picker {
-  display: none;
+  display: flex;
   flex: none;
   flex-direction: column;
   gap: var(--th-space-1);
@@ -759,6 +802,7 @@
 
 .th-composer-model .th-model-picker {
   flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
 }
 
@@ -811,10 +855,6 @@
   background: var(--th-surface-overlay);
   border-color: var(--th-border-overlay);
   box-shadow: var(--th-shadow-overlay);
-}
-
-.th-model-picker-popover--sheet .th-thinking-in-picker {
-  display: flex;
 }
 
 .th-model-picker-popover--sheet .th-model-picker-list > button {

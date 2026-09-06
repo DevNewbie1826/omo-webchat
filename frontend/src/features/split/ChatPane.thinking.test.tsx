@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatSession, ControlledResizeObserver, renderChatPane } from "./chatPaneTestHarness";
+import { chatSession, ControlledResizeObserver, pressKey, renderChatPane, requireElement } from "./chatPaneTestHarness";
 
 describe("ChatPane thinking level selector", () => {
   let container: HTMLDivElement;
@@ -28,7 +28,7 @@ describe("ChatPane thinking level selector", () => {
     return select;
   }
 
-  it("includes the narrow model and thinking control inside the measured composer", () => {
+  it("keeps the model and thinking control above the composer at every pane width", () => {
     vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
     const { deliver } = renderChatPane(root, chatSession);
     const pane = container.querySelector(".th-chat-pane")!;
@@ -42,21 +42,58 @@ describe("ChatPane thinking level selector", () => {
       deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false,
         model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "high" });
     });
+    const expectComposerPlacement = (): void => {
+      const picker = container.querySelector(".th-model-picker");
+      expect(picker?.closest(".th-composer-model")).not.toBeNull();
+      expect(picker?.closest(".th-chat-input")).not.toBeNull();
+      expect(picker?.closest(".th-termhead")).toBeNull();
+      expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+      expect(picker?.textContent).toContain("GPT-5");
+    };
     resizePane(375);
-    const picker = container.querySelector(".th-model-picker");
-    expect(picker?.closest(".th-chat-input")).not.toBeNull();
-    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
-    expect(picker?.textContent).toContain("GPT-5");
-    expect(picker?.textContent).toContain("high");
+    expectComposerPlacement();
+    // The compact trigger keeps the active thinking level visible.
+    expect(container.querySelector(".th-model-picker")?.textContent).toContain("high");
     resizePane(800);
-    expect(container.querySelector(".th-model-picker")?.closest(".th-termhead")).not.toBeNull();
-    expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
+    expectComposerPlacement();
   });
 
   it("offers every Omo thinking level", () => {
     renderChatPane(root, chatSession);
     const options = Array.from(thinkingSelect().querySelectorAll("option")).map((option) => option.value);
     expect(options).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("reaches desktop thinking high from the trigger through Tab and sends exactly one request", () => {
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => deliver({ type: "models", sessionId: "chat-1",
+      models: [{ provider: "provider-b", modelId: "model-b", name: "Model B" }] }));
+    const trigger = requireElement(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"), "trigger");
+    act(() => {
+      trigger.focus();
+      expect(pressKey(trigger, "Enter").defaultPrevented).toBe(false);
+      trigger.click(); // jsdom does not perform native Enter activation.
+    });
+    const search = requireElement(container.querySelector<HTMLInputElement>(".th-model-picker-search"), "search");
+    expect(document.activeElement).toBe(search);
+    const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
+    for (const level of levels.slice(0, 5)) {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement)) throw new Error("missing keyboard focus");
+      act(() => pressKey(focused, "Tab"));
+      expect(document.activeElement).toBe(level);
+    }
+    const high = requireElement(levels[4], "high");
+    act(() => {
+      expect(pressKey(high, "Enter").defaultPrevented).toBe(false);
+      high.click(); // Native activation only, not a substitute for focus navigation.
+    });
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([
+      expect.objectContaining({ type: "chat.set", sessionId: "chat-1", thinkingLevel: "high" }),
+    ]);
+    act(() => pressKey(high, "Escape"));
+    expect(container.querySelector(".th-model-picker-popover")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("retains an authoritative unknown thinking level as an option", () => {
