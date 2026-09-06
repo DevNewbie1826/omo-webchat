@@ -37,12 +37,19 @@ func (d *Decoder) discardHistory(prefix []byte) error {
 		if err := json.Unmarshal(p.capture, &key); err != nil {
 			return err
 		}
-		key = strings.ToLower(key)
+		// Match DecodeLine's encoding/json field folding, not Unicode lowercase.
+		// Canonicalize before duplicate detection so aliases cannot be discarded.
+		known := false
+		for _, canonical := range [...]string{"id", "type", "command", "sessionid", "success", "error", "data"} {
+			if strings.EqualFold(key, canonical) {
+				key, known = canonical, true
+				break
+			}
+		}
 		p.capture = nil
 		p.space()
 		p.want(':')
 		p.space()
-		known := key == "id" || key == "type" || key == "command" || key == "sessionid" || key == "success" || key == "error" || key == "data"
 		if known {
 			if seen[key] {
 				return fmt.Errorf("%w: duplicate envelope member %q", ErrFrameTooLarge, key)
