@@ -35,7 +35,7 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
+  const runs = new Map(), useTimes = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
   const traffic = [], heldReplaySessions = new Set(), replays = [];
   let sequence = 0, socketSequence = 0, entrySequence = 0;
   const record = (kind, detail) => {
@@ -85,7 +85,7 @@ export function startFixture(options = {}) {
     if (seed.longLabels) workspace.chats[0].name = "긴 세션 이름 verification with a deliberately long readable conversation identity";
     pageFailures = seed.pageFailures ?? 0; deferred = seed.deferred ?? true; shelves = seed.shelves ?? false;
     deferredCreate = seed.deferredCreate ?? false;
-    runs.clear(); heldSessions.clear(); histories.length = 0; heldReplaySessions.clear(); replays.length = 0;
+    runs.clear(); useTimes.clear(); heldSessions.clear(); histories.length = 0; heldReplaySessions.clear(); replays.length = 0;
     for (const id of seed.holdReplay ?? []) heldReplaySessions.add(id);
     for (const id of seed.running ?? []) runFor(id).running = true;
   }
@@ -93,7 +93,7 @@ export function startFixture(options = {}) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 25173,
     async fetch(req, server) {
       const url = new URL(req.url), path = url.pathname;
-      const body = ["POST", "PUT"].includes(req.method) ? await req.json() : undefined;
+      const body = ["POST", "PUT"].includes(req.method) && req.headers.get("content-type")?.includes("application/json") ? await req.json() : undefined;
       const request = { method: req.method, path: path + url.search, body }; requests.push(request);
       events.emit("request", request); record("http", request);
       if (path === "/api/v2/ws" && server.upgrade(req)) return;
@@ -116,13 +116,22 @@ export function startFixture(options = {}) {
           creates.push(pending); events.emit('create', { index: creates.length - 1 });
         });
       }
+      const usage = /^\/api\/workspaces\/ws\/chats\/([^/]+)\/touch$/.exec(path);
+      if (usage && req.method === "POST") {
+        const id = decodeURIComponent(usage[1]);
+        if (id !== "union" && !workspace.chats.some(chat => chat.id === id)) return Response.json({ error: "not found" }, { status: 404 });
+        const recencyMs = (options.now ?? Date.now)();
+        useTimes.set(id, recencyMs);
+        return Response.json({ recencyMs });
+      }
       if (path === "/api/workspaces/ws/sessions") {
         if (pageFailures > 0) { pageFailures--; return Response.json({ error: "fixture page failure" }, { status: 503 }); }
         return Response.json(url.searchParams.has("cursor")
           ? { items: [{ id: "discovered-c", name: "Discovered C", source: "discovered", recencyMs: 10 }], nextCursor: "" }
           : { items: [{ id: "discovered-b", name: "Discovered B", source: "discovered", recencyMs: 50 },
-            ...workspace.chats.map((chat, i) => ({ ...chat, source: "stored", recencyMs: 40 - i })),
-            { id: "union", name: "Union stored row", source: "stored", recencyMs: 20 }], nextCursor: "page2" });
+            ...workspace.chats.map((chat, i) => ({ ...chat, source: "stored", recencyMs: useTimes.get(chat.id) ?? 40 - i })),
+            { id: "union", name: "Union stored row", source: "stored", recencyMs: useTimes.get("union") ?? 20 }]
+            .sort((a, b) => b.recencyMs - a.recencyMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)), nextCursor: "page2" });
       }
       if (path.endsWith("/sessions/open")) {
         const chat = { id: `opened-${body.id}`, name: `Opened ${body.id}`, provider: "omo" };

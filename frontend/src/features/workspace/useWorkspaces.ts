@@ -4,11 +4,18 @@ import type { ToastKind } from "../../components/SessionTree";
 import type { Translate } from "../../i18n";
 import type { LayoutApi } from "../split/useLayout";
 import { deleteTerminal, renameTerminal } from "../terminal/terminal";
-import { deleteWorkspace, listWorkspaceSessions, listWorkspaces, renameWorkspace } from "./workspace";
+import { deleteWorkspace, listWorkspaceSessions, listWorkspaces, mergeWorkspaceSessions, renameWorkspace, touchWorkspaceSession } from "./workspace";
 import type { ChatSessionRef, Terminal, Workspace, WorkspaceSession } from "./workspace";
 import type { ConfirmOptions } from "../../components/ConfirmDialog";
 
 type Notify = (msg: string, kind?: ToastKind) => void;
+
+// Mutable reconciliation state, stable for one live workspace/chat incarnation.
+type SessionRecency = {
+  confirmedMs: number;
+  pendingUse: { readonly recencyMs: number } | undefined;
+  creationFallbackMs: number;
+};
 
 export interface UseWorkspacesOptions {
   readonly notify: Notify;
@@ -44,7 +51,7 @@ export interface UseWorkspacesResult {
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
-  /** Hoists an opened session to the head of its workspace's session list (local state only). */
+  /** Records explicit activation, optimistically reorders, then applies server-owned recency. */
   readonly markSessionUsed: (wsId: string, id: string) => void;
   readonly toggleExpanded: (wsId: string) => void;
   readonly handleDeleteWorkspace: (ws: Workspace) => Promise<void>;
@@ -104,6 +111,10 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       return next;
     });
   }, []);
+  const pageRequestsRef = useRef(new Map<string, object>());
+  const deletedSessionsRef = useRef(new Map<string, Set<string>>());
+  const recenciesRef = useRef(new Map<string, Map<string, SessionRecency>>());
+  const loadGenerationRef = useRef(0);
   const sessionListsRef = useRef<ReadonlyMap<string, readonly WorkspaceSession[]>>(new Map());
   const [sessionLists, setSessionLists] = useState<ReadonlyMap<string, readonly WorkspaceSession[]>>(
     sessionListsRef.current,
@@ -128,11 +139,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   const suppressBoundSources = (wsId: string, items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => {
     const bindings = inPlaceBindingsRef.current.get(wsId);
     if (!bindings) return items;
-    return items.filter((item) => item.source !== "discovered"
-      || ![...bindings.entries()].some(([durableId, binding]) =>
-        durableId !== ""
-          ? item.id === durableId
-          : binding.path !== "" && item.resumeIdentity === binding.path));
+    return items.flatMap((item) => {
+      if (item.source !== "discovered") return [item];
+      const match = [...bindings.entries()].find(([durableId, binding]) => durableId !== ""
+        ? item.id === durableId : binding.path !== "" && item.resumeIdentity === binding.path);
+      if (!match) return [item];
+      const representative = items.find(row => row.id === match[1].chatId)
+        ?? sessionListsRef.current.get(wsId)?.find(row => row.id === match[1].chatId);
+      return representative ? [{ ...representative, recencyMs: item.recencyMs }] : [];
+    });
   };
 
   // One armed eventual refresh per workspace: a bound timer means the ready
@@ -205,6 +220,8 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         if (scheduled) pendingStaleRefreshRef.current.add(wsId);
         return;
       }
+      const request = {};
+      pageRequestsRef.current.set(wsId, request);
       patchSessionPaging(wsId, {
         ready: before?.ready ?? false,
         loading: true,
@@ -213,21 +230,28 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       });
       try {
         const page = await listWorkspaceSessions(wsId, cursor);
+        if (pageRequestsRef.current.get(wsId) !== request) return;
         const canonicalItems = suppressBoundSources(wsId, page.items);
-        const previousItems = sessionListsRef.current.get(wsId) ?? [];
-        const pendingCreated = append ? [] : (pendingCreatedSessionsRef.current.get(wsId) ?? []);
-        const leadingItems = append ? previousItems : pendingCreated;
-        const fresh = canonicalItems.filter((item) => !leadingItems.some((listed) => listed.id === item.id));
-        // A stale page-one refresh must not discard already-loaded
-        // continuation rows: retain anything previously listed that the fresh
-        // page did not return. A later load-more re-requests those pages and
-        // dedupes against them.
-        const retained = append
-          ? []
-          : previousItems.filter((item) =>
-              !fresh.some((freshItem) => freshItem.id === item.id)
-              && !leadingItems.some((listed) => listed.id === item.id));
-        const items = [...leadingItems, ...fresh, ...retained];
+        for (const item of canonicalItems) {
+          const recency = recenciesRef.current.get(wsId)?.get(item.id);
+          if (recency) {
+            recency.confirmedMs = Math.max(recency.confirmedMs, item.recencyMs);
+            recency.creationFallbackMs = 0;
+          }
+        }
+        // Retain loaded continuation rows, update overlaps, then sort the union.
+        const items = mergeWorkspaceSessions(suppressBoundSources(wsId, [
+          ...(sessionListsRef.current.get(wsId) ?? []),
+          ...canonicalItems,
+          ...(pendingCreatedSessionsRef.current.get(wsId) ?? []),
+        ]).filter(item => !deletedSessionsRef.current.get(wsId)?.has(item.id)).map(item => {
+          const recency = recenciesRef.current.get(wsId)?.get(item.id);
+          // Retire provisional row values before max-merging loaded snapshots.
+          return recency ? {
+            ...item,
+            recencyMs: Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0, recency.creationFallbackMs),
+          } : item;
+        }));
         const nextLists = new Map(sessionListsRef.current);
         nextLists.set(wsId, items);
         replaceSessionLists(nextLists);
@@ -252,6 +276,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
           void fetchSessionPage(wsId, "", false, true);
         }
       } catch {
+        if (pageRequestsRef.current.get(wsId) !== request) return;
         // Restore the pre-fetch state so a failed page can be retried.
         patchSessionPaging(wsId, {
           ready: before?.ready ?? false,
@@ -269,18 +294,27 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   );
 
   // Pending eventual refreshes die with the hook.
-  useEffect(() => () => disarmAllCatalogRefreshes(), [disarmAllCatalogRefreshes]);
+  useEffect(() => () => {
+    disarmAllCatalogRefreshes();
+    pageRequestsRef.current.clear();
+    recenciesRef.current.clear();
+    loadGenerationRef.current++;
+  }, [disarmAllCatalogRefreshes]);
 
   const load = useCallback(async (): Promise<void> => {
+    const generation = ++loadGenerationRef.current;
     try {
       const loadedWorkspaces = await listWorkspaces();
+      if (loadGenerationRef.current !== generation) return;
       setWorkspaces(loadedWorkspaces);
       const loadedIds = new Set(loadedWorkspaces.map((workspace) => workspace.id));
       setExpanded((previous) => new Set([...previous].filter((id) => loadedIds.has(id))));
       // A fresh canonical list invalidates the independently paged sidebar view.
       disarmAllCatalogRefreshes();
-      replaceSessionLists(new Map());
+      pageRequestsRef.current.clear();
+      replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
       replaceSessionPages(new Map());
+      for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
     } catch {
       /* transient failure — tree stays empty until next mutation */
     }
@@ -297,16 +331,31 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   }, [expanded, fetchSessionPage, workspaces]);
 
   const addCreatedSession = useCallback((wsId: string, tm: Terminal, inPlaceSource?: WorkspaceSession): void => {
+    deletedSessionsRef.current.get(wsId)?.delete(tm.id);
     if (inPlaceSource !== undefined) {
       const bindings = new Map(inPlaceBindingsRef.current.get(wsId));
       bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
       inPlaceBindingsRef.current.set(wsId, bindings);
     }
-    const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: Date.now() };
-    const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] => [
-      created,
-      ...suppressBoundSources(wsId, items).filter((item) => item.id !== tm.id),
-    ];
+    const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
+    const confirmedMs = Math.max(
+      inPlaceSource?.recencyMs ?? 0,
+      recencies.get(tm.id)?.confirmedMs
+        ?? sessionListsRef.current.get(wsId)?.find(item => item.id === tm.id)?.recencyMs ?? 0,
+    );
+    const recency: SessionRecency = recencies.get(tm.id) ?? {
+      confirmedMs, pendingUse: undefined, creationFallbackMs: confirmedMs > 0 ? 0 : Date.now(),
+    };
+    recency.confirmedMs = confirmedMs;
+    if (inPlaceSource && inPlaceSource.recencyMs > 0) recency.creationFallbackMs = 0;
+    recencies.set(tm.id, recency);
+    recenciesRef.current.set(wsId, recencies);
+    const created = {
+      id: tm.id, name: tm.name, source: "stored" as const,
+      recencyMs: Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0, recency.creationFallbackMs),
+    };
+    const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] =>
+      mergeWorkspaceSessions(suppressBoundSources(wsId, [...items, created]));
     if (!sessionPagesRef.current.get(wsId)?.ready) {
       const pending = pendingCreatedSessionsRef.current.get(wsId) ?? [];
       pendingCreatedSessionsRef.current.set(wsId, mergeCreated(pending));
@@ -336,21 +385,46 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     [fetchSessionPage],
   );
 
-  // Opening a session is a recency event: hoist it to the head of its
-  // workspace's session list with the same dedupe semantics as creations.
-  // Purely local state — the server already keeps both lists MRU-sorted.
-  const markSessionUsed = useCallback(
-    (wsId: string, id: string): void => {
-      const listed = sessionListsRef.current.get(wsId);
-      if (!listed) return;
-      const entry = listed.find((item) => item.id === id);
-      if (!entry) return;
+  // This boundary is called only by explicit App activation, never by WS lifecycle.
+  const markSessionUsed = useCallback((wsId: string, id: string): void => {
+    const listed = sessionListsRef.current.get(wsId) ?? [];
+    const chat = workspaces.find(ws => ws.id === wsId)?.chats.find(row => row.id === id);
+    const entry = listed.find(item => item.id === id)
+      ?? pendingCreatedSessionsRef.current.get(wsId)?.find(item => item.id === id)
+      ?? (chat ? { id, name: chat.name, source: "stored" as const, recencyMs: 0 } : undefined);
+    if (!entry || entry.source !== "stored" || deletedSessionsRef.current.get(wsId)?.has(id)) return;
+    const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
+    const recency: SessionRecency = recencies.get(id) ?? {
+      confirmedMs: entry.recencyMs, pendingUse: undefined, creationFallbackMs: 0,
+    };
+    const stamp = { recencyMs: Math.max(Date.now(), entry.recencyMs) };
+    recency.pendingUse = stamp;
+    recency.creationFallbackMs = 0;
+    recencies.set(id, recency);
+    recenciesRef.current.set(wsId, recencies);
+    const apply = (recencyMs: number): void => {
+      const current = sessionListsRef.current.get(wsId) ?? [];
+      const updated = { ...(current.find(item => item.id === id) ?? entry), recencyMs };
       const next = new Map(sessionListsRef.current);
-      next.set(wsId, [entry, ...listed.filter((item) => item.id !== id)]);
+      next.set(wsId, mergeWorkspaceSessions([...current.filter(item => item.id !== id), updated]));
       replaceSessionLists(next);
-    },
-    [replaceSessionLists],
-  );
+      const pending = pendingCreatedSessionsRef.current.get(wsId);
+      if (pending) pendingCreatedSessionsRef.current.set(wsId, pending.map(item => item.id === id ? updated : item));
+    };
+    apply(stamp.recencyMs);
+    const settle = (recencyMs: number): void => {
+      if (recenciesRef.current.get(wsId)?.get(id) !== recency) return;
+      recency.confirmedMs = Math.max(recency.confirmedMs, recencyMs);
+      if (recency.pendingUse === stamp) recency.pendingUse = undefined;
+      apply(Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0));
+    };
+    void touchWorkspaceSession(wsId, id).then(settle).catch((error: unknown) => {
+      if (!(error instanceof Error)) throw error;
+      if (recenciesRef.current.get(wsId)?.get(id) !== recency || recency.pendingUse !== stamp) return;
+      settle(0);
+      notify(t("toast.error"), "error");
+    });
+  }, [notify, replaceSessionLists, t, workspaces]);
 
   const sessions = useMemo(() => {
     const map = new Map<string, ChatSessionRef>();
@@ -399,6 +473,10 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     if (!ok) return;
     try {
       await deleteWorkspace(ws.id);
+      loadGenerationRef.current++;
+      pageRequestsRef.current.delete(ws.id);
+      recenciesRef.current.delete(ws.id);
+      deletedSessionsRef.current.delete(ws.id);
       for (const tm of ws.chats) layout.unplaceSession(tm.id);
       setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
       setExpanded((previous) => {
@@ -435,6 +513,11 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     if (!ok) return;
     try {
       await deleteTerminal(ws.id, tm.id);
+      loadGenerationRef.current++;
+      const deleted = deletedSessionsRef.current.get(ws.id) ?? new Set<string>();
+      deleted.add(tm.id);
+      deletedSessionsRef.current.set(ws.id, deleted);
+      recenciesRef.current.get(ws.id)?.delete(tm.id);
       setWorkspaces((prev) =>
         prev.map((w) =>
           w.id === ws.id ? { ...w, chats: w.chats.filter((x) => x.id !== tm.id) } : w,

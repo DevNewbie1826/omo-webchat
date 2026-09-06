@@ -321,7 +321,7 @@ func TestListWorkspaceSessionsGatesFreshDiskSessionWhileStoredChatDangling(t *te
 		t.Fatal(err)
 	}
 	page = listWorkspaceSessions(t, s, ws.ID, "")
-	if len(page.Items) != 2 || page.Items[1].ID != "disk-1" || page.Items[1].Source != sessionHistorySourceDiscovered {
+	if len(page.Items) != 2 || page.Items[0].ID != "disk-1" || page.Items[0].Source != sessionHistorySourceDiscovered || page.Items[0].RecencyMs != aged.UnixMilli() {
 		t.Fatalf("aged disk session must be discovered: %+v", page.Items)
 	}
 }
@@ -524,7 +524,7 @@ func TestListWorkspaceSessionsShowsFreshDiskSessionWithDanglingChatInAnotherCWD(
 	if len(page.Items) != 2 {
 		t.Fatalf("young disk session must remain visible when only another cwd has a dangling chat: %+v", page.Items)
 	}
-	if page.Items[1].ID != "disk-1" || page.Items[1].Source != sessionHistorySourceDiscovered {
+	if page.Items[0].ID != "disk-1" || page.Items[0].Source != sessionHistorySourceDiscovered || page.Items[0].RecencyMs != young.UnixMilli() {
 		t.Fatalf("fresh discovered row missing: %+v", page.Items)
 	}
 }
