@@ -290,6 +290,7 @@ func TestHistoryInPlaceFileRemovedBeforeOpenQuarantines(t *testing.T) {
 
 func TestHistoryRetainedDiskCursorUnretainedByDaemonStillIncomplete(t *testing.T) {
 	d := newDaemon(t)
+	d.UseLegacyEmptyUnknownHistory()
 	client := dial(t, d)
 	mgr := testManager(t, client, newMemStore(), 16)
 	sess, _, detach := acquire(t, mgr, testChat{id: "retained-unretained", cwd: t.TempDir()}, nil)

@@ -348,6 +348,7 @@ func TestInPlaceQuarantinePublishesOnceToEveryAttachedSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := newDaemon(t)
+	daemon.UseLegacyEmptyUnknownHistory()
 	if err := daemon.LoadSessionFile(path); err != nil {
 		t.Fatal(err)
 	}
@@ -425,6 +426,7 @@ func TestInPlaceReattachRehydratesDiskAndReportsExternalLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 	daemon := newDaemon(t)
+	daemon.UseLegacyEmptyUnknownHistory()
 	if err := daemon.LoadSessionFile(path); err != nil {
 		t.Fatal(err)
 	}
