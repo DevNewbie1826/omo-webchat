@@ -5,6 +5,8 @@
  * Deferred opens: await fixture.wait("open"); fixture.resolveOpen(index, chat).
  * Running: seed { running: ["stored-a"] }; deliver(id, frame) reaches current subscribers.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
+ * Per-session seeds: runs: { [id]: { entries, queue, stats, running, model, thinkingLevel } }.
+ * Entries use provider history shapes; queue/stats use server-frame payloads without type/sessionId.
  */
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -36,13 +38,15 @@ export function startFixture(options = {}) {
   const runs = new Map();
   let layout, workspace, stopped = false, pageFailures = 0, deferred = true, deferredCreate = false, shelves = false;
   function runFor(id) {
-    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: [] });
+    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: shelves ? structuredClone(entries) : [] });
     return runs.get(id);
   }
   function deliver(id, frame) {
     const run = runFor(id);
     if (frame.type === 'run.started') run.running = true;
     if (frame.type === 'run.done') run.running = false;
+    if (frame.type === 'queue') { const { type, sessionId, ...queue } = frame; run.queue = structuredClone(queue); }
+    if (frame.type === 'stats') { const { type, sessionId, ...stats } = frame; run.stats = structuredClone(stats); }
     for (const [socket, sessionId] of sockets) if (sessionId === id) socket.send(JSON.stringify({ sessionId: id, ...frame }));
   }
   function reset(seed = {}) {
@@ -53,6 +57,7 @@ export function startFixture(options = {}) {
     pageFailures = seed.pageFailures ?? 0; deferred = seed.deferred ?? true; shelves = seed.shelves ?? false;
     deferredCreate = seed.deferredCreate ?? false;
     runs.clear();
+    for (const [id, state] of Object.entries(seed.runs ?? {})) Object.assign(runFor(id), structuredClone(state));
     for (const id of seed.running ?? []) runFor(id).running = true;
   }
   reset(options);
@@ -123,9 +128,11 @@ export function startFixture(options = {}) {
             send({ type: "ready", resumed: true, piSessionId: frame.chatId });
             send({ type: "state", isStreaming: run.running, isCompacting: false, model: run.model, thinkingLevel: run.thinkingLevel });
             send({ type: "models", models }); send({ type: "commands", commands: [] });
-            send({ type: "entries", entries: shelves ? entries : run.entries, final: true }); break;
+            send({ type: "entries", entries: run.entries, final: true });
+            if (run.queue) send({ type: "queue", ...run.queue });
+            break;
           }
-          case "chat.stats": send({ type: "stats", cost: 0 }); break;
+          case "chat.stats": send({ type: "stats", ...(runFor(frame.sessionId).stats ?? { cost: 0 }) }); break;
           case "chat.models": send({ type: "models", models }); break;
           case "chat.set":
             if (frame.model) runFor(frame.sessionId).model = frame.model;
