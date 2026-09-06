@@ -593,49 +593,81 @@ describe("useWorkspaces paginated session history", () => {
 
   it("moves an opened session to the head of its workspace list without refetching", async () => {
     let latest: ReturnType<typeof useWorkspaces> | undefined;
+    const touch = deferred<Response>();
+    const fetchTouch = vi.fn(() => touch.promise);
+    vi.stubGlobal("fetch", fetchTouch);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
 
-    function Probe() {
-      latest = useWorkspaces({
-        notify: () => undefined,
-        t: (key) => key,
-        layout,
-        confirm: async () => true,
+    try {
+      function Probe() {
+        latest = useWorkspaces({
+          notify: () => undefined,
+          t: (key) => key,
+          layout,
+          confirm: async () => true,
+        });
+        return null;
+      }
+
+      // Given: a loaded first page and a controlled, pending HTTP touch.
+      act(() => root.render(<Probe />));
+      await act(async () => latest?.load());
+      await act(async () => latest?.setExpanded(new Set(["ws-1"])));
+      expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+        "chat-1", "chat-2", "chat-3", "chat-4", "chat-5",
+      ]);
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+
+      // When: explicit use is applied immediately, then confirmed by the server.
+      act(() => latest?.markSessionUsed("ws-1", "chat-3"));
+      expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+        "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
+      ]);
+      expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "chat-3")?.recencyMs).toBe(1000);
+      expect(fetchTouch).toHaveBeenCalledExactlyOnceWith(
+        "/api/workspaces/ws-1/chats/chat-3/touch",
+        { method: "POST", credentials: "same-origin" },
+      );
+      expect(latest?.sessionPages.get("ws-1")).toMatchObject({
+        ready: true, loading: false, hasMore: true, nextCursor: "next-page",
       });
-      return null;
+      await act(async () => {
+        touch.resolve(Response.json({ recencyMs: 900 }));
+        await touch.promise;
+      });
+
+      // Then: confirmed order, de-duplication and paging survive settlement.
+      expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+        "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
+      ]);
+      expect(latest?.sessionLists.get("ws-1")?.find((item) => item.id === "chat-3")?.recencyMs).toBe(900);
+      expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-3")).toHaveLength(1);
+      expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
+      expect(latest?.sessionPages.get("ws-1")).toMatchObject({
+        ready: true, loading: false, hasMore: true, nextCursor: "next-page",
+      });
+    } finally {
+      clock.mockRestore();
     }
+  });
 
-    act(() => root.render(<Probe />));
-    await act(async () => latest?.load());
-    act(() => latest?.setExpanded(new Set(["ws-1"])));
-    await act(async () => undefined);
-
-    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
+  it("leaves sessions and paging unchanged when an unknown ID is activated", async () => {
+    // Given: a loaded page and no valid target for explicit use.
+    const fetchTouch = vi.fn();
+    vi.stubGlobal("fetch", fetchTouch);
+    act(() => root.render(<PendingSessionsProbe />));
+    await act(async () => pendingLatest?.load());
+    await act(async () => pendingLatest?.setExpanded(new Set(["ws-1"])));
+    const paging = pendingLatest?.sessionPages.get("ws-1");
+    // When
+    act(() => pendingLatest?.markSessionUsed("ws-1", "chat-unknown"));
+    // Then
+    expect(pendingLatest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
       "chat-1", "chat-2", "chat-3", "chat-4", "chat-5",
     ]);
+    expect(pendingLatest?.sessionPages.get("ws-1")).toBe(paging);
+    expect(fetchTouch).not.toHaveBeenCalled();
     expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
-
-    act(() => latest?.markSessionUsed("ws-1", "chat-3"));
-
-    // Hoisted to head, deduplicated, purely local state: no page refetch and
-    // the paging cursor survives untouched.
-    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
-    ]);
-    expect(latest?.sessionLists.get("ws-1")?.filter((item) => item.id === "chat-3"))
-      .toHaveLength(1);
-    expect(listWorkspaceSessions).toHaveBeenCalledTimes(1);
-    expect(latest?.sessionPages.get("ws-1")).toMatchObject({
-      ready: true,
-      loading: false,
-      hasMore: true,
-      nextCursor: "next-page",
-    });
-
-    // Unknown or foreign ids leave the list untouched.
-    act(() => latest?.markSessionUsed("ws-1", "chat-unknown"));
-    expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-3", "chat-1", "chat-2", "chat-4", "chat-5",
-    ]);
   });
 
   it("loads the picker's first page on demand without refetching while loading or ready", async () => {

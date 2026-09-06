@@ -10,10 +10,11 @@ import type { ConfirmOptions } from "../../components/ConfirmDialog";
 
 type Notify = (msg: string, kind?: ToastKind) => void;
 
-type SessionUse = {
-  readonly recencyMs: number;
-  // Accumulates server activity while this optimistic request is pending.
+// Mutable reconciliation state, stable for one live workspace/chat incarnation.
+type SessionRecency = {
   confirmedMs: number;
+  pendingUse: { readonly recencyMs: number } | undefined;
+  creationFallbackMs: number;
 };
 
 export interface UseWorkspacesOptions {
@@ -112,7 +113,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   }, []);
   const pageRequestsRef = useRef(new Map<string, object>());
   const deletedSessionsRef = useRef(new Map<string, Set<string>>());
-  const usesRef = useRef(new Map<string, Map<string, SessionUse>>());
+  const recenciesRef = useRef(new Map<string, Map<string, SessionRecency>>());
   const loadGenerationRef = useRef(0);
   const sessionListsRef = useRef<ReadonlyMap<string, readonly WorkspaceSession[]>>(new Map());
   const [sessionLists, setSessionLists] = useState<ReadonlyMap<string, readonly WorkspaceSession[]>>(
@@ -232,17 +233,25 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
         if (pageRequestsRef.current.get(wsId) !== request) return;
         const canonicalItems = suppressBoundSources(wsId, page.items);
         for (const item of canonicalItems) {
-          const use = usesRef.current.get(wsId)?.get(item.id);
-          if (use) use.confirmedMs = Math.max(use.confirmedMs, item.recencyMs);
+          const recency = recenciesRef.current.get(wsId)?.get(item.id);
+          if (recency) {
+            recency.confirmedMs = Math.max(recency.confirmedMs, item.recencyMs);
+            recency.creationFallbackMs = 0;
+          }
         }
         // Retain loaded continuation rows, update overlaps, then sort the union.
         const items = mergeWorkspaceSessions(suppressBoundSources(wsId, [
           ...(sessionListsRef.current.get(wsId) ?? []),
           ...canonicalItems,
           ...(pendingCreatedSessionsRef.current.get(wsId) ?? []),
-        ]).filter(item => !deletedSessionsRef.current.get(wsId)?.has(item.id)).map(item => ({
-          ...item, recencyMs: Math.max(item.recencyMs, usesRef.current.get(wsId)?.get(item.id)?.recencyMs ?? 0),
-        })));
+        ]).filter(item => !deletedSessionsRef.current.get(wsId)?.has(item.id)).map(item => {
+          const recency = recenciesRef.current.get(wsId)?.get(item.id);
+          // Retire provisional row values before max-merging loaded snapshots.
+          return recency ? {
+            ...item,
+            recencyMs: Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0, recency.creationFallbackMs),
+          } : item;
+        }));
         const nextLists = new Map(sessionListsRef.current);
         nextLists.set(wsId, items);
         replaceSessionLists(nextLists);
@@ -288,7 +297,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   useEffect(() => () => {
     disarmAllCatalogRefreshes();
     pageRequestsRef.current.clear();
-    usesRef.current.clear();
+    recenciesRef.current.clear();
     loadGenerationRef.current++;
   }, [disarmAllCatalogRefreshes]);
 
@@ -305,7 +314,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       pageRequestsRef.current.clear();
       replaceSessionLists(new Map([...sessionListsRef.current].filter(([id]) => loadedIds.has(id))));
       replaceSessionPages(new Map());
-      for (const id of usesRef.current.keys()) if (!loadedIds.has(id)) usesRef.current.delete(id);
+      for (const id of recenciesRef.current.keys()) if (!loadedIds.has(id)) recenciesRef.current.delete(id);
     } catch {
       /* transient failure — tree stays empty until next mutation */
     }
@@ -328,10 +337,23 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
       inPlaceBindingsRef.current.set(wsId, bindings);
     }
-    const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: inPlaceSource && inPlaceSource.recencyMs > 0 ? inPlaceSource.recencyMs : Date.now() };
-    const uses = usesRef.current.get(wsId) ?? new Map<string, SessionUse>();
-    if (!uses.has(tm.id)) uses.set(tm.id, { recencyMs: created.recencyMs, confirmedMs: inPlaceSource?.recencyMs ?? 0 });
-    usesRef.current.set(wsId, uses);
+    const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
+    const confirmedMs = Math.max(
+      inPlaceSource?.recencyMs ?? 0,
+      recencies.get(tm.id)?.confirmedMs
+        ?? sessionListsRef.current.get(wsId)?.find(item => item.id === tm.id)?.recencyMs ?? 0,
+    );
+    const recency: SessionRecency = recencies.get(tm.id) ?? {
+      confirmedMs, pendingUse: undefined, creationFallbackMs: confirmedMs > 0 ? 0 : Date.now(),
+    };
+    recency.confirmedMs = confirmedMs;
+    if (inPlaceSource && inPlaceSource.recencyMs > 0) recency.creationFallbackMs = 0;
+    recencies.set(tm.id, recency);
+    recenciesRef.current.set(wsId, recencies);
+    const created = {
+      id: tm.id, name: tm.name, source: "stored" as const,
+      recencyMs: Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0, recency.creationFallbackMs),
+    };
     const mergeCreated = (items: readonly WorkspaceSession[]): readonly WorkspaceSession[] =>
       mergeWorkspaceSessions(suppressBoundSources(wsId, [...items, created]));
     if (!sessionPagesRef.current.get(wsId)?.ready) {
@@ -371,11 +393,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       ?? pendingCreatedSessionsRef.current.get(wsId)?.find(item => item.id === id)
       ?? (chat ? { id, name: chat.name, source: "stored" as const, recencyMs: 0 } : undefined);
     if (!entry || entry.source !== "stored" || deletedSessionsRef.current.get(wsId)?.has(id)) return;
-    const uses = usesRef.current.get(wsId) ?? new Map<string, SessionUse>();
-    const confirmedMs = uses.get(id)?.confirmedMs ?? entry.recencyMs;
-    const stamp = { confirmedMs, recencyMs: Math.max(Date.now(), entry.recencyMs) };
-    uses.set(id, stamp);
-    usesRef.current.set(wsId, uses);
+    const recencies = recenciesRef.current.get(wsId) ?? new Map<string, SessionRecency>();
+    const recency: SessionRecency = recencies.get(id) ?? {
+      confirmedMs: entry.recencyMs, pendingUse: undefined, creationFallbackMs: 0,
+    };
+    const stamp = { recencyMs: Math.max(Date.now(), entry.recencyMs) };
+    recency.pendingUse = stamp;
+    recency.creationFallbackMs = 0;
+    recencies.set(id, recency);
+    recenciesRef.current.set(wsId, recencies);
     const apply = (recencyMs: number): void => {
       const current = sessionListsRef.current.get(wsId) ?? [];
       const updated = { ...(current.find(item => item.id === id) ?? entry), recencyMs };
@@ -387,16 +413,15 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     };
     apply(stamp.recencyMs);
     const settle = (recencyMs: number): void => {
-      if (usesRef.current.get(wsId)?.get(id) !== stamp) return;
-      const currentMs = sessionListsRef.current.get(wsId)?.find(item => item.id === id)?.recencyMs ?? 0;
-      const confirmed = Math.max(stamp.confirmedMs, recencyMs, currentMs === stamp.recencyMs ? 0 : currentMs);
-      uses.set(id, { confirmedMs: confirmed, recencyMs: confirmed });
-      apply(confirmed);
+      if (recenciesRef.current.get(wsId)?.get(id) !== recency) return;
+      recency.confirmedMs = Math.max(recency.confirmedMs, recencyMs);
+      if (recency.pendingUse === stamp) recency.pendingUse = undefined;
+      apply(Math.max(recency.confirmedMs, recency.pendingUse?.recencyMs ?? 0));
     };
     void touchWorkspaceSession(wsId, id).then(settle).catch((error: unknown) => {
       if (!(error instanceof Error)) throw error;
-      if (usesRef.current.get(wsId)?.get(id) !== stamp) return;
-      settle(confirmedMs);
+      if (recenciesRef.current.get(wsId)?.get(id) !== recency || recency.pendingUse !== stamp) return;
+      settle(0);
       notify(t("toast.error"), "error");
     });
   }, [notify, replaceSessionLists, t, workspaces]);
@@ -450,7 +475,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       await deleteWorkspace(ws.id);
       loadGenerationRef.current++;
       pageRequestsRef.current.delete(ws.id);
-      usesRef.current.delete(ws.id);
+      recenciesRef.current.delete(ws.id);
       deletedSessionsRef.current.delete(ws.id);
       for (const tm of ws.chats) layout.unplaceSession(tm.id);
       setWorkspaces((prev) => prev.filter((w) => w.id !== ws.id));
@@ -492,7 +517,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       const deleted = deletedSessionsRef.current.get(ws.id) ?? new Set<string>();
       deleted.add(tm.id);
       deletedSessionsRef.current.set(ws.id, deleted);
-      usesRef.current.get(ws.id)?.delete(tm.id);
+      recenciesRef.current.get(ws.id)?.delete(tm.id);
       setWorkspaces((prev) =>
         prev.map((w) =>
           w.id === ws.id ? { ...w, chats: w.chats.filter((x) => x.id !== tm.id) } : w,

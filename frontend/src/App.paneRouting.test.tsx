@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { deferred } from "./App.testHarness";
 import type { ChatClientFrame, ChatHandlers, ChatServerFrame } from "./lib/chatWs";
-import type { Terminal } from "./features/workspace/workspace";
+import type { Terminal, WorkspaceSessionPage } from "./features/workspace/workspace";
 import { requireElement, setTextareaValue } from "./features/split/chatPaneTestHarness";
 import { notifyUnauthorized } from "./lib/api";
 
@@ -59,6 +59,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   let activeConflict: boolean;
   let requests: { path: string; method: string; body: string }[];
   let touch: ReturnType<typeof deferred<{ readonly recencyMs: number }>>;
+  let continuation: WorkspaceSessionPage;
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -66,6 +67,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     requests = []; transport.frames.length = 0; transport.running.clear(); transport.subscribers.clear();
     opening = deferred<Terminal>();
     touch = deferred<{ readonly recencyMs: number }>();
+    continuation = { items: [{ ...paged, source: "discovered" }], nextCursor: "" };
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -96,7 +98,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
       if (path === "/api/workspaces/ws/chats" && init?.method === "POST") return Response.json(await opening.promise);
       if (path === "/api/workspaces/ws/sessions") {
         if (failPage || (failMore && url.searchParams.has("cursor"))) return new Response("failed", { status: 500 });
-        return Response.json(url.searchParams.has("cursor") ? { items: [paged], nextCursor: "" } : {
+        return Response.json(url.searchParams.has("cursor") ? continuation : {
           items: [discovered, unresolved, { ...stored, source: "stored", recencyMs: 15 }, { ...newer, source: "stored", recencyMs: 5 }], nextCursor: "page-2",
         });
       }
@@ -358,12 +360,32 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect(container.querySelector(".th-termhead-name")?.textContent).toBe("Opened C");
   });
   it.each(["newer", "closed"])("keeps new-chat completion from replacing a %s target", async (mode) => {
+    // Given: creation is pending while its captured destination becomes ineligible.
+    vi.spyOn(Date, "now").mockReturnValue(1000);
     await mount(); await click(button(pane(1), ".th-picker-pane-create button"));
     expect(requests.filter(r => r.method === "POST" && r.path.endsWith("/chats"))).toHaveLength(1);
-    if (mode === "newer") { await focusPane(1); await click(sidebar("Newer")); }
+    if (mode === "newer") {
+      await focusPane(1); await click(sidebar("Newer"));
+      await act(async () => touch.resolve({ recencyMs: 200 }));
+    }
     else await click(button(pane(1), '[aria-label="Close pane"]'));
     await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
     expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
+    expect(container.querySelector(".th-tree-children .th-tree-activation")?.textContent).toBe("Created");
+    continuation = { items: [
+      { id: "activity", name: "Recent activity", source: "discovered", recencyMs: 950 },
+      { id: "created", name: "Created", source: "stored", recencyMs: 900 },
+    ], nextCursor: "" };
+    // When: the actual sidebar requests and reconciles the canonical continuation.
+    await click(button(container, ".th-tree-more"));
+    // Then: created900 sorts below activity950, not at browser1000, without activation.
+    expect([...container.querySelectorAll(".th-tree-children .th-tree-activation")]
+      .slice(0, 2).map(element => element.textContent)).toEqual(["Recent activity", "Created"]);
+    expect(requests.filter(r => r.path.endsWith("/touch")).map(r => r.path)).toEqual(mode === "newer"
+      ? ["/api/workspaces/ws/chats/stored-new/touch"]
+      : []);
+    expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
+    expect(container.querySelector(".th-tree-more")).toBeNull();
   });
   it("records use when explicit creation is assigned to its captured pane", async () => {
     // Given

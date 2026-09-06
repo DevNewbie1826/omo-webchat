@@ -21,6 +21,7 @@ let container: HTMLDivElement;
 let current: ReturnType<typeof useWorkspaces>;
 let pages: ReturnType<typeof deferred<WorkspaceSessionPage>>[];
 let touches: ReturnType<typeof deferred<{ readonly recencyMs: number }>>[];
+let touchStatuses: Map<number, number>;
 let paths: string[];
 const notify = vi.fn();
 function Probe() {
@@ -30,15 +31,16 @@ function Probe() {
 beforeEach(async () => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  localStorage.clear(); paths = []; pages = []; touches = [];
+  localStorage.clear(); paths = []; pages = []; touches = []; touchStatuses = new Map(); notify.mockClear();
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const url = new URL(input, "http://localhost");
     paths.push(`${init?.method ?? "GET"} ${url.pathname}`);
     if (init?.method === "DELETE") return new Response(null, { status: 204 });
     if (url.pathname === "/api/workspaces") return Response.json([workspace]);
     if (url.pathname.endsWith("/touch")) {
+      const index = touches.length;
       const touch = deferred<{ readonly recencyMs: number }>(); touches.push(touch);
-      return Response.json(await touch.promise);
+      return Response.json(await touch.promise, { status: touchStatuses.get(index) ?? 200 });
     }
     if (url.pathname.endsWith("/sessions")) {
       const page = deferred<WorkspaceSessionPage>(); pages.push(page);
@@ -85,6 +87,64 @@ it("persists explicit use without blocking local activation and rejects older us
   expect(rows()?.[0]).toEqual(["web", 1800]);
 });
 
+it.each([true, false])("retains an older successful use when the newer use fails (successFirst=%s)", async successFirst => {
+  // Given: A and B overlap, but only A will persist successfully.
+  touchStatuses.set(1, 500);
+  act(() => current.markSessionUsed("ws", "web"));
+  vi.setSystemTime(2000);
+  act(() => current.markSessionUsed("ws", "web"));
+  expect(touches).toHaveLength(2);
+  expect(rows()).toEqual([["web", 2000], ["disk", 100]]);
+  const first = successFirst ? 0 : 1;
+  const last = successFirst ? 1 : 0;
+  // When: the two real HTTP responses settle in either order.
+  await act(async () => touches[first]?.resolve({ recencyMs: first === 0 ? 900 : 0 }));
+  expect(rows()).toEqual(successFirst
+    ? [["web", 2000], ["disk", 100]]
+    : [["disk", 100], ["web", 80]]);
+  await act(async () => touches[last]?.resolve({ recencyMs: last === 0 ? 900 : 0 }));
+  // Then: A's confirmed use survives B's rollback.
+  expect(rows()).toEqual([["web", 900], ["disk", 100]]);
+  expect(notify).toHaveBeenCalledExactlyOnceWith("toast.error", "error");
+});
+
+it.each([true, false])("ignores old use responses after the same ID is recreated (successFirst=%s)", async successFirst => {
+  // Given: two requests belong to a deleted incarnation, not its replacement.
+  touchStatuses.set(1, 500);
+  act(() => current.markSessionUsed("ws", "web"));
+  vi.setSystemTime(2000);
+  act(() => current.markSessionUsed("ws", "web"));
+  const chat = workspace.chats[0]; if (!chat) throw new Error("fixture missing chat");
+  await act(async () => current.handleDeleteTerminal(workspace, chat));
+  act(() => current.addCreatedSession("ws", { ...chat, name: "Replacement" }));
+  act(() => current.markSessionUsed("ws", "web"));
+  await act(async () => touches[2]?.resolve({ recencyMs: 700 }));
+  notify.mockClear();
+  // When: stale success and failure settle after the replacement is confirmed.
+  const first = successFirst ? 0 : 1;
+  const last = successFirst ? 1 : 0;
+  await act(async () => touches[first]?.resolve({ recencyMs: first === 0 ? 9000 : 0 }));
+  await act(async () => touches[last]?.resolve({ recencyMs: last === 0 ? 9000 : 0 }));
+  // Then: neither stale request changes the replacement's recency or metadata.
+  expect(rows()).toEqual([["web", 700], ["disk", 100]]);
+  expect(current.sessionLists.get("ws")?.find(item => item.id === "web")?.name).toBe("Replacement");
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it("settles an unassigned creation to canonical recency without recording use", async () => {
+  // Given: creation used the browser clock, but no pane activated it.
+  act(() => current.addCreatedSession("ws", { id: "created", name: "Created", provider: "omo" }));
+  expect(rows()?.[0]).toEqual(["created", 1000]);
+  act(() => { void current.loadMoreSessions("ws"); });
+  // When: the continuation carries the authoritative created row.
+  await act(async () => pages[1]?.resolve({ items: [
+    { id: "created", name: "Created", source: "stored", recencyMs: 900 },
+  ], nextCursor: "" }));
+  // Then: the temporary creation clock is retired, without a touch.
+  expect(rows()).toEqual([["created", 900], ["disk", 100], ["web", 80]]);
+  expect(paths.filter(path => path.endsWith("/touch"))).toEqual([]);
+});
+
 it("retains confirmed use and continuation rows when an older head refresh arrives", async () => {
   // Given: a loaded continuation and confirmed activation.
   act(() => { void current.loadMoreSessions("ws"); });
@@ -113,9 +173,11 @@ it("does not resurrect a deleted row when a page or usage response arrives late"
 
 it("does not restore a removed workspace when an old page resolves", async () => {
   // Given
+  act(() => current.markSessionUsed("ws", "web"));
   act(() => { void current.loadMoreSessions("ws"); });
   await act(async () => current.handleDeleteWorkspace(workspace));
   // When
+  await act(async () => touches[0]?.resolve({ recencyMs: 900 }));
   await act(async () => pages[1]?.resolve({ items: [web], nextCursor: "" }));
   // Then
   expect(current.sessionLists.has("ws")).toBe(false);
