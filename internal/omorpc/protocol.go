@@ -33,7 +33,8 @@ import (
 const defaultMaxLineBytes = 4 << 20
 
 // ErrFrameTooLarge reports a wire record larger than the configured decoder
-// limit. The connection cannot be resynchronized safely after this error.
+// limit. Decoder.Decode treats this as fatal. The client can contain a fully
+// validated, LF-terminated oversized get_entries response within its request.
 var ErrFrameTooLarge = errors.New("omorpc: frame exceeds maximum line length")
 
 // Wire command names, verbatim on the socket.
@@ -554,10 +555,17 @@ func NewDecoderWithLimit(r io.Reader, maxLineBytes int) *Decoder {
 
 // Decode returns the next record or io.EOF at a clean end of stream.
 func (d *Decoder) Decode() (*Inbound, error) {
+	return d.decode(false)
+}
+
+func (d *Decoder) decode(discardHistory bool) (*Inbound, error) {
 	line := make([]byte, 0, min(d.maxLineBytes, 64<<10))
 	for {
 		fragment, err := d.br.ReadSlice('\n')
 		if len(line)+len(fragment) > d.maxLineBytes {
+			if discardHistory {
+				return nil, d.discardHistory(append(line, fragment...))
+			}
 			return nil, ErrFrameTooLarge
 		}
 		line = append(line, fragment...)
