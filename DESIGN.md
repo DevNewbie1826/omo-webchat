@@ -348,6 +348,15 @@ Choose a tested foreground/background token pair instead.
   capsule and right-aligned within the reading column, on desktop and narrow
   layouts alike. It keeps its position across pane resizes; it does not move
   with header metadata and does not reflow as the transcript changes.
+- One bottom trigger shows the current model and reported reasoning level in
+  both its visible and accessible state at every pane width. There is no header
+  thinking select. Before catalog hydration, the exact reported model key is
+  the identity fallback; an unloaded reasoning value selects no level.
+- Both presentations use current identity, reasoning controls, model search,
+  model list order. Reasoning remains available with an empty, loading or failed
+  catalog. Unknown reported levels remain visible and selectable. Only explicit
+  changes send a request; confirmation and rollback retain the existing session
+  transaction contract.
 - On desktop the picker opens as an upward popup anchored above the control
   (Raised elevation, bounded to `min(280px, 50dvh)`), so the list never
   covers the composer or send action. On narrow screens the existing
@@ -358,8 +367,13 @@ Choose a tested foreground/background token pair instead.
   readable pointer-selectable row, with one-line model/provider rows below 60px
   of available space. Popup navigation never scrolls hidden ancestors or moves
   the composer. Mobile keeps its pinned current identity and list scrollport.
-  Desktop Tab from search visits thinking controls, Shift+Tab reverses, forward
-  exit reaches attachment, and Escape or reverse exit restores the trigger.
+  Both presentations initially focus the non-text popup container. Forward Tab
+  reaches reasoning before search; the mobile close action precedes reasoning.
+  Search accepts text, Arrow navigation and Enter selection after it receives
+  focus. Desktop forward exit from search reaches attachment; reverse exit from
+  the first control restores the trigger. Mobile retains its sheet focus trap.
+  Escape restores the trigger in both presentations. Opening never focuses
+  search or summons the mobile keyboard.
 - Search, exact provider/model identity, thinking-level controls, keyboard
   selection, file/attachment/send actions, and responsive composer height
   contracts are unchanged by the move; the control renders the exact active

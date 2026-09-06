@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { layouts, leaf } from './pane-workspace-ui.mjs';
+import { layouts, leaf, models } from './pane-workspace-ui.mjs';
+import { mixedInputScenario } from './model-control-mixed-input.mjs';
+import { focusedFitScenarios } from './model-control-fit.mjs';
 /** Desktop popup owns scrolling. Use real wheel, clipping bounds and raw pointer selection. */
 export async function shortMenuScenarios(q) {
   const { fixture } = q;
@@ -13,7 +15,9 @@ export async function shortMenuScenarios(q) {
   ]) {
     await q.scenario(`bounded-open-menu-${name}`, async () => {
     const page = await q.reset({ layout }, { width, height });
-    await page.evaluate(() => window.qaSignal(() => document.querySelector('[data-pane-id="a"] .th-model-picker-btn')));
+    await page.evaluate(() => window.qaSignal(() =>
+      document.querySelector('[data-pane-id="a"] .th-model-picker-label')?.textContent === 'Model A'
+      && document.querySelector('[data-pane-id="a"] .th-model-picker-thinking')?.textContent === 'low'));
     const trigger = page.locator('[data-pane-id="a"] .th-model-picker-btn');
     const armControl = command => page.evaluate(command => {
       window.controlDone = new Promise((done, fail) => {
@@ -51,8 +55,72 @@ export async function shortMenuScenarios(q) {
         composer: box('.th-chat-input'), trigger: box('.th-model-picker-btn'),
         popup: bounds?.toJSON(), maxHeight: popup && getComputedStyle(popup).maxHeight,
         popupScrollTop: popup?.scrollTop, popupClientHeight: popup?.clientHeight,
+        reasoning: popup && [...popup.querySelectorAll('.th-thinking-level')].map(e => ({
+          level: e.textContent, focused: e === document.activeElement, rect: e.getBoundingClientRect().toJSON() })),
         rows, ancestors, clips, documentWidth: document.documentElement.scrollWidth };
     });
+    if (name === 'v4-700') {
+      // Given authoritative high with an empty catalog, reached by native keys.
+      const baseline = fixture.frames.length;
+      await page.evaluate(() => { window.qaEmpty = window.qaSignal(() =>
+        document.querySelector('.th-model-picker-label')?.textContent === 'provider-a/model-a'
+        && document.querySelector('.th-model-picker-thinking')?.textContent === 'high'); });
+      fixture.deliver('stored-a', { type: 'models', models: [] });
+      fixture.deliver('stored-a', { type: 'state', model: models[0], thinkingLevel: 'high', isStreaming: false, isCompacting: false });
+      await page.evaluate(() => window.qaEmpty);
+      await trigger.focus(); await page.keyboard.press('Enter');
+      for (const level of ['off', 'minimal', 'low', 'medium', 'high']) {
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.textContent), level);
+      }
+      const empty = await measure(), initialHigh = empty.reasoning.find(e => e.level === 'high');
+      assert(initialHigh.focused && initialHigh.rect.top >= empty.popup.top && initialHigh.rect.bottom <= empty.popup.bottom);
+      await q.shot('model-v4-700-before-hydration.png', { scenario: 'short-catalog-hydration', state: 'empty-focused-high' });
+      // Subscribe to catalog, layout and scroll completion before delivery.
+      await page.evaluate(() => {
+        const popup = document.querySelector('.th-model-picker-popover'), list = popup.querySelector('.th-model-picker-list');
+        const focused = document.activeElement, initialScroll = popup.scrollTop;
+        window.qaHydration = new Promise((resolve, reject) => {
+          let catalogReady = false, layoutReady = false, settledScroll = initialScroll, frame = 0;
+          const mutations = new MutationObserver(() => { catalogReady = list.children.length === 53; finish(); });
+          const layout = new ResizeObserver(() => { layoutReady = list.children.length === 53; finish(); });
+          function cleanup() {
+            clearTimeout(timer); cancelAnimationFrame(frame); mutations.disconnect(); layout.disconnect();
+            popup.removeEventListener('scrollend', scrolled);
+          }
+          function finish() {
+            if (!catalogReady || !layoutReady) return;
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => {
+              if (popup.scrollTop !== initialScroll && popup.scrollTop !== settledScroll) return;
+              cleanup(); resolve(document.activeElement === focused);
+            });
+          }
+          function scrolled() { settledScroll = popup.scrollTop; finish(); }
+          const timer = setTimeout(() => { cleanup(); reject(new Error('Catalog layout/scroll completion deadline')); }, 8000);
+          mutations.observe(list, { childList: true }); layout.observe(list);
+          popup.addEventListener('scrollend', scrolled);
+        });
+      });
+      // When the complete catalog arrives, without any explicit selection.
+      fixture.deliver('stored-a', { type: 'models', models });
+      const sameFocus = await page.evaluate(() => window.qaHydration);
+      const hydrated = await measure(), high = hydrated.reasoning.find(e => e.level === 'high');
+      const sets = fixture.frames.slice(baseline).filter(frame => frame.type === 'chat.set');
+      await q.save('model-v4-700-hydration.json', { empty, hydrated, sameFocus, sets });
+      await q.shot('model-v4-700-after-hydration.png', { scenario: 'short-catalog-hydration', state: 'hydrated-focused-high' });
+      // Then the focused reasoning control remains completely visible.
+      assert(sameFocus && high.focused, 'Catalog arrival preserves the same reasoning focus');
+      assert(high.rect.top >= hydrated.popup.top && high.rect.bottom <= hydrated.popup.bottom,
+        'Catalog arrival must keep the focused reasoning control visible');
+      assert.equal(hydrated.rows.length, 53); assert.deepEqual(sets, []);
+      assert.deepEqual(hydrated.ancestors, empty.ancestors); assert.deepEqual(hydrated.composer, empty.composer);
+      assert.deepEqual([hydrated.trigger.top, hydrated.trigger.right, hydrated.trigger.bottom],
+        [empty.trigger.top, empty.trigger.right, empty.trigger.bottom]);
+      assert.deepEqual(hydrated.popup, empty.popup);
+      await page.keyboard.press('Escape');
+      assert(await trigger.evaluate(e => document.activeElement === e));
+    }
     const before = await measure();
     await trigger.click();
     await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-model-picker-popover')?.style.maxHeight));
@@ -63,7 +131,8 @@ export async function shortMenuScenarios(q) {
     assert(open.popup.bottom <= open.trigger.top, `${name}: upward anchor`);
     assert(open.rows.some(row => row.complete && row.hit), `${name}: complete row on open`);
     assert.equal(open.rows.length, 53);
-    const shot = suffix => q.shot(`model-${name}-${suffix}.png`);
+    const shot = suffix => q.shot(`model-${name}-${suffix}.png`,
+      { scenario: `bounded-open-menu-${name}`, state: suffix });
     await shot('OPEN');
 
     async function wheel(delta) {
@@ -114,11 +183,11 @@ export async function shortMenuScenarios(q) {
         const e = document.querySelectorAll('.th-model-picker-search, .th-thinking-level')[index];
         const rect = e.getBoundingClientRect(), popup = document.querySelector('.th-model-picker-popover').getBoundingClientRect();
         const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        return { rect: rect.toJSON(), popup: popup.toJSON(), hit: e === hit || e.contains(hit), text: e.textContent };
+        return { rect: rect.toJSON(), popup: popup.toJSON(), hit: e === hit || e.contains(hit), text: e.textContent, thinking: e.classList.contains('th-thinking-level') };
       }, index);
       assert(control.hit && control.rect.top >= control.popup.top && control.rect.bottom <= control.popup.bottom,
         `${name}: complete pointer control ${index}`);
-      const changed = index ? fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === control.text) : null;
+      const changed = control.thinking ? fixture.wait('frame', frame => frame.type === 'chat.set' && frame.thinkingLevel === control.text) : null;
       if (changed) await armControl('set_thinking_level');
       await page.mouse.click(control.rect.x + control.rect.width / 2, control.rect.y + control.rect.height / 2);
       if (changed) { await changed; await controlDone(); }
@@ -128,10 +197,11 @@ export async function shortMenuScenarios(q) {
     assert.deepEqual(controls.composer, before.composer);
     await page.keyboard.press('Escape');
 
-    // Only the trigger receives initial focus. All internal navigation and
-    // native Enter activation are real keyboard input, including reverse Tab.
+    // Start at the trigger; opening focuses the non-text popup container.
+    // All internal traversal and Enter activation use native keyboard input.
     await trigger.focus();
     await page.keyboard.press('Enter');
+    assert(await page.locator('.th-model-picker-popover').evaluate(e => document.activeElement === e));
     const keyboardStart = fixture.frames.length;
     for (const expected of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']) {
       await page.keyboard.press('Tab');
@@ -149,7 +219,14 @@ export async function shortMenuScenarios(q) {
     await page.keyboard.press('Escape');
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');
-    for (let i = 0; i < 8; i++) await page.keyboard.press('Tab');
+    assert(await page.locator('.th-model-picker-popover').evaluate(e => document.activeElement === e));
+    for (const expected of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
+    }
+    await page.keyboard.press('Tab');
+    assert(await page.locator('.th-model-picker-search').evaluate(e => document.activeElement === e));
+    await page.keyboard.press('Tab');
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await page.locator('.th-chat-attach-btn').evaluate(e => e === document.activeElement));
     await trigger.focus();
@@ -158,6 +235,8 @@ export async function shortMenuScenarios(q) {
     assert.equal(await page.locator('.th-model-picker-popover').count(), 0);
     assert(await trigger.evaluate(e => document.activeElement === e));
     await page.keyboard.press('Enter');
+    for (let i = 0; i < 8; i++) await page.keyboard.press('Tab');
+    assert(await page.locator('.th-model-picker-search').evaluate(e => document.activeElement === e));
     await page.keyboard.type('provider-b');
     await page.keyboard.press('ArrowDown');
     const exactModel = fixture.wait('frame', frame => frame.type === 'chat.set' && frame.model);
@@ -172,4 +251,6 @@ export async function shortMenuScenarios(q) {
     return receipt;
     });
   }
+  await q.scenario('mixed-input-v4-700', () => mixedInputScenario(q));
+  await focusedFitScenarios(q);
 }

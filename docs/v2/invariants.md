@@ -6,6 +6,27 @@ v1 test file (all under `cli-webchat/internal/chat/` unless prefixed `api:`) tha
 V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecycle_test.go`
 (632 LOC), `omo_lifecycle_test.go` (536 LOC).
 
+## Session catalog recency
+
+Stored and discovered rows share one descending `recencyMs` ordering, with ordinal ID
+ties. File mtime is an activity proxy, not exact last-message time: copies and metadata
+writes count. Stored rows combine valid explicit use and represented-file activity,
+with seconds/milliseconds normalization. Creation is considered only when neither
+use nor activity is available; truly unknown time is zero. A newer stored wrapper
+never promotes an existing logical file merely through its creation timestamp. Durable
+IDs remain authoritative over paths; folding a discovered identity retains its activity.
+Historical raw timestamps are not migrated by reads. Merge/deduplicate before pagination.
+
+The client reconciles every loaded page, creation and explicit use by numeric recency,
+retains continuation rows on head refresh, and preserves newer confirmed/optimistic use
+against older responses. A winning deletion invalidates late page/use results. The one
+bounded catalog stabilization refresh remains; no continuous polling or new body scan.
+Pane assignment does not await use persistence.
+
+Proof: `api:session_recency_test.go:TestUnifiedSessionRecency`,
+`api:session_recency_edges_test.go`, `frontend/src/features/workspace/useWorkspaces.recency.test.tsx`,
+`frontend/src/App.paneRouting.test.tsx`.
+
 ## INVARIANTS
 
 1. **Lock order is fixed**: `Session.lifecycleMu -> Manager.mu -> sharedProvider.mu -> Session.mu`.
@@ -186,10 +207,13 @@ V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecyc
     (a create that races a winning delete tears itself down after rechecking the store);
     provider shutdown I/O stays OUTSIDE `chatLifecycleMu`; deleting a workspace serializes
     with chat create and stops every active chat; chat open is bounded by a 15 s timeout and a
-    disconnect/lifecycle-blocked open must not block another lifecycle operation; opening
-    touches `last_used_at`; every non-create/ping WS frame must target the socket-bound chat
+    disconnect/lifecycle-blocked open must not block another lifecycle operation. Explicit App
+    session activation records server-owned `lastUsedAt` through authenticated
+    `POST /api/workspaces/{wsId}/chats/{chatId}/touch`; it validates membership but never imports
+    or opens an engine. Automatic `chat.create`, reconnect, restoration, query recovery and send
+    recovery do not advance use time. Every non-create/ping WS frame must target the socket-bound chat
     (`session_mismatch` otherwise), with `activity.refresh` exempt when unbound.
-    Sources: `api:release_blockers_test.go:TestConnHandlerAccessIsSynchronizedWithClose,TestChatCreateAndDeleteLifecycleCannotOrphanSession,TestDeleteWorkspaceSerializesCreateAndStopsEveryActiveChat,TestListWorkspacesProjectsLegacyChatsWithoutWrites`; `api:router.go` (`chatOpenTimeout`); `api:chat_open_timeout_test.go:TestChatOpenDisconnectDoesNotBlockAnotherLifecycleOperation`; `api:chat_open_mru_test.go:TestChatOpenTouchesLastUsedAt`; `api:chat.go:routeMessage` (session-mismatch gate).
+    Sources: `api:release_blockers_test.go:TestConnHandlerAccessIsSynchronizedWithClose,TestChatCreateAndDeleteLifecycleCannotOrphanSession,TestDeleteWorkspaceSerializesCreateAndStopsEveryActiveChat,TestListWorkspacesProjectsLegacyChatsWithoutWrites`; `api:router.go` (`chatOpenTimeout`); `api:chat_open_timeout_test.go:TestChatOpenDisconnectDoesNotBlockAnotherLifecycleOperation`; `api:session_touch_test.go:TestExplicitSessionUse`; `wsbridge:session_use_test.go:TestAutomaticBindingPreservesSessionUse`; `api:chat.go:routeMessage` (session-mismatch gate).
 
 21. **Naming precedence and creation contract**: user rename always wins — auto-title never
     overrides it and a provider name event keeps the user rename; provider name events replace
@@ -227,6 +251,7 @@ either engine-independent (fs/layout/system/auth) or is the only chat-control su
 | 6 | `DELETE /api/workspaces/{wsId}` | Delete workspace; serializes with chat create and stops every active chat (invariant 20) | KEEP |
 | 7 | `PATCH /api/workspaces/{wsId}` | Rename workspace | KEEP |
 | 8 | `GET /api/workspaces/{wsId}/sessions` | List sessions discoverable in workspace history scan (incl. dangling/branch handling) | KEEP |
+| 8a | `POST /api/workspaces/{wsId}/chats/{chatId}/touch` | Explicit user activation; validates workspace membership, persists server-owned use, returns `{recencyMs}` without engine preparation | NEW |
 | 9 | `POST /api/workspaces/{wsId}/chats` | Create chat `{name, provider}`; `resumeIdentity` is rejected; provider normalized to omo (invariant 21) | KEEP; discovered sessions open in place from the workspace session catalog; the verified-copy adoption endpoint remains the scripted fork endpoint |
 | 10 | `DELETE /api/workspaces/{wsId}/chats/{chatId}` | Remove chat record; `Stop`s the session; provider I/O outside `chatLifecycleMu` (invariants 20, 22) | KEEP |
 | 11 | `PATCH /api/workspaces/{wsId}/chats/{chatId}` | Rename chat; marks `NameSource:"user"`; forwards best-effort to live provider (invariant 21) | KEEP |

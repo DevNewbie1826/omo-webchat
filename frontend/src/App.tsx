@@ -171,7 +171,7 @@ export function App() {
       setWorkspaces((prev) => prev.map(workspace => workspace.id === ws.id
         ? { ...workspace, chats: workspace.chats.some(chat => chat.id === tm.id) ? workspace.chats : [...workspace.chats, tm] }
         : workspace));
-      addCreatedSession(ws.id, tm, session.source === "discovered" ? session : undefined);
+      if (session.source === "discovered") addCreatedSession(ws.id, tm, session);
       const chatKey = sessionOpenAttemptKey(ws.id, tm.id);
       // Source intent protects concurrent opens before the canonical chat id
       // is known. Canonical intent also protects newer stored/alias placement
@@ -210,9 +210,11 @@ export function App() {
         // A pane may close while the request is pending; the chat remains in the sidebar.
         if (layout.hasPane(target.paneId) && paneIntents.current.get(target.paneId) === target.generation) {
           layout.assignSession(target.paneId, tm.id, false);
+          markSessionUsed(target.wsId, tm.id);
         }
       } else {
         layout.assignSession(layout.focusedPaneId, tm.id);
+        markSessionUsed(target.wsId, tm.id);
       }
       notify(t("toast.terminalAdded"), "success");
     } catch (error) {
@@ -220,7 +222,7 @@ export function App() {
     } finally {
       createChatInFlightRef.current = false;
     }
-  }, [addCreatedSession, layout, notify, setExpanded, setWorkspaces, t]);
+  }, [addCreatedSession, layout, markSessionUsed, notify, setExpanded, setWorkspaces, t]);
 
   const requestNewChat = useCallback((target: NewChatTarget): void => {
     if (createChatInFlightRef.current) return;

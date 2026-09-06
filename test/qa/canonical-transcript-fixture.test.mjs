@@ -202,6 +202,128 @@ test('controlled heartbeat receives pong before the next response without starti
   });
 });
 
+test.each([false, true])('integrated touch/model/reset preserves canonical and replay mode (controlled=%s)', async controlled => {
+  await withFixture({ controlled, now: () => 100 }, async (fixture, attach) => {
+    // Real HTTP requests and WS frames share this one fixture, not separate mocks.
+    const { socket, received } = await attach();
+    const captured = fixture.wait('frame', frame => frame.type === 'chat.send');
+    const fence = nextFrame(socket, frame => frame.type === 'stats');
+    send(socket, 'integrated-request');
+    socket.send(JSON.stringify({ type: 'chat.stats', sessionId: 'stored-a' }));
+    await captured; await fence;
+    expect(received.filter(frame => frame.type === 'ack')).toHaveLength(controlled ? 0 : 1);
+    expect(fixture.runState('stored-a').running).toBe(!controlled);
+    expect(fixture.runState('stored-a').entries).toEqual([]);
+
+    async function request(path, init = {}) {
+      const observed = fixture.wait('request', value => value.path === path && value.method === (init.method ?? 'GET'));
+      const [response] = await Promise.all([
+        fetch(fixture.url + path, { ...init, signal: AbortSignal.timeout(2000) }), observed,
+      ]);
+      return response;
+    }
+    async function sessions() {
+      const response = await request('/api/workspaces/ws/sessions');
+      expect(response.status).toBe(200);
+      return response.json();
+    }
+    const initial = await sessions();
+    expect(initial.items.map(item => [item.id, item.recencyMs])).toEqual([
+      ['discovered-b', 50], ['stored-a', 40], ['newer', 39], ['union', 20],
+    ]);
+    // JSON first gives the old task parent a meaningful missing-route RED, not a parse error.
+    for (const [id, init] of [
+      ['newer', { headers: { 'content-type': 'application/json' }, body: '{}' }],
+      ['stored-a', {}], ['union', {}],
+    ]) {
+      const response = await request(`/api/workspaces/ws/chats/${id}/touch`, { method: 'POST', ...init });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ recencyMs: 100 });
+    }
+    expect((await sessions()).items.map(item => [item.id, item.recencyMs])).toEqual([
+      ['newer', 100], ['stored-a', 100], ['union', 100], ['discovered-b', 50],
+    ]);
+    const missing = await request('/api/workspaces/ws/chats/missing/touch', { method: 'POST' });
+    expect(missing.status).toBe(404);
+    const page = await request('/api/workspaces/ws/sessions?cursor=page2');
+    expect(await page.json()).toEqual({ items: [{ id: 'discovered-c', name: 'Discovered C', source: 'discovered', recencyMs: 10 }], nextCursor: '' });
+
+    const model = { provider: 'provider-c', modelId: 'model-b' };
+    for (const [requestId, change, command] of [
+      ['integrated-model', { model }, 'set_model'],
+      ['integrated-thinking', { thinkingLevel: 'high' }, 'set_thinking_level'],
+    ]) {
+      const ack = nextFrame(socket, frame => frame.type === 'ack' && frame.requestId === requestId);
+      const result = nextFrame(socket, frame => frame.type === 'control.result' && frame.requestId === requestId);
+      socket.send(JSON.stringify({ type: 'chat.set', sessionId: 'stored-a', requestId, ...change }));
+      expect(await ack).toMatchObject({ command });
+      expect(await result).toMatchObject({ command, success: true });
+    }
+    await delivered(fixture, socket, { type: 'message', message: { role: 'user', content: 'integrated canonical' } });
+    const canonical = fixture.runState('stored-a').entries;
+    expect(canonical.map(entry => entry.message.content)).toEqual(controlled ? ['integrated canonical'] : []);
+    let staleHistory, staleReplay;
+    if (controlled) {
+      await delivered(fixture, socket, { type: 'run.started' });
+      await delivered(fixture, socket, { type: 'ack', command: 'chat.send', requestId: 'integrated-request', phase: 'completed' });
+      await delivered(fixture, socket, { type: 'queue', revision: 1,
+        items: [{ id: 'q1', requestId: 'queued-request', text: 'queued original' }],
+        engine: { pendingMessageCount: 0, ordered: [] } });
+      fixture.holdHistory('stored-a'); fixture.holdReplay('stored-a');
+      async function holdAttach() {
+        const history = fixture.wait('history-held', event => event.sessionId === 'stored-a');
+        const replay = fixture.wait('replay-held', event => event.sessionId === 'stored-a');
+        socket.send(JSON.stringify({ type: 'chat.create', wsId: 'ws', chatId: 'stored-a' }));
+        return Promise.all([history, replay]);
+      }
+      const [history, replay] = await holdAttach();
+      expect(history.entries).toEqual(canonical);
+      expect(replay.state).toMatchObject({ model, thinkingLevel: 'high', isStreaming: true });
+      expect(replay.outcomes.map(frame => frame.requestId)).toEqual(['integrated-request']);
+      const start = received.length;
+      const state = nextFrame(socket, frame => frame.type === 'state');
+      fixture.releaseReplay(replay.token, { stateFirst: false }); await state;
+      const entries = nextFrame(socket, frame => frame.type === 'entries' && frame.final);
+      fixture.releaseHistory(history.token);
+      expect((await entries).entries).toEqual(canonical);
+      expect(received.slice(start).filter(frame => ['ack', 'state', 'entries'].includes(frame.type)).map(frame => frame.type)).toEqual(['ack', 'state', 'entries']);
+      [staleHistory, staleReplay] = await holdAttach();
+      expect(fixture.traffic.filter(event => event.kind === 'commit')).toHaveLength(1);
+    } else {
+      const replay = await attach();
+      expect(replay.received.find(frame => frame.type === 'state')).toMatchObject({ model, thinkingLevel: 'high', isStreaming: true });
+      expect(replay.received.find(frame => frame.type === 'entries').entries).toEqual([]);
+    }
+    expect((await sessions()).items[0].recencyMs).toBe(100);
+
+    fixture.reset({ layout: 'single' });
+    expect(await sessions()).toEqual(initial);
+    expect(fixture.runState('stored-a')).toMatchObject({ running: false, entries: [],
+      model: { provider: 'provider-a', modelId: 'model-a' }, thinkingLevel: 'low' });
+    if (controlled) {
+      expect(() => fixture.releaseHistory(staleHistory.token)).toThrow('Unknown or completed history');
+      expect(() => fixture.releaseReplay(staleReplay.token)).toThrow('Unknown or completed replay');
+      expect(fixture.runState('stored-a')).toMatchObject({ outcomes: [],
+        queue: { revision: 0, items: [], engine: { pendingMessageCount: 0, ordered: [] } } });
+    }
+    // Final entries fence proves neither old history nor replay holds survive reset.
+    const reset = await attach();
+    expect(reset.received.find(frame => frame.type === 'state')).toMatchObject({ isStreaming: false, thinkingLevel: 'low' });
+    expect(reset.received.find(frame => frame.type === 'entries').entries).toEqual([]);
+    expect(reset.received.filter(frame => frame.type === 'ack')).toEqual([]);
+    if (controlled) {
+      fixture.reset({ holdReplay: ['stored-a'], running: ['stored-a'] });
+      const held = fixture.wait('replay-held', event => event.sessionId === 'stored-a');
+      const seeded = await attach();
+      expect(seeded.received.some(frame => frame.type === 'state')).toBe(false);
+      const state = nextFrame(seeded.socket, frame => frame.type === 'state');
+      fixture.releaseReplay((await held).token);
+      expect((await state).isStreaming).toBe(true);
+    }
+    expect(fixture.unexpected).toEqual([]);
+  });
+});
+
 test('controlled retained state/outcome replay can be released after terminal history', async () => {
   await withFixture({ controlled: true, holdReplay: ['stored-a'] }, async (fixture, attach) => {
     fixture.deliver('stored-a', { type: 'ack', command: 'chat.send', requestId: 'retained', phase: 'completed' });
