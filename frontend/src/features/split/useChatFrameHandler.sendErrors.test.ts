@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChatServerFrame } from "../../lib/chatWs";
-import { retirePendingSteers, sendCommandFailureOf, settleCompletedSendPending } from "./useChatFrameHandler";
-import type { PendingOptimistic } from "./chatSessionState";
+import { sendCommandFailureOf } from "./useChatFrameHandler";
+import { ChatSendStore } from "./chatSendState";
 
 type ErrorFrame = Extract<ChatServerFrame, { readonly type: "error" }>;
 
@@ -35,32 +35,18 @@ describe("sendCommandFailureOf", () => {
 });
 
 describe("completed chat.send settlement", () => {
-  const pending = (kind: PendingOptimistic["kind"], id: number, requestId: string): PendingOptimistic => ({
-    id,
-    requestId,
-    kind,
-    text: "work",
-    image: null,
-    priorMatchingCount: 0,
-    baselineKnown: true,
-    accepted: true,
-    admitted: true,
+  it("releases the steer original when completion follows run.done", () => {
+    const store = new ChatSendStore();
+    store.register("steer-7", "steer", { text: "work", image: null }, 1);
+    store.endRun();
+    expect(store.get("steer-7")?.showSteer).toBe(false);
+    expect(store.complete("steer-7")).toBe(true);
+    expect(store.getSnapshot()).toEqual([]);
   });
-
-  it("clears the steer tombstone when completion follows run.done", () => {
-    const steer = pending("steer", 7, "steer-7");
-    const retiredSteerIds = new Set<number>();
-    retirePendingSteers([steer], retiredSteerIds);
-    expect(retiredSteerIds).toEqual(new Set([steer.id]));
-
-    expect(settleCompletedSendPending([steer], steer.requestId, retiredSteerIds)).toEqual([]);
-    expect(retiredSteerIds.size).toBe(0);
-  });
-
-  it("retains a completed follow-up until its canonical echo reconciles", () => {
-    const followUp = pending("followUp", 8, "follow-up-8");
-    const operations = [followUp];
-
-    expect(settleCompletedSendPending(operations, followUp.requestId, new Set())).toBe(operations);
+  it("releases a completed queued request without requiring a canonical echo", () => {
+    const store = new ChatSendStore();
+    store.register("follow-up-8", "queued", { text: "work", image: null }, 1);
+    store.complete("follow-up-8");
+    expect(store.getSnapshot()).toEqual([]);
   });
 });

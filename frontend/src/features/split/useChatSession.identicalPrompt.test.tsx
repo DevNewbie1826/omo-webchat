@@ -84,12 +84,9 @@ describe("useChatSession delayed identical-prompt history", () => {
 
 		// Old history must not clear the running/active association.
 		expect(current?.running).toBe(true);
-		// The optimistic run stays associated exactly once: no dropped association, no duplicate.
-		const optimisticTurns = (current?.messages ?? []).filter(
-			(message) =>
-				message.role === "user" && message.optimisticId !== undefined,
-		);
-		expect(optimisticTurns).toHaveLength(1);
+		// The original stays request-owned; only the old canonical user row exists.
+    expect(current?.messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(current?.sendRequests).toMatchObject([{ draft: { text: "hello" }, hold: true }]);
 
 		// A second identical submit is accepted independently and queued server-side.
 		let secondAccepted = false;

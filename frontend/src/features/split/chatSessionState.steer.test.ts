@@ -35,9 +35,6 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
     const result = reconcileHistory({
       entries: [{ type: "message", id: "e1", message: { role: "user", content: "hold on", timestamp: 10 } }],
       current: [],
-      pending: [],
-      active: null,
-      uncertain: null,
       preserveCurrent: false,
       steerMarks: [{ requestId: "r1", text: "hold on", ordinal: 1 }],
     });
@@ -53,9 +50,6 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
         { type: "message", id: "e2", message: { role: "user", content: "same", timestamp: 20 } },
       ],
       current: [],
-      pending: [],
-      active: null,
-      uncertain: null,
       preserveCurrent: false,
       steerMarks: [{ requestId: "r1", text: "same", ordinal: 2 }],
     });
@@ -66,26 +60,21 @@ describe("reconcileHistory re-marks the canonical steer flush", () => {
     const result = reconcileHistory({
       entries: [{ type: "message", id: "e1", message: { role: "user", content: "hold on", timestamp: 10 } }],
       current: [],
-      pending: [],
-      active: null,
-      uncertain: null,
       preserveCurrent: false,
     });
     expect(result.messages[0]?.customType).toBeUndefined();
   });
 
-  it("collapses the local un-marked-id steer echo into the tagged canonical row", () => {
+  it("preserves an ambiguous id-less live occurrence alongside the tagged canonical row", () => {
     const result = reconcileHistory({
       entries: [{ type: "message", id: "e1", message: { role: "user", content: "hold on", timestamp: 10 } }],
       current: [steerRow("hold on")],
-      pending: [],
-      active: null,
-      uncertain: null,
       preserveCurrent: true,
       steerMarks: [{ requestId: "r1", text: "hold on", ordinal: 1 }],
     });
     const rows = result.messages.filter((message) => message.blocks?.[0]?.text === "hold on");
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
+    expect(rows[1]?.id).toBeUndefined();
     expect(rows[0]?.customType).toBe("steer");
     expect(rows[0]?.id).toBe("e1");
   });

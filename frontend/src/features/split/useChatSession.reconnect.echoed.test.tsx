@@ -77,11 +77,15 @@ describe("useChatSession reconnect echoed in-flight", () => {
 			}),
 		);
 
-		// The echoed run is recovered: stale surfaces clear and retry is restored.
+		// Stale surfaces clear; the unresolved original remains available for explicit recovery.
 		expect(harness.current?.running).toBe(false);
 		expect(harness.current?.streaming).toBe("");
 		expect(harness.current?.thinking).toBe("");
 		expect(harness.current?.toolCalls).toEqual({});
-		expect(harness.current?.retryDraft?.text).toBe("work");
+		expect(harness.current?.retryDraft).toBeNull();
+    expect(harness.current?.sendRequests).toMatchObject([{ phase: "unknown", draft: { text: "work" } }]);
+    const requestId = harness.current!.sendRequests[0]!.requestId;
+    act(() => harness.current?.recoverFailedDraft(requestId));
+    expect(harness.current?.retryDraft?.text).toBe("work");
 	});
 });

@@ -1,4 +1,9 @@
 {
+  "chat.send.sending": "전송 중",
+  "chat.send.admitted": "결과 대기 중",
+  "chat.send.unknown": "결과 확인 안 됨",
+  "chat.send.restore": "원본 복원",
+  "chat.send.unknownWarning": "이미 처리된 요청일 수 있습니다. 다시 보내면 중복될 수 있습니다.",
   "app.title": "omo-webchat",
   "login.title": "omo-webchat",
   "login.subtitle": "비밀번호를 입력하고 omo-webchat에 접속하세요.",
