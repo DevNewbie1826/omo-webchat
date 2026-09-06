@@ -794,7 +794,10 @@
 
 
 .th-composer-model {
-  width: min(var(--th-chat-max), 100%);
+  /* One reading-column lane with the capsule, status strip, and transcript
+     rows (DESIGN.md "Model control placement"): the control's outer edges
+     meet the capsule's instead of overhanging into the local gutters. */
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   margin-inline: auto;
   display: flex;
   justify-content: flex-end;

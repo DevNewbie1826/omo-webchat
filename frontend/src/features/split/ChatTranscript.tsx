@@ -87,6 +87,17 @@ const Markdown = memo(({ text }: { readonly text: string }) => (
   </ReactMarkdown>
 ));
 
+/** Presentational only (DESIGN.md "Conversation anatomy"): true when the
+ * message at `index` is the first user message after other content, so the
+ * row can open the taller before-user-turn gap. Purely derived from the
+ * rendered item list; never reorders or filters the transcript. */
+export function userTurnStart(items: readonly TranscriptItem[], index: number): boolean {
+  const item = items[index];
+  if (!item || item.kind !== "message" || item.message.role !== "user") return false;
+  const previous = items[index - 1];
+  return !previous || previous.kind !== "message" || previous.message.role !== "user";
+}
+
 export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly string[] {
   let messageOrdinal = 0;
   return items.map((item) => {
@@ -216,7 +227,7 @@ export function ChatTranscript({
                   key={virtualItem.key}
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
-                  className={`th-chat-row th-chat-row--${message.role}`}
+                  className={`th-chat-row th-chat-row--${message.role}${userTurnStart(items, virtualItem.index) ? " th-chat-row--turn-start" : ""}`}
                   style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <div

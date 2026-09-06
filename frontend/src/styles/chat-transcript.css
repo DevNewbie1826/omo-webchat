@@ -54,6 +54,16 @@
   translate: -50% 0;
 }
 
+/* A new user turn opens with a taller gap than the within-assistant rhythm:
+   the first user row after other content pads its top with --th-space-5, so
+   spacing before a user turn (20px + the previous row's 8px = 28px total)
+   visibly exceeds the 16px within-turn rhythm (DESIGN.md "Conversation
+   anatomy"). The hook is presentational only; transcript ordering is fixed
+   by the virtualizer. */
+.th-chat-row--turn-start {
+  padding-top: var(--th-space-5);
+}
+
 .th-chat-row--user {
   justify-content: flex-end;
 }
