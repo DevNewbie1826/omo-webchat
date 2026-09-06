@@ -67,6 +67,8 @@ export function ChatPane({
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
   const disconnectTitleId = useId();
+  const originalTitleId = useId();
+  const [inspectedOriginal, setInspectedOriginal] = useState<{ text: string; trigger: HTMLButtonElement } | null>(null);
   const chat = useChatSession(chatSession, connect, onChatName);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
@@ -214,7 +216,11 @@ export function ChatPane({
               title={request.draft.text || request.draft.image?.name}>
               {request.phase !== "unknown" && <span className="th-chat-status-spinner" aria-hidden="true" />}
               <span className="th-chat-status-label">{t(`chat.send.${request.phase}`)}:</span>
-              <span className="th-chat-send-preview">{request.draft.text || request.draft.image?.name}</span>
+              <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
+                aria-haspopup="dialog"
+                onClick={event => setInspectedOriginal({ text: request.draft.text || request.draft.image?.name || "", trigger: event.currentTarget })}>
+                {request.draft.text || request.draft.image?.name}
+              </button>
               {request.phase === "unknown" && <>
                 <button type="button" className="th-btn th-btn--ghost th-send-restore"
                   title={t("chat.send.unknownWarning")} onClick={() => chat.recoverFailedDraft(request.requestId)}>{t("chat.send.restore")}</button>
@@ -232,7 +238,10 @@ export function ChatPane({
           {chat.steerPending.map((item) => (
             <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
               <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
-              <span className="th-chat-send-preview">{item.text.length > 40 ? `${item.text.slice(0, 40)}…` : item.text}</span>
+              <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
+                aria-haspopup="dialog" onClick={event => setInspectedOriginal({ text: item.text, trigger: event.currentTarget })}>
+                {item.text}
+              </button>
             </span>
           ))}
           {chat.contextUsage && (
@@ -304,6 +313,18 @@ export function ChatPane({
         />
       )}
       {chat.pendingApproval && <ApprovalModal request={chat.pendingApproval} onRespond={chat.respondApproval} />}
+      {inspectedOriginal && (
+        <ModalDialog open labelledBy={originalTitleId} closeLabel={t("common.close")}
+          onClose={() => {
+            setInspectedOriginal(null);
+            if (!inspectedOriginal.trigger.isConnected) pane?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+          }}>
+          <div className="th-chat-original">
+            <h2 id={originalTitleId} className="th-confirm-title">{t("chat.send.original")}</h2>
+            <div className="th-chat-original-text" tabIndex={0}>{inspectedOriginal.text}</div>
+          </div>
+        </ModalDialog>
+      )}
       {showDisconnect && (
         <ModalDialog
           open={showDisconnect}

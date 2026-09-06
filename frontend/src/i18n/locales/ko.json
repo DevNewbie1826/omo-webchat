@@ -1,4 +1,6 @@
 {
+  "chat.send.inspect": "원본 보기",
+  "chat.send.original": "요청 원본",
   "chat.send.sending": "전송 중",
   "chat.send.admitted": "결과 대기 중",
   "chat.send.unknown": "결과 확인 안 됨",
