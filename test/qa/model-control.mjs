@@ -52,7 +52,8 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
         send({ type: "entries", entries: [], final: true });
       }
       if (frame.type === "chat.set") {
-        send(seed.rejectThinking && frame.thinkingLevel
+        send({ type: "ack", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking" });
+        send(frame.thinkingLevel && (seed.rejectThinking || seed.rejectThinkingLevel === frame.thinkingLevel)
           ? { type: "error", requestId: frame.requestId, command: "set_thinking_level", code: "provider_error", message: "fixture rejection" }
           : { type: "control.result", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking_level", success: true });
       }

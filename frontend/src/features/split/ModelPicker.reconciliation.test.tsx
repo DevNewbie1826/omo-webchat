@@ -36,6 +36,62 @@ describe("ModelPicker no-op navigation reconciliation", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(["full", "empty"])("reveals focused reasoning when passive fit shrinks with a %s catalog", catalog => {
+    // Given visible high in the taller popup, reached by forward Tab.
+    const selected = vi.fn();
+    const changed = vi.fn();
+    const models = catalog === "empty" ? [] : [
+      current,
+      ...Array.from({ length: 52 }, (_, index) => ({
+        provider: "provider-a", modelId: `model-${index}`,
+      })),
+    ];
+    act(() => root.render(<ModelPicker models={models}
+      currentModelKey="long-provider/long-49" placeholder="Model"
+      searchPlaceholder="Search" onSelect={selected}
+      thinkingLevels={["off", "minimal", "low", "medium", "high"]}
+      thinkingLevel="high" onThinkingChange={changed} />));
+    const trigger = required(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"));
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 656));
+    const triggerRect = vi.spyOn(trigger, "getBoundingClientRect")
+      .mockReturnValue(new DOMRect(0, 139, 71, 19));
+    act(() => trigger.click());
+    const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
+    for (let index = 0; index < 5; index++) {
+      act(() => required(document.activeElement).dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }),
+      ));
+    }
+    const high = required(popup.querySelector<HTMLButtonElement>('.th-thinking-level[aria-pressed="true"]'));
+    expect(document.activeElement).toBe(high);
+    const clientHeight = vi.spyOn(popup, "clientHeight", "get").mockReturnValue(85);
+    vi.spyOn(popup, "clientTop", "get").mockReturnValue(1);
+    vi.spyOn(popup, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 47, 260, popup.clientHeight + 2),
+    );
+    vi.spyOn(high, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 120 - popup.scrollTop, 40, 21),
+    );
+    popup.scrollTop = 8;
+    expect(high.getBoundingClientRect().bottom).toBeLessThanOrEqual(48 + popup.clientHeight);
+
+    // When the column tightens without navigation or catalog hydration.
+    act(() => {
+      clientHeight.mockReturnValue(35);
+      triggerRect.mockReturnValue(new DOMRect(0, 89, 71, 19));
+      resize();
+    });
+
+    // Then high stays visible using only popup-local scrolling.
+    expect(document.activeElement).toBe(high);
+    expect(high.getBoundingClientRect().top).toBeGreaterThanOrEqual(48);
+    expect(high.getBoundingClientRect().bottom).toBeLessThanOrEqual(48 + popup.clientHeight);
+    expect(popup.scrollTop).toBe(58);
+    expect(container.scrollTop).toBe(0);
+    expect(selected).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it.each(
     [null, "ArrowUp", "ArrowDown"].flatMap(key =>
       [false, true].map(fit => ({ key, fit }))),

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { layouts, leaf, models } from './pane-workspace-ui.mjs';
 import { mixedInputScenario } from './model-control-mixed-input.mjs';
+import { focusedFitScenarios } from './model-control-fit.mjs';
 /** Desktop popup owns scrolling. Use real wheel, clipping bounds and raw pointer selection. */
 export async function shortMenuScenarios(q) {
   const { fixture } = q;
@@ -251,4 +252,5 @@ export async function shortMenuScenarios(q) {
     });
   }
   await q.scenario('mixed-input-v4-700', () => mixedInputScenario(q));
+  await focusedFitScenarios(q);
 }

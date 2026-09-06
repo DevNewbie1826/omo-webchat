@@ -124,7 +124,7 @@ describe("ChatPane thinking level selector", () => {
     ]);
   });
 
-  it.each(["confirm", "reject"])("sends one max change and reflects its %s result without a catalog", outcome => {
+  it.each(["confirm", "reject"])("restores the confirmed baseline when a follow-up to %s is rejected without a catalog", outcome => {
     // Given confirmed high and an open picker.
     const { deliver, sent } = renderChatPane(root, chatSession);
     act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false,
@@ -139,6 +139,7 @@ describe("ChatPane thinking level selector", () => {
       { type: "chat.set", sessionId: "chat-1", requestId, thinkingLevel: "max" },
     ]);
     act(() => {
+      deliver({ type: "ack", sessionId: "chat-1", requestId, command: "set_thinking" });
       if (outcome === "confirm") deliver({ type: "control.result", sessionId: "chat-1",
         requestId, command: "set_thinking_level", success: true });
       else deliver({ type: "error", sessionId: "chat-1", requestId,
@@ -149,6 +150,29 @@ describe("ChatPane thinking level selector", () => {
     expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe(expected);
     expect(level(expected).getAttribute("aria-pressed")).toBe("true");
     expect(level(expected === "max" ? "high" : "max").getAttribute("aria-pressed")).toBe("false");
+
+    // When a subsequent explicit change is accepted and then rejected.
+    act(() => level("low").click());
+    const requests = sent.filter(frame => frame.type === "chat.set");
+    expect(requests).toHaveLength(2);
+    const followup = requests[1];
+    if (followup?.type !== "chat.set" || !followup.requestId) throw new Error("missing follow-up request");
+    const followupId = followup.requestId;
+    expect(followup).toEqual({ type: "chat.set", sessionId: "chat-1",
+      requestId: expect.any(String), thinkingLevel: "low" });
+    expect(followupId).not.toBe(requestId);
+    act(() => {
+      deliver({ type: "ack", sessionId: "chat-1",
+        requestId: followupId, command: "set_thinking" });
+      deliver({ type: "control.result", sessionId: "chat-1",
+        requestId: followupId, command: "set_thinking_level",
+        success: false, message: "follow-up rejected" });
+    });
+
+    // Then rollback uses the prior confirmed value, not initial high or optimistic low.
+    expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe(expected);
+    expect(level(expected).getAttribute("aria-pressed")).toBe("true");
+    expect(level("low").getAttribute("aria-pressed")).toBe("false");
   });
 
   it("reaches desktop max by forward Tab before search and preserves native activation and Escape", () => {

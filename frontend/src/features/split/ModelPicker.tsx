@@ -103,10 +103,10 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     const deliberateNavigation = navigationKey.current === resolvedActiveKey && resolvedActiveKey !== null;
     navigationKey.current = null;
     const option = optionRefs.current[activeIndex];
-    if (!open || !option) return;
-    const focusedReasoning = deliberateNavigation ? null : popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus");
-    if (compact) option.scrollIntoView?.({ block: "nearest" });
-    else if (popoverRef.current) revealInPopup(popoverRef.current, focusedReasoning ?? option);
+    if (!open) return;
+    const target = deliberateNavigation ? option : popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus") ?? option;
+    if (compact) option?.scrollIntoView?.({ block: "nearest" });
+    else if (popoverRef.current && target) revealInPopup(popoverRef.current, target);
   }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight]);
 
   useEffect(() => {

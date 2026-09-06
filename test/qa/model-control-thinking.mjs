@@ -79,4 +79,73 @@ export async function thinkingScenarios(q) {
         pass: true, reported, expected, result, sets });
     }
   }
+
+  for (const narrow of [false, true]) {
+    const scenario = `thinking-confirmed-followup-${narrow ? 'mobile' : 'desktop'}`;
+    // Given initial high and a fixture configured to reject low, not max.
+    await q.reset(narrow ? 390 : 1440, narrow ? 844 : 900, {
+      reported: 'high', catalog: [], rejectThinkingLevel: 'low',
+    });
+    const baseline = frames.length;
+    const trigger = page.locator('.th-model-picker-btn');
+    await page.evaluate(() => {
+      window.qaConfirmationWire = [];
+      window.addEventListener('qa:wire', event => {
+        if (event.detail.sessionId === 'stored-a' && event.detail.requestId
+          && ['ack', 'control.result', 'error'].includes(event.detail.type)) {
+          window.qaConfirmationWire.push(event.detail);
+        }
+      });
+    });
+    let passed = false;
+    try {
+      await trigger.click();
+      const popup = page.locator('.th-model-picker-popover');
+      await page.evaluate(() => { window.qaControlPending = window.qaControl('set_thinking_level'); });
+      await popup.locator('.th-thinking-level').filter({ hasText: /^max$/ }).click();
+      const accepted = await page.evaluate(() => window.qaControlPending);
+      assert.equal(accepted.success, true);
+      await page.evaluate(() => window.qaSignal(() =>
+        document.querySelector('.th-model-picker-thinking')?.textContent === 'max'));
+      await q.shot(`${scenario}-max.png`, { scenario, state: 'max-before-followup' });
+
+      // When another explicit change follows acceptance and terminal success.
+      await page.evaluate(() => { window.qaControlPending = window.qaControl('set_thinking_level'); });
+      await popup.locator('.th-thinking-level').filter({ hasText: /^low$/ }).click();
+      const rejected = await page.evaluate(() => window.qaControlPending);
+      await page.evaluate(() => window.qaSignal(() =>
+        document.querySelector('.th-model-picker-thinking')?.textContent === 'max'));
+
+      // Then both requests reached the wire and rejection restores confirmed max.
+      const sets = frames.slice(baseline).filter(frame => frame.type === 'chat.set');
+      assert.equal(sets.length, 2);
+      assert.deepEqual(sets, [
+        { type: 'chat.set', sessionId: 'stored-a', requestId: accepted.requestId, thinkingLevel: 'max' },
+        { type: 'chat.set', sessionId: 'stored-a', requestId: rejected.requestId, thinkingLevel: 'low' },
+      ]);
+      assert.notEqual(sets[0].requestId, sets[1].requestId);
+      assert.equal(rejected.type, 'error');
+      assert.equal(rejected.command, 'set_thinking_level');
+      const wire = await page.evaluate(() => window.qaConfirmationWire);
+      assert.deepEqual(wire.map(frame => ({
+        type: frame.type, requestId: frame.requestId, command: frame.command,
+      })), [
+        { type: 'ack', requestId: sets[0].requestId, command: 'set_thinking' },
+        { type: 'control.result', requestId: sets[0].requestId, command: 'set_thinking_level' },
+        { type: 'ack', requestId: sets[1].requestId, command: 'set_thinking' },
+        { type: 'error', requestId: sets[1].requestId, command: 'set_thinking_level' },
+      ]);
+      assert.equal(await popup.locator('.th-thinking-level[aria-pressed="true"]').textContent(), 'max');
+      assert.equal(await trigger.locator('.th-model-picker-thinking').textContent(), 'max');
+      await q.shot(`${scenario}-rollback.png`, { scenario, state: 'rejected-low-restores-confirmed-max' });
+      await page.keyboard.press('Escape');
+      assert.equal(await popup.count(), 0);
+      assert(await trigger.evaluate(element => document.activeElement === element));
+      passed = true;
+    } finally {
+      q.results.push({ scenario, pass: passed,
+        sets: frames.slice(baseline).filter(frame => frame.type === 'chat.set'),
+        wire: await page.evaluate(() => window.qaConfirmationWire) });
+    }
+  }
 }
