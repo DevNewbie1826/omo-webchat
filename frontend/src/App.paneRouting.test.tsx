@@ -58,12 +58,14 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
   let failMore: boolean;
   let activeConflict: boolean;
   let requests: { path: string; method: string; body: string }[];
+  let touch: ReturnType<typeof deferred<{ readonly recencyMs: number }>>;
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     narrow = false; empty = false; failPage = false; failMore = false; activeConflict = false;
     requests = []; transport.frames.length = 0; transport.running.clear(); transport.subscribers.clear();
     opening = deferred<Terminal>();
+    touch = deferred<{ readonly recencyMs: number }>();
     localStorage.setItem("th-lang", "en");
     localStorage.setItem("th-ws-expanded", '["ws"]');
     vi.stubGlobal("matchMedia", (query: string) => ({
@@ -86,6 +88,7 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
         : { kind: "split", id: "split", dir: "h", ratio: 0.5,
             first: { kind: "leaf", id: "left", sessionId: empty ? null : stored.id },
             second: { kind: "leaf", id: "right", sessionId: null } } });
+      if (path.endsWith("/touch")) return Response.json(await touch.promise);
       if (path.endsWith("/sessions/open")) {
         if (activeConflict && !String(init?.body).includes('"force":true')) return Response.json({ state: "session-active" }, { status: 409 });
         return Response.json(await opening.promise);
@@ -156,6 +159,21 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     expect(requests.filter(r => r.method === "DELETE" || /stop|disconnect/.test(r.path))).toEqual([]);
     expect(transport.frames.filter(frame => ["chat.abort", "chat.disconnect", "chat.close"].includes(frame.type))).toEqual([]);
   }
+
+  it("records explicit sidebar use without waiting for persistence or touching restored layout", async () => {
+    // Given: a restored pane has already attached automatically.
+    await mount();
+    expect(requests.filter(r => r.path.endsWith("/touch"))).toEqual([]);
+    // When: the user activates a stored row while persistence remains pending.
+    await focusPane(1); await click(sidebar("Stored A"));
+    // Then: placement is immediate and exactly one explicit-use request is sent.
+    expect([title(0), title(1)]).toEqual([null, "Stored A"]);
+    expect(requests.filter(r => r.path.endsWith("/touch"))).toEqual([
+      { method: "POST", path: "/api/workspaces/ws/chats/stored-a/touch", body: "" },
+    ]);
+    await act(async () => touch.resolve({ recencyMs: 200 }));
+    expect(container.querySelector(".th-tree-children .th-tree-activation")?.textContent).toBe("Stored A");
+  });
 
   it("moves a hosted session to the pointer-selected empty destination without import, stop or delete", async () => {
     await mount();
@@ -346,6 +364,17 @@ describe("App pane routing with real layout, sidebar, picker and chat", () => {
     else await click(button(pane(1), '[aria-label="Close pane"]'));
     await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
     expect([...container.querySelectorAll(".th-termhead-name")].map(e => e.textContent)).toEqual(mode === "newer" ? ["Stored A", "Newer"] : ["Stored A"]);
+  });
+  it("records use when explicit creation is assigned to its captured pane", async () => {
+    // Given
+    await mount(); await click(button(pane(1), ".th-picker-pane-create button"));
+    // When
+    await act(async () => opening.resolve({ id: "created", name: "Created", provider: "omo" }));
+    // Then
+    expect(title(1)).toBe("Created");
+    expect(requests.filter(r => r.path.endsWith("/touch")).map(r => r.path)).toEqual([
+      "/api/workspaces/ws/chats/created/touch",
+    ]);
   });
   it("lands deferred New Chat in its captured pane while later active and DOM focus stay authoritative", async () => {
     await mount();

@@ -201,11 +201,17 @@ func parseSessionFile(path string) (diskSession, bool) {
 	if info, statErr := f.Stat(); statErr == nil {
 		modTime = info.ModTime()
 	}
+	recency := int64(0)
+	if !modTime.IsZero() && modTime.UnixMilli() > 0 {
+		recency = modTime.UnixMilli()
+	} else if !createdAt.IsZero() && createdAt.UnixMilli() > 0 {
+		recency = createdAt.UnixMilli()
+	}
 	return diskSession{
 		ID:        header.ID,
 		Path:      path,
 		CWD:       header.CWD,
-		RecencyMs: createdAt.UnixMilli(),
+		RecencyMs: recency,
 		ModTime:   modTime,
 	}, true
 }
@@ -333,11 +339,14 @@ func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
-// chatRecencyMs is the recency key for a stored chat in MRU orderings: the
-// last-used stamp when the record carries one, else creation time for legacy
-// rows that never recorded a use.
+// chatRecencyMs combines explicit use with the represented file's activity.
+// Reading only its header preserves authoritative durable-ID matching.
 func chatRecencyMs(ch cursorstore.Chat) int64 {
-	return cursorstore.RecencyMillis(ch)
+	recency := max(int64(0), cursorstore.RecencyMillis(ch))
+	if sess, ok := parseSessionFile(ch.SessionFile); ok && sessionMatchesChat(sess, ch) {
+		recency = max(recency, sess.RecencyMs)
+	}
+	return recency
 }
 
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCWD ...string) []sessionHistoryItem {
@@ -372,10 +381,11 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 			scanDirs[filepath.Dir(sess.Path)] = struct{}{}
 		}
 		suppress := false
-		for _, chat := range chats {
+		for i, chat := range chats {
 			// The stored row already represents this durable session regardless
 			// of how the chat acquired it. Match only concrete identity fields.
 			if sessionMatchesChat(sess, chat) {
+				items[i].RecencyMs = max(items[i].RecencyMs, sess.RecencyMs)
 				suppress = true
 				break
 			}
