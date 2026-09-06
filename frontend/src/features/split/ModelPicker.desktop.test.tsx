@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, type ModelOption } from "./ModelPicker";
 
 const catalog = [
   { provider: "provider-a", modelId: "model-a", name: "Model A" },
@@ -108,6 +108,54 @@ describe("bounded desktop ModelPicker", () => {
       if (original) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", original);
       else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
     }
+  });
+
+  it("keeps focused reasoning fully visible when an empty catalog hydrates in a short popup", () => {
+    // Given the reviewer-sized popup with high reached through forward Tab.
+    const selected = vi.fn();
+    const changed = vi.fn();
+    const renderCatalog = (models: readonly ModelOption[]): void => {
+      root.render(<ModelPicker models={models} currentModelKey="provider-a/model-a"
+        placeholder="Model" searchPlaceholder="Search" onSelect={selected}
+        thinkingLevels={["off", "minimal", "low", "medium", "high", "xhigh", "max"]}
+        thinkingLevel="high" onThinkingChange={changed} />);
+    };
+    act(() => renderCatalog([]));
+    const trigger = required(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"));
+    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 656));
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 89, 71, 19));
+    act(() => trigger.click());
+    const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
+    for (let index = 0; index < 5; index++) act(() => key("Tab"));
+    const high = required(popup.querySelector<HTMLButtonElement>('.th-thinking-level[aria-pressed="true"]'));
+    expect(document.activeElement).toBe(high);
+    vi.spyOn(popup, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 47, 260, 37));
+    vi.spyOn(popup, "clientHeight", "get").mockReturnValue(35);
+    vi.spyOn(popup, "clientTop", "get").mockReturnValue(1);
+    const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this === high) return new DOMRect(0, 120 - popup.scrollTop, 40, 21);
+      if (this.getAttribute("role") === "option") {
+        return new DOMRect(0, 206 - popup.scrollTop, 250, 21);
+      }
+      return nativeRect.call(this);
+    });
+    popup.scrollTop = 58;
+    expect(high.getBoundingClientRect().top).toBe(62);
+    expect(high.getBoundingClientRect().bottom).toBe(83);
+
+    // When the real component commits the 53-model catalog and flushes effects.
+    act(() => renderCatalog(catalog));
+
+    // Then the same focused chip stays fully inside the popup without a request.
+    expect(high.getBoundingClientRect().top).toBeGreaterThanOrEqual(48);
+    expect(high.getBoundingClientRect().bottom).toBeLessThanOrEqual(83);
+    expect(document.activeElement).toBe(high);
+    expect(popup.scrollTop).toBe(58);
+    expect(container.scrollTop).toBe(0);
+    expect(popup.querySelectorAll('[role="option"]')).toHaveLength(53);
+    expect(selected).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
   });
 
   it("opens with non-text focus and reaches reasoning before search through forward Tab", () => {

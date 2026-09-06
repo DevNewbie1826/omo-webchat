@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { layouts, leaf } from './pane-workspace-ui.mjs';
+import { layouts, leaf, models } from './pane-workspace-ui.mjs';
 /** Desktop popup owns scrolling. Use real wheel, clipping bounds and raw pointer selection. */
 export async function shortMenuScenarios(q) {
   const { fixture } = q;
@@ -53,8 +53,72 @@ export async function shortMenuScenarios(q) {
         composer: box('.th-chat-input'), trigger: box('.th-model-picker-btn'),
         popup: bounds?.toJSON(), maxHeight: popup && getComputedStyle(popup).maxHeight,
         popupScrollTop: popup?.scrollTop, popupClientHeight: popup?.clientHeight,
+        reasoning: popup && [...popup.querySelectorAll('.th-thinking-level')].map(e => ({
+          level: e.textContent, focused: e === document.activeElement, rect: e.getBoundingClientRect().toJSON() })),
         rows, ancestors, clips, documentWidth: document.documentElement.scrollWidth };
     });
+    if (name === 'v4-700') {
+      // Given authoritative high with an empty catalog, reached by native keys.
+      const baseline = fixture.frames.length;
+      await page.evaluate(() => { window.qaEmpty = window.qaSignal(() =>
+        document.querySelector('.th-model-picker-label')?.textContent === 'provider-a/model-a'
+        && document.querySelector('.th-model-picker-thinking')?.textContent === 'high'); });
+      fixture.deliver('stored-a', { type: 'models', models: [] });
+      fixture.deliver('stored-a', { type: 'state', model: models[0], thinkingLevel: 'high', isStreaming: false, isCompacting: false });
+      await page.evaluate(() => window.qaEmpty);
+      await trigger.focus(); await page.keyboard.press('Enter');
+      for (const level of ['off', 'minimal', 'low', 'medium', 'high']) {
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.textContent), level);
+      }
+      const empty = await measure(), initialHigh = empty.reasoning.find(e => e.level === 'high');
+      assert(initialHigh.focused && initialHigh.rect.top >= empty.popup.top && initialHigh.rect.bottom <= empty.popup.bottom);
+      await q.shot('model-v4-700-before-hydration.png', { scenario: 'short-catalog-hydration', state: 'empty-focused-high' });
+      // Subscribe to catalog, layout and scroll completion before delivery.
+      await page.evaluate(() => {
+        const popup = document.querySelector('.th-model-picker-popover'), list = popup.querySelector('.th-model-picker-list');
+        const focused = document.activeElement, initialScroll = popup.scrollTop;
+        window.qaHydration = new Promise((resolve, reject) => {
+          let catalogReady = false, layoutReady = false, settledScroll = initialScroll, frame = 0;
+          const mutations = new MutationObserver(() => { catalogReady = list.children.length === 53; finish(); });
+          const layout = new ResizeObserver(() => { layoutReady = list.children.length === 53; finish(); });
+          function cleanup() {
+            clearTimeout(timer); cancelAnimationFrame(frame); mutations.disconnect(); layout.disconnect();
+            popup.removeEventListener('scrollend', scrolled);
+          }
+          function finish() {
+            if (!catalogReady || !layoutReady) return;
+            cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(() => {
+              if (popup.scrollTop !== initialScroll && popup.scrollTop !== settledScroll) return;
+              cleanup(); resolve(document.activeElement === focused);
+            });
+          }
+          function scrolled() { settledScroll = popup.scrollTop; finish(); }
+          const timer = setTimeout(() => { cleanup(); reject(new Error('Catalog layout/scroll completion deadline')); }, 8000);
+          mutations.observe(list, { childList: true }); layout.observe(list);
+          popup.addEventListener('scrollend', scrolled);
+        });
+      });
+      // When the complete catalog arrives, without any explicit selection.
+      fixture.deliver('stored-a', { type: 'models', models });
+      const sameFocus = await page.evaluate(() => window.qaHydration);
+      const hydrated = await measure(), high = hydrated.reasoning.find(e => e.level === 'high');
+      const sets = fixture.frames.slice(baseline).filter(frame => frame.type === 'chat.set');
+      await q.save('model-v4-700-hydration.json', { empty, hydrated, sameFocus, sets });
+      await q.shot('model-v4-700-after-hydration.png', { scenario: 'short-catalog-hydration', state: 'hydrated-focused-high' });
+      // Then the focused reasoning control remains completely visible.
+      assert(sameFocus && high.focused, 'Catalog arrival preserves the same reasoning focus');
+      assert(high.rect.top >= hydrated.popup.top && high.rect.bottom <= hydrated.popup.bottom,
+        'Catalog arrival must keep the focused reasoning control visible');
+      assert.equal(hydrated.rows.length, 53); assert.deepEqual(sets, []);
+      assert.deepEqual(hydrated.ancestors, empty.ancestors); assert.deepEqual(hydrated.composer, empty.composer);
+      assert.deepEqual([hydrated.trigger.top, hydrated.trigger.right, hydrated.trigger.bottom],
+        [empty.trigger.top, empty.trigger.right, empty.trigger.bottom]);
+      assert.deepEqual(hydrated.popup, empty.popup);
+      await page.keyboard.press('Escape');
+      assert(await trigger.evaluate(e => document.activeElement === e));
+    }
     const before = await measure();
     await trigger.click();
     await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-model-picker-popover')?.style.maxHeight));

@@ -98,8 +98,9 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   useEffect(() => {
     const option = optionRefs.current[activeIndex];
     if (!open || !option) return;
+    const focusedReasoning = popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus");
     if (compact) option.scrollIntoView?.({ block: "nearest" });
-    else if (popoverRef.current) revealInPopup(popoverRef.current, option);
+    else if (popoverRef.current) revealInPopup(popoverRef.current, focusedReasoning ?? option);
   }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight]);
 
   useEffect(() => {
