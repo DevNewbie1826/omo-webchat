@@ -339,16 +339,6 @@ func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
-// chatRecencyMs combines explicit use with the represented file's activity.
-// Reading only its header preserves authoritative durable-ID matching.
-func chatRecencyMs(ch cursorstore.Chat) int64 {
-	recency := max(int64(0), cursorstore.RecencyMillis(ch))
-	if sess, ok := parseSessionFile(ch.SessionFile); ok && sessionMatchesChat(sess, ch) {
-		recency = max(recency, sess.RecencyMs)
-	}
-	return recency
-}
-
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCWD ...string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	danglingCWDs := make(map[string]struct{})
@@ -367,7 +357,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 			ID:        ch.ID,
 			Name:      ch.Name,
 			Source:    sessionHistorySourceStored,
-			RecencyMs: chatRecencyMs(ch),
+			RecencyMs: chatRecencyMs(ch, disk),
 			// A cheap Stat per stored row flags an owned copy that vanished.
 			// Never a branch scan — that is recovery-time work.
 			Dangling: danglingRow,
@@ -381,11 +371,10 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 			scanDirs[filepath.Dir(sess.Path)] = struct{}{}
 		}
 		suppress := false
-		for i, chat := range chats {
+		for _, chat := range chats {
 			// The stored row already represents this durable session regardless
 			// of how the chat acquired it. Match only concrete identity fields.
 			if sessionMatchesChat(sess, chat) {
-				items[i].RecencyMs = max(items[i].RecencyMs, sess.RecencyMs)
 				suppress = true
 				break
 			}

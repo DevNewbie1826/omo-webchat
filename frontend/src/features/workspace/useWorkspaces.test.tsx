@@ -154,6 +154,7 @@ describe("useWorkspaces paginated session history", () => {
     root = createRoot(container);
     pendingLatest = undefined;
     vi.mocked(listWorkspaces).mockResolvedValue([workspace]);
+    vi.mocked(listWorkspaceSessions).mockReset();
     vi.mocked(listWorkspaceSessions).mockResolvedValue({
       items: chats.slice(0, 5).map((chat, index) => ({
         id: chat.id,
@@ -288,8 +289,9 @@ describe("useWorkspaces paginated session history", () => {
     }, source));
 
     expect(latest?.sessionLists.get("ws-1")?.map((item) => item.id)).toEqual([
-      "chat-new", "chat-1", "chat-2", "chat-3", "chat-4",
+      "chat-1", "chat-2", "chat-3", "chat-4", "chat-new",
     ]);
+    expect(latest?.sessionLists.get("ws-1")?.find(item => item.id === "chat-new")?.recencyMs).toBe(source.recencyMs);
     expect(latest?.sessionPages.get("ws-1")?.nextCursor).toBe("next-page");
 
     await act(async () => latest?.loadMoreSessions("ws-1"));

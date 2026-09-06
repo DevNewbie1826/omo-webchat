@@ -328,7 +328,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       bindings.set(inPlaceSource.id, { chatId: tm.id, path: inPlaceSource.resumeIdentity ?? "" });
       inPlaceBindingsRef.current.set(wsId, bindings);
     }
-    const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: Math.max(Date.now(), inPlaceSource?.recencyMs ?? 0) };
+    const created = { id: tm.id, name: tm.name, source: "stored" as const, recencyMs: inPlaceSource && inPlaceSource.recencyMs > 0 ? inPlaceSource.recencyMs : Date.now() };
     const uses = usesRef.current.get(wsId) ?? new Map<string, SessionUse>();
     if (!uses.has(tm.id)) uses.set(tm.id, { recencyMs: created.recencyMs, confirmedMs: inPlaceSource?.recencyMs ?? 0 });
     usesRef.current.set(wsId, uses);

@@ -10,9 +10,10 @@ V1 concurrency canon: `manager.go` header comment, `AGENTS.md`, `compact_lifecyc
 
 Stored and discovered rows share one descending `recencyMs` ordering, with ordinal ID
 ties. File mtime is an activity proxy, not exact last-message time: copies and metadata
-writes count. A valid creation timestamp is the fallback when file time is unavailable;
-truly unknown time is zero. Stored rows use the newer of explicit use (legacy creation
-fallback, with seconds/milliseconds normalization) and represented-file activity. Durable
+writes count. Stored rows combine valid explicit use and represented-file activity,
+with seconds/milliseconds normalization. Creation is considered only when neither
+use nor activity is available; truly unknown time is zero. A newer stored wrapper
+never promotes an existing logical file merely through its creation timestamp. Durable
 IDs remain authoritative over paths; folding a discovered identity retains its activity.
 Historical raw timestamps are not migrated by reads. Merge/deduplicate before pagination.
 

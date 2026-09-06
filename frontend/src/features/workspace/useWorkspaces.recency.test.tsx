@@ -174,3 +174,13 @@ it("reconciles a newly created row to authoritative use time when the client clo
   // Then
   expect(rows()?.[0]).toEqual(["created", 900]);
 });
+
+it("preserves logical file recency when adding its stored wrapper without activation", () => {
+  // Given: file activity predates the client clock used for new metadata wrappers.
+  const chat = workspace.chats[0]; if (!chat) throw new Error("fixture missing chat");
+  // When: identity wrapping alone is not explicit use.
+  act(() => current.addCreatedSession("ws", chat, disk));
+  // Then: the representative inherits file activity, not wrapper creation time.
+  expect(rows()).toEqual([["web", 100]]);
+  expect(paths.filter(path => path.endsWith("/touch"))).toEqual([]);
+});

@@ -34,13 +34,8 @@ func (s *Server) handleTouchChat(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	recency := chatRecencyMs(chat)
 	disk, _ := listDiskSessions(ws.Path)
-	for _, sess := range disk {
-		if sessionMatchesChat(sess, chat) {
-			recency = max(recency, sess.RecencyMs)
-		}
-	}
+	recency := chatRecencyMs(chat, disk)
 	writeJSON(w, http.StatusOK, struct {
 		RecencyMs int64 `json:"recencyMs"`
 	}{recency})
