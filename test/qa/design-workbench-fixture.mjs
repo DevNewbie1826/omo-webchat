@@ -1,6 +1,7 @@
 /** Reusable actual-App setup. No synthetic DOM, style overrides, user server or disk state. */
 import { startFixture } from './pane-workspace-ui.mjs';
 
+export const fileContent = 'export const session = { preserved: true };\n';
 export const prose = '대화의 흐름과 도구 실행 결과를 분리하면서 세션과 입력 상태를 보존합니다. ';
 export const output = Array.from({ length: 70 }, (_, i) => `record ${i}: ${prose} const value = inspect(sessionId);`).join('\n');
 export function designSeed(layout = 'single') {
@@ -18,7 +19,7 @@ export function designSeed(layout = 'single') {
     ...[['design-read', 'read', false], ['design-bash', 'bash', false], ['design-failed', 'bash', true]].map(([toolCallId, toolName, isError]) => ({
       role: 'toolResult', toolCallId, toolName, isError, content: [{ type: 'text', text: output }],
     })));
-  return { layout, shelves: true, longLabels: true, running: ['stored-a'], runs: { 'stored-a': {
+  return { layout, files: { '/fixture/session.ts': fileContent }, shelves: true, longLabels: true, running: ['stored-a'], runs: { 'stored-a': {
     entries: messages.map((message, i) => ({ id: `design-entry-${i}`, parentId: i ? `design-entry-${i - 1}` : null, type: 'message', message })),
     queue: { revision: 1, items: Array.from({ length: 9 }, (_, i) => ({ id: `design-queue-${i}`, text: `${i}: ${prose}`, hasImage: false, createdAt: i + 1 })),
       engine: { pendingMessageCount: 1, ordered: [{ text: 'Engine follow-up: preserve queue ownership', mode: 'followUp' }] } },
@@ -83,12 +84,28 @@ export async function setupDesign(browser, options = {}) {
 export async function wheel(page, locator, delta, gutter = false) {
   await locator.evaluate(element => {
     window.qaPending = new Promise((done, fail) => {
-      const timer = setTimeout(() => { element.removeEventListener('scrollend', finish); fail(new Error('Design scrollend deadline')); }, 8000);
-      function finish(event) { if (event.target !== element) return; clearTimeout(timer); element.removeEventListener('scrollend', finish); done(true); }
+      let wheelSeen = false, scrolled = false;
+      const timer = setTimeout(() => { cleanup(); fail(new Error(`Design wheel/scrollend deadline: wheel=${wheelSeen}, scroll=${scrolled}`)); }, 8000);
+      function cleanup() {
+        clearTimeout(timer);
+        element.removeEventListener('wheel', started);
+        element.removeEventListener('scroll', changed);
+        element.removeEventListener('scrollend', finish);
+      }
+      function started() { wheelSeen = true; }
+      function changed(event) { if (wheelSeen && event.target === element) scrolled = true; }
+      function finish(event) {
+        if (!wheelSeen || !scrolled || event.target !== element) return;
+        cleanup(); done(true);
+      }
+      // A previous auto-follow scrollend can arrive while mouse.move runs.
+      // Only this wheel -> exact-owner scroll -> scrollend sequence completes.
+      element.addEventListener('wheel', started, { passive: true });
+      element.addEventListener('scroll', changed);
       element.addEventListener('scrollend', finish);
     });
   });
   const box = await locator.boundingBox();
-  await page.mouse.move(box.x + (gutter ? box.width - 2 : box.width / 2), box.y + box.height / 2);
+  await page.mouse.move(box.x + (gutter ? box.width - 2 : box.width / 2), box.y + (gutter ? box.height - 2 : box.height / 2));
   await page.mouse.wheel(0, delta); await complete(page);
 }

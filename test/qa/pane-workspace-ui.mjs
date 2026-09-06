@@ -35,7 +35,7 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map();
+  const runs = new Map(), files = new Map();
   let layout, workspace, stopped = false, pageFailures = 0, deferred = true, deferredCreate = false, shelves = false;
   function runFor(id) {
     if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: shelves ? structuredClone(entries) : [] });
@@ -56,6 +56,8 @@ export function startFixture(options = {}) {
     if (seed.longLabels) workspace.chats[0].name = "긴 세션 이름 verification with a deliberately long readable conversation identity";
     pageFailures = seed.pageFailures ?? 0; deferred = seed.deferred ?? true; shelves = seed.shelves ?? false;
     deferredCreate = seed.deferredCreate ?? false;
+    files.clear();
+    for (const [path, content] of Object.entries(seed.files ?? {})) files.set(path, content);
     runs.clear();
     for (const [id, state] of Object.entries(seed.runs ?? {})) Object.assign(runFor(id), structuredClone(state));
     for (const id of seed.running ?? []) runFor(id).running = true;
@@ -110,7 +112,18 @@ export function startFixture(options = {}) {
       if (path.startsWith("/api/sessions/")) return Response.json({ sessions: [] });
       if (path.endsWith("/goal")) return Response.json({ goal: shelves ? goal : null });
       if (path.endsWith("/activity")) return Response.json(shelves ? activity : { history: {} });
-      if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [] });
+      if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [...files].map(([path, content]) => ({
+        name: path.slice('/fixture/'.length), isDir: false, size: Buffer.byteLength(content), modTime: '2026-09-06T00:00:00Z',
+      })) });
+      if (files.has(url.searchParams.get('path'))) {
+        const filePath = url.searchParams.get('path');
+        if (path === '/api/fs/read' && req.method === 'GET') {
+          const content = files.get(filePath); return Response.json({ content, size: Buffer.byteLength(content) });
+        }
+        if (path === '/api/fs/write' && req.method === 'POST' && typeof body.content === 'string') {
+          files.set(filePath, body.content); return new Response(null, { status: 204 });
+        }
+      }
       if (path.startsWith("/api/")) { unexpected.push(request); return new Response(`Unexpected ${path}`, { status: 404 }); }
       const file = Bun.file(resolve(import.meta.dir, "../../frontend/dist", path === "/" ? "index.html" : path.slice(1)));
       return await file.exists() ? new Response(file) : new Response("Not found", { status: 404 });
@@ -143,6 +156,26 @@ export function startFixture(options = {}) {
           case "chat.send":
             send({ type: "ack", requestId: frame.requestId, command: "chat.send" });
             deliver(frame.sessionId, { type: "run.started" }); break;
+          case "chat.queue.move": case "chat.queue.remove": case "chat.queue.clear": {
+            const queue = structuredClone(runFor(frame.sessionId).queue);
+            if (!queue) { unexpected.push({ frame }); break; }
+            if (frame.type === 'chat.queue.clear') {
+              if (!['webchat', 'engine', 'all'].includes(frame.scope)) { unexpected.push({ frame }); break; }
+              if (frame.scope !== 'engine') queue.items = [];
+              if (frame.scope !== 'webchat') queue.engine = { pendingMessageCount: 0, ordered: [] };
+            } else {
+              const index = queue.items.findIndex(item => item.id === frame.itemId);
+              if (index < 0) { send({ type: 'error', code: 'queue_item_not_found', requestId: frame.requestId }); break; }
+              if (frame.type === 'chat.queue.move' && (!Number.isInteger(frame.toIndex) || frame.toIndex < 0 || frame.toIndex >= queue.items.length)) {
+                unexpected.push({ frame }); break;
+              }
+              const [item] = queue.items.splice(index, 1);
+              if (frame.type === 'chat.queue.move') queue.items.splice(frame.toIndex, 0, item);
+            }
+            send({ type: 'ack', requestId: frame.requestId, command: frame.type });
+            deliver(frame.sessionId, { type: 'queue', ...queue, revision: queue.revision + 1 });
+            break;
+          }
           case "chat.abort": deliver(frame.sessionId, { type: "run.done", reason: "stop" }); break;
           case "hello": case "sessions.subscribe": case "activity.refresh": break;
           default: unexpected.push({ frame });
@@ -153,6 +186,7 @@ export function startFixture(options = {}) {
   });
   return {
     url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, reset, deliver,
+    fileContent(path) { return files.get(path); },
     runState(id) { return structuredClone(runFor(id)); },
     subscribers(id) { return [...sockets.values()].filter(sessionId => sessionId === id).length; },
     resolveCreate(index, chat, status) { creates[index].release(chat, status); },

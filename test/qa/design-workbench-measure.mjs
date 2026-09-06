@@ -30,7 +30,10 @@ export async function measure(page) {
         output: box(element.querySelector('.th-tool-output')) };
     });
     const assistant = pane.querySelector('.th-chat-msg--assistant');
-    return { viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
+    const column = pane.querySelector('.th-chat-main'), columnStyle = getComputedStyle(column);
+    return { readingColumn: { paneWidth: pane.clientWidth, width: column.clientWidth,
+      maxWidth: parseFloat(columnStyle.getPropertyValue('--th-chat-max')),
+      gutter: parseFloat(columnStyle.getPropertyValue('--th-chat-gutter')) }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
       theme: document.documentElement.dataset.theme, fontSize: assistant && getComputedStyle(assistant).fontSize,
       coarse: matchMedia('(pointer: coarse)').matches, rows, tools, roles,
       tokens: Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter'].map(name => [name, token(name)])),
@@ -72,14 +75,20 @@ export function designAssertions(sample) {
   assert(Number.isFinite(sample.historyAxis) && Number.isFinite(sample.liveAxis), 'both live and history prose must render');
   const gutterDelta = Math.max(...edgeValues.map(rect => rect.left)) - Math.min(...edgeValues.map(rect => rect.left));
   const rightDelta = Math.max(...edgeValues.map(rect => rect.right)) - Math.min(...edgeValues.map(rect => rect.right));
+  const { width, maxWidth, gutter } = sample.readingColumn;
+  assert([width, maxWidth, gutter].every(Number.isFinite), 'gutter baseline requires measured local column dimensions');
+  // Old CSS centers min(max, 100%) model chrome against min(max, 100% -
+  // two gutters) composer chrome. Predict its RED from local geometry, not
+  // viewport breakpoints or the observed edge assertion's own result.
+  const beforeEdgeDelta = (Math.min(maxWidth, width) - Math.min(maxWidth, width - 2 * gutter)) / 2;
   return [
     { id: 'collapsed-enclosure', pass: collapsed.every(tool => tool.background === 'rgba(0, 0, 0, 0)'
       && !tool.borders.every(border => border.width > 0 && border.style !== 'none')), expectedBefore: true,
       actual: collapsed.map(tool => ({ id: tool.id, background: tool.background, borders: tool.borders })) },
     { id: 'new-turn-spacing', pass: newTurnGap > withinAssistantGap, expectedBefore: true,
       actual: { newTurnGap, withinAssistantGap } },
-    { id: 'local-gutters', pass: gutterDelta <= 1 && rightDelta <= 1, expectedBefore: sample.viewport.width <= 768,
-      actual: { leftDelta: gutterDelta, rightDelta, edges: sample.edges } },
+    { id: 'local-gutters', pass: gutterDelta <= 1 && rightDelta <= 1, expectedBefore: beforeEdgeDelta > 1,
+      actual: { leftDelta: gutterDelta, rightDelta, edges: sample.edges, readingColumn: sample.readingColumn, beforeEdgeDelta } },
     { id: 'live-history-axis', pass: Math.abs(sample.historyAxis - sample.liveAxis) <= 1, expectedBefore: false,
       actual: { history: sample.historyAxis, live: sample.liveAxis } },
     { id: 'semantic-surfaces', pass: sample.roles.filter(role => role.actual).every(role => role.actual === role.expected), expectedBefore: false,
@@ -104,4 +113,39 @@ export async function modelRows(page) {
         hit: element === hit || element.contains(hit) };
     });
   });
+}
+
+/** A visible text fragment, not a virtual row's potentially offscreen origin. */
+export async function contentAnchor(page, anchor = null) {
+  return page.evaluate(anchor => {
+    const port = document.querySelector('.th-chat-scrollport').getBoundingClientRect();
+    const owners = [...document.querySelectorAll('.th-chat-row, .th-chat-live')];
+    for (const owner of owners) {
+      const key = owner.dataset.index ?? 'live';
+      if (anchor && key !== anchor.key) continue;
+      const walker = document.createTreeWalker(owner, NodeFilter.SHOW_TEXT);
+      let node, ordinal = 0;
+      while ((node = walker.nextNode())) {
+        const index = ordinal++;
+        if (anchor && index !== anchor.index) continue;
+        if (!node.textContent.trim()) continue;
+        const range = document.createRange(); range.selectNodeContents(node);
+        const rects = [...range.getClientRects()];
+        for (let fragment = 0; fragment < rects.length; fragment++) {
+          const rect = rects[fragment];
+          if (anchor ? fragment === anchor.fragment : rect.height > 0 && rect.top >= port.top && rect.bottom <= port.bottom && rect.right > port.left && rect.left < port.right) {
+            return { key, index, fragment, text: node.textContent, top: rect.top - port.top, left: rect.left - port.left };
+          }
+        }
+      }
+    }
+    return null;
+  }, anchor);
+}
+
+export function assertAnchor(before, after) {
+  assert(before && after, 'visible transcript anchor must remain mounted');
+  for (const key of ['key', 'index', 'fragment', 'text']) assert.equal(after[key], before[key], 'same visible content anchor');
+  assert(Math.abs(after.top - before.top) <= 1 && Math.abs(after.left - before.left) <= 1,
+    `visible transcript anchor moved: ${JSON.stringify({ before, after })}`);
 }
