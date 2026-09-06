@@ -331,30 +331,6 @@
   letter-spacing: var(--th-type-body-tracking);
 }
 
-.th-thinking-select {
-  flex: 0 1 10em;
-  /* Scales with its Label tier and leaves room for localized text plus the
-     native chevron at the maximum user font size. */
-  max-width: 10em;
-  min-width: 0;
-  padding: var(--th-space-0-5) var(--th-space-1);
-  border: 0;
-  background: transparent;
-  color: var(--th-muted);
-  font-size: var(--th-type-label-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-label-line);
-  letter-spacing: var(--th-type-label-tracking);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.th-thinking-select:hover {
-  color: var(--th-text-dim);
-}
-
 .th-model-picker {
   position: relative;
 }
@@ -729,8 +705,7 @@
 }
 
 @container chat-pane (max-width: 600px) {
-  .th-chat-pane .th-termhead-path,
-  .th-chat-pane .th-thinking-select {
+  .th-chat-pane .th-termhead-path {
     display: none;
   }
 

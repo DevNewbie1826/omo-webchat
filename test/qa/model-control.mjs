@@ -6,7 +6,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
 import { startFixture } from "./pane-workspace-ui.mjs";
+import { thinkingScenarios } from "./model-control-thinking.mjs";
 import { shortMenuScenarios } from "./pane-workspace-short-menus.mjs";
+import { createModelEvidence } from "./model-control-evidence.mjs";
 const { chromium } = await import(process.env.QA_PLAYWRIGHT);
 const evidence = resolve(process.argv[2]);
 await mkdir(evidence, { recursive: true });
@@ -14,7 +16,7 @@ const leaf = (id, sessionId = null) => ({ kind: "leaf", id, sessionId });
 const stored = { id: "stored-a", name: "Stored A", provider: "omo" };
 const catalog = [{ provider: "provider-a", modelId: "model-a", name: "Model A" },
   { provider: "provider-b", modelId: "model-b", name: "Model B" }];
-let layout;
+let layout, seed = { reported: "high", catalog };
 const requests = [], frames = [], results = [], errors = [];
 const sockets = new Set();
 const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -39,28 +41,39 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     close(ws) { sockets.delete(ws); },
     message(ws, raw) {
       const frame = JSON.parse(String(raw)); frames.push(frame);
-      const send = value => ws.send(JSON.stringify({ sessionId: frame.chatId, ...value }));
+      const send = value => ws.send(JSON.stringify({ sessionId: frame.sessionId ?? frame.chatId, ...value }));
       if (frame.type === "chat.create") {
         send({ type: "ready", resumed: true, piSessionId: frame.chatId });
         send({ type: "state", isStreaming: false, isCompacting: false,
-          model: { provider: "provider-a", modelId: "model-a" }, thinkingLevel: "low" });
-        send({ type: "models", models: catalog }); send({ type: "commands", commands: [] });
+          model: { provider: "provider-a", modelId: "model-a" }, thinkingLevel: seed.reported });
+        if (seed.catalog) send({ type: "models", models: seed.catalog });
+        if (seed.catalogFailure) send({ type: "error", code: "provider_error", command: "get_available_models", message: "fixture catalog failure" });
+        send({ type: "commands", commands: [] });
         send({ type: "entries", entries: [], final: true });
+      }
+      if (frame.type === "chat.set") {
+        send({ type: "ack", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking" });
+        send(frame.thinkingLevel && (seed.rejectThinking || seed.rejectThinkingLevel === frame.thinkingLevel)
+          ? { type: "error", requestId: frame.requestId, command: "set_thinking_level", code: "provider_error", message: "fixture rejection" }
+          : { type: "control.result", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking_level", success: true });
       }
       if (frame.type === "chat.stats") send({ type: "stats", cost: 0 });
     },
   },
 });
 const fixturePort = server.port;
-let browser;
+let browser, captureEvidence;
 const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + "\n");
 const modelSets = () => frames.filter(f => f.type === "chat.set" && f.model);
 const thinkingSets = () => frames.filter(f => f.type === "chat.set" && f.thinkingLevel);
 try {
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  captureEvidence = await createModelEvidence(page, evidence);
+  const { shot } = captureEvidence;
   page.on("pageerror", error => errors.push(String(error)));
   await page.addInitScript(() => {
+    if (location.protocol !== "http:") return; // The reset document has an opaque origin.
     const NativeWebSocket = window.WebSocket;
     window.WebSocket = class extends NativeWebSocket {
       set onmessage(handler) {
@@ -71,6 +84,14 @@ try {
       }
     };
     localStorage.setItem("th-lang", "en"); localStorage.setItem("th-ws-expanded", '["ws"]');
+    window.qaControl = command => new Promise((done, fail) => {
+      const timer = setTimeout(() => { window.removeEventListener('qa:wire', listener); fail(new Error('Control deadline')); }, 8000);
+      function listener(event) {
+        if (event.detail.command !== command || !['control.result', 'error'].includes(event.detail.type)) return;
+        clearTimeout(timer); window.removeEventListener('qa:wire', listener); done(event.detail);
+      }
+      window.addEventListener('qa:wire', listener);
+    });
     window.qaSignal = predicate => new Promise((done, fail) => {
       const observer = new MutationObserver(check);
       const timer = setTimeout(() => { observer.disconnect(); fail(new Error("DOM signal deadline")); }, 8000);
@@ -80,11 +101,14 @@ try {
   });
   const arm = predicate => page.evaluate(source => { window.qaPending = window.qaSignal(new Function(`return (${source})`)()); }, predicate);
   const complete = () => page.evaluate(() => window.qaPending);
-  async function reset(width, height) {
+  async function reset(width, height, next = { reported: "high", catalog }) {
+    await page.goto("about:blank");
+    seed = next;
     layout = leaf("only", stored.id);
     await page.setViewportSize({ width, height });
     await page.goto(`http://127.0.0.1:${server.port}`);
-    await page.evaluate(() => window.qaSignal(() => !!document.querySelector(".th-chat-pane .th-model-picker-btn")));
+    await page.evaluate(expected => window.qaSignal(() =>
+      document.querySelector(".th-model-picker-label")?.textContent === expected), seed.catalog?.length ? "Model A" : "provider-a/model-a");
   }
   const geometry = () => page.evaluate(() => {
     const control = document.querySelector(".th-composer-model .th-model-picker-btn").getBoundingClientRect();
@@ -99,6 +123,7 @@ try {
   });
 
   for (const narrow of [false, true]) {
+    const scenario = `model-control-${narrow ? "narrow" : "desktop"}`;
     const width = narrow ? 390 : 1440, height = narrow ? 844 : 900;
     await reset(width, height);
     const before = modelSets().length, beforeThinking = thinkingSets().length;
@@ -106,7 +131,9 @@ try {
     assert.equal(await trigger.count(), 1, "model trigger inside the composer band");
     assert.equal(await page.locator(".th-termhead .th-model-picker").count(), 0, "no header model picker");
     assert((await trigger.textContent()).includes("Model A"), "exact current model identity on the trigger");
-    if (narrow) assert((await trigger.textContent()).includes("low"), "compact trigger shows the thinking level");
+    assert.equal(await page.locator(".th-thinking-select").count(), 0, "no duplicate header select");
+    assert((await trigger.textContent()).includes("high"), "trigger shows reported thinking at every width");
+    assert((await trigger.getAttribute("aria-label")).includes("high"), "accessible thinking state");
     const closed = await geometry();
     assert(closed.control.bottom <= closed.capsule.top + 1, "control above the capsule");
     assert(closed.control.bottom <= closed.textarea.top + 1, "control above the textarea");
@@ -116,27 +143,30 @@ try {
     assert(closed.control.right >= closed.capsule.right - 1.5, "control reaches the reading-column right edge");
     assert(closed.control.right <= closed.form.right + 1, "control stays inside the composer band");
     if (narrow) assert(closed.control.height >= 44, "compact control keeps its 44px touch target");
+    await shot(`${scenario}-initial-closed.png`, { scenario, state: "initial-closed-high" });
 
-    // Keyboard-only: open, filter to provider-b/model-b, select, then thinking high.
+    // Keyboard-only: open, traverse reasoning before search, select, then thinking max.
     await trigger.focus();
     await arm(`() => !!document.querySelector('.th-model-picker-popover')`);
     await page.keyboard.press("Enter"); await complete();
+    assert(await page.locator(".th-model-picker-popover").evaluate(e => document.activeElement === e),
+      "both presentations open with non-text container focus");
+    await shot(`${scenario}-initial-open.png`, { scenario, state: "initial-open-high" });
     if (narrow) {
-      // Sheet: search is not focused; Tab cycles sheet controls until search.
-      assert(!(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search"))),
-        "narrow sheet does not focus search on open");
-      for (let i = 0; i < 12; i++) {
-        await page.keyboard.press("Tab");
-        if (await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search"))) break;
-      }
-      assert(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search")),
-        "sheet Tab cycle reaches search");
-    } else {
-      assert(await page.evaluate(() => document.activeElement?.classList.contains("th-model-picker-search")),
-        "desktop popup focuses search on open");
+      await page.keyboard.press("Tab");
+      assert(await page.locator(".th-model-picker-current .th-btn-icon").evaluate(e => document.activeElement === e));
     }
+    for (const expected of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+      await page.keyboard.press("Tab");
+      assert.equal(await page.evaluate(() => document.activeElement.textContent), expected);
+    }
+    await page.keyboard.press("Tab");
+    assert(await page.locator(".th-model-picker-search").evaluate(e => document.activeElement === e),
+      "forward Tab reaches search after reasoning");
     await page.keyboard.type("provider-b");
+    await page.evaluate(() => { window.qaControlPending = window.qaControl('set_model'); });
     await page.keyboard.press("Enter");
+    await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() =>
       document.querySelector(".th-composer-model .th-model-picker-btn")?.textContent.includes("Model B")));
     assert.equal(await page.locator(".th-model-picker-popover").count(), 0, "popup closed after selection");
@@ -146,6 +176,8 @@ try {
     await trigger.focus();
     await arm(`() => !!document.querySelector('.th-model-picker-popover')`);
     await page.keyboard.press("Enter"); await complete();
+    assert(await page.locator(".th-model-picker-popover").evaluate(e => document.activeElement === e),
+      "reopening restores non-text initial focus");
     const open = await geometry();
     assert(open.popup, "popup present");
     assert(open.popup.bottom <= open.control.top + 1, "popup opens upward above the control");
@@ -154,18 +186,21 @@ try {
     assert(open.popup.bottom <= open.capsule.top + 1, "popup does not cover the composer capsule or send action");
     assert.equal(await page.locator(".th-model-picker-current").evaluate(e => e.textContent.includes("provider-b")), true,
       "current provider/model identity pinned in the popup");
-    await page.screenshot({ path: resolve(evidence, `model-popup-${narrow ? "narrow" : "desktop"}.png`) });
-    const high = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^high$/ });
+    await shot(`model-popup-${narrow ? "narrow" : "desktop"}.png`, { scenario, state: "model-b-confirmed-open-high" });
+    const max = page.locator(".th-model-picker-popover .th-thinking-level", { hasText: /^max$/ });
     for (let i = 0; i < 12; i++) {
       await page.keyboard.press("Tab");
-      if (await high.evaluate(e => e === document.activeElement)) break;
+      if (await max.evaluate(e => e === document.activeElement)) break;
     }
-    assert(await high.evaluate(e => e === document.activeElement), "thinking high reachable from trigger using Tab");
+    assert(await max.evaluate(e => e === document.activeElement), "thinking max reachable from trigger using Tab");
+    await page.evaluate(() => { window.qaControlPending = window.qaControl("set_thinking_level"); });
     await page.keyboard.press("Enter");
+    await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() => !document.querySelector(".th-model-picker-popover")
-      || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("high")));
-    assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["high"],
-      "exactly one thinking request for high");
+      || !!document.querySelector(".th-model-picker-popover .th-thinking-level--active")?.textContent?.includes("max")));
+    assert.deepEqual(thinkingSets().slice(beforeThinking).map(f => f.thinkingLevel), ["max"],
+      "exactly one thinking request for max");
+    await shot(`${scenario}-confirmed-max.png`, { scenario, state: "keyboard-confirmed-max" });
     // The picker stays open after a thinking change; dismiss and verify focus restoration.
     if (narrow) {
       await page.locator(".th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon").click();
@@ -191,9 +226,14 @@ try {
     assert(after.scrollWidth <= after.viewport.width, "no horizontal overflow");
     results.push({ scenario: `model-control-${narrow ? "narrow" : "desktop"}`, pass: true,
       closed, open, sendCount: sends.length });
-    await page.screenshot({ path: resolve(evidence, `model-after-${narrow ? "narrow" : "desktop"}.png`) });
+    await shot(`model-after-${narrow ? "narrow" : "desktop"}.png`, { scenario, state: "closed-max-after-send" });
   }
   assert.deepEqual(errors, []);
+
+  await thinkingScenarios({ page, frames, results, reset,
+    deliver: frame => { for (const socket of sockets) socket.send(JSON.stringify({ sessionId: stored.id, ...frame })); },
+    shot,
+  });
 
   // Shared strengthened checker replaces pane-only bounds and forced ancestor scrolling.
   // It checks all six short layouts plus 53 models, OPEN captures, ordinary wheel
@@ -204,7 +244,7 @@ try {
       async reset(seed, viewport) {
         fixture.reset(seed); await page.setViewportSize(viewport); await page.goto(fixture.url); return page;
       },
-      shot: name => page.screenshot({ path: resolve(evidence, name) }),
+      shot,
       async scenario(name, action) { results.push({ scenario: name, pass: true, detail: await action() }); },
     });
     assert.deepEqual(fixture.unexpected, []);
@@ -220,5 +260,6 @@ try {
   for (const socket of sockets) socket.close(); await server.stop(true);
   await save("model.json", results); await save("traffic.json", { requests, frames }); await save("errors.json", errors);
   await save("cleanup.json", { browserClosed: !!browser, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: fixturePort, fixtureInMemoryOnly: true });
+  if (captureEvidence) await captureEvidence.finish();
 }
 console.log(JSON.stringify(results, null, 2));

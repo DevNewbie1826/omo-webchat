@@ -429,7 +429,6 @@ describe("visual accessibility contracts", () => {
   it("makes every prose-bearing chat header item shrink and ellipsize", () => {
     const proseRules = [
       [".th-provider-badge", chatPane],
-      [".th-thinking-select", chatPane],
       [".th-model-picker-label", chatPane],
       [".th-chat-resync-label", chatPane],
     ] as const;
@@ -454,11 +453,10 @@ describe("visual accessibility contracts", () => {
     // shrink. Model prose has no intrinsic minimum; resync retains one 44px
     // control target while its long copy contributes no unbounded minimum.
     const provider = ruleBody(chatPane, ".th-provider-badge");
-    const thinking = ruleBody(chatPane, ".th-thinking-select");
     const modelButton = ruleBody(chatPane, ".th-model-picker-btn");
     const resync = ruleBody(chatPane, ".th-chat-pane .th-chat-resync-btn");
     expect(declarationValue(provider, "flex")).toMatch(/^0 1 /);
-    expect(declarationValue(thinking, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-thinking"), "flex")).toBe("none");
     expect(declarationValue(modelButton, "min-width")).toBe("0");
     expect(declarationValue(modelButton, "overflow")).toBe("hidden");
     expect(declarationValue(resync, "flex")).toMatch(/^0 1 /);
@@ -503,7 +501,7 @@ describe("visual accessibility contracts", () => {
     // Expanded mode may show all three split actions plus the viewport edge
     // action. Count that conservative combination even though the app normally
     // makes the mobile menu and desktop split chrome mutually exclusive. Long
-    // provider/path/thinking/resync text contributes only its CSS minimum;
+    // provider/path/resync text contributes only its CSS minimum;
     // ellipsis absorbs the remaining width rather than increasing this sum.
     // The model control lives in the composer band, not the header.
     const expandedWidths =

@@ -22,107 +22,188 @@ describe("ChatPane thinking level selector", () => {
     vi.unstubAllGlobals();
   });
 
-  function thinkingSelect(): HTMLSelectElement {
-    const select = container.querySelector<HTMLSelectElement>(".th-thinking-select");
-    if (!select) throw new Error("thinking select missing");
-    return select;
+  function trigger(): HTMLButtonElement {
+    return requireElement(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"), "model trigger");
   }
 
-  it("keeps the model and thinking control above the composer at every pane width", () => {
+  function level(value: string): HTMLButtonElement {
+    return requireElement(Array.from(document.querySelectorAll<HTMLButtonElement>(".th-thinking-level"))
+      .find(button => button.textContent === value), "thinking " + value);
+  }
+
+  it("keeps one bottom model and reported-thinking control at every pane width", () => {
+    // Given a catalog and authoritative high state.
     vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
     const { deliver } = renderChatPane(root, chatSession);
-    const pane = container.querySelector(".th-chat-pane")!;
-    const observer = ControlledResizeObserver.instances.find((item) => item.targets.has(pane))!;
-    const resizePane = (width: number): void => {
-      act(() => observer.callback([{ target: pane, contentRect: { width, height: 740 } } as ResizeObserverEntry],
-        observer as unknown as ResizeObserver));
-    };
+    const pane = requireElement(container.querySelector(".th-chat-pane"), "pane");
+    const observer = requireElement(ControlledResizeObserver.instances.find(item => item.targets.has(pane)), "observer");
     act(() => {
       deliver({ type: "models", sessionId: "chat-1", models: [{ provider: "openai", modelId: "gpt-5", name: "GPT-5" }] });
       deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false,
         model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "high" });
     });
-    const expectComposerPlacement = (): void => {
-      const picker = container.querySelector(".th-model-picker");
-      expect(picker?.closest(".th-composer-model")).not.toBeNull();
-      expect(picker?.closest(".th-chat-input")).not.toBeNull();
-      expect(picker?.closest(".th-termhead")).toBeNull();
-      expect(container.querySelectorAll(".th-model-picker")).toHaveLength(1);
-      expect(picker?.textContent).toContain("GPT-5");
-    };
-    resizePane(375);
-    expectComposerPlacement();
-    // The compact trigger keeps the active thinking level visible.
-    expect(container.querySelector(".th-model-picker")?.textContent).toContain("high");
-    resizePane(800);
-    expectComposerPlacement();
+    for (const width of [375, 800, 390]) {
+      // When the same pane crosses the compact boundary.
+      const entry: ResizeObserverEntry = { target: pane, contentRect: new DOMRect(0, 0, width, 740),
+        borderBoxSize: [], contentBoxSize: [], devicePixelContentBoxSize: [] };
+      act(() => observer.callback([entry], { observe() {}, unobserve() {}, disconnect() {} }));
+      // Then one bottom control retains both visible and accessible state.
+      expect(container.querySelectorAll(".th-model-picker-btn")).toHaveLength(1);
+      expect(container.querySelectorAll(".th-thinking-select")).toHaveLength(0);
+      expect(trigger().closest(".th-composer-model")?.closest(".th-chat-input")).not.toBeNull();
+      expect(trigger().closest(".th-termhead")).toBeNull();
+      expect(trigger().textContent).toContain("GPT-5");
+      expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe("high");
+      expect(trigger().getAttribute("aria-label")).toContain("GPT-5");
+      expect(trigger().getAttribute("aria-label")).toContain("high");
+    }
   });
 
-  it("offers every Omo thinking level", () => {
-    renderChatPane(root, chatSession);
-    const options = Array.from(thinkingSelect().querySelectorAll("option")).map((option) => option.value);
-    expect(options).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-  });
-
-  it("reaches desktop thinking high from the trigger through Tab and sends exactly one request", () => {
+  it.each(["loading", "empty", "failed"])("offers every level without selecting off when the catalog is %s", catalogState => {
+    // Given no reported reasoning value and an unavailable catalog.
     const { deliver, sent } = renderChatPane(root, chatSession);
-    act(() => deliver({ type: "models", sessionId: "chat-1",
-      models: [{ provider: "provider-b", modelId: "model-b", name: "Model B" }] }));
-    const trigger = requireElement(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"), "trigger");
     act(() => {
-      trigger.focus();
-      expect(pressKey(trigger, "Enter").defaultPrevented).toBe(false);
-      trigger.click(); // jsdom does not perform native Enter activation.
+      deliver({ type: "ready", sessionId: "chat-1", piSessionId: "pi-1", resumed: true });
+      if (catalogState === "empty") deliver({ type: "models", sessionId: "chat-1", models: [] });
+      if (catalogState === "failed") deliver({ type: "error", sessionId: "chat-1", code: "provider_error",
+        command: "get_available_models", message: "catalog unavailable" });
     });
-    const search = requireElement(container.querySelector<HTMLInputElement>(".th-model-picker-search"), "search");
-    expect(document.activeElement).toBe(search);
-    const levels = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
-    for (const level of levels.slice(0, 5)) {
+    // When opening the sole bottom control.
+    act(() => trigger().click());
+    // Then every level is offered without a fabricated selection or request.
+    const levels = Array.from(document.querySelectorAll<HTMLButtonElement>(".th-thinking-level"));
+    expect(levels.map(button => button.textContent)).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+    expect(levels.every(button => button.getAttribute("aria-pressed") === "false")).toBe(true);
+    expect(trigger().querySelector(".th-model-picker-thinking")).toBeNull();
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([]);
+  });
+
+  it("preserves reported identity and high when the catalog arrives after opening", () => {
+    // Given a known model and high reasoning before catalog hydration.
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false,
+      model: { provider: "openai", modelId: "gpt-5" }, thinkingLevel: "high" }));
+    expect(trigger().textContent).toContain("openai/gpt-5");
+    act(() => trigger().click());
+    const high = level("high");
+    act(() => high.focus());
+    // When the catalog arrives.
+    act(() => deliver({ type: "models", sessionId: "chat-1",
+      models: [{ provider: "openai", modelId: "gpt-5", name: "GPT-5" }] }));
+    // Then state and focus survive without implicit changes.
+    expect(trigger().textContent).toContain("GPT-5");
+    expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe("high");
+    expect(high.getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(high);
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([]);
+  });
+
+  it("retains authoritative ultra as a visible selected control without a catalog", () => {
+    // Given an unknown but authoritative level.
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false,
+      isCompacting: false, thinkingLevel: "ultra" }));
+    // When opening the picker.
+    act(() => trigger().click());
+    // Then ultra is selected instead of normalizing to a known level.
+    expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe("ultra");
+    expect(level("ultra").getAttribute("aria-pressed")).toBe("true");
+    expect(level("off").getAttribute("aria-pressed")).toBe("false");
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([]);
+  });
+
+  it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max"])("sends exactly one explicit %s change", chosen => {
+    // Given an open bottom picker without a catalog.
+    const { sent } = renderChatPane(root, chatSession);
+    act(() => trigger().click());
+    // When choosing an offered level by pointer.
+    act(() => level(chosen).click());
+    // Then the exact level is transmitted once, without a model change.
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([
+      { type: "chat.set", sessionId: "chat-1", requestId: expect.any(String), thinkingLevel: chosen },
+    ]);
+  });
+
+  it.each(["confirm", "reject"])("restores the confirmed baseline when a follow-up to %s is rejected without a catalog", outcome => {
+    // Given confirmed high and an open picker.
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => deliver({ type: "state", sessionId: "chat-1", isStreaming: false,
+      isCompacting: false, thinkingLevel: "high" }));
+    act(() => trigger().click());
+    // When max is explicitly requested and its authoritative result arrives.
+    act(() => level("max").click());
+    const request = sent.find(frame => frame.type === "chat.set");
+    if (request?.type !== "chat.set" || !request.requestId) throw new Error("missing thinking request");
+    const requestId = request.requestId;
+    expect(sent.filter(frame => frame.type === "chat.set")).toEqual([
+      { type: "chat.set", sessionId: "chat-1", requestId, thinkingLevel: "max" },
+    ]);
+    act(() => {
+      deliver({ type: "ack", sessionId: "chat-1", requestId, command: "set_thinking" });
+      if (outcome === "confirm") deliver({ type: "control.result", sessionId: "chat-1",
+        requestId, command: "set_thinking_level", success: true });
+      else deliver({ type: "error", sessionId: "chat-1", requestId,
+        command: "set_thinking_level", code: "provider_error", message: "thinking rejected" });
+    });
+    // Then badge and selected chip reflect confirmation or rollback.
+    const expected = outcome === "confirm" ? "max" : "high";
+    expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe(expected);
+    expect(level(expected).getAttribute("aria-pressed")).toBe("true");
+    expect(level(expected === "max" ? "high" : "max").getAttribute("aria-pressed")).toBe("false");
+
+    // When a subsequent explicit change is accepted and then rejected.
+    act(() => level("low").click());
+    const requests = sent.filter(frame => frame.type === "chat.set");
+    expect(requests).toHaveLength(2);
+    const followup = requests[1];
+    if (followup?.type !== "chat.set" || !followup.requestId) throw new Error("missing follow-up request");
+    const followupId = followup.requestId;
+    expect(followup).toEqual({ type: "chat.set", sessionId: "chat-1",
+      requestId: expect.any(String), thinkingLevel: "low" });
+    expect(followupId).not.toBe(requestId);
+    act(() => {
+      deliver({ type: "ack", sessionId: "chat-1",
+        requestId: followupId, command: "set_thinking" });
+      deliver({ type: "control.result", sessionId: "chat-1",
+        requestId: followupId, command: "set_thinking_level",
+        success: false, message: "follow-up rejected" });
+    });
+
+    // Then rollback uses the prior confirmed value, not initial high or optimistic low.
+    expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe(expected);
+    expect(level(expected).getAttribute("aria-pressed")).toBe("true");
+    expect(level("low").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("reaches desktop max by forward Tab before search and preserves native activation and Escape", () => {
+    // Given a desktop catalog and reported high state.
+    const { deliver, sent } = renderChatPane(root, chatSession);
+    act(() => {
+      deliver({ type: "models", sessionId: "chat-1", models: [{ provider: "provider-b", modelId: "model-b" }] });
+      deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false, thinkingLevel: "high" });
+    });
+    act(() => trigger().click());
+    const popup = requireElement(container.querySelector<HTMLElement>(".th-model-picker-popover"), "popup");
+    expect(document.activeElement).toBe(popup);
+    // When traversing in DOM order to max and activating the native button.
+    for (const value of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
       const focused = document.activeElement;
       if (!(focused instanceof HTMLElement)) throw new Error("missing keyboard focus");
       act(() => pressKey(focused, "Tab"));
-      expect(document.activeElement).toBe(level);
+      expect(document.activeElement).toBe(level(value));
     }
-    const high = requireElement(levels[4], "high");
+    expect(document.activeElement).toBe(level("max"));
     act(() => {
-      expect(pressKey(high, "Enter").defaultPrevented).toBe(false);
-      high.click(); // Native activation only, not a substitute for focus navigation.
+      expect(pressKey(level("max"), "Enter").defaultPrevented).toBe(false);
+      level("max").click(); // jsdom does not synthesize native Enter activation.
     });
+    // Then only reasoning changes; Escape restores the trigger.
     expect(sent.filter(frame => frame.type === "chat.set")).toEqual([
-      expect.objectContaining({ type: "chat.set", sessionId: "chat-1", thinkingLevel: "high" }),
+      expect.objectContaining({ type: "chat.set", sessionId: "chat-1", thinkingLevel: "max" }),
     ]);
-    act(() => pressKey(high, "Escape"));
+    act(() => pressKey(level("max"), "Escape"));
     expect(container.querySelector(".th-model-picker-popover")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
-
-  it("retains an authoritative unknown thinking level as an option", () => {
-    const { deliver } = renderChatPane(root, chatSession);
-    act(() => {
-      deliver({
-        type: "state",
-        sessionId: "chat-1",
-        isStreaming: false,
-        isCompacting: false,
-        thinkingLevel: "ultra",
-      });
-    });
-    const select = thinkingSelect();
-    const options = Array.from(select.querySelectorAll("option")).map((option) => option.value);
-    expect(options).toContain("ultra");
-    expect(select.value).toBe("ultra");
-  });
-
-  it("sends chat.set with the chosen thinking level", () => {
-    const { sent } = renderChatPane(root, chatSession);
-    const select = thinkingSelect();
-    act(() => {
-      select.value = "xhigh";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(sent).toContainEqual(
-      expect.objectContaining({ type: "chat.set", sessionId: "chat-1", thinkingLevel: "xhigh" }),
-    );
+    expect(document.activeElement).toBe(trigger());
   });
 });
 
