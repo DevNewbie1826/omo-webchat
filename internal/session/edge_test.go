@@ -876,6 +876,7 @@ func TestEdgeCloseAllDuringInflightPromptTypedFailureNoLeak(t *testing.T) {
 
 func TestEdgeThreeManagerRestartsResumeSameDurableID(t *testing.T) {
 	d := newDaemon(t)
+	d.UseLegacyEmptyUnknownHistory()
 	store := newMemStore()
 	chat := testChat{id: "chat-1", cwd: t.TempDir()}
 

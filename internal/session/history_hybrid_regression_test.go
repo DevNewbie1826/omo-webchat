@@ -225,6 +225,7 @@ func TestHistoryHybridNonEmptyTailAppendsWithOneTerminal(t *testing.T) {
 
 func TestHistoryHybridUnknownCursorEmptyTailIsIncomplete(t *testing.T) {
 	d := newDaemon(t)
+	d.UseLegacyEmptyUnknownHistory()
 	client := dial(t, d)
 	mgr := testManager(t, client, newMemStore(), 16)
 	sub := newRecorder(16)
@@ -243,6 +244,7 @@ func TestHistoryHybridUnknownCursorEmptyTailIsIncomplete(t *testing.T) {
 
 func TestHistoryHybridHeaderOnlyConsultsDaemonThenReportsIncomplete(t *testing.T) {
 	d := newDaemon(t)
+	d.UseLegacyEmptyUnknownHistory()
 	client := dial(t, d)
 	store := newMemStore()
 	path, _ := writeHistorySession(t, 0, 0)

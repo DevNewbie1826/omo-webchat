@@ -161,6 +161,8 @@ type Daemon struct {
 	promptHolds       map[string]chan struct{}
 	requests          []map[string]any
 
+	legacyEmptyUnknownHistory bool
+
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
 
@@ -489,12 +491,20 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	case omorpc.CmdGetEntries:
 		d.mu.Lock()
-		entries := append([]any(nil), rec.history...)
+		entries := append([]any{}, rec.history...)
 		leafID := rec.leafID
+		legacyEmpty := d.legacyEmptyUnknownHistory
 		d.mu.Unlock()
 		since, _ := req["since"].(string)
 		if since != "" {
 			entries = entriesAfter(entries, since)
+			if entries == nil {
+				if !legacyEmpty {
+					d.write(conn, map[string]any{"id": id, "type": "response", "command": cmd, "sessionId": sid, "success": false, "error": "Entry not found: " + since})
+					return
+				}
+				entries = []any{}
+			}
 		}
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"entries": entries, "leafId": leafID}))
 		return
@@ -737,6 +747,15 @@ func (d *Daemon) appendHistoryEntryLocked(rec *daemonSession, payload map[string
 	}
 }
 
+// UseLegacyEmptyUnknownHistory explicitly scripts the former fixture response
+// for replay compatibility tests. New authority tests must use the default
+// engine behavior: an unknown since cursor is a provider error, never success.
+func (d *Daemon) UseLegacyEmptyUnknownHistory() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.legacyEmptyUnknownHistory = true
+}
+
 func entriesAfter(entries []any, since string) []any {
 	for i, raw := range entries {
 		entry, _ := raw.(map[string]any)
@@ -744,7 +763,7 @@ func entriesAfter(entries []any, since string) []any {
 			return entries[i+1:]
 		}
 	}
-	return []any{}
+	return nil
 }
 
 func (d *Daemon) resp(id, cmd, sid string, data map[string]any) map[string]any {

@@ -57,8 +57,11 @@ func (f *qaFrames) assertHistory(t *testing.T, entries, finals, errors int) {
 	}
 }
 
-func TestOwnedInPlaceQABootstrapAndNoPagesMutation(t *testing.T) {
+func TestOwnedInPlaceQABootstrapAndNoPagesMutationLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	f := startFixture(t)
+	// Characterize bootstrap quarantine with the legacy empty-success response
+	// to an unknown history cursor; keep the realistic provider-error default elsewhere.
+	f.daemon.UseLegacyEmptyUnknownHistory()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "r4-owned.jsonl")
 	sum := sha256.Sum256([]byte(path))

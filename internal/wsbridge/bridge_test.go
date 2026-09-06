@@ -1928,8 +1928,9 @@ func TestChatCreateSessionActiveConflictsUseContractCode(t *testing.T) {
 	})
 }
 
-func TestChatCreateExternalWriteRequiresExplicitRecovery(t *testing.T) {
+func TestChatCreateExternalWriteRequiresExplicitRecoveryLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "external-recovery")
+	h.daemon.UseLegacyEmptyUnknownHistory()
 	AuthorizeInPlaceOpen(h.store, "external-recovery", true, func(context.Context, string, time.Duration) (SessionActivity, error) {
 		return SessionActivity{}, nil
 	})

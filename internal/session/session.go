@@ -105,6 +105,9 @@ type Session struct {
 	title, nameSource                                                       string
 	inPlace, sessionFileObserved                                            bool
 	sessionFileIdentity                                                     os.FileInfo
+	queueFileIdentity                                                       os.FileInfo
+	queueFileErr                                                            error
+	queueHistoryEstablished                                                 bool
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 	engineQueue                                                             EngineQueueSnapshot
@@ -130,6 +133,9 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 		engineQueue:          engineQueueFromState(data.State),
 		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
 	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
+	// Remember even native file identity before the first queue inspection.
+	// An initially absent native path is different from later disappearance.
+	s.queueFileIdentity, s.queueFileErr = os.Lstat(s.sessionFile)
 	s.broadcast.onDetach = m.cfg.OnDetach
 	return s
 }
@@ -2020,41 +2026,54 @@ type entriesTail struct {
 // DurableHistoryLeaf returns the authoritative transcript boundary used to
 // fence a queue delivery before its provider call begins.
 func (s *Session) DurableHistoryLeaf(ctx context.Context) (string, error) {
-	wire, err := s.fetchEntriesAfter(ctx, "")
+	var checkpoint string
+	err := s.inspectQueueHistory(ctx, nil, func(order *coldhistory.FileOrder, leaf string) error {
+		var err error
+		checkpoint, err = order.Checkpoint(leaf)
+		return err
+	})
 	if err != nil {
 		return "", err
 	}
-	return wire.LeafID, nil
+	return checkpoint, nil
 }
 
 // DurableUserMessageAfter reports whether the authoritative transcript after
 // cursor contains the dispatched user message.
 func (s *Session) DurableUserMessageAfter(ctx context.Context, cursor, text string) (bool, error) {
-	wire, err := s.fetchEntriesAfter(ctx, cursor)
+	match := func(raw json.RawMessage) bool { return durableUserTextMatches(raw, text) }
+	var found bool
+	err := s.inspectQueueHistory(ctx, match, func(order *coldhistory.FileOrder, leaf string) error {
+		var err error
+		found, err = order.MatchAfter(cursor, leaf)
+		return err
+	})
 	if err != nil {
 		return false, err
 	}
-	for _, raw := range wire.Entries {
-		var entry struct {
+	return found, nil
+}
+
+func durableUserTextMatches(raw json.RawMessage, text string) bool {
+	var entry struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+		Message struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
-			Message struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(raw, &entry) != nil {
-			continue
-		}
-		role, content := entry.Role, entry.Content
-		if entry.Message.Role != "" {
-			role, content = entry.Message.Role, entry.Message.Content
-		}
-		if role == "user" && durableMessageText(content) == text {
-			return true, nil
-		}
+		} `json:"message"`
 	}
-	return false, nil
+	if json.Unmarshal(raw, &entry) != nil {
+		return false
+	}
+	role, content := entry.Role, entry.Content
+	if entry.Message.Role != "" {
+		role, content = entry.Message.Role, entry.Message.Content
+	}
+	if role == "user" && durableMessageText(content) == text {
+		return true
+	}
+	return false
 }
 
 func durableMessageText(content json.RawMessage) string {
