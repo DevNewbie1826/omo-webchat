@@ -113,7 +113,7 @@ describe("ChatPane release contracts", () => {
 		return frame.requestId;
 	}
 
-	it("rolls back a legacy prompt failure without a request identity", () => {
+	it("shows a legacy prompt failure without inferring a failed request", () => {
 		submit("provider retry");
 		act(() =>
 			deliver({
@@ -128,11 +128,13 @@ describe("ChatPane release contracts", () => {
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		expect(
 			container.querySelector<HTMLTextAreaElement>("textarea")?.value,
-		).toBe("provider retry");
+		).toBe("");
 		expect(
-			container.querySelector<HTMLButtonElement>('button[type="submit"]')
+			container.querySelector<HTMLButtonElement>(".th-chat-send-btn")
 				?.textContent,
-		).toBe("chat.send");
+		).toBe("chat.stop");
+    expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
+    expect(container.querySelector(".th-failed-draft")).toBeNull();
 	});
 
 	it.each(["start_failed", "no_session"] as const)(
@@ -162,7 +164,7 @@ describe("ChatPane release contracts", () => {
 	);
 
 	it.each(["pi_eof", "provider_timeout", "no_session"] as const)(
-		"recovers the active run for uncorrelated terminal %s",
+		"retains the unresolved original for uncorrelated %s",
 		(code) => {
 			submit("uncorrelated termination");
 			act(() =>
@@ -176,18 +178,21 @@ describe("ChatPane release contracts", () => {
 			);
 
 			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
-			expect(container.querySelector(".th-btn--danger")).toBeNull();
-			expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("uncorrelated termination");
+			expect(container.querySelector(".th-chat-send-btn")?.textContent).toBe("chat.stop");
+      expect(container.querySelector(".th-failed-draft")).toBeNull();
+      expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
+			expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("");
 			submit("retry after uncorrelated termination");
 			expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(2);
 		},
 	);
 
 	it.each(["decode_failed", "provider_overflow", "provider_timeout"] as const)(
-		"clears the active run, optimistic message, and submit latch for terminal %s",
+		"clears the local hold and submit latch without inventing a message for terminal %s",
 		(code) => {
 			submit("terminated prompt");
-			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+      expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
 			expect(container.querySelector(".th-btn--danger")?.textContent).toBe(
 				"chat.stop",
 			);
@@ -217,17 +222,20 @@ describe("ChatPane release contracts", () => {
 			expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(
 				2,
 			);
-			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+      expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
 		},
 	);
 
 	it("labels image-only failed-send recovery with its attachment filename", async () => {
 		const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
 		if (!fileInput) throw new Error("missing attachment input");
-		const chipInserted = new Promise<void>((resolve) => {
+		const chipInserted = new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => { observer.disconnect(); reject(new Error("attachment chip was not inserted")); }, 1000);
 			const observer = new MutationObserver(() => {
 				if (!container.querySelector(".th-chat-attach-chip")) return;
 				observer.disconnect();
+        window.clearTimeout(timeout);
 				resolve();
 			});
 			observer.observe(container, { childList: true, subtree: true });
@@ -267,7 +275,8 @@ describe("ChatPane release contracts", () => {
 				}),
 			);
 
-			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(1);
+			expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
+      expect(container.querySelector("[data-send-phase=sending]")).not.toBeNull();
 			expect(
 				container.querySelector<HTMLTextAreaElement>("textarea")?.value,
 			).toBe("");
@@ -331,7 +340,7 @@ describe("ChatPane release contracts", () => {
 
 		expect(
 			container.querySelectorAll(".th-chat-history .th-chat-msg--user"),
-		).toHaveLength(2);
+		).toHaveLength(1);
 		expect(
 			container.querySelectorAll(".th-chat-history .th-chat-msg--assistant"),
 		).toHaveLength(1);
@@ -352,7 +361,9 @@ describe("ChatPane release contracts", () => {
 		act(() => deliver(restored));
 		expect(
 			container.querySelectorAll(".th-chat-history .th-chat-msg--user"),
-		).toHaveLength(3);
+		).toHaveLength(1);
+    expect(container.querySelectorAll("[data-send-phase=sending]")).toHaveLength(1);
+    expect(container.querySelectorAll("[data-send-phase=unknown]")).toHaveLength(1);
 		expect(
 			container.querySelectorAll(".th-chat-history .th-chat-msg--assistant"),
 		).toHaveLength(1);

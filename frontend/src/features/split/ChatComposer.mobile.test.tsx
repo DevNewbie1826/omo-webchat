@@ -53,7 +53,7 @@ describe("ChatComposer mobile Enter behavior", () => {
 							submitted += 1;
 							return true;
 						}}
-						onSteer={() => undefined}
+						onSteer={() => true}
 						onStop={() => undefined}
 						provider="omo"
 						cwd="/tmp"

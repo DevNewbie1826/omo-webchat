@@ -19,7 +19,7 @@ describe("useChatSession reconnect recovery", () => {
 		await unmountReconnectHarness(harness);
 	});
 
-	it("clears stale live state and restores retry when an uncertain run has a user entry but no assistant", () => {
+	it("clears stale live state and allows explicit recovery when an uncertain run has a user entry but no assistant", () => {
 		// Initial history loads first, so the submit baseline is known.
 		act(() => harness.deliver({ type: "entries", sessionId: session.id, entries: [] }));
 		act(() => {
@@ -73,7 +73,11 @@ describe("useChatSession reconnect recovery", () => {
 		expect(harness.current?.streaming).toBe("");
 		expect(harness.current?.thinking).toBe("");
 		expect(harness.current?.toolCalls).toEqual({});
-		expect(harness.current?.retryDraft?.text).toBe("work");
+		expect(harness.current?.retryDraft).toBeNull();
+    expect(harness.current?.sendRequests).toMatchObject([{ phase: "unknown", draft: { text: "work" } }]);
+    const requestId = harness.current!.sendRequests[0]!.requestId;
+    act(() => harness.current?.recoverFailedDraft(requestId));
+    expect(harness.current?.retryDraft?.text).toBe("work");
 		expect(
 			(harness.current?.messages ?? [])
 				.filter((message) => message.role === "user")

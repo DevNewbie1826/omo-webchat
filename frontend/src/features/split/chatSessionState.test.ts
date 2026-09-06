@@ -1,161 +1,93 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "./chatEntries";
 import { messageText } from "./chatEntries";
-import { followUpSendFrame, type PendingOptimistic, nextToolEntry, reconcileHistory, reconcileOutcome, uncertainRun } from "./chatSessionState";
+import { queuedSendFrame, nextToolEntry, reconcileHistory } from "./chatSessionState";
+import { ChatSendStore } from "./chatSendState";
 import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
 
-function pending(text: string, overrides: Partial<PendingOptimistic> = {}): PendingOptimistic {
-  return { text, image: null, id: 1, requestId: "request-1", kind: "prompt", priorMatchingCount: 0, accepted: true, admitted: false, baselineKnown: true, ...overrides };
+function userMessage(text: string): UiMessage {
+  return { role: "user", blocks: [{ kind: "text", text }] };
 }
-
-function userMessage(text: string, optimisticId?: number): UiMessage {
-  return { role: "user", blocks: [{ kind: "text", text }], ...(optimisticId !== undefined ? { optimisticId } : {}) };
-}
-
-// Delayed initial history that already contains an OLD turn identical to the
-// active prompt, followed by an assistant reply.
 const staleHistory = [
   { type: "message", message: { role: "user", content: "hello", timestamp: 1 } },
   { type: "message", message: { role: "assistant", content: "old reply", timestamp: 2 } },
 ];
 
-describe("followUpSendFrame", () => {
-  it("preserves an attached image", () => {
-    expect(followUpSendFrame(pending("look here", {
-      kind: "followUp",
-      image: { name: "context.png", mimeType: "image/png", data: "YWJj" },
-    }), "chat-1")).toEqual({
-      type: "chat.send",
-      sessionId: "chat-1",
-      requestId: "request-1",
-      run: {
-        kind: "follow_up",
-        message: "look here",
-        images: [{ mimeType: "image/png", data: "YWJj" }],
-      },
+describe("queuedSendFrame", () => {
+  it("preserves an attached image in the server-owned prompt queue", () => {
+    expect(queuedSendFrame({ text: "look here", image: { name: "context.png", mimeType: "image/png", data: "YWJj" } }, "request-1", "chat-1")).toEqual({
+      type: "chat.send", sessionId: "chat-1", requestId: "request-1",
+      run: { kind: "prompt", message: "look here", images: [{ mimeType: "image/png", data: "YWJj" }] },
     });
   });
 });
 
-describe("reconcileHistory active matching", () => {
-  it("does not complete an un-echoed active run from stale initial history", () => {
-    const active = pending("hello");
-    const result = reconcileHistory({
-      entries: staleHistory,
-      current: [userMessage("hello", 1)],
-      pending: [active],
-      active,
-      uncertain: null,
-      preserveCurrent: false,
-    });
-
-    expect(result.activeCompleted).toBe(false);
-    expect(result.pending.map((item) => item.id)).toEqual([1]);
+describe("canonical history is independent of send outcomes", () => {
+  const setup = () => {
+    const store = new ChatSendStore();
+    store.register("request", "prompt", { text: "hello", image: null }, 1);
+    return store;
+  };
+  it("does not complete an unechoed active request from stale initial history", () => {
+    const store = setup();
+    const result = reconcileHistory({ entries: staleHistory, current: [], preserveCurrent: false });
+    expect(result.messages.map(messageText)).toEqual(["hello", "old reply"]);
+    expect(store.get("request")?.phase).toBe("sending");
   });
-
-  it("completes an active run that has an actual server echo", () => {
-    const active = pending("hello", { echo: userMessage("hello") });
-    const result = reconcileHistory({
-      entries: staleHistory,
-      current: [userMessage("hello", 1)],
-      pending: [active],
-      active,
-      uncertain: null,
-      preserveCurrent: false,
-    });
-
-    expect(result.activeCompleted).toBe(true);
+  it("does not complete an echoed active request from history", () => {
+    const store = setup();
+    const result = reconcileHistory({ entries: staleHistory, current: [userMessage("hello")], preserveCurrent: false });
+    expect(result.messages.map(messageText)).toEqual(["hello", "old reply"]);
+    expect(store.get("request")?.hold).toBe(true);
   });
-
-  it("completes an uncertain run across reconnect from authoritative history", () => {
-    const active = pending("hello");
-    const result = reconcileHistory({
-      entries: staleHistory,
-      current: [],
-      pending: [active],
-      active,
-      uncertain: active,
-      preserveCurrent: false,
-    });
-
-    expect(result.activeCompleted).toBe(true);
+  it("requires the request outcome even when reconnect history contains a reply", () => {
+    const store = setup();
+    store.disconnect(1);
+    reconcileHistory({ entries: staleHistory, current: [], preserveCurrent: false });
+    expect(store.get("request")?.phase).toBe("unknown");
+    store.complete("request");
+    expect(store.getSnapshot()).toEqual([]);
   });
-
-  it("flags a known-baseline uncertain run whose user entry has no assistant reply", () => {
-    const active = pending("work");
-    const result = reconcileHistory({
-      entries: [{ type: "message", message: { role: "user", content: "work", timestamp: 1 } }],
-      current: [userMessage("work", 1)],
-      pending: [active],
-      active,
-      uncertain: active,
-      preserveCurrent: false,
-    });
-
-    expect(result.uncertainMissing).toBe(false);
-    expect(result.activeCompleted).toBe(false);
-    expect(result.uncertainStalled).toBe(true);
-    // The user entry exists in authoritative history; the optimistic duplicate drops.
-    expect(result.pending).toEqual([]);
-    expect(result.messages.map(messageText)).toEqual(["work"]);
+  it("does not declare a user-only history record to be a stalled failed request", () => {
+    const store = setup();
+    store.disconnect(1);
+    const result = reconcileHistory({ entries: staleHistory.slice(0, 1), current: [], preserveCurrent: false });
+    expect(result.messages.map(messageText)).toEqual(["hello"]);
+    expect(store.get("request")?.phase).toBe("unknown");
   });
-
-  it("never completes or drops an echo-less uncertain run on an unknown baseline", () => {
-    const active = pending("hello", { baselineKnown: false });
-    const result = reconcileHistory({
-      entries: staleHistory,
-      current: [],
-      pending: [active],
-      active,
-      uncertain: active,
-      preserveCurrent: false,
-    });
-
-    // The stale identical turn must not pose as the unsent run's completion.
-    expect(result.activeCompleted).toBe(false);
-    expect(result.uncertainMissing).toBe(false);
-    expect(result.uncertainStalled).toBe(true);
-    expect(result.pending.map((item) => item.id)).toEqual([1]);
+  it("never completes or drops an echo-less uncertain request on an unknown baseline", () => {
+    const store = setup();
+    store.disconnect(1);
+    reconcileHistory({ entries: staleHistory, current: [], preserveCurrent: false });
+    expect(store.getSnapshot()).toMatchObject([{ requestId: "request", phase: "unknown" }]);
   });
-
-  it("still completes an echoed uncertain run even on an unknown baseline", () => {
-    const active = pending("hello", { baselineKnown: false, echo: userMessage("hello") });
-    const result = reconcileHistory({
-      entries: staleHistory,
-      current: [],
-      pending: [active],
-      active,
-      uncertain: active,
-      preserveCurrent: false,
-    });
-
-    expect(result.activeCompleted).toBe(true);
+  it("settles an echoed uncertain request by completed ACK rather than history", () => {
+    const store = setup();
+    store.disconnect(1);
+    const result = reconcileHistory({ entries: staleHistory, current: [userMessage("hello")], preserveCurrent: false });
+    store.complete("request");
+    expect(store.getSnapshot()).toEqual([]);
+    expect(result.messages.map(messageText)).toEqual(["hello", "old reply"]);
   });
-});
-
-describe("reconcileOutcome", () => {
-  it("keeps an uncertain run active while authoritative state is streaming", () => {
-    const active = pending("work");
-    expect(reconcileOutcome({ messages: [], pending: [], uncertainMissing: true, uncertainStalled: true, activeCompleted: true }, active, true)).toBe("active");
+  it("does not let missing history mutate an unresolved request", () => {
+    const store = setup();
+    reconcileHistory({ entries: [], current: [], preserveCurrent: false });
+    expect(store.get("request")?.hold).toBe(true);
   });
-});
-
-describe("uncertainRun", () => {
-  it("marks an active run uncertain while it is still display-pending", () => {
-    const active = pending("work");
-    expect(uncertainRun(active, [active])?.id).toBe(1);
+  it("marks an admitted active request unknown on disconnect", () => {
+    const store = setup(); store.admit("request"); store.disconnect(1);
+    expect(store.get("request")?.phase).toBe("unknown");
   });
-
-  it("keeps an echoed active run uncertain after its display-pending state is removed", () => {
-    // The server user echo splices the run out of the pending display list, but
-    // the run is still in flight (no assistant reply), so it stays uncertain.
-    const active = pending("work", { echo: userMessage("work") });
-    expect(uncertainRun(active, [])?.id).toBe(1);
+  it("keeps an echoed request original across disconnect", () => {
+    const store = setup();
+    reconcileHistory({ entries: staleHistory, current: [userMessage("hello")], preserveCurrent: true });
+    store.disconnect(1);
+    expect(store.get("request")?.draft.text).toBe("hello");
   });
-
-  it("returns null when no run is active", () => {
-    expect(uncertainRun(null, [pending("work")])).toBeNull();
+  it("does not resurrect a completed request on disconnect", () => {
+    const store = setup(); store.complete("request"); store.disconnect(1);
+    expect(store.getSnapshot()).toEqual([]);
   });
 });
 

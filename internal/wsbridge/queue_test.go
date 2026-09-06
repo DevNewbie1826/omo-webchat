@@ -489,12 +489,12 @@ func TestIdleBacklogOrdersRestoredHeadBeforeNewPrompt(t *testing.T) {
 	}
 }
 
-func TestSessionSendAckIsNotMappedToSecondClientFrame(t *testing.T) {
+func TestSessionSendAdmissionAckIsNotMappedToSecondClientFrame(t *testing.T) {
 	wire, err := mapFrame(session.Frame{Kind: session.FrameAck, Command: "chat.send", RequestID: "one"}, "chat", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if wire != nil {
-		t.Fatalf("completed send ack mapped to client frame: %#v", wire)
+		t.Fatalf("duplicate admission ack mapped to client frame: %#v", wire)
 	}
 }

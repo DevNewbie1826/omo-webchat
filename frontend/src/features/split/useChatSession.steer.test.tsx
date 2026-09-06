@@ -289,7 +289,7 @@ describe("useChatSession active-run sends", () => {
 		expect(current?.messages).toEqual([]);
 	});
 
-	it("replaces a steer-pending echo with its canonical user message", () => {
+	it("ingests a canonical steer without treating its text as request completion", () => {
 		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
 		act(() => current?.steer("queued work"));
 		act(() => deliver({
@@ -301,7 +301,10 @@ describe("useChatSession active-run sends", () => {
 		expect(current?.messages).toEqual([
 			{ role: "user", customType: "steer", blocks: [{ kind: "text", text: "queued work" }], ts: 10 },
 		]);
-		expect(current?.steerPending).toEqual([]);
+		expect(current?.steerPending).toHaveLength(1);
+    const requestId = current!.steerPending[0]!.requestId;
+    act(() => deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId, phase: "completed" }));
+    expect(current?.steerPending).toEqual([]);
 	});
 
 	it("sends an idle submission as a prompt", () => {
