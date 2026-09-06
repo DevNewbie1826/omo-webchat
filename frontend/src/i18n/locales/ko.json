@@ -166,6 +166,7 @@
   "editor.discardConfirm": "저장되지 않은 변경 사항을 버릴까요?",
   "editor.discard": "버리기",
   "common.close": "닫기",
+  "common.cancel": "취소",
   "confirm.ok": "확인",
   "toast.copiedSelection": "선택한 내용을 복사했습니다",
   "chat.done": "완료",

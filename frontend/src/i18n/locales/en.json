@@ -166,6 +166,7 @@
   "editor.discardConfirm": "Discard unsaved changes?",
   "editor.discard": "Discard",
   "common.close": "Close",
+  "common.cancel": "Cancel",
   "confirm.ok": "Confirm",
   "toast.copiedSelection": "Selection copied",
   "chat.done": "Done",

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useState } from "react";
 import { IconMenu, IconPower, IconSplitH, IconSplitV, IconX } from "../../components/icons";
 import { ModalDialog } from "../../components/ModalDialog";
 import type { ToastKind } from "../../components/SessionTree";
@@ -66,6 +66,7 @@ export function ChatPane({
   const [showFiles, setShowFiles] = useState(false);
   const [filePanelWidth, setFilePanelWidth] = useState(320);
   const [showDisconnect, setShowDisconnect] = useState(false);
+  const disconnectTitleId = useId();
   const chat = useChatSession(chatSession, connect, onChatName);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
@@ -285,9 +286,10 @@ export function ChatPane({
           open={showDisconnect}
           onClose={() => setShowDisconnect(false)}
           closeLabel={t("common.close")}
+          labelledBy={disconnectTitleId}
         >
           <div className="th-confirm">
-            <h2 className="th-confirm-title">{t("chat.disconnect")}</h2>
+            <h2 id={disconnectTitleId} className="th-confirm-title">{t("chat.disconnect")}</h2>
             <p className="th-confirm-message">{t("chat.disconnectConfirm")}</p>
             <div className="th-confirm-actions">
               <button type="button" className="th-btn th-btn--ghost" onClick={() => setShowDisconnect(false)}>
