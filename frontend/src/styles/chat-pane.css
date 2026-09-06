@@ -158,25 +158,64 @@
 
 .th-chat-send-status,
 .th-chat-status-item--steer {
-  flex: 0 1 24ch;
+  flex: 1 1 0;
   max-width: 100%;
   align-items: center;
 }
 
 /* Keep state labels/actions intact; only original previews yield space.
-   The strip still scrolls when even those fixed parts cannot fit. */
+   Previews widen into free strip width and shrink only under pressure;
+   the strip still scrolls when even those fixed parts cannot fit. */
 .th-chat-status-label,
-.th-chat-send-status > button {
+.th-chat-send-status > button:not(.th-chat-send-preview) {
   flex: none;
 }
 
 .th-chat-send-preview {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   width: 3ch;
   min-width: 3ch;
-  max-width: 24ch;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
   overflow: hidden;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .th-chat-send-preview {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.th-chat-original {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--th-space-6);
+}
+
+.th-chat-original .th-confirm-title {
+  padding-right: var(--th-space-5);
+}
+
+.th-chat-original-text {
+  margin-top: var(--th-space-3);
+  min-height: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
 }
 
 .th-failed-drafts {
@@ -816,7 +855,10 @@
 
 
 .th-composer-model {
-  width: min(var(--th-chat-max), 100%);
+  /* One reading-column lane with the capsule, status strip, and transcript
+     rows (DESIGN.md "Model control placement"): the control's outer edges
+     meet the capsule's instead of overhanging into the local gutters. */
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   margin-inline: auto;
   display: flex;
   justify-content: flex-end;

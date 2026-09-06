@@ -1,4 +1,6 @@
 {
+  "chat.send.inspect": "View original",
+  "chat.send.original": "Original request",
   "chat.send.sending": "Sending",
   "chat.send.admitted": "Awaiting result",
   "chat.send.unknown": "Outcome unconfirmed",
@@ -171,6 +173,7 @@
   "editor.discardConfirm": "Discard unsaved changes?",
   "editor.discard": "Discard",
   "common.close": "Close",
+  "common.cancel": "Cancel",
   "confirm.ok": "Confirm",
   "toast.copiedSelection": "Selection copied",
   "chat.done": "Done",

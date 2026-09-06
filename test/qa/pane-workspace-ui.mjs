@@ -7,6 +7,8 @@
  * Opt-in controlled: true holds sends; deliver(message) alone commits history.
  * holdHistory(id), releaseHistory(token, page), disconnect(id), traffic and subscription events support canonical QA.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
+ * Per-session seeds: runs: { [id]: { entries, queue, stats, running, model, thinkingLevel } }.
+ * Entries use provider history shapes; queue/stats use server-frame payloads without type/sessionId.
  */
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -35,7 +37,7 @@ const activity = { history: { task: { parent_session_id: "qa-durable", truncated
   tasks: Array.from({ length: 18 }, (_, i) => ({ task_id: `task-${i}`, name: `Verified task ${i}`, status: "completed" })) }, dag: null } };
 export function startFixture(options = {}) {
   const events = new EventEmitter(), requests = [], frames = [], unexpected = [], opens = [], creates = [], sockets = new Map();
-  const runs = new Map(), useTimes = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
+  const runs = new Map(), files = new Map(), useTimes = new Map(), socketIds = new Map(), heldSessions = new Set(), histories = [];
   const traffic = [], heldReplaySessions = new Set(), replays = [];
   let sequence = 0, socketSequence = 0, entrySequence = 0;
   const record = (kind, detail) => {
@@ -53,7 +55,7 @@ export function startFixture(options = {}) {
   }
   let layout, workspace, stopped = false, pageFailures = 0, deferred = true, deferredCreate = false, shelves = false;
   function runFor(id) {
-    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: [],
+    if (!runs.has(id)) runs.set(id, { running: false, model: models[0], thinkingLevel: 'low', entries: shelves ? structuredClone(entries) : [],
       ...(options.controlled ? { outcomes: [], queue: { revision: 0, items: [], engine: { pendingMessageCount: 0, ordered: [] } } } : {}) });
     return runs.get(id);
   }
@@ -61,6 +63,8 @@ export function startFixture(options = {}) {
     const run = runFor(id);
     if (frame.type === 'run.started') run.running = true;
     if (frame.type === 'run.done') run.running = false;
+    if (frame.type === 'queue') { const { type, sessionId, ...queue } = frame; run.queue = structuredClone(queue); }
+    if (frame.type === 'stats') { const { type, sessionId, ...stats } = frame; run.stats = structuredClone(stats); }
     if (options.controlled) {
       if (frame.type === 'message') {
         const entry = { id: `canonical-${++entrySequence}`, parentId: run.entries.at(-1)?.id ?? null,
@@ -74,7 +78,6 @@ export function startFixture(options = {}) {
           if (run.outcomes.length > 64) run.outcomes.shift();
         }
       }
-      if (frame.type === 'queue') run.queue = structuredClone({ revision: frame.revision, items: frame.items, engine: frame.engine });
     }
     for (const [socket, sessionId] of sockets) if (sessionId === id) sendTo(socket, { ...frame, sessionId: id });
   }
@@ -85,8 +88,11 @@ export function startFixture(options = {}) {
     if (seed.longLabels) workspace.chats[0].name = "긴 세션 이름 verification with a deliberately long readable conversation identity";
     pageFailures = seed.pageFailures ?? 0; deferred = seed.deferred ?? true; shelves = seed.shelves ?? false;
     deferredCreate = seed.deferredCreate ?? false;
+    files.clear();
+    for (const [path, content] of Object.entries(seed.files ?? {})) files.set(path, content);
     runs.clear(); useTimes.clear(); heldSessions.clear(); histories.length = 0; heldReplaySessions.clear(); replays.length = 0;
     for (const id of seed.holdReplay ?? []) heldReplaySessions.add(id);
+    for (const [id, state] of Object.entries(seed.runs ?? {})) Object.assign(runFor(id), structuredClone(state));
     for (const id of seed.running ?? []) runFor(id).running = true;
   }
   reset(options);
@@ -148,7 +154,18 @@ export function startFixture(options = {}) {
       if (path.startsWith("/api/sessions/")) return Response.json({ sessions: [] });
       if (path.endsWith("/goal")) return Response.json({ goal: shelves ? goal : null });
       if (path.endsWith("/activity")) return Response.json(shelves ? activity : { history: {} });
-      if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [] });
+      if (path === "/api/fs/list") return Response.json({ path: "/fixture", entries: [...files].map(([path, content]) => ({
+        name: path.slice('/fixture/'.length), isDir: false, size: Buffer.byteLength(content), modTime: '2026-09-06T00:00:00Z',
+      })) });
+      if (files.has(url.searchParams.get('path'))) {
+        const filePath = url.searchParams.get('path');
+        if (path === '/api/fs/read' && req.method === 'GET') {
+          const content = files.get(filePath); return Response.json({ content, size: Buffer.byteLength(content) });
+        }
+        if (path === '/api/fs/write' && req.method === 'POST' && typeof body.content === 'string') {
+          files.set(filePath, body.content); return new Response(null, { status: 204 });
+        }
+      }
       if (path.startsWith("/api/")) { unexpected.push(request); return new Response(`Unexpected ${path}`, { status: 404 }); }
       const file = Bun.file(resolve(options.assetsDir ?? resolve(import.meta.dir, "../../frontend/dist"), path === "/" ? "index.html" : path.slice(1)));
       return await file.exists() ? new Response(file) : new Response("Not found", { status: 404 });
@@ -176,8 +193,8 @@ export function startFixture(options = {}) {
             const state = { type: 'state', isStreaming: run.running, isCompacting: false, model: run.model, thinkingLevel: run.thinkingLevel };
             if (!options.controlled || !heldReplaySessions.has(frame.chatId)) send(state);
             send({ type: "models", models }); send({ type: "commands", commands: [] });
+            if (run.queue) send({ type: 'queue', ...run.queue });
             if (options.controlled) {
-              send({ type: 'queue', ...run.queue });
               if (heldReplaySessions.has(frame.chatId)) {
                 const pending = { token: replays.length, sessionId: frame.chatId, socket: ws,
                   state: structuredClone(state), outcomes: structuredClone(run.outcomes), released: false };
@@ -192,12 +209,12 @@ export function startFixture(options = {}) {
                 break;
               }
             }
-            send({ type: "entries", entries: shelves ? entries : run.entries, final: true }); break;
+            send({ type: "entries", entries: run.entries, final: true }); break;
           }
           case 'ping':
             if (options.controlled) sendTo(ws, { type: 'pong' }); else unexpected.push({ frame });
             break;
-          case "chat.stats": send({ type: "stats", cost: 0 }); break;
+          case "chat.stats": send({ type: "stats", ...(runFor(frame.sessionId).stats ?? { cost: 0 }) }); break;
           case "chat.models": send({ type: "models", models }); break;
           case "chat.set":
             if (frame.model) runFor(frame.sessionId).model = frame.model;
@@ -212,20 +229,25 @@ export function startFixture(options = {}) {
           case 'chat.close':
             if (!options.controlled) { unexpected.push({ frame }); break; }
             subscribe(ws, null); break;
-          case 'chat.queue.remove': case 'chat.queue.move': case 'chat.queue.clear': {
-            if (!options.controlled) { unexpected.push({ frame }); break; }
+          case "chat.queue.move": case "chat.queue.remove": case "chat.queue.clear": {
             const queue = structuredClone(runFor(frame.sessionId).queue);
-            if (frame.type === 'chat.queue.remove') queue.items = queue.items.filter(item => item.id !== frame.itemId);
-            if (frame.type === 'chat.queue.move') {
-              const index = queue.items.findIndex(item => item.id === frame.itemId);
-              if (index >= 0) queue.items.splice(frame.toIndex, 0, ...queue.items.splice(index, 1));
-            }
+            if (!queue) { unexpected.push({ frame }); break; }
             if (frame.type === 'chat.queue.clear') {
+              if (!['webchat', 'engine', 'all'].includes(frame.scope)) { unexpected.push({ frame }); break; }
               if (frame.scope !== 'engine') queue.items = [];
               if (frame.scope !== 'webchat') queue.engine = { pendingMessageCount: 0, ordered: [] };
+            } else {
+              const index = queue.items.findIndex(item => item.id === frame.itemId);
+              if (index < 0) { send({ type: 'error', code: 'queue_item_not_found', requestId: frame.requestId }); break; }
+              if (frame.type === 'chat.queue.move' && (!Number.isInteger(frame.toIndex) || frame.toIndex < 0 || frame.toIndex >= queue.items.length)) {
+                unexpected.push({ frame }); break;
+              }
+              const [item] = queue.items.splice(index, 1);
+              if (frame.type === 'chat.queue.move') queue.items.splice(frame.toIndex, 0, item);
             }
-            send({ type: 'ack', command: frame.type, requestId: frame.requestId });
-            deliver(frame.sessionId, { type: 'queue', ...queue, revision: queue.revision + 1 }); break;
+            send({ type: 'ack', requestId: frame.requestId, command: frame.type });
+            deliver(frame.sessionId, { type: 'queue', ...queue, revision: queue.revision + 1 });
+            break;
           }
           case "chat.abort": deliver(frame.sessionId, { type: "run.done", reason: "stop" }); break;
           case "hello": case "sessions.subscribe": case "activity.refresh": break;
@@ -237,6 +259,7 @@ export function startFixture(options = {}) {
   });
   return {
     url: `http://127.0.0.1:${server.port}`, requests, frames, unexpected, opens, creates, traffic, reset, deliver,
+    fileContent(path) { return files.get(path); },
     holdReplay(id, hold = true) { if (hold) heldReplaySessions.add(id); else heldReplaySessions.delete(id); },
     releaseReplay(token, { stateFirst = true } = {}) {
       const pending = replays[token];

@@ -1,16 +1,27 @@
 /* Tool-execution block (DESIGN.md "Tool-execution block anatomy"): one
-   disclosure per invocation at Surface elevation, receding behind Body-tier
-   prose through smaller type, compact spacing, and dim/muted text - never
-   whole-block opacity. Spacing uses --th-space-* tokens; the px fallbacks are
-   the contract values, in effect only until tokens.css declares them. */
+   disclosure per invocation. A collapsed record is an unboxed transcript row
+   - no fill, no outline, no shadow - so consecutive executions read as
+   inspectable records rather than a wall of cards; the Surface well appears
+   only with the expanded body, bounding running output. Receding behind
+   Body-tier prose happens through smaller type, compact spacing, and
+   dim/muted text - never whole-block opacity. Spacing uses --th-space-*
+   tokens; the px fallbacks are the contract values, in effect only until
+   tokens.css declares them. */
 
 .th-tool {
   width: 100%;
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--th-border);
+  /* The radius has no visible effect while the record is unboxed; it shapes
+     the header's hover/focus treatment and clips the expanded well. */
   border-radius: var(--th-radius-sm);
+}
+
+/* Expanded output boundary: the record takes the Surface elevation well only
+   once a body is present, so collapsed rows stay quiet transcript rows. */
+.th-tool:has(> .th-tool-body) {
+  border: 1px solid var(--th-border);
   background: var(--th-surface);
   /* Surface elevation: outline only, no independent shadow. */
 }
