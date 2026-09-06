@@ -201,11 +201,17 @@ func parseSessionFile(path string) (diskSession, bool) {
 	if info, statErr := f.Stat(); statErr == nil {
 		modTime = info.ModTime()
 	}
+	recency := int64(0)
+	if !modTime.IsZero() && modTime.UnixMilli() > 0 {
+		recency = modTime.UnixMilli()
+	} else if !createdAt.IsZero() && createdAt.UnixMilli() > 0 {
+		recency = createdAt.UnixMilli()
+	}
 	return diskSession{
 		ID:        header.ID,
 		Path:      path,
 		CWD:       header.CWD,
-		RecencyMs: createdAt.UnixMilli(),
+		RecencyMs: recency,
 		ModTime:   modTime,
 	}, true
 }
@@ -333,13 +339,6 @@ func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 	return durableID != "" && durableID == sess.ID || sessionFile != "" && sessionFile == sess.Path
 }
 
-// chatRecencyMs is the recency key for a stored chat in MRU orderings: the
-// last-used stamp when the record carries one, else creation time for legacy
-// rows that never recorded a use.
-func chatRecencyMs(ch cursorstore.Chat) int64 {
-	return cursorstore.RecencyMillis(ch)
-}
-
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCWD ...string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	danglingCWDs := make(map[string]struct{})
@@ -358,7 +357,7 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 			ID:        ch.ID,
 			Name:      ch.Name,
 			Source:    sessionHistorySourceStored,
-			RecencyMs: chatRecencyMs(ch),
+			RecencyMs: chatRecencyMs(ch, disk),
 			// A cheap Stat per stored row flags an owned copy that vanished.
 			// Never a branch scan — that is recovery-time work.
 			Dangling: danglingRow,
