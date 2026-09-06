@@ -102,6 +102,29 @@ export interface WorkspaceSessionPage {
 
 const WORKSPACE_SESSION_PAGE_SIZE = 5;
 
+/** Reconcile loaded snapshots without rolling back recency; ties match Go's ordinal IDs. */
+export function mergeWorkspaceSessions(items: readonly WorkspaceSession[]): readonly WorkspaceSession[] {
+  const rows = new Map<string, WorkspaceSession>();
+  for (const item of items) {
+    const previous = rows.get(item.id);
+    rows.set(item.id, { ...item, recencyMs: Math.max(item.recencyMs, previous?.recencyMs ?? 0) });
+  }
+  return [...rows.values()].sort((a, b) => b.recencyMs - a.recencyMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/** Explicit App activation only; not a transport bind or preparation request. */
+export async function touchWorkspaceSession(wsId: string, chatId: string): Promise<number> {
+  const response = await apiJson<unknown>(
+    `/api/workspaces/${encodeURIComponent(wsId)}/chats/${encodeURIComponent(chatId)}/touch`,
+    { method: "POST" },
+  );
+  if (typeof response !== "object" || response === null || !("recencyMs" in response)
+    || typeof response.recencyMs !== "number" || !Number.isSafeInteger(response.recencyMs) || response.recencyMs < 0) {
+    throw new ApiError(200, "Invalid session recency response", response);
+  }
+  return response.recencyMs;
+}
+
 /**
  * Fetch one recency-sorted page of a workspace's session history (stored
  * chats merged with discovered omo sessions). Pass the previous page's

@@ -790,9 +790,6 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 	if oldDetach != nil {
 		oldDetach()
 	}
-	if touchErr := op.bridge.cfg.Store.TouchLastUsed(op.chatID); touchErr != nil {
-		op.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", op.chatID, "error", touchErr)
-	}
 	op.bridge.publishQueueToConnection(op.conn, acquired)
 	op.bridge.scheduleIdleDrain(op.chatID, acquired)
 	op.conn.queryState(ctx, acquired)
@@ -1044,9 +1041,6 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 				return err
 			}
 			return session.ErrSubscriberDetached
-		}
-		if touchErr := c.bridge.cfg.Store.TouchLastUsed(f.ChatID); touchErr != nil {
-			c.bridge.cfg.Logger.Warn("touching v2 chat last-used time", "chat_id", f.ChatID, "error", touchErr)
 		}
 		c.bridge.publishQueueToConnection(c, acquired)
 		c.bridge.scheduleIdleDrain(f.ChatID, acquired)

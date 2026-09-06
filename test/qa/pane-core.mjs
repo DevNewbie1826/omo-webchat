@@ -30,6 +30,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     if (path === "/api/workspaces/ws/sessions") return Response.json(url.searchParams.has("cursor")
       ? { items: [{ id: "discovered-c", name: "Discovered C", source: "discovered", recencyMs: 5 }], nextCursor: "" }
       : { items: catalog, nextCursor: "page2" });
+    if (/^\/api\/workspaces\/ws\/chats\/[^/]+\/touch$/.test(path) && req.method === "POST") return Response.json({ recencyMs: Date.now() });
     if (path.endsWith("/sessions/open")) {
       const body = await req.json(); openStarted?.(body);
       return Response.json(await new Promise(done => { releaseOpen = (chat = { id: `opened-${body.id}`, name: `Opened ${body.id}`, provider: "omo" }) => done(chat); }));
