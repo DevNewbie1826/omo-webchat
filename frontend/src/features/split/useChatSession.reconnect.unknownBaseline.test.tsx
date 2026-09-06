@@ -51,9 +51,13 @@ describe("useChatSession reconnect unknown baseline", () => {
 			}),
 		);
 
-		// The stale identical turn must not pose as completion: retry is restored.
+		// The stale identical turn cannot settle the request; recovery is explicit.
 		expect(harness.current?.running).toBe(false);
-		expect(harness.current?.retryDraft?.text).toBe("hello");
+		expect(harness.current?.retryDraft).toBeNull();
+    expect(harness.current?.sendRequests).toMatchObject([{ phase: "unknown", draft: { text: "hello" } }]);
+    const requestId = harness.current!.sendRequests[0]!.requestId;
+    act(() => harness.current?.recoverFailedDraft(requestId));
+    expect(harness.current?.retryDraft?.text).toBe("hello");
 		expect(harness.current?.streaming).toBe("");
 		expect(harness.current?.toolCalls).toEqual({});
 

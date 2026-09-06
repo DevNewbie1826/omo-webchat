@@ -197,7 +197,7 @@ export function renderTwoChatComposers(
 								isCompacting={false}
 								retryDraft={null}
 								onSubmit={() => true}
-								onSteer={() => undefined}
+								onSteer={() => true}
 								onStop={() => undefined}
 								provider="omo"
 								cwd="/tmp"

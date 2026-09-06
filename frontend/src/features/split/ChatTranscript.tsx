@@ -94,7 +94,6 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
     const message = item.message;
     const fallback = messageOrdinal++;
     if (message.id !== undefined) return `message:${message.id}`;
-    if (message.optimisticId !== undefined) return `optimistic:${message.optimisticId}`;
     // Notice insertion/dismissal does not change the authoritative message
     // ordinal, so even legacy id-less messages retain their virtual row.
     return `message-ordinal:${fallback}`;

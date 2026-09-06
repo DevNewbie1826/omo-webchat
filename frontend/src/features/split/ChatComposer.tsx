@@ -11,7 +11,7 @@ import { ChatComposerPalettes } from "./chatComposerPalettes";
 import { commandPrefix, detectCommandTrigger, matchCommands } from "./commandMatch";
 import { mergeCommands } from "./curatedCommands";
 import { detectFileTrigger, type FileMatch } from "./fileSearch";
-import type { ChatDraft } from "./chatSessionTypes";
+import type { ChatDraft, RecoveredChatDraft } from "./chatSessionTypes";
 import { useFileMention } from "./useFileMention";
 import { useImageAttachment } from "./useImageAttachment";
 import { useSessionDraft } from "./sessionDraft";
@@ -24,9 +24,9 @@ interface ChatComposerProps {
   readonly running: boolean;
   readonly isCompacting: boolean;
   readonly disabled?: boolean;
-  readonly retryDraft: (ChatDraft & { readonly version: number }) | null;
+  readonly retryDraft: RecoveredChatDraft | null;
   readonly onSubmit: (draft: ChatDraft) => boolean;
-  readonly onSteer: (text: string) => void;
+  readonly onSteer: (text: string) => boolean;
   readonly onStop: () => void;
   readonly provider: string;
   readonly cwd: string;
@@ -35,7 +35,7 @@ interface ChatComposerProps {
 
 export function ChatComposer({ session, modelControl, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
-  const { input, setInput, draftCommand, setDraftCommand, pendingImage, setPendingImage } = useSessionDraft(session);
+  const { input, setInput, draftCommand, setDraftCommand, pendingImage, setPendingImage, restoreDraft } = useSessionDraft(session);
   const [paletteHidden, setPaletteHidden] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const paletteId = useId();
@@ -70,12 +70,11 @@ export function ChatComposer({ session, modelControl, commands, running, disable
   }, [matches.length, paletteOpen]);
 
   useEffect(() => {
-    if (!retryDraft) return;
-    setInput(retryDraft.text);
+    if (!retryDraft || (!retryDraft.explicit && (input !== "" || pendingImage !== null || draftCommand !== null))) return;
+    restoreDraft(retryDraft);
     setCaret(retryDraft.text.length);
-    setPendingImage(retryDraft.image);
     textareaRef.current?.focus();
-  }, [retryDraft, setPendingImage]);
+  }, [retryDraft, restoreDraft]);
 
   useEffect(() => {
     if (!imageSupported && pendingImage) clearImage();
@@ -169,8 +168,9 @@ export function ChatComposer({ session, modelControl, commands, running, disable
   const steer = (): void => {
     const text = input.trim();
     if (!text || disabled) return;
-    onSteer(text);
+    if (!onSteer(input)) return;
     setInput("");
+    setDraftCommand(null);
     setPaletteHidden(false);
     setActiveIndex(-1);
   };

@@ -124,6 +124,50 @@ describe("useChatSession server-owned send queue", () => {
     expect(current?.queuePlaceholders).toEqual([]);
   });
 
+  it.each(["remove", "clear"] as const)("releases the handed-off original even when queue %s produces no send outcome", action => {
+    beginRun();
+    act(() => current?.submit({ text: "queue original", image: { name: "original.png", data: "AAAA", mimeType: "image/png" } }));
+    const requestId = lastSend().requestId!;
+    act(() => deliver({ type: "queue", sessionId: session.id, revision: 1,
+      items: [{ id: "q-1", requestId, text: "queue original", hasImage: true, createdAt: 1 }],
+      engine: { pendingMessageCount: 0, ordered: [] } }));
+    act(() => { if (action === "remove") current?.queueRemove("q-1"); else current?.queueClear("webchat"); });
+    expect(sent.at(-1)?.type).toBe(`chat.queue.${action}`);
+    act(() => {
+      deliver({ type: "ack", sessionId: session.id, command: `chat.queue.${action}` });
+      deliver({ type: "queue", sessionId: session.id, revision: 2, items: [], engine: { pendingMessageCount: 0, ordered: [] } });
+    });
+    expect(current?.queueItems).toEqual([]);
+    expect(current?.sendRequests).toEqual([]);
+    expect(current?.failedDrafts).toEqual([]);
+    expect(current?.retryDraft).toBeNull();
+    expect(current?.messages).toEqual([]);
+  });
+  it("handles a restored queue dispatch failure and later completion without duplicate recovery", () => {
+    beginRun();
+    act(() => current?.submit({ text: "queue original", image: null }));
+    const requestId = lastSend().requestId!;
+    const queue = (revision: number, present: boolean): ChatServerFrame => ({ type: "queue", sessionId: session.id, revision,
+      items: present ? [{ id: "q-1", requestId, text: "queue original", hasImage: false, createdAt: 1 }] : [],
+      engine: { pendingMessageCount: 0, ordered: [] } });
+    const failure: ChatServerFrame = { type: "error", sessionId: session.id, command: "chat.send", requestId, code: "provider_error", message: "dispatch rejected" };
+    act(() => { deliver(queue(1, true)); deliver(queue(3, false)); deliver(failure); deliver(queue(4, true)); });
+    expect(current?.sendError).toEqual({ message: "dispatch rejected" });
+    expect(current?.failedDrafts).toEqual([]);
+    expect(current?.retryDraft).toBeNull();
+    act(() => { handlers.onClose?.(1006); handlers.onOpen?.(); deliver(queue(4, true)); deliver({ type: "state", sessionId: session.id, isStreaming: true, isCompacting: false }); });
+    act(() => {
+      deliver(queue(6, false));
+      deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId, phase: "completed" });
+    });
+    expect(current?.sendRequests).toEqual([]);
+    expect(current?.running).toBe(true);
+    act(() => current?.dismissSendError());
+    act(() => deliver(failure));
+    expect(current?.sendError).toBeNull();
+    expect(current?.failedDrafts).toEqual([]);
+    expect(sent.filter(frame => frame.type === "chat.send")).toHaveLength(1);
+  });
   it("restores the queue list after a page reload from the attach queue frame", () => {
     // No local submission in this connection: a bare attach replay populates the panel.
     act(() => deliver({
@@ -150,7 +194,7 @@ describe("useChatSession server-owned send queue", () => {
     expect(sent).toContainEqual({ type: "chat.queue.clear", sessionId: session.id, scope: "all" });
   });
 
-  it("steers without a transcript row and keeps a pending summary until the echo tags it", () => {
+  it("steers without a transcript row and keeps a pending summary until its completed ACK", () => {
     beginRun();
     act(() => current?.steer("redirect now"));
 
@@ -171,6 +215,8 @@ describe("useChatSession server-owned send queue", () => {
     expect(current?.messages).toEqual([
       { role: "user", customType: "steer", blocks: [{ kind: "text", text: "redirect now" }], ts: 10 },
     ]);
+    expect(current?.steerPending).toHaveLength(1);
+    act(() => deliver({ type: "ack", sessionId: session.id, command: "chat.send", requestId: lastSend().requestId!, phase: "completed" }));
     expect(current?.steerPending).toEqual([]);
   });
 

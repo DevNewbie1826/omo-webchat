@@ -18,7 +18,7 @@ describe("useChatSession reconnect lost run", () => {
 		await unmountReconnectHarness(harness);
 	});
 
-	it("still recovers a genuinely lost run (user entry, no reply, no run.done)", () => {
+	it("requires explicit recovery of an unconfirmed run (user entry, no reply, no run.done)", () => {
 		// Known baseline: initial history loads before the submit.
 		act(() => harness.deliver({ type: "entries", sessionId: session.id, entries: [] }));
 		act(() => {
@@ -57,8 +57,12 @@ describe("useChatSession reconnect lost run", () => {
 			}),
 		);
 
-		// The truly lost run is still recovered: retry draft is restored.
-		expect(harness.current?.retryDraft?.text).toBe("work");
+		// Missing reply is not proof of failure: explicit recovery restores the original.
+		expect(harness.current?.retryDraft).toBeNull();
+    expect(harness.current?.sendRequests).toMatchObject([{ phase: "unknown", draft: { text: "work" } }]);
+    const requestId = harness.current!.sendRequests[0]!.requestId;
+    act(() => harness.current?.recoverFailedDraft(requestId));
+    expect(harness.current?.retryDraft?.text).toBe("work");
 		expect(harness.current?.running).toBe(false);
 	});
 });
