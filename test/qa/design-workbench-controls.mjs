@@ -215,8 +215,9 @@ export async function auxiliarySurfaces(q, shot) {
   await arm(page, () => !document.querySelector('.th-files'));
   await page.locator('.th-editor-area').press('Escape'); await complete(page);
   await arm(page, () => !!document.querySelector('.th-settings-panel'));
-  await page.locator('.th-settings-menu > button').click(); await complete(page);
-  await shot('settings');
+  const settingsReady = { target: '.th-settings-panel', settings: { fontSize: 14 } };
+  await page.locator('.th-settings-menu > button').click(); await complete(page, settingsReady);
+  await shot('settings', settingsReady);
   const initialTheme = await page.evaluate(() => document.documentElement.dataset.theme);
   await page.getByRole('radio', { name: 'System', exact: true }).click();
   assert.equal(await page.evaluate(() => localStorage.getItem('th-theme')), 'system');
@@ -225,16 +226,18 @@ export async function auxiliarySurfaces(q, shot) {
     await page.emulateMedia({ colorScheme: theme }); await complete(page);
     assert.equal(await page.evaluate(() => localStorage.getItem('th-theme')), 'system');
     assert((await measure(page)).roles.filter(role => role.actual).every(role => role.actual === role.expected));
-    await shot(`system-${theme}`);
+    await shot(`system-${theme}`, settingsReady);
   }
   await arm(page, () => document.querySelector('.th-settings-size-value')?.textContent === '15px');
-  await page.locator('.th-settings-size-btn').last().click(); await complete(page);
+  const largerReady = { target: '.th-settings-panel', settings: { fontSize: 15 } };
+  await page.locator('.th-settings-size-btn').last().click(); await complete(page, largerReady);
   assert.equal(await page.evaluate(() => localStorage.getItem('th-font-size')), '15');
-  await shot('font-15-settings');
+  await shot('font-15-settings', largerReady);
   await page.keyboard.press('Escape');
   await arm(page, () => !!document.querySelector('[role="dialog"]'));
-  await page.locator('.th-disconnect-btn').click(); await complete(page);
-  await shot('disconnect-dialog');
+  const dialogReady = { target: '[role="dialog"][aria-modal="true"]' };
+  await page.locator('.th-disconnect-btn').click(); await complete(page, dialogReady);
+  await shot('disconnect-dialog', dialogReady);
   await page.keyboard.press('Escape');
   assert.equal(fixture.frames.filter(frame => frame.type === 'chat.disconnect').length, 0, 'cancelled dialog never disconnects');
 }

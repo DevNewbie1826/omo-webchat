@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util';
 import { setupDesign, arm, complete, wheel } from './design-workbench-fixture.mjs';
 import { measure, preservedGeometry, designAssertions } from './design-workbench-measure.mjs';
 import { exerciseControls, auxiliarySurfaces } from './design-workbench-controls.mjs';
+import { captureSettled } from './design-workbench-capture.mjs';
 
 export async function run({ phase, evidence, driver = process.env.QA_PLAYWRIGHT }) {
   assert(['before', 'after'].includes(phase), '--phase must be before or after');
@@ -30,9 +31,11 @@ export async function run({ phase, evidence, driver = process.env.QA_PLAYWRIGHT 
       let q;
       try {
         q = await setupDesign(browser, options);
-        const shot = async suffix => {
+        const shot = async (suffix, readiness) => {
           const path = resolve(evidence, `${name}-${suffix}.png`);
-          await q.page.screenshot({ path }); screenshots.push(path);
+          if (readiness) await save(`${name}-${suffix}-readiness.json`, await captureSettled(q.page, readiness, { path }));
+          else await q.page.screenshot({ path });
+          screenshots.push(path);
           await save(`${name}-${suffix}.json`, await measure(q.page));
         };
         const detail = await action(q, shot);

@@ -1,5 +1,6 @@
 /** Reusable actual-App setup. No synthetic DOM, style overrides, user server or disk state. */
 import { startFixture } from './pane-workspace-ui.mjs';
+import { settleCapture } from './design-workbench-capture.mjs';
 
 export const fileContent = 'export const session = { preserved: true };\n';
 export const prose = '대화의 흐름과 도구 실행 결과를 분리하면서 세션과 입력 상태를 보존합니다. ';
@@ -28,9 +29,9 @@ export function designSeed(layout = 'single') {
 }
 
 /** Install observers before navigation/actions. Timeouts are failure bounds, not readiness delays. */
-export async function installSignals(page, { theme = 'dark', fontSize = 14 } = {}) {
-  await page.addInitScript(({ theme, fontSize }) => {
-    localStorage.setItem('th-lang', 'en'); localStorage.setItem('th-theme', theme);
+export async function installSignals(page, { theme = 'dark', fontSize = 14, lang = 'en' } = {}) {
+  await page.addInitScript(({ theme, fontSize, lang }) => {
+    localStorage.setItem('th-lang', lang); localStorage.setItem('th-theme', theme);
     localStorage.setItem('th-ws-expanded', '["ws"]'); localStorage.setItem('th-font-size', String(fontSize));
     window.qaSignal = predicate => new Promise((done, fail) => {
       const mo = new MutationObserver(check), ro = new ResizeObserver(check);
@@ -39,12 +40,15 @@ export async function installSignals(page, { theme = 'dark', fontSize = 14 } = {
       mo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
       ro.observe(document.documentElement); check();
     });
-  }, { theme, fontSize });
+  }, { theme, fontSize, lang });
 }
 export const arm = (page, predicate) => page.evaluate(source => {
   window.qaPending = window.qaSignal(new Function(`return (${source})`)());
 }, String(predicate));
-export const complete = page => page.evaluate(() => window.qaPending);
+export const complete = async (page, readiness) => {
+  const state = await page.evaluate(() => window.qaPending);
+  return readiness ? page.evaluate(settleCapture, readiness) : state;
+};
 
 /** Observe intent separately from allocation: aria-expanded alone can be transient. */
 export const armShelf = (page, kind, open) => page.evaluate(({ kind, open }) => {
