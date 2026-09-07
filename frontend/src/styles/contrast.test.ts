@@ -614,6 +614,69 @@ describe("token contrast contracts (WCAG 2.1)", () => {
     expect(failures).toEqual([]);
   });
 
+  // The authenticated reference identifies the composer's default primary
+  // action by its 28x28 bg-primary-solid button: dark fill #dfdfdf, light
+  // fill #1a1c1f, box-shadow none. The button's inherited colour equals its
+  // own fill, so the reference does not measure the glyph; the glyph instead
+  // inverts each theme's own measured canvas role, and hover - uncaptured in
+  // the reference - must stay a visible step toward that canvas.
+  const PRIMARY_ACTION = {
+    "--th-send": { light: "#1a1c1f", dark: "#dfdfdf" },
+    "--th-send-fg": { light: "#ffffff", dark: "#181818" },
+  } as const;
+
+  it("pins the measured primary composer action fill and its inverting glyph", () => {
+    const failures: string[] = [];
+    for (const [token, expected] of Object.entries(PRIMARY_ACTION)) {
+      for (const [selector, hex] of [
+        [":root", expected.dark],
+        ['[data-theme="light"]', expected.light],
+      ] as const) {
+        const scope = must(scopes.find((candidate) => candidate.selector === selector));
+        const got = scopeColor(scope, token);
+        const want = hexChannels(hex);
+        const drifted =
+          [got.r, got.g, got.b].some((channel, i) => Math.abs(channel - must(want[i])) > 0.5) || got.a !== 1;
+        if (drifted) {
+          failures.push(`[${selector}] ${token}: rgb(${got.r}, ${got.g}, ${got.b}) != measured primary action ${hex}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps the menu's Raised shadow token at the measured none in both themes", () => {
+    // The measured chooser carries no box shadow and DESIGN.md assigns the
+    // menu role borders without shadows, so the Raised role must resolve to
+    // none in both scopes; the composer and Overlay shadows are separate
+    // roles and stay.
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      if (scope.tokens["--th-shadow-raised"] !== "none") {
+        failures.push(
+          `[${scope.selector}] --th-shadow-raised: '${scope.tokens["--th-shadow-raised"]}' != none (measured menu)`,
+        );
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("moves the uncaptured send hover a visible step toward the canvas role", () => {
+    const failures: string[] = [];
+    for (const scope of scopes) {
+      const base = relativeLuminance(scopeColor(scope, "--th-send"));
+      const hover = relativeLuminance(scopeColor(scope, "--th-send-hover"));
+      // Dark state treatments darken toward the dark canvas; light state
+      // treatments lighten toward the white canvas. The hover must follow
+      // its theme's direction so the state stays visible.
+      const towardCanvas = scope.selector === ":root" ? hover < base : hover > base;
+      if (!towardCanvas) {
+        failures.push(`[${scope.selector}] --th-send-hover is not a visible step from --th-send toward the canvas`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
   it("keeps border tiers at the measured foreground/white alpha mixes", () => {
     const failures: string[] = [];
     const expected = [

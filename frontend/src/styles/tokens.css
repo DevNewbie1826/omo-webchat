@@ -72,11 +72,13 @@
   --th-accent-fg: #0a0a0a;
   --th-accent-hover: #e2e2e2;
 
-  /* Composer send action: the approved reference's blue, expressed only as
-     tokens so component CSS never hardcodes it. */
-  --th-send: #3b82f6;
-  --th-send-hover: #2563eb;
-  --th-send-fg: #ffffff;
+  /* Composer send action: the measured primary-action fill (#dfdfdf) with
+     the glyph inverted to this theme's measured canvas (#181818); hover is
+     uncaptured in the reference, so it steps 10% toward the canvas. Tokens
+     only: component CSS never hardcodes the fill. */
+  --th-send: #dfdfdf;
+  --th-send-hover: #cbcbcb;
+  --th-send-fg: #181818;
 
   /* Status hues as text must clear 4.5:1 on the measured elevated fills,
      which are far brighter than the previous dark ladder; the hues are
@@ -229,9 +231,11 @@
   --th-accent-fg: #ffffff;
   --th-accent-hover: #35322f;
 
-  /* The reference blue is theme-independent. */
-  --th-send: #3b82f6;
-  --th-send-hover: #2563eb;
+  /* The measured primary-action fill (#1a1c1f) with the glyph inverted to
+     this theme's measured canvas (#ffffff); hover is uncaptured in the
+     reference, so it steps 10% toward the canvas. */
+  --th-send: #1a1c1f;
+  --th-send-hover: #313335;
   --th-send-fg: #ffffff;
 
   /* Status hues deepened for light fills; semantic identity unchanged. */
@@ -249,12 +253,14 @@
   --th-glow: rgba(0, 0, 0, 0.05);
 
   /* Light elevation uses the measured black low-alpha shadow idiom: the
-     composer geometry at the Surface level, conservative extensions of the
-     same idiom for floating Raised and blocking Overlay work. */
+     composer geometry at the Surface level. The measured menu carries no
+     shadow, so Raised is none in both themes and borders do the separating;
+     Overlay keeps a conservative extension of the idiom for blocking
+     dialogs. */
   --th-shadow-color: #000000;
   --th-shadow-surface: 0 3px 7.5px color-mix(in srgb, var(--th-shadow-color) 4%, transparent),
     0 0 20px color-mix(in srgb, var(--th-shadow-color) 5%, transparent);
-  --th-shadow-raised: 0 6px 18px -6px color-mix(in srgb, var(--th-shadow-color) 10%, transparent);
+  --th-shadow-raised: none;
   --th-shadow-overlay: 0 18px 48px -12px color-mix(in srgb, var(--th-shadow-color) 16%, transparent);
   /* Migration aliases: the size-named shadows resolve to their level's role. */
   --th-shadow-sm: var(--th-shadow-surface);
