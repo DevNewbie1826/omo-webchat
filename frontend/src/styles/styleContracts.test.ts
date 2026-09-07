@@ -443,6 +443,15 @@ describe("visual accessibility contracts", () => {
     const sheetClose = ruleBody(chatPane, ".th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon");
     expect(declarationValue(sheetClose, "width")).toBe("var(--th-space-11)");
     expect(declarationValue(sheetClose, "height")).toBe("var(--th-space-11)");
+    // Over-constrained heights: the sheet becomes its own scrollport instead
+    // of painting content outside its bounds; the identity header pins inside
+    // it and the list keeps a bounded minimum scrollport.
+    expect(declarationValue(sheet, "overflow-y")).toBe("auto");
+    const sheetHeader = ruleBody(chatPane, ".th-model-picker-popover--sheet .th-model-picker-current");
+    expect(declarationValue(sheetHeader, "position")).toBe("sticky");
+    expect(declarationValue(sheetHeader, "background")).toBe("var(--th-surface-overlay)");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--sheet .th-model-picker-list"), "min-height"))
+      .toBe("var(--th-space-11)");
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {
