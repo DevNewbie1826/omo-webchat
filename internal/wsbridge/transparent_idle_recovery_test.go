@@ -25,6 +25,7 @@ func TestTransparentIdleRecoveryBridge(t *testing.T) {
 		writeClient(t, refresh, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "refresh-without-notice"})
 		writeClient(t, refresh, map[string]any{"type": "ping"})
 		frames.next(t, "pong")
+		awaitCommandFence(t, refresh, frames)
 
 		assertTerminalHistory(t, frames, 3)
 		assertNoBridgeErrors(t, frames)
@@ -84,6 +85,7 @@ func TestTransparentIdleRecoveryBridge(t *testing.T) {
 		releaseOpen()
 		writeClient(t, refreshConn, map[string]any{"type": "ping"})
 		refreshFrames.next(t, "pong")
+		awaitCommandFence(t, refreshConn, refreshFrames)
 
 		if !h.daemon.AwaitRequestCount(omorpc.CmdPrompt, beforePrompt+1, 5*time.Second) {
 			sendFrames.mu.Lock()
@@ -121,6 +123,7 @@ func TestTransparentIdleRecoveryBridge(t *testing.T) {
 		releaseEntries()
 		writeClient(t, refresh, map[string]any{"type": "ping"})
 		frames.next(t, "pong")
+		awaitCommandFence(t, refresh, frames)
 
 		assertTerminalHistory(t, frames, 4)
 		assertNoBridgeErrors(t, frames)
