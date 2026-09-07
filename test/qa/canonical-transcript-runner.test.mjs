@@ -155,7 +155,7 @@ function layoutHarness({ adjacent = false, viewport = { width: 390, height: 844 
   const request = { requestId: 'mobile-request', original: 'mobile-original', phase: adjacent ? 'admitted' : 'sending' };
   const queued = { id: 'mobile-queue-item', requestId: 'mobile-queued-request', text: 'mobile-queued-original' };
   const expected = { viewport, request, ...(adjacent ? { queued } : {}) };
-  const state = { viewport, users: [], input: '', sendRequests: [{ requestId: request.requestId, phase: request.phase, spinning: true }],
+  const state = { viewport, users: [], input: '', sendRequests: [{ requestId: request.requestId, phase: request.phase, spinning: false }],
     live: adjacent, steer: adjacent ? [request.original] : [],
     queueItems: adjacent ? [structuredClone(queued)] : [], queueTexts: adjacent ? [queued.text] : [] };
   const captures = [], assertions = [], screenshots = [];
@@ -226,12 +226,12 @@ test('layout capture rejects reproduced mobile unknown even with correct width a
   expect(h.captures).toEqual([]);
 });
 
-test('layout capture requires the exact request, phase, spinner, empty composer and absent original row', async () => {
+test('layout capture requires exact request/phase, no duplicate ring, empty composer and absent original row', async () => {
   for (const corrupt of [
     h => { h.state.sendRequests[0].requestId = 'unrelated-request'; },
     h => { h.state.sendRequests.push({ ...h.state.sendRequests[0] }); },
     h => { h.state.sendRequests[0].phase = 'admitted'; },
-    h => { h.state.sendRequests[0].spinning = false; },
+    h => { h.state.sendRequests[0].spinning = true; },
     h => { h.state.users.push(h.expected.request.original); },
     h => { h.state.input = h.expected.request.original; },
     h => { h.state.viewport = { width: 1280, height: 800 }; },

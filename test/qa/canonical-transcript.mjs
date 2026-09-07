@@ -254,7 +254,7 @@ export function assertTranscriptPhase(actual, expected) {
   const owned = actual.sendRequests.filter(value => value.requestId === request.requestId);
   assert.equal(owned.length, 1, 'Exactly one status for this requestId');
   assert.equal(owned[0].phase, request.phase, 'Expected request phase');
-  assert.equal(owned[0].spinning, true, 'Pending request spinner');
+  assert.equal(owned[0].spinning, false, 'Request words must not duplicate the run indicator');
   assert.ok(!actual.users.includes(request.original.trim()), 'No original transcript row before canonical commit');
   if (queued) {
     assert.equal(actual.live, true, 'Queue/steer belongs to a live run');

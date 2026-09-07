@@ -122,10 +122,8 @@ describe("useChatSession stats", () => {
       ] });
     });
     replyStats(136000, 400000, 34);
-    const details = requireElement(container.querySelector<HTMLDetailsElement>(".th-chat-status-details"), "status details");
-    act(() => requireElement(details.querySelector("summary"), "summary").click());
-    const usage = () => details.querySelector(".th-chat-status-num")?.textContent;
-    expect(details.open).toBe(true);
+    const status = requireElement(container.querySelector<HTMLElement>(".th-chat-status"), "inline status");
+    const usage = () => status.querySelector(".th-chat-status-num")?.textContent;
     expect(usage()).toBe("34%");
 
     if (control === "model") {
@@ -166,8 +164,7 @@ describe("useChatSession stats", () => {
     const { deliver } = renderChatPane(root);
     act(() => deliver({ type: "stats", sessionId: session.id,
       contextUsage: { tokens: 136000, contextWindow: 272000, percent: 29.4 } }));
-    const details = requireElement(container.querySelector<HTMLDetailsElement>(".th-chat-status-details"), "status details");
-    act(() => requireElement(details.querySelector("summary"), "summary").click());
-    expect(details.querySelector(".th-chat-status-num")?.textContent).toBe("29%");
+    const status = requireElement(container.querySelector<HTMLElement>(".th-chat-status"), "inline status");
+    expect(status.querySelector(".th-chat-status-num")?.textContent).toBe("29%");
   });
 });

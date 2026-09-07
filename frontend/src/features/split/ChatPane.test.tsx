@@ -93,7 +93,7 @@ describe("ChatPane streaming", () => {
 
 		act(() => pickerBtn?.click());
 		const options = Array.from(
-			container.querySelectorAll<HTMLButtonElement>('[role="option"]'),
+			document.querySelectorAll<HTMLButtonElement>('[role="option"]'),
 		);
 		expect(options).toHaveLength(2);
 		const alphaOption = options.find((opt) => opt.textContent?.includes("Shared A"));
