@@ -22,6 +22,14 @@
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar {
+  /* Mirror #root's standalone gate: the in-flow column stretches to the
+     installed app's full screen instead of the gesture-zone-collapsed
+     dynamic viewport. Its safe-top origin is unchanged. */
+  height: calc(100vh - env(safe-area-inset-top));
+  height: calc(100lvh - env(safe-area-inset-top));
+}
+
 .th-sidebar--collapsed {
   width: var(--th-space-11);
   border-right-color: transparent;
@@ -142,6 +150,14 @@
     /* Fixed positioning bypasses #root's safe padding, both against the
        viewport and against #root when its keyboard transform is active. */
     padding-top: env(safe-area-inset-top);
+  }
+
+  /* The fixed drawer also consumes the installed app's full screen while
+     the keyboard is closed (mirrors #root's standalone gate) and keeps
+     owning its safe top via the padding above. */
+  html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar {
+    height: 100vh;
+    height: 100lvh;
   }
 
   .th-sidebar-inner {

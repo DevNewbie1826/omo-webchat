@@ -11,7 +11,6 @@ describe("mobile safe area", () => {
     expect(globalCss).toMatch(
       /^#root \{[^}]*height: 100dvh;[^}]*padding: env\(safe-area-inset-top\)/m,
     );
-    expect(globalCss).not.toContain("100lvh");
     expect(globalCss).not.toContain("100svh");
     expect(globalCss).toMatch(
       /html\[data-th-keyboard-open\] #root \{[^}]*height: calc\(var\(--th-vh-unit, 1vh\) \* 100\);[^}]*transform: translate\(var\(--th-vv-left, 0px\), var\(--th-vv-top, 0px\)\)/,
@@ -23,6 +22,42 @@ describe("mobile safe area", () => {
     expect(globalCss).toMatch(
       /#root \{[^}]*padding:\s+env\(safe-area-inset-top\)\s+env\(safe-area-inset-right\)\s+0\s+env\(safe-area-inset-left\)/,
     );
+  });
+
+  test("paints the installed standalone PWA's full screen only while the keyboard is closed", () => {
+    // Installed PWAs collapse the dynamic viewport above the home-indicator
+    // gesture zone, so the 100dvh shell ended 50px short of the physical
+    // 812px screen and the body background showed through below the
+    // composer. The large viewport is the installed app's real paintable
+    // screen; gate it on the script's standalone marker with a closed
+    // keyboard so the keyboard-open VisualViewport contract and the
+    // ordinary-browser dvh policy stay untouched.
+    const standalone = globalCss.match(
+      /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) #root \{([^}]*)\}/,
+    )?.[1] ?? "";
+    expect(standalone).toContain("height: 100vh");
+    expect(standalone).toContain("height: 100lvh");
+    // dvh remains the only ungated full-surface height.
+    const base = globalCss.match(/^#root \{([^}]*)\}/m)?.[1] ?? "";
+    expect(base).toContain("height: 100dvh");
+    expect(base).not.toContain("lvh");
+  });
+
+  test("reserves the standalone composer's control-safe inset once behind a full-bleed background", () => {
+    // Once #root paints the full physical screen the composer docks at the
+    // true bottom edge: its controls need the home-indicator inset as
+    // internal padding - the necessary inset subsumes the breathing-room
+    // budget wherever the inset exists - while the element's background
+    // stays full-bleed. Coarse pointers only: a desktop standalone window
+    // keeps its hover breathing room, and the keyboard-open and
+    // ordinary-browser policies keep the base padding.
+    const composerCss = readFileSync("src/styles/chat-composer.css", "utf8");
+    const reserve = composerCss.match(
+      /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) \.th-chat-input \{([^}]*)\}/,
+    )?.[1] ?? "";
+    expect(reserve).toContain("padding-bottom: env(safe-area-inset-bottom)");
+    const base = composerCss.match(/^\.th-chat-input \{([^}]*)\}/m)?.[1] ?? "";
+    expect(base).toContain("padding: var(--th-space-3) 0 var(--th-space-1)");
   });
 
   test("keeps the safe inset when focus outlives the software keyboard", () => {

@@ -36,6 +36,17 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 
+html[data-th-standalone]:not([data-th-keyboard-open]) #root {
+  /* Installed PWAs collapse the dynamic viewport above the home-indicator
+     gesture zone, so 100dvh leaves the bottom of the physical screen to the
+     body background (measured: root ends at 762 of the 812 screen). The
+     large viewport is the installed app's real paintable screen while no
+     keyboard is open; the keyboard rule below keeps VisualViewport geometry
+     and ordinary browsers never set the standalone marker. */
+  height: 100vh;
+  height: 100lvh;
+}
+
 html[data-th-keyboard-open] #root {
   /* Keyboard covers the bottom safe-area, so drop the inset addition and let the
      VisualViewport pan translate keep the composer visible above the keyboard. */
