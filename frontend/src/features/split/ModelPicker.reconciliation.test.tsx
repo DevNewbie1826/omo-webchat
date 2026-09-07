@@ -53,7 +53,8 @@ describe("ModelPicker no-op navigation reconciliation", () => {
       thinkingLevel="high" onThinkingChange={changed} />));
     const trigger = required(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"));
     vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 656));
-    const triggerRect = vi.spyOn(trigger, "getBoundingClientRect")
+    // The fit measure reads the picker box (the popup's anchor), not the button.
+    const triggerRect = vi.spyOn(required(container.querySelector<HTMLElement>(".th-model-picker")), "getBoundingClientRect")
       .mockReturnValue(new DOMRect(0, 139, 71, 19));
     act(() => trigger.click());
     const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
@@ -108,7 +109,7 @@ describe("ModelPicker no-op navigation reconciliation", () => {
     act(() => renderCatalog([current]));
     const trigger = required(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"));
     vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 656));
-    const triggerRect = vi.spyOn(trigger, "getBoundingClientRect")
+    const triggerRect = vi.spyOn(required(container.querySelector<HTMLElement>(".th-model-picker")), "getBoundingClientRect")
       .mockReturnValue(new DOMRect(0, 89, 71, 19));
     act(() => trigger.click());
     const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));

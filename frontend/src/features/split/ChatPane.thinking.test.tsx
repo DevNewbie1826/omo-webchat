@@ -50,7 +50,8 @@ describe("ChatPane thinking level selector", () => {
       // Then one bottom control retains both visible and accessible state.
       expect(container.querySelectorAll(".th-model-picker-btn")).toHaveLength(1);
       expect(container.querySelectorAll(".th-thinking-select")).toHaveLength(0);
-      expect(trigger().closest(".th-composer-model")?.closest(".th-chat-input")).not.toBeNull();
+      expect(trigger().closest(".th-chat-controls")).not.toBeNull();
+      expect(trigger().closest(".th-chat-input")).toBeNull();
       expect(trigger().closest(".th-termhead")).toBeNull();
       expect(trigger().textContent).toContain("GPT-5");
       expect(trigger().querySelector(".th-model-picker-thinking")?.textContent).toBe("high");

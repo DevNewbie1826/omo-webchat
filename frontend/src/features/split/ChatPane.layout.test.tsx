@@ -26,11 +26,17 @@ it("keeps dynamic queue and recovery controls in the bounded content scroll shel
   act(() => requireElement(container.querySelector<HTMLButtonElement>(".th-queue-header"), "queue header").click());
   act(() => deliver({ type: "error", sessionId: chatSession.id, code: "send_failed", message: "Fixture recovery" }));
   const content = requireElement(container.querySelector<HTMLElement>(".th-chat-main-content"), "bounded content shell");
-  for (const selector of [".th-queue", ".th-queue-clear", ".th-send-error-banner", ".th-chat-status", ".th-chat-scrollport"]) {
+  for (const selector of [".th-queue", ".th-queue-clear", ".th-send-error-banner", ".th-chat-scrollport"]) {
     expect(content.contains(requireElement(container.querySelector(selector), selector))).toBe(true);
   }
+  // The merged status/model row is the fixed band between the content shell
+  // and the composer (DESIGN.md "Model control placement"): outside the
+  // scroll shell, so the desktop popup keeps the column-wide clip topology.
+  const row = requireElement(container.querySelector<HTMLElement>(".th-chat-controls"), "status/model row");
+  expect(content.contains(row)).toBe(false);
+  expect(content.nextElementSibling).toBe(row);
+  expect(row.nextElementSibling).toBe(input.closest(".th-chat-input"));
   expect(content.contains(input)).toBe(false);
-  expect(content.nextElementSibling).toBe(input.closest(".th-chat-input"));
   expect(input.value.split("\n")).toHaveLength(6);
 });
 

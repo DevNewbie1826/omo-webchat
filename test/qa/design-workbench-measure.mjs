@@ -37,7 +37,7 @@ export async function measure(page) {
       theme: document.documentElement.dataset.theme, fontSize: assistant && getComputedStyle(assistant).fontSize,
       coarse: matchMedia('(pointer: coarse)').matches, rows, tools, roles,
       tokens: Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter'].map(name => [name, token(name)])),
-      edges: { model: rect('.th-composer-model'), composer: rect('.th-chat-input-inner'), status: rect('.th-chat-status'), live: rect('.th-chat-live') },
+      edges: { controls: rect('.th-chat-controls'), composer: rect('.th-chat-input-inner'), status: rect('.th-chat-status'), live: rect('.th-chat-live') },
       historyAxis: rect('.th-chat-row--assistant .th-chat-markdown')?.left, liveAxis: rect('.th-chat-msg--streaming .th-chat-markdown')?.left,
       panes: [...document.querySelectorAll(document.querySelector('.th-pane-wrap') ? '.th-pane-wrap' : '.th-chat-pane')].map(element => ({ id: element.dataset.paneId, rect: box(element),
         active: element.matches('.th-pane--focused') || !!element.querySelector('.th-pane--focused'),
@@ -72,6 +72,8 @@ export function designAssertions(sample) {
   const withinAssistantGap = assistant.content.top - continuation.content.bottom;
   const edgeValues = Object.values(sample.edges);
   assert(edgeValues.every(Boolean), 'all local reading-column controls must exist');
+  assert(Number.isFinite(sample.trigger.right) && Math.abs(sample.trigger.right - sample.edges.composer.right) <= 2,
+    'model trigger right edge aligns with the input capsule edge');
   assert(Number.isFinite(sample.historyAxis) && Number.isFinite(sample.liveAxis), 'both live and history prose must render');
   const gutterDelta = Math.max(...edgeValues.map(rect => rect.left)) - Math.min(...edgeValues.map(rect => rect.left));
   const rightDelta = Math.max(...edgeValues.map(rect => rect.right)) - Math.min(...edgeValues.map(rect => rect.right));

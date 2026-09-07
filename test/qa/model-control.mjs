@@ -131,7 +131,7 @@ try {
       document.querySelector(".th-model-picker-label")?.textContent === expected), seed.catalog?.length ? "Model A" : "provider-a/model-a");
   }
   const geometry = () => page.evaluate(() => {
-    const control = document.querySelector(".th-composer-model .th-model-picker-btn").getBoundingClientRect();
+    const control = document.querySelector(".th-chat-controls .th-model-picker-btn").getBoundingClientRect();
     const form = document.querySelector(".th-chat-input").getBoundingClientRect();
     const capsule = document.querySelector(".th-chat-input-inner").getBoundingClientRect();
     const textarea = document.querySelector(".th-chat-input textarea").getBoundingClientRect();
@@ -147,8 +147,8 @@ try {
     const width = narrow ? 390 : 1440, height = narrow ? 844 : 900;
     await reset(width, height);
     const before = modelSets().length, beforeThinking = thinkingSets().length;
-    const trigger = page.locator(".th-composer-model .th-model-picker-btn");
-    assert.equal(await trigger.count(), 1, "model trigger inside the composer band");
+    const trigger = page.locator(".th-chat-controls .th-model-picker-btn");
+    assert.equal(await trigger.count(), 1, "model trigger inside the merged status row");
     assert.equal(await page.locator(".th-termhead .th-model-picker").count(), 0, "no header model picker");
     assert((await trigger.textContent()).includes("Model A"), "exact current model identity on the trigger");
     assert.equal(await page.locator(".th-thinking-select").count(), 0, "no duplicate header select");
@@ -188,7 +188,7 @@ try {
     await page.keyboard.press("Enter");
     await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() =>
-      document.querySelector(".th-composer-model .th-model-picker-btn")?.textContent.includes("Model B")));
+      document.querySelector(".th-chat-controls .th-model-picker-btn")?.textContent.includes("Model B")));
     assert.equal(await page.locator(".th-model-picker-popover").count(), 0, "popup closed after selection");
     assert.deepEqual(modelSets().slice(before).map(f => f.model),
       [{ provider: "provider-b", modelId: "model-b" }], "exactly one exact-identity model request");

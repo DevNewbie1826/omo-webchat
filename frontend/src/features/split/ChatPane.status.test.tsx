@@ -48,9 +48,16 @@ describe("ChatPane status row", () => {
     expect(status?.textContent).toContain("chat.contextUsage42%");
     expect(status?.textContent).toContain("chat.cacheHit70%");
     expect(header?.querySelector(".th-context-badge")).toBeNull();
-    expect(status?.previousElementSibling).toBe(transcript);
-    expect(status?.parentElement?.className).toBe("th-chat-main-content");
-    expect(status?.parentElement?.nextElementSibling).toBe(composer);
+    // The strip shares the merged control row with the model selector, below
+    // the transcript and above the composer (DESIGN.md "Model control placement").
+    const row = status?.parentElement;
+    const main = row?.parentElement;
+    const content = main?.querySelector(".th-chat-main-content");
+    expect(row?.className).toBe("th-chat-controls");
+    expect(row?.contains(container.querySelector(".th-model-picker-btn") ?? null)).toBe(true);
+    expect(main).toBe(container.querySelector(".th-chat-main"));
+    expect(content?.contains(transcript ?? null)).toBe(true);
+    expect(row?.nextElementSibling).toBe(composer);
   });
 
   it.each(["en", "ko"] as const)("allocates localized state labels separately from the original steer preview in %s", (lang) => {
@@ -130,6 +137,81 @@ describe("ChatPane status row", () => {
     const css = readFileSync("src/styles/chat-pane.css", "utf8");
     const statusRule = css.match(/\.th-chat-status\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(statusRule).not.toMatch(/border-top/);
+  });
+
+  it("shares one compact control row: statuses lead, the model control follows, and live scope excludes the model", () => {
+    const { deliver } = renderChatPane(root);
+    act(() => {
+      deliver({ type: "models", sessionId: "chat-1", models: [{ provider: "openai", modelId: "gpt-5", name: "GPT-5" }] });
+      deliver({ type: "state", sessionId: "chat-1", isStreaming: true, isCompacting: false,
+        model: { provider: "openai", modelId: "gpt-5" } });
+      deliver({ type: "stats", sessionId: "chat-1", contextUsage: { tokens: 42, contextWindow: 100, percent: 42 } });
+    });
+    const row = requireElement(container.querySelector(".th-chat-controls"), "status/model control row");
+    const status = requireElement(container.querySelector(".th-chat-status"), "status strip");
+    const trigger = requireElement(container.querySelector<HTMLButtonElement>(".th-model-picker-btn"), "model trigger");
+    expect(row.contains(status)).toBe(true);
+    expect(row.contains(trigger)).toBe(true);
+    expect(status.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    // The separate full-column composer band is gone; the control is not a composer child.
+    expect(container.querySelector(".th-composer-model")).toBeNull();
+    expect(trigger.closest(".th-chat-input")).toBeNull();
+    // Live announcements stay scoped to the status strip, never the model controls.
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.contains(trigger)).toBe(false);
+  });
+
+  it("keeps secondary context/cache metrics in an accessible details disclosure while urgent states stay direct", () => {
+    const { deliver } = renderChatPane(root);
+    act(() => {
+      deliver({ type: "stats", sessionId: "chat-1",
+        contextUsage: { tokens: 42, contextWindow: 100, percent: 42 },
+        tokens: { input: 30, cacheRead: 70, output: 5 } });
+      deliver({ type: "compaction.started", sessionId: "chat-1" });
+    });
+    const status = requireElement(container.querySelector(".th-chat-status"), "status strip");
+    const details = requireElement(container.querySelector<HTMLDetailsElement>(".th-chat-status-details"), "status details");
+    const summary = requireElement(details.querySelector("summary"), "details summary");
+    expect(status.contains(details)).toBe(true);
+    expect(summary.textContent).toBe(i18n.t("chat.statusDetails"));
+    // Urgent compaction state stays a direct status item, outside the disclosure.
+    const direct = Array.from(status.querySelectorAll(":scope > .th-chat-status-item"));
+    expect(direct.some(item => item.textContent?.includes("chat.compacting"))).toBe(true);
+    // Secondary metrics live inside the disclosure and remain part of the announced strip.
+    expect(details.textContent).toContain("chat.contextUsage42%");
+    expect(details.textContent).toContain("chat.cacheHit70%");
+    // The key must exist in both locales instead of falling back to the raw key.
+    expect(translate("en", "chat.statusDetails")).not.toBe("chat.statusDetails");
+    expect(translate("ko", "chat.statusDetails")).not.toBe("chat.statusDetails");
+  });
+
+  it("keeps unknown-send recovery and original inspection reachable inside the merged row", async () => {
+    const { deliver, sent } = renderChatPane(root);
+    const original = "inspectable unknown original";
+    const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "composer");
+    act(() => setTextareaValue(input, original));
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    const request = sent.find(frame => frame.type === "chat.send");
+    if (request?.type !== "chat.send" || !request.requestId) throw new Error("missing request");
+    act(() => deliver({ type: "run.done", sessionId: chatSession.id, reason: "local_command" }));
+    const row = requireElement(container.querySelector(".th-chat-controls"), "status/model control row");
+    const status = requireElement(container.querySelector(".th-chat-status"), "status strip");
+    expect(row.contains(status)).toBe(true);
+    const preview = requireElement(status.querySelector<HTMLButtonElement>("button.th-chat-send-preview"), "original preview");
+    expect(status.querySelector(".th-send-restore")?.textContent).toBe(i18n.t("chat.send.restore"));
+    // Inspection stays non-mutating from inside the merged row.
+    await act(async () => { preview.focus(); preview.click(); });
+    const dialog = requireElement(document.querySelector('[role="dialog"]'), "original dialog");
+    expect(dialog.querySelector(".th-chat-original-text")?.textContent).toBe(original);
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(document.activeElement).toBe(preview);
+    // Recovery refills and refocuses the composer without sending.
+    act(() => status.querySelector<HTMLButtonElement>(".th-send-restore")!.click());
+    expect(input.value).toBe(original);
+    expect(document.activeElement).toBe(input);
+    expect(container.querySelector(".th-chat-send-status")).toBeNull();
   });
 
   it("shows the compacting indicator for the live manual compaction state", () => {
