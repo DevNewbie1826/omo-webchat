@@ -30,6 +30,10 @@ describe("ModelPicker", () => {
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    // Supply real-sized local space; zero jsdom rectangles mean a short pane.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.matches(".th-model-picker") ? new DOMRect(0, 500, 100, 24) : new DOMRect(0, 0, 260, 40);
+    });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -41,6 +45,7 @@ describe("ModelPicker", () => {
       root.unmount();
     });
     container.remove();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 

@@ -183,6 +183,10 @@ describe("ChatPane thinking level selector", () => {
       deliver({ type: "models", sessionId: "chat-1", models: [{ provider: "provider-b", modelId: "model-b" }] });
       deliver({ type: "state", sessionId: "chat-1", isStreaming: false, isCompacting: false, thinkingLevel: "high" });
     });
+    // jsdom has no layout: this case explicitly exercises normal desktop space.
+    Object.defineProperty(trigger().parentElement, "getBoundingClientRect", {
+      value: () => new DOMRect(0, 500, 100, 24), configurable: true,
+    });
     act(() => trigger().click());
     const popup = requireElement(container.querySelector<HTMLElement>(".th-model-picker-popover"), "popup");
     expect(document.activeElement).toBe(popup);
