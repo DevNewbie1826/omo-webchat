@@ -178,9 +178,23 @@ describe("ChatPane status row", () => {
     // Urgent compaction state stays a direct status item, outside the disclosure.
     const direct = Array.from(status.querySelectorAll(":scope > .th-chat-status-item"));
     expect(direct.some(item => item.textContent?.includes("chat.compacting"))).toBe(true);
-    // Secondary metrics live inside the disclosure and remain part of the announced strip.
+    // The disclosure starts collapsed; the summary is what opens it.
+    expect(details.open).toBe(false);
+    act(() => summary.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(details.open).toBe(true);
+    // While open, both secondary metrics are the disclosure's accessible
+    // content (not merely hidden-DOM text).
+    const metrics = [...details.querySelectorAll(".th-chat-status-item .th-chat-status-num")]
+      .map(num => num.textContent);
+    expect(metrics).toEqual(["42%", "70%"]);
     expect(details.textContent).toContain("chat.contextUsage42%");
     expect(details.textContent).toContain("chat.cacheHit70%");
+    // Closing collapses the metrics again while they stay part of the
+    // announced strip content.
+    act(() => summary.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(details.open).toBe(false);
+    expect(status.textContent).toContain("chat.contextUsage42%");
+    expect(status.textContent).toContain("chat.cacheHit70%");
     // The key must exist in both locales instead of falling back to the raw key.
     expect(translate("en", "chat.statusDetails")).not.toBe("chat.statusDetails");
     expect(translate("ko", "chat.statusDetails")).not.toBe("chat.statusDetails");
