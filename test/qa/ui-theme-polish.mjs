@@ -1,10 +1,10 @@
 /** QA_PLAYWRIGHT=<installed-driver> bun test/qa/ui-theme-polish.mjs --phase red|green --out ABSOLUTE_PATH
  *
  * Theme reference harness (brief C2). Boots the real built App through
- * setupDesign, toggles dark/light through the actual Settings theme radio
+ * an idle controlled fixture, toggles dark/light through the actual Settings theme radio
  * group, and samples the semantic surfaces the authenticated Codex desktop
  * reference measured (canvas, sidebar, composer, expanded tool shell, model
- * menu, highlighted menu row, primary text). Surface fills are read twice:
+ * menu, highlighted menu row, primary action and text). Surface fills are read:
  * as resolved computed style tokens and as real screenshot pixels decoded by
  * the browser itself. No DOM/style substitution and no synthetic pages.
  *
@@ -17,7 +17,9 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { setupDesign, arm, complete } from './design-workbench-fixture.mjs';
+import { designSeed, installSignals, seedLive, arm, complete } from './design-workbench-fixture.mjs';
+import { startFixture } from './pane-workspace-ui.mjs';
+import { captureFrame, closeResources, exposeTranscript, judgeFill, missingSurfaces, near, parseComputedColor, settleFrame } from './ui-theme-evidence.mjs';
 
 /** Measured authenticated reference (authenticated-pixel-measurements.json
  *  plus the report's computed foreground values), CSS 0-255 samples. The
@@ -26,20 +28,20 @@ const REFERENCE = {
   dark: {
     canvas: [24, 24, 24], sidebar: [40, 40, 40], composer: [42, 42, 42],
     toolShell: [40, 40, 40], menu: [45, 45, 45], highlightedRow: [61, 61, 61],
-    text: [223, 223, 223],
+    text: [223, 223, 223], send: [223, 223, 223],
   },
   light: {
     canvas: [255, 255, 255], sidebar: [255, 255, 255], composer: [255, 255, 255],
     toolShell: [255, 255, 255], menu: [255, 255, 255], highlightedRow: [242, 243, 243],
-    text: [26, 28, 31],
+    text: [26, 28, 31], send: [26, 28, 31],
   },
 };
 const COLLAPSED_TOOL_BACKGROUND_ALPHA = 0; // transparent collapsed records
 
-const VIEWPORTS = [{ width: 1280, height: 800 }, { width: 390, height: 844 }];
-
-const near = (a, b, tolerance = 1) =>
-  a.length === b.length && a.every((channel, i) => Math.abs(channel - b[i]) <= tolerance);
+const SCENARIOS = [
+  { width: 1280, height: 800 }, { width: 390, height: 844 }, { width: 844, height: 390 },
+  { width: 1280, height: 800, paneWidth: 600 }, { width: 1280, height: 800, paneWidth: 340 },
+];
 
 /** Runs in the page: picks candidate points whose elementFromPoint chain up to
  *  the target paints only transparent intermediates, then samples those points
@@ -81,11 +83,27 @@ function pageHelpers() {
     // Full-bleed surfaces (body canvas) are covered at every corner by opaque
     // chrome; the transcript's reading-column margins are the honest fill.
     for (const fraction of [0.3, 0.45, 0.6, 0.75]) {
-      push(innerWidth - 6, innerHeight * fraction);
-      push(innerWidth - 26, innerHeight * fraction);
+      push(rect.right - 6, rect.top + rect.height * fraction);
+      push(rect.right - 26, rect.top + rect.height * fraction);
     }
+    // Tall tool bodies may be clipped, but an exposed transparent header
+    // still paints the shell. Sample inside the visible intersection, not
+    // exclusively corners of the full offscreen body.
+    for (const y of [Math.max(0, rect.top) + 8, Math.max(0, rect.top) + 20, Math.max(0, rect.top) + 36]) {
+      for (const x of [rect.left + 8, rect.right - 8, rect.left + rect.width / 2]) push(x, y);
+    }
+    const cx = Math.max(0, rect.left) + Math.min(rect.width, innerWidth - Math.max(0, rect.left)) / 2;
+    const cy = Math.max(0, rect.top) + Math.min(rect.height, innerHeight - Math.max(0, rect.top)) / 2;
+    const hit = document.elementFromPoint(cx, cy);
     return {
-      selector, present: true, computed: style.backgroundColor,
+      selector, present: true, computed: style.backgroundColor, boxShadow: style.boxShadow,
+      color: style.color, borderColor: style.borderColor, borderStyle: style.borderStyle, borderWidth: style.borderWidth,
+      opacity: style.opacity, cursor: style.cursor, outlineColor: style.outlineColor, outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth, disabled: el.disabled, type: el.type,
+      glyphColor: el.querySelector('svg') ? getComputedStyle(el.querySelector('svg')).color : null,
+      exposed: !!hit && (el === hit || el.contains(hit)),
+      tokens: Object.fromEntries(['send', 'send-hover', 'send-fg', 'error', 'error-fg', 'success', 'warning', 'disabled-bg', 'disabled-fg']
+        .map(name => [name, style.getPropertyValue(`--th-${name}`).trim()])),
       visible: rect.width > 0 && rect.height > 0,
       onScreen: rect.right > 0 && rect.bottom > 0 && rect.x < innerWidth && rect.y < innerHeight,
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
@@ -102,34 +120,13 @@ async function loadPixels(page, shot) {
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
     const context = canvas.getContext('2d', { willReadFrequently: true });
     context.drawImage(bitmap, 0, 0);
-    const frame = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    bitmap.close();
+    const frame = context.getImageData(0, 0, canvas.width, canvas.height);
     window.themePixels = {
       data: frame.data, width: frame.width, height: frame.height,
       scale: frame.width / innerWidth,
     };
   }, `data:image/png;base64,${shot.toString('base64')}`);
-}
-
-const parseComputedColor = value => {
-  const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(value ?? '');
-  if (!match) return null;
-  return { rgb: [Number(match[1]), Number(match[2]), Number(match[3])], alpha: match[4] === undefined ? 1 : Number(match[4]) };
-};
-
-/** Fill verdict: the resolved computed style must equal the reference exactly,
- *  and for on-screen surfaces a real screenshot pixel must agree with it. */
-function judgeFill(sample, referenceRgb) {
-  const computed = parseComputedColor(sample.computed);
-  const computedMatches = computed !== null && computed.alpha === 1 && near(computed.rgb, referenceRgb, 0);
-  const needsPixel = sample.visible === true && sample.onScreen === true;
-  const pixelMatches = (sample.samples ?? []).some(point => near(point.rgb, referenceRgb));
-  return {
-    selector: sample.selector, present: sample.present === true, visible: sample.visible === true,
-    onScreen: sample.onScreen === true,
-    computedMatches, pixelMatches, needsPixel,
-    computed: sample.computed, pixelEvidence: (sample.samples ?? []).map(point => point.rgb),
-    referenceRgb, matches: computedMatches && (!needsPixel || pixelMatches),
-  };
 }
 
 export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
@@ -145,191 +142,213 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     dirty: Bun.spawnSync(['git', 'status', '--porcelain']).stdout.toString(),
     command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-theme-polish.mjs --phase ${phase} --out ${out}`,
   };
-  const screenshots = [], actions = [], cleanup = [], results = [];
+  const screenshots = [], actions = [], results = [], resources = [], sessions = [], failures = [];
   const SURFACES = {
-    // The chat pane paints the canvas token itself; body's fill is never
-    // visible inside the pane.
-    canvas: '.th-chat-pane',
-    sidebar: '.th-sidebar',
-    composer: '.th-chat-input-inner',
-    menu: '.th-model-picker-popover',
+    canvas: '.th-chat-pane', sidebar: '.th-sidebar', composer: '.th-chat-input-inner',
+    send: '.th-chat-send-btn', menu: '.th-model-picker-popover',
     highlightedRow: '.th-model-picker-list > button[data-active="true"]',
   };
-  let browser;
+  let browser, mismatches;
   try {
     const { chromium } = await import(driver);
     browser = await chromium.launch({ channel: 'chrome', headless: true });
     receipt.browserVersion = browser.version();
+    for (const { paneWidth, ...viewport } of SCENARIOS) {
+      const label = `${viewport.width}x${viewport.height}${paneWidth ? `-pane${paneWidth}` : ''}`;
+      // Actual split layout, not CSS/DOM substitution. 264px sidebar + 4px divider.
+      const layout = paneWidth ? { kind: 'split', id: 'root', dir: 'h', ratio: paneWidth / (1280 - 264 - 4),
+        first: { kind: 'leaf', id: 'a', sessionId: 'stored-a' }, second: { kind: 'leaf', id: 'b', sessionId: null } } : 'single';
+      const seed = designSeed(layout);
+      seed.running = [];
+      seed.runs['stored-a'].queue = { revision: 1, items: [], engine: { pendingMessageCount: 0, ordered: [] } };
+      const fixture = startFixture({ ...seed, controlled: true, port: 0 });
+      const fixtureResource = { name: `${label}/fixture`, close: () => fixture.stop() };
+      resources.push(fixtureResource);
+      const context = await browser.newContext({ viewport, colorScheme: 'light' });
+      resources.splice(resources.indexOf(fixtureResource), 0, { name: `${label}/context`, close: async () => {
+        await context.close(); return { contextClosed: true, url: fixture.url };
+      } });
+      const page = await context.newPage(); page.setDefaultTimeout(8000);
+      const errors = []; page.on('pageerror', error => errors.push(String(error)));
+      const q = { page, fixture, errors }; sessions.push({ label, ...q });
+      await installSignals(page, { theme: 'light' });
+      console.log(`WORKING: ${label} actual SPA ${fixture.url}`);
+      actions.push({ scenario: label, action: 'idle controlled fixture navigation', url: fixture.url });
+      const attached = fixture.wait('frame', frame => frame.type === 'chat.stats');
+      await page.goto(fixture.url); await attached;
+      await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-activity-bar')
+        && document.querySelector('.th-goal-bar') && document.querySelector('[data-tool-call-id="design-failed"]')
+        && document.querySelector('.th-chat-status-num')?.textContent === '42%'));
+      await page.evaluate(pageHelpers);
+      const pane = await page.locator('.th-chat-pane').boundingBox();
+      if (paneWidth) assert(Math.abs(pane.width - paneWidth) <= 2, `${label}: actual pane width ${pane.width}`);
+      actions.push({ scenario: label, action: 'actual pane geometry', pane });
 
-    for (const viewport of VIEWPORTS) {
-      const label = `${viewport.width}x${viewport.height}`;
-      const q = await setupDesign(browser, { theme: 'dark', viewport });
-      await q.page.evaluate(pageHelpers);
-      try {
-        let drawerOpen = false;
-        for (const theme of ['dark', 'light']) {
-          if (theme === 'light') {
-            actions.push({ scenario: label, action: 'open Settings, click the actual Light radio, close Settings' });
-            // On narrow viewports the sidebar (which owns Settings) starts as
-            // a collapsed off-canvas drawer: open it with the chat header's
-            // actual menu button, and close it with the drawer's own control.
-            const menuButton = q.page.locator('.th-mobile-menu');
-            if (await menuButton.isVisible()) {
-              actions.push({ scenario: label, action: 'open the collapsed mobile sidebar drawer' });
-              // Wait on the discrete collapsed class, not animated geometry:
-              // the drawer's transform transition fires no further mutations
-              // for an observer to re-check once it starts.
-              await arm(q.page, () => !document.querySelector('.th-sidebar--collapsed'));
-              await menuButton.click();
-              await complete(q.page);
-              drawerOpen = true;
-            }
-            await arm(q.page, () => !!document.querySelector('.th-settings-panel'));
-            await q.page.click('.th-settings-menu .th-btn-icon');
-            await complete(q.page);
-            await arm(q.page, () => document.documentElement.getAttribute('data-theme') === 'light');
-            await q.page.getByRole('radio', { name: 'Light', exact: true }).click();
-            await complete(q.page);
-            await q.page.click('.th-settings-menu .th-btn-icon');
-            await complete(q.page);
-            if (drawerOpen) {
-              await arm(q.page, () => !!document.querySelector('.th-sidebar--collapsed'));
-              await q.page.click('.th-sidebar button[title="Collapse sidebar"]');
-              await complete(q.page);
-              drawerOpen = false;
-              // The collapsed class flips before the transform transition
-              // ends; drain the sidebar's finite animations so off-canvas
-              // geometry is terminal before anything samples or shoots it.
-              await q.page.evaluate(() => {
-                const sidebar = document.querySelector('.th-sidebar');
-                const finite = [...(sidebar?.getAnimations({ subtree: true }) ?? [])]
-                  .filter(animation => Number.isFinite(animation.effect?.getComputedTiming?.().endTime));
-                return Promise.race([
-                  Promise.allSettled(finite.map(animation => animation.finished)),
-                  new Promise((_, fail) => { setTimeout(() => fail(new Error('Drawer transition deadline')), 8000); }),
-                ]);
-              });
-            }
-          }
-
-          const shoot = async name => {
-            const path = resolve(out, `c2-${phase}-${label}-${theme}-${name}.png`);
-            await q.page.screenshot({ path, animations: 'allow' });
-            screenshots.push(path);
-            await loadPixels(q.page, await q.page.screenshot({ animations: 'allow' }));
-          };
-
-          await shoot('main');
-          const main = await q.page.evaluate(selectors => {
-            const out = {};
-            for (const [name, selector] of Object.entries(selectors)) out[name] = window.themeSample(selector);
-            const msg = document.querySelector('.th-chat-msg');
-            out.text = msg
-              ? { selector: '.th-chat-msg', present: true, computed: getComputedStyle(msg).color }
-              : { selector: '.th-chat-msg', present: false };
-            return out;
-          }, SURFACES);
-
-          actions.push({ scenario: label, action: `expand first tool record (${theme})` });
-          await arm(q.page, () => !!document.querySelector('.th-tool:has(> .th-tool-body)'));
-          await q.page.locator('.th-tool-head').first().click();
-          await complete(q.page);
-          // The click leaves the pointer over the header, whose :hover fill
-          // would mask the shell; park it on the empty transcript margin and
-          // make sure the shell is on screen before sampling.
-          await q.page.mouse.move(viewport.width / 2, 6);
-          await q.page.locator('.th-tool:has(> .th-tool-body)').first().scrollIntoViewIfNeeded();
-          await shoot('tool-expanded');
-          const toolShell = await q.page.evaluate(() => window.themeSample('.th-tool:has(> .th-tool-body)'));
-          const collapsed = await q.page.evaluate(() => {
-            const el = [...document.querySelectorAll('.th-tool')].find(el => !el.querySelector('.th-tool-body'));
-            return el ? { present: true, computed: getComputedStyle(el).backgroundColor } : { present: false };
-          });
-
-          actions.push({ scenario: label, action: `open model menu, hover first option (${theme})` });
-          await arm(q.page, () => {
-            const popover = document.querySelector('.th-model-picker-popover');
-            return !!popover && popover.getBoundingClientRect().height > 0;
-          });
-          await q.page.click('.th-model-picker-btn');
-          await complete(q.page);
-          await q.page.hover('.th-model-picker-list > button');
-          await q.page.waitForFunction(() => !!document.querySelector('.th-model-picker-list > button[data-active="true"]'));
-          await shoot('model-menu');
-          const menu = await q.page.evaluate(selectors => ({
-            menu: window.themeSample(selectors.menu),
-            highlightedRow: window.themeSample(selectors.highlightedRow),
-          }), SURFACES);
-          await q.page.keyboard.press('Escape');
-
-          const surfaces = {
-            canvas: judgeFill(main.canvas, REFERENCE[theme].canvas),
-            // Desktop shows the sidebar in its elevated-chrome role; at or
-            // below the 768px drawer breakpoint sidebar.css pins the mobile
-            // drawer to the overlay role (styleContracts), so the measured
-            // menu fill is the expected drawer fill.
-            sidebar: judgeFill(main.sidebar, viewport.width <= 768 ? REFERENCE[theme].menu : REFERENCE[theme].sidebar),
-            composer: judgeFill(main.composer, REFERENCE[theme].composer),
-            toolShell: judgeFill(toolShell, REFERENCE[theme].toolShell),
-            menu: judgeFill(menu.menu, REFERENCE[theme].menu),
-            highlightedRow: judgeFill(menu.highlightedRow, REFERENCE[theme].highlightedRow),
-            collapsedTool: {
-              present: collapsed.present === true,
-              computed: collapsed.computed ?? null,
-              matches: !collapsed.present || (parseComputedColor(collapsed.computed)?.alpha ?? 1) === COLLAPSED_TOOL_BACKGROUND_ALPHA,
-            },
-            text: {
-              present: main.text.present === true,
-              computed: main.text.computed,
-              computedMatches: near(parseComputedColor(main.text.computed)?.rgb ?? [], REFERENCE[theme].text, 0),
-              referenceRgb: REFERENCE[theme].text,
-              matches: near(parseComputedColor(main.text.computed)?.rgb ?? [], REFERENCE[theme].text, 0),
-            },
-          };
-          results.push({
-            scenario: label, theme,
-            surfaces,
-            screenshots: screenshots.filter(path => path.includes(`-${label}-${theme}-`)),
-          });
+      for (const theme of ['dark', 'light']) {
+        const log = (action, detail = {}) => actions.push({ scenario: label, theme, action, ...detail });
+        const shoot = async (name, selectors) => {
+          const frame = await captureFrame({ page, path: resolve(out, `c2-${phase}-${label}-${theme}-${name}.png`),
+            settle: () => page.evaluate(settleFrame), decode: loadPixels, actions: actions.filter(row => row.scenario === label),
+            measure: () => page.evaluate(selectors => Object.fromEntries(Object.entries(selectors)
+              .map(([name, selector]) => [name, window.themeSample(selector)])), selectors) });
+          screenshots.push(frame);
+          return frame.geometry;
+        };
+        const scroll = async selector => {
+          await page.mouse.move(viewport.width / 2, 6);
+          await page.evaluate(settleFrame);
+          log('scroll actual transcript to expose target', await page.evaluate(exposeTranscript, selector));
+        };
+        const change = async (predicate, action) => { await arm(page, predicate); await action(); await complete(page); };
+        const painted = sample => ({ ...sample, matches: sample.present === true && sample.visible && sample.onScreen && sample.exposed });
+        const mobile = viewport.width <= 768;
+        if (mobile) {
+          log('open mobile sidebar through header menu');
+          await change(() => !document.querySelector('.th-sidebar--collapsed'), () => page.locator('.th-mobile-menu').click());
         }
-        assert.deepEqual(q.errors, [], `${label}: no browser exceptions`);
-        assert.deepEqual(q.fixture.unexpected, [], `${label}: no unexpected HTTP/WS traffic`);
-      } finally {
-        cleanup.push({ scenario: label, ...await q.close() });
+        log('open actual Settings');
+        await change(() => !!document.querySelector('.th-settings-panel'), () => page.click('.th-settings-menu .th-btn-icon'));
+        // Both themes are selected through the actual control, including Dark.
+        await arm(page, theme === 'dark'
+          ? () => document.documentElement.getAttribute('data-theme') === 'dark'
+          : () => document.documentElement.getAttribute('data-theme') === 'light');
+        await page.getByRole('radio', { name: theme === 'dark' ? 'Dark' : 'Light', exact: true }).click();
+        await complete(page);
+        const selected = await page.getByRole('radio', { name: theme === 'dark' ? 'Dark' : 'Light', exact: true }).getAttribute('aria-checked');
+        assert.equal(selected, 'true'); log('select actual Settings theme radio', { selectedTheme: theme, checked: selected });
+        await change(() => !document.querySelector('.th-settings-panel'), () => page.click('.th-settings-menu .th-btn-icon'));
+        log('capture exposed sidebar before closing drawer');
+        const sidebar = (await shoot('sidebar', { sidebar: SURFACES.sidebar })).sidebar;
+        if (mobile) {
+          await change(() => !!document.querySelector('.th-sidebar--collapsed'), () => page.click('.th-sidebar button[title="Collapse sidebar"]'));
+          await page.mouse.move(viewport.width - 6, 6);
+        }
+
+        log('fill UNSENT draft in idle controlled fixture');
+        await page.locator('.th-chat-input textarea').fill('Unsent theme QA draft');
+        assert.equal(fixture.runState('stored-a').running, false);
+        await page.mouse.move(viewport.width / 2, 6);
+        const main = await shoot('main-idle-send', { canvas: SURFACES.canvas, composer: SURFACES.composer, send: SURFACES.send,
+          status: '.th-chat-status-num', goal: '.th-goal-bar', activity: '.th-activity-bar' });
+        assert.equal(main.send.type, 'submit'); assert.equal(main.send.disabled, false);
+        assert.equal(await page.locator('.th-chat-input textarea').inputValue(), 'Unsent theme QA draft');
+        assert.equal(fixture.frames.filter(frame => frame.type === 'chat.send').length, 0, 'draft must remain unsent');
+        log('hover enabled default send');
+        await page.locator(SURFACES.send).hover();
+        const hover = (await shoot('send-hover', { send: SURFACES.send })).send;
+        log('keyboard focus default send');
+        await page.locator('.th-chat-input textarea').focus(); await page.keyboard.press('Tab');
+        await page.mouse.move(viewport.width / 2, 6);
+        const focus = (await shoot('send-focus', { send: SURFACES.send })).send;
+        log('deliver external-write conflict for disabled send');
+        await change(() => document.querySelector('.th-chat-send-btn')?.disabled === true,
+          () => fixture.deliver('stored-a', { type: 'error', code: 'external-write-detected',
+            message: 'Fixture conflict', knownLeaf: 'fixture-known', observedLeaf: 'fixture-observed' }));
+        const disabled = (await shoot('send-disabled', { send: SURFACES.send })).send;
+        await change(() => document.querySelector('.th-chat-send-btn')?.disabled === false,
+          () => page.locator('.th-external-write-banner-actions').click());
+        log('recover through actual conflict reload control');
+
+        const tool = '[data-tool-call-id="design-read"]';
+        await scroll(`${tool} > .th-tool-head`);
+        await page.mouse.move(viewport.width / 2, 6);
+        const collapsedFrame = await shoot('tool-collapsed', { tool, success: `${tool} .th-tool-status--ok` });
+        const collapsed = collapsedFrame.tool;
+        log('expand actual tool record');
+        await change(() => !!document.querySelector('[data-tool-call-id="design-read"] > .th-tool-body'),
+          () => page.locator(`${tool} > .th-tool-head`).click());
+        await scroll(`${tool} > .th-tool-head`);
+        await page.mouse.move(viewport.width / 2, 6);
+        const toolShell = (await shoot('tool-expanded', { tool })).tool;
+        await change(() => !document.querySelector('[data-tool-call-id="design-read"] > .th-tool-body'),
+          () => page.locator(`${tool} > .th-tool-head`).click());
+        // A real visible prose row, not the first offscreen message's style.
+        const textSelector = '.th-chat-msg:has([data-tool-call-id="design-read"]) .th-chat-markdown';
+        await scroll(`${tool} > .th-tool-head`);
+        // Scroll to the preceding assistant prose using its first paragraph.
+        await scroll(`${textSelector} p`);
+        await page.mouse.move(viewport.width / 2, 6);
+        const text = (await shoot('transcript-text', { text: `${textSelector} p` })).text;
+
+        await scroll('[data-tool-call-id="design-failed"] > .th-tool-head');
+        await page.mouse.move(viewport.width / 2, 6);
+        const errorState = (await shoot('tool-error', { error: '[data-tool-call-id="design-failed"] .th-tool-status--error' })).error;
+        log('deliver running state and live tool through controlled fixture');
+        await change(() => !!document.querySelector('.th-chat-send-btn.th-btn--danger'),
+          () => fixture.deliver('stored-a', { type: 'run.started' }));
+        await seedLive(page, fixture);
+        await change(() => !!document.querySelector('.th-queue-header'),
+          () => fixture.deliver('stored-a', { type: 'queue', ...designSeed().runs['stored-a'].queue }));
+        await scroll('[data-tool-call-id="design-running"] > .th-tool-head');
+        await page.mouse.move(viewport.width / 2, 6);
+        const running = await shoot('running-stop', { stop: SURFACES.send, running: '[data-tool-call-id="design-running"] .th-tool-status--running', queue: '.th-queue-header' });
+        log('click actual Stop and observe idle');
+        await change(() => document.querySelector('.th-chat-send-btn')?.type === 'submit', () => page.locator(SURFACES.send).click());
+        await change(() => !document.querySelector('.th-queue-header'),
+          () => fixture.deliver('stored-a', { type: 'queue', revision: 2, items: [], engine: { pendingMessageCount: 0, ordered: [] } }));
+        assert.equal(fixture.frames.filter(frame => frame.type === 'chat.send').length, 0, 'semantic captures must not submit the draft');
+
+        log('open model menu and hover first option');
+        await change(() => !!document.querySelector('.th-model-picker-popover'), () => page.click('.th-model-picker-btn'));
+        await change(() => !!document.querySelector('.th-model-picker-list > button[data-active="true"]'),
+          () => page.locator('.th-model-picker-list > button').first().hover());
+        const menu = await shoot('model-menu', { menu: SURFACES.menu, highlightedRow: SURFACES.highlightedRow });
+        await change(() => !document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Escape'));
+        const color = sample => parseComputedColor(sample.color)?.rgb ?? [];
+        const surfaces = {
+          canvas: judgeFill(main.canvas, REFERENCE[theme].canvas),
+          sidebar: judgeFill(sidebar, mobile ? REFERENCE[theme].menu : REFERENCE[theme].sidebar),
+          composer: judgeFill(main.composer, REFERENCE[theme].composer),
+          send: judgeFill(main.send, REFERENCE[theme].send),
+          toolShell: judgeFill(toolShell, REFERENCE[theme].toolShell),
+          menu: judgeFill(menu.menu, REFERENCE[theme].menu),
+          highlightedRow: judgeFill(menu.highlightedRow, REFERENCE[theme].highlightedRow),
+          collapsedTool: { ...painted(collapsed), matches: painted(collapsed).matches
+            && (parseComputedColor(collapsed.computed)?.alpha ?? 1) === COLLAPSED_TOOL_BACKGROUND_ALPHA },
+          text: { ...painted(text), referenceRgb: REFERENCE[theme].text,
+            matches: painted(text).matches && near(color(text), REFERENCE[theme].text, 0) },
+          menuShadow: { present: menu.menu.present, computed: menu.menu.boxShadow, matches: menu.menu.boxShadow === 'none' },
+          toolBorder: { present: toolShell.present, computed: toolShell.borderColor,
+            matches: toolShell.borderStyle === 'solid' && toolShell.borderWidth === '1px' },
+          sendHover: { ...painted(hover), matches: painted(hover).matches && hover.computed !== main.send.computed && hover.samples.length > 0 },
+          sendFocus: { ...painted(focus), matches: painted(focus).matches && focus.outlineStyle !== 'none' && parseFloat(focus.outlineWidth) > 0 },
+          sendDisabled: { ...painted(disabled), matches: painted(disabled).matches && disabled.disabled === true
+            && disabled.cursor === 'not-allowed' },
+          stop: { ...painted(running.stop), matches: painted(running.stop).matches && running.stop.type === 'button'
+            && running.stop.disabled === false && running.stop.computed !== main.send.computed && running.stop.samples.length > 0 },
+          success: painted(collapsedFrame.success), error: painted(errorState), running: painted(running.running), queue: painted(running.queue),
+          status: painted(main.status), goal: painted(main.goal), activity: painted(main.activity),
+        };
+        results.push({ scenario: label, theme, pane, surfaces,
+          screenshots: screenshots.filter(frame => frame.path.includes(`-${label}-${theme}-`)).map(frame => ({ path: frame.path, sha256: frame.sha256 })) });
       }
     }
-
-    const mismatches = results.flatMap(result =>
-      Object.entries(result.surfaces)
-        .filter(([name, verdict]) => {
-          if (name === 'collapsedTool') return verdict.present && !verdict.matches;
-          if (name === 'text') return verdict.present && !verdict.matches;
-          return verdict.present && !verdict.matches;
-        })
-        .map(([name]) => `${result.scenario}/${result.theme}/${name}`));
-
+    mismatches = missingSurfaces(results);
     await save('theme-samples.json', { ...receipt, mismatches, results, actions, screenshots });
     if (phase === 'red') {
-      assert(mismatches.length > 0,
-        'red phase requires the current build to MISS the reference; the tree already matches');
+      assert(mismatches.length > 0, 'red phase requires the current build to MISS the reference; the tree already matches');
       console.log(`RED confirmed: ${mismatches.length} reference mismatches:\n  ${mismatches.join('\n  ')}`);
     } else {
       assert.deepEqual(mismatches, [], `green phase requires full reference match; mismatched: ${mismatches.join(', ')}`);
-      console.log('GREEN confirmed: every sampled surface matches the authenticated reference in both themes.');
     }
-    await writeFile(resolve(out, 'cleanup.json'), JSON.stringify({
-      cleanups: cleanup, browserClosed: true,
-      portsFreed: cleanup.map(entry => ({ port: entry.port, contextClosed: entry.contextClosed, url: entry.url })),
-    }, null, 2) + '\n');
-    return { phase, mismatches, results };
   } catch (error) {
-    await save('theme-samples-FAIL.json', { ...receipt, results, actions, error: String(error), stack: error.stack });
-    await writeFile(resolve(out, 'cleanup.json'), JSON.stringify({ cleanups: cleanup, browserClosed: true, error: String(error) }, null, 2) + '\n')
-      .catch(() => { /* samples file above already flushed the failure record */ });
-    throw error;
+    failures.push(error);
+    try { await save('theme-samples-FAIL.json', { ...receipt, results, actions, screenshots, error: String(error), stack: error.stack }); }
+    catch (writeError) { failures.push(writeError); }
   } finally {
-    if (browser) await browser.close();
+    for (const { label, errors, fixture } of sessions) {
+      try {
+        assert.deepEqual(errors, [], `${label}: no browser exceptions`);
+        assert.deepEqual(fixture.unexpected, [], `${label}: no unexpected HTTP/WS traffic`);
+      } catch (error) { failures.push(error); }
+    }
+    if (browser) resources.push({ name: 'browser', close: async () => { await browser.close(); return { browserClosed: true }; } });
+    try { await closeResources(resources, value => save('cleanup.json', value)); }
+    catch (error) { failures.push(error); }
   }
+  if (failures.length) throw new AggregateError(failures, 'Theme QA failed');
+  console.log(`${phase.toUpperCase()} complete; all owned resource closures awaited.`);
+  return { phase, mismatches, results };
 }
 
 if (import.meta.main) {
