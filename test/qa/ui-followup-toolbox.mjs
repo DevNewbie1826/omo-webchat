@@ -200,21 +200,24 @@ export async function run({ phase = 'green', out, driver = process.env.QA_PLAYWR
       const capture = async (id, state, kind = 'state') => {
         const readiness = await page.evaluate(settleFrame);
         const before = await page.evaluate(probePage, id);
+        const accessibility = await page.locator(`${selector(id)} .th-tool-head`).ariaSnapshot();
         const bytes = await page.screenshot({ animations: 'allow' });
         const file = resolve(out, `p4-${phase}-${label}-${state}.png`);
         await writeFile(file, bytes);
         const row = { path: file, sha256: hash(bytes), byteLength: bytes.length, scenario: label, kind, state, tool: id,
-          actionIds: actions.filter(a => a.scenario === label).map(a => a.id), readiness, before, after: await page.evaluate(probePage, id) };
+          actionIds: actions.filter(a => a.scenario === label).map(a => a.id), readiness, accessibility, before, after: await page.evaluate(probePage, id) };
         images.push(row); return row;
       };
       const locale = JSON.parse(await readFile(resolve(`frontend/src/i18n/locales/${lang}.json`), 'utf8'));
       const inspect = async (id, state, status, expanded, first) => {
         const p = await page.evaluate(probePage, id);
+        p.accessibility = await page.locator(`${selector(id)} .th-tool-head`).ariaSnapshot();
         const bg = parseComputedColor(p.background), border = parseComputedColor(p.border.color), canvas = parseComputedColor(p.canvas), prose = parseComputedColor(p.prose);
         check(label, `material/${state}`, bg?.alpha === 1 && border?.alpha > 0 && p.border.width === '1px' && p.border.style === 'solid'
           && prose?.alpha === 0 && bg.rgb.join() !== canvas?.rgb.join() && p.boxShadow === 'none', p);
         check(label, `identity/${state}`, p.name === identity && p.accessibleText.includes(identity)
-          && p.command.includes(id === 'read' ? path : command), p);
+          && p.command.includes(id === 'read' ? path : command) && p.accessibility.includes(identity)
+          && p.accessibility.includes(id === 'read' ? path : command), p);
         check(label, `locale-status/${state}`, p.locale === lang && p.fontSize === String(fontSize) && p.status === locale[`tool.${status === 'ok' ? 'done' : status === 'error' ? 'error' : 'running'}`]
           && p.glyphClass.includes(`th-tool-glyph--${status}`), p);
         check(label, `disclosure-bounds/${state}`, p.expanded === expanded && p.header.height >= 48 && p.headerHit && p.statusHit
