@@ -112,6 +112,7 @@ func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding
 		return false
 	}
 	oldSession, oldDetach, oldSub := c.sess, c.detach, c.sub
+	c.invalidateTodoWatchLocked()
 	c.sess, c.detach, c.sub = staged.session, wrappedDetach, staged.sub
 	c.stateMu.Unlock()
 	if !staged.sub.activate(ctx, !staged.started) {

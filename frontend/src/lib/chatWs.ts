@@ -123,6 +123,7 @@ export type ChatServerFrame =
   | ct.ExtensionEventFrame
   | ct.SessionsActivityFrame
   | ct.ChatGoalFrame
+  | ct.ChatTodoFrame
   | ct.ApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame

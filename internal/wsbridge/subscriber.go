@@ -2,6 +2,7 @@ package wsbridge
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ type subscriber struct {
 	replaying      bool
 	treatAsResumed bool
 	claim          queryBinding
+	bindingID      string
 	pending        []session.Frame
 	overflowed     bool
 	ready          chan struct{}
@@ -33,7 +35,7 @@ type subscriber struct {
 }
 
 func newSubscriber(c *connection) *subscriber {
-	return &subscriber{conn: c, ready: make(chan struct{}), detachSignal: make(chan struct{})}
+	return &subscriber{conn: c, bindingID: rand.Text(), ready: make(chan struct{}), detachSignal: make(chan struct{})}
 }
 
 // SynchronousAttach asks session's broadcaster to finish queueing its initial
@@ -77,6 +79,7 @@ func (s *subscriber) DiscardHydrationAttempt() {
 	s.overflowed = false
 	s.replaying = false
 	s.claim = queryBinding{}
+	s.bindingID = rand.Text()
 }
 func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	s.mu.Lock()
@@ -188,14 +191,31 @@ func (s *subscriber) deliver(f session.Frame) error {
 	if wire == nil {
 		return nil
 	}
-	return s.conn.writeIfCurrent(s.claim, wire)
+	if ready, ok := wire.(wscontract.ReadyFrame); ok {
+		ready.BindingID = &s.claim.bindingID
+		wire = ready
+	}
+	if err := s.conn.writeIfCurrent(s.claim, wire); err != nil {
+		return err
+	}
+	if f.Kind == session.FrameReady {
+		s.conn.startTodoWatch(s.claim)
+	} else if todoInvalidation(f) {
+		s.conn.markTodoDirty(s.claim)
+	}
+	return nil
 }
 
 func (c *connection) subscriberClaim(s *subscriber) (queryBinding, bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	claim := queryBinding{chatID: c.chatID, generation: c.bindingGeneration, session: c.sess}
-	return claim, !c.closed.Load() && c.sub == s && claim.chatID != "" && claim.session != nil
+	claim := queryBinding{chatID: c.chatID, generation: c.bindingGeneration, session: c.sess, bindingID: s.bindingID}
+	ok := !c.closed.Load() && c.sub == s && claim.chatID != "" && claim.session != nil
+	if ok {
+		c.invalidateTodoWatchLocked()
+		c.todoBindingID = s.bindingID
+	}
+	return claim, ok
 }
 
 func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
