@@ -52,6 +52,7 @@ func TestQueueClearEngineFailurePreservesDurableItems(t *testing.T) {
 	// synchronous clear handler before observing memory or reloading the JSON.
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 	if got := queue.Snapshot("queue-clear-fail"); len(got.Items) != 1 || got.Items[0].ID != id || got.Items[0].Text != "keep-me" {
 		t.Errorf("memory queue after failed clear = %+v, want item %q with text keep-me", got, id)
 	}

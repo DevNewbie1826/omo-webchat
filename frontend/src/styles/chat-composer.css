@@ -35,7 +35,9 @@
   /* Bounded radius: clamps to a 25px half-height pill at the 50px one-line
      shell, but stops growing with multiline height. */
   border-radius: 26px;
-  background: var(--th-surface);
+  /* The composer's own measured surface role (an opaque approximation of the
+     native material), not the shared elevated-chrome Surface. */
+  background: var(--th-surface-composer);
   box-shadow: var(--th-shadow-surface);
   transition:
     border-color var(--th-dur-fast) var(--th-ease),

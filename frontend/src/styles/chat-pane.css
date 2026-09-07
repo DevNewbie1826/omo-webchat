@@ -1005,7 +1005,7 @@
   z-index: 60;
   background: var(--th-surface-overlay);
   border-color: var(--th-border-overlay);
-  box-shadow: var(--th-shadow-overlay);
+  box-shadow: var(--th-shadow-raised);
 }
 
 .th-model-picker-popover--sheet .th-model-picker-list > button {

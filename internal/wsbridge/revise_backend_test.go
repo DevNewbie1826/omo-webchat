@@ -98,6 +98,7 @@ func TestTransparentIdleRecoveryBridgePostBindingLoss(t *testing.T) {
 	release()
 	writeClient(t, refresh, map[string]any{"type": "ping"})
 	replay.next(t, "pong")
+	awaitCommandFence(t, refresh, replay)
 	assertTerminalHistory(t, replay, 4)
 	assertOrderedHistoryIDs(t, replay, []string{"root", "entry-1", "entry-2", "entry-3"})
 	assertNoBridgeErrors(t, replay)
@@ -196,6 +197,7 @@ func TestTransparentIdleRecoveryBridgeSavedConversation(t *testing.T) {
 						}
 						writeClient(t, conn, map[string]any{"type": "ping"})
 						frames.next(t, "pong")
+						awaitCommandFence(t, conn, frames)
 						failures := 0
 						frames.mu.Lock()
 						for _, raw := range frames.frames {

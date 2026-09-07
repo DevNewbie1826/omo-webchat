@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="theme-color" content="#181818" />
   <link rel="manifest" href="./manifest.json" />
   <link rel="icon" href="./favicon-32x32.png" type="image/png" sizes="32x32" />
   <link rel="icon" href="./favicon-16x16.png" type="image/png" sizes="16x16" />
@@ -59,7 +59,7 @@
       // THEME_CHROME_COLORS / APPLE_STATUS_BAR_STYLES in src/lib/theme.ts.
       var themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute("content", resolved === "light" ? "#eeedeb" : "#0a0a0a");
+        themeColorMeta.setAttribute("content", resolved === "light" ? "#ffffff" : "#181818");
       }
       var statusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
       if (statusBarMeta) {
