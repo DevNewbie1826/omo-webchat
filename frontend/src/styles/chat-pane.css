@@ -125,26 +125,32 @@
 }
 
 .th-chat-status {
-  flex: none;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--th-space-3);
-  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  gap: var(--th-space-2);
   min-width: 0;
   min-height: 24px;
-  margin: 0 auto;
   padding: 0 var(--th-space-0-5);
-  overflow-x: auto;
   color: var(--th-text-dim);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  scrollbar-width: none;
   white-space: nowrap;
 }
 
-.th-chat-status::-webkit-scrollbar {
+.th-chat-status-primary {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--th-space-3);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.th-chat-status-primary::-webkit-scrollbar {
   display: none;
 }
 
@@ -194,6 +200,11 @@
   .th-chat-send-preview {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  .th-chat-status-details summary {
+    min-width: 44px;
+    justify-content: center;
   }
 }
 
@@ -561,11 +572,14 @@
   padding: var(--th-space-0-5);
 }
 
+  /* 0.5-step block padding: in the shortest panes the one-line row must stay
+     complete inside the measured popup bound (DESIGN.md "Model control
+     placement"). */
 .th-model-picker-popover--short .th-model-picker-list > button {
   flex-direction: row;
   align-items: center;
   gap: var(--th-space-1);
-  padding: var(--th-space-1) var(--th-space-2);
+  padding: var(--th-space-0-5) var(--th-space-2);
 }
 
 .th-model-picker-popover--short .th-model-picker-list strong {
@@ -577,8 +591,16 @@
   flex: none;
 }
 
+  /* The search must stay a complete control inside the measured short-pane
+     popup bound (DESIGN.md "Model control placement"). */
 .th-model-picker-popover--short .th-model-picker-search {
-  padding-block: var(--th-space-1);
+  padding-block: var(--th-space-0-5);
+}
+
+/* Short-pane reasoning chips stay one complete pointer control inside the
+   measured popup bound (DESIGN.md "Model control placement"). */
+.th-model-picker-popover--short .th-thinking-level {
+  padding-block: var(--th-space-0);
 }
 
 .th-files-toggle {
@@ -808,12 +830,11 @@
     display: none;
   }
 
+  /* The compact trigger hugs the merged row's right edge with a 44px touch
+     target; bounded truncation keeps statuses on the same row. */
   .th-chat-pane .th-model-picker-btn {
-    width: 100%;
-    max-width: 100%;
     min-width: 0;
     min-height: var(--th-space-11);
-    justify-content: center;
   }
 
   .th-chat-pane .th-chat-resync-btn {
@@ -854,20 +875,82 @@
 }
 
 
-.th-composer-model {
-  /* One reading-column lane with the capsule, status strip, and transcript
-     rows (DESIGN.md "Model control placement"): the control's outer edges
-     meet the capsule's instead of overhanging into the local gutters. */
-  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
-  margin-inline: auto;
+/* Merged compact control row (DESIGN.md "Model control placement"): the
+   status strip leads on the left and the current model selector is pinned to
+   the row's right edge — the same reading-column lane as the capsule, so the
+   trigger's right edge meets the input's edge at every pane width. */
+.th-chat-controls {
   display: flex;
-  justify-content: flex-end;
+  flex: none;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  margin-inline: auto;
 }
 
-.th-composer-model .th-model-picker {
-  flex: 0 1 auto;
+.th-chat-controls .th-chat-status {
+  flex: 1 1 0;
   min-width: 0;
-  max-width: 100%;
+}
+
+.th-chat-controls .th-model-picker {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 45%;
+}
+
+/* Disclosure adds a second line without changing either control's allocation.
+   Its content is still natively hidden/announced by the owning details. */
+.th-chat-controls:has(.th-chat-status-details[open]) {
+  padding-bottom: var(--th-space-6);
+}
+
+.th-chat-status-metrics {
+  position: absolute;
+  top: 100%;
+  left: var(--th-space-0-5);
+  right: var(--th-space-0-5);
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-3);
+  height: var(--th-space-6);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* Secondary context/cache metrics collapse into a keyboard-accessible
+   disclosure so urgent states keep the compact strip; the summary inherits
+   the strip's Micro tier. */
+.th-chat-status-details {
+  flex: none;
+  min-width: 0;
+}
+
+.th-chat-status-details summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--th-space-0-5);
+  border-radius: var(--th-radius-sm);
+  list-style: none;
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .th-chat-status-details summary {
+    min-height: 44px;
+  }
+}
+
+.th-chat-status-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.th-chat-status-details summary:hover,
+.th-chat-status-details[open] summary {
+  background: var(--th-hover);
+  color: var(--th-text);
 }
 
 .th-model-picker-thinking {
@@ -897,24 +980,57 @@
   gap: var(--th-space-0-5);
 }
 
+  /* Pinned identity: in the sheet scrollport the header (with its 44px close
+     control) sticks to the top and paints over scrolled options, so
+     header and close stay bounded and hit-testable at any height. */
+.th-model-picker-popover--sheet .th-model-picker-current {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--th-surface-overlay);
+}
+
 .th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon {
   flex: none;
   width: var(--th-space-11);
   height: var(--th-space-11);
 }
 
+  /* Bounded minimum scrollport: even when the fixed chrome consumes the
+     measured bound, the list keeps a usable scrolling region of options. */
+.th-model-picker-popover--sheet .th-model-picker-list {
+  min-height: var(--th-space-11);
+}
+
 .th-model-picker-current span {
   color: var(--th-muted);
 }
 
+/* Over-constrained heights (deep keyboard, very short landscape): when the
+   fixed chrome alone exceeds the measured bound, the sheet becomes its own
+   scrollport instead of painting content outside its bounds. When chrome
+   fits, flex sizing makes the sheet content fit exactly and nothing scrolls.
+   The identity header is pinned inside that scrollport below. */
 .th-model-picker-popover--sheet {
+  container: model-sheet / inline-size;
   position: fixed;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   right: auto;
-  left: calc(var(--th-vv-left, 0px) + var(--th-space-2));
+  /* Usable visual-viewport bounds on all four sides (DESIGN.md "Responsive
+     behavior"): the fixed sheet compensates the visual-viewport pan like
+     #root and keeps every edge clear of the display cutouts via the
+     per-side safe-area insets, so the pinned 44px close header stays
+     reachable with nonzero insets in portrait, landscape, and while the
+     keyboard resizes or pans the visual viewport. */
+  left: calc(var(--th-vv-left, 0px) + var(--th-space-2) + env(safe-area-inset-left, 0px));
   bottom: auto;
-  top: calc(var(--th-vv-top, 0px) + var(--th-space-2));
-  width: calc(100% - var(--th-space-4));
-  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4));
+  top: calc(var(--th-vv-top, 0px) + var(--th-space-2) + env(safe-area-inset-top, 0px));
+  /* Width follows the visible viewport width (--th-vv-width, 100% without
+     JS), not the layout viewport: native pan and zoom narrow the visible
+     region and the sheet must stay inside it, both safe sides included. */
+  width: calc(var(--th-vv-width, 100%) - 2 * var(--th-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   z-index: 60;
   background: var(--th-surface-overlay);
   border-color: var(--th-border-overlay);
@@ -924,4 +1040,23 @@
 .th-model-picker-popover--sheet .th-model-picker-list > button {
   flex: none;
   min-height: var(--th-space-11);
+}
+
+/* Zoom/pan can leave an 85px sheet even in a 390px layout viewport. Use
+   the actual sheet width, keeping the 44px close in its own full row. */
+@container model-sheet (max-width: 180px) {
+  .th-model-picker-current {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+
+  .th-model-picker-current > div {
+    width: 100%;
+  }
+
+  .th-model-picker-current > div > * {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
