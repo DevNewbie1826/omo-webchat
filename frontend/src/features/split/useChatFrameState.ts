@@ -6,7 +6,7 @@ import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
 import {
   applyActivityEvent,
-  applyActivityHistorySnapshot,
+  applyTaskHistorySnapshot,
   applyDagHistorySnapshot,
   bufferActivityHydrationEvent,
   createActivityHydrationBuffer,
@@ -14,6 +14,7 @@ import {
   type ActivityHydrationBuffer,
   type BufferedActivityEvent,
 } from "./activityState";
+import { parseTaskDigest } from "../workspace/activityDigest";
 import type { ActivityState } from "./activityTypes";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -161,6 +162,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     readonly token: number;
     readonly buffer: ActivityHydrationBuffer;
     readonly touchedDags: Set<string>;
+    readonly touchedTasks: Set<string>;
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
@@ -178,6 +180,11 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     if (hydration !== null && next.dags !== activitiesRef.current.dags) {
       for (const [id, run] of next.dags) {
         if (run !== activitiesRef.current.dags.get(id)) hydration.touchedDags.add(id);
+      }
+    }
+    if (hydration !== null && next.tasks !== activitiesRef.current.tasks) {
+      for (const id of new Set([...next.tasks.keys(), ...activitiesRef.current.tasks.keys()])) {
+        if (next.tasks.get(id) !== activitiesRef.current.tasks.get(id)) hydration.touchedTasks.add(id);
       }
     }
     activitiesRef.current = next;
@@ -391,35 +398,26 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setQueueEngine,
   });
 
-  // Task hydration keeps its arrival-order fence. DAG history compares against
-  // accepted live rows at response time; actual per-ID touches survive omissions
-  // independently of the bounded progress replay buffer.
+  // Both domains reconcile per ID; touches outlive the bounded progress buffer.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set() };
+    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set(), touchedTasks: new Set() };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
     if (activityHydrationRef.current?.token === token) activityHydrationRef.current = null;
   };
-  const hydrateActivities = (token: number, task: unknown, dag: unknown): void => {
+  const hydrateActivities = (token: number, task: unknown, dag: unknown, taskDigest?: unknown, taskOversized = false): void => {
     const hydration = activityHydrationRef.current;
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    // Overflow flags are mutation-aware (per-event bits): an armed flag means
-    // a dropped event actually changed that domain's live state, so fencing
-    // applies unconditionally — stale cached rows can no longer widen it.
-    const protectLiveTasks = hydration.buffer.taskSuperseded
-      || hydration.buffer.taskOverflowed;
-    if (!protectLiveTasks) {
-      next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
-    }
+    next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
       // would remove REST-only rows or reverse both-unknown legacy ordering.
-      if (event.name !== "omo.dag.updated") next = applyActivityEvent(next, event.name, event.data);
+      if (event.name !== "omo.dag.updated" && event.name !== "omo.task.updated") next = applyActivityEvent(next, event.name, event.data);
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };

@@ -16,6 +16,7 @@ type ActivityPair struct {
 type TaskDigestEntry struct {
 	TaskID    string `json:"task_id"`
 	Status    string `json:"status"`
+	RawStatus string `json:"raw_status,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
@@ -116,19 +117,28 @@ func parseTaskDigest(data json.RawMessage) (*TaskDigest, bool) {
 		if json.Unmarshal(raw, &row) != nil {
 			return nil, false
 		}
-		id, idOK := parseRequiredString(row, "task_id")
-		status, statusOK := parseRequiredString(row, "status")
-		updated, updatedOK := parseOptionalString(row, "updated_at")
-		if !idOK || !statusOK || !updatedOK {
+		_, idOK := parseRequiredString(row, "task_id")
+		_, statusOK := parseRequiredString(row, "status")
+		if !idOK || !statusOK {
 			return nil, false
 		}
 		if len(tasks) == maxActivityDigestEntries {
 			truncated = true
 			continue
 		}
-		tasks = append(tasks, TaskDigestEntry{TaskID: id, Status: status, UpdatedAt: updated})
+		tasks = append(tasks, taskDigestRow(row))
 	}
 	return &TaskDigest{Tasks: tasks, Truncated: truncated, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
+}
+
+// Optional malformed clocks are unknown, not missing task membership.
+func taskDigestRow(row map[string]json.RawMessage) TaskDigestEntry {
+	entry := TaskDigestEntry{TaskID: rawString(row["task_id"]), Status: rawString(row["status"]), UpdatedAt: rawString(row["updated_at"])}
+	raw := rawString(row["raw_status"])
+	if raw != "" && !terminalTaskStatuses[raw] && terminalTaskStatuses[entry.Status] {
+		entry.RawStatus = raw
+	}
+	return entry
 }
 
 var terminalTaskStatuses = map[string]bool{
@@ -245,63 +255,6 @@ func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
 		}
 	}
 	return outcomes
-}
-
-func reconcileTaskPayloadWithOutcomes(task json.RawMessage, outcomes map[string]dagTaskOutcome) (json.RawMessage, bool) {
-	if len(outcomes) == 0 || len(task) == 0 {
-		return nil, false
-	}
-	var doc map[string]json.RawMessage
-	if json.Unmarshal(task, &doc) != nil {
-		return nil, false
-	}
-	var tasks []map[string]json.RawMessage
-	if raw, ok := doc["tasks"]; !ok || json.Unmarshal(raw, &tasks) != nil || tasks == nil {
-		return nil, false
-	}
-	changed := false
-	for _, row := range tasks {
-		var id string
-		var status *string
-		if json.Unmarshal(row["task_id"], &id) != nil || id == "" ||
-			json.Unmarshal(row["status"], &status) != nil || status == nil || *status == "" {
-			continue
-		}
-		outcome, vouched := outcomes[id]
-		if !vouched || terminalTaskStatuses[*status] {
-			continue
-		}
-		row["status"], _ = json.Marshal(outcome.status)
-		changed = true
-	}
-	if !changed {
-		return nil, false
-	}
-	doc["tasks"], _ = json.Marshal(tasks)
-	out, err := json.Marshal(doc)
-	return out, err == nil
-}
-
-// reconcileActivityCacheLocked demotes stale task rows using terminal DAG
-// outcomes. The caller holds lifecycleMu, which protects both projections.
-func (s *Session) reconcileActivityCacheLocked(dag json.RawMessage) {
-	outcomes := terminalDagRunTaskOutcomes(dag)
-	if len(outcomes) == 0 {
-		return
-	}
-	if task, changed := reconcileTaskPayloadWithOutcomes(s.activitySnapshots[activitySnapshotOrder[0]], outcomes); changed {
-		s.activitySnapshots[activitySnapshotOrder[0]] = task
-	}
-	if s.taskDigest == nil {
-		return
-	}
-	for i := range s.taskDigest.Tasks {
-		row := &s.taskDigest.Tasks[i]
-		outcome, vouched := outcomes[row.TaskID]
-		if vouched && !terminalTaskStatuses[row.Status] {
-			row.Status = outcome.status
-		}
-	}
 }
 
 func cloneTaskDigest(src *TaskDigest) *TaskDigest {

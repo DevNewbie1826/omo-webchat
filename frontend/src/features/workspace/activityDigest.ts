@@ -1,10 +1,13 @@
 import { isRecord, optString, reqBoolean, reqString } from "../../lib/chatWsParseFields";
 
+import { taskRawStatus } from "../split/taskAuthority";
+
 /** Compact in-memory task summary from GET /api/sessions/live `task_digest`. */
 export type TaskDigestEntry = {
   readonly taskId: string;
   readonly status: string;
   readonly updatedAt?: string;
+  readonly rawStatus?: string;
 };
 
 export type TaskDigest = {
@@ -30,11 +33,12 @@ function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry 
   const taskId = reqString(record, "task_id");
   const status = reqString(record, "status");
   if (taskId === null || status === null || taskId.length === 0 || status.length === 0) return null;
-  const updatedAt = optString(record, "updated_at");
-  if (updatedAt === null) return null;
+  const updatedAt = optString(record, "updated_at") ?? undefined;
+  const rawStatus = taskRawStatus(status, record["raw_status"]);
   return {
     taskId,
     status,
+    ...(rawStatus === undefined ? {} : { rawStatus }),
     ...(updatedAt !== undefined ? { updatedAt } : {}),
   };
 }

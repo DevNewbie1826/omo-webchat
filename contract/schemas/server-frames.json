@@ -343,6 +343,10 @@
         "status": {
           "type": "string"
         },
+        "raw_status": {
+          "type": "string",
+          "description": "Original nonterminal status, present only when webchat applies a terminal DAG-derived correction. updated_at remains the original raw task revision; engine/store metadata is not trusted provenance."
+        },
         "updated_at": {
           "type": "string"
         }

@@ -25,6 +25,13 @@ export interface ActivityTask {
   readonly model?: string;
   readonly createdAt?: string;
   readonly updatedAt?: string;
+  /** Original source clock is separate from the presentation/activity clock. */
+  readonly rawUpdatedAt?: string | undefined;
+  readonly rawStatus?: string;
+  readonly activityAt?: string;
+  readonly activityProgress?: ActivityLiveProgress;
+  readonly compact?: boolean;
+  readonly truncated?: boolean;
   readonly finalResponse?: string;
   readonly errorMessage?: string;
   readonly liveProgress?: ActivityLiveProgress;
@@ -108,6 +115,7 @@ export interface ActivityState {
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
   /** Known per-ID high-water marks survive membership removal, without retaining graphs. */
   readonly dagFreshness?: ReadonlyMap<string, number>;
+  readonly taskFreshness?: ReadonlyMap<string, number>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
   /** The retained task/DAG rows are a bounded prefix of a larger history. */
