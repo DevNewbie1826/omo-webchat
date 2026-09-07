@@ -54,6 +54,7 @@ const assertHeadlessSelectors = (css: string) => {
     const actualSelectors = new Set(
       selectorList.split(",").map((selector) => selector.replace(/\s+/g, " ").trim()),
     );
+    // Headless is an inner-panel policy, never a reason to hide peer tabs.
     const expectedSelectors = new Set(
       HIDDEN_WHEN_HEADLESS.map((selector) => `${panelSelector} ${selector}`),
     );

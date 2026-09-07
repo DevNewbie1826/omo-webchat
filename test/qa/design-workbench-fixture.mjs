@@ -68,7 +68,7 @@ export const armShelf = (page, kind, open) => page.evaluate(({ kind, open }) => 
     }
     for (const item of column.querySelectorAll('.th-goal-shelf, .th-activity-shelf')) {
       fixed += margin(item);
-      for (const band of item.querySelectorAll('.th-activity-bar-row, .th-activity-resize')) fixed += outer(band);
+      for (const band of item.querySelectorAll('.th-activity-bar-row, .th-activity-tabs, .th-activity-resize')) fixed += outer(band);
     }
     state = { kind, requestedOpen: !!shelf.querySelector('.th-activity-caret--open'),
       allocationApplied: shelf.style.flexShrink === '0',

@@ -15,8 +15,9 @@ import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { connect } from 'node:net';
 import { startFixture } from './pane-workspace-ui.mjs';
-import { installSignals, arm, complete, wheel } from './design-workbench-fixture.mjs';
+import { arm, complete, wheel } from './design-workbench-fixture.mjs';
 import { exerciseShelves } from './design-workbench-controls.mjs';
+import { shelfRegressionScenarios } from './pane-workspace-composer.mjs';
 
 const ROOT = resolve(import.meta.dir, '../..');
 const DRIVER = '/Users/mirage/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs';
@@ -62,7 +63,16 @@ async function state(page) {
   return page.evaluate(() => {
     const box = s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null;
     const tabs = [...document.querySelectorAll('[data-activity-tab]')].map(e => ({ id: e.dataset.activityTab, selected: e.getAttribute('aria-selected'), rect: e.getBoundingClientRect().toJSON(), count: e.querySelector('.th-activity-tab-count')?.textContent, display: getComputedStyle(e).display }));
-    return { at: performance.now(), tabs, visible: [...document.querySelectorAll('[data-activity-tabpanel]')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.dataset.activityTabpanel),
+    const column = document.querySelector('.th-chat-main'), content = column.querySelector(':scope > .th-chat-main-content');
+    const margin = e => { const s = getComputedStyle(e); return (parseFloat(s.marginTop) || 0) + (parseFloat(s.marginBottom) || 0); };
+    const outer = e => e.getBoundingClientRect().height + margin(e);
+    let fixed = 0;
+    for (const child of [...column.children, ...(content?.children ?? [])]) {
+      if (child === content || child.matches('.th-chat-scrollport,.th-goal-shelf,.th-activity-shelf,.th-goal-panel,.th-activity-panel') || child.querySelector('.th-goal-shelf,.th-activity-shelf')) continue;
+      fixed += outer(child);
+    }
+    for (const shelf of column.querySelectorAll('.th-goal-shelf,.th-activity-shelf')) { fixed += margin(shelf); for (const band of shelf.querySelectorAll('.th-activity-bar-row,.th-activity-tabs,.th-activity-resize')) fixed += outer(band); }
+    return { at: performance.now(), fixed, usable: column.getBoundingClientRect().height - fixed, tabs, visible: [...document.querySelectorAll('[data-activity-tabpanel]')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.dataset.activityTabpanel),
       pane: box('.th-chat-pane'), column: box('.th-chat-main'), transcript: box('.th-chat-scrollport'), goal: box('.th-goal-panel'), activity: box('.th-activity-panel'), composer: box('.th-chat-input'),
       goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('button.th-activity-fold')?.getAttribute('aria-expanded'),
       goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: !!document.querySelector('.th-activity-shelf .th-activity-caret--open'),
@@ -72,17 +82,23 @@ async function state(page) {
       animations: document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf')).map(a => ({ name: a.animationName, time: a.currentTime, playState: a.playState, node: a.effect.target.closest('[data-node]')?.dataset.node, transform: getComputedStyle(a.effect.target).transform })),
       nodes: [...document.querySelectorAll('.th-activity-gnode')].map(e => ({ id: e.dataset.node, transform: e.getAttribute('transform'), class: e.getAttribute('class'), opacity: getComputedStyle(e).opacity })),
       partial: document.querySelector('.th-activity-partial')?.textContent ?? null,
-      freshness: [...document.querySelectorAll('.th-activity-stale-note,.th-activity-severed-note')].map(e => e.textContent),
+      freshness: [...document.querySelectorAll('.th-activity-quiet-note,.th-activity-severed-note')].map(e => e.textContent),
       overflow: document.documentElement.scrollWidth > innerWidth };
   });
 }
 async function settled(page) {
-  await page.evaluate(async () => {
+  return page.evaluate(async () => {
     await document.fonts.ready;
     const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf') && a.effect.getTiming().iterations !== Infinity);
     let timer;
-    try { await Promise.race([Promise.all(animations.map(a => a.finished)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Finite animation deadline')), 8000); })]); }
-    finally { clearTimeout(timer); }
+    try {
+      const outcomes = await Promise.race([Promise.allSettled(animations.map(a => a.finished)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Finite animation deadline')), 8000); })]);
+      return outcomes.map((outcome, index) => {
+        const animation = animations[index];
+        if (outcome.status === 'rejected' && (outcome.reason.name !== 'AbortError' || animation.playState !== 'idle')) throw outcome.reason;
+        return { name: animation.animationName ?? animation.transitionProperty, outcome: outcome.status === 'fulfilled' ? 'finished' : 'cancelled', playState: animation.playState, reason: outcome.status === 'rejected' ? String(outcome.reason) : null };
+      });
+    } finally { clearTimeout(timer); }
   });
 }
 async function click(q, selector, predicate) {
@@ -101,11 +117,31 @@ async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
 }
 async function capture(q, name, motion = false) {
-  if (!motion) await settled(q.page);
+  const settlement = motion ? [] : await settled(q.page);
   const data = await state(q.page), path = join(q.out, `${name}.png`);
+  if (!motion && data.visible.includes('dag')) assert(data.nodes.every(n => n.opacity === '1'), 'settled graph is not a transitional blank');
   await q.page.screenshot({ path, animations: 'allow' });
-  q.manifest.push({ name: `${name}.png`, sha256: sha(readFileSync(path)), fixture: q.record.id, url: q.record.url, options: q.record.options, motion, state: data, actionCount: q.record.actions.length, sourceIdentity: q.identityHash });
+  q.manifest.push({ name: `${name}.png`, sha256: sha(readFileSync(path)), fixture: q.record.id, url: q.record.url, options: q.record.options, motion, settlement, state: data, actionCount: q.record.actions.length, sourceIdentity: q.identityHash });
   return data;
+}
+async function graphScroll(q, target) {
+  const graph = q.page.locator('.th-activity-graph');
+  const before = await graph.evaluate(e => ({ left: e.scrollLeft, max: e.scrollWidth - e.clientWidth }));
+  const goal = Math.min(target, before.max);
+  if (Math.abs(goal - before.left) >= 1) {
+    await graph.evaluate(e => {
+      window.qaPending = new Promise((done, fail) => {
+        const timer = setTimeout(() => { cleanup(); fail(new Error('Graph horizontal scrollend deadline')); }, 8000);
+        function cleanup() { clearTimeout(timer); e.removeEventListener('scrollend', ended); }
+        function ended(event) { if (event.target !== e) return; cleanup(); done(e.scrollLeft); }
+        e.addEventListener('scrollend', ended);
+      });
+    });
+    const box = await graph.boundingBox(); await q.page.mouse.move(box.x + box.width / 2, box.y + Math.min(box.height / 2, 40));
+    await q.page.mouse.wheel(goal - before.left, 0); await complete(q.page);
+  }
+  const after = await graph.evaluate(e => ({ left: e.scrollLeft, max: e.scrollWidth - e.clientWidth }));
+  assert(Math.abs(after.left - goal) <= 1); q.record.actions.push({ action: 'graph-scroll', target, before, after }); return after;
 }
 async function geometry(q) {
   return q.page.evaluate(() => [...document.querySelectorAll('.th-activity-gnode')].map(node => {
@@ -141,7 +177,7 @@ async function portClosed(port) {
   finally { socket.destroy(); }
 }
 async function session(browser, receipt, options, body) {
-  const fixture = startFixture({ port: 0, layout: options.layout ?? 'single', shelves: true });
+  const fixture = startFixture({ port: 0, layout: options.layout ?? 'single', shelves: true, longLabels: options.longLabels ?? false });
   const record = { id: receipt.fixtures.length, options, url: fixture.url, navigation: [], actions: [], assets: [], errors: [], cleanup: {}, traffic: fixture.traffic };
   receipt.fixtures.push(record);
   let context, page;
@@ -158,19 +194,27 @@ async function session(browser, receipt, options, body) {
         record.assets.push(item); assert.equal(item.sha256, item.diskHash, 'served asset identity');
       })());
     });
-    await installSignals(page, { theme: options.theme ?? 'dark', lang: options.lang ?? 'en', fontSize: options.fontSize ?? 13 });
     const seeds = seed(), history = options.history ?? seeds.history;
     await page.route('**/chats/*/activity', route => route.fulfill({ json: { history } }));
     // Browser-side readiness is installed before navigation. No wire request that
     // might have happened before a listener is used as an attachment proxy.
-    await page.addInitScript(() => {
-      window.activityReady = new Promise((done, fail) => {
-        const observer = new MutationObserver(check);
-        const timer = setTimeout(() => { observer.disconnect(); fail(new Error('Activity hydration deadline')); }, 8000);
-        function check() { if (document.querySelector('.th-activity-shelf') && document.querySelector('.th-goal-bar')) { clearTimeout(timer); observer.disconnect(); done(true); } }
-        observer.observe(document, { subtree: true, childList: true }); check();
+    await page.addInitScript(({ theme, lang, fontSize }) => {
+      localStorage.setItem('th-lang', lang); localStorage.setItem('th-theme', theme);
+      localStorage.setItem('th-ws-expanded', '["ws"]'); localStorage.setItem('th-font-size', String(fontSize));
+      window.activitySignals = { pending: 0, subscribed: 0, cleaned: 0 };
+      window.qaSignal = predicate => new Promise((done, fail) => {
+        const observer = new MutationObserver(check), resize = new ResizeObserver(check);
+        let active = true;
+        window.activitySignals.pending++; window.activitySignals.subscribed++;
+        const timer = setTimeout(() => { cleanup(); fail(new Error('Activity state deadline')); }, 8000);
+        function cleanup() { if (!active) return; active = false; clearTimeout(timer); observer.disconnect(); resize.disconnect(); window.activitySignals.pending--; window.activitySignals.cleaned++; }
+        function check() { if (!active) return; try { if (predicate()) { cleanup(); done(true); } } catch (error) { cleanup(); fail(error); } }
+        observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+        if (document.documentElement) resize.observe(document.documentElement);
+        check();
       });
-    });
+      window.activityReady = window.qaSignal(() => document.querySelector('.th-activity-shelf') && document.querySelector('.th-goal-bar'));
+    }, { theme: options.theme ?? 'dark', lang: options.lang ?? 'en', fontSize: options.fontSize ?? 13 });
     const q = { page, context, fixture, seeds, record, out: receipt.out, manifest: receipt.manifest, identityHash: receipt.identityHash };
     q.reload = async () => {
       record.navigation.push({ url: fixture.url, at: new Date().toISOString() }); console.log(`navigate ${fixture.url}`);
@@ -179,6 +223,15 @@ async function session(browser, receipt, options, body) {
         await arm(page, () => document.querySelector('.th-activity-shelf .th-activity-bar')?.textContent.includes('32'));
         fixture.deliver('stored-a', { type: 'tool', toolCallId: 'r2-todo', toolName: 'todo', phase: 'end', result: { details: { phases: seeds.todo } } });
         await complete(page);
+      }
+      if (options.paneWidth) {
+        const paneWidth = await page.locator('.th-chat-pane').evaluate(e => e.getBoundingClientRect().width);
+        const divider = page.locator('.th-divider'), box = await divider.boundingBox();
+        assert(box, 'desktop divider is present');
+        await arm(page, new Function(`return Math.abs(document.querySelector('.th-chat-pane').getBoundingClientRect().width - ${options.paneWidth}) <= 1`));
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down();
+        await page.mouse.move(box.x + box.width / 2 + options.paneWidth - paneWidth, box.y + box.height / 2); await page.mouse.up(); await complete(page);
+        record.actions.push({ action: 'actual-pane-resize', before: paneWidth, target: options.paneWidth, state: await state(page) });
       }
     };
     await q.reload();
@@ -189,7 +242,12 @@ async function session(browser, receipt, options, body) {
   finally {
     const errors = [];
     if (page && !page.isClosed()) {
-      try { await page.emulateMedia({ reducedMotion: 'no-preference', colorScheme: null }); record.cleanup.emulationRestored = true; } catch (e) { errors.push(e); }
+      try {
+        record.cleanup.signals = await page.evaluate(() => window.activitySignals);
+        assert.equal(record.cleanup.signals.pending, 0, 'all armed state subscriptions released');
+        assert.equal(record.cleanup.signals.subscribed, record.cleanup.signals.cleaned);
+        await page.emulateMedia({ reducedMotion: 'no-preference', colorScheme: null }); record.cleanup.emulationRestored = true;
+      } catch (e) { errors.push(e); }
     }
     if (context) {
       try { const closed = once(context, 'close'); await context.close(); await closed; record.cleanup.contextClosed = context.pages().length === 0; } catch (e) { errors.push(e); }
@@ -259,40 +317,46 @@ async function allocation(q, name) {
   assert(s.goalIntent && s.activityIntent); assert(s.tabs.every(t => t.rect.height > 0));
   assert(s.composer.bottom <= q.record.options.viewport.height + 1); assert(!s.overflow);
   // Both allocators reserve the transcript before distributing usable panels.
-  assert(s.transcript.height >= 119, `120px reserve: ${s.transcript.height}`);
+  if (s.usable >= 120) assert(s.transcript.height >= 119, `120px reserve: ${s.transcript.height}, usable=${s.usable}`);
+  else assert(s.transcript.height >= 0 && !s.activity && !s.goal, 'no usable panel when the reserve exhausts the budget');
   if (s.activity) assert(s.activity.height <= Number.parseFloat(s.panelMax) + 1);
   if (name.includes('340')) assert(Math.abs(s.pane.width - 340) <= 1, `actual pane width ${s.pane.width}`);
   return s;
 }
-async function motionArm(q, id, name, interrupt) {
-  await q.page.evaluate(({ id, name, interrupt }) => {
+async function motionArm(q, id, name, interrupt, hold = false) {
+  await q.page.evaluate(({ id, name, interrupt, hold }) => {
     window.motionEvents = [];
     window.motionSignal = new Promise((done, fail) => {
-      const timer = setTimeout(() => { cleanup(); fail(new Error(`Motion event deadline ${id}/${name}`)); }, 8000);
-      function cleanup() { clearTimeout(timer); document.removeEventListener('animationstart', listener, true); document.removeEventListener('animationcancel', listener, true); document.removeEventListener('animationend', listener, true); }
+      let target;
+      const timer = setTimeout(() => { cleanup(); fail(new Error(`Motion event deadline ${id}/${name}: ${JSON.stringify(window.motionEvents)}`)); }, 8000);
+      function cleanup() { clearTimeout(timer); document.removeEventListener('animationstart', listener, true); target?.removeEventListener('animationcancel', listener); }
       function listener(e) {
         if (e.target?.getAttribute?.('data-node') !== id || e.animationName !== name) return;
         window.motionEvents.push({ type: e.type, name, id, at: performance.now(), elapsed: e.elapsedTime });
         if (e.type === 'animationstart') {
-          if (interrupt) document.querySelector(interrupt).click();
+          target = e.target;
+          if (interrupt && !hold) { target.addEventListener('animationcancel', listener); document.querySelector(interrupt).click(); }
           else {
             window.motionAnimation = e.target.getAnimations().find(a => a.animationName === name);
             window.motionAnimation.pause(); cleanup(); done(window.motionEvents);
           }
         } else if (interrupt && e.type === 'animationcancel') { cleanup(); done(window.motionEvents); }
       }
-      document.addEventListener('animationstart', listener, true); document.addEventListener('animationcancel', listener, true); document.addEventListener('animationend', listener, true);
+      document.addEventListener('animationstart', listener, true);
     });
-  }, { id, name, interrupt });
+  }, { id, name, interrupt, hold });
 }
 function deliverDag(q, run) {
-  q.record.actions.push({ action: 'dag-frame', run });
+  q.revision = Math.max(Date.now(), (q.revision ?? Date.parse(q.seeds.run.updated_at)) + 1);
+  run.updated_at = new Date(q.revision).toISOString();
+  q.record.actions.push({ action: 'dag-frame', run: structuredClone(run) });
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa', truncated_runs: false, runs: [run] } });
 }
 async function motion(q, interruptions = false) {
   await select(q, 'dag'); await settled(q.page);
   const base = q.seeds.run, data = [];
   if (!interruptions) {
+    await capture(q, 'motion-running-before', true);
     // Sample actual consecutive compositor frames; time is the behavior under test.
     const running = await q.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
       const a = document.getAnimations().find(a => a.animationName === 'th-dag-run-spin');
@@ -300,7 +364,7 @@ async function motion(q, interruptions = false) {
       requestAnimationFrame(() => { const during = { time: a.currentTime, transform: getComputedStyle(a.effect.target).transform }; a.pause(); window.runningAnimation = a; resolve({ before, during }); });
     })));
     assert(running.during.time > running.before.time); assert.notEqual(running.during.transform, running.before.transform);
-    await capture(q, 'motion-running-during', true); await q.page.evaluate(() => window.runningAnimation.play()); data.push(running);
+    await capture(q, 'motion-running-during', true); await q.page.evaluate(() => window.runningAnimation.play()); await capture(q, 'motion-running-after', true); data.push(running);
     for (const [id, status] of [['c', 'completed'], ['e', 'failed'], ['new', 'running']]) {
       await capture(q, `motion-${id}-before`);
       const run = { ...base, updated_at: new Date().toISOString(), nodes: id === 'new' ? [...base.nodes, { id, label: 'New entry', prompt: 'New entry', depends_on: ['b'], state: status }] : base.nodes.map(n => n.id === id ? { ...n, state: status } : n) };
@@ -336,8 +400,18 @@ async function motion(q, interruptions = false) {
       deliverDag(q, running); await complete(q.page); await settled(q.page);
       const next = { ...running, nodes: terminal ? running.nodes.map(n => n.id === id ? { ...n, state: 'completed' } : n) : [...running.nodes, { id, label: 'Interrupted entry', prompt: 'Interrupted entry', depends_on: ['b'], state: 'running' }] };
       await capture(q, `interrupt-${switchName}-${terminal}-before`);
-      await motionArm(q, id, terminal ? 'th-dag-node-settle' : 'th-dag-node-enter', selector);
+      await motionArm(q, id, terminal ? 'th-dag-node-settle' : 'th-dag-node-enter', selector, true);
       deliverDag(q, next); const events = await q.page.evaluate(() => window.motionSignal);
+      await capture(q, `interrupt-${switchName}-${terminal}-during`, true);
+      const cancel = await q.page.evaluate(selector => new Promise((done, fail) => {
+        const a = window.motionAnimation, target = a.effect.target;
+        const timer = setTimeout(() => { target.removeEventListener('animationcancel', cancelled); fail(new Error('Interrupted animation cancel deadline')); }, 8000);
+        function cancelled(e) { if (e.animationName !== a.animationName) return; clearTimeout(timer); target.removeEventListener('animationcancel', cancelled); done({ type: e.type, name: e.animationName, at: performance.now(), elapsed: e.elapsedTime }); }
+        target.addEventListener('animationcancel', cancelled);
+        a.play(); requestAnimationFrame(() => document.querySelector(selector).click());
+      }), selector);
+      events.push(cancel);
+      q.record.actions.push({ action: 'interruption-events', switchName, terminal, events });
       const hidden = await capture(q, `interrupt-${switchName}-${terminal}-hidden`, true);
       assert.equal(hidden.animations.filter(a => /th-dag/.test(a.name)).length, 0);
       if (switchName === 'fold') await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
@@ -353,6 +427,26 @@ async function motion(q, interruptions = false) {
   assert(hidden.nodes.length > 0); assert.equal(hidden.animations.filter(a => /th-dag/.test(a.name)).length, 0);
   await capture(q, `motion-${interruptions ? 'interrupt' : 'normal'}-mounted-hidden`);
   return { data, hidden };
+}
+
+/** Derived navigation aids, never additional SPA evidence or a visual verdict. */
+async function contactSheets(browser, receipt) {
+  const context = await browser.newContext({ viewport: { width: 1140, height: 960 } });
+  receipt.contacts = { pages: [], contextClosed: false };
+  try {
+    const page = await context.newPage();
+    for (let offset = 0; offset < receipt.manifest.length; offset += 9) {
+      const items = receipt.manifest.slice(offset, offset + 9);
+      await page.setContent(`<html><head><style>body{margin:0;background:#eee;color:#111;font:14px monospace;display:grid;grid-template-columns:repeat(3,380px)}figure{margin:0;padding:8px;height:304px;box-sizing:border-box}img{display:block;max-width:364px;height:266px;object-fit:contain;margin:auto}figcaption{overflow-wrap:anywhere}</style></head><body>${items.map((item, i) => `<figure><img src="data:image/png;base64,${readFileSync(join(receipt.out, item.name)).toString('base64')}"><figcaption>${offset + i + 1}. ${item.name}</figcaption></figure>`).join('')}</body></html>`);
+      await page.evaluate(async () => { await Promise.all([...document.images].map(image => image.decode())); });
+      const name = `contact-${String(offset / 9 + 1).padStart(2, '0')}.png`;
+      await page.screenshot({ path: join(receipt.out, name) });
+      receipt.contacts.pages.push({ name, sha256: sha(readFileSync(join(receipt.out, name))), items: items.map((item, i) => ({ index: offset + i + 1, name: item.name, sha256: item.sha256 })) });
+    }
+  } finally {
+    const closed = once(context, 'close'); await context.close(); await closed;
+    receipt.contacts.contextClosed = context.pages().length === 0;
+  }
 }
 
 export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) {
@@ -393,10 +487,16 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       await scenario('initial-agents', { noTodo: true }, async q => { const s = await state(q.page); assert.equal(s.tabs.find(t => t.selected === 'true').id, 'agents'); await select(q, 'agents'); return capture(q, 'initial-agents'); });
       await scenario('history-freshness', { noTodo: true, history: { task: { ...s.history.task, truncated_tasks: true, tasks: s.tasks.map(t => ({ ...t, updated_at: new Date(Date.now() - 600000).toISOString() })) }, dag: { ...s.history.dag, truncated_runs: true, runs: [s.run, { ...s.run, run_id: 'historical', run_key: 'old', name: 'Completed history', status: 'completed' }] } } }, async q => {
         await select(q, 'dag'); assert.equal(await q.page.locator('.th-activity-dag').count(), 2); await capture(q, 'partial-multiple-dags');
-        await select(q, 'agents'); const before = await capture(q, 'freshness-before');
-        await arm(q.page, () => document.querySelectorAll('.th-activity-stale-note').length === 0);
-        q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.task.updated', data: { ...q.seeds.history.task, tasks: q.seeds.tasks } }); await complete(q.page);
-        return { before, after: await capture(q, 'freshness-after') };
+        await select(q, 'agents');
+        await arm(q.page, () => document.querySelectorAll('.th-activity-quiet-note').length > 0);
+        q.fixture.deliver('stored-a', { type: 'run.started' }); await complete(q.page);
+        const before = await capture(q, 'freshness-before');
+        await arm(q.page, () => [...document.querySelectorAll('.th-activity-agent-tool')].some(e => e.textContent === 'updated-tool'));
+        q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.task.updated', data: { ...q.seeds.history.task, tasks: q.seeds.tasks.map(t => t.task_id === 'direct' ? { ...t, updated_at: new Date().toISOString(), live_progress: { ...t.live_progress, current_tool: 'updated-tool' } } : t) } }); await complete(q.page);
+        const after = await capture(q, 'freshness-after'); assert.notDeepEqual(before.freshness, after.freshness);
+        await arm(q.page, () => document.querySelectorAll('.th-activity-quiet-note').length === 0);
+        q.fixture.deliver('stored-a', { type: 'run.done', reason: 'stop' }); await complete(q.page);
+        return { before, after, idle: await capture(q, 'freshness-idle') };
       });
       await scenario('scroll', { history: { ...s.history, task: { ...s.history.task, tasks: Array.from({ length: 35 }, (_, i) => ({ ...s.tasks[0], task_id: `task-${i}` })) }, dag: { ...s.history.dag, runs: Array.from({ length: 8 }, (_, i) => ({ ...s.run, run_id: `run-${i}`, run_key: `key-${i}` })) } } }, async q => {
         const data = [];
@@ -404,33 +504,82 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         return data;
       });
       await scenario('resize-reload', {}, resize);
+      await scenario('font-settings-live', {}, async q => {
+        await select(q, 'dag'); const before = await geometry(q);
+        const handle = await q.page.locator('[data-node="a"]').elementHandle();
+        await capture(q, 'font-live-13');
+        await click(q, '.th-settings-menu > button', () => !!document.querySelector('.th-settings-panel'));
+        for (let size = 14; size <= 24; size++) {
+          await arm(q.page, new Function(`return document.querySelector('.th-settings-size-value')?.textContent === '${size}px'`));
+          await q.page.locator('.th-settings-size-btn').last().click(); await complete(q.page);
+        }
+        await arm(q.page, () => !document.querySelector('.th-settings-panel'));
+        await q.page.keyboard.press('Escape'); await complete(q.page);
+        const after = await geometry(q); assertGeometry(after); assert(after[0].rect.width > before[0].rect.width);
+        assert(await handle.evaluate(e => e === document.querySelector('[data-node="a"]'))); await handle.dispose();
+        await capture(q, 'font-live-24'); return { before, after };
+      });
+      await scenario('goal-hover-summary-readonly', {}, async q => {
+        const paint = () => q.page.evaluate(() => { const style = s => { const e = document.querySelector(s), c = getComputedStyle(e); return { tag: e.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor }; }; return { goal: style('.th-goal-bar'), summary: style('.th-activity-shelf .th-activity-bar') }; });
+        await q.page.mouse.move(0, 0); const before = await paint();
+        await q.page.locator('.th-goal-bar').hover();
+        await q.page.evaluate(() => Promise.all(document.querySelector('.th-goal-bar').getAnimations().map(a => a.finished)));
+        const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
+        await capture(q, 'goal-hover-feedback');
+        await q.page.locator('.th-activity-shelf .th-activity-bar').hover();
+        const summaryHover = await paint(); assert.deepEqual(summaryHover.summary, before.summary); assert.equal(summaryHover.summary.tag, 'SPAN');
+        await capture(q, 'activity-summary-readonly'); return { before, hovered, summaryHover };
+      });
       await scenario('shared-hooks', {}, async q => ({ actions: await exerciseShelves(q, name => capture(q, `shared-${name}`)) }));
-      for (const [name, viewport, layout] of [['desktop', { width: 1280, height: 800 }, 'single'], ['mobile', { width: 390, height: 844 }, 'single'], ['340', { width: 685, height: 800 }, 'two'], ['short', { width: 1280, height: 420 }, 'single']]) await scenario(`allocation-${name}`, { viewport, layout }, q => allocation(q, `allocation-${name}`));
+      for (const [name, viewport, layout] of [['desktop', { width: 1280, height: 800 }, 'single'], ['mobile', { width: 390, height: 844 }, 'single'], ['340', { width: 1280, height: 800 }, 'two'], ['short', { width: 1280, height: 420 }, 'single']]) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
+        const label = `allocation-${name}-${lang}-${fontSize}`;
+        await scenario(label, { viewport, layout, lang, fontSize, ...(name === '340' ? { paneWidth: 340 } : {}) }, q => allocation(q, label));
+      }
+      let shared;
+      await shelfRegressionScenarios({
+        fixture: { wait: (...args) => shared.fixture.wait(...args) },
+        async scenario(name, body) {
+          const [, width, height] = /-(\d+)-(\d+)$/.exec(name);
+          await scenario(`caller-${name}`, { viewport: { width: Number(width), height: Number(height) }, longLabels: true }, async q => { shared = q; return body(); });
+        },
+        reset: async () => shared.page,
+        arm: predicate => arm(shared.page, predicate), done: () => complete(shared.page),
+        shot: name => capture(shared, `caller-${name.replace('.png', '')}`),
+      });
       for (const theme of ['dark', 'light']) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
         const name = `${theme}-${lang}-${fontSize}`;
         await scenario(`geometry-${name}`, { theme, lang, fontSize, viewport: { width: 390, height: 844 } }, async q => {
           await select(q, 'todo'); await capture(q, `${name}-todo`); await select(q, 'agents'); await capture(q, `${name}-agents`); await select(q, 'dag'); await capture(q, `${name}-graph`);
           const nodes = await geometry(q); q.record.geometry = nodes; assertGeometry(nodes);
           assert((await q.page.locator('.th-activity-gedge').evaluateAll(es => es.every(e => e.hasAttribute('marker-end')))));
-          const graph = q.page.locator('.th-activity-graph');
-          await graph.evaluate(e => { window.qaPending = new Promise((done, fail) => { const timer = setTimeout(() => { e.removeEventListener('scroll', changed); fail(new Error('Horizontal scroll deadline')); }, 8000); function changed() { clearTimeout(timer); e.removeEventListener('scroll', changed); done(e.scrollLeft); } e.addEventListener('scroll', changed); }); });
-          const box = await graph.boundingBox(); await q.page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await q.page.mouse.wheel(10000, 0); await complete(q.page);
-          const reach = await graph.evaluate(e => ({ left: e.scrollLeft, max: e.scrollWidth - e.clientWidth })); assert(Math.abs(reach.left - reach.max) <= 1);
+          for (const layer of [1, 2]) { await graphScroll(q, layer * (nodes[0].rect.width + 24)); await capture(q, `${name}-graph-layer-${layer}`); }
+          const reach = await graphScroll(q, 10000);
           await capture(q, `${name}-graph-right`); return { nodes, reach };
+        });
+      }
+      for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
+        await scenario(`empty-geometry-${lang}-${fontSize}`, { lang, fontSize, noTodo: true, viewport: { width: 390, height: 844 }, history: { task: { parent_session_id: 'qa', truncated_tasks: true, tasks: [] }, dag: null } }, async q => {
+          const data = [];
+          for (const id of ['todo', 'agents', 'dag']) { await select(q, id); data.push(await capture(q, `empty-${lang}-${fontSize}-${id}`)); }
+          return data;
         });
       }
       await scenario('motion', {}, q => motion(q));
       await scenario('interruption', {}, q => motion(q, true));
       await scenario('reduced', { reduced: true }, async q => { await select(q, 'dag'); const s = await capture(q, 'reduced-motion'); assert.equal(s.animations.length, 0); assert(s.nodes.every(n => n.opacity === '1')); return s; });
     }
+    await contactSheets(browser, receipt);
   } finally {
     const disconnected = once(browser, 'disconnected'); await browser.close(); await disconnected;
     receipt.cleanup = { browserClosed: !browser.isConnected(), contexts: browser.contexts().length };
     receipt.finishedAt = new Date().toISOString(); receipt.identityAfter = await identity();
     receipt.pendingWorkZero = receipt.fixtures.every(f => f.cleanup.contextClosed && f.cleanup.fixture?.serverStopped && ['pendingWebSockets', 'pendingOpens', 'pendingCreates'].every(k => f.cleanup.fixture[k] === 0) && f.cleanup.errors.length === 0);
-    receipt.verdict = receipt.scenarios.every(s => s.ok) && receipt.pendingWorkZero ? 'PASS' : 'FAIL';
+    receipt.sourceStable = JSON.stringify(receipt.identity) === JSON.stringify(receipt.identityAfter);
+    receipt.verdict = receipt.scenarios.every(s => s.ok) && receipt.pendingWorkZero && receipt.sourceStable && receipt.cleanup.browserClosed && receipt.cleanup.contexts === 0 && receipt.contacts?.contextClosed ? 'PASS' : 'FAIL';
     writeFileSync(join(out, 'receipt.json'), JSON.stringify(receipt, null, 2));
     writeFileSync(join(out, 'manifest.json'), JSON.stringify(receipt.manifest, null, 2));
+    writeFileSync(join(out, 'contacts.json'), JSON.stringify(receipt.contacts, null, 2));
+    writeFileSync(join(out, 'index.md'), '# Exact capture inventory\n\nContact sheets are derived navigation aids; inspect the named full-size PNG for detail.\n\n' + receipt.manifest.map((item, i) => `${i + 1}. [${item.name}](${item.name}) - fixture ${item.fixture}; ${item.motion ? 'motion frame' : 'settled frame'}; SHA256 ${item.sha256}`).join('\n'));
   }
   if (receipt.verdict !== 'PASS' && phase !== 'regression') throw new Error(`${phase} failed: ${receipt.scenarios.filter(s => !s.ok).map(s => s.name).join(', ')}`);
   return { verdict: receipt.verdict, scenarios: receipt.scenarios.length, failed: receipt.scenarios.filter(s => !s.ok).map(s => s.name), pngs: receipt.manifest.length, out };

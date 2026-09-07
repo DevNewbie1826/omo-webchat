@@ -7,7 +7,6 @@ import {
   lastActivityMs,
   statusKind,
   statusLabel,
-  taskStatusCounts,
   type StatusKind,
 } from "./activityShelfModel";
 import type { ActivityTask, TodoPhase, TodoTask } from "./activityTypes";
@@ -97,15 +96,10 @@ export function AgentSection({ tasks, nowMs, freshnessCtx, t }: {
   readonly freshnessCtx: AgentFreshnessContext;
   readonly t: Translate;
 }) {
-  const { running, done } = taskStatusCounts(tasks);
+  // The tab carries the section title and compact counts; the panel body
+  // stays pure rows.
   return (
     <section className="th-activity-section">
-      <div className="th-activity-section-head">
-        <span className="th-activity-section-title">{t("activity.agents")}</span>
-        <span className="th-activity-section-counts">
-          {t("activity.agentCounts", { running, done })}
-        </span>
-      </div>
       <ul className="th-activity-agents">
         {tasks.map((task) => (
           <AgentRow key={task.taskId} task={task} nowMs={nowMs} freshnessCtx={freshnessCtx} t={t} />
@@ -115,13 +109,13 @@ export function AgentSection({ tasks, nowMs, freshnessCtx, t }: {
   );
 }
 
-export function TodoSection({ phases, t }: {
+export function TodoSection({ phases }: {
   readonly phases: readonly TodoPhase[];
   readonly t: Translate;
 }) {
+  // The tab carries the section title; the panel body stays pure phases.
   return (
     <section className="th-activity-section">
-      <span className="th-activity-section-title">{t("activity.todo")}</span>
       <ul className="th-activity-phases">
         {phases.map((phase) => (
           <li key={phase.name} className="th-activity-phase">
