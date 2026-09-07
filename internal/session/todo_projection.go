@@ -168,48 +168,45 @@ func (f *todoFold) finish(leaf string) (TodoProjection, error) {
 }
 
 func parseTodoPhases(raw json.RawMessage, custom bool) ([]TodoPhase, error) {
-	var wire struct {
-		Schema json.RawMessage
-		Phases json.RawMessage
-	}
+	// Struct decoding matches JSON keys case-insensitively. Required fields
+	// use exact lookups so optional lookalikes cannot supply or override them.
+	var wire map[string]json.RawMessage
 	if json.Unmarshal(raw, &wire) != nil {
 		return nil, ErrInvalidTodoState
 	}
 	if custom {
 		var schema string
-		if json.Unmarshal(wire.Schema, &schema) != nil || schema != "v2" {
+		if json.Unmarshal(wire["schema"], &schema) != nil || schema != "v2" {
 			return nil, ErrInvalidTodoState
 		}
 	}
-	if len(wire.Phases) > maxActivitySnapshotBytes {
+	if len(wire["phases"]) > maxActivitySnapshotBytes {
 		return nil, ErrTodoProjectionOversized
 	}
-	var phases []struct {
-		Name  *string
-		Tasks []struct {
-			Content *string
-			Status  string
-		}
-	}
-	if json.Unmarshal(wire.Phases, &phases) != nil || phases == nil {
+	var phases []map[string]json.RawMessage
+	if json.Unmarshal(wire["phases"], &phases) != nil || phases == nil {
 		return nil, ErrInvalidTodoState
 	}
 	out := make([]TodoPhase, 0, len(phases))
 	for _, p := range phases {
-		if p.Name == nil || p.Tasks == nil {
+		var name *string
+		var tasks []map[string]json.RawMessage
+		if json.Unmarshal(p["name"], &name) != nil || name == nil || json.Unmarshal(p["tasks"], &tasks) != nil || tasks == nil {
 			return nil, ErrInvalidTodoState
 		}
-		phase := TodoPhase{Name: *p.Name, Tasks: make([]TodoTask, 0, len(p.Tasks))}
-		for _, task := range p.Tasks {
-			if task.Content == nil {
+		phase := TodoPhase{Name: *name, Tasks: make([]TodoTask, 0, len(tasks))}
+		for _, task := range tasks {
+			var content *string
+			var status string
+			if json.Unmarshal(task["content"], &content) != nil || content == nil || json.Unmarshal(task["status"], &status) != nil {
 				return nil, ErrInvalidTodoState
 			}
-			switch task.Status {
+			switch status {
 			case "pending", "in_progress", "completed", "abandoned":
 			default:
 				return nil, ErrInvalidTodoState
 			}
-			phase.Tasks = append(phase.Tasks, TodoTask{Content: *task.Content, Status: task.Status})
+			phase.Tasks = append(phase.Tasks, TodoTask{Content: *content, Status: status})
 		}
 		out = append(out, phase)
 	}
