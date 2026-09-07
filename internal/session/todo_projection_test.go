@@ -53,6 +53,8 @@ func TestTodoProjectionAuthority(t *testing.T) {
 		{name: "named-empty", body: todoCustom("a", "", `{"schema":"v2","phases":[{"name":"empty","tasks":[]}]}`), kind: "custom", entry: "a", phase: "empty"},
 		{name: "absent", body: queueEntry("root", "", "user", "hello"), kind: "absent", absent: true},
 		{name: "legacy-completion-array", body: todoLegacy("a", "", `{"phases":[{"name":"legacy","tasks":[]}],"completedTasks":[{"phase":"legacy","content":"done"}]}`), kind: "legacy-tool", entry: "a", phase: "legacy"},
+		{name: "legacy-tool-result", body: todoLegacy("a", "", todoData("legacy", "in_progress")), kind: "legacy-tool", entry: "a", phase: "legacy", status: "in_progress"},
+		{name: "legacy-bare-tool", body: fmt.Sprintf("{\"type\":\"tool\",\"id\":\"a\",\"parentId\":null,\"toolName\":\"todo\",\"result\":{\"details\":%s}}\n", b), kind: "legacy-tool", entry: "a", phase: "new", status: "completed"},
 		{name: "invalid-custom-blocks-legacy", body: todoCustom("a", "", `{"schema":"v2","phases":[{}]}`) + todoLegacy("b", "a", b), invalid: true},
 		{name: "unsupported-custom", body: todoCustom("a", "", `{"schema":"v3","phases":[]}`), invalid: true},
 		{name: "later-invalid-retains-valid", body: todoCustom("a", "", a) + todoCustom("bad", "a", `{"schema":"v2","phases":[{}]}`), kind: "custom", entry: "a", phase: "old", status: "pending", diagnostic: true},
@@ -96,7 +98,7 @@ func TestTodoProjectionAuthority(t *testing.T) {
 			if len(got.Phases) != 1 || got.Phases[0].Name != tc.phase {
 				t.Fatalf("phases=%+v", got.Phases)
 			}
-			if tc.status != "" && (len(got.Phases[0].Tasks) != 1 || got.Phases[0].Tasks[0].Status != tc.status) {
+			if tc.status != "" && (len(got.Phases[0].Tasks) != 1 || got.Phases[0].Tasks[0].Status != tc.status || got.Phases[0].Tasks[0].Content != "검증") {
 				t.Fatalf("tasks=%+v", got.Phases[0].Tasks)
 			}
 			if tc.diagnostic && len(got.Diagnostics) == 0 {
