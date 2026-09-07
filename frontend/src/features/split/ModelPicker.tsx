@@ -61,17 +61,24 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const [fitMaxHeight, setFitMaxHeight] = useState<number | null>(null);
   useLayoutEffect(() => {
     if (compact || !open || typeof ResizeObserver === "undefined") return;
-    const trigger = triggerRef.current;
-    const column = trigger?.closest<HTMLElement>(".th-chat-main");
-    if (!trigger || !column) return;
+    const picker = rootRef.current;
+    const column = picker?.closest<HTMLElement>(".th-chat-main");
+    if (!picker || !column) return;
     const measure = (): void => {
-      const above = trigger.getBoundingClientRect().top - column.getBoundingClientRect().top - 8;
+      // Measured on the picker box — the popup's actual offset parent and
+      // anchor (picker.top - 4) — with 4px clearance, so the bound ends
+      // exactly at the column top: the control shares the status row, making
+      // the space above it one band tighter than in the composer-band
+      // placement, and the tighter bound keeps a complete one-line row
+      // visible in short v3/v4 panes while the popup still opens strictly
+      // above the control. floor() only shrinks the result.
+      const above = picker.getBoundingClientRect().top - column.getBoundingClientRect().top - 4;
       setFitMaxHeight(Math.max(0, Math.floor(above)));
     };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(column);
-    observer.observe(trigger);
+    observer.observe(picker);
     return () => observer.disconnect();
   }, [compact, open]);
   const matches = useMemo(() => {

@@ -2,6 +2,8 @@ import { test, expect } from 'bun:test';
 import { designAssertions, preservedGeometry, assertAnchor } from './design-workbench-measure.mjs';
 
 function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop = 180 } = {}) {
+  const bandWidth = Math.min(760, columnWidth - 2 * gutter);
+  const left = (columnWidth - bandWidth) / 2, right = left + bandWidth;
   return {
     viewport: { width: viewportWidth, height: 900 }, documentWidth: viewportWidth,
     readingColumn: { paneWidth: columnWidth, width: columnWidth, maxWidth: 760, gutter },
@@ -12,13 +14,74 @@ function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop 
     ],
     tools: ['one', 'two', 'three'].map(id => ({ id, name: 'bash', status: 'Done', glyph: true,
       expanded: 'false', background: 'rgba(0, 0, 0, 0)', borders: [], head: { height: 44 } })),
-    edges: Object.fromEntries(['model', 'composer', 'status', 'live'].map(key => [key, { left: 24, right: columnWidth - 24 }])),
-    historyAxis: 24, liveAxis: 24, roles: [],
-    panes: [{ active: true, outline: '1px solid rgb(1, 1, 1)' }],
-    composer: { bottom: 900 }, trigger: { top: 800, bottom: 830 }, coarse: false,
+    edges: Object.fromEntries(['controls', 'composer', 'live'].map(key => [key, { left, right }])),
+    status: { left, right: right - 108, top: 800, bottom: 830 },
+    historyAxis: left, liveAxis: left, roles: [],
+    panes: [{ active: true, outline: viewportWidth <= 768 ? 'none' : '1px solid rgb(1, 1, 1)' }],
+    composer: { bottom: 900 }, trigger: { left: right - 100, right, top: 800, bottom: 830 }, coarse: false,
   };
 }
 const assertion = (value, id) => designAssertions(value).find(result => result.id === id);
+
+test('active outline is suppressed at the mobile viewport boundary and visible above it', () => {
+  expect(() => preservedGeometry(sample({ viewportWidth: 768 }))).not.toThrow();
+  expect(() => preservedGeometry(sample({ viewportWidth: 769 }))).not.toThrow();
+});
+
+test('wrong outline role fails at both sides of the viewport contract', () => {
+  const mobile = sample({ viewportWidth: 768 }); mobile.panes[0].outline = '1px solid black';
+  expect(() => preservedGeometry(mobile)).toThrow(/viewport contract/);
+  const desktop = sample({ viewportWidth: 769 }); desktop.panes[0].outline = 'none';
+  expect(() => preservedGeometry(desktop)).toThrow(/viewport contract/);
+});
+
+test('composer surface uses its dedicated semantic role', () => {
+  const value = sample();
+  value.roles = [{ selector: '.th-chat-input-inner', token: '--th-surface-composer',
+    expected: 'rgb(1, 2, 3)', actual: 'rgb(1, 2, 3)' }];
+  expect(assertion(value, 'semantic-surfaces').pass).toBe(true);
+  value.roles[0].actual = 'rgb(9, 9, 9)';
+  expect(assertion(value, 'semantic-surfaces').pass).toBe(false);
+});
+
+test('aligned full reading bands accept a narrower status beside the right-pinned trigger', () => {
+  const value = sample();
+  expect(value.status.right).toBeLessThan(value.trigger.left);
+  expect(value.trigger.right).toBe(value.edges.composer.right);
+  const result = assertion(value, 'local-gutters');
+  expect(result.pass).toBe(true);
+  expect(result.actual.leftDelta).toBe(0);
+  expect(result.actual.rightDelta).toBe(0);
+});
+
+test('trigger alignment allows at most two pixels independently of full-band alignment', () => {
+  for (const delta of [-2, 2, -2.01, 2.01]) {
+    const value = sample(); value.trigger.right += delta;
+    if (Math.abs(delta) <= 2) expect(assertion(value, 'local-gutters').pass).toBe(true);
+    else expect(() => designAssertions(value)).toThrow();
+  }
+  const value = sample(); delete value.trigger.right;
+  expect(() => designAssertions(value)).toThrow();
+});
+
+test('displaced full reading bands fail gutters even with an aligned trigger', () => {
+  for (const band of ['controls', 'composer', 'live']) for (const edge of ['left', 'right']) {
+    const value = sample(); value.edges[band][edge] += 3;
+    if (band === 'composer' && edge === 'right') value.trigger.right += 3;
+    const result = assertion(value, 'local-gutters');
+    expect(result.pass).toBe(false);
+    expect(result.actual[edge === 'left' ? 'leftDelta' : 'rightDelta']).toBe(3);
+  }
+});
+
+test('missing full reading bands or the separate status are unexpected failures', () => {
+  for (const band of ['controls', 'composer', 'live']) {
+    const value = sample(); delete value.edges[band];
+    expect(() => designAssertions(value)).toThrow();
+  }
+  const value = sample(); delete value.status;
+  expect(() => designAssertions(value)).toThrow();
+});
 
 test('turn rhythm accepts larger rendered gaps without larger user padding', () => {
   // Given equally padded adjacent rendered assistant/assistant/user content.

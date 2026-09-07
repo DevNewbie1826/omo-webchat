@@ -1,5 +1,4 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import { MOBILE_QUERY } from "../../components/Sidebar";
 import type { CommandEntry } from "../../lib/chatWs";
 import { useT } from "../../i18n";
@@ -19,7 +18,6 @@ import type { ChatSessionRef } from "../workspace/workspace";
 
 interface ChatComposerProps {
   readonly session?: Pick<ChatSessionRef, "wsId" | "id">;
-  readonly modelControl?: ReactNode;
   readonly commands: readonly CommandEntry[];
   readonly running: boolean;
   readonly isCompacting: boolean;
@@ -33,7 +31,7 @@ interface ChatComposerProps {
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ session, modelControl, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ session, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
   const { input, setInput, draftCommand, setDraftCommand, pendingImage, setPendingImage, restoreDraft } = useSessionDraft(session);
   const [paletteHidden, setPaletteHidden] = useState(false);
@@ -187,7 +185,6 @@ export function ChatComposer({ session, modelControl, commands, running, disable
         submit();
       }}
     >
-      {modelControl && <div className="th-composer-model">{modelControl}</div>}
       <ChatComposerAttachmentPreview
         pendingImage={pendingImage}
         removeLabel={t("chat.removeAttach")}

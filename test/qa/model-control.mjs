@@ -73,13 +73,14 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
   },
 });
 const fixturePort = server.port;
-let browser, captureEvidence;
+let browser, context, captureEvidence;
 const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + "\n");
 const modelSets = () => frames.filter(f => f.type === "chat.set" && f.model);
 const thinkingSets = () => frames.filter(f => f.type === "chat.set" && f.thinkingLevel);
 try {
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
   captureEvidence = await createModelEvidence(page, evidence);
   const { shot } = captureEvidence;
   page.on("pageerror", error => errors.push(String(error)));
@@ -131,7 +132,7 @@ try {
       document.querySelector(".th-model-picker-label")?.textContent === expected), seed.catalog?.length ? "Model A" : "provider-a/model-a");
   }
   const geometry = () => page.evaluate(() => {
-    const control = document.querySelector(".th-composer-model .th-model-picker-btn").getBoundingClientRect();
+    const control = document.querySelector(".th-chat-controls .th-model-picker-btn").getBoundingClientRect();
     const form = document.querySelector(".th-chat-input").getBoundingClientRect();
     const capsule = document.querySelector(".th-chat-input-inner").getBoundingClientRect();
     const textarea = document.querySelector(".th-chat-input textarea").getBoundingClientRect();
@@ -147,8 +148,8 @@ try {
     const width = narrow ? 390 : 1440, height = narrow ? 844 : 900;
     await reset(width, height);
     const before = modelSets().length, beforeThinking = thinkingSets().length;
-    const trigger = page.locator(".th-composer-model .th-model-picker-btn");
-    assert.equal(await trigger.count(), 1, "model trigger inside the composer band");
+    const trigger = page.locator(".th-chat-controls .th-model-picker-btn");
+    assert.equal(await trigger.count(), 1, "model trigger inside the merged status row");
     assert.equal(await page.locator(".th-termhead .th-model-picker").count(), 0, "no header model picker");
     assert((await trigger.textContent()).includes("Model A"), "exact current model identity on the trigger");
     assert.equal(await page.locator(".th-thinking-select").count(), 0, "no duplicate header select");
@@ -188,7 +189,7 @@ try {
     await page.keyboard.press("Enter");
     await page.evaluate(() => window.qaControlPending);
     await page.evaluate(() => window.qaSignal(() =>
-      document.querySelector(".th-composer-model .th-model-picker-btn")?.textContent.includes("Model B")));
+      document.querySelector(".th-chat-controls .th-model-picker-btn")?.textContent.includes("Model B")));
     assert.equal(await page.locator(".th-model-picker-popover").count(), 0, "popup closed after selection");
     assert.deepEqual(modelSets().slice(before).map(f => f.model),
       [{ provider: "provider-b", modelId: "model-b" }], "exactly one exact-identity model request");
@@ -321,10 +322,13 @@ try {
 } catch (error) {
   results.push({ pass: false, error: String(error), stack: error.stack }); process.exitCode = 1;
 } finally {
+  // The recorder subscribed before navigation; await the actual owner teardown
+  // before serializing evidence, rather than inferring it from browser shutdown.
+  if (context) await context.close();
   if (browser) await browser.close();
   for (const socket of sockets) socket.close(); await server.stop(true);
   await save("model.json", results); await save("traffic.json", { requests, frames }); await save("errors.json", errors);
-  await save("cleanup.json", { browserClosed: !!browser, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: fixturePort, fixtureInMemoryOnly: true });
+  await save("cleanup.json", { browserClosed: browser ? !browser.isConnected() : false, serverStopped: true, pendingWebSockets: server.pendingWebSockets, port: fixturePort, fixtureInMemoryOnly: true });
   if (captureEvidence) await captureEvidence.finish();
 }
 console.log(JSON.stringify(results, null, 2));

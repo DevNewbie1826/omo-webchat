@@ -428,18 +428,27 @@ Choose a tested foreground/background token pair instead.
 
 ## Model control placement
 
-- The model control lives in the composer band, directly above the composer
-  capsule and right-aligned within the reading column, on desktop and narrow
-  layouts alike. It keeps its position across pane resizes; it does not move
-  with header metadata and does not reflow as the transcript changes.
-- The model wrapper, composer capsule, status strip, and transcript rows all
-  resolve to one reading-column lane: containers outside the scrollport use
+- The model control shares one compact control row with the status strip,
+  directly above the composer capsule: statuses lead on the left and the
+  current model selector is pinned to the row's right edge, on desktop and
+  narrow layouts alike. The row keeps its position across pane resizes; the
+  selector does not move with header metadata and does not reflow as the
+  transcript changes.
+- The control row, composer capsule, and transcript rows all resolve to one
+  reading-column lane: containers outside the scrollport use
   `min(var(--th-chat-max), 100% - 2 * var(--th-chat-gutter))`, transcript rows
   add the scrollport's two reserved scrollbar gutters back to the same
-  formula, and every band centers in the same column. The outer edges of
-  model control, capsule, status, and live prose therefore agree within 1 CSS
-  px at every pane width -- the control ends at the capsule's edge, not at the
-  raw column edge -- with no document horizontal overflow.
+  formula, and every band centers in the same column. The selector's right
+  edge and the capsule's edge agree within 2 CSS px at every pane width, the
+  row is one line in the normal case, and there is no document horizontal
+  overflow. Only the inner primary status strip scrolls under width pressure;
+  Details remains a complete fixed peer inside the announced status region,
+  immediately before the right-pinned model, at rest and on keyboard focus.
+  The selector retains a meaningful bounded share independent of preview
+  minima, including at 340px panes and with long Korean labels. Request focus
+  reveals only its primary scroll owner, never hidden outer ancestors.
+  Opening Details may add a second metrics line without reallocating either
+  control; the normal row remains compact.
 - One bottom trigger shows the current model and reported reasoning level in
   both its visible and accessible state at every pane width. There is no header
   thinking select. Before catalog hydration, the exact reported model key is
@@ -480,6 +489,13 @@ Choose a tested foreground/background token pair instead.
   explicit original-draft recovery with a duplicate-submission warning; it
   never retries or fills the composer automatically. A completed send ACK
   retires that request, not an independently running assistant response.
+- Running, reconnecting, compacting, and uncertain-send states stay primary
+  strip content outside Details at any nesting depth. Reconnect and compaction
+  warnings precede variable previews. Request inspection, steer feedback and
+  recovery actions remain outside Details; only secondary metrics (context
+  usage, cache hit) live in its native keyboard-accessible disclosure within
+  the announced status region. Details retains its full 44px coarse-pointer
+  target.
 - Failed originals follow their logical workspace/chat while panes move or
   remount. Recovery restores text, image, and command identity without sending.
 
@@ -617,12 +633,23 @@ At 390x844 and comparable narrow sizes:
 
 - the conversation and composer remain at least 320px wide;
 - the workspace path may hide; the current model name and thinking level stay
-  visible in the compact model control, which keeps its composer-band
-  placement above the capsule (see Model control placement);
-- the narrow model picker opens a viewport-contained sheet without focusing
-  search or summoning its keyboard. Current model/provider identity stays pinned
-  above the scrolling options. Selection uses exact provider/model identity,
-  independent of navigation focus, and the current row is visible on opening;
+  visible in the compact model control, which shares the status row above the
+  capsule with the selector pinned to its right edge (see Model control
+  placement);
+- the narrow model picker opens a viewport-contained sheet that keeps every
+  edge, including its pinned 44px close header, inside the usable
+  visual-viewport bounds: it compensates keyboard pan and keeps clear of
+  display cutouts via the per-side safe-area insets, without focusing search
+  or summoning its keyboard. When the bound is over-constrained the fixed
+  chrome scrolls beneath the pinned identity header and the list keeps a
+  bounded minimum scrollport, so no content paints outside the sheet. Current
+  model/provider identity stays pinned above the scrolling options. When the
+  sheet itself is very narrow (including an 85px panned sheet), its local width
+  query puts the unchanged 44px close on its own row and gives identity the
+  full inset content width with single-line ellipsis, never character fragments.
+  Safe insets, type sizes and viewport handling are unchanged. Selection
+  uses exact provider/model identity, independent of navigation focus, and
+  the current row is visible on opening;
 - header controls remain reachable with 44px touch targets;
 - the composer's plus action and send/stop circle grow to 44px hit areas, and
   the input keeps a 44px minimum height;
@@ -669,8 +696,9 @@ widths confirms:
 9. an empty pane opens stored and discovered sessions through the one open
    flow with loading/error/retry, and a delayed open never overwrites a newer
    selection or a closed pane;
-10. the model control sits above the composer, right aligned, with the desktop
-    popup opening upward and the narrow sheet contained;
+10. the model control shares the status row above the composer with the
+    selector pinned right, the desktop popup opens upward, and the narrow
+    sheet stays inside usable visual-viewport bounds on all four sides;
 11. during divider drag or focus every visible pane shows its whole-work-area
     percentage overlay, Escape restores the originating control, and bounds
     never overflow;

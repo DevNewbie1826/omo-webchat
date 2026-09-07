@@ -209,60 +209,6 @@ export function ChatPane({
           onMove={chat.queueMove}
           onClear={chat.queueClear}
         />
-        <div className="th-chat-status" role="status" aria-live="polite">
-          {chat.sendRequests.filter(request => !request.queueOwned && request.phase !== "failed").map(request => (
-            <span key={request.requestId} className="th-chat-status-item th-chat-send-status"
-              data-request-id={request.requestId} data-send-phase={request.phase}
-              title={request.draft.text || request.draft.image?.name}>
-              {request.phase !== "unknown" && <span className="th-chat-status-spinner" aria-hidden="true" />}
-              <span className="th-chat-status-label">{t(`chat.send.${request.phase}`)}:</span>
-              <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
-                aria-haspopup="dialog"
-                onClick={event => setInspectedOriginal({ text: request.draft.text || request.draft.image?.name || "", trigger: event.currentTarget })}>
-                {request.draft.text || request.draft.image?.name}
-              </button>
-              {request.phase === "unknown" && <>
-                <button type="button" className="th-btn th-btn--ghost th-send-restore"
-                  title={t("chat.send.unknownWarning")} onClick={() => chat.recoverFailedDraft(request.requestId)}>{t("chat.send.restore")}</button>
-                <button type="button" className="th-btn th-btn--ghost th-send-dismiss"
-                  onClick={() => chat.dismissSendRequest(request.requestId)}>{t("common.close")}</button>
-              </>}
-            </span>
-          ))}
-          {chat.serverRunning && (
-            <span className="th-chat-status-item th-chat-status-item--live">
-              <span className="th-chat-status-spinner" aria-hidden="true" />
-              {t("chat.responding")}
-            </span>
-          )}
-          {chat.steerPending.map((item) => (
-            <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
-              <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
-              <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
-                aria-haspopup="dialog" onClick={event => setInspectedOriginal({ text: item.text, trigger: event.currentTarget })}>
-                {item.text}
-              </button>
-            </span>
-          ))}
-          {chat.contextUsage && (
-            <span className="th-chat-status-item">
-              {t("chat.contextUsage")}
-              <span className="th-chat-status-num">{Math.round(chat.contextUsage.percent)}%</span>
-            </span>
-          )}
-          {chat.cacheHitRate !== null && (
-            <span className="th-chat-status-item">
-              {t("chat.cacheHit")}
-              <span className="th-chat-status-num">{Math.round(chat.cacheHitRate * 100)}%</span>
-            </span>
-          )}
-          {chat.isCompacting && (
-            <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.compacting")}</span>
-          )}
-          {!chat.connected && (
-            <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.reconnecting")}</span>
-          )}
-        </div>
         {chat.failedDrafts.length > 0 && (
           <div className="th-failed-drafts" role="group" aria-label={t("chat.failedSends")}>
             {chat.failedDrafts.map((draft) => (
@@ -285,9 +231,90 @@ export function ChatPane({
           </div>
         )}
         </div>
+        {/* Merged compact control row (DESIGN.md "Model control placement"): a
+           fixed band between the content shell and the composer, so the
+           desktop popup keeps the column-wide clip topology it had in the
+           composer band and short panes retain a complete readable row. */}
+        <div className="th-chat-controls">
+          <div className="th-chat-status" role="status" aria-live="polite">
+            <div className="th-chat-status-primary" onFocus={event => {
+              // Only the primary strip owns request-focus scrolling. Broad
+              // scrollIntoView can move hidden pane/composer ancestors too.
+              const owner = event.currentTarget;
+              const left = owner.getBoundingClientRect().left + owner.clientLeft;
+              const rect = event.target.getBoundingClientRect();
+              if (rect.left < left) owner.scrollLeft += rect.left - left;
+              else if (rect.right > left + owner.clientWidth) {
+                owner.scrollLeft += Math.min(rect.left - left, rect.right - left - owner.clientWidth);
+              }
+            }}>
+            {!chat.connected && (
+              <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.reconnecting")}</span>
+            )}
+            {chat.isCompacting && (
+              <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.compacting")}</span>
+            )}
+            {chat.sendRequests.filter(request => !request.queueOwned && request.phase !== "failed").map(request => (
+              <span key={request.requestId} className="th-chat-status-item th-chat-send-status"
+                data-request-id={request.requestId} data-send-phase={request.phase}
+                title={request.draft.text || request.draft.image?.name}>
+                {request.phase !== "unknown" && <span className="th-chat-status-spinner" aria-hidden="true" />}
+                <span className="th-chat-status-label">{t(`chat.send.${request.phase}`)}:</span>
+                <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
+                  aria-haspopup="dialog"
+                  onClick={event => setInspectedOriginal({ text: request.draft.text || request.draft.image?.name || "", trigger: event.currentTarget })}>
+                  {request.draft.text || request.draft.image?.name}
+                </button>
+                {request.phase === "unknown" && <>
+                  <button type="button" className="th-btn th-btn--ghost th-send-restore"
+                    title={t("chat.send.unknownWarning")} onClick={() => chat.recoverFailedDraft(request.requestId)}>{t("chat.send.restore")}</button>
+                  <button type="button" className="th-btn th-btn--ghost th-send-dismiss"
+                    onClick={() => chat.dismissSendRequest(request.requestId)}>{t("common.close")}</button>
+                </>}
+              </span>
+            ))}
+            {chat.serverRunning && (
+              <span className="th-chat-status-item th-chat-status-item--live">
+                <span className="th-chat-status-spinner" aria-hidden="true" />
+                {t("chat.responding")}
+              </span>
+            )}
+            {chat.steerPending.map((item) => (
+              <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
+                <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
+                <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
+                  aria-haspopup="dialog" onClick={event => setInspectedOriginal({ text: item.text, trigger: event.currentTarget })}>
+                  {item.text}
+                </button>
+              </span>
+            ))}
+            </div>
+
+          {/* Secondary metrics live in a keyboard-accessible disclosure so
+              urgent states keep the compact strip (DESIGN.md "Conversation
+              anatomy"). They remain part of the announced status region. */}
+          <details className="th-chat-status-details">
+            <summary>{t("chat.statusDetails")}</summary>
+            <div className="th-chat-status-metrics">
+            {chat.contextUsage && (
+              <span className="th-chat-status-item">
+                {t("chat.contextUsage")}
+                <span className="th-chat-status-num">{Math.round(chat.contextUsage.percent)}%</span>
+              </span>
+            )}
+            {chat.cacheHitRate !== null && (
+              <span className="th-chat-status-item">
+                {t("chat.cacheHit")}
+                <span className="th-chat-status-num">{Math.round(chat.cacheHitRate * 100)}%</span>
+              </span>
+            )}
+            </div>
+          </details>
+          </div>
+          {modelPicker}
+        </div>
         <ChatComposer
           session={chatSession}
-          modelControl={modelPicker}
           commands={chat.commands}
           running={chat.running}
           isCompacting={chat.isCompacting}
