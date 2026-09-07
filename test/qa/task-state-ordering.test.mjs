@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { activityPath, chat, createTaskRequestGate, pollPath, startTaskFixture } from './task-state-fixture.mjs';
-import { armDOM, assertTaskDOM, doneDOM, overviewFrame, parseArgs, readTaskDOM, taskRow, transcript } from './task-state-ordering.mjs';
+import { armDOM, assertTaskDOM, doneDOM, overviewFrame, parseArgs, readTaskDOM, taskRow, taskSnapshot, transcript } from './task-state-ordering.mjs';
 import { confirmPortReleased, installDOMSignals } from './dag-state-ordering.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
 import { parseChatServerFrame } from '../../frontend/src/lib/chatWsParse.ts';
@@ -26,6 +26,22 @@ test('CLI rejects malformed flags without launching a browser; fixtures retain r
   assert.equal(parseChatServerFrame({ ...frame, sessionId: null }), null, 'null routing identity is invalid at actual boundary');
   assert.equal(transcript().length, 160);
   assert.equal(transcript().at(-1).parentId, 'ordering-entry-158');
+});
+
+test('REST and overview markers own their tasks without aliasing the target; explicit durable aliases remain valid', () => {
+  const rows = [{ task_id: 'marker-1', status: 'running' }];
+  assert.equal(taskSnapshot(rows).parent_session_id, chat);
+  assert.equal(taskSnapshot(rows, 'newer').parent_session_id, 'newer');
+  for (const identity of [{ sessionId: 'newer', durableSessionId: 'newer' }, { sessionId: 'newer' },
+    { sessionId: chat, durableSessionId: 'qa-durable', replacesSessionId: 'qa-durable' }]) {
+    const frame = overviewFrame(rows, identity), parsed = parseChatServerFrame(frame);
+    assert.equal(parsed?.type, 'sessions.activity');
+    assert.equal(parsed.sessionId, identity.sessionId);
+    assert.equal(parsed.durableSessionId, identity.durableSessionId ?? identity.sessionId);
+    assert.equal(parsed.snapshots[0].data.parent_session_id, parsed.durableSessionId);
+    assert.deepEqual(parsed.snapshots[0].data.tasks, rows);
+    if (identity.replacesSessionId) assert.equal(parsed.replacesSessionId, identity.replacesSessionId);
+  }
 });
 
 function route(path, options = {}) {

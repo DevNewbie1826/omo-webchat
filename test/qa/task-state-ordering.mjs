@@ -24,10 +24,11 @@ export function taskRow(status, minute, extra = {}) {
   return { task_id: 'child-1', name: '검증 작업 - 完了した結果と新しい再試行を区別する long subagent identity',
     status, created_at: stamp(0), updated_at: stamp(minute), ...extra };
 }
-export function taskSnapshot(rows) { return { parent_session_id: chat, truncated_tasks: false, tasks: rows }; }
+export function taskSnapshot(rows, owner = chat) { return { parent_session_id: owner, truncated_tasks: false, tasks: rows }; }
 export function overviewFrame(rows, extra = {}) {
-  return { type: 'sessions.activity', sessionId: chat, durableSessionId: chat,
-    snapshots: [{ name: 'omo.task.updated', data: taskSnapshot(rows), oversized: false }], overflow: false, ...extra };
+  const { sessionId = chat, durableSessionId = sessionId } = extra;
+  return { type: 'sessions.activity', sessionId, durableSessionId,
+    snapshots: [{ name: 'omo.task.updated', data: taskSnapshot(rows, durableSessionId), oversized: false }], overflow: false, ...extra };
 }
 const taskFrame = rows => ({ type: 'extensionEvent', name: 'omo.task.updated', data: taskSnapshot(rows) });
 function dagFrame(status, minute) {
@@ -113,7 +114,7 @@ export async function run({ evidenceDir, browser: suppliedBrowser, chromium, hea
           markerCount++;
           return { id: 'newer', title: 'Newer', task: taskSnapshot(Array.from({ length: markerCount }, (_, i) => ({
             task_id: `marker-${prefix}-${i}`, name: `marker-${prefix}-${i}`, status: 'running',
-          }))), dag: null };
+          })), 'newer'), dag: null };
         };
         async function armSidebarMarker() {
           return armDOM(page, count => [...document.querySelectorAll('.th-tree-node')].some(node =>
