@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertProjection, bounded, completion, custom, legacy, parseArgs, phase, startOwnedFixture } from './todo-state-ordering.mjs';
+import { applicationBarrier, assertProjection, bounded, completion, custom, legacy, parseArgs, phase, startOwnedFixture } from './todo-state-ordering.mjs';
+import { observeSockets } from './heartbeat-liveness.mjs';
 
 const binding = 'bound-1';
 const ready = (phases, source = {}) => ({ type: 'chat.todo', sessionId: 'todo-qa-chat', durableSessionId: 'todo-qa-durable', bindingId: binding,
@@ -64,4 +66,41 @@ test('fixture launch rejects invalid readiness and still collects process exit l
     await assert.rejects(startOwnedFixture(executable, dir), /Invalid fixture readiness JSON|fixture start and cleanup failed/);
     assert.equal(await readFile(join(dir, 'fixture-stdout.log'), 'utf8'), 'not-json\n');
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('application barrier ignores retained DOM, old markers and other sockets until a later same-socket marker renders', async () => {
+  const page = new EventEmitter(), observed = observeSockets(page);
+  const sockets = [new EventEmitter(), new EventEmitter()];
+  for (const socket of sockets) { socket.url = () => 'ws://fixture/chat'; page.emit('websocket', socket); }
+  const emit = (socket, frame) => sockets[socket - 1].emit('framereceived', { payload: JSON.stringify(frame) });
+  const marker = 'qa-render-barrier', frame = { type: 'tool', sessionId: 'todo-qa-chat', toolCallId: marker, phase: 'end' };
+  emit(1, frame); // A pre-existing marker cannot certify a later unavailable frame.
+  const after = observed.record({ socketId: 1, direction: 'received', frame: { ...ready(phase('retained')), status: 'unavailable' } });
+  let armCalled = false, wireDelivered = false, settled = false;
+  const dom = Promise.withResolvers(), checkingDOM = Promise.withResolvers(), published = Promise.withResolvers();
+  const pending = applicationBarrier(observed, { after, marker }, {
+    arm: async () => { armCalled = true; return { signal: dom.promise }; },
+    publish: async () => {
+      assert.ok(armCalled, 'DOM subscription precedes provider action');
+      emit(2, frame); // Matching text on a different socket is not a barrier.
+      emit(1, { ...frame, toolCallId: 'unrelated' });
+      published.resolve();
+    },
+    done: async token => {
+      assert.ok(wireDelivered, 'unchanged DOM cannot be checked before the exact wire marker');
+      checkingDOM.resolve(); await token.signal;
+    },
+  });
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    await Promise.race([published.promise, pending]);
+    assert.equal(settled, false, 'wrong-socket and old markers leave the barrier pending');
+    wireDelivered = true; emit(1, frame);
+    await Promise.race([checkingDOM.promise, pending]);
+    assert.equal(settled, false, 'wire receipt alone is not application/render completion');
+    dom.resolve(true);
+    const receipt = await pending;
+    assert.equal(receipt.socketId, after.socketId); assert.ok(receipt.sequence > after.sequence);
+    assert.equal(receipt.frame.toolCallId, marker);
+  } finally { dom.resolve(true); observed.stop(); }
 });
