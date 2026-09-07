@@ -94,7 +94,7 @@ describe("ChatComposer capsule geometry contracts", () => {
 		const capsule = css.match(/(?:^|\})\s*\.th-chat-input-inner\s*\{([^}]*)\}/)?.[1] ?? "";
 		expect(capsule).toMatch(/border:\s*1px solid var\(--th-border\)/);
 		expect(capsule).toMatch(/border-radius:\s*26px/);
-		expect(capsule).toMatch(/background:\s*var\(--th-surface\)/);
+		expect(capsule).toMatch(/background:\s*var\(--th-surface-composer\)/);
 	});
 
 	it("keeps send/stop one fixed circular slot driven by send tokens", () => {

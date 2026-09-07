@@ -234,8 +234,13 @@ describe("token contrast contracts (WCAG 2.1)", () => {
 
   const TEXT_TIERS = ["--th-text", "--th-text-dim", "--th-muted", "--th-faint"] as const;
   // DESIGN.md "Theme contract": every text tier is tested on every elevation
-  // fill and every state fill it can land on, in both theme scopes.
-  const ELEVATION_FILLS = ["--th-bg", "--th-surface", "--th-surface-raised", "--th-surface-overlay"] as const;
+  // fill and every state fill it can land on, in both theme scopes. The
+  // composer capsule and the user bubble are elevation fills in their own
+  // right (placeholder, queued text, and steer rows land on them).
+  const ELEVATION_FILLS = [
+    "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
+    "--th-surface-user", "--th-surface-overlay",
+  ] as const;
   const STATE_FILLS = ["--th-hover", "--th-active"] as const;
   const TEXT_BACKGROUNDS = [...ELEVATION_FILLS, ...STATE_FILLS] as const;
   const STATUS_TOKENS = ["--th-error", "--th-success", "--th-warning"] as const;
@@ -572,5 +577,99 @@ describe("token contrast contracts (WCAG 2.1)", () => {
       }
     }
     expect(stale).toEqual([]);
+  });
+
+  // DESIGN.md "Colour reference": the authenticated installed-Codex capture
+  // (authenticated-pixel-measurements.json). Fills pin exact captured values;
+  // derived roles pin ordering contracts instead of invented hexes.
+  const REFERENCE_SURFACES = {
+    "#ffffff / #181818 canvas": { token: "--th-bg", light: "#ffffff", dark: "#181818" },
+    "#ffffff / #282828 elevated chrome": { token: "--th-surface", light: "#ffffff", dark: "#282828" },
+    "#ffffff / #2a2a2a composer approximation": { token: "--th-surface-composer", light: "#ffffff", dark: "#2a2a2a" },
+    "#ffffff / #2d2d2d menu surface": { token: "--th-surface-raised", light: "#ffffff", dark: "#2d2d2d" },
+    "#f2f3f3 / #3d3d3d highlighted row": { token: "--th-hover", light: "#f2f3f3", dark: "#3d3d3d" },
+    "#1a1c1f / #dfdfdf foreground": { token: "--th-text", light: "#1a1c1f", dark: "#dfdfdf" },
+  } as const;
+
+  const hexChannels = (hex: string): number[] =>
+    (hex.match(/\w\w/g) ?? []).map((channel) => parseInt(channel, 16));
+
+  it("pins every measured reference surface in both theme scopes", () => {
+    const failures: string[] = [];
+    for (const [label, reference] of Object.entries(REFERENCE_SURFACES)) {
+      for (const [selector, expected] of [
+        [":root", reference.dark],
+        ['[data-theme="light"]', reference.light],
+      ] as const) {
+        const scope = must(scopes.find((candidate) => candidate.selector === selector));
+        const got = scopeColor(scope, reference.token);
+        const want = hexChannels(expected);
+        const drifted = [got.r, got.g, got.b].some((channel, i) => Math.abs(channel - must(want[i])) > 0.5) || got.a !== 1;
+        if (drifted) {
+          failures.push(`[${selector}] ${reference.token} (${label}): ` +
+            `rgb(${got.r}, ${got.g}, ${got.b}) != reference ${expected}`);
+        }
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps border tiers at the measured foreground/white alpha mixes", () => {
+    const failures: string[] = [];
+    const expected = [
+      [":root", "--th-border-surface", 0.084, [255, 255, 255]],
+      [":root", "--th-border-strong", 0.156, [255, 255, 255]],
+      ['[data-theme="light"]', "--th-border-surface", 0.078, [26, 28, 31]],
+      ['[data-theme="light"]', "--th-border-strong", 0.117, [26, 28, 31]],
+    ] as const;
+    for (const [selector, token, alpha, tint] of expected) {
+      const scope = must(scopes.find((candidate) => candidate.selector === selector));
+      const got = scopeColor(scope, token);
+      if (Math.abs(got.a - alpha) > 0.006 || [got.r, got.g, got.b].some((channel, i) => Math.abs(channel - must(tint[i])) > 0.5)) {
+        failures.push(`[${selector}] ${token}: rgba(${got.r}, ${got.g}, ${got.b}, ${got.a}) != ` +
+          `the measured ${alpha} alpha over rgb(${tint.join(", ")})`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  it("keeps derived roles ordered inside the measured hierarchy", () => {
+    const failures: string[] = [];
+    const luminance = (scope: ThemeScope, token: string): number => {
+      const channel = (value: number): number => {
+        const scaled = value / 255;
+        return scaled <= 0.03928 ? scaled / 12.92 : Math.pow((scaled + 0.055) / 1.055, 2.4);
+      };
+      const color = scopeColor(scope, token);
+      return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
+    };
+    const dark = must(scopes.find((scope) => scope.selector === ":root"));
+    // Dark lifts by white-alpha steps: chrome < composer < menu < user < hover < active.
+    for (const [below, above] of [
+      ["--th-surface", "--th-surface-composer"],
+      ["--th-surface-composer", "--th-surface-raised"],
+      ["--th-surface-raised", "--th-surface-user"],
+      ["--th-surface-user", "--th-hover"],
+      ["--th-hover", "--th-active"],
+    ] as const) {
+      if (luminance(dark, above) <= luminance(dark, below)) {
+        failures.push(`[dark] ${above} must sit one visible step above ${below}`);
+      }
+    }
+    const light = must(scopes.find((scope) => scope.selector === '[data-theme="light"]'));
+    // Light state treatments darken the measured white surfaces; the composer,
+    // menus, and the user bubble share the measured canvas white.
+    for (const token of ["--th-surface", "--th-surface-composer", "--th-surface-raised", "--th-surface-user", "--th-surface-overlay"]) {
+      if (luminance(light, token) !== 1) {
+        failures.push(`[light] ${token} must stay at the measured white`);
+      }
+    }
+    if (luminance(light, "--th-hover") >= luminance(light, "--th-bg")) {
+      failures.push("[light] --th-hover must darken the measured white canvas");
+    }
+    if (luminance(light, "--th-active") >= luminance(light, "--th-hover")) {
+      failures.push("[light] --th-active must step one tier beyond --th-hover");
+    }
+    expect(failures).toEqual([]);
   });
 });
