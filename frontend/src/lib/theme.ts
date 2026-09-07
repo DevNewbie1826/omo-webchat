@@ -75,8 +75,8 @@ export function resolveTheme(id: ThemeId): ResolvedTheme {
  * pre-paint inline script in index.html carries the same values.
  */
 export const THEME_CHROME_COLORS: Readonly<Record<ResolvedTheme, string>> = {
-  dark: "#0a0a0a",
-  light: "#eeedeb",
+  dark: "#181818",
+  light: "#ffffff",
 };
 
 export const APPLE_STATUS_BAR_STYLES: Readonly<Record<ResolvedTheme, string>> = {

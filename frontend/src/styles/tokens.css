@@ -12,61 +12,82 @@
  * token names (enforced by contrast.test.ts) and set their own color-scheme
  * so native controls, scrollbars, and the caret follow the active theme.
  *
- * Elevation follows DESIGN.md's ladder. Dark lifts surfaces by white
- * luminance steps with whisper borders and no shadows (dark-on-dark drop
- * shadows do not read as depth) and separates Overlay with a Canvas-derived
- * scrim. Light keeps every grey in one warm-neutral temperature family,
- * steps fills upward in luminance, and carries elevation primarily through
- * low-chroma downward shadows resolved from --th-shadow-color.
+ * Elevation follows DESIGN.md's ladder, calibrated against the authenticated
+ * installed-Codex capture (DESIGN.md "Colour reference"): both themes keep
+ * every opaque fill in one narrow band and separate levels with
+ * foreground-alpha hairline borders plus the measured composer shadow. Dark
+ * lifts surfaces by measured white fills (`#282828` chrome, `#2a2a2a`
+ * composer, `#2d2d2d` menus); light holds the measured white surfaces and
+ * separates through borders and shadows. Text tiers deviate upward from the
+ * native 65%/50% foreground alpha mixes because the 4.5:1 matrix on the
+ * brighter elevated fills is a standing contract; DESIGN.md documents the
+ * adaptation.
  */
 
 :root {
-  /* Canvas - opaque lowest-luminance neutral. */
-  --th-bg: #0a0a0a;
-  /* Surface - a 2% white luminance lift over Canvas. */
-  --th-surface: #0f0f0f;
-  /* Raised - a 4% white luminance lift over Canvas. */
-  --th-surface-raised: #141414;
-  /* User - the authorship surface for the user chat bubble: one step above
-     Raised so the bubble reads at a glance without accent decoration. */
-  --th-surface-user: #1c1c1c;
-  /* Overlay - a 5% white luminance lift over Canvas. */
-  --th-surface-overlay: #161616;
-  --th-hover: #1f1f1f;
-  --th-active: #262626;
+  /* Canvas - the measured reference canvas. */
+  --th-bg: #181818;
+  /* Elevated chrome - the measured sidebar fill: sidebar, top bar, and the
+     expanded tool shell. */
+  --th-surface: #282828;
+  /* Composer - the measured composer material as an opaque approximation
+     (the native fill is translucent over an unknown underlay). */
+  --th-surface-composer: #2a2a2a;
+  /* Menus - the measured chooser fill. */
+  --th-surface-raised: #2d2d2d;
+  /* User - the authorship bubble: one visible step above the menu fill,
+     inside the measured white-alpha idiom (role not captured directly). */
+  --th-surface-user: #343434;
+  /* Overlay - the highest captured surface; the scrim and strong border do
+     the separating work. */
+  --th-surface-overlay: #2d2d2d;
+  /* State treatments are the measured highlighted row (#3d3d3d) plus one
+     alpha tier for press/selection. */
+  --th-hover: #3d3d3d;
+  --th-active: #454545;
 
-  /* Per-level whisper borders; components consume the token matching their fill. */
-  --th-border-surface: rgba(255, 255, 255, 0.06);
-  --th-border-raised: rgba(255, 255, 255, 0.08);
-  --th-border-user: rgba(255, 255, 255, 0.12);
-  --th-border-overlay: rgba(255, 255, 255, 0.10);
+  /* Per-level borders at the measured alpha tiers: default 8.4%, strong
+     15.6% (the measured strong border). */
+  --th-border-surface: rgba(255, 255, 255, 0.084);
+  --th-border-raised: rgba(255, 255, 255, 0.084);
+  --th-border-user: rgba(255, 255, 255, 0.156);
+  --th-border-overlay: rgba(255, 255, 255, 0.156);
   --th-border: var(--th-border-surface);
   --th-border-strong: var(--th-border-overlay);
 
-  --th-text: #ededed;
-  --th-text-dim: #b3b3b3;
-  --th-muted: #999999;
+  /* The measured foreground, then the text ladder. The native 65%/50%
+     foreground mixes fail the 4.5:1 matrix on the brighter elevated fills,
+     so the tiers are brightened above native transparency (documented in
+     DESIGN.md); ordering stays text > dim > muted > faint. */
+  --th-text: #dfdfdf;
+  --th-text-dim: #c9c9c9;
+  --th-muted: #bcbcbc;
   /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
      staying below --th-muted in the hierarchy. */
-  --th-faint: #8d8d8d;
-  --th-disabled-fg: #8d8d8d;
-  --th-disabled-bg: #0f0f0f;
+  --th-faint: #b3b3b3;
+  --th-disabled-fg: #b3b3b3;
+  --th-disabled-bg: #282828;
 
   --th-accent: #ffffff;
   --th-accent-fg: #0a0a0a;
   --th-accent-hover: #e2e2e2;
 
-  /* Composer send action: the approved reference's blue, expressed only as
-     tokens so component CSS never hardcodes it. */
-  --th-send: #3b82f6;
-  --th-send-hover: #2563eb;
-  --th-send-fg: #ffffff;
+  /* Composer send action: the measured primary-action fill (#dfdfdf) with
+     the glyph inverted to this theme's measured canvas (#181818); hover is
+     uncaptured in the reference, so it steps 10% toward the canvas. Tokens
+     only: component CSS never hardcodes the fill. */
+  --th-send: #dfdfdf;
+  --th-send-hover: #cbcbcb;
+  --th-send-fg: #181818;
 
-  --th-error: #ea565b;
+  /* Status hues as text must clear 4.5:1 on the measured elevated fills,
+     which are far brighter than the previous dark ladder; the hues are
+     brightened accordingly and their tints re-derived (DESIGN.md). */
+  --th-error: #f98085;
   --th-error-fg: #0a0a0a;
-  --th-error-bg: rgba(229, 72, 77, 0.12);
-  --th-success: #30a46c;
-  --th-success-bg: rgba(48, 164, 108, 0.12);
+  --th-error-bg: rgba(249, 128, 133, 0.12);
+  --th-success: #3fc084;
+  --th-success-bg: rgba(63, 192, 132, 0.12);
   --th-warning: #f5a623;
   --th-warning-bg: rgba(245, 166, 35, 0.12);
 
@@ -75,10 +96,12 @@
   /* Decorative only; carries no elevation job. */
   --th-glow: rgba(255, 255, 255, 0.06);
 
-  /* Dark elevation is luminance steps and borders, so the level shadows are
-     none; the shadow tint exists for parity with the light scope. */
+  /* The measured shadow tint is black in both captured themes, and the
+     captured runtime carries the composer shadow in dark too - the earlier
+     "dark shadows are none" rule contradicted the measurement. */
   --th-shadow-color: #000000;
-  --th-shadow-surface: none;
+  --th-shadow-surface: 0 3px 7.5px color-mix(in srgb, var(--th-shadow-color) 4%, transparent),
+    0 0 20px color-mix(in srgb, var(--th-shadow-color) 5%, transparent);
   --th-shadow-raised: none;
   --th-shadow-overlay: none;
   /* Migration aliases: the size-named shadows resolve to their level's role. */
@@ -86,7 +109,7 @@
   --th-shadow: var(--th-shadow-raised);
   --th-shadow-lg: var(--th-shadow-overlay);
   /* Canvas-derived 60% scrim separating Overlay from every pane. */
-  --th-backdrop: rgba(10, 10, 10, 0.60);
+  --th-backdrop: rgba(24, 24, 24, 0.60);
 
   --th-radius-sm: 6px;
   --th-radius: 8px;
@@ -164,38 +187,43 @@
 }
 
 [data-theme="light"] {
-  /* One temperature family: every neutral below is a warm grey (R>=G>=B),
-     and elevation is a luminance ladder from Canvas up to Overlay. */
-  /* Canvas - low-chroma light neutral, deliberately not pure white. */
-  --th-bg: #eeedeb;
-  /* Surface - one luminance step above Canvas. */
-  --th-surface: #f7f6f4;
-  /* Raised / Overlay - the theme's highest opaque neutral surface. */
-  --th-surface-raised: #fdfcfa;
-  --th-surface-overlay: #fdfcfa;
-  /* User - the authorship surface for the user chat bubble: pure white so
-     the bubble reads at a glance against the warm canvas. */
+  /* Both themes hold the measured white surfaces; separation comes from
+     foreground-alpha borders and the measured black shadow, not from grey
+     luminance steps. */
+  /* Canvas / elevated chrome / composer / menus - all measured #ffffff. */
+  --th-bg: #ffffff;
+  --th-surface: #ffffff;
+  --th-surface-composer: #ffffff;
+  --th-surface-raised: #ffffff;
+  /* User - white like every measured light surface; the strong border plus
+     the Raised shadow separate it exactly as the measured composer is
+     separated on white. */
   --th-surface-user: #ffffff;
-  /* State treatments darken on a light canvas. */
-  --th-hover: #e5e4e2;
-  --th-active: #d9d8d5;
+  --th-surface-overlay: #ffffff;
+  /* State treatments darken: the measured highlighted row, then one alpha
+     tier further. */
+  --th-hover: #f2f3f3;
+  --th-active: #ededed;
 
-  /* Borders resolved from the shadow tint at each elevation level. */
-  --th-border-surface: rgba(38, 34, 31, 0.10);
-  --th-border-raised: rgba(38, 34, 31, 0.12);
-  --th-border-user: rgba(38, 34, 31, 0.14);
-  --th-border-overlay: rgba(38, 34, 31, 0.14);
+  /* Per-level borders at the measured alpha tiers: default 7.8%, strong
+     11.7%, over the measured foreground tint. */
+  --th-border-surface: rgba(26, 28, 31, 0.078);
+  --th-border-raised: rgba(26, 28, 31, 0.078);
+  --th-border-user: rgba(26, 28, 31, 0.117);
+  --th-border-overlay: rgba(26, 28, 31, 0.117);
   --th-border: var(--th-border-surface);
   --th-border-strong: var(--th-border-overlay);
 
-  --th-text: #1b1a19;
-  --th-text-dim: #454341;
-  --th-muted: #57544f;
+  /* The measured foreground, then the text ladder, darkened past the native
+     65%/50% mixes to hold the 4.5:1 matrix on every fill (DESIGN.md). */
+  --th-text: #1a1c1f;
+  --th-text-dim: #5d5f62;
+  --th-muted: #66676b;
   /* Dimmest text tier; >=4.5:1 on every elevation and state fill while
      staying below --th-muted in the hierarchy. */
-  --th-faint: #5e5c58;
-  --th-disabled-fg: #5e5c58;
-  --th-disabled-bg: #f7f6f4;
+  --th-faint: #6a6a6a;
+  --th-disabled-fg: #6a6a6a;
+  --th-disabled-bg: #f2f3f3;
 
   /* The dark theme's white primary action inverts: near-black fill, white
      label; as link or emphasis text it keeps >=4.5:1 on every fill. */
@@ -203,9 +231,11 @@
   --th-accent-fg: #ffffff;
   --th-accent-hover: #35322f;
 
-  /* The reference blue is theme-independent. */
-  --th-send: #3b82f6;
-  --th-send-hover: #2563eb;
+  /* The measured primary-action fill (#1a1c1f) with the glyph inverted to
+     this theme's measured canvas (#ffffff); hover is uncaptured in the
+     reference, so it steps 10% toward the canvas. */
+  --th-send: #1a1c1f;
+  --th-send-hover: #313335;
   --th-send-fg: #ffffff;
 
   /* Status hues deepened for light fills; semantic identity unchanged. */
@@ -218,22 +248,26 @@
   --th-warning-bg: rgba(138, 82, 0, 0.12);
 
   /* Focus treatment: a visible 3px halo (~3.1:1 over Surface). */
-  --th-ring: rgba(38, 34, 31, 0.50);
+  --th-ring: rgba(0, 0, 0, 0.50);
   /* Decorative only; carries no elevation job. */
-  --th-glow: rgba(38, 34, 31, 0.05);
+  --th-glow: rgba(0, 0, 0, 0.05);
 
-  /* Light elevation is carried by low-chroma downward shadows resolved from
-     the theme's shadow tint, at the ladder's per-level geometry and alpha. */
-  --th-shadow-color: #26221f;
-  --th-shadow-surface: 0 1px 2px color-mix(in srgb, var(--th-shadow-color) 8%, transparent);
-  --th-shadow-raised: 0 6px 18px -6px color-mix(in srgb, var(--th-shadow-color) 12%, transparent);
-  --th-shadow-overlay: 0 18px 48px -12px color-mix(in srgb, var(--th-shadow-color) 18%, transparent);
+  /* Light elevation uses the measured black low-alpha shadow idiom: the
+     composer geometry at the Surface level. The measured menu carries no
+     shadow, so Raised is none in both themes and borders do the separating;
+     Overlay keeps a conservative extension of the idiom for blocking
+     dialogs. */
+  --th-shadow-color: #000000;
+  --th-shadow-surface: 0 3px 7.5px color-mix(in srgb, var(--th-shadow-color) 4%, transparent),
+    0 0 20px color-mix(in srgb, var(--th-shadow-color) 5%, transparent);
+  --th-shadow-raised: none;
+  --th-shadow-overlay: 0 18px 48px -12px color-mix(in srgb, var(--th-shadow-color) 16%, transparent);
   /* Migration aliases: the size-named shadows resolve to their level's role. */
   --th-shadow-sm: var(--th-shadow-surface);
   --th-shadow: var(--th-shadow-raised);
   --th-shadow-lg: var(--th-shadow-overlay);
-  /* 28% shadow-tint scrim; never assumes the Canvas is black. */
-  --th-backdrop: rgba(38, 34, 31, 0.28);
+  /* Shadow-tint scrim; never assumes the Canvas is black. */
+  --th-backdrop: rgba(0, 0, 0, 0.28);
 
   color-scheme: light;
 }
