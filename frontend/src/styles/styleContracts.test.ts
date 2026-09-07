@@ -362,17 +362,25 @@ describe("visual accessibility contracts", () => {
     expect(wide).toMatch(/\.th-chat-pane \.th-files-toggle,[\s\S]*?\{[^}]*width:\s*44px[^}]*min-width:\s*44px[^}]*height:\s*44px/);
   });
 
-  it("anchors the model control above the composer with an upward bounded desktop popup", () => {
-    // DESIGN.md "Model control placement": the control lives in the composer
-    // band, directly above the capsule and right-aligned within the reading
-    // column, at every pane width.
-    const slot = ruleBody(chatPane, ".th-composer-model");
-    expect(declarationValue(slot, "justify-content")).toBe("flex-end");
-    expect(slot).toMatch(/margin-inline:\s*auto/);
-    const slotPicker = ruleBody(chatPane, ".th-composer-model .th-model-picker");
+  it("anchors the model control in the shared status row with an upward bounded desktop popup", () => {
+    // DESIGN.md "Model control placement": the control shares one compact row
+    // with the status strip — statuses lead on the left and the model is
+    // pinned to the row's right edge within the reading column, at every pane
+    // width.
+    const row = ruleBody(chatPane, ".th-chat-controls");
+    expect(declarationValue(row, "display")).toBe("flex");
+    expect(declarationValue(row, "align-items")).toBe("center");
+    expect(row).toMatch(/margin-inline:\s*auto/);
+    const rowStatus = ruleBody(chatPane, ".th-chat-controls .th-chat-status");
+    expect(declarationValue(rowStatus, "flex")).toMatch(/^1 1 /);
+    expect(declarationValue(rowStatus, "min-width")).toBe("0");
+    const slotPicker = ruleBody(chatPane, ".th-chat-controls .th-model-picker");
     expect(declarationValue(slotPicker, "flex")).toMatch(/^0 1 /);
     expect(declarationValue(slotPicker, "min-width")).toBe("0");
-    expect(declarationValue(slotPicker, "max-width")).toBe("100%");
+    expect(declarationValue(slotPicker, "max-width")).toBe("60%");
+    // Secondary metrics keep a disclosure whose marker is suppressed; the
+    // summary is the disclosure's only control.
+    expect(chatPane).toMatch(/\.th-chat-status-details summary\s*\{[^}]*list-style:\s*none/);
 
     // The header no longer sizes the picker; nothing may remove it from the
     // composer band on either side of the 600px container breakpoint.
@@ -411,12 +419,30 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list > button"), "flex")).toBe("none");
     const shortRow = ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-list > button");
     expect(declarationValue(shortRow, "flex-direction")).toBe("row");
-    expect(declarationValue(shortRow, "padding")).toBe("var(--th-space-1) var(--th-space-2)");
+    expect(declarationValue(shortRow, "padding")).toBe("var(--th-space-0-5) var(--th-space-2)");
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-search"), "padding-block"))
-      .toBe("var(--th-space-1)");
+      .toBe("var(--th-space-0-5)");
     const sheet = ruleBody(chatPane, ".th-model-picker-popover--sheet");
     expect(declarationValue(sheet, "position")).toBe("fixed");
     expect(sheet).toMatch(/(?:^|;)\s*top\s*:/);
+    // The sheet keeps every edge inside usable visual-viewport bounds: vv pan
+    // compensation plus the per-side safe-area insets (env()), so the pinned
+    // 44px close header stays reachable with nonzero insets.
+    expect(sheet).toMatch(
+      /top:\s*calc\(var\(--th-vv-top,\s*0px\)\s*\+\s*var\(--th-space-2\)\s*\+\s*env\(safe-area-inset-top,\s*0px\)\)/,
+    );
+    expect(sheet).toMatch(
+      /left:\s*calc\(var\(--th-vv-left,\s*0px\)\s*\+\s*var\(--th-space-2\)\s*\+\s*env\(safe-area-inset-left,\s*0px\)\)/,
+    );
+    expect(sheet).toMatch(
+      /width:\s*calc\(100%\s*-\s*2\s*\*\s*var\(--th-space-2\)\s*-\s*env\(safe-area-inset-left,\s*0px\)\s*-\s*env\(safe-area-inset-right,\s*0px\)\)/,
+    );
+    expect(sheet).toMatch(
+      /max-height:\s*calc\(var\(--th-vh-unit,\s*1dvh\)\s*\*\s*100\s*-\s*var\(--th-space-4\)\s*-\s*env\(safe-area-inset-top,\s*0px\)\s*-\s*env\(safe-area-inset-bottom,\s*0px\)\)/,
+    );
+    const sheetClose = ruleBody(chatPane, ".th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon");
+    expect(declarationValue(sheetClose, "width")).toBe("var(--th-space-11)");
+    expect(declarationValue(sheetClose, "height")).toBe("var(--th-space-11)");
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {
@@ -638,8 +664,7 @@ describe("chat reading rhythm and tool width contracts", () => {
     // absolute lane is identical.
     const lane =
       /min\(var\(--th-chat-max\),\s*calc\(100% - var\(--th-chat-gutter\) - var\(--th-chat-gutter\)\)\)/;
-    expect(ruleBody(chatPane, ".th-composer-model")).toMatch(lane);
-    expect(ruleBody(chatPane, ".th-chat-status")).toMatch(lane);
+    expect(ruleBody(chatPane, ".th-chat-controls")).toMatch(lane);
     const row = chatTranscript.match(/\.th-chat-row,\s*\n\.th-chat-live\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(row).toMatch(
       /min\(\s*var\(--th-chat-max\),\s*calc\(100% \+ var\(--th-chat-scrollbar\) \+ var\(--th-chat-scrollbar\) - var\(--th-chat-gutter\) - var\(--th-chat-gutter\)\)\s*\)/,

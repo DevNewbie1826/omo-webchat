@@ -125,14 +125,11 @@
 }
 
 .th-chat-status {
-  flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-3);
-  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
   min-width: 0;
   min-height: 24px;
-  margin: 0 auto;
   padding: 0 var(--th-space-0-5);
   overflow-x: auto;
   color: var(--th-text-dim);
@@ -194,6 +191,12 @@
   .th-chat-send-preview {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  .th-chat-status-details summary {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
   }
 }
 
@@ -561,11 +564,14 @@
   padding: var(--th-space-0-5);
 }
 
+  /* 0.5-step block padding: in the shortest panes the one-line row must stay
+     complete inside the measured popup bound (DESIGN.md "Model control
+     placement"). */
 .th-model-picker-popover--short .th-model-picker-list > button {
   flex-direction: row;
   align-items: center;
   gap: var(--th-space-1);
-  padding: var(--th-space-1) var(--th-space-2);
+  padding: var(--th-space-0-5) var(--th-space-2);
 }
 
 .th-model-picker-popover--short .th-model-picker-list strong {
@@ -577,8 +583,16 @@
   flex: none;
 }
 
+  /* The search must stay a complete control inside the measured short-pane
+     popup bound (DESIGN.md "Model control placement"). */
 .th-model-picker-popover--short .th-model-picker-search {
-  padding-block: var(--th-space-1);
+  padding-block: var(--th-space-0-5);
+}
+
+/* Short-pane reasoning chips stay one complete pointer control inside the
+   measured popup bound (DESIGN.md "Model control placement"). */
+.th-model-picker-popover--short .th-thinking-level {
+  padding-block: var(--th-space-0);
 }
 
 .th-files-toggle {
@@ -808,12 +822,11 @@
     display: none;
   }
 
+  /* The compact trigger hugs the merged row's right edge with a 44px touch
+     target; bounded truncation keeps statuses on the same row. */
   .th-chat-pane .th-model-picker-btn {
-    width: 100%;
-    max-width: 100%;
     min-width: 0;
     min-height: var(--th-space-11);
-    justify-content: center;
   }
 
   .th-chat-pane .th-chat-resync-btn {
@@ -854,20 +867,57 @@
 }
 
 
-.th-composer-model {
-  /* One reading-column lane with the capsule, status strip, and transcript
-     rows (DESIGN.md "Model control placement"): the control's outer edges
-     meet the capsule's instead of overhanging into the local gutters. */
-  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
-  margin-inline: auto;
+/* Merged compact control row (DESIGN.md "Model control placement"): the
+   status strip leads on the left and the current model selector is pinned to
+   the row's right edge — the same reading-column lane as the capsule, so the
+   trigger's right edge meets the input's edge at every pane width. */
+.th-chat-controls {
   display: flex;
-  justify-content: flex-end;
+  flex: none;
+  align-items: center;
+  gap: var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  min-width: 0;
+  margin-inline: auto;
 }
 
-.th-composer-model .th-model-picker {
+.th-chat-controls .th-chat-status {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.th-chat-controls .th-model-picker {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 100%;
+  max-width: 60%;
+}
+
+/* Secondary context/cache metrics collapse into a keyboard-accessible
+   disclosure so urgent states keep the compact strip; the summary inherits
+   the strip's Micro tier. */
+.th-chat-status-details {
+  flex: none;
+  min-width: 0;
+}
+
+.th-chat-status-details summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--th-space-0-5);
+  border-radius: var(--th-radius-sm);
+  list-style: none;
+  cursor: pointer;
+}
+
+.th-chat-status-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.th-chat-status-details summary:hover,
+.th-chat-status-details[open] summary {
+  background: var(--th-hover);
+  color: var(--th-text);
 }
 
 .th-model-picker-thinking {
@@ -910,11 +960,17 @@
 .th-model-picker-popover--sheet {
   position: fixed;
   right: auto;
-  left: calc(var(--th-vv-left, 0px) + var(--th-space-2));
+  /* Usable visual-viewport bounds on all four sides (DESIGN.md "Responsive
+     behavior"): the fixed sheet compensates the visual-viewport pan like
+     #root and keeps every edge clear of the display cutouts via the
+     per-side safe-area insets, so the pinned 44px close header stays
+     reachable with nonzero insets in portrait, landscape, and while the
+     keyboard resizes or pans the visual viewport. */
+  left: calc(var(--th-vv-left, 0px) + var(--th-space-2) + env(safe-area-inset-left, 0px));
   bottom: auto;
-  top: calc(var(--th-vv-top, 0px) + var(--th-space-2));
-  width: calc(100% - var(--th-space-4));
-  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4));
+  top: calc(var(--th-vv-top, 0px) + var(--th-space-2) + env(safe-area-inset-top, 0px));
+  width: calc(100% - 2 * var(--th-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   z-index: 60;
   background: var(--th-surface-overlay);
   border-color: var(--th-border-overlay);

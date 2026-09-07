@@ -57,14 +57,16 @@ describe("bounded desktop ModelPicker", () => {
 
   // R1 actual-App rectangles: every first pane's clipping column starts at 44.
   it.each([
-    ["normal53-model", 817.203125, 765],
-    ["v3-900", 214.484375, 162], ["v3-700", 147.6875, 95],
-    ["v4-900", 139.203125, 87], ["v4-700", 89.203125, 37],
-    ["mixed-900", 214.484375, 162], ["mixed-700", 147.6875, 95],
+    ["normal53-model", 817.203125, 769],
+    ["v3-900", 214.484375, 166], ["v3-700", 147.6875, 99],
+    ["v4-900", 139.203125, 91], ["v4-700", 89.203125, 41],
+    ["mixed-900", 214.484375, 166], ["mixed-700", 147.6875, 99],
   ])("tightens both caps to the actual R1 %s column space", (_name, top, available) => {
     const trigger = render(true);
+    const picker = required(container.querySelector<HTMLElement>(".th-model-picker"));
     vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 856));
-    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(0, top, 71, 19));
+    // The popup anchors to the picker box (its offset parent), not the button.
+    vi.spyOn(picker, "getBoundingClientRect").mockReturnValue(new DOMRect(0, top, 71, 19));
     act(() => trigger.click());
     const popup = required(container.querySelector<HTMLElement>(".th-model-picker-popover"));
     expect(popup.style.maxHeight).toBe(`min(280px, 50dvh, ${available}px)`);
@@ -74,13 +76,14 @@ describe("bounded desktop ModelPicker", () => {
 
   it("recomputes the bound without a floor when the trigger loses space", () => {
     const trigger = render();
+    const picker = required(container.querySelector<HTMLElement>(".th-model-picker"));
     vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 44, 1176, 856));
-    const rect = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 817, 71, 19));
+    const rect = vi.spyOn(picker, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 817, 71, 19));
     act(() => trigger.click());
     rect.mockReturnValue(new DOMRect(0, 89, 71, 19));
     act(() => resize());
     expect(required(container.querySelector<HTMLElement>(".th-model-picker-popover")).style.maxHeight)
-      .toBe("min(280px, 50dvh, 37px)");
+      .toBe("min(280px, 50dvh, 41px)");
     rect.mockReturnValue(new DOMRect(0, 48, 71, 19));
     act(() => resize());
     expect(required(container.querySelector<HTMLElement>(".th-model-picker-popover")).style.maxHeight)
