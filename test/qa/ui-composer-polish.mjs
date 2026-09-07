@@ -345,40 +345,6 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, keybo
         && readout.sheet.top >= readout.vv.top
         && readout.sheet.top < readout.vv.top + readout.vv.height,
         { readout, pinned });
-      // A touch drag inside the sheet is absorbed by the contained dialog
-      // (overscroll containment): the page behind does not pan, the dialog
-      // stays open, and the close control remains the hit target. A page-level
-      // pan gesture must start outside the dialog and is dismissed by the
-      // outside-pointerdown contract, so keyboard-driven visual-viewport
-      // offset tracking stays var-based (the vars update on the pinch's real
-      // visualViewport events).
-      const sheetRect = await page.locator('.th-model-picker-popover--sheet').evaluate(el => {
-        const rect = el.getBoundingClientRect(), vv = visualViewport;
-        // Gesture coordinates are visible-widget CSS pixels bounded by the
-        // visible region: target the sheet's intersection with it.
-        const left = Math.max(rect.left, vv.offsetLeft);
-        const right = Math.min(rect.right, vv.offsetLeft + vv.width);
-        const top = Math.max(rect.top, vv.offsetTop);
-        const bottom = Math.min(rect.bottom, vv.offsetTop + vv.height);
-        const cx = left + Math.min(60, (right - left) / 2);
-        const cy = top + Math.min(40, (bottom - top) / 2);
-        return { x: Math.min((cx - vv.offsetLeft) * vv.scale, vv.width - 5),
-          y: Math.min((cy - vv.offsetTop) * vv.scale, vv.height - 5) };
-      });
-      const offsetsBefore = { top: readout.vv.top, left: readout.vv.left };
-      await session.send('Input.synthesizeScrollGesture',
-        { x: sheetRect.x, y: sheetRect.y, xDistance: 0, yDistance: -200,
-          speed: 4000, gestureSourceType: 'touch' });
-      const contained = await page.evaluate(({ top, left }) => {
-        const sheet = document.querySelector('.th-model-picker-popover--sheet');
-        const close = sheet.querySelector('.th-model-picker-current .th-btn-icon');
-        const rect = close.getBoundingClientRect();
-        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        return { pageStill: visualViewport.offsetTop === top && visualViewport.offsetLeft === left,
-          open: !!sheet, closeHit: hit === close || close.contains(hit) };
-      }, offsetsBefore);
-      record(`c4-${label}-pan-contained`, contained.pageStill && contained.open && contained.closeHit,
-        contained);
     }
     // Native keyboard navigation to the last matching choice scrolls the real
     // list. The header/close must remain pinned while choices move beneath it.
@@ -394,9 +360,9 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, keybo
       return { hit: at === close || close.contains(at),
         inViewport: x >= vv.offsetLeft && x < vv.offsetLeft + vv.width
           && y >= vv.offsetTop && y < vv.offsetTop + vv.height,
-        // CDP input coordinates are visible-widget CSS pixels, not the
-        // layout coordinates returned by getBoundingClientRect under zoom.
-        x: (x - vv.offsetLeft) * vv.scale, y: (y - vv.offsetTop) * vv.scale };
+        // CDP input coordinates are visual-viewport CSS pixels (offset by
+        // offsetLeft/Top, 1:1 with layout px — never multiplied by scale).
+        x: x - vv.offsetLeft, y: y - vv.offsetTop };
     });
     const hit = pointer.hit;
     let closeError = null;

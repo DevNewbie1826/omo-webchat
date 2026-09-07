@@ -434,8 +434,12 @@ describe("visual accessibility contracts", () => {
     expect(sheet).toMatch(
       /left:\s*calc\(var\(--th-vv-left,\s*0px\)\s*\+\s*var\(--th-space-2\)\s*\+\s*env\(safe-area-inset-left,\s*0px\)\)/,
     );
+    // Width follows the VISIBLE viewport width (--th-vv-width, published by
+    // the parse-time script with a 100% no-JS fallback), so native pan and
+    // zoom cannot leave the sheet beyond the usable right edge; both safe
+    // sides and the gutters are subtracted.
     expect(sheet).toMatch(
-      /width:\s*calc\(100%\s*-\s*2\s*\*\s*var\(--th-space-2\)\s*-\s*env\(safe-area-inset-left,\s*0px\)\s*-\s*env\(safe-area-inset-right,\s*0px\)\)/,
+      /width:\s*calc\(var\(--th-vv-width,\s*100%\)\s*-\s*2\s*\*\s*var\(--th-space-2\)\s*-\s*env\(safe-area-inset-left,\s*0px\)\s*-\s*env\(safe-area-inset-right,\s*0px\)\)/,
     );
     expect(sheet).toMatch(
       /max-height:\s*calc\(var\(--th-vh-unit,\s*1dvh\)\s*\*\s*100\s*-\s*var\(--th-space-4\)\s*-\s*env\(safe-area-inset-top,\s*0px\)\s*-\s*env\(safe-area-inset-bottom,\s*0px\)\)/,
