@@ -93,7 +93,8 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelectorAll(".th-activity-agent")).toHaveLength(2);
     expect(harness.container.textContent).toContain("Inspecting");
-    expect(harness.container.querySelectorAll(".th-activity-dnode")).toHaveLength(2);
+    // P6: the DAG renders as a graph by default.
+    expect(harness.container.querySelectorAll(".th-activity-gnode")).toHaveLength(2);
     expect(harness.container.textContent).toContain("Phase C verification");
     expect(activities.tasks.get("st_child_one")?.taskSummary).toBe("Inspect implementation");
     expect(activities.tasks.get("st_child_one")?.liveProgress?.currentTool).toBe("read");
@@ -120,15 +121,23 @@ describe("ActivityShelf", () => {
     expect(graph.querySelector('.th-activity-gnode[data-node="c"]')).not.toBeNull();
   });
 
-  it("toggles the DAG view between list and graph with layered nodes", () => {
+  it("defaults to graph, and the List round trip keeps layered nodes", () => {
     renderShelf(harness, activityState({ dags: [makeDag()] }));
     openShelf(harness.container);
     const graphBtn = requireElement(
       harness.container.querySelector<HTMLButtonElement>('.th-activity-view-btn[data-view="graph"]'),
       "graph toggle",
     );
-    expect(graphBtn.getAttribute("aria-pressed")).toBe("false");
-    expect(harness.container.querySelector(".th-activity-graph")).toBeNull();
+    const listBtn = requireElement(
+      harness.container.querySelector<HTMLButtonElement>('.th-activity-view-btn[data-view="list"]'),
+      "list toggle",
+    );
+    // P6: graph is the default view.
+    expect(graphBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(listBtn.getAttribute("aria-pressed")).toBe("false");
+    // The optional List remains inside the DAG view.
+    click(listBtn);
+    expect(listBtn.getAttribute("aria-pressed")).toBe("true");
     expect(harness.container.querySelectorAll(".th-activity-dnode").length).toBe(3);
     click(graphBtn);
     expect(graphBtn.getAttribute("aria-pressed")).toBe("true");

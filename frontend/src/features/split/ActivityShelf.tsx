@@ -7,15 +7,17 @@ import type {
 import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
 import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
-import { DagSection } from "./activityShelfDag";
+import { DagSection, type DagNodeMotion } from "./activityShelfDag";
 import {
   agentTimeMs,
   dagTimeMs,
   orderActivities,
+  SHELF_TABS,
   TERMINAL_DAG_STATUSES,
   TERMINAL_TASK_STATUSES,
   todoCounts,
   type DagView,
+  type ShelfTab,
 } from "./activityShelfModel";
 import { AgentSection, TodoSection } from "./activityShelfSections";
 import { workflowNodeTasks } from "./activityWorkflowNodes";
@@ -67,6 +69,14 @@ function maxPanelHeight(): number {
   return Math.round(window.innerHeight * 0.6);
 }
 
+function tabIdPrefix(tab: ShelfTab, panelId: string): string {
+  return `th-activity-tab-${panelId.replace(/[^A-Za-z0-9_-]/g, "")}-${tab}`;
+}
+
+function panelElementId(tab: ShelfTab, panelId: string): string {
+  return `th-activity-tabpanel-${panelId.replace(/[^A-Za-z0-9_-]/g, "")}-${tab}`;
+}
+
 function clampPanelHeight(px: number): number {
   return Math.min(maxPanelHeight(), Math.max(PANEL_MIN, Math.round(px)));
 }
@@ -84,12 +94,43 @@ function detectPanelHeight(): number | null {
 export function ActivityShelf({ activities }: ActivityShelfProps) {
   const { t } = useT();
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<DagView>("list");
+  // Graph is the P6 default; the choice survives tab and fold switches.
+  const [view, setView] = useState<DagView>("graph");
+  // null = no explicit choice yet: selection derives from availability in
+  // user order. Once chosen, new activity never steals the selection.
+  const [chosenTab, setChosenTab] = useState<ShelfTab | null>(null);
   const [height, setHeight] = useState<number | null>(() => detectPanelHeight());
   const [resizing, setResizing] = useState(false);
   const [shelfElement, setShelfElement] = useState<HTMLElement | null>(null);
   const [panelElement, setPanelElement] = useState<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const tablistRef = useRef<HTMLDivElement | null>(null);
+  // Per-node last painted state: the graph motion contract (enter/settle) is
+  // decided against this history, so elapsed-time ticks, tab switches and
+  // fold reopens replay nothing. Lives at the shelf level, above the panel.
+  const nodeHistory = useRef<Map<string, DagNodeMotion>>(new Map<string, DagNodeMotion>());
+  // Consume completion/cancellation and explicit graph exits separately from
+  // data updates. Hidden or unmounted DOM must never restart a pending class.
+  const [motionEpoch, setMotionEpoch] = useState(0);
+  const onNodeMotionEnd = useCallback((key: string): void => {
+    const motion = nodeHistory.current.get(key);
+    if (motion === undefined || (!motion.entering && !motion.settling)) return;
+    nodeHistory.current.set(key, { ...motion, entering: false, settling: false });
+    setMotionEpoch((epoch) => epoch + 1);
+  }, []);
+  const consumeGraphMotion = (): void => {
+    for (const [key, motion] of nodeHistory.current) {
+      if (motion.entering || motion.settling) onNodeMotionEnd(key);
+    }
+  };
+  const changeView = (next: DagView): void => {
+    if (next !== view) consumeGraphMotion();
+    setView(next);
+  };
+  const toggleOpen = (): void => {
+    if (open) consumeGraphMotion();
+    setOpen(value => !value);
+  };
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
   const taskRows = [...activities.tasks.values()];
@@ -111,6 +152,50 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   const hasActivity = activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
+
+  const availability: Readonly<Record<ShelfTab, boolean>> = {
+    todo: activities.todo !== null,
+    agents: tasks.length > 0,
+    dag: dags.length > 0,
+  };
+  const selectedTab: ShelfTab = chosenTab
+    ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
+  const selectTab = (tab: ShelfTab): void => {
+    if (selectedTab === "dag" && tab !== "dag") consumeGraphMotion();
+    setOpen(true);
+    setChosenTab(tab);
+  };
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
+    const index = SHELF_TABS.indexOf(selectedTab);
+    let next: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (index + 1) % SHELF_TABS.length;
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (index + SHELF_TABS.length - 1) % SHELF_TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = SHELF_TABS.length - 1;
+    const target: ShelfTab | undefined = next === null ? undefined : SHELF_TABS[next];
+    if (target === undefined) return;
+    event.preventDefault();
+    selectTab(target);
+    // Roving tabindex moves with the selection; focus follows the key.
+    tablistRef.current?.querySelector<HTMLButtonElement>(`[data-activity-tab="${target}"]`)?.focus();
+  };
+  const tabCount = (tab: ShelfTab): string | null => {
+    if (tab === "todo") {
+      return activities.todo === null ? null : (() => {
+        const { done, total } = todoCounts(activities.todo);
+        return `${done}/${total}`;
+      })();
+    }
+    if (tab === "agents") {
+      return tasks.length === 0
+        ? null
+        : `${tasks.filter((task) => task.status === "running").length}/${tasks.length}`;
+    }
+    if (dags.length === 0) return null;
+    const done = dags.reduce((sum, run) => sum + run.counts.completed, 0);
+    const total = dags.reduce((sum, run) => sum + run.counts.total, 0);
+    return `${done}/${total}`;
+  };
 
   useEffect(() => {
     if (!hasLiveActivity) return undefined;
@@ -216,15 +301,10 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
       // height (the inline max-height bounds the panel); flexbox shrink is
       // what crushed it when the transcript ran long.
       style={columnClampPx === null ? undefined : { flexShrink: 0 }}
+      data-motion-epoch={motionEpoch}
     >
-      <div className="th-activity-bar-row" role="status">
-        <button
-          type="button"
-          className="th-activity-bar"
-          aria-expanded={expanded}
-          aria-controls={panelId}
-          onClick={() => setOpen((value) => !value)}
-        >
+      <div className="th-activity-bar-row">
+        <span className="th-activity-bar" role="status">
           <span className="th-activity-bar-text">
             {segments.map((segment, index) => (
               <span key={segment} className="th-activity-bar-seg">
@@ -239,11 +319,46 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
               </span>
             )}
           </span>
+        </span>
+        <button
+          type="button"
+          className="th-activity-fold"
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          aria-label={t("activity.fold")}
+          onClick={toggleOpen}
+        >
           <IconChevron
             size={12}
             className={`th-activity-caret${open ? " th-activity-caret--open" : ""}`}
           />
         </button>
+      </div>
+      {/* The tab strip is the shelf's permanent chrome: visible while
+          collapsed so a tab click opens the panel and selects, and kept as
+          its own measured fixed band for the shared column allocator. */}
+      <div ref={tablistRef} role="tablist" aria-label={t("activity.tabs")} className="th-activity-tabs">
+        {SHELF_TABS.map((tab) => {
+          const count = tabCount(tab);
+          return (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              className="th-activity-tab"
+              data-activity-tab={tab}
+              id={`${tabIdPrefix(tab, panelId)}`}
+              aria-selected={selectedTab === tab}
+              aria-controls={`${panelElementId(tab, panelId)}`}
+              tabIndex={selectedTab === tab ? 0 : -1}
+              onClick={() => selectTab(tab)}
+              onKeyDown={onTabKeyDown}
+            >
+              <span className="th-activity-tab-label">{t(tab === "agents" ? "activity.subagents" : `activity.${tab}`)}</span>
+              {count !== null && <span className="th-activity-tab-count">{count}</span>}
+            </button>
+          );
+        })}
       </div>
       {open && (
         <>
@@ -277,22 +392,36 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                   }
             }
           >
-            {tasks.length > 0 && (
-              <AgentSection
-                tasks={tasks}
-                nowMs={nowMs}
-                freshnessCtx={{
-                  runInFlight: activities.runInFlight === true,
-                  lifeSeenThisRun: lifeSeenThisRunOf(activities),
-                  runActivityMsByTask: runActivityMsByTaskOf(activities),
-                }}
-                t={t}
-              />
-            )}
-            {dags.length > 0 && (
-              <DagSection dags={dags} t={t} view={view} onViewChange={setView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} />
-            )}
-            {activities.todo !== null && <TodoSection phases={activities.todo} t={t} />}
+            {SHELF_TABS.map((tab) => (
+              <div
+                key={tab}
+                role="tabpanel"
+                data-activity-tabpanel={tab}
+                id={panelElementId(tab, panelId)}
+                aria-labelledby={tabIdPrefix(tab, panelId)}
+                hidden={selectedTab !== tab}
+                className={`th-activity-tabpanel th-activity-tabpanel--${tab}`}
+              >
+                {tab === "todo" && (activities.todo !== null
+                  ? <TodoSection phases={activities.todo} t={t} />
+                  : <p className="th-activity-empty">{t("activity.emptyTodo")}</p>)}
+                {tab === "agents" && (tasks.length > 0
+                  ? <AgentSection
+                      tasks={tasks}
+                      nowMs={nowMs}
+                      freshnessCtx={{
+                        runInFlight: activities.runInFlight === true,
+                        lifeSeenThisRun: lifeSeenThisRunOf(activities),
+                        runActivityMsByTask: runActivityMsByTaskOf(activities),
+                      }}
+                      t={t}
+                    />
+                  : <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
+                {tab === "dag" && (dags.length > 0
+                  ? <DagSection dags={dags} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
+                  : <p className="th-activity-empty">{t("activity.emptyDag")}</p>)}
+              </div>
+            ))}
           </div>}
         </>
       )}

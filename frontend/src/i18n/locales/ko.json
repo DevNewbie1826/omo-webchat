@@ -307,5 +307,11 @@
   "activity.status.blocked": "차단됨",
   "activity.status.scheduled": "예약됨",
   "activity.status.skipped": "건너뜀",
-  "activity.partial": "일부만 표시"
+  "activity.partial": "일부만 표시",
+  "activity.tabs": "활동 섹션",
+  "activity.fold": "활동 패널 접기/펼치기",
+  "activity.subagents": "하위 에이전트",
+  "activity.emptyTodo": "아직 할 일 목록이 없습니다",
+  "activity.emptyAgents": "아직 에이전트 작업이 없습니다",
+  "activity.emptyDag": "아직 DAG 실행이 없습니다"
 }

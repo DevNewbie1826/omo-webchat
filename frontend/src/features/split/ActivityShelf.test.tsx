@@ -66,28 +66,30 @@ describe("ActivityShelf", () => {
 
   it("renders a collapsed summary bar as a live status region while activity exists", () => {
     renderShelf(harness, activityState({ tasks: [makeTask()] }));
-    const bar = requireElement(
-      harness.container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-      "collapsed summary bar",
+    // P5: the summary row is status text; the fold control is a separate button.
+    const bar = requireElement(harness.container.querySelector(".th-activity-bar"), "summary bar");
+    const fold = requireElement(
+      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+      "separate fold control",
     );
-    expect(bar.getAttribute("aria-expanded")).toBe("false");
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
     const status = requireElement(harness.container.querySelector('[role="status"]'), "status region");
     expect(status.contains(bar)).toBe(true);
     expect(bar.textContent).toContain("activity.summaryAgents");
   });
 
-  it("expands and collapses via the toggle button", () => {
+  it("expands and collapses via the separate fold control", () => {
     renderShelf(harness, activityState({ tasks: [makeTask()] }));
-    const bar = requireElement(
-      harness.container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-      "collapsed summary bar",
+    const fold = requireElement(
+      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+      "separate fold control",
     );
-    click(bar);
-    expect(bar.getAttribute("aria-expanded")).toBe("true");
+    click(fold);
+    expect(fold.getAttribute("aria-expanded")).toBe("true");
     expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
-    click(bar);
-    expect(bar.getAttribute("aria-expanded")).toBe("false");
+    click(fold);
+    expect(fold.getAttribute("aria-expanded")).toBe("false");
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
   });
 });

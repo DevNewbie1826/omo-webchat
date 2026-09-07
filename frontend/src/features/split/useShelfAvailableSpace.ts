@@ -25,7 +25,7 @@ export function computeShelfAvailableSpace(column: HTMLElement, _selfPanel?: Ele
   }
   for (const shelf of column.querySelectorAll(".th-goal-shelf, .th-activity-shelf")) {
     fixed += verticalMargins(shelf);
-    for (const band of shelf.querySelectorAll(".th-activity-bar-row, .th-activity-resize")) fixed += outerHeight(band);
+    for (const band of shelf.querySelectorAll(".th-activity-bar-row, .th-activity-tabs, .th-activity-resize")) fixed += outerHeight(band);
   }
   return column.getBoundingClientRect().height - fixed - TRANSCRIPT_MIN_BAND_PX;
 }
@@ -83,7 +83,7 @@ function createColumnAllocator(column: HTMLElement) {
   const resize = new ResizeObserver((entries) => measure(entries));
   const refresh = (): void => {
     const next = new Set<Element>([column, ...column.children,
-      ...column.querySelectorAll(".th-chat-main-content > *, .th-activity-bar-row, .th-activity-resize, .th-goal-content, .th-goal-panel, .th-activity-panel, .th-goal-shelf, .th-activity-shelf")]);
+      ...column.querySelectorAll(".th-chat-main-content > *, .th-activity-bar-row, .th-activity-tabs, .th-activity-resize, .th-goal-content, .th-goal-panel, .th-activity-panel, .th-goal-shelf, .th-activity-shelf")]);
     for (const item of observed) if (!next.has(item)) { resize.unobserve(item); observed.delete(item); }
     for (const item of next) if (!observed.has(item)) { resize.observe(item); observed.add(item); }
   };
