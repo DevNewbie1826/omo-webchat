@@ -73,6 +73,7 @@ async function state(page) {
     }
     for (const shelf of column.querySelectorAll('.th-goal-shelf,.th-activity-shelf')) { fixed += margin(shelf); for (const band of shelf.querySelectorAll('.th-activity-bar-row,.th-activity-tabs,.th-activity-resize')) fixed += outer(band); }
     return { at: performance.now(), fixed, usable: column.getBoundingClientRect().height - fixed, tabs, visible: [...document.querySelectorAll('[data-activity-tabpanel]')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.dataset.activityTabpanel),
+      settings: { theme: document.documentElement.dataset.theme, lang: document.documentElement.lang, fontSize: localStorage.getItem('th-font-size'), font: getComputedStyle(document.documentElement).getPropertyValue('--th-font-mono') },
       pane: box('.th-chat-pane'), column: box('.th-chat-main'), transcript: box('.th-chat-scrollport'), goal: box('.th-goal-panel'), activity: box('.th-activity-panel'), composer: box('.th-chat-input'),
       goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('button.th-activity-fold')?.getAttribute('aria-expanded'),
       goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: !!document.querySelector('.th-activity-shelf .th-activity-caret--open'),
@@ -178,7 +179,7 @@ async function portClosed(port) {
 }
 async function session(browser, receipt, options, body) {
   const fixture = startFixture({ port: 0, layout: options.layout ?? 'single', shelves: true, longLabels: options.longLabels ?? false });
-  const record = { id: receipt.fixtures.length, options, url: fixture.url, navigation: [], actions: [], assets: [], errors: [], cleanup: {}, traffic: fixture.traffic };
+  const record = { id: receipt.fixtures.length, options: { viewport: { width: 1280, height: 800 }, theme: 'dark', lang: 'en', fontSize: 13, layout: 'single', reduced: false, ...options }, url: fixture.url, navigation: [], actions: [], assets: [], errors: [], cleanup: {}, traffic: fixture.traffic };
   receipt.fixtures.push(record);
   let context, page;
   const assets = [];
@@ -195,6 +196,7 @@ async function session(browser, receipt, options, body) {
       })());
     });
     const seeds = seed(), history = options.history ?? seeds.history;
+    record.seed = structuredClone({ history, todo: options.noTodo ? null : seeds.todo });
     await page.route('**/chats/*/activity', route => route.fulfill({ json: { history } }));
     // Browser-side readiness is installed before navigation. No wire request that
     // might have happened before a listener is used as an attachment proxy.
