@@ -992,7 +992,10 @@
   left: calc(var(--th-vv-left, 0px) + var(--th-space-2) + env(safe-area-inset-left, 0px));
   bottom: auto;
   top: calc(var(--th-vv-top, 0px) + var(--th-space-2) + env(safe-area-inset-top, 0px));
-  width: calc(100% - 2 * var(--th-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  /* Width follows the visible viewport width (--th-vv-width, 100% without
+     JS), not the layout viewport: native pan and zoom narrow the visible
+     region and the sheet must stay inside it, both safe sides included. */
+  width: calc(var(--th-vv-width, 100%) - 2 * var(--th-space-2) - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
   max-height: calc(var(--th-vh-unit, 1dvh) * 100 - var(--th-space-4) - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
   z-index: 60;
   background: var(--th-surface-overlay);

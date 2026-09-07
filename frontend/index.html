@@ -71,6 +71,8 @@
     // Track the visual viewport at parse time (before first paint):
     //  - --th-vh-unit: 1% of the visible height. iOS reports 1vh as the max
     //    viewport behind the URL bar, which otherwise overflows on first load.
+    //  - --th-vv-width: the visible viewport's width in CSS px (narrowed by
+    //    pinch zoom), for dialogs that must stay inside the visible region.
     //  - --th-vv-top / --th-vv-left: the visual viewport's pan offset. When
     //    the keyboard opens, iOS pans the visual viewport to keep the focused
     //    input visible; #root translates by this offset to stay glued to the
@@ -90,6 +92,7 @@
           baselineHeight = h;
         }
         rootStyle.setProperty("--th-vh-unit", h * 0.01 + "px");
+        rootStyle.setProperty("--th-vv-width", w + "px");
         rootStyle.setProperty("--th-vv-top", vv ? vv.offsetTop + "px" : "0px");
         rootStyle.setProperty("--th-vv-left", vv ? vv.offsetLeft + "px" : "0px");
         document.documentElement.toggleAttribute(
