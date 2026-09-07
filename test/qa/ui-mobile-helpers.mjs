@@ -100,8 +100,8 @@ export async function settle(page) {
   });
 }
 
-export async function measure(page, safeBottom) {
-  return page.evaluate(safeBottom => {
+export async function measure(page, safeBottom, safeTop = 0) {
+  return page.evaluate(({ safeBottom, safeTop }) => {
     const rect = element => element.getBoundingClientRect().toJSON();
     const read = element => {
       const s = getComputedStyle(element), r = rect(element);
@@ -116,10 +116,24 @@ export async function measure(page, safeBottom) {
     const keyboardOpen = root.hasAttribute('data-th-keyboard-open');
     // The keyboard occludes the home-indicator region; retain its inset only when closed.
     const necessaryBottomInset = keyboardOpen ? 0 : safeBottom;
-    const safe = { top: viewport.top, left: viewport.left, right: viewport.right, bottom: viewport.bottom - necessaryBottomInset };
+    // Insets are supplied by the scenario, never inferred from product padding.
+    const safe = { top: viewport.top + safeTop, left: viewport.left, right: viewport.right, bottom: viewport.bottom - necessaryBottomInset };
     const button = element => {
       const r = rect(element), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      const clippingAncestors = [];
+      for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        const style = getComputedStyle(ancestor), a = rect(ancestor);
+        const clipsX = ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowX);
+        const clipsY = ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowY);
+        if (!clipsX && !clipsY) continue;
+        const bounds = { left: a.left + ancestor.clientLeft, top: a.top + ancestor.clientTop,
+          right: a.left + ancestor.clientLeft + ancestor.clientWidth, bottom: a.top + ancestor.clientTop + ancestor.clientHeight };
+        clippingAncestors.push({ className: ancestor.className, bounds, clipsX, clipsY,
+          contains: (!clipsX || r.left >= bounds.left - 1 && r.right <= bounds.right + 1)
+            && (!clipsY || r.top >= bounds.top - 1 && r.bottom <= bounds.bottom + 1) });
+      }
       return { rect: r, hit: element === hit || element.contains(hit), disabled: element.disabled,
+        unclipped: clippingAncestors.every(a => a.contains), clippingAncestors,
         bounded: r.left >= safe.left - 1 && r.right <= safe.right + 1 && r.top >= safe.top - 1 && r.bottom <= safe.bottom + 1,
         focusVisible: element.matches(':focus-visible'), outlineStyle: getComputedStyle(element).outlineStyle };
     };
@@ -135,7 +149,7 @@ export async function measure(page, safeBottom) {
     const paneNodes = [...document.querySelectorAll(document.querySelector('.th-pane-wrap') ? '.th-pane-wrap' : '.th-chat-pane')];
     const panel = document.querySelector('.th-settings-panel');
     return { layoutViewport: { width: innerWidth, height: innerHeight, clientWidth: root.clientWidth, clientHeight: root.clientHeight },
-      visualViewport: viewport, safe, safeBottom, necessaryBottomInset, keyboardOpen,
+      visualViewport: viewport, safe, safeBottom, safeTop, necessaryBottomInset, keyboardOpen,
       cssViewport: { heightUnit: root.style.getPropertyValue('--th-vh-unit'), top: root.style.getPropertyValue('--th-vv-top'),
         left: root.style.getPropertyValue('--th-vv-left') },
       displayMode: matchMedia('(display-mode: standalone)').matches ? 'standalone' : 'browser',
@@ -154,17 +168,58 @@ export async function measure(page, safeBottom) {
       activeElement: { tag: document.activeElement.tagName, className: document.activeElement.className },
       settings: panel ? { ...read(panel), controls: [...panel.querySelectorAll('button, select')].map(button) } : null,
       horizontalOverflow: root.scrollWidth > root.clientWidth + 1 };
-  }, safeBottom);
+  }, { safeBottom, safeTop });
 }
 
 export function footerAssertions(g) {
   assert.equal(g.controls.length, 2, 'Expected exactly two footer controls');
   return [
-    { id: 'C5.controls-bounded-and-hit', pass: g.controls.every(c => c.bounded && c.hit && !c.disabled), actual: g.controls },
+    { id: 'C5.controls-bounded-and-hit', pass: g.controls.every(c => c.bounded && c.unclipped && c.hit && !c.disabled), actual: g.controls },
     { id: 'C5.bottom-reserve', pass: g.usableBottomGap >= -1 && g.usableBottomGap <= 8.5,
       actual: { bottomGap: g.bottomGap, necessaryBottomInset: g.necessaryBottomInset, usableBottomGap: g.usableBottomGap } },
+    { id: 'C5.mobile-bottom-gap-exact', pass: Math.abs(g.usableBottomGap - (g.mobileMedia ? 4 : 8)) <= 0.5,
+      actual: { expectedGap: g.mobileMedia ? 4 : 8, usableBottomGap: g.usableBottomGap,
+        bottomGap: g.bottomGap, necessaryBottomInset: g.necessaryBottomInset } },
     { id: 'C5.no-horizontal-overflow', pass: !g.horizontalOverflow, actual: g.horizontalOverflow },
   ];
+}
+
+export async function settingsReachability(page, safeBottom, safeTop) {
+  const before = await measure(page, safeBottom, safeTop), panel = before.settings, p = panel.rect, safe = before.safe;
+  const panelBounded = p.top >= safe.top - 1 && p.bottom <= safe.bottom + 1
+    && p.left >= safe.left - 1 && p.right <= safe.right + 1;
+  const controls = [];
+  let interiorScrolled = false;
+  // An unbounded panel is already a product failure, not an automation timeout.
+  if (panelBounded && ['auto', 'scroll'].includes(panel.overflowY)) {
+    for (let index = 0; index < panel.controls.length; index++) {
+      await page.locator('.th-settings-panel').evaluate((element, index) => {
+        const control = element.querySelectorAll('button, select')[index];
+        const r = control.getBoundingClientRect(), p = element.getBoundingClientRect();
+        const target = Math.max(0, Math.min(element.scrollHeight - element.clientHeight,
+          element.scrollTop + r.top - p.top - element.clientTop - (element.clientHeight - r.height) / 2));
+        window.mobilePending = new Promise((done, fail) => {
+          if (Math.abs(element.scrollTop - target) < 1) { done(true); return; }
+          const timer = setTimeout(() => { element.removeEventListener('scroll', finish); fail(new Error('Settings scroll deadline')); }, 30000);
+          function finish() { clearTimeout(timer); element.removeEventListener('scroll', finish); done(true); }
+          element.addEventListener('scroll', finish, { once: true });
+          element.scrollTo({ top: target, behavior: 'instant' });
+        });
+      }, index);
+      await complete(page);
+      const g = await measure(page, safeBottom, safeTop);
+      interiorScrolled ||= g.settings.scrollTop !== panel.scrollTop;
+      controls.push({ ...g.settings.controls[index], scrollTop: g.settings.scrollTop });
+    }
+  } else controls.push(...panel.controls);
+  const after = await measure(page, safeBottom, safeTop);
+  const stable = Math.abs(after.settings.rect.top - p.top) < 1 && Math.abs(after.footer.rect.bottom - before.footer.rect.bottom) < 1
+    && after.body.scrollTop === before.body.scrollTop && after.sidebar.scrollTop === before.sidebar.scrollTop
+    && after.root.scrollTop === before.root.scrollTop;
+  return { id: 'C5.settings-reachable', pass: panelBounded && controls.length > 0
+    && controls.every(c => c.bounded && c.unclipped && c.hit) && stable
+    && (panel.scrollHeight <= panel.clientHeight || interiorScrolled),
+    actual: { panel, safe, controls, panelBounded, interiorScrolled, stable } };
 }
 
 export async function openSidebar(page) {

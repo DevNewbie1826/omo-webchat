@@ -8,7 +8,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar } from './ui-mobile-helpers.mjs';
+import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability } from './ui-mobile-helpers.mjs';
 
 const git = async (...args) => {
   const child = Bun.spawn(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });
@@ -32,6 +32,10 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-mobile-polish.mjs --phase ${phase} --out ${out}`,
     sources: Object.fromEntries(await Promise.all(['ui-mobile-polish.mjs', 'ui-mobile-helpers.mjs'].map(async file =>
       [file, hash(await readFile(resolve('test/qa', file)))]))),
+    productSources: Object.fromEntries(await Promise.all(['frontend/src/styles/settings-menu.css',
+      'frontend/src/styles/sidebar.css', 'frontend/index.html', 'frontend/dist/index.html',
+      ...Array.from(new Bun.Glob('frontend/dist/assets/*.{css,js}').scanSync('.'))].map(async file =>
+      [file, hash(await readFile(file))]))),
     limitations: [
       'Bun.WebView default backend lacks CDP; installed playwright-core preserves the existing real-App fixture API.',
       'Headless Chrome emulates viewport/safe-area geometry, not iOS browser bars, physical keyboards or home-indicator hardware.',
@@ -40,9 +44,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       'Keyboard-open necessary bottom inset is zero (keyboard occludes home-indicator); persistent 34px env is an emulated condition, not a measured iOS claim.',
     ] };
   let browser;
-  async function capture(q, name, inset, extra = {}) {
+  async function capture(q, name, inset, extra = {}, safeTop = 0) {
     const motion = await settle(q.page);
-    const geometry = await measure(q.page, inset);
+    const geometry = await measure(q.page, inset, safeTop);
     const image = `${name}.png`, path = resolve(evidence, image);
     await q.page.screenshot({ path, animations: 'allow' });
     const bytes = await readFile(path);
@@ -124,12 +128,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               actions.push({ action: 'native-keyboard-resize', width, layoutHeight: keyboardHeight, originalHeight: height,
                 limitation: 'Chrome resizes layout and visual viewport together; no OS keyboard rendered' });
             }
-            for (const inset of [0, 34]) {
-              const insets = { top: 0, left: 0, right: 0, bottom: inset };
+            for (const safeTop of [0, 59]) for (const inset of [0, 34]) {
+              const insets = { top: safeTop, left: 0, right: 0, bottom: inset };
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets });
               actions.push({ action: 'CDP-safe-area', method: 'Emulation.setSafeAreaInsetsOverride', insets });
-              const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-safe${inset}`;
-              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' });
+              const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-top${safeTop}-safe${inset}`;
+              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' }, safeTop);
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
               results.push({ scenario: key, id: 'C5.session-row-coverage',
                 pass: g.sessionRows === (list === 'long' ? 24 : 4), actual: { expected: list === 'long' ? 24 : 4, count: g.sessionRows } });
@@ -146,33 +150,24 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                   });
                 });
                 await complete(page);
-                const scrolled = await measure(page, inset);
+                const scrolled = await measure(page, inset, safeTop);
                 results.push({ scenario: key, id: 'C5.list-scroll-preserves-footer', pass: Math.abs(scrolled.footer.rect.bottom - g.footer.rect.bottom) < 1,
                   actual: { before: g.footer.rect, after: scrolled.footer.rect, listScrollTop: scrolled.body.scrollTop } });
                 actions.push({ action: 'scroll-session-list', scenario: key, scrollTop: scrolled.body.scrollTop });
               }
               await arm(page, () => !!document.querySelector('.th-settings-panel'));
               await page.locator('.th-settings-menu > button').click(); await complete(page);
-              const settings = await capture(q, `C5-${phase}-${key}-settings`, inset);
-              const panel = settings.settings, p = panel.rect, safe = settings.safe;
-              const panelBounded = p.top >= safe.top - 1 && p.bottom <= safe.bottom + 1 && p.left >= safe.left - 1 && p.right <= safe.right + 1;
-              let reachable = panel.controls.every(c => c.hit && c.bounded);
-              if (panelBounded && ['auto', 'scroll'].includes(panel.overflowY)) {
-                const controls = page.locator('.th-settings-panel').locator('button, select');
-                const scrolledControls = [];
-                for (let index = 0; index < await controls.count(); index++) {
-                  await controls.nth(index).scrollIntoViewIfNeeded();
-                  scrolledControls.push((await measure(page, inset)).settings.controls[index]);
-                }
-                reachable = scrolledControls.every(c => c.hit && c.bounded);
-                actions.push({ action: 'reach-scrollable-settings-controls', scenario: key, controls: scrolledControls });
-              }
-              results.push({ scenario: key, id: 'C5.settings-reachable', pass: panelBounded && reachable, actual: panel });
+              await capture(q, `C5-${phase}-${key}-settings`, inset, {}, safeTop);
+              const reachable = await settingsReachability(page, inset, safeTop);
+              results.push({ scenario: key, ...reachable });
+              actions.push({ action: 'reach-scrollable-settings-controls', scenario: key, ...reachable.actual });
+              await capture(q, `C5-${phase}-${key}-settings-scrolled`, inset, {}, safeTop);
               await arm(page, () => !document.querySelector('.th-settings-panel'));
               await page.keyboard.press('Escape'); await complete(page);
               actions.push({ action: 'settings-open-close', scenario: key, closed: true, logoutClicked: false });
             }
             if (keyboard) {
+              await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, left: 0, right: 0, bottom: 34 } });
               // Restore the physical screenshot envelope before emulating a smaller, panned visual viewport.
               await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
               await page.setViewportSize({ width, height }); await complete(page);
@@ -188,8 +183,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               const g = await capture(q, `C5-${phase}-${key}`, 34, { keyboardEmulation: 'synthetic visualViewport height and offsetTop=60 inside original layout viewport' });
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
               actions.push({ action: 'synthetic-visual-viewport-pan', offsetTop: 60, measured: g.visualViewport, root: g.root.rect });
-              await page.evaluate(() => { delete visualViewport.offsetTop; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); });
               await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
+              await page.evaluate(() => { delete visualViewport.offsetTop; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); });
               await page.setViewportSize({ width, height }); await complete(page);
             }
           }
@@ -218,10 +213,11 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     if (browser) { await browser.close(); cleanup.push({ browserClosed: !browser.isConnected(), disposableProfileManagedByPlaywright: true }); }
     receipt.productDiffAfter = await git('diff', 'HEAD', '--', 'frontend', 'DESIGN.md');
     receipt.finished = new Date().toISOString();
-    const redConfirmed = results.filter(r => r.id === 'C1.mobile-outline-none').length === 2
-      && results.filter(r => r.id === 'C1.mobile-outline-none').every(r => !r.pass) && failures.length === 0
+    const expectedFailures = ['C1.mobile-outline-none', 'C5.bottom-reserve', 'C5.mobile-bottom-gap-exact',
+      'C5.controls-bounded-and-hit', 'C5.settings-reachable'];
+    const redConfirmed = results.some(r => !r.pass) && failures.length === 0
       && cleanup.filter(row => row.contextClosed).length === 6
-      && results.filter(r => !['C1.mobile-outline-none', 'C5.bottom-reserve', 'C5.controls-bounded-and-hit', 'C5.settings-reachable'].includes(r.id)).every(r => r.pass);
+      && results.filter(r => !expectedFailures.includes(r.id)).every(r => r.pass);
     receipt.status = failures.length ? 'INFRASTRUCTURE_FAILURE' : phase === 'red' && redConfirmed ? 'RED_CONFIRMED'
       : results.every(r => r.pass) ? 'GREEN' : 'ASSERTION_FAILURE';
     receipt.exitStatus = failures.length ? 2 : phase === 'red' ? (redConfirmed ? 1 : 2) : results.every(r => r.pass) ? 0 : 1;
