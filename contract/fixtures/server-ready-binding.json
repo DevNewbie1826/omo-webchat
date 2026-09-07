@@ -1,0 +1,4 @@
+{
+  "type": "ready", "sessionId": "chat-1", "piSessionId": "durable-1",
+  "resumed": true, "bindingId": "binding-1"
+}

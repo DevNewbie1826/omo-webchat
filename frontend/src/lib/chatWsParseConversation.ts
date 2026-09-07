@@ -30,8 +30,9 @@ export function parseConversationFrame(
       const piSessionId = msg["piSessionId"];
       if (typeof piSessionId !== "string" && piSessionId !== null) return null;
       const resumed = reqBoolean(msg, "resumed");
-      if (resumed === null) return null;
-      return { type: "ready", sessionId, piSessionId, resumed };
+      const bindingId = optString(msg, "bindingId");
+      if (resumed === null || bindingId === null) return null;
+      return { type: "ready", sessionId, piSessionId, resumed, ...(bindingId === undefined ? {} : { bindingId }) };
     }
     case "chat.name": {
       if (sessionId === null) return null;
