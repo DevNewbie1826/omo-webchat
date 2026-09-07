@@ -188,8 +188,8 @@ func TestHistoricalActivitySnapshotCapKeepsNewestPrefix(t *testing.T) {
 	if got := rawString(snapshot.Tasks[0]["task_id"]); got != "task-119" {
 		t.Fatalf("first task = %q, want newest", got)
 	}
-	if activity.TaskDigest == nil || len(activity.TaskDigest.Tasks) != len(snapshot.Tasks) || !activity.TaskDigest.Truncated {
-		t.Fatalf("digest does not describe retained prefix: %+v", activity.TaskDigest)
+	if activity.TaskDigest == nil || len(activity.TaskDigest.Tasks) != 120 || len(activity.TaskDigest.Tasks) <= len(snapshot.Tasks) || !activity.TaskDigest.Truncated {
+		t.Fatalf("digest lost compact rows beyond rich prefix: %+v", activity.TaskDigest)
 	}
 	digest, err := json.Marshal(activity.TaskDigest)
 	if err != nil || len(digest) > maxActivitySnapshotBytes {

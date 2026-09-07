@@ -262,11 +262,14 @@ func projectLiveProgress(raw json.RawMessage) (json.RawMessage, bool) {
 func projectStoredTask(task storedTask) (map[string]json.RawMessage, bool) {
 	projected := make(map[string]json.RawMessage, 9)
 	truncated := false
-	for _, key := range []string{"task_summary", "agent_type", "category", "created_at", "updated_at"} {
+	for _, key := range []string{"task_summary", "agent_type", "category", "created_at"} {
 		if value, ok, fieldTruncated := projectedString(task.Fields[key]); ok {
 			projected[key] = value
 			truncated = truncated || fieldTruncated
 		}
+	}
+	if value := task.Fields["updated_at"]; len(value) > 0 {
+		projected["updated_at"] = value
 	}
 	if progress, progressTruncated := projectLiveProgress(task.Fields["live_progress"]); progress != nil {
 		projected["live_progress"] = progress
@@ -280,8 +283,11 @@ func projectStoredTask(task storedTask) (map[string]json.RawMessage, bool) {
 		if key == "name" && value == "" {
 			value = task.TaskID
 		}
-		value, fieldTruncated := truncateActivityField(value)
-		truncated = truncated || fieldTruncated
+		if key == "name" {
+			var fieldTruncated bool
+			value, fieldTruncated = truncateActivityField(value)
+			truncated = truncated || fieldTruncated
+		}
 		projected[key], _ = json.Marshal(value)
 	}
 	return projected, truncated
@@ -644,13 +650,21 @@ func packDagSnapshot(parent string, rows []historicalDagRow, truncated bool) (js
 }
 
 func boundTaskDigest(digest *TaskDigest) {
-	for len(digest.Tasks) > 0 {
-		payload, err := json.Marshal(digest)
-		if err == nil && len(payload) <= maxActivitySnapshotBytes {
-			return
+	// Skip unrepresentable rows rather than shortening identity/clock scalars or
+	// allowing one huge row to erase every subsequent compact winner.
+	rows := digest.Tasks
+	digest.Tasks = nil
+	for _, row := range rows {
+		if len(digest.Tasks) == maxActivityDigestEntries {
+			digest.Truncated = true
+			break
 		}
-		digest.Tasks = digest.Tasks[:len(digest.Tasks)-1]
-		digest.Truncated = true
+		digest.Tasks = append(digest.Tasks, row)
+		payload, err := json.Marshal(digest)
+		if err != nil || len(payload) > maxActivitySnapshotBytes {
+			digest.Tasks = digest.Tasks[:len(digest.Tasks)-1]
+			digest.Truncated = true
+		}
 	}
 }
 
@@ -686,7 +700,15 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	taskFieldsTruncated := false
 	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
 		var task storedTask
-		if !readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.TaskID == "" || task.Status == "" || task.ParentSessionID != durableSessionID {
+		if !readStableJSON(ctx, path, info, &task) {
+			taskFieldsTruncated = true
+			return
+		}
+		if durableSessionID == "" || task.ParentSessionID != durableSessionID {
+			return
+		}
+		if task.TaskID == "" || task.Status == "" {
+			taskFieldsTruncated = true
 			return
 		}
 		if task.Owner.Kind == "dag" && task.Owner.RunID != "" {
@@ -701,8 +723,41 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
-	tasks, taskRetentionTruncated := newestTaskRows(tasks)
-	truncatedTasks := taskBudgetExhausted || taskRetentionTruncated || taskFieldsTruncated || parentFieldTruncated
+	// Admit oldest creation positions first so bounded eviction retains the
+	// newest IDs, but compare every raw revision before byte/entry projection.
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].createdAt == tasks[j].createdAt {
+			return tasks[i].taskID < tasks[j].taskID
+		}
+		return tasks[i].createdAt < tasks[j].createdAt
+	})
+	truncatedTasks := taskBudgetExhausted || len(tasks) > maxActivityDigestEntries || taskFieldsTruncated || parentFieldTruncated
+	// Compact authority is independent of the rich prefix's byte budget.
+	taskRows := make([]map[string]json.RawMessage, 0, len(tasks))
+	for _, row := range tasks {
+		taskRows = append(taskRows, row.payload)
+	}
+	unpacked, err := json.Marshal(historicalTaskSnapshot{ParentSessionID: durableSessionID, Truncated: truncatedTasks, Tasks: taskRows})
+	if err != nil {
+		return HistoricalActivity{}, err
+	}
+	var authority taskSnapshotCache
+	accepted := authority.merge(unpacked, nil, nil)
+	taskDigest := &TaskDigest{Truncated: accepted.digest.Truncated}
+	// Store duplicates use the same per-ID raw admission policy before packing.
+	var selected historicalTaskSnapshot
+	if err := json.Unmarshal(accepted.live, &selected); err != nil {
+		return HistoricalActivity{}, err
+	}
+	tasks = tasks[:0]
+	for _, row := range selected.Tasks {
+		tasks = append(tasks, historicalTaskRow{payload: row, createdAt: rawString(row["created_at"]), taskID: rawString(row["task_id"])})
+	}
+	tasks, _ = newestTaskRows(tasks)
+	for _, row := range tasks {
+		taskDigest.Tasks = append(taskDigest.Tasks, taskDigestRow(row.payload))
+	}
+	truncatedTasks = truncatedTasks || selected.Truncated
 	taskPayload, taskOversized, err := packTaskSnapshot(durableSessionID, tasks, truncatedTasks)
 	if err != nil {
 		return HistoricalActivity{}, err
@@ -744,10 +799,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	}
 
 	receivedAt := time.Now().UTC().Format(time.RFC3339)
-	taskDigest, taskDigestOK := parseTaskDigest(taskPayload)
-	if !taskDigestOK {
-		taskDigest = &TaskDigest{Truncated: true}
-	}
+
 	dagDigest, dagDigestOK := parseDagDigest(dagPayload)
 	if !dagDigestOK {
 		dagDigest = &DagDigest{Truncated: true}

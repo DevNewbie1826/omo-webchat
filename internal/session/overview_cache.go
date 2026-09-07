@@ -13,14 +13,15 @@ const (
 )
 
 type overviewCacheEntry struct {
-	epoch        omorpc.EpochToken
-	chatID       string
-	snapshots    map[string]json.RawMessage
-	oversized    map[string]bool
-	task         *TaskDigest
-	dag          *DagDigest
-	dagSnapshots dagSnapshotCache
-	used         uint64
+	epoch         omorpc.EpochToken
+	chatID        string
+	snapshots     map[string]json.RawMessage
+	oversized     map[string]bool
+	task          *TaskDigest
+	dag           *DagDigest
+	dagSnapshots  dagSnapshotCache
+	taskSnapshots taskSnapshotCache
+	used          uint64
 }
 
 type overviewUpdate struct {
@@ -270,13 +271,10 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	entry.used = m.overviewClock
 	switch name {
 	case activitySnapshotOrder[0]:
-		entry.oversized[name] = len(data) > maxActivitySnapshotBytes
-		if !entry.oversized[name] {
-			entry.snapshots[name] = append(json.RawMessage(nil), data...)
-		}
-		if digest, valid := parseTaskDigest(data); valid {
-			entry.task = digest
-		}
+		accepted := entry.taskSnapshots.merge(data, entry.snapshots[name], entry.task)
+		entry.snapshots[name] = accepted.replay
+		entry.oversized[name] = accepted.oversized
+		entry.task = accepted.digest
 	case activitySnapshotOrder[1]:
 		accepted, err := entry.dagSnapshots.merge(data, entry.snapshots[name], entry.dag)
 		if err != nil {
@@ -285,30 +283,27 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		entry.snapshots[name] = accepted.replay
 		entry.oversized[name] = accepted.oversized
 		entry.dag = accepted.digest
-		reconcileOverviewEntry(entry, accepted.live)
+		entry.taskSnapshots.observe(accepted.accepted)
+		reconcileOverviewEntry(entry)
 	}
 	m.evictOverviewLRULocked()
 	snapshot := entry.summary(entry.chatID, durableID)
 	return snapshot, m.updateOverviewLocked(snapshot)
 }
 
-func reconcileOverviewEntry(entry *overviewCacheEntry, dag json.RawMessage) {
-	outcomes := terminalDagRunTaskOutcomes(dag)
-	if len(outcomes) == 0 {
+func reconcileOverviewEntry(entry *overviewCacheEntry) {
+	name := activitySnapshotOrder[0]
+	raw, digest, changed := entry.taskSnapshots.reconcile(entry.snapshots[name], entry.task)
+	if !changed {
 		return
 	}
-	if task, changed := reconcileTaskPayloadWithOutcomes(entry.snapshots[activitySnapshotOrder[0]], outcomes); changed {
-		entry.snapshots[activitySnapshotOrder[0]] = task
+	entry.task = digest
+	if len(raw) > maxActivitySnapshotBytes {
+		entry.taskSnapshots.oversized = true
+		entry.oversized[name] = true
+		raw = nil
 	}
-	if entry.task == nil {
-		return
-	}
-	for i := range entry.task.Tasks {
-		row := &entry.task.Tasks[i]
-		if outcome, vouched := outcomes[row.TaskID]; vouched && !terminalTaskStatuses[row.Status] {
-			row.Status = outcome.status
-		}
-	}
+	entry.snapshots[name] = raw
 }
 
 func (m *Manager) evictOverviewLRULocked() {
@@ -368,6 +363,7 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 		s.taskDigest = cloneTaskDigest(entry.task)
 		s.dagDigest = cloneDagDigest(entry.dag)
 		s.dagSnapshots = entry.dagSnapshots
+		s.taskSnapshots = entry.taskSnapshots
 		if entry.oversized[activitySnapshotOrder[1]] {
 			delete(s.activitySnapshots, activitySnapshotOrder[1])
 		}

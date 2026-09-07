@@ -25,7 +25,22 @@ const SESSION_FRAME_TYPES: ReadonlySet<string> = new Set(
 );
 
 export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
-  const generated = parseServerFrame(msg);
+  // Optional task metadata must not discard otherwise valid membership.
+  // Keep required fields untouched so malformed rows still fail validation.
+  let input = msg;
+  if (isRecord(msg) && msg["type"] === "sessions.activity" && isRecord(msg["taskDigest"]) && Array.isArray(msg["taskDigest"]["tasks"])) {
+    const taskDigest = msg["taskDigest"];
+    const tasks = msg["taskDigest"]["tasks"].map((row: unknown) => {
+      if (!isRecord(row)) return row;
+      const fields = { ...row };
+      for (const key of ["raw_status", "updated_at"]) {
+        if (typeof fields[key] !== "string") delete fields[key];
+      }
+      return fields;
+    });
+    input = { ...msg, taskDigest: { ...taskDigest, tasks } };
+  }
+  const generated = parseServerFrame(input);
   // Established notice producers may omit `at`. Preserve that compatibility
   // by passing the original object to the notice seam; never fabricate a
   // schema-valid replacement and mistake rewritten input for validation.

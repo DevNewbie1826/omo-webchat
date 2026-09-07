@@ -1,0 +1,18 @@
+{
+  "type": "sessions.activity",
+  "sessionId": "chat-1",
+  "durableSessionId": "child-session-1",
+  "snapshots": [{
+    "name": "omo.task.updated",
+    "data": {
+      "tasks": [{"task_id": "task-1", "status": "completed", "raw_status": "running", "updated_at": "2026-09-07T10:01:00Z"}],
+      "truncated_tasks": false
+    },
+    "oversized": false
+  }],
+  "taskDigest": {
+    "tasks": [{"task_id": "task-1", "status": "completed", "raw_status": "running", "updated_at": "2026-09-07T10:01:00Z"}],
+    "truncated": false
+  },
+  "overflow": false
+}
