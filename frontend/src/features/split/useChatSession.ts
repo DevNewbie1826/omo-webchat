@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, type ChatClientFrame, type ChatConnector, type ChatServerFrame } from "../../lib/chatWs";
+import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, type ChatClientFrame, type ChatConnector } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
@@ -22,7 +22,7 @@ export function useChatSession(
   const goalPushedRef = useRef(false);
   const clientRef = useRef<ChatClient | null>(null);
   const connectionGenerationRef = useRef(0);
-  const frameHandlerRef = useRef<(frame: ChatServerFrame, connectionGeneration: number) => void>(() => undefined);
+  const frameHandlerRef = useRef<typeof frameState.handleFrame>(() => undefined);
   const onChatNameRef = useRef(onChatName);
   const markOpenRef = useRef<() => number>(() => 0);
   const markCloseRef = useRef<() => void>(() => undefined);
@@ -80,7 +80,9 @@ export function useChatSession(
           onChatNameRef.current?.(frame.name, frame.origin);
           return;
         }
-        frameHandlerRef.current(frame, connectionGenerationRef.current);
+        if (frameHandlerRef.current(frame, connectionGenerationRef.current) === "refresh_stats") {
+          clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
+        }
       },
       onParseError: () => frameState.reportError("Received a malformed server frame."),
       onClose: () => markCloseRef.current(),
