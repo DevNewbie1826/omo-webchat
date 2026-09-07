@@ -31,10 +31,12 @@
  * canvas comparison rows from the same transcript.
  */
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { promisify } from 'node:util';
 import { designSeed, installSignals, arm, complete, seedLive } from './design-workbench-fixture.mjs';
 import { startFixture } from './pane-workspace-ui.mjs';
 import { closeResources, exposeTranscript, settleFrame } from './ui-theme-evidence.mjs';
@@ -116,11 +118,14 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   out = resolve(out);
   await mkdir(out, { recursive: true });
   const save = (name, value) => writeFile(resolve(out, name), JSON.stringify(value, null, 2) + '\n');
+  const git = promisify(execFile);
+  const [sha, tree, dirty] = await Promise.all([
+    git('git', ['rev-parse', 'HEAD']).then(({ stdout }) => stdout.trim()),
+    git('git', ['rev-parse', 'HEAD^{tree}']).then(({ stdout }) => stdout.trim()),
+    git('git', ['status', '--porcelain']).then(({ stdout }) => stdout),
+  ]);
   const receipt = {
-    phase, out, driver, cwd: process.cwd(),
-    sha: Bun.spawnSync(['git', 'rev-parse', 'HEAD']).stdout.toString().trim(),
-    tree: Bun.spawnSync(['git', 'rev-parse', 'HEAD^{tree}']).stdout.toString().trim(),
-    dirty: Bun.spawnSync(['git', 'status', '--porcelain']).stdout.toString(),
+    phase, out, driver, cwd: process.cwd(), sha, tree, dirty,
     command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-followup-toolbox.mjs --phase ${phase} --out ${out}`,
   };
   const observations = [], shots = [], actions = [], resources = [], sessions = [], failures = [];
