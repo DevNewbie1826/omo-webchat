@@ -238,7 +238,18 @@ Choose a tested foreground/background token pair instead.
   overlaps pane titles in either state. Mobile retains its dismissible
   overlay drawer without the rail. The shared `--th-space-11` token is the
   coarse-pointer touch size and must not be re-valued to remove the expanded
-  rail; only the expanded shell's allocation changes.
+  rail; only the expanded shell's allocation changes. The mobile drawer is
+  sized to the visual viewport, and the sidebar shell reserves the bottom
+  home-indicator inset at every width (`env(safe-area-inset-bottom)` — zero
+  wherever the hardware has none, and the only protection on landscape phones
+  beyond the 768px drawer breakpoint, where `#root` intentionally keeps a 0
+  bottom inset for the full-bleed input bar). While the software keyboard is
+  open the bottom inset is dropped (`html[data-th-keyboard-open]`) because
+  the keyboard covers the gesture zone. The intentional reserve below the
+  settings/logout row is the footer's own block padding — 4px (`--th-space-1`)
+  at mobile widths, 8px (`--th-space-2`) beyond them — and never a second
+  inset; the footer spacer stretches that row horizontally and never adds
+  vertical reserve.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
@@ -594,4 +605,9 @@ widths confirms:
     popup opening upward and the narrow sheet contained;
 11. during divider drag or focus every visible pane shows its whole-work-area
     percentage overlay, Escape restores the originating control, and bounds
-    never overflow.
+    never overflow;
+12. at mobile widths no active-pane outline paints while desktop split panes
+    keep theirs, and the sidebar settings/logout row sits inside usable
+    bounds with only the necessary safe inset plus the footer's 4px mobile
+    padding, with the software keyboard open or closed and in either
+    orientation.

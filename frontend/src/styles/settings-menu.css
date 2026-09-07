@@ -9,6 +9,13 @@
   left: 0;
   z-index: 60;
   width: 240px;
+  /* The panel opens upward from the footer button, so its height budget is
+     the visual viewport minus the footer and the panel offset (48px + 4px
+     covers both the drawer and the desktop-shell footer heights). Without
+     this bound the natural panel height leaves the visible region in short
+     viewports, e.g. a landscape phone with the software keyboard open. */
+  max-height: calc(var(--th-vh-unit, 1vh) * 100 - var(--th-space-12) - var(--th-space-1));
+  overflow-y: auto;
   padding: var(--th-space-2);
   background: var(--th-surface-raised);
   border: 1px solid var(--th-border-raised);
