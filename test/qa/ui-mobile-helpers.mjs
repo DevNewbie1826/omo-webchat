@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { startFixture } from './pane-workspace-ui.mjs';
 import { designSeed } from './design-workbench-fixture.mjs';
 
-export async function setupMobile(browser, { theme, list = 'short', layout = 'single', lang = 'en', fontSize = 14 }, actions) {
+export async function setupMobile(browser, { theme, list = 'short', layout = 'single', lang = 'en', fontSize = 14, beforeNavigate }, actions) {
   const fixture = startFixture({ ...designSeed(layout), port: 0, controlled: true });
   let context;
   try {
@@ -41,6 +41,7 @@ export async function setupMobile(browser, { theme, list = 'short', layout = 'si
         && !!document.querySelector('[data-tool-call-id="design-failed"]'));
     }, { theme, lang, fontSize });
     actions.push({ action: 'navigate', url: fixture.url, authentication: 'isolated fixture /api/auth/check 204', theme, list, layout, lang, fontSize });
+    if (beforeNavigate) await beforeNavigate(page, fixture.url);
     await page.goto(fixture.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.evaluate(() => window.mobileReady);
     await page.evaluate(() => window.mobileSignal(() => document.querySelectorAll('.th-sidebar-body .th-tree-children > .th-tree-node').length >= 4));

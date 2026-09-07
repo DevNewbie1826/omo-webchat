@@ -19,12 +19,109 @@ const viewports = [[390, 844], [384, 844], [768, 844], [769, 844], [844, 390], [
 const states = ['baseline', 'nonkeyboard-origin34', 'nonkeyboard-top0', 'keyboard-origin', 'restored'];
 const productPaths = ['frontend/src/styles/sidebar.css', 'frontend/src/styles/mobile-drawer.css', 'frontend/src/styles/global.css', 'frontend/index.html'];
 
+export function bindingAssertion(binding) {
+  return binding.domURLs.length >= 3 && binding.domURLs.every(url => binding.responses.some(r =>
+    r.url === url && r.status === 200 && r.sha256 === r.localSha256 && r.bytes === r.localBytes));
+}
+
+export function motionAssertion(row) {
+  const { before, during, after } = row.frames;
+  const open = row.direction === 'open';
+  const endpoints = before.closed === open && after.closed === !open
+    && before.backdrop.present === !open && after.backdrop.present === open;
+  if (row.reduced) return endpoints && during.closed === after.closed
+    && row.animations.length === 0 && during.sidebar.transform === after.sidebar.transform;
+  return endpoints && row.animations.some(a => a.target === 'sidebar' && a.name === 'transform' && a.duration > 0)
+    && during.sidebar.x > -during.sidebar.width && during.sidebar.x < 0
+    && (open ? row.animations.some(a => a.target === 'backdrop' && a.name === 'th-fade-in')
+      && during.backdrop.opacity > 0 && during.backdrop.opacity < 1 : !during.backdrop.present);
+}
+
+export function actionAssertion(row) {
+  if (row.action === 'settings-open') return !row.before.settings && row.result.settings && !row.result.closed;
+  if (row.action === 'settings-escape') return row.before.settings && !row.result.settings && row.before.closed === row.result.closed;
+  if (row.action === 'backdrop-dismiss') return !row.before.closed && row.result.closed && !row.result.backdrop;
+  if (row.action === 'menu-open') return !row.result.closed && row.result.backdrop;
+  throw new Error(`Unknown sidebar action: ${row.action}`);
+}
+
+const actionState = page => page.evaluate(() => ({
+  closed: document.querySelector('.th-sidebar').getAttribute('aria-hidden') === 'true',
+  settings: !!document.querySelector('.th-settings-panel'), backdrop: !!document.querySelector('.th-backdrop'),
+}));
+
+// Observe and pause the existing CSS timeline, never inject replacement motion.
+// The backdrop is removed immediately on close; that absence is part of the evidence.
+async function drawerMotion(page, { context, reduced, direction }, capture, actions) {
+  const name = `${context}-motion-${reduced ? 'reduce' : 'normal'}-${direction}`;
+  const readFrame = () => page.evaluate(() => {
+    const sidebar = document.querySelector('.th-sidebar'), backdrop = document.querySelector('.th-backdrop');
+    const r = sidebar.getBoundingClientRect();
+    return { closed: sidebar.getAttribute('aria-hidden') === 'true',
+      sidebar: { x: r.x, width: r.width, transform: getComputedStyle(sidebar).transform, visibility: getComputedStyle(sidebar).visibility },
+      backdrop: { present: !!backdrop, opacity: backdrop ? Number(getComputedStyle(backdrop).opacity) : null },
+      timeline: document.timeline.currentTime };
+  });
+  const frames = { before: await readFrame() };
+  await capture(page, `${name}-before`);
+  await page.evaluate(({ reduced, direction }) => {
+    window.drawerAnimations = [];
+    if (reduced) {
+      window.mobilePending = window.mobileSignal(() => (document.querySelector('.th-sidebar').getAttribute('aria-hidden') !== 'true') === (direction === 'open'));
+      return;
+    }
+    window.mobilePending = new Promise((done, fail) => {
+      const expected = direction === 'open' ? 2 : 1;
+      const timer = setTimeout(() => { stop(); fail(new Error('Drawer transition signal deadline')); }, 30000);
+      function stop() { clearTimeout(timer); document.removeEventListener('transitionrun', observe, true); document.removeEventListener('animationstart', observe, true); }
+      function observe(event) {
+        if (!event.target.matches('.th-sidebar, .th-backdrop')) return;
+        for (const animation of event.target.getAnimations()) {
+          const name = animation.transitionProperty ?? animation.animationName;
+          if (!['transform', 'th-fade-in', 'visibility'].includes(name) || window.drawerAnimations.includes(animation)) continue;
+          animation.pause(); animation.currentTime = 0; window.drawerAnimations.push(animation);
+        }
+        if (window.drawerAnimations.filter(a => a.transitionProperty !== 'visibility').length === expected) { stop(); done(true); }
+      }
+      document.addEventListener('transitionrun', observe, true); document.addEventListener('animationstart', observe, true);
+    });
+  }, { reduced, direction });
+  if (direction === 'open') await page.locator('.th-mobile-menu').click();
+  else await page.locator('.th-backdrop').click({ position: { x: 380, y: 100 } });
+  await complete(page);
+  const animations = await page.evaluate(reduced => (reduced
+    ? [...document.querySelectorAll('.th-sidebar, .th-backdrop')].flatMap(e => e.getAnimations())
+    : window.drawerAnimations).map(a => ({
+    target: a.effect.target.matches('.th-sidebar') ? 'sidebar' : 'backdrop',
+    name: a.transitionProperty ?? a.animationName, duration: a.effect.getComputedTiming().duration,
+    keyframes: a.effect.getKeyframes(), playState: a.playState,
+  })), reduced);
+  await page.evaluate(() => {
+    for (const a of window.drawerAnimations) a.currentTime = a.effect.getComputedTiming().endTime / 2;
+    return new Promise(done => requestAnimationFrame(done));
+  });
+  frames.during = await readFrame(); await capture(page, `${name}-during`);
+  await page.evaluate(async () => {
+    for (const a of window.drawerAnimations.sort((a, b) => Number(a.transitionProperty === 'visibility') - Number(b.transitionProperty === 'visibility'))) {
+      const finished = a.finished; a.finish(); await finished;
+    }
+  });
+  await settle(page);
+  frames.after = await readFrame(); await capture(page, `${name}-after`);
+  const row = { context, name, reduced, direction, animations, frames,
+    sampling: reduced ? 'state signal then animation frame; static equivalent, not an interpolated transition'
+      : 'native transitionrun/animationstart; paused existing timeline at 50%; exact finished promises' };
+  actions.push({ action: direction === 'open' ? 'menu-open' : 'backdrop-dismiss', context, motion: name,
+    before: frames.before, result: await actionState(page) });
+  return row;
+}
+
 export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   assert(['red', 'green'].includes(phase), 'phase must be red or green');
   assert(out && isAbsolute(out) && driver, 'absolute --out and QA_PLAYWRIGHT required');
   await mkdir(out, { recursive: true });
   const save = (name, data) => writeFile(resolve(out, name), JSON.stringify(data, null, 2) + '\n');
-  const results = [], failures = [], actions = [], cleanup = [], screenshots = [];
+  const results = [], failures = [], actions = [], cleanup = [], screenshots = [], bindings = [], motion = [];
   const sources = [...productPaths, 'DESIGN.md', 'test/qa/ui-followup-sidebar.mjs', 'test/qa/ui-mobile-helpers.mjs',
     'test/qa/design-workbench-fixture.mjs', 'test/qa/pane-workspace-ui.mjs', 'frontend/dist/index.html',
     ...new Bun.Glob('frontend/dist/assets/*.{css,js}').scanSync('.')];
@@ -34,7 +131,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     inputHashes: Object.fromEntries(await Promise.all(sources.map(async path => [path, hash(await readFile(path))]))),
     inventory: { themes: ['dark', 'light'], languages: ['en', 'ko'], fonts: [13, 24], lists: ['short', 'long'], viewports, states,
       safeBottom: [0, 34], safeTop: '0 everywhere plus 59 at width390',
-      captures: 'every state/viewport/theme/language/font/list with safeBottom34 and safeTop0; Settings keyboard/origin captures at width390 safeTop59 safeBottom34' },
+      captures: '512 static: every state/viewport/theme/language/font/list with safeBottom34 and safeTop0; Settings keyboard/origin at width390 safeTop59 safeBottom34; 192 motion: each context x normal/reduce x open/close x before/during/after at390x844',
+      expectedStaticPNGs: 512, expectedMotionPNGs: 192 },
     limitation: 'Synthetic visualViewport getters and CDP safe insets, not physical iPhone behavior. No product style or DOM overrides.',
     started: new Date().toISOString() };
   let browser;
@@ -53,13 +151,47 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       const contextName = `${theme}-${lang}-font${fontSize}-${list}`;
       let q, cdp;
       try {
-        q = await setupMobile(browser, { theme, lang, fontSize, list }, actions);
+        const responses = [], responseJobs = [];
+        q = await setupMobile(browser, { theme, lang, fontSize, list, beforeNavigate(page, url) {
+          page.on('response', response => {
+            const path = new URL(response.url()).pathname;
+            if (new URL(response.url()).origin !== url || !(path === '/' || /\.(js|css)$/.test(path))) return;
+            responseJobs.push((async () => {
+              const bytes = await response.body(), localPath = `frontend/dist/${path === '/' ? 'index.html' : path.slice(1)}`;
+              const local = await readFile(localPath);
+              responses.push({ url: response.url(), status: response.status(), bytes: bytes.length, sha256: hash(bytes),
+                localPath, localBytes: local.length, localSha256: hash(local) });
+            })().then(() => null, error => ({ error: String(error) })));
+          });
+        } }, actions);
         const { page } = q;
+        const domURLs = await page.evaluate(() => [location.href,
+          ...[...document.querySelectorAll('script[src]')].map(e => e.src),
+          ...[...document.querySelectorAll('link[rel="stylesheet"]')].map(e => e.href)]);
+        const responseErrors = (await Promise.all(responseJobs)).filter(Boolean);
+        const binding = { context: contextName, url: q.fixture.url, domURLs, responses, responseErrors };
+        bindings.push(binding);
+        check(contextName, 'P3.served-byte-binding', responseErrors.length === 0 && bindingAssertion(binding), binding);
         cdp = await q.context.newCDPSession(page);
         const draft = `Sidebar viewport draft ${contextName}`;
         // The controlled fixture leaves the real composer editable; no message is sent.
         await page.locator('.th-pane--focused textarea').fill(draft);
+        if (!(await actionState(page)).closed) {
+          await arm(page, () => document.querySelector('.th-sidebar').getAttribute('aria-hidden') === 'true');
+          const before = await actionState(page);
+          await page.locator('.th-backdrop').click({ position: { x: 380, y: 100 } }); await complete(page); await settle(page);
+          actions.push({ action: 'backdrop-dismiss', context: contextName, before, result: await actionState(page) });
+        }
+        for (const reduced of [false, true]) {
+          await page.emulateMedia({ reducedMotion: reduced ? 'reduce' : 'no-preference' });
+          for (const direction of ['open', 'close']) {
+            const row = await drawerMotion(page, { context: contextName, reduced, direction }, capture, actions);
+            motion.push(row); check(row.name, 'P3.drawer-motion', motionAssertion(row), row);
+          }
+        }
+        await page.emulateMedia({ reducedMotion: 'no-preference' });
         await openSidebar(page);
+        actions.push({ action: 'menu-open', context: contextName, result: await actionState(page) });
         const dimensions = (await measure(page, 0)).controls.map(c => ({ width: c.rect.width, height: c.rect.height }));
         for (const [width, height] of viewports) {
           await page.evaluate(() => {
@@ -119,23 +251,30 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               } else if (list === 'long') check(name, 'P3.list-scroll-owner', false, g.body);
               await save(`${name}.json`, { geometry: g, backdrop });
               if (safeBottom === 34 && safeTop === 0) await capture(page, name);
+              const beforeSettings = await actionState(page);
               await arm(page, () => !!document.querySelector('.th-settings-panel'));
               await page.locator('.th-settings-menu > button').click(); await complete(page); await settle(page);
+              actions.push({ action: 'settings-open', scenario: name, before: beforeSettings, result: await actionState(page) });
               const settings = await settingsReachability(page, safeBottom, safeTop);
               results.push({ scenario: name, ...settings });
               if (width === 390 && safeTop === 59 && safeBottom === 34 && ['nonkeyboard-origin34', 'keyboard-origin'].includes(state)) {
                 await capture(page, `${name}-settings`);
               }
+              const beforeEscape = await actionState(page);
               await arm(page, () => !document.querySelector('.th-settings-panel'));
               await page.keyboard.press('Escape'); await complete(page);
+              actions.push({ action: 'settings-escape', scenario: name, before: beforeEscape, result: await actionState(page) });
             }
           }
         }
         await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } });
         await page.setViewportSize({ width: 390, height: 844 }); await openSidebar(page);
+        const beforeDismiss = await actionState(page);
         await arm(page, () => document.querySelector('.th-sidebar').getAttribute('aria-hidden') === 'true');
         await page.locator('.th-backdrop').click({ position: { x: 380, y: 100 } }); await complete(page);
+        actions.push({ action: 'backdrop-dismiss', context: contextName, before: beforeDismiss, result: await actionState(page) });
         await openSidebar(page);
+        actions.push({ action: 'menu-open', context: contextName, result: await actionState(page) });
         check(contextName, 'P3.draft-preserved', await page.locator('.th-pane--focused textarea').inputValue() === draft, draft);
         assert.deepEqual(q.errors, [], 'browser errors');
         assert.deepEqual(q.fixture.unexpected, [], 'unexpected fixture traffic');
@@ -146,9 +285,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         if (q) {
           try {
             if (!q.page.isClosed()) await q.page.evaluate(() => {
+              for (const animation of window.drawerAnimations ?? []) animation.cancel();
+              delete window.drawerAnimations;
               delete visualViewport.height; delete visualViewport.offsetTop;
               visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll'));
             });
+            await q.page.emulateMedia({ reducedMotion: 'no-preference' });
             if (cdp) {
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, bottom: 0, left: 0, right: 0 } });
               await cdp.detach();
@@ -169,9 +311,13 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   finally {
     if (browser) { await browser.close(); cleanup.push({ browserClosed: !browser.isConnected() }); }
     const expectedScenarios = 16 * (20 + 5 * 10);
-    const completeInventory = results.filter(r => r.id === 'P3.input').length === expectedScenarios;
+    const completeInventory = results.filter(r => r.id === 'P3.input').length === expectedScenarios
+      && motion.length === 64 && bindings.length === 16 && screenshots.length === 704;
     const clean = cleanup.filter(c => c.contextClosed && c.serverStopped && c.pendingWebSockets === 0
       && c.pendingOpens === 0 && c.pendingCreates === 0 && c.portReboundAndReleased).length === 16 && cleanup.at(-1)?.browserClosed;
+    for (const row of actions.filter(r => ['settings-open', 'settings-escape', 'backdrop-dismiss', 'menu-open'].includes(r.action))) {
+      check(row.scenario ?? row.context, `P3.action-${row.action}`, actionAssertion(row), row);
+    }
     const failed = results.filter(r => !r.pass);
     receipt.summary = { scenarios: results.filter(r => r.id === 'P3.input').length, expectedScenarios, assertions: results.length,
       failed: failed.length, screenshots: screenshots.length, completeInventory, clean,
@@ -184,6 +330,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     receipt.finished = new Date().toISOString();
     await save('receipt.json', receipt); await save('results.json', results); await save('failures.json', failures);
     await save('actions.json', actions); await save('cleanup.json', cleanup); await save('screenshots.json', screenshots);
+    await save('served-bindings.json', bindings); await save('motion.json', motion);
   }
   console.log(JSON.stringify({ status: receipt.status, exitStatus: receipt.exitStatus, ...receipt.summary, failures, out }, null, 2));
   return receipt.exitStatus;
