@@ -35,7 +35,7 @@ function activityBody(taskName: string, dagName: string): unknown {
         }],
       },
     },
-    task_digest: { tasks: [], truncated: false },
+    task_digest: { tasks: [{ task_id: `task-${taskName}`, status: "completed" }], truncated: false },
     dag_digest: { runs: [], truncated: false },
   };
 }
@@ -161,14 +161,14 @@ describe("useChatSession historical activity hydration", () => {
     expect(current?.activities.truncatedDags).toBe(true);
   });
 
-  it("preserves a push newer than the REST request while hydrating the other side", async () => {
+  it("preserves a live-touched task while admitting independent REST-only history", async () => {
     render();
     act(() => deliver(snapshotFrame("task", "new-live-task")));
 
     await resolveActivity(0, activityBody("old-history-task", "history-dag"));
 
     expect(current?.activities.tasks.has("task-new-live-task")).toBe(true);
-    expect(current?.activities.tasks.has("task-old-history-task")).toBe(false);
+    expect(current?.activities.tasks.has("task-old-history-task")).toBe(true);
     expect(current?.activities.dags.has("dag-history-dag")).toBe(true);
   });
 
@@ -579,6 +579,93 @@ describe("useChatSession historical activity hydration", () => {
     expect(current?.activities.dagFreshness?.size).toBe(1);
     await resolveActivity(1, dagBody([orderingDagRun(olderAt, "running")]));
     expect(current?.activities.dagFreshness?.size).toBe(1);
+  });
+
+  it.each([false, true])("task hydration merges newer REST and REST-only rows with retained state=%s", async retained => {
+    const task = (status: string, at: string, id = "child-1") => ({ task_id: id, name: id, status, updated_at: at });
+    const frame = (tasks: JsonObject[]): ChatServerFrame => ({ type: "extensionEvent", sessionId: session.id,
+      name: "omo.task.updated", data: { tasks } });
+    render(retained ? [frame([task("completed", completedAt)])] : []);
+    act(() => deliver(frame([task("running", olderAt)])));
+    await resolveActivity(0, { history: { task: { tasks: [task("completed", completedAt), task("running", completedAt, "rest-only")] } } });
+    expect(current?.activities.tasks.get("child-1")?.status).toBe("completed");
+    expect(current?.activities.tasks.has("rest-only")).toBe(true);
+  });
+
+  it("task touches survive activity overflow without protecting untouched rows or blocking REST winners", async () => {
+    const tasks = Array.from({ length: 125 }, (_, index) => ({ task_id: `t${index}`, name: `t${index}`, status: "running", updated_at: olderAt }));
+    const nodes = tasks.map(task => ({ id: task.task_id, task_id: task.task_id, prompt: "do", depends_on: [], state: "running" }));
+    render([
+      { type: "extensionEvent", sessionId: session.id, name: "omo.task.updated", data: { tasks: [...tasks,
+        { task_id: "untouched", name: "untouched", status: "completed", updated_at: completedAt }] } },
+      dagFrame([orderingDagRun(olderAt, "running", { nodes })]),
+    ]);
+    act(() => {
+      for (const task of tasks) deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.dag.activity",
+        data: { runId: "ordering-run", nodeId: task.task_id, taskId: task.task_id, at: "2026-09-07T10:05:00Z", activity: task.task_id } });
+      deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.task.updated", data: {
+        tasks: [{ task_id: "untouched", name: "stale", status: "running", updated_at: olderAt }], truncated_tasks: true } });
+    });
+    await resolveActivity(0, { history: { task: { tasks: [
+      { ...tasks[0], status: "completed", updated_at: completedAt },
+      { task_id: "rest-only", name: "rest-only", status: "running", updated_at: completedAt },
+    ] } } });
+    expect(current?.activities.tasks.size).toBe(126);
+    expect(current?.activities.tasks.has("untouched")).toBe(false);
+    expect(current?.activities.tasks.get("t0")).toMatchObject({ status: "completed", liveProgress: { activity: "t0" } });
+    expect(current?.activities.tasks.get("t124")?.liveProgress?.activity).toBe("t124");
+    expect(current?.activities.tasks.has("rest-only")).toBe(true);
+  });
+
+  it("hydrates compact history authority beyond the rich packed prefix", async () => {
+    render();
+    await resolveActivity(0, { history: { task_oversized: true, task: { tasks: [], truncated_tasks: true } },
+      task_digest: { tasks: [{ task_id: "compact-only", status: "completed", raw_status: "running", updated_at: completedAt }], truncated: false } });
+    expect(current?.activities.tasks.get("compact-only")).toMatchObject({ status: "completed", rawStatus: "running", updatedAt: completedAt });
+    expect(current?.activities.truncatedTasks).toBe(true);
+    act(() => deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.task.updated",
+      data: { tasks: [{ task_id: "compact-only", name: "Enriched", status: "running", updated_at: completedAt }] } }));
+    expect(current?.activities.tasks.get("compact-only")).toMatchObject({ name: "Enriched", status: "completed" });
+    expect(current?.activities.truncatedTasks).toBe(true);
+  });
+
+  it("identical task activity does not protect omission while actual activity does", async () => {
+    const tasks = ["same", "changed"].map(task_id => ({ task_id, name: task_id, status: "running", updated_at: olderAt }));
+    const activity = (taskId: string, at: string): ChatServerFrame => ({ type: "extensionEvent", sessionId: session.id,
+      name: "omo.dag.activity", data: { runId: "ordering-run", nodeId: taskId, taskId, at, activity: "work" } });
+    render([{ type: "extensionEvent", sessionId: session.id, name: "omo.task.updated", data: { tasks } },
+      dagFrame([orderingDagRun(olderAt, "running", { nodes: tasks.map(task => ({ id: task.task_id, prompt: "do", depends_on: [], state: "running" })) })]),
+      activity("same", completedAt), activity("changed", completedAt)]);
+    act(() => { deliver(activity("same", completedAt)); deliver(activity("changed", "2026-09-07T10:03:00Z")); });
+    await resolveActivity(0, { history: { task: { tasks: [] } } });
+    expect([...current?.activities.tasks.keys() ?? []]).toEqual(["changed"]);
+  });
+
+  it("replays the newest buffered task progress for REST-only tasks even when stale progress arrives last", async () => {
+    render();
+    const activity = (at: string, currentTool: string): ChatServerFrame => ({ type: "extensionEvent", sessionId: session.id,
+      name: "omo.dag.activity", data: { runId: "ordering-run", nodeId: "n1", taskId: "child-1", at, currentTool } });
+    act(() => { deliver(activity("2026-09-07T10:05:00Z", "new")); deliver(activity(completedAt, "old")); });
+    await resolveActivity(0, { history: { task: { tasks: [{ task_id: "child-1", name: "Child", status: "running", updated_at: olderAt }] },
+      dag: { runs: [orderingDagRun(olderAt, "running")] } } });
+    expect(current?.activities.tasks.get("child-1")?.liveProgress?.currentTool).toBe("new");
+  });
+
+  it("retains newer activity when an equal rich row enriches compact authority", async () => {
+    render();
+    await resolveActivity(0, { history: { task: null, task_oversized: true, dag: { runs: [orderingDagRun(olderAt, "running")] } },
+      task_digest: { tasks: [{ task_id: "child-1", status: "completed", raw_status: "running", updated_at: completedAt }], truncated: false } });
+    act(() => {
+      deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.dag.activity",
+        data: { runId: "ordering-run", nodeId: "n1", taskId: "child-1", at: "2026-09-07T10:05:00Z", currentTool: "new" } });
+      deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.task.updated", data: { tasks: [
+        { task_id: "child-1", name: "Rich", status: "running", updated_at: completedAt, live_progress: { current_tool: "old" } },
+      ] } });
+    });
+    expect(current?.activities.tasks.get("child-1")).toMatchObject({ status: "completed", name: "Rich", liveProgress: { currentTool: "new" } });
+    act(() => deliver({ type: "extensionEvent", sessionId: session.id, name: "omo.task.updated",
+      data: { tasks: [{ task_id: "child-1", name: "Revived", status: "running", updated_at: "2026-09-07T10:03:00Z" }] } }));
+    expect(current?.activities.tasks.get("child-1")?.status).toBe("running");
   });
 
 });
