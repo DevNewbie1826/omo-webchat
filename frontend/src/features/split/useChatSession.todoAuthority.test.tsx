@@ -13,7 +13,7 @@ const B = [{ name: "Canonical B", tasks: [{ content: "new work", status: "in_pro
 const ready = (bindingId = "binding-a", piSessionId = "durable-a"): ChatServerFrame => ({
   type: "ready", sessionId: session.id, piSessionId, bindingId, resumed: true,
 });
-const projection = (phases: readonly TodoPhase[] | null, requestGeneration = 1, bindingId = "binding-a", durableSessionId = "durable-a"): ChatServerFrame => ({
+const projection = (phases: readonly TodoPhase[] | null, requestGeneration = 1, bindingId = "binding-a", durableSessionId = "durable-a"): Extract<ChatServerFrame, { readonly type: "chat.todo" }> => ({
   type: "chat.todo", sessionId: session.id, durableSessionId, bindingId, requestGeneration, status: "ready",
   source: phases === null
     ? { kind: "absent", leafId: "leaf", entryId: null, entryIndex: null }
@@ -67,11 +67,15 @@ describe("canonical todo hook authority", () => {
       deliver({ type: "entries", sessionId: session.id, final: true, entries: [
         { type: "message", message: { role: "user", content: "keep transcript", timestamp: 1 } },
         { type: "custom", customType: "senpi.todo-state", data: { schema: "v2", phases: A } },
+        { type: "tool", toolName: "todo", result: { details: { phases: A } } },
+        { type: "message", message: { role: "toolResult", toolName: "todo", content: [{ text: "written" }], details: { phases: A } } },
       ] });
     });
     expect(current.activities.todo).toEqual(B);
     expect(current.toolCalls["late"]?.details).toMatchObject({ phases: A });
-    expect(current.messages.map(messageText)).toEqual(["keep transcript"]);
+    expect(current.messages.map(messageText)).toEqual(["keep transcript", ""]);
+    expect(current.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+    expect(current.messages[1]?.blocks).toEqual([{ kind: "tool", name: "todo", text: "written" }]);
   });
 
   it("renders canonical replacement, unavailable retention, reopen and clear on the permanent todo tab", () => {
@@ -93,8 +97,11 @@ describe("canonical todo hook authority", () => {
     expect(container.querySelector(".th-activity-shelf")).toBeNull();
   });
 
-  it("commits custom-only pushes without tool or entries frames", () => {
-    act(() => { deliver(ready()); deliver(projection(B)); });
+  it.each(["custom", "legacy-tool"] as const)("commits canonical %s pushes without tool or entries frames", kind => {
+    act(() => {
+      deliver(ready());
+      deliver({ ...projection(B), source: { kind, leafId: "leaf", entryId: "state", entryIndex: 0 } });
+    });
     expect(current.activities.todo).toEqual(B);
     expect(current.toolCalls).toEqual({});
     expect(current.messages).toEqual([]);
