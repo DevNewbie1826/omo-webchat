@@ -252,6 +252,7 @@
   "notice.fallbackReason": "사유",
   "notice.autoRetryStarted": "자동 재시도 시작",
   "notice.autoRetryEnded": "자동 재시도 종료",
+  "notice.compactionError": "컨텍스트 압축 실패",
   "notice.highReasoningWarning": "고추론 모델 경고",
   "notice.highReasoningGuidance": "ultrabrain 위임 권장",
   "notice.system": "시스템",

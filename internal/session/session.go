@@ -96,6 +96,7 @@ type Session struct {
 	completedCompactions                                                    map[string]struct{}
 	completedCompactionFIFO                                                 [][]string
 	completedUnpaired                                                       []string
+	compactionDiagnostics                                                   [][2]string
 	abortInFlight                                                           bool
 	sendOwner                                                               *sendOperationOwner
 	closeTxn                                                                *closeTransaction

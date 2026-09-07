@@ -299,7 +299,8 @@ type Compact struct {
 
 func (Compact) commandName() string { return CmdCompact }
 
-// SetAutoCompaction enables or disables threshold/overflow auto compaction.
+// SetAutoCompaction sets the session-scoped proactive threshold policy.
+// Overflow recovery remains enabled regardless of this setting.
 // Enabled must serialize even when false, so it carries no omitempty.
 type SetAutoCompaction struct {
 	SessionID string `json:"sessionId"`
