@@ -1001,6 +1001,7 @@ func TestChatSendResumesIdleUnloadedSessionBeforeOriginalPrompt(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
@@ -1046,6 +1047,7 @@ func TestAdmissionTimeFollowUpRecoveryRemainsGatedWhenIdle(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
@@ -1107,6 +1109,7 @@ func TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetry(t *testing.T) {
 			frames.next(t, "ready")
 			writeClient(t, conn, map[string]any{"type": "ping"})
 			frames.next(t, "pong")
+			awaitCommandFence(t, conn, frames)
 			h.daemon.UnloadSession(h.path)
 			h.markSessionResumable(t)
 			beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
@@ -1253,6 +1256,7 @@ func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T)
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 
 	beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
 	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
@@ -1300,6 +1304,7 @@ func TestChatSendDetachedResumableCompletionResumesAndRetriesOnce(t *testing.T) 
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 
 	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
 	h.daemon.SetPromptScript(h.path,
@@ -1385,6 +1390,7 @@ func TestResumeAndOriginalRetryStayAheadOfWaitingSend(t *testing.T) {
 	first.next(t, "ready")
 	writeClient(t, firstConn, map[string]any{"type": "ping"})
 	first.next(t, "pong")
+	awaitCommandFence(t, firstConn, first)
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
 	beforeOpen := h.daemon.RequestCount(omorpc.CmdOpenSession)
@@ -1428,6 +1434,7 @@ func TestQueuedControlsRefreshRecoveredBindingAfterAdmissionWait(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
 
@@ -1482,6 +1489,7 @@ func TestPostHydrationMetadataChangeSettlesRecoveredSend(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
 
@@ -1515,6 +1523,7 @@ func TestPostHydrationQuarantineSettlesRecoveredSend(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
 
@@ -1576,6 +1585,7 @@ func TestRecoveryReplayCannotEndConcurrentRebindReplay(t *testing.T) {
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.UnloadSession(h.path)
 	h.markSessionResumable(t)
 
@@ -1659,6 +1669,7 @@ func TestDetachedResumableRetrySurvivesOriginatingSocketDisconnect(t *testing.T)
 	frames.next(t, "ready")
 	writeClient(t, conn, map[string]any{"type": "ping"})
 	frames.next(t, "pong")
+	awaitCommandFence(t, conn, frames)
 
 	releasePrompt := h.daemon.BlockHandler(omorpc.CmdPrompt)
 	h.daemon.SetPromptScript(h.path,
