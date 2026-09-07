@@ -78,12 +78,13 @@ export function click(element: Element): void {
 }
 
 export function openShelf(container: ParentNode): HTMLButtonElement {
-  const bar = requireElement(
-    container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-    "collapsed summary bar",
+  // P5: collapse lives on the separate compact chevron control.
+  const fold = requireElement(
+    container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+    "separate fold control",
   );
-  click(bar);
-  return bar;
+  click(fold);
+  return fold;
 }
 
 /** Mutable React mount — mutation is the fixture purpose. */

@@ -307,5 +307,11 @@
   "activity.status.blocked": "blocked",
   "activity.status.scheduled": "scheduled",
   "activity.status.skipped": "skipped",
-  "activity.partial": "Partial history shown"
+  "activity.partial": "Partial history shown",
+  "activity.tabs": "Activity sections",
+  "activity.fold": "Fold or expand activity panel",
+  "activity.subagents": "Subagents",
+  "activity.emptyTodo": "No todo list yet",
+  "activity.emptyAgents": "No agent tasks yet",
+  "activity.emptyDag": "No DAG runs yet"
 }

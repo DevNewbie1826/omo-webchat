@@ -326,6 +326,33 @@ Choose a tested foreground/background token pair instead.
   owns the activity panel gap for the entire open intent, including hidden
   panels. Registration and preference changes recompute the complete shelf
   set; saved/requested sizes remain independent of viewport allocations.
+- Activity shelf anatomy: one summary/status row (role=status) joined by a
+  separate compact chevron fold control — the summary text is never the
+  toggle. When any activity exists, three equal primary tabs in user order
+  (Todo / Subagents / DAG) sit in a `tablist` with compact per-domain counts;
+  empty tabs keep their position and show a proper empty state. Initial
+  selection is the first available content in user order; after an explicit
+  choice, new activity never steals the selection. All three tabpanels stay
+  mounted (hidden tabs carry `hidden`), so per-view scroll state and DOM
+  identity survive switching, and hidden panels run no motion. Open intent,
+  tab selection, DAG view mode and the user's panel height are four separate
+  states: opening, folding, resizing and switching tabs never reset each
+  other. Real tab semantics: roving tabindex, Arrow/Home/End navigation,
+  `aria-selected`/`aria-controls`/`tabpanel` wiring.
+- Activity DAG view: graph is the default; the List mode remains available
+  inside the DAG tab and the choice survives tab and fold switches. Nodes
+  reuse the parsed waves/layering and size their boxes/row pitch to the user's
+  type setting. Actual SVG glyph widths determine two-line title wrapping;
+  separate line clips protect the status lane, and the full prompt stays in
+  the `<title>`. Nodes expose their state as visible text plus a
+  non-colour glyph. Edges are directional (arrowhead markers). Motion is
+  state-purposeful only: the running node's dashed ring rotates while the
+  node is running and visible; a completion or failure plays one brief
+  settle; a genuinely new node plays one restrained entry. No elapsed-time
+  tick, tab switch, or fold reopen replays the graph: completion, cancellation
+  and leaving the graph consume one-shot motion. Reduced motion shows the
+  static glyph/word state. The peer tabs remain visible even when inner panel
+  headers are hidden for lack of headroom.
 - The content shell between header and composer owns auxiliary overflow only
   when fixed bands exceed the column. Banners, shelves, queue and recovery
   actions remain reachable by scrolling; the transcript retains its normal
@@ -677,7 +704,10 @@ At 390x844 and comparable narrow sizes:
 
 - Honor `prefers-reduced-motion`.
 - Transitions are 120-180ms and communicate hover, focus, disclosure, or
-  entrance only.
+  entrance only. Activity DAG motion is state-purposeful (running ring
+  rotation, one brief completion/failure settle, one restrained new-node
+  entry); nothing animates per elapsed-time tick, in hidden panels, or on
+  tab changes.
 - Every icon button has an accessible name.
 - Dialogs trap and restore focus.
 - Command list semantics follow combobox/listbox behavior.

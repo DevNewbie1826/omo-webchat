@@ -11,7 +11,6 @@ import {
 } from "./ActivityShelf.support";
 import { requireElement } from "./chatPaneTestHarness";
 
-const NODE_WIDTH = 118;
 const koreanLabel = "한글 라벨이 노드 폭을 넘게 길어지는 경우 상태 글리프와 겹칩니다";
 
 describe("ActivityShelf dag graph label clipping", () => {
@@ -124,9 +123,10 @@ describe("ActivityShelf dag graph label clipping", () => {
     const width = Number(rect.getAttribute("width"));
     expect(Number.isFinite(x)).toBe(true);
     expect(Number.isFinite(width)).toBe(true);
-    // The clip must start at or after the label's x origin and end strictly
-    // left of the glyph zone, which begins at NODE_WIDTH - 15.
+    expect(clipEl.children).toHaveLength(1);
+    const glyph = requireElement(harness.container.querySelector('.th-activity-gstatus--running'), 'running glyph');
+    const glyphLeft = Number(glyph.getAttribute('cx')) - Number(glyph.getAttribute('r'));
     expect(x).toBeGreaterThanOrEqual(7);
-    expect(x + width).toBeLessThanOrEqual(NODE_WIDTH - 22);
+    expect(x + width).toBeLessThanOrEqual(glyphLeft - 2);
   });
 });

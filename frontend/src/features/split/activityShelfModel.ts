@@ -3,6 +3,9 @@ import type { ActivityDagRun, ActivityTask, TodoPhase } from "./activityTypes";
 
 export type DagView = "list" | "graph";
 export type StatusKind = "running" | "ok" | "error" | "muted";
+/** Primary activity regions in the user's fixed order. */
+export type ShelfTab = "todo" | "agents" | "dag";
+export const SHELF_TABS: readonly ShelfTab[] = ["todo", "agents", "dag"];
 
 export const TERMINAL_TASK_STATUSES: ReadonlySet<string> = new Set([
   "completed",

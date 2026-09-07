@@ -193,8 +193,8 @@ describe("ActivityShelf resize", () => {
 
   function openShelf(): void {
     const bar = requireElement(
-      container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-      "collapsed summary bar",
+      container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+      "separate fold control",
     );
     act(() => {
       bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -214,16 +214,16 @@ describe("ActivityShelf resize", () => {
     expect(panelOf().contains(handle)).toBe(false);
   });
 
-  it("renders the handle as a standalone grip between the summary bar and the panel", () => {
+  it("renders the handle as a standalone grip between the tab strip and the panel", () => {
     renderShelf();
     openShelf();
     const handle = handleOf();
     expect(panelOf().contains(handle)).toBe(false);
-    const barRow = requireElement(
-      container.querySelector<HTMLElement>(".th-activity-bar-row"),
-      "summary bar row",
+    const tabStrip = requireElement(
+      container.querySelector<HTMLElement>(".th-activity-tabs"),
+      "activity tab strip",
     );
-    expect(handle.previousElementSibling).toBe(barRow);
+    expect(handle.previousElementSibling).toBe(tabStrip);
     expect(handle.nextElementSibling).toBe(panelOf());
     // The grip sits in normal flow, not absolutely positioned over the panel.
     const css = readFileSync("src/styles/activity-shelf.css", "utf8");
@@ -548,11 +548,11 @@ describe("ActivityShelf resize", () => {
       mockRect(fixture.column, 300);
       observer?.fireAt(fixture.column, 300);
       expect(container.querySelector(".th-activity-panel")).toBeNull();
-      expect(container.querySelector(".th-activity-bar")?.getAttribute("aria-expanded")).toBe("false");
+      expect(container.querySelector("button.th-activity-fold")?.getAttribute("aria-expanded")).toBe("false");
       mockRect(fixture.column, 800);
       HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
       expect(container.querySelector(".th-activity-panel")).not.toBeNull();
-      expect(container.querySelector(".th-activity-bar")?.getAttribute("aria-expanded")).toBe("true");
+      expect(container.querySelector("button.th-activity-fold")?.getAttribute("aria-expanded")).toBe("true");
     });
 
     it("clears the inline clamp and the shelf's no-yield shrink when the shelf closes", () => {
@@ -565,8 +565,8 @@ describe("ActivityShelf resize", () => {
       observer?.fireAt(fixture.column, 500);
       expect(panelOf().style.maxHeight).toBe("176px");
       const bar = requireElement(
-        container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-        "collapsed summary bar",
+        container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+        "separate fold control",
       );
       act(() => {
         bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -687,8 +687,8 @@ describe("ActivityShelf resize", () => {
       observer?.fire(18);
       expect(panel.getAttribute("data-headless")).toBe("true");
       const bar = requireElement(
-        container.querySelector<HTMLButtonElement>(".th-activity-bar"),
-        "collapsed summary bar",
+        container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
+        "separate fold control",
       );
       act(() => {
         bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));

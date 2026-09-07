@@ -315,11 +315,12 @@ describe("ActivityShelf", () => {
       );
     });
     openShelf(harness.container);
+    // P5: the compact roster count moved into the Subagents tab.
     const counts = requireElement(
-      harness.container.querySelector(".th-activity-section-counts"),
+      harness.container.querySelector('[data-activity-tab="agents"] .th-activity-tab-count'),
       "agents roster counts",
     );
-    expect(counts.textContent).toBe("2 running / 3 done");
+    expect(counts.textContent).toBe("2/6");
   });
 
   it("advances live ages once per second and stops ticking after work becomes terminal", () => {

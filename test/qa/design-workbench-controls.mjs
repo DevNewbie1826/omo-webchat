@@ -138,7 +138,7 @@ export function assertShelfAllocation(state) {
 export async function exerciseShelves({ page }, shot) {
   const actions = [];
   for (const kind of ['goal', 'activity']) {
-    const selector = kind === 'goal' ? '.th-goal-bar' : '.th-activity-shelf .th-activity-bar';
+    const selector = kind === 'goal' ? '.th-goal-bar' : '.th-activity-shelf button.th-activity-fold';
     const button = page.locator(selector);
     const reachable = await revealAuxiliaryControl(page, button);
     await armShelf(page, kind, true);
