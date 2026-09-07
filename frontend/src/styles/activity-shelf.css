@@ -670,7 +670,7 @@ button.th-activity-bar:hover,
 /* The running node's dashed ring rotates while the node runs and the panel
    is visible (a display:none subtree runs no animations). */
 @keyframes th-dag-run-spin {
-  to { transform: rotate(300deg); }
+  to { transform: rotate(360deg); }
 }
 
 .th-activity-gstatus--running {

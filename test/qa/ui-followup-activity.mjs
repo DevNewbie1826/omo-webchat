@@ -3,8 +3,9 @@
  * Inventory: baseline old controls; tabs/counts/empty/keyboard/history/freshness;
  * per-view scroll, List/fold, resize/reload; both-open desktop/mobile/340/short;
  * dark/light x en/ko x font13/24 graph/agents/tabs; directional/horizontal graph;
- * actual entry/completed/failed/running frames, interrupted tab/fold/List,
- * hidden mounted/unmounted and reduced motion. No readiness polling.
+ * actual entry/completed/failed/running frames, six independently seeded
+ * interrupted tab/fold/List cases with viewport/ancestor-clip proof,
+ * elapsed-only identity/no-replay, hidden and reduced motion. No readiness polling.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -59,6 +60,7 @@ const tab = id => `[data-activity-tab="${id}"]`;
 const panel = id => `[data-activity-tabpanel="${id}"]`;
 const fold = 'button.th-activity-fold';
 const view = id => `.th-activity-view-btn[data-view="${id}"]`;
+const interruptionCases = ['tab', 'fold', 'list'].flatMap(switchName => [false, true].map(terminal => ({ switchName, terminal })));
 async function state(page) {
   return page.evaluate(() => {
     const box = s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null;
@@ -117,11 +119,49 @@ async function open(q) { await select(q, 'todo'); }
 async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
 }
-async function capture(q, name, motion = false) {
+async function subjectBounds(q, subject) {
+  const proof = await q.page.evaluate(({ id, future }) => {
+    const node = document.querySelector(`[data-node="${id}"]`);
+    if (future ? node !== null : node === null) throw new Error(`Unexpected subject presence: ${id}/${future}`);
+    // The new child of c occupies layer2/row1: the real e column and k row.
+    // Measure that EMPTY position without inserting a placeholder into the SPA.
+    const anchor = future ? document.querySelector('[data-node="e"]') : node;
+    const box = anchor.getBoundingClientRect();
+    const row = future ? document.querySelector('[data-node="k"]').getBoundingClientRect() : box;
+    const rect = { left: box.left, right: box.right, top: row.top, bottom: row.top + box.height, width: box.width, height: box.height };
+    const viewport = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+    const intersection = { ...rect }, clips = [];
+    function intersect(bounds, x, y) {
+      if (x) { intersection.left = Math.max(intersection.left, bounds.left); intersection.right = Math.min(intersection.right, bounds.right); }
+      if (y) { intersection.top = Math.max(intersection.top, bounds.top); intersection.bottom = Math.min(intersection.bottom, bounds.bottom); }
+    }
+    intersect(viewport, true, true);
+    let visible = getComputedStyle(anchor).visibility === 'visible' && anchor.getClientRects().length > 0;
+    for (let ancestor = anchor.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor), b = ancestor.getBoundingClientRect();
+      visible &&= style.display !== 'none' && style.visibility === 'visible';
+      const x = style.overflowX !== 'visible', y = style.overflowY !== 'visible';
+      if (!x && !y) continue;
+      const bounds = ancestor instanceof SVGElement ? { left: b.left, top: b.top, right: b.right, bottom: b.bottom }
+        : { left: b.left + ancestor.clientLeft, top: b.top + ancestor.clientTop, right: b.left + ancestor.clientLeft + ancestor.clientWidth, bottom: b.top + ancestor.clientTop + ancestor.clientHeight };
+      intersect(bounds, x, y);
+      clips.push({ tag: ancestor.tagName, class: ancestor.getAttribute('class'), overflowX: style.overflowX, overflowY: style.overflowY, bounds, intersection: { ...intersection }, scrollTop: ancestor.scrollTop, scrollLeft: ancestor.scrollLeft });
+    }
+    const fullyInside = visible && rect.width > 0 && rect.height > 0 && ['left', 'right', 'top', 'bottom'].every(edge => Math.abs(rect[edge] - intersection[edge]) <= .5);
+    return { at: performance.now(), id, future: !!future, present: !!node, basis: future ? { column: 'e', row: 'k', dependency: 'c' } : null, rect, viewport, clips, intersection, fullyInside };
+  }, subject);
+  assert(proof.fullyInside, `Subject outside viewport/ancestor clips: ${JSON.stringify(proof)}`);
+  return proof;
+}
+async function capture(q, name, motion = false, subject = null) {
   const settlement = motion ? [] : await settled(q.page);
   const data = await state(q.page), path = join(q.out, `${name}.png`);
   if (!motion && data.visible.includes('dag')) assert(data.nodes.every(n => n.opacity === '1'), 'settled graph is not a transitional blank');
+  const beforeScreenshot = subject ? await subjectBounds(q, subject) : null;
+  if (q.record.options.elapsedOnly) data.elapsedBeforeScreenshot = await q.page.evaluate(() => window.elapsedSnapshot());
   await q.page.screenshot({ path, animations: 'allow' });
+  if (q.record.options.elapsedOnly) data.elapsedAfterScreenshot = await q.page.evaluate(() => window.elapsedSnapshot());
+  if (subject) data.subject = { beforeScreenshot, afterScreenshot: await subjectBounds(q, subject) };
   q.manifest.push({ name: `${name}.png`, sha256: sha(readFileSync(path)), fixture: q.record.id, url: q.record.url, options: q.record.options, motion, settlement, state: data, actionCount: q.record.actions.length, sourceIdentity: q.identityHash });
   return data;
 }
@@ -195,7 +235,9 @@ async function session(browser, receipt, options, body) {
         record.assets.push(item); assert.equal(item.sha256, item.diskHash, 'served asset identity');
       })());
     });
-    const seeds = seed(), history = options.history ?? seeds.history;
+    const seeds = seed();
+    if (options.elapsedOnly) seeds.tasks[0].created_at = new Date(Date.now() - 5000).toISOString();
+    const history = options.history ?? seeds.history;
     record.seed = structuredClone({ history, todo: options.noTodo ? null : seeds.todo });
     await page.route('**/chats/*/activity', route => route.fulfill({ json: { history } }));
     // Browser-side readiness is installed before navigation. No wire request that
@@ -354,10 +396,10 @@ function deliverDag(q, run) {
   q.record.actions.push({ action: 'dag-frame', run: structuredClone(run) });
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa', truncated_runs: false, runs: [run] } });
 }
-async function motion(q, interruptions = false) {
+async function motion(q, interruption = null) {
   await select(q, 'dag'); await settled(q.page);
   const base = q.seeds.run, data = [];
-  if (!interruptions) {
+  if (!interruption) {
     await capture(q, 'motion-running-before', true);
     // Sample actual consecutive compositor frames; time is the behavior under test.
     const running = await q.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => {
@@ -395,16 +437,20 @@ async function motion(q, interruptions = false) {
     assert.deepEqual((await state(q.page)).nodes.map(n => n.transform), before.nodes.map(n => n.transform));
     for (const handle of handles) { assert(await handle.evaluate(e => e === document.querySelector(`[data-node="${e.dataset.node}"]`))); await handle.dispose(); }
   } else {
-    for (const [switchName, selector] of [['tab', tab('todo')], ['fold', fold], ['list', view('list')]]) for (const terminal of [false, true]) {
+    // Every interruption has its own browser context and unchanged six-node seed.
+    const { switchName, terminal } = interruption;
+    const selector = { tab: tab('todo'), fold, list: view('list') }[switchName];
+    {
       const id = terminal ? 'c' : `new-${switchName}`;
       const running = { ...base, nodes: base.nodes.map(n => n.id === 'c' ? { ...n, state: 'running' } : n), updated_at: new Date().toISOString() };
       await arm(q.page, () => document.querySelector('[data-node="c"]')?.classList.contains('th-activity-gnode--running'));
       deliverDag(q, running); await complete(q.page); await settled(q.page);
-      const next = { ...running, nodes: terminal ? running.nodes.map(n => n.id === id ? { ...n, state: 'completed' } : n) : [...running.nodes, { id, label: 'Interrupted entry', prompt: 'Interrupted entry', depends_on: ['b'], state: 'running' }] };
-      await capture(q, `interrupt-${switchName}-${terminal}-before`);
+      const next = { ...running, nodes: terminal ? running.nodes.map(n => n.id === id ? { ...n, state: 'completed' } : n) : [...running.nodes, { id, label: 'Interrupted entry', prompt: 'Interrupted entry', depends_on: ['c'], state: 'running' }] };
+      const before = await capture(q, `interrupt-${switchName}-${terminal}-before`, false, { id, future: !terminal });
       await motionArm(q, id, terminal ? 'th-dag-node-settle' : 'th-dag-node-enter', selector, true);
       deliverDag(q, next); const events = await q.page.evaluate(() => window.motionSignal);
-      await capture(q, `interrupt-${switchName}-${terminal}-during`, true);
+      const during = await capture(q, `interrupt-${switchName}-${terminal}-during`, true, { id });
+      assert.deepEqual(during.subject.beforeScreenshot.rect, before.subject.afterScreenshot.rect, 'actual subject occupies its captured before/future position');
       const cancel = await q.page.evaluate(selector => new Promise((done, fail) => {
         const a = window.motionAnimation, target = a.effect.target;
         const timer = setTimeout(() => { target.removeEventListener('animationcancel', cancelled); fail(new Error('Interrupted animation cancel deadline')); }, 8000);
@@ -416,19 +462,93 @@ async function motion(q, interruptions = false) {
       q.record.actions.push({ action: 'interruption-events', switchName, terminal, events });
       const hidden = await capture(q, `interrupt-${switchName}-${terminal}-hidden`, true);
       assert.equal(hidden.animations.filter(a => /th-dag/.test(a.name)).length, 0);
+      await q.page.evaluate(() => {
+        window.returnStarts = [];
+        window.returnListener = e => { if (/^th-dag-node-(enter|settle)$/.test(e.animationName)) window.returnStarts.push({ name: e.animationName, id: e.target.getAttribute('data-node'), at: performance.now() }); };
+        document.addEventListener('animationstart', window.returnListener, true);
+      });
       if (switchName === 'fold') await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
       if (switchName === 'tab') await select(q, 'dag');
       if (switchName === 'list') await changeView(q, 'graph');
       const returned = await state(q.page);
       assert(!returned.animations.some(a => a.node === id && /enter|settle/.test(a.name)), `interrupted motion replay ${switchName}/${terminal}`);
-      await capture(q, `interrupt-${switchName}-${terminal}-return`); data.push({ switchName, terminal, events, hidden, returned });
-      Object.assign(base, next);
+      const returnFrame = await capture(q, `interrupt-${switchName}-${terminal}-return`, false, { id });
+      const returnStarts = await q.page.evaluate(() => { document.removeEventListener('animationstart', window.returnListener, true); return window.returnStarts; });
+      assert.deepEqual(returnStarts, [], 'return must not restart any one-shot animation');
+      assert.deepEqual(returnFrame.subject.beforeScreenshot.rect, before.subject.afterScreenshot.rect, 'return position is stable');
+      data.push({ switchName, terminal, events, before, during, hidden, returned, returnFrame, returnStarts });
     }
   }
   await select(q, 'todo'); const hidden = await state(q.page);
   assert(hidden.nodes.length > 0); assert.equal(hidden.animations.filter(a => /th-dag/.test(a.name)).length, 0);
-  await capture(q, `motion-${interruptions ? 'interrupt' : 'normal'}-mounted-hidden`);
+  const hiddenName = !interruption ? 'normal' : interruption.switchName === 'tab' && !interruption.terminal ? 'interrupt' : `interrupt-${interruption.switchName}-${interruption.terminal}`;
+  await capture(q, `motion-${hiddenName}-mounted-hidden`);
   return { data, hidden };
+}
+
+async function elapsedOnly(q) {
+  await select(q, 'dag'); await settled(q.page);
+  const actionStart = q.record.actions.length, trafficStart = q.fixture.traffic.length;
+  await q.page.evaluate(({ taskName, runId }) => {
+    const row = [...document.querySelectorAll('.th-activity-agent')].find(e => e.querySelector('.th-activity-agent-name')?.textContent === taskName);
+    const label = row?.querySelector('.th-activity-agent-meta:not(.th-activity-agent-turns):not(.th-activity-agent-toolcalls):not(.th-activity-agent-rate):not(.th-activity-quiet-note)');
+    if (!label) throw new Error('Elapsed subject is absent');
+    const ids = new WeakMap(); let serial = 0;
+    const identity = element => { if (!ids.has(element)) ids.set(element, ++serial); return ids.get(element); };
+    window.elapsedStarts = [];
+    window.elapsedListener = e => {
+      if (e.target.closest?.('.th-activity-shelf')) window.elapsedStarts.push({ name: e.animationName, node: e.target.closest('[data-node]')?.dataset.node ?? null, at: performance.now(), elapsed: e.elapsedTime });
+    };
+    window.elapsedSnapshot = () => ({
+      at: performance.now(), label: label.textContent, labelIdentity: identity(label), labelConnected: label.isConnected,
+      agentsHidden: row.closest('[data-activity-tabpanel]').hidden,
+      dagVisible: !document.querySelector('[data-activity-tabpanel="dag"]').hidden,
+      runs: [...document.querySelectorAll('.th-activity-dag')].map(e => ({ runId, identity: identity(e), rect: e.getBoundingClientRect().toJSON() })),
+      nodes: [...document.querySelectorAll('.th-activity-gnode')].map(e => ({ id: e.dataset.node, identity: identity(e), transform: e.getAttribute('transform'), rect: e.getBoundingClientRect().toJSON() })),
+      animations: document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf')).map(a => ({ name: a.animationName ?? a.transitionProperty, time: a.currentTime, playState: a.playState, node: a.effect.target.closest('[data-node]')?.dataset.node ?? null })),
+      starts: [...window.elapsedStarts],
+    });
+    window.awaitElapsedMutation = () => new Promise((done, fail) => {
+      const before = window.elapsedSnapshot(); let frame;
+      const observer = new MutationObserver(() => {
+        if (label.textContent === before.label) return;
+        const mutation = window.elapsedSnapshot(); observer.disconnect();
+        // Observe the native animation frame after React's timer-driven render,
+        // so animationstart dispatch cannot trail our no-replay assertion.
+        frame = requestAnimationFrame(() => { cleanup(); done({ before, mutation, afterFrame: window.elapsedSnapshot() }); });
+      });
+      const timer = setTimeout(() => { cleanup(); fail(new Error('Actual elapsed-label mutation deadline')); }, 8000);
+      function cleanup() { clearTimeout(timer); cancelAnimationFrame(frame); observer.disconnect(); }
+      observer.observe(label, { subtree: true, childList: true, characterData: true });
+    });
+    document.addEventListener('animationstart', window.elapsedListener, true);
+  }, { taskName: q.seeds.tasks[0].name, runId: q.seeds.run.run_id });
+  try {
+    const before = await capture(q, 'elapsed-only-before', true);
+    // No fixture action, clock override, or DAG update triggers this signal.
+    const tick = await q.page.evaluate(() => window.awaitElapsedMutation());
+    const after = await capture(q, 'elapsed-only-after', true);
+    const frames = [before.elapsedBeforeScreenshot, before.elapsedAfterScreenshot, tick.before, tick.mutation, tick.afterFrame, after.elapsedBeforeScreenshot, after.elapsedAfterScreenshot];
+    for (const frame of frames) {
+      assert(frame.agentsHidden && frame.dagVisible && frame.labelConnected);
+      assert.equal(frame.labelIdentity, frames[0].labelIdentity);
+      assert.deepEqual(frame.runs, frames[0].runs, 'elapsed tick preserves run DOM and position');
+      assert.deepEqual(frame.nodes, frames[0].nodes, 'elapsed tick preserves node DOM and positions');
+      assert.equal(frame.nodes.length, q.seeds.run.nodes.length);
+      assert(!frame.animations.some(a => /^th-dag-node-(enter|settle)$/.test(a.name)), 'elapsed tick must not replay one-shot motion');
+      assert(!frame.starts.some(a => /^th-dag-node-(enter|settle)$/.test(a.name)), 'no one-shot animationstart across elapsed capture');
+    }
+    assert.notEqual(tick.before.label, tick.mutation.label, 'real elapsed text changed');
+    assert.equal(q.record.actions.length, actionStart, 'no fixture action during elapsed observation');
+    const traffic = structuredClone(q.fixture.traffic.slice(trafficStart));
+    assert(!traffic.some(e => e.frame?.name === 'omo.dag.updated' || e.frame?.name === 'omo.task.updated'), 'no activity data update substitutes for elapsed time');
+    const result = { before, tick, after, traffic, actionStart, actionEnd: q.record.actions.length };
+    q.record.actions.push({ action: 'native-elapsed-only', tick, traffic });
+    return result;
+  } finally {
+    await q.page.evaluate(() => document.removeEventListener('animationstart', window.elapsedListener, true));
+    q.record.cleanup.elapsedListenerRemoved = true;
+  }
 }
 
 /** Derived navigation aids, never additional SPA evidence or a visual verdict. */
@@ -456,7 +576,7 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
   out = resolve(out); mkdirSync(out, { recursive: true });
   const receipt = { phase, out, command: `bun test/qa/ui-followup-activity.mjs --phase ${phase} --out ${out}`, startedAt: new Date().toISOString(), identity: await identity(), fixtures: [], scenarios: [], manifest: [] };
   receipt.identityHash = sha(JSON.stringify(receipt.identity));
-  writeFileSync(join(out, 'inventory.json'), JSON.stringify({ phase, groups: ['tabs', 'empty-three', 'initial', 'history-freshness', 'scroll', 'resize-reload', 'shared-hooks', 'allocation-4', 'geometry-8', 'motion', 'interruption-6', 'reduced'], command: receipt.command, identity: receipt.identity }, null, 2));
+  writeFileSync(join(out, 'inventory.json'), JSON.stringify({ phase, groups: ['tabs', 'empty-three', 'initial', 'history-freshness', 'scroll', 'resize-reload', 'shared-hooks', 'allocation-4', 'geometry-8', 'motion', 'interruption-6-independent', 'elapsed-only', 'reduced'], command: receipt.command, identity: receipt.identity }, null, 2));
   const { chromium } = await import(qaPlaywright), browser = await chromium.launch({ channel: 'chrome', headless: true });
   async function scenario(name, options, body) {
     const entry = { name, options, fixtures: [] }; receipt.scenarios.push(entry); const start = receipt.fixtures.length;
@@ -480,7 +600,7 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       });
     } else if (phase === 'regression') {
       for (const lang of ['en', 'ko']) await scenario(`font24-${lang}`, { lang, fontSize: 24 }, async q => { await select(q, 'dag'); await capture(q, `regression-${lang}-font24`); const nodes = await geometry(q); q.record.geometry = nodes; assertGeometry(nodes); return nodes; });
-      await scenario('interrupted-motion', {}, q => motion(q, true));
+      for (const item of interruptionCases) await scenario(`interrupted-motion-${item.switchName}-${item.terminal ? 'terminal' : 'entry'}`, {}, q => motion(q, item));
       await scenario('shared-hooks', {}, async q => ({ actions: await exerciseShelves(q, name => capture(q, `shared-${name}`)) }));
     } else {
       await scenario('tabs', {}, tabs);
@@ -567,7 +687,8 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         });
       }
       await scenario('motion', {}, q => motion(q));
-      await scenario('interruption', {}, q => motion(q, true));
+      for (const item of interruptionCases) await scenario(`interruption-${item.switchName}-${item.terminal ? 'terminal' : 'entry'}`, {}, q => motion(q, item));
+      await scenario('elapsed-only', { elapsedOnly: true }, elapsedOnly);
       await scenario('reduced', { reduced: true }, async q => { await select(q, 'dag'); const s = await capture(q, 'reduced-motion'); assert.equal(s.animations.length, 0); assert(s.nodes.every(n => n.opacity === '1')); return s; });
     }
     await contactSheets(browser, receipt);
