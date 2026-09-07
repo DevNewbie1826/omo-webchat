@@ -15,6 +15,7 @@ import {
   type BufferedActivityEvent,
 } from "./activityState";
 import type { ActivityState } from "./activityTypes";
+import { emptyTodoAuthority, unbindTodoAuthority } from "./todoAuthority";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
 import { recordSteerMark, forgetSteerMark, steerMarks } from "./chatSteerMarks";
@@ -157,6 +158,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const historyLoadedRef = useRef(false);
   const historyStallTimerRef = useRef<number | null>(null);
   const activitiesRef = useRef<ActivityState>(emptyActivityState());
+  const todoAuthorityRef = useRef(emptyTodoAuthority());
   const activityHydrationRef = useRef<{
     readonly token: number;
     readonly buffer: ActivityHydrationBuffer;
@@ -288,6 +290,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // already released the action's own busy marker, fencing older page streams
   // away from the reset buffer.
   const beginResync = (): void => {
+    todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     const generation = beginReplay(connectionGenerationRef.current);
     resyncGenerationRef.current = generation;
     resyncPendingRef.current = true;
@@ -358,6 +361,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     toolCallsRef,
     historyLoadedRef,
     activitiesRef,
+    todoAuthorityRef,
     bufferActivityEvent: (event: BufferedActivityEvent) => {
       const hydration = activityHydrationRef.current;
       if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
@@ -468,6 +472,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sendDraft({ text, image: null }, requestId, sessionId, client, "steer");
 
   const markOpen = (): number => {
+    todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     socketRef.current = sends.nextSocket();
     const connectionGeneration = ++replayGenerationRef.current;
     connectionGenerationRef.current = connectionGeneration;
@@ -486,6 +491,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     return connectionGeneration;
   };
   const markClose = (): void => {
+    todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     ledger.failAll();
     if (historyStallTimerRef.current !== null) {
       window.clearTimeout(historyStallTimerRef.current);
@@ -507,6 +513,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
 
   const beginExternalWriteRecovery = (): void => {
+    todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
     externalRecoveryPendingRef.current = true;
     externalRecoveryReadyRef.current = false;
     externalRecoveryHistoryRef.current = false;
