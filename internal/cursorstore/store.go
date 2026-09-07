@@ -16,6 +16,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/dirsync"
 )
 
 var (
@@ -227,7 +229,7 @@ func (s *Store) flushLocked(candidate State) error {
 	if err != nil {
 		return persistErr("opening state directory", err)
 	}
-	if err := dir.Sync(); err != nil {
+	if err := dirsync.Handle(dir); err != nil {
 		if closeErr := dir.Close(); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("closing state directory: %w", closeErr))
 		}
