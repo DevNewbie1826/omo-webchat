@@ -1,4 +1,5 @@
 import { isRecord, optBoolean, optNumber, optString, reqString } from "../../lib/chatWsParseFields";
+import { taskRawStatus } from "./taskAuthority";
 import { mapDrop } from "./activityParseShared";
 import type { ActivityLiveProgress, ActivityTask } from "./activityTypes";
 
@@ -59,7 +60,8 @@ function parseTask(record: Record<string, unknown>, parentSessionId: string | un
   const category = optString(record, "category");
   const model = optString(record, "model");
   const createdAt = optString(record, "created_at");
-  const updatedAt = optString(record, "updated_at");
+  const updatedAt = optString(record, "updated_at") ?? undefined;
+  const rawStatus = taskRawStatus(status, record["raw_status"]);
   const finalResponse = optString(record, "final_response");
   const errorMessage = optString(record, "error_message");
   const liveProgress = parseLiveProgress(record["live_progress"]);
@@ -69,7 +71,6 @@ function parseTask(record: Record<string, unknown>, parentSessionId: string | un
     category === null ||
     model === null ||
     createdAt === null ||
-    updatedAt === null ||
     finalResponse === null ||
     errorMessage === null
   ) {
@@ -79,6 +80,7 @@ function parseTask(record: Record<string, unknown>, parentSessionId: string | un
     taskId,
     name,
     status,
+    ...(rawStatus === undefined ? {} : { rawStatus }),
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
     ...(taskSummary !== undefined ? { taskSummary } : {}),
     ...(agentType !== undefined ? { agentType } : {}),
@@ -102,6 +104,7 @@ export function parseTaskUpdated(data: unknown): ParsedTaskUpdated | null {
   return {
     tasks,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
-    ...(truncatedTasks !== undefined ? { truncatedTasks } : {}),
+    ...(truncatedTasks !== undefined || tasks.length !== (data["tasks"] as unknown[]).length
+      ? { truncatedTasks: truncatedTasks === true || tasks.length !== (data["tasks"] as unknown[]).length } : {}),
   };
 }

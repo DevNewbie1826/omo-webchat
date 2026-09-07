@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { parseDagActivity, parseTaskUpdated } from "../split/activityParse";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
+import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, type TaskAuthority } from "../split/taskAuthority";
+import type { TaskDigest } from "./activityDigest";
 import type { LiveSessionInfo } from "./workspace";
 
 /** How long a WS-pushed side or heartbeat-stamp set stays authoritative,
@@ -50,12 +52,83 @@ let overrides: ReadonlyMap<string, SessionOverride> = new Map();
 let activitySequence = 0;
 let sessionAliases: ReadonlyMap<string, string> = new Map();
 
+interface SessionTasks extends TaskAuthority {
+  readonly mutations: ReadonlyMap<string, number>;
+}
+let taskAuthorities: ReadonlyMap<string, SessionTasks> = new Map();
+
+export function canonicalLiveSessionId(id: string): string {
+  const visited = new Set<string>();
+  while (sessionAliases.has(id) && !visited.has(id)) {
+    visited.add(id);
+    id = sessionAliases.get(id)!;
+  }
+  return id;
+}
+
+function getTaskAuthorities(): ReadonlyMap<string, SessionTasks> { return taskAuthorities; }
+
+/** All three task transports enter this reducer before any consumer counts rows. */
+export function acceptLiveTaskInfo(
+  info: { readonly id: string; readonly task?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean },
+  sequence: number,
+  requestSequence?: number,
+): void {
+  const id = canonicalLiveSessionId(info.id);
+  const previous: SessionTasks = taskAuthorities.get(id) ?? { tasks: new Map(), mutations: new Map() };
+  const rich = parseTaskUpdated(info.task);
+  const digest = info.taskDigest;
+  if (rich === null && digest === undefined && info.taskOversized !== true) return;
+  const touched = new Set([...previous.mutations].filter(([, at]) => requestSequence !== undefined && at > requestSequence).map(([key]) => key));
+  const next = reconcileTaskSources(previous, rich, digest, {
+    history: requestSequence !== undefined, touched, oversized: info.taskOversized === true,
+  });
+  if (next === previous) return;
+  const mutations = new Map(previous.mutations);
+  for (const key of new Set([...previous.tasks.keys(), ...next.tasks.keys()])) {
+    if (previous.tasks.get(key) !== next.tasks.get(key)) mutations.set(key, sequence);
+  }
+  for (const key of mutations.keys()) if (!next.tasks.has(key) && !next.taskFreshness?.has(key)) mutations.delete(key);
+  const all = new Map(taskAuthorities);
+  all.delete(id); all.set(id, { ...next, mutations });
+  while (all.size > 256) all.delete(all.keys().next().value!);
+  taskAuthorities = all;
+  emit();
+}
+
+export function projectLiveTaskInfo<T extends { readonly id: string }>(info: T): T {
+  const authority = taskAuthorities.get(canonicalLiveSessionId(info.id));
+  if (authority === undefined) return info;
+  return { ...info, task: taskAuthorityPayload(authority), taskOversized: authority.taskUnavailable === true, taskDigest: undefined };
+}
+
+/** Snapshot subscription also makes attached task updates visible to overview consumers. */
+export function useAcceptedLiveTaskInfos(infos: readonly LiveSessionInfo[]): readonly LiveSessionInfo[] {
+  const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
+  return useMemo(() => infos.map(projectLiveTaskInfo), [infos, authority]);
+}
+
+export function retireLiveTaskSessions(ids: readonly string[]): void {
+  const retired = new Set(ids.map(canonicalLiveSessionId));
+  const all = new Map(taskAuthorities);
+  const aliases = new Map(sessionAliases);
+  const remaining = new Map(overrides);
+  for (const id of retired) all.delete(id);
+  for (const id of aliases.keys()) if (retired.has(canonicalLiveSessionId(id))) aliases.delete(id);
+  for (const id of remaining.keys()) if (retired.has(canonicalLiveSessionId(id))) remaining.delete(id);
+  if (all.size === taskAuthorities.size && aliases.size === sessionAliases.size && remaining.size === overrides.size) return;
+  taskAuthorities = all;
+  sessionAliases = aliases;
+  overrides = remaining;
+  emit();
+}
+
+
 function emit(): void {
   for (const listener of listeners) listener();
 }
 
-/** Shared logical clock for REST request starts, overview pushes, and attached
- * extension events. Wall time is deliberately excluded from source ordering. */
+/** Request/membership correlation for the three transports, never a raw task revision. */
 export function nextLiveActivitySequence(): number {
   activitySequence += 1;
   return activitySequence;
@@ -161,6 +234,17 @@ function mergeOverrides(first: SessionOverride, second: SessionOverride): Sessio
 
 function remapOverride(next: Map<string, SessionOverride>, fromId: string, toId: string): void {
   if (fromId === toId) return;
+  fromId = canonicalLiveSessionId(fromId);
+  toId = canonicalLiveSessionId(toId);
+  if (fromId === toId) return;
+  const sourceTasks = taskAuthorities.get(fromId), targetTasks = taskAuthorities.get(toId);
+  if (sourceTasks !== undefined) {
+    const all = new Map(taskAuthorities);
+    const merged = targetTasks === undefined ? sourceTasks : mergeTaskAuthorities(targetTasks, sourceTasks);
+    const mutations = new Map(sourceTasks.mutations);
+    for (const [id, at] of targetTasks?.mutations ?? []) mutations.set(id, Math.max(mutations.get(id) ?? 0, at));
+    all.set(toId, { ...merged, mutations }); all.delete(fromId); taskAuthorities = all;
+  }
   sessionAliases = new Map(sessionAliases).set(fromId, toId);
   const source = next.get(fromId);
   if (source === undefined) return;
@@ -172,7 +256,7 @@ function remapOverride(next: Map<string, SessionOverride>, fromId: string, toId:
 /** Settle attached-socket overrides against a successful REST response. Each
  * side is compared with the sequence captured when the request started. */
 export function settleLiveBadgePoll(
-  infos: readonly { readonly id: string; readonly task?: unknown; readonly dag?: unknown }[],
+  infos: readonly { readonly id: string; readonly task?: unknown; readonly dag?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean }[],
   requestSequence: number,
 ): void {
   const next = new Map(overrides);
@@ -184,6 +268,7 @@ export function settleLiveBadgePoll(
       remapOverride(next, parentId, info.id);
       if (before !== undefined) changed = true;
     }
+    acceptLiveTaskInfo(info, nextLiveActivitySequence(), requestSequence);
     const entry = next.get(info.id);
     if (entry === undefined) continue;
     const task = entry.task !== undefined && entry.task.sequence > requestSequence ? entry.task : undefined;
@@ -211,6 +296,7 @@ export function settleLiveBadgePush(
   dagUpdated: boolean,
   pushSequence: number,
 ): void {
+  const beforeAuthorities = taskAuthorities;
   const next = new Map(overrides);
   let changed = false;
   for (const sourceId of sourceIds) {
@@ -218,7 +304,7 @@ export function settleLiveBadgePush(
     remapOverride(next, sourceId, sessionId);
   }
   const entry = next.get(sessionId);
-  if (entry === undefined) return;
+  if (entry === undefined) { if (beforeAuthorities !== taskAuthorities) emit(); return; }
   const task = taskUpdated && (entry.task?.sequence ?? -1) <= pushSequence ? undefined : entry.task;
   const dag = dagUpdated && (entry.dag?.sequence ?? -1) <= pushSequence ? undefined : entry.dag;
   if (task !== entry.task || dag !== entry.dag) {
@@ -230,20 +316,31 @@ export function settleLiveBadgePush(
       ...(entry.activity === undefined ? {} : { activity: entry.activity }),
     });
   }
-  if (!changed) return;
+  if (!changed && beforeAuthorities === taskAuthorities) return;
   overrides = next;
   emit();
 }
 
-/** Feed a WS extensionEvent frame into the badge store. Recognized null data
- * clears that side; omo.dag.activity frames only refresh per-task freshness
- * stamps; unknown frame names leave the store untouched. */
+/** Task snapshots enter per-ID authority; null cannot clear task membership.
+ * Activity advances its own progress clock. DAG-side settlement remains arrival-ordered. */
 export function ingestExtensionEvent(sessionId: string, frameName: string, data: unknown): void {
   if (frameName !== TASK_FRAME && frameName !== DAG_FRAME && frameName !== ACTIVITY_FRAME) return;
-  const id = sessionAliases.get(sessionId) ?? sessionId;
+  const id = canonicalLiveSessionId(sessionId);
+  if (frameName === TASK_FRAME) acceptLiveTaskInfo({ id, task: data }, nextLiveActivitySequence());
   if (frameName === ACTIVITY_FRAME) {
     const parsed = parseDagActivity(data);
     if (parsed === null || parsed.taskId === undefined) return;
+    const authority = taskAuthorities.get(id);
+    const currentTask = authority?.tasks.get(parsed.taskId);
+    if (authority !== undefined && currentTask !== undefined) {
+      const task = applyTaskActivity(currentTask, parsed);
+      if (task !== currentTask) {
+        taskAuthorities = new Map(taskAuthorities).set(id, { ...authority,
+          tasks: new Map(authority.tasks).set(parsed.taskId, task),
+          mutations: new Map(authority.mutations).set(parsed.taskId, nextLiveActivitySequence()),
+        });
+      }
+    }
     const epochMs = activityStampMs(parsed.at);
     const previous = overrides.get(id);
     const stamps = new Map(previous?.activity?.stamps ?? []);
@@ -280,6 +377,7 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
 /** WS-pushed per-session override summaries built from the raw payloads. */
 export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> {
   const snapshot = useSyncExternalStore(subscribeOverrides, getOverridesSnapshot);
+  const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
   return useMemo(() => {
     const summaries = new Map<string, LiveBadgeOverride>();
     for (const [id, entry] of snapshot) {
@@ -290,7 +388,7 @@ export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> 
       );
       summaries.set(id, {
         summary: summarizeLiveSession(
-          { id, title: "", task: entry.task?.payload ?? null, dag: entry.dag?.payload ?? null },
+          projectLiveTaskInfo({ id, title: "", task: entry.task?.payload ?? null, dag: entry.dag?.payload ?? null }),
           Date.now(),
           entry.activity === undefined ? undefined : { heartbeatStamps: entry.activity.stamps },
         ),
@@ -298,7 +396,7 @@ export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> 
       });
     }
     return summaries;
-  }, [snapshot]);
+  }, [snapshot, authority]);
 }
 
 function newerPayload(
@@ -324,6 +422,7 @@ function parentSessionIdOf(summary: { readonly task?: unknown; readonly dag?: un
  * session and activity side. */
 export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummary[]): readonly LiveSessionSummary[] {
   const snapshot = useSyncExternalStore(subscribeOverrides, getOverridesSnapshot);
+  const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
   const [clockMs, setClockMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -341,10 +440,10 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
     () => pollSummaries.map((poll) => {
       const parentId = parentSessionIdOf(poll);
       const entry = snapshot.get(poll.id) ?? (parentId === undefined ? undefined : snapshot.get(parentId));
-      if (entry === undefined) return poll;
-      const task = newerPayload(entry.task, poll.task ?? null, clockMs);
-      const dag = newerPayload(entry.dag, poll.dag ?? null, clockMs);
-      const mergedInfo = {
+      if (entry === undefined && !authority.has(canonicalLiveSessionId(poll.id))) return poll;
+      const task = newerPayload(entry?.task, poll.task ?? null, clockMs);
+      const dag = newerPayload(entry?.dag, poll.dag ?? null, clockMs);
+      const mergedInfo = projectLiveTaskInfo({
         id: poll.id,
         title: poll.title,
         task: task.payload,
@@ -353,22 +452,23 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
         dagOversized: dag.replaced ? false : poll.dagSideOversized,
         ...(!task.replaced && poll.taskDigest !== undefined ? { taskDigest: poll.taskDigest } : {}),
         ...(!dag.replaced && poll.dagDigest !== undefined ? { dagDigest: poll.dagDigest } : {}),
-      } as LiveSessionInfo;
+      } as LiveSessionInfo);
       // The poller listing the session is the process-alive signal, so the
       // merged summary never ages out its running tasks; heartbeat stamps
       // keep per-task freshness honest under the replaced payload.
       return summarizeLiveSession(mergedInfo, clockMs, {
         sessionLive: true,
-        ...(entry.activity === undefined ? {} : { heartbeatStamps: entry.activity.stamps }),
+        ...(entry?.activity === undefined ? {} : { heartbeatStamps: entry.activity.stamps }),
       });
     }),
-    [pollSummaries, snapshot, clockMs],
+    [pollSummaries, snapshot, authority, clockMs],
   );
 }
 
 /** Reset module state so fake-clock ordering and TTL tests are isolated. */
 export function __resetLiveBadgeStoreForTests(): void {
   overrides = new Map();
+  taskAuthorities = new Map();
   activitySequence = 0;
   sessionAliases = new Map();
   emit();

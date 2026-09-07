@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
 import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
-import type { DagDigestRun, TaskDigestEntry } from "./activityDigest";
+import type { DagDigest, TaskDigest, DagDigestRun, TaskDigestEntry } from "./activityDigest";
+import { reconcileTaskSources } from "../split/taskAuthority";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
@@ -24,8 +25,8 @@ export interface LiveSessionSummary {
   readonly task?: unknown;
   readonly dag?: unknown;
   /** Parsed poll digests retained when a WS frame replaces only the other side. */
-  readonly taskDigest?: unknown;
-  readonly dagDigest?: unknown;
+  readonly taskDigest?: TaskDigest;
+  readonly dagDigest?: DagDigest;
   /** Raw wire flags, distinct from the flattened unknown-state UI flags below. */
   readonly taskSideOversized: boolean;
   readonly dagSideOversized: boolean;
@@ -159,14 +160,15 @@ export function summarizeLiveSession(
   freshness?: SummaryFreshness,
 ): LiveSessionSummary {
   const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
-  const tasks = parsedTask?.tasks ?? [];
+  const taskProjection = reconcileTaskSources({ tasks: new Map<string, ActivityTask>() }, parsedTask, info.taskDigest);
+  const tasks = [...taskProjection.tasks.values()];
   const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
   const counts = taskStatusCounts(tasks);
   // An oversized side retains the server's previous cached payload. Parse it
   // for descriptive fields such as lastLine, but never treat stale rows as a
   // trustworthy running-count lower bound. Compact digests, when present, are
   // the running-count source instead of those cached rows.
-  const taskDigest = info.taskOversized === true ? info.taskDigest : undefined;
+  const taskDigest = info.taskDigest;
   const dagDigest = info.dagOversized === true ? info.dagDigest : undefined;
   const runningDagTaskIds = new Set<string>();
   if (info.dagOversized !== true) {
@@ -232,7 +234,7 @@ export function summarizeLiveSession(
     taskSideOversized: info.taskOversized === true,
     dagSideOversized: info.dagOversized === true,
     runningCount: taskRunning + dagRunning,
-    doneCount: counts.done,
+    doneCount: info.taskOversized === true && taskDigest === undefined ? 0 : counts.done,
     dagDone,
     dagTotal,
     lastLine: lastLineOf(tasks),

@@ -4,7 +4,6 @@ import {
   parseDagUpdated,
   parseTaskUpdated,
   parseTodoDetails,
-  type ParsedDagActivity,
 } from "./activityParse";
 import type {
   ActivityDagNode,
@@ -14,6 +13,8 @@ import type {
   ActivityState,
   ActivityTask,
 } from "./activityTypes";
+import { applyTaskActivity, reconcileTaskAuthority, reconcileTaskSources, taskRevision } from "./taskAuthority";
+import type { TaskDigest } from "../workspace/activityDigest";
 import { parseDagUpdatedAt, type ParsedDagUpdated } from "./activityParseDag";
 import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from "./activityShelfModel";
 
@@ -120,9 +121,13 @@ export function bufferActivityHydrationEvent(
     buffer.events.splice(previousIndex, 1);
     if (!event.snapshot && typeof previous.data === "object" && previous.data !== null
       && typeof event.data === "object" && event.data !== null) {
+      const previousActivity = event.name === "omo.dag.activity" ? parseDagActivity(previous.data) : null;
+      const incomingActivity = event.name === "omo.dag.activity" ? parseDagActivity(event.data) : null;
+      const staleActivity = previousActivity !== null && incomingActivity !== null
+        && taskRevision(incomingActivity.at)! < taskRevision(previousActivity.at)!;
       nextEvent = {
         ...event,
-        data: { ...previous.data, ...event.data },
+        data: staleActivity ? previous.data : { ...previous.data, ...event.data },
         mutatedTask: (event.mutatedTask ?? mutatedTask) || (previous.mutatedTask ?? false),
         mutatedDag: (event.mutatedDag ?? mutatedDag) || (previous.mutatedDag ?? false),
       };
@@ -294,35 +299,8 @@ function latchedTaskLife(
   return latched;
 }
 
-function isTerminalTask(task: ActivityTask): boolean {
-  // Snapshot replace: keep previous entries only when they are terminal and
-  // absent from the new snapshot.
-  return TERMINAL_TASK_STATUSES.has(task.status);
-}
-
 function isTerminalDag(run: ActivityDagRun): boolean {
   return TERMINAL_DAG_STATUSES.has(run.status);
-}
-
-function replaceKeepingTerminal<T>(
-  previous: ReadonlyMap<string, T>,
-  incoming: readonly T[],
-  policy: {
-    readonly keyOf: (item: T) => string;
-    readonly keepPrevious: (item: T) => boolean;
-    readonly merge: (prev: T | undefined, next: T) => T;
-  },
-): Map<string, T> {
-  const present = new Set(incoming.map(policy.keyOf));
-  const next = new Map<string, T>();
-  for (const [key, item] of previous) {
-    if (!present.has(key) && policy.keepPrevious(item)) next.set(key, item);
-  }
-  for (const item of incoming) {
-    const key = policy.keyOf(item);
-    next.set(key, policy.merge(previous.get(key), item));
-  }
-  return next;
 }
 
 function mergePreservedNode(previous: ActivityDagNode | undefined, incoming: ActivityDagNode): ActivityDagNode {
@@ -360,18 +338,9 @@ function mergeDagRun(previous: ActivityDagRun | undefined, incoming: ActivityDag
 function applyTaskSnapshot(state: ActivityState, data: unknown): ActivityState {
   const parsed = parseTaskUpdated(data);
   if (parsed === null) return state;
-  const tasks = replaceKeepingTerminal(state.tasks, parsed.tasks, {
-    keyOf: (task) => task.taskId,
-    keepPrevious: isTerminalTask,
-    merge: (_prev, next) => next,
-  });
-  const snapshot = {
-    ...state,
-    tasks,
-    ...(parsed.truncatedTasks === undefined ? {} : { truncatedTasks: parsed.truncatedTasks }),
-  };
+  const snapshot = reconcileTaskAuthority(state, parsed.tasks, { truncated: parsed.truncatedTasks });
   if (state.runInFlight !== true) return snapshot;
-  const lifeSeenThisRun = latchedTaskLife(state, parsed.tasks);
+  const lifeSeenThisRun = latchedTaskLife(state, [...snapshot.tasks.values()]);
   if (lifeSeenThisRun === null) return snapshot;
   const next: LifeLatchedActivityState = { ...snapshot, lifeSeenThisRun };
   return next;
@@ -424,20 +393,6 @@ export function applyDagHistorySnapshot(
   return parsed === null ? state : reconcileDagSnapshot(state, parsed, run => touched.has(run.runId));
 }
 
-function liveProgressFromActivity(
-  activity: ParsedDagActivity,
-  previous: ActivityLiveProgress | undefined,
-): ActivityLiveProgress {
-  return {
-    ...previous,
-    ...(activity.activity !== undefined ? { activity: activity.activity } : {}),
-    ...(activity.currentTool !== undefined ? { currentTool: activity.currentTool } : {}),
-    ...(activity.lastAssistantLine !== undefined ? { lastAssistantLine: activity.lastAssistantLine } : {}),
-    ...(activity.turns !== undefined ? { turns: activity.turns } : {}),
-    ...(activity.toolCalls !== undefined ? { toolCalls: activity.toolCalls } : {}),
-  };
-}
-
 function applyNodeActivity(state: ActivityState, data: unknown): ActivityState {
   const parsed = parseDagActivity(data);
   if (parsed === null) return state;
@@ -473,15 +428,9 @@ function applyNodeActivity(state: ActivityState, data: unknown): ActivityState {
   if (parsed.taskId === undefined) return dagState;
   const task = state.tasks.get(parsed.taskId);
   if (task === undefined) return dagState;
-  const tasks = new Map(state.tasks);
-  // The heartbeat is the freshest evidence of life for the task row the shelf
-  // keeps after taskId dedup drops the node projection - stamp updatedAt so
-  // staleness follows the heartbeat, not the last task.updated event.
-  tasks.set(parsed.taskId, {
-    ...task,
-    ...(parsed.at > (task.updatedAt ?? "") ? { updatedAt: parsed.at } : {}),
-    liveProgress: liveProgressFromActivity(parsed, task.liveProgress),
-  });
+  const updatedTask = applyTaskActivity(task, parsed);
+  if (updatedTask === task) return dagState;
+  const tasks = new Map(state.tasks).set(parsed.taskId, updatedTask);
   const next: ActivityState = { ...state, dags, tasks };
   // Node activity mapped to a task is life by definition; keep the previous
   // latch reference when that task already latched so the version bump stays
@@ -504,18 +453,16 @@ function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {
   return { ...state, heartbeats };
 }
 
-/** Hydrate activity history. Task ordering is caller-owned; DAG revisions
- * reconcile per ID and complete REST may remove omitted terminal rows. */
+/** Complete REST membership removes even terminal rows unless actually touched. */
+export function applyTaskHistorySnapshot(
+  state: ActivityState, data: unknown, touched: ReadonlySet<string> = new Set(),
+  digest?: TaskDigest, oversized = false,
+): ActivityState {
+  return reconcileTaskSources(state, parseTaskUpdated(data), digest, { history: true, touched, oversized });
+}
+
 export function applyActivityHistorySnapshot(state: ActivityState, name: string, data: unknown): ActivityState {
-  if (name === "omo.task.updated") {
-    const parsed = parseTaskUpdated(data);
-    if (parsed === null) return state;
-    return {
-      ...state,
-      tasks: new Map(parsed.tasks.map((task) => [task.taskId, task])),
-      ...(parsed.truncatedTasks === undefined ? {} : { truncatedTasks: parsed.truncatedTasks }),
-    };
-  }
+  if (name === "omo.task.updated") return applyTaskHistorySnapshot(state, data);
   if (name === "omo.dag.updated") return applyDagHistorySnapshot(state, data);
   return state;
 }

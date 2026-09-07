@@ -105,9 +105,9 @@ describe("per-task life latches", () => {
       applyRunFlight(seeded, true),
       "omo.task.updated",
       taskSnapshot([
-        inFlightTask({ task_id: "t-time", updated_at: "2026-08-19T11:59:30.000Z" }),
-        inFlightTask({ task_id: "t-status", status: "completed" }),
-        inFlightTask({ task_id: "t-progress", live_progress: { current_tool: "bash", turns: 2 } }),
+        inFlightTask({ task_id: "t-time", updated_at: "2026-08-19T12:01:00.000Z" }),
+        inFlightTask({ task_id: "t-status", status: "completed", updated_at: "2026-08-19T12:01:00.000Z" }),
+        inFlightTask({ task_id: "t-progress", updated_at: "2026-08-19T12:01:00.000Z", live_progress: { current_tool: "bash", turns: 2 } }),
       ]),
     );
     expect([...lifeSeenThisRunOf(next)].sort()).toEqual(["t-progress", "t-status", "t-time"]);
@@ -122,7 +122,7 @@ describe("per-task life latches", () => {
     const next = applyActivityEvent(
       applyRunFlight(seeded, true),
       "omo.task.updated",
-      taskSnapshot([inFlightTask({ live_progress: { current_tool: "ripgrep" } })]),
+      taskSnapshot([inFlightTask({ updated_at: "2026-08-19T12:01:00.000Z", live_progress: { current_tool: "ripgrep" } })]),
     );
 
     expect(lifeSeenThisRunOf(next).has("t1")).toBe(true);
