@@ -867,6 +867,25 @@
   max-width: 45%;
 }
 
+/* A request label/action must not overflow its status allocation. When its
+   intrinsic width cannot share a line with the model, wrap the whole group. */
+.th-chat-controls:has([data-send-phase="unknown"]) {
+  flex-wrap: wrap;
+}
+
+.th-chat-controls .th-chat-status:has([data-send-phase="unknown"]) {
+  flex-basis: min-content;
+  min-width: min-content;
+}
+
+.th-chat-controls .th-chat-send-status[data-send-phase="unknown"] {
+  min-width: min-content;
+}
+
+.th-chat-controls:has([data-send-phase="unknown"]) .th-model-picker {
+  margin-left: auto;
+}
+
 /* Metrics are ordinary whole flex items in the same wrapping control area. */
 .th-chat-status-metrics {
   display: contents;
