@@ -87,15 +87,15 @@ export async function shelfRegressionScenarios(q) {
   for (const [width, height] of [[1440, 900], [390, 844], [390, 420]]) {
     await scenario(`regression-shelves-files-long-labels-${width}-${height}`, async () => {
       const page = await reset({ layout: 'single', shelves: true, longLabels: true }, { width, height });
-      await page.evaluate(() => window.qaSignal(() => !!document.querySelector('.th-activity-bar') && !!document.querySelector('.th-goal-bar')));
+      await page.evaluate(() => window.qaSignal(() => !!document.querySelector('.th-activity-shelf [data-activity-tab]') && !!document.querySelector('.th-goal-bar')));
       await arm(() => document.querySelector('.th-goal-shelf')?.style.flexShrink === '0');
       await page.locator('.th-goal-bar').click(); await done();
       await arm(() => document.querySelector('.th-activity-shelf')?.style.flexShrink === '0');
-      await page.locator('.th-activity-shelf button.th-activity-fold').click(); await done();
+      await page.locator('.th-activity-shelf [role="tab"][aria-selected="true"]').click(); await done();
       const geometry = await page.evaluate(() => {
         const box = s => document.querySelector(s)?.getBoundingClientRect().toJSON();
         return { goal: box('.th-goal-panel'), activity: box('.th-activity-panel'), goalShelf: box('.th-goal-shelf'), activityShelf: box('.th-activity-shelf'),
-          goalExpanded: document.querySelector('.th-goal-bar').getAttribute('aria-expanded'), activityExpanded: document.querySelector('.th-activity-shelf button.th-activity-fold').getAttribute('aria-expanded'), transcript: box('.th-chat-scrollport'),
+          goalExpanded: document.querySelector('.th-goal-bar').getAttribute('aria-expanded'), activityExpanded: document.querySelector('.th-activity-shelf').dataset.expanded, transcript: box('.th-chat-scrollport'),
           composer: box('.th-chat-input'), trigger: box('.th-model-picker-btn'), scrollWidth: document.documentElement.scrollWidth,
           viewport: { width: innerWidth, height: innerHeight } };
       });

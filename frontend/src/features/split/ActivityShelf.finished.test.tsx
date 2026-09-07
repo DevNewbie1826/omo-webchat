@@ -44,8 +44,9 @@ describe("ActivityShelf finished work", () => {
     expect(shelf).not.toBeNull();
     expect(harness.container.innerHTML).not.toBe("");
 
-    // The finished entries themselves are reachable behind the summary bar,
-    // each reading as complete through a visible word, never colour alone.
+    // The finished entries themselves are reachable behind the permanent
+    // tab strip, each reading as complete through a visible word, never
+    // colour alone.
     openShelf(harness.container);
     const agentRow = requireElement(
       [...harness.container.querySelectorAll(".th-activity-agent")].find((row) => row.textContent?.includes("Spawned agent")) ?? null,

@@ -124,7 +124,7 @@ describe("ActivityShelf workflow nodes as agents", () => {
     // Node live progress surfaces like a task's would.
     expect(rows[0]?.textContent).toContain("bash");
 
-    // The collapsed bar counts workflow children as agents too.
-    expect(harness.container.querySelector(".th-activity-bar-text")?.textContent).toContain("activity.summaryAgents");
+    // The tab count includes workflow children as agents too.
+    expect(harness.container.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent).toBe('1/3');
   });
 });

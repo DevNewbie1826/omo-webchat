@@ -14,19 +14,22 @@ import {
 import { requireElement } from "./chatPaneTestHarness";
 
 /**
- * P5/P6 tabbed activity shelf: three equal primary tabs (Todo / Subagents /
- * DAG) over one content area, a separate compact fold control, DAG defaulting
- * to graph, and motion that only represents state transitions. These tests
- * are the failing-first behavior contract for ui-followup-activity-20260907.
+ * P7 tab-only activity shelf: three equal primary tabs (Todo / Subagents /
+ * DAG) over one content area are the shelf's only disclosure. A tab click
+ * opens; an open selected-tab click closes while retaining selection;
+ * another tab switches without closing; keyboard selection never collapses.
+ * DAG defaults to graph and motion only represents state transitions.
  */
 
 function openPanel(container: ParentNode): HTMLButtonElement {
-  const fold = requireElement(
-    container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-    "separate fold control",
+  // The tab strip is the only disclosure: while closed, clicking the
+  // selected tab opens the panel.
+  const tab = requireElement(
+    container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+    "selected activity tab",
   );
-  click(fold);
-  return fold;
+  click(tab);
+  return tab;
 }
 
 function tabOf(container: ParentNode, id: string): HTMLButtonElement {
@@ -162,27 +165,80 @@ describe("ActivityShelf tabs", () => {
     expect(dagPanel.textContent).toContain("activity.emptyDag");
   });
 
-  it("keeps collapse on a separate compact chevron control, not the summary bar", () => {
+  it("closes on a selected-tab click while retaining selection, tabs, and counts", () => {
     renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
-    const fold = requireElement(
-      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "fold control",
-    );
-    expect(fold.getAttribute("aria-expanded")).toBe("false");
-    expect(fold.getAttribute("aria-controls")).not.toBeNull();
-    const bar = requireElement(harness.container.querySelector(".th-activity-bar"), "summary bar");
-    expect(bar.closest("button")).toBeNull();
-    expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
-    // The tab strip is permanent chrome: reachable while collapsed.
-    expect(tabOf(harness.container, "todo")).toBeDefined();
-
-    click(fold);
-    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    openPanel(harness.container);
     expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
 
-    // Tab click while collapsed opens the panel and selects that tab.
-    click(fold);
+    // Open plus a selected-tab click closes while the selection and the
+    // permanent tab strip (with its counts) survive the collapse.
+    selectTab(harness.container, "todo");
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    expect(selectedTab(harness.container)).toBe("todo");
+    const tabs = [...harness.container.querySelectorAll("[data-activity-tab]")];
+    expect(tabs.map((tab) => tab.getAttribute("data-activity-tab"))).toEqual(["todo", "agents", "dag"]);
+    expect(tabs.map((tab) => tab.querySelector(".th-activity-tab-count")?.textContent)).toEqual(["2/4", "2/4", "2/3"]);
+
+    // Reopening through the retained selection restores the same content.
+    selectTab(harness.container, "todo");
+    expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
+    expect(selectedTab(harness.container)).toBe("todo");
+  });
+
+  it("switches content on another tab click without closing the panel", () => {
+    renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
+    openPanel(harness.container);
+    selectTab(harness.container, "agents");
+    expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
+    expect(selectedTab(harness.container)).toBe("agents");
+    expect(harness.container.querySelector<HTMLElement>('[data-activity-tabpanel="agents"]')?.hidden).toBe(false);
+  });
+
+  it("never collapses through keyboard selection, including same-target boundary navigation", () => {
+    renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
+    openPanel(harness.container);
+    const todo = tabOf(harness.container, "todo");
+    // Home on the already-first tab computes the same target; the panel must stay open.
+    pressKey(todo, "Home");
+    expect(selectedTab(harness.container)).toBe("todo");
+    expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
+    // Keyboard selection keeps its opening behavior from a collapsed shelf.
+    // Close through the retained selection first, then navigate by key.
+    selectTab(harness.container, "todo");
+    expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    pressKey(todo, "ArrowRight");
+    expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
+    expect(selectedTab(harness.container)).toBe("agents");
+  });
+
+  it("discloses the panel only through the three permanent tabs", () => {
+    renderShelf(harness, activityState({ todo: todoPhases, tasks: [makeTask()], dags: [makeDag()] }));
+    const shelf = requireElement(harness.container.querySelector(".th-activity-shelf"), "shelf");
+    // The old summary pill row and its separate fold control are removed;
+    // the tabs are the only toggle and carry the counts themselves.
+    expect(harness.container.querySelector(".th-activity-bar-row")).toBeNull();
+    expect(harness.container.querySelector("button.th-activity-fold")).toBeNull();
+    expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    expect(shelf.getAttribute("data-open")).toBe("false");
+    expect(shelf.getAttribute("data-expanded")).toBe("false");
+    // The tab strip is permanent chrome: reachable while closed.
+    expect(tabOf(harness.container, "todo")).toBeDefined();
+
+    openPanel(harness.container);
+    expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
+    expect(shelf.getAttribute("data-open")).toBe("true");
+
+    // Open plus another tab click switches; open plus the selected-tab
+    // click closes while retaining the selection and the whole strip.
+    selectTab(harness.container, "dag");
+    expect(shelf.getAttribute("data-expanded")).toBe("true");
+    selectTab(harness.container, "dag");
+    expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    expect(selectedTab(harness.container)).toBe("dag");
+    expect(harness.container.querySelectorAll("[data-activity-tab]").length).toBe(3);
+    expect(shelf.getAttribute("data-open")).toBe("false");
+
+    // Reopening lands on the retained selection.
     selectTab(harness.container, "dag");
     expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
     expect(selectedTab(harness.container)).toBe("dag");
@@ -210,7 +266,7 @@ describe("ActivityShelf tabs", () => {
     expect(selectedTab(harness.container)).toBe("dag");
   });
 
-  it("defaults the DAG tab to graph and keeps the user's view across tab and fold switches", () => {
+  it("defaults the DAG tab to graph and keeps the user's view across tab switches and close/reopen", () => {
     renderShelf(harness, activityState({ dags: [makeDag()] }));
     openPanel(harness.container);
     expect(harness.container.querySelector('[data-activity-tabpanel="dag"] .th-activity-graph svg')).not.toBeNull();
@@ -228,14 +284,10 @@ describe("ActivityShelf tabs", () => {
     expect(harness.container.querySelector('[data-activity-tabpanel="dag"] .th-activity-dagnodes')).not.toBeNull();
     expect(listBtn.getAttribute("aria-pressed")).toBe("true");
 
-    // Survives fold/unfold.
-    const fold = requireElement(
-      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "fold control",
-    );
-    click(fold);
+    // Survives a close/reopen round trip through the selected tab.
+    selectTab(harness.container, "dag");
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
-    click(fold);
+    selectTab(harness.container, "dag");
     expect(harness.container.querySelector('[data-activity-tabpanel="dag"] .th-activity-dagnodes')).not.toBeNull();
   });
 
@@ -308,12 +360,9 @@ describe("ActivityShelf tabs", () => {
 
     // Leaving an in-progress entry consumes it, even before animationend.
     // Keeping its class on the recreated DOM would restart the CSS animation.
-    const fold = requireElement(
-      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "fold control",
-    );
-    click(fold);
-    click(fold);
+    // A selected-tab click closes (consuming motion); reopening replays
+    // nothing.
+    selectTab(harness.container, "dag");
     selectTab(harness.container, "dag");
     expect(nodeClass("d")).not.toContain("th-activity-gnode--enter");
     expect(nodeClass("c")).not.toContain("th-activity-gnode--settle");

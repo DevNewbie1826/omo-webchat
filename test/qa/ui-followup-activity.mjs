@@ -1,10 +1,10 @@
 /** Activity real-SPA acceptance. Baseline is a new run, never historical evidence.
  * bun test/qa/ui-followup-activity.mjs --phase baseline|regression|green --out DIR
- * Inventory: baseline old controls; tabs/counts/empty/keyboard/history/freshness;
- * per-view scroll, List/fold, resize/reload; both-open desktop/mobile/340/short;
+ * Inventory: baseline tab-only disclosure; tabs/counts/empty/keyboard/history/freshness;
+ * per-view scroll, close/reopen, resize/reload; both-open desktop/mobile/340/short;
  * dark/light x en/ko x font13/24 graph/agents/tabs; directional/horizontal graph;
  * actual entry/completed/failed/running frames, six independently seeded
- * interrupted tab/fold/List cases with viewport/ancestor-clip proof,
+ * interrupted tab/close/List cases with viewport/ancestor-clip proof,
  * elapsed-only identity/no-replay, hidden and reduced motion. No readiness polling.
  */
 import assert from 'node:assert/strict';
@@ -58,9 +58,11 @@ function seed() {
 }
 const tab = id => `[data-activity-tab="${id}"]`;
 const panel = id => `[data-activity-tabpanel="${id}"]`;
-const fold = 'button.th-activity-fold';
+// The selected tab is the shelf's only close control: open + click closes
+// while closed + click opens. Exactly one tab is selected at all times.
+const selectedTab = '.th-activity-shelf [role="tab"][aria-selected="true"]';
 const view = id => `.th-activity-view-btn[data-view="${id}"]`;
-const interruptionCases = ['tab', 'fold', 'list'].flatMap(switchName => [false, true].map(terminal => ({ switchName, terminal })));
+const interruptionCases = ['tab', 'close', 'list'].flatMap(switchName => [false, true].map(terminal => ({ switchName, terminal })));
 async function state(page) {
   return page.evaluate(() => {
     const box = s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null;
@@ -77,8 +79,8 @@ async function state(page) {
     return { at: performance.now(), fixed, usable: column.getBoundingClientRect().height - fixed, tabs, visible: [...document.querySelectorAll('[data-activity-tabpanel]')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.dataset.activityTabpanel),
       settings: { theme: document.documentElement.dataset.theme, lang: document.documentElement.lang, fontSize: localStorage.getItem('th-font-size'), font: getComputedStyle(document.documentElement).getPropertyValue('--th-font-mono') },
       pane: box('.th-chat-pane'), column: box('.th-chat-main'), transcript: box('.th-chat-scrollport'), goal: box('.th-goal-panel'), activity: box('.th-activity-panel'), composer: box('.th-chat-input'),
-      goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('button.th-activity-fold')?.getAttribute('aria-expanded'),
-      goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: !!document.querySelector('.th-activity-shelf .th-activity-caret--open'),
+      goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('.th-activity-shelf')?.dataset.expanded,
+      goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: document.querySelector('.th-activity-shelf')?.dataset.open === 'true',
       allocated: [...document.querySelectorAll('.th-goal-shelf,.th-activity-shelf')].map(e => e.style.flexShrink),
       panelMax: document.querySelector('.th-activity-panel')?.style.maxHeight, stored: localStorage.getItem('th-activity-panel-height'),
       scroll: [...document.querySelectorAll('[data-activity-tabpanel],.th-activity-graph')].map(e => ({ owner: e.dataset.activityTabpanel ?? 'graph', top: e.scrollTop, left: e.scrollLeft, height: e.clientHeight, width: e.clientWidth, scrollHeight: e.scrollHeight, scrollWidth: e.scrollWidth })),
@@ -264,7 +266,7 @@ async function session(browser, receipt, options, body) {
       record.navigation.push({ url: fixture.url, at: new Date().toISOString() }); console.log(`navigate ${fixture.url}`);
       await page.goto(fixture.url); await page.evaluate(() => window.activityReady);
       if (!options.noTodo) {
-        await arm(page, () => document.querySelector('.th-activity-shelf .th-activity-bar')?.textContent.includes('32'));
+        await arm(page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent.includes('32'));
         fixture.deliver('stored-a', { type: 'tool', toolCallId: 'r2-todo', toolName: 'todo', phase: 'end', result: { details: { phases: seeds.todo } } });
         await complete(page);
       }
@@ -313,16 +315,33 @@ async function tabs(q) {
   }
   await changeView(q, 'list'); await select(q, 'todo'); await select(q, 'dag');
   assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
-  await click(q, fold, () => !document.querySelector('.th-activity-panel'));
-  assert.equal((await state(q.page)).tabs.length, 3);
-  await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
+  // Tab-only disclosure: the selected-tab click closes (selection retained,
+  // strip intact), and the next selected-tab click reopens on the same view.
+  await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+  const closed = await state(q.page);
+  assert.equal(closed.tabs.length, 3);
+  assert.equal(closed.activityOpen, 'false');
+  assert.equal(closed.activityIntent, false);
+  assert.equal(closed.tabs.find(t => t.selected === 'true').id, 'dag');
+  await click(q, selectedTab, () => !!document.querySelector('.th-activity-panel'));
   assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
+  // Switching while open keeps the panel open.
+  await select(q, 'agents');
+  assert.deepEqual((await state(q.page)).visible, ['agents']);
+  await select(q, 'dag');
   for (const [key, id] of [['Home', 'todo'], ['ArrowRight', 'agents'], ['End', 'dag'], ['ArrowLeft', 'agents'], ['ArrowDown', 'dag'], ['ArrowUp', 'agents']]) {
     await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
     await arm(q.page, new Function(`return document.activeElement?.getAttribute('data-activity-tab') === '${id}'`));
     await q.page.keyboard.press(key); await complete(q.page);
     q.record.actions.push({ action: 'tab-key', key, state: await state(q.page) });
   }
+  // Same-target boundary navigation (Home on the first tab) must not close.
+  await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
+  await q.page.keyboard.press('Home');
+  const boundary = await state(q.page);
+  assert.equal(boundary.tabs.find(t => t.selected === 'true').id, 'todo');
+  assert.deepEqual(boundary.visible, ['todo']);
+  q.record.actions.push({ action: 'tab-key-boundary', key: 'Home', state: boundary });
   await select(q, 'dag');
   await arm(q.page, () => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === '4/9');
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.task.updated', data: { parent_session_id: 'qa', truncated_tasks: false, tasks: [...q.seeds.tasks, { task_id: 'new', name: 'Live addition', status: 'running' }] } });
@@ -356,7 +375,8 @@ async function resize(q) {
 }
 async function allocation(q, name) {
   await click(q, '.th-goal-bar', () => document.querySelector('.th-goal-shelf')?.style.flexShrink === '0');
-  await click(q, fold, () => document.querySelector('.th-activity-shelf')?.style.flexShrink === '0');
+  // The shelf opens through its selected tab (closed + click opens).
+  await click(q, selectedTab, () => document.querySelector('.th-activity-shelf')?.style.flexShrink === '0');
   const s = await capture(q, name);
   assert(s.goalIntent && s.activityIntent); assert(s.tabs.every(t => t.rect.height > 0));
   assert(s.composer.bottom <= q.record.options.viewport.height + 1); assert(!s.overflow);
@@ -439,7 +459,7 @@ async function motion(q, interruption = null) {
   } else {
     // Every interruption has its own browser context and unchanged six-node seed.
     const { switchName, terminal } = interruption;
-    const selector = { tab: tab('todo'), fold, list: view('list') }[switchName];
+    const selector = { tab: tab('todo'), close: selectedTab, list: view('list') }[switchName];
     {
       const id = terminal ? 'c' : `new-${switchName}`;
       const running = { ...base, nodes: base.nodes.map(n => n.id === 'c' ? { ...n, state: 'running' } : n), updated_at: new Date().toISOString() };
@@ -467,7 +487,7 @@ async function motion(q, interruption = null) {
         window.returnListener = e => { if (/^th-dag-node-(enter|settle)$/.test(e.animationName)) window.returnStarts.push({ name: e.animationName, id: e.target.getAttribute('data-node'), at: performance.now() }); };
         document.addEventListener('animationstart', window.returnListener, true);
       });
-      if (switchName === 'fold') await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
+      if (switchName === 'close') await select(q, 'dag');
       if (switchName === 'tab') await select(q, 'dag');
       if (switchName === 'list') await changeView(q, 'graph');
       const returned = await state(q.page);
@@ -587,16 +607,20 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
   }
   try {
     if (phase === 'baseline') {
-      await scenario('new-baseline-old-ui', {}, async q => {
+      await scenario('new-baseline-tab-ui', {}, async q => {
         const before = await capture(q, 'baseline-collapsed');
-        await click(q, '.th-activity-shelf button.th-activity-bar', () => !!document.querySelector('.th-activity-panel'));
-        const listDefault = await q.page.locator('.th-activity-dagnodes').count() > 0;
-        await capture(q, 'baseline-mixed-list');
-        await changeView(q, 'graph'); await capture(q, 'baseline-old-graph');
-        const observed = await state(q.page);
-        const failures = { permanentTabs: before.tabs.length !== 3, graphDefault: listDefault, visibleStates: await q.page.locator('.th-activity-gstate').count() === 0, runningMotion: observed.animations.length === 0 };
-        assert(failures.permanentTabs && failures.visibleStates && failures.runningMotion);
-        return { before, observed, failures };
+        // The current baseline is the tab-only disclosure: the summary band
+        // and its separate fold control stay removed, the three tabs are
+        // permanent chrome, and the selected tab is the only close control.
+        assert.equal(before.tabs.length, 3, 'tabs are permanent chrome while closed');
+        assert.equal(before.activityOpen, 'false');
+        assert.equal(await q.page.locator('button.th-activity-fold').count(), 0, 'fold control removed');
+        assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0, 'summary band removed');
+        await click(q, tab('todo'), () => !!document.querySelector('.th-activity-panel'));
+        await capture(q, 'baseline-open-via-tab');
+        await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+        assert.equal((await state(q.page)).tabs.length, 3, 'strip survives the close');
+        return { before };
       });
     } else if (phase === 'regression') {
       for (const lang of ['en', 'ko']) await scenario(`font24-${lang}`, { lang, fontSize: 24 }, async q => { await select(q, 'dag'); await capture(q, `regression-${lang}-font24`); const nodes = await geometry(q); q.record.geometry = nodes; assertGeometry(nodes); return nodes; });
@@ -641,16 +665,24 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         assert(await handle.evaluate(e => e === document.querySelector('[data-node="a"]'))); await handle.dispose();
         await capture(q, 'font-live-24'); return { before, after };
       });
-      await scenario('goal-hover-summary-readonly', {}, async q => {
-        const paint = () => q.page.evaluate(() => { const style = s => { const e = document.querySelector(s), c = getComputedStyle(e); return { tag: e.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor }; }; return { goal: style('.th-goal-bar'), summary: style('.th-activity-shelf .th-activity-bar') }; });
+      await scenario('goal-hover-feedback-tabs-interactive', {}, async q => {
+        const paint = () => q.page.evaluate(() => { const style = s => { const e = document.querySelector(s), c = getComputedStyle(e); return { tag: e.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor }; }; return { goal: style('.th-goal-bar'), tab: style('.th-activity-shelf [role="tab"][aria-selected="false"]') }; });
         await q.page.mouse.move(0, 0); const before = await paint();
         await q.page.locator('.th-goal-bar').hover();
         await q.page.evaluate(() => Promise.all(document.querySelector('.th-goal-bar').getAnimations().map(a => a.finished)));
         const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
         await capture(q, 'goal-hover-feedback');
-        await q.page.locator('.th-activity-shelf .th-activity-bar').hover();
-        const summaryHover = await paint(); assert.deepEqual(summaryHover.summary, before.summary); assert.equal(summaryHover.summary.tag, 'SPAN');
-        await capture(q, 'activity-summary-readonly'); return { before, hovered, summaryHover };
+        // The activity shelf has no summary pill left to be read-only about;
+        // its tabs are the interactive surface, with visible hover feedback
+        // (an unselected tab: transparent turns to the shared hover fill).
+        await q.page.locator('.th-activity-shelf [role="tab"][aria-selected="false"]').first().hover();
+        await q.page.evaluate(() => Promise.all(document.querySelector('.th-activity-shelf [role="tab"][aria-selected="false"]').getAnimations().map(a => a.finished)));
+        const tabHover = await paint(); assert.equal(tabHover.tab.tag, 'BUTTON'); assert.equal(tabHover.tab.cursor, 'pointer');
+        assert.notEqual(before.tab.background, tabHover.tab.background);
+        await capture(q, 'activity-tab-interactive');
+        assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0);
+        assert.equal(await q.page.locator('button.th-activity-fold').count(), 0);
+        return { before, hovered, tabHover };
       });
       await scenario('shared-hooks', {}, async q => ({ actions: await exerciseShelves(q, name => capture(q, `shared-${name}`)) }));
       for (const [name, viewport, layout] of [['desktop', { width: 1280, height: 800 }, 'single'], ['mobile', { width: 390, height: 844 }, 'single'], ['340', { width: 1280, height: 800 }, 'two'], ['short', { width: 1280, height: 420 }, 'single']]) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
