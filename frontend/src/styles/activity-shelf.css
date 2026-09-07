@@ -602,6 +602,23 @@ button.th-activity-bar:hover {
   stroke: none;
 }
 
+.th-activity-gedge--fulfilled { stroke: var(--th-success); }
+.th-activity-gedge-head--fulfilled { fill: var(--th-success); }
+
+/* Negative offset moves dashes from (x1,y1) toward (x2,y2), including
+   diagonal/backward edges. One full dash period keeps the loop seamless. */
+@keyframes th-dag-edge-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -12; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .th-activity-gedge--flow {
+    stroke-dasharray: 8 4;
+    animation: th-dag-edge-flow 1.2s linear infinite;
+  }
+}
+
 .th-activity-gnode rect {
   fill: var(--th-bg);
   stroke: var(--th-border);
