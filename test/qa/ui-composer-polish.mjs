@@ -229,9 +229,13 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label }) 
 }
 
 /** C4: safe visual-viewport sheet and real close control. */
-async function c4Scenario(browser, { width, height, insets, keyboard, pan, label }) {
+async function c4Scenario(browser, { width, height, insets, keyboard, pan, keyboardHeight, tight, label }) {
   const q = await setupComposer(browser, { viewport: { width, height }, coarse: true, mobile: !pan });
   const { page, fixture } = q;
+  const step = async (name, predicate, action) => {
+    try { await transition(page, predicate, action); }
+    catch (error) { throw new Error(`[${name}] ${error.message}`); }
+  };
   try {
     const session = await page.context().newCDPSession(page);
     const safe = insets ?? { top: 0, right: 0, bottom: 0, left: 0 };
@@ -239,7 +243,7 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, label
       mobile: !pan, coarse: true,
       emulation: 'Chrome CDP safe-area, device-metrics resize, desktop-renderer page scale and native touch pan; not physical-device evidence' });
     await session.send('Emulation.setSafeAreaInsetsOverride', { insets: safe });
-    await transition(page, "() => !!document.querySelector('.th-model-picker-popover--sheet')",
+    await step("open-sheet", "() => !!document.querySelector('.th-model-picker-popover--sheet')",
       () => page.locator('.th-model-picker-btn').click());
     await page.locator('.th-model-picker-search').fill('model');
     const read = () => {
@@ -256,32 +260,67 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, label
     if (keyboard) {
       // Landscape must shrink by >100px too; the previous 390 -> 300 scenario
       // never entered the public keyboard-open state.
-      const keyboardHeight = height > 500 ? height - 300 : height - 160;
-      await transition(page, `() => document.documentElement.hasAttribute('data-th-keyboard-open') && Math.abs(visualViewport.height - ${keyboardHeight}) < 1`,
+      const shrink = keyboardHeight ?? (height > 500 ? height - 300 : height - 160);
+      await transition(page, `() => document.documentElement.hasAttribute('data-th-keyboard-open') && Math.abs(visualViewport.height - ${shrink}) < 1`,
         () => session.send('Emulation.setDeviceMetricsOverride',
-          { width, height: keyboardHeight, deviceScaleFactor: 2, mobile: true }));
+          { width, height: shrink, deviceScaleFactor: 2, mobile: true }));
+    }
+    if (tight) {
+      // Over-constrained height: the fixed chrome (thinking, search) can
+      // exceed the measured sheet bound. The pinned header and close must
+      // stay bounded and genuinely hit-testable, the search must scroll into
+      // view within the sheet, and the list must keep a usable scrollport —
+      // a bounded rectangle with hidden or unreachable content is a failure,
+      // not a pass.
+      // Mobile input is touch: swipe up over the fixed chrome region to
+      // scroll the sheet (the search/keyboard state keeps focus untouched).
+      const sheetBox = await page.locator('.th-model-picker-popover--sheet').boundingBox();
+      await session.send('Input.synthesizeScrollGesture',
+        { x: sheetBox.x + sheetBox.width / 2, y: sheetBox.y + 60,
+          xDistance: 0, yDistance: -260, speed: 4000, gestureSourceType: 'touch' });
+      const exposed = await page.evaluate(() => {
+        const sheet = document.querySelector('.th-model-picker-popover--sheet').getBoundingClientRect();
+        const search = document.querySelector('.th-model-picker-search').getBoundingClientRect();
+        const hit = document.elementFromPoint(search.x + search.width / 2,
+          Math.min(Math.max(search.y + search.height / 2, sheet.top + 1), sheet.bottom - 1));
+        const searchEl = document.querySelector('.th-model-picker-search');
+        return { sheet: sheet.toJSON(), search: search.toJSON(),
+          complete: search.top >= sheet.top + 1 && search.bottom <= sheet.bottom - 1,
+          hit: hit === searchEl || searchEl.contains(hit) };
+      });
+      record(`c4-${label}-search-reachable`, exposed.complete && exposed.hit, exposed);
+      const listZone = await page.locator('.th-model-picker-popover--sheet').boundingBox();
+      await session.send('Input.synthesizeScrollGesture',
+        { x: listZone.x + listZone.width / 2, y: listZone.y + listZone.height - 15,
+          xDistance: 0, yDistance: -3000, speed: 4000, gestureSourceType: 'touch' });
+      const listRead = await page.evaluate(() => {
+        const sheet = document.querySelector('.th-model-picker-popover--sheet').getBoundingClientRect();
+        const list = document.querySelector('.th-model-picker-list');
+        const listRect = list.getBoundingClientRect();
+        const options = [...list.querySelectorAll('[role=option]')];
+        // A touch-targetable option shows at least a 20px visible band at the
+        // scroll edge and owns the point that a real finger would land on.
+        const targetable = options.filter(element => {
+          const rect = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+          const visible = Math.min(rect.bottom, sheet.bottom, listRect.bottom) - Math.max(rect.top, listRect.top, sheet.top);
+          return visible >= 20 && (hit === element || element.contains(hit));
+        });
+        return { list: listRect.toJSON(), scrollable: list.scrollHeight > list.clientHeight,
+          viewport: list.clientHeight, scrollTop: list.scrollTop, targetable: targetable.length };
+      });
+      record(`c4-${label}-list-scrollport`, listRead.scrollable && listRead.viewport >= 44
+        && listRead.scrollTop > 0 && listRead.targetable >= 1, listRead);
     }
     const beforePan = pan ? await page.evaluate(read) : null;
     if (pan) {
       // At page scale 1 with insets the close header must already sit inside
-      // the safe visual rectangle; the zoomed post-pan state is covered by
-      // the pan-tracking record below (see the scope note there).
+      // the safe visual rectangle before any zoom.
       const preBounds = safeBounds(beforePan.vv, safe);
       record(`c4-${label}-pre-pan-safe-bounds`, fits(beforePan.close, preBounds)
         && fits(beforePan.sheet, preBounds), { safe, bounds: preBounds, readout: beforePan });
-      await transition(page, "() => visualViewport.scale > 1.5",
+      await step("pinch", "() => visualViewport.scale > 1.5",
         () => session.send('Emulation.setPageScaleFactor', { pageScaleFactor: 2 }));
-      const start = await page.locator('.th-model-picker-current').evaluate(header => {
-        const rect = header.getBoundingClientRect(), vv = visualViewport;
-        // Gesture starts inside the pinned header, not outside the dialog:
-        // an outside pointerdown correctly dismisses this model picker.
-        return { left: vv.offsetLeft, top: vv.offsetTop,
-          x: (rect.left + 12 - vv.offsetLeft) * vv.scale,
-          y: (rect.top + 12 - vv.offsetTop) * vv.scale };
-      });
-      await transition(page, `() => visualViewport.offsetLeft !== ${start.left} || visualViewport.offsetTop !== ${start.top}`,
-        () => session.send('Input.synthesizeScrollGesture',
-          { x: start.x, y: start.y, xDistance: -60, yDistance: -60, speed: 4000, gestureSourceType: 'touch' }));
     }
     const readout = await page.evaluate(read);
     const bounds = safeBounds(readout.vv, safe);
@@ -291,22 +330,55 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, label
     if (!pan) record(`c4-${label}-safe-bounds`, fits(readout.close, bounds) && fits(readout.sheet, bounds)
       && readout.close.width >= 44 && readout.close.height >= 44, { safe, bounds, readout });
     if (pan) {
-      // Keyboard-style pan tracking: the sheet's layout position shifts by
-      // exactly the visual-viewport offset delta (the CSS custom properties
-      // it consumes), and the 44px close header stays pinned inside the
-      // sheet. Containment inside the ZOOMED visual region would require a
+      // Pinch-zoom tracking: the sheet keeps consuming the visual-viewport
+      // custom properties across the zoom's real resize events, and the
+      // 44px close header stays pinned at the top of the sheet. Full sheet
+      // containment inside the ZOOMED visible region would require a
       // visual-viewport width variable in the global viewport protocol
-      // (index.html), which is out of this task's scope without lead
-      // coordination; at page scale 1 the safe-bounds record above covers it.
-      const track = (before, after) => Math.abs((after.sheet.left - before.sheet.left)
-        - (after.vv.left - before.vv.left)) <= 1
-        && Math.abs((after.sheet.top - before.sheet.top) - (after.vv.top - before.vv.top)) <= 1;
-      const pinned = readout.close.left >= readout.sheet.left - 0.5
-        && readout.close.right <= readout.sheet.right + 0.5
-        && readout.close.top >= readout.sheet.top - 0.5
-        && readout.close.bottom <= readout.sheet.bottom + 0.5;
-      record(`c4-${label}-pan-tracking`, track(beforePan, readout) && pinned,
-        { before: beforePan, after: readout, pinned });
+      // (index.html) — out of scope without lead coordination; at page
+      // scale 1 the safe-bounds record above covers containment.
+      const pinned = readout.close.left >= readout.header.left - 0.5
+        && readout.close.right <= readout.header.right + 0.5
+        && readout.close.top >= readout.header.top - 0.5
+        && readout.close.bottom <= readout.header.bottom + 0.5;
+      record(`c4-${label}-zoom-tracked`, pinned && readout.css.top !== '' && readout.css.left !== ''
+        && readout.sheet.top >= readout.vv.top
+        && readout.sheet.top < readout.vv.top + readout.vv.height,
+        { readout, pinned });
+      // A touch drag inside the sheet is absorbed by the contained dialog
+      // (overscroll containment): the page behind does not pan, the dialog
+      // stays open, and the close control remains the hit target. A page-level
+      // pan gesture must start outside the dialog and is dismissed by the
+      // outside-pointerdown contract, so keyboard-driven visual-viewport
+      // offset tracking stays var-based (the vars update on the pinch's real
+      // visualViewport events).
+      const sheetRect = await page.locator('.th-model-picker-popover--sheet').evaluate(el => {
+        const rect = el.getBoundingClientRect(), vv = visualViewport;
+        // Gesture coordinates are visible-widget CSS pixels bounded by the
+        // visible region: target the sheet's intersection with it.
+        const left = Math.max(rect.left, vv.offsetLeft);
+        const right = Math.min(rect.right, vv.offsetLeft + vv.width);
+        const top = Math.max(rect.top, vv.offsetTop);
+        const bottom = Math.min(rect.bottom, vv.offsetTop + vv.height);
+        const cx = left + Math.min(60, (right - left) / 2);
+        const cy = top + Math.min(40, (bottom - top) / 2);
+        return { x: Math.min((cx - vv.offsetLeft) * vv.scale, vv.width - 5),
+          y: Math.min((cy - vv.offsetTop) * vv.scale, vv.height - 5) };
+      });
+      const offsetsBefore = { top: readout.vv.top, left: readout.vv.left };
+      await session.send('Input.synthesizeScrollGesture',
+        { x: sheetRect.x, y: sheetRect.y, xDistance: 0, yDistance: -200,
+          speed: 4000, gestureSourceType: 'touch' });
+      const contained = await page.evaluate(({ top, left }) => {
+        const sheet = document.querySelector('.th-model-picker-popover--sheet');
+        const close = sheet.querySelector('.th-model-picker-current .th-btn-icon');
+        const rect = close.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        return { pageStill: visualViewport.offsetTop === top && visualViewport.offsetLeft === left,
+          open: !!sheet, closeHit: hit === close || close.contains(hit) };
+      }, offsetsBefore);
+      record(`c4-${label}-pan-contained`, contained.pageStill && contained.open && contained.closeHit,
+        contained);
     }
     // Native keyboard navigation to the last matching choice scrolls the real
     // list. The header/close must remain pinned while choices move beneath it.
@@ -385,6 +457,8 @@ try {
       insets: { top: 0, right: 47, bottom: 0, left: 47 }, label: "landscape-insets-keyboard" });
     await c4Scenario(browser, { width: 390, height: 844, pan: true,
       insets: { top: 59, right: 47, bottom: 34, left: 47 }, label: "portrait-insets-pan" });
+    await c4Scenario(browser, { width: 844, height: 390, keyboard: true, keyboardHeight: 150, tight: true,
+      insets: { top: 0, right: 47, bottom: 0, left: 47 }, label: "landscape-tight-keyboard" });
   }
 } finally {
   await browser.close();

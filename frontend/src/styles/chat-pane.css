@@ -947,18 +947,41 @@
   gap: var(--th-space-0-5);
 }
 
+  /* Pinned identity: in the sheet scrollport the header (with its 44px close
+     control) sticks to the top and paints over scrolled options, so
+     header and close stay bounded and hit-testable at any height. */
+.th-model-picker-popover--sheet .th-model-picker-current {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--th-surface-overlay);
+}
+
 .th-model-picker-popover--sheet .th-model-picker-current .th-btn-icon {
   flex: none;
   width: var(--th-space-11);
   height: var(--th-space-11);
 }
 
+  /* Bounded minimum scrollport: even when the fixed chrome consumes the
+     measured bound, the list keeps a usable scrolling region of options. */
+.th-model-picker-popover--sheet .th-model-picker-list {
+  min-height: var(--th-space-11);
+}
+
 .th-model-picker-current span {
   color: var(--th-muted);
 }
 
+/* Over-constrained heights (deep keyboard, very short landscape): when the
+   fixed chrome alone exceeds the measured bound, the sheet becomes its own
+   scrollport instead of painting content outside its bounds. When chrome
+   fits, flex sizing makes the sheet content fit exactly and nothing scrolls.
+   The identity header is pinned inside that scrollport below. */
 .th-model-picker-popover--sheet {
   position: fixed;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   right: auto;
   /* Usable visual-viewport bounds on all four sides (DESIGN.md "Responsive
      behavior"): the fixed sheet compensates the visual-viewport pan like

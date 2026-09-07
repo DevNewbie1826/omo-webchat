@@ -547,9 +547,12 @@ At 390x844 and comparable narrow sizes:
   edge, including its pinned 44px close header, inside the usable
   visual-viewport bounds: it compensates keyboard pan and keeps clear of
   display cutouts via the per-side safe-area insets, without focusing search
-  or summoning its keyboard. Current model/provider identity stays pinned
-  above the scrolling options. Selection uses exact provider/model identity,
-  independent of navigation focus, and the current row is visible on opening;
+  or summoning its keyboard. When the bound is over-constrained the fixed
+  chrome scrolls beneath the pinned identity header and the list keeps a
+  bounded minimum scrollport, so no content paints outside the sheet. Current
+  model/provider identity stays pinned above the scrolling options. Selection
+  uses exact provider/model identity, independent of navigation focus, and
+  the current row is visible on opening;
 - header controls remain reachable with 44px touch targets;
 - the composer's plus action and send/stop circle grow to 44px hit areas, and
   the input keeps a 44px minimum height;
