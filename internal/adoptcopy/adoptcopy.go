@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
+	"github.com/DevNewbie1826/omo-webchat/internal/dirsync"
 )
 
 // MaxSourceBytes is the adoption ceiling. It accommodates known large session
@@ -579,7 +580,7 @@ func syncRoot(root *os.Root) error {
 		return err
 	}
 	defer directory.Close()
-	return directory.Sync()
+	return dirsync.Handle(directory)
 }
 
 func fail(kind Kind, op, path string, size, limit int64, err error) *Error {

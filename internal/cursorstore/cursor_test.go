@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -239,6 +240,9 @@ func TestAtomicityFailureLeavesNoPartialState(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based fault injection is ineffective as root")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based fault injection is ineffective on Windows: os.Chmod cannot revoke directory writes")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 
@@ -288,6 +292,9 @@ func TestAtomicityFailureLeavesNoPartialState(t *testing.T) {
 
 // TestFilePermissions: the persisted state file is 0600.
 func TestFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits are not represented on Windows: files report 0666")
+	}
 	path := filepath.Join(t.TempDir(), "state.json")
 	s := mustOpen(t, path)
 	if err := s.SaveWorkspace(testWorkspace("ws1")); err != nil {
