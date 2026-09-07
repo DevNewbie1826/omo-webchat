@@ -181,6 +181,16 @@
   outline-offset: -1px;
 }
 
+/* One mobile pane already owns the whole viewport, so its inset active
+   outline only doubles the screen edge. Active-pane identity keeps flowing
+   through the class (routing, PaneResize); desktop splits and keyboard
+   focus keep their outlines above the breakpoint. */
+@media (max-width: 768px) {
+  .th-pane--focused {
+    outline: none;
+  }
+}
+
 .th-session-workarea {
   display: flex;
   flex: 1;
