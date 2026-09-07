@@ -271,18 +271,6 @@ export function ChatPane({
                 </button>
               </span>
             ))}
-            {chat.contextUsage && (
-              <span className="th-chat-status-item">
-                {t("chat.contextUsage")}
-                <span className="th-chat-status-num">{Math.round(chat.contextUsage.percent)}%</span>
-              </span>
-            )}
-            {chat.cacheHitRate !== null && (
-              <span className="th-chat-status-item">
-                {t("chat.cacheHit")}
-                <span className="th-chat-status-num">{Math.round(chat.cacheHitRate * 100)}%</span>
-              </span>
-            )}
             {chat.isCompacting && (
               <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.compacting")}</span>
             )}

@@ -195,7 +195,6 @@
 
   .th-chat-status-details summary {
     min-width: 44px;
-    min-height: 44px;
     justify-content: center;
   }
 }
@@ -908,6 +907,12 @@
   border-radius: var(--th-radius-sm);
   list-style: none;
   cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .th-chat-status-details summary {
+    min-height: 44px;
+  }
 }
 
 .th-chat-status-details summary::-webkit-details-marker {
