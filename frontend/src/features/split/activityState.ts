@@ -14,6 +14,7 @@ import type {
   ActivityState,
   ActivityTask,
 } from "./activityTypes";
+import { parseDagUpdatedAt, type ParsedDagUpdated } from "./activityParseDag";
 import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from "./activityShelfModel";
 
 /* The terminal-status rule lives once in activityShelfModel.ts (exported for
@@ -376,18 +377,51 @@ function applyTaskSnapshot(state: ActivityState, data: unknown): ActivityState {
   return next;
 }
 
-function applyDagSnapshot(state: ActivityState, data: unknown): ActivityState {
-  const parsed = parseDagUpdated(data);
-  if (parsed === null) return state;
+function reconcileDagSnapshot(
+  state: ActivityState,
+  parsed: ParsedDagUpdated,
+  keepOmitted: (run: ActivityDagRun) => boolean,
+): ActivityState {
+  const present = new Set(parsed.runs.map(run => run.runId));
+  const dags = new Map(state.dags);
+  const dagFreshness = new Map(state.dagFreshness);
+  for (const [id, run] of state.dags) {
+    const revision = parseDagUpdatedAt(run.updatedAt);
+    if (revision !== undefined && !dagFreshness.has(id)) dagFreshness.set(id, revision);
+    if (!present.has(id) && !parsed.truncatedRuns && !keepOmitted(run)) dags.delete(id);
+  }
+  for (const incoming of parsed.runs) {
+    const revision = parseDagUpdatedAt(incoming.updatedAt);
+    const currentRevision = dagFreshness.get(incoming.runId);
+    // Equal known revisions keep the incumbent as a complete unit. Unknown
+    // pairs remain arrival-ordered for legacy payloads, never terminal-latched.
+    if (currentRevision !== undefined && (revision === undefined || revision <= currentRevision)) continue;
+    dags.set(incoming.runId, mergeDagRun(dags.get(incoming.runId), {
+      ...incoming, truncated: parsed.truncatedRuns === true,
+    }));
+    if (revision !== undefined) dagFreshness.set(incoming.runId, revision);
+  }
   return {
     ...state,
-    dags: replaceKeepingTerminal(state.dags, parsed.runs, {
-      keyOf: (run) => run.runId,
-      keepPrevious: isTerminalDag,
-      merge: mergeDagRun,
-    }),
-    ...(parsed.truncatedRuns === undefined ? {} : { truncatedDags: parsed.truncatedRuns }),
+    dags,
+    dagFreshness,
+    truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
   };
+}
+
+function applyDagSnapshot(state: ActivityState, data: unknown): ActivityState {
+  const parsed = parseDagUpdated(data);
+  return parsed === null ? state : reconcileDagSnapshot(state, parsed, isTerminalDag);
+}
+
+/** REST membership may remove terminal rows, except IDs changed during the request. */
+export function applyDagHistorySnapshot(
+  state: ActivityState,
+  data: unknown,
+  touched: ReadonlySet<string> = new Set(),
+): ActivityState {
+  const parsed = parseDagUpdated(data);
+  return parsed === null ? state : reconcileDagSnapshot(state, parsed, run => touched.has(run.runId));
 }
 
 function liveProgressFromActivity(
@@ -410,10 +444,11 @@ function applyNodeActivity(state: ActivityState, data: unknown): ActivityState {
   const run = state.dags.get(parsed.runId);
   if (run === undefined) return state;
   let matched = false;
+  let changed = false;
   const nodes = run.nodes.map((node) => {
     if (node.id !== parsed.nodeId) return node;
     matched = true;
-    return {
+    const nextNode = {
       ...node,
       ...(parsed.taskId !== undefined ? { taskId: parsed.taskId } : {}),
       ...(parsed.activity !== undefined ? { activity: parsed.activity } : {}),
@@ -423,13 +458,21 @@ function applyNodeActivity(state: ActivityState, data: unknown): ActivityState {
       ...(parsed.toolCalls !== undefined ? { toolCalls: parsed.toolCalls } : {}),
       lastActivityAt: parsed.at,
     };
+    if (node.taskId === nextNode.taskId && node.activity === nextNode.activity
+      && node.currentTool === nextNode.currentTool && node.lastAssistantLine === nextNode.lastAssistantLine
+      && node.turns === nextNode.turns && node.toolCalls === nextNode.toolCalls
+      && node.lastActivityAt === nextNode.lastActivityAt) return node;
+    changed = true;
+    return nextNode;
   });
   if (!matched) return state;
-  const dags = new Map(state.dags);
-  dags.set(parsed.runId, { ...run, nodes, lastActivityAt: parsed.at });
-  if (parsed.taskId === undefined) return { ...state, dags };
+  const dags = changed || run.lastActivityAt !== parsed.at
+    ? new Map(state.dags).set(parsed.runId, { ...run, nodes, lastActivityAt: parsed.at })
+    : state.dags;
+  const dagState = dags === state.dags ? state : { ...state, dags };
+  if (parsed.taskId === undefined) return dagState;
   const task = state.tasks.get(parsed.taskId);
-  if (task === undefined) return { ...state, dags };
+  if (task === undefined) return dagState;
   const tasks = new Map(state.tasks);
   // The heartbeat is the freshest evidence of life for the task row the shelf
   // keeps after taskId dedup drops the node projection - stamp updatedAt so
@@ -461,9 +504,8 @@ function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {
   return { ...state, heartbeats };
 }
 
-/** Replace one activity side from a REST history response. Unlike live
- * snapshots, authoritative hydration does not retain terminal rows omitted by
- * the store projection; ordering is decided by the caller per side. */
+/** Hydrate activity history. Task ordering is caller-owned; DAG revisions
+ * reconcile per ID and complete REST may remove omitted terminal rows. */
 export function applyActivityHistorySnapshot(state: ActivityState, name: string, data: unknown): ActivityState {
   if (name === "omo.task.updated") {
     const parsed = parseTaskUpdated(data);
@@ -474,15 +516,7 @@ export function applyActivityHistorySnapshot(state: ActivityState, name: string,
       ...(parsed.truncatedTasks === undefined ? {} : { truncatedTasks: parsed.truncatedTasks }),
     };
   }
-  if (name === "omo.dag.updated") {
-    const parsed = parseDagUpdated(data);
-    if (parsed === null) return state;
-    return {
-      ...state,
-      dags: new Map(parsed.runs.map((run) => [run.runId, run])),
-      ...(parsed.truncatedRuns === undefined ? {} : { truncatedDags: parsed.truncatedRuns }),
-    };
-  }
+  if (name === "omo.dag.updated") return applyDagHistorySnapshot(state, data);
   return state;
 }
 
