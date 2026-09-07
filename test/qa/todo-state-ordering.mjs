@@ -70,6 +70,29 @@ export async function applicationBarrier(observed, { after, marker }, { arm, pub
   } finally { pending.cancel(); }
 }
 
+/** Exercise the exact missing-key carrier through the real canonical reader.
+ * Do not filter by expected phases: the false-clear response must reach App. */
+export async function exactKeyRetention(observed, incumbent, { append, barrier, read, capture }) {
+  assert.ok(incumbent.frame.phases.some(phase => phase.tasks.length > 0), 'nonempty incumbent');
+  const input = { entry: { type: 'custom', customType: 'senpi.todo-state', data: { schema: 'v2', Phases: [] } }, persist: true };
+  const pending = observed.wait(row => row.socketId === incumbent.socketId && row.direction === 'received'
+    && row.frame?.type === 'chat.todo' && row.frame.sessionId === incumbent.frame.sessionId
+    && row.frame.bindingId === incumbent.frame.bindingId && row.frame.status === 'ready'
+    && row.frame.source?.leafId !== incumbent.frame.source.leafId,
+  { after: observed.mark(), timeout: deadline, label: 'exact-key canonical source response' });
+  try {
+    const appended = await append(input), projection = await pending;
+    assert.equal(projection.frame.source.leafId, appended.entryId, 'exact malformed source was acquired');
+    const marker = await barrier(projection, `qa-exact-key-${appended.entryId}`);
+    const retained = await read();
+    await capture({ input, appended, incumbent, projection, marker, retained });
+    assert.deepEqual(retained, incumbent.frame.phases, 'missing exact phases must retain incumbent, not clear it');
+    assertProjection(projection.frame, incumbent.frame.bindingId, incumbent.frame.phases);
+    assert.equal(projection.frame.source.entryId, incumbent.frame.source.entryId, 'malformed carrier has no whole-list authority');
+    return projection;
+  } finally { pending.cancel(); }
+}
+
 export async function bounded(promise, label, timeout = deadline) {
   let timer;
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Deadline: ${label}`)), timeout); })]); }
@@ -286,6 +309,21 @@ export async function run({ fixtureBin, evidenceDir, browser: suppliedBrowser, c
     assert.equal(observed.timeline.filter(row => row.sequence > customOnlyStart && received(row, 'tool') && row.frame.toolName === 'todo').length, 0,
       'custom-only mutation reaches App without any direct todo tool frame');
     await capture('desktop-custom-only-B');
+    const exactKey = await exactKeyRetention(observed, observed.timeline.findLast(row => row.frame === current), {
+      append: input => control('/append', input),
+      barrier: async (after, marker) => {
+        assert.equal(await page.locator(`[data-tool-call-id="${marker}"]`).count(), 0, 'render marker is new');
+        return applicationBarrier(observed, { after, marker }, {
+          arm: marker => arm(page, marker => !!document.querySelector(`[data-tool-call-id="${marker}"].th-tool--ok`), marker),
+          publish: marker => control('/events', { events: [{ type: 'tool_execution_end', toolCallId: marker, toolName: 'read',
+            result: { content: [{ type: 'text', text: marker }] }, isError: false }] }),
+          done: token => done(page, token),
+        });
+      },
+      read: () => page.evaluate(() => window.__todoQA.read()),
+      capture: async proof => { record({ action: 'exact-key-malformed-retention', proof }); await capture('desktop-exact-key-retained', proof); },
+    });
+    await consume(exactKey, B); await rendered(B);
     const toolAfter = observed.mark();
     const tool = observed.wait(row => received(row, 'tool') && row.frame.toolCallId === 'completion-array' && row.frame.phase === 'end', { after: toolAfter, label: 'actual-shaped completion result' });
     await control('/events', { events: [
