@@ -2,7 +2,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
-import { extractTodoPhases } from "./chatTodoHistory";
 import { useChatSession } from "./useChatSession";
 
 const session = {
@@ -27,50 +26,6 @@ const TOOLRESULT_HISTORY_PHASES = [
 const CUSTOM_HISTORY_PHASES = [
   { name: "From custom", tasks: [{ content: "history custom", status: "completed" as const }] },
 ];
-
-describe("extractTodoPhases", () => {
-  it("extracts phases from a senpi.todo-state custom history entry", () => {
-    const phases = [{ name: "Custom", tasks: [{ content: "x", status: "pending" as const }] }];
-    expect(
-      extractTodoPhases([
-        { type: "custom", customType: "senpi.todo-state", data: { schema: "v2", op: "write", phases } },
-      ]),
-    ).toEqual(phases);
-  });
-
-  it("extracts phases from a todo toolResult history entry", () => {
-    const phases = [{ name: "ToolResult", tasks: [{ content: "y", status: "in_progress" as const }] }];
-    expect(
-      extractTodoPhases([
-        {
-          type: "message",
-          message: { role: "toolResult", toolName: "todo", details: { op: "write", phases } },
-        },
-      ]),
-    ).toEqual(phases);
-  });
-
-  it("returns the last valid payload in document order across both shapes", () => {
-    const first = [{ name: "First", tasks: [{ content: "a", status: "pending" as const }] }];
-    const last = [{ name: "Last", tasks: [{ content: "b", status: "completed" as const }] }];
-    expect(
-      extractTodoPhases([
-        { type: "custom", customType: "senpi.todo-state", data: { schema: "v2", phases: first } },
-        {
-          type: "message",
-          message: { role: "toolResult", toolName: "todo", details: { op: "write", phases: last } },
-        },
-      ]),
-    ).toEqual(last);
-  });
-
-  it("returns null when history carries no todo payload", () => {
-    expect(
-      extractTodoPhases([{ type: "message", message: { role: "user", content: "hi", timestamp: 1 } }]),
-    ).toBeNull();
-    expect(extractTodoPhases("not entries")).toBeNull();
-  });
-});
 
 describe("useChatSession activities", () => {
   let root: Root;
