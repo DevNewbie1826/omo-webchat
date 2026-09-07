@@ -78,6 +78,8 @@ export interface ActivityDagRun {
   readonly parentSessionId?: string;
   readonly createdAt?: string;
   readonly updatedAt?: string;
+  /** This accepted row came from a truncated projection, which stale input cannot complete. */
+  readonly truncated?: boolean;
   readonly counts: ActivityDagCounts;
   readonly nodes: readonly ActivityDagNode[];
   readonly edges: readonly ActivityDagEdge[];
@@ -104,6 +106,8 @@ export interface ActivityHeartbeat {
 export interface ActivityState {
   readonly tasks: ReadonlyMap<string, ActivityTask>;
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
+  /** Known per-ID high-water marks survive membership removal, without retaining graphs. */
+  readonly dagFreshness?: ReadonlyMap<string, number>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
   /** The retained task/DAG rows are a bounded prefix of a larger history. */
