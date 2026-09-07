@@ -159,7 +159,7 @@ function messagesSinceSnapshot(
   });
 }
 
-export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (frame: ChatServerFrame, connectionGeneration?: number) => void {
+export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (frame: ChatServerFrame, connectionGeneration?: number) => "refresh_stats" | void {
   const clearLiveSurfaces = (): void => {
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
@@ -171,7 +171,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.externalRecoveryPendingRef.current = false;
     bindings.setExternalWriteDetected(false);
   };
-  const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): void => {
+  const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
     switch (frame.type) {
       case "ready": {
         const generation = bindings.claimReadyGeneration(connectionGeneration);
@@ -283,7 +283,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       case "control.result":
         if (frame.success) {
-          if (frame.requestId) bindings.controls.ledger.dropRestoreRequest(frame.requestId);
+          if (frame.requestId && bindings.controls.ledger.dropRestoreRequest(frame.requestId, frame.command) === "set_model") {
+            return "refresh_stats";
+          }
           return;
         }
         if (frame.requestId && bindings.controls.ledger.reject(frame.requestId)) bindings.setError(frame.message ?? "");
@@ -396,6 +398,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "compaction.done":
         bindings.setIsCompacting(false);
         if (frame.error) bindings.setSendError({ message: frame.error });
+        else if (!bindings.runningRef.current) return "refresh_stats";
         return;
       case "state":
         // ready precedes provider initialization; state proves get_state

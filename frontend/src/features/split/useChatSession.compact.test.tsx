@@ -240,4 +240,58 @@ describe("useChatSession manual compaction", () => {
     expect(accepted).toBe(true);
     expect(compactFrames()).toHaveLength(1);
   });
+
+  it("preserves the last authoritative budget on failed compact and ignores foreign completion and stats", () => {
+    act(() => deliver?.({ type: "stats", sessionId: session.id,
+      contextUsage: { tokens: 136000, contextWindow: 272000, percent: 50 } }));
+    act(() => expect(current?.compact()).toBe(true));
+    act(() => deliver?.({ type: "compaction.started", sessionId: session.id }));
+    act(() => {
+      deliver?.({ type: "compaction.done", sessionId: "chat-other" });
+      deliver?.({ type: "stats", sessionId: "chat-other",
+        contextUsage: { tokens: 27200, contextWindow: 272000, percent: 10 } });
+    });
+    expect(current?.isCompacting).toBe(true);
+    expect(current?.contextUsage?.percent).toBe(50);
+    act(() => deliver?.({ type: "compaction.done", sessionId: session.id, error: "COMPACT_FAILED" }));
+    expect(current?.isCompacting).toBe(false);
+    expect(current?.sendError?.["message"]).toBe("COMPACT_FAILED");
+    expect(current?.contextUsage).toEqual({ tokens: 136000, contextWindow: 272000, percent: 50 });
+    expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+    expect(current?.doneReason).toBeNull();
+  });
+
+  it("keeps two queued inputs server-owned across overflow compaction and retry until run.done", () => {
+    act(() => {
+      deliver?.({ type: "run.started", sessionId: session.id });
+      deliver?.({ type: "compaction.started", sessionId: session.id });
+      deliver?.({ type: "compaction.done", sessionId: session.id });
+    });
+    expect(current?.serverRunning).toBe(true);
+    expect(current?.doneReason).toBeNull();
+    expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+    for (const text of ["queued-first", "queued-second"]) {
+      act(() => expect(current?.submit({ text, image: null })).toBe(true));
+    }
+    const prompts = promptFrames();
+    const items = prompts.map((frame, index) => {
+      if (frame.type !== "chat.send" || !frame.requestId) throw new Error("missing queued prompt");
+      return { id: `queue-${index}`, requestId: frame.requestId, text: index === 0 ? "queued-first" : "queued-second", createdAt: index + 1, hasImage: false };
+    });
+    expect(prompts).toHaveLength(2);
+    expect(current?.queuePlaceholders).toHaveLength(2);
+    expect(current?.messages).toEqual([]);
+    act(() => deliver?.({ type: "queue", sessionId: session.id, revision: 1, items,
+      engine: { pendingMessageCount: 0, ordered: [] } }));
+    expect(current?.queuePlaceholders).toHaveLength(0);
+    expect(current?.queueItems).toEqual(items);
+    act(() => deliver?.({ type: "messageDelta", sessionId: session.id,
+      delta: { kind: "text_delta", delta: "retry output" } }));
+    expect(current?.serverRunning).toBe(true);
+    expect(promptFrames()).toHaveLength(2);
+    act(() => deliver?.({ type: "run.done", sessionId: session.id, reason: "stop" }));
+    expect(current?.serverRunning).toBe(false);
+    expect(current?.queueItems).toEqual(items);
+    expect(promptFrames()).toHaveLength(2);
+  });
 });
