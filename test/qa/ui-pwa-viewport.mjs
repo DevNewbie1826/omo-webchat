@@ -62,6 +62,12 @@ export function pwaAssertions(g, draft) {
     ...(e.bothShelves ? [{ id: 'PWA.both-shelves-with-transcript', pass: g.shelves.goal?.rect.height > 0
       && g.shelves.activity?.rect.height > 0 && g.shelves.transcript?.clientHeight > 0
       && g.shelves.transcript.scrollHeight > g.shelves.transcript.clientHeight, actual: g.shelves }] : []),
+    ...(e.shelfIntent ? [{ id: 'PWA.retained-shelf-intent', pass: g.shelfIntent.goalOpen === e.shelfIntent.goalOpen
+      && g.shelfIntent.activityOpen === e.shelfIntent.activityOpen && g.shelfIntent.selectedTab === e.shelfIntent.selectedTab,
+      actual: { expected: e.shelfIntent, measured: g.shelfIntent } }] : []),
+    ...(e.compactShelves ? [{ id: 'PWA.compact-floor-collapse', pass: g.shelves.goal === null && g.shelves.activity === null
+      && g.shelves.transcript?.clientHeight > 0 && g.shelves.transcript.scrollHeight > g.shelves.transcript.clientHeight,
+      actual: g.shelves }] : []),
     ...(!e.sidebarOpen || !g.mobileMedia ? [{ id: 'PWA.composer-access', pass: g.composerControls.length >= 2
       && g.composerControls.every(c => c.bounded && c.unclipped && c.hit), actual: g.composerControls }] : []),
   ];
@@ -72,15 +78,101 @@ export const cases = [
   { width: 390, height: 844, isMobile: true, hasTouch: true, mode: 'standalone', list: 'short', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
   { width: 768, height: 844, isMobile: true, hasTouch: true, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
   { width: 769, height: 844, isMobile: false, hasTouch: false, mode: 'browser', list: 'short', insets: { top: 0, right: 0, bottom: 34, left: 0 } },
-  { width: 812, height: 375, isMobile: true, hasTouch: true, mode: 'standalone', list: 'short', insets: { top: 0, right: 44, bottom: 21, left: 44 } },
+  { width: 812, height: 375, isMobile: true, hasTouch: true, mode: 'standalone', list: 'short', compactShelves: true,
+    restorationViewport: { width: 812, height: 844 }, insets: { top: 0, right: 44, bottom: 21, left: 44 } },
   { width: 1280, height: 800, isMobile: false, hasTouch: false, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
 ];
+
+export async function openGoalBar(page) {
+  // aria-expanded is actual allocation, not retained intent at the 48px floor.
+  if (await page.locator('.th-goal-bar .th-activity-caret--open').count()) return;
+  await arm(page, () => !!document.querySelector('.th-goal-bar .th-activity-caret--open'));
+  await page.locator('.th-goal-bar').click(); await complete(page);
+}
+
+export function shelfExpectations(input, state, opened) {
+  const combined = state === 'goal-activity-long-transcript';
+  return { bothShelves: combined && !input.compactShelves || state === 'compact-adequate-space',
+    compactShelves: input.compactShelves === true && (combined || ['compact-controls-reachable', 'compact-return'].includes(state)),
+    shelfIntent: opened && (input.compactShelves || combined) ? { goalOpen: true, activityOpen: true, selectedTab: 'agents' } : null };
+}
+
+const sameRect = (a, b) => ['top', 'bottom', 'left', 'right'].every(edge => Math.abs(a[edge] - b[edge]) < 1);
+const retainedIntent = g => g.shelfIntent.goalOpen && g.shelfIntent.activityOpen && g.shelfIntent.selectedTab === 'agents';
+
+export function compactReachabilityAssertion(before, after, controls) {
+  const owner = before.shelves.auxiliary;
+  return { id: 'PWA.compact-auxiliary-reachable', pass: owner.clientHeight > 0 && owner.scrollHeight > owner.clientHeight
+    && ['auto', 'scroll'].includes(owner.overflowY) && after.shelves.auxiliary.scrollTop !== owner.scrollTop
+    && ['goal', 'todo', 'agents', 'dag', 'resize'].every(key => controls.some(c => c.key === key))
+    && controls.every(c => c.bounded && c.unclipped && c.hit && !c.disabled)
+    && ['transcript', 'scrollport'].every(key => after.shelves[key].scrollTop === before.shelves[key].scrollTop)
+    && after.root.scrollTop === before.root.scrollTop && retainedIntent(before) && retainedIntent(after)
+    && after.draft === before.draft && sameRect(after.composer.rect, before.composer.rect)
+    && after.composerControls.every(c => c.bounded && c.unclipped && c.hit),
+    actual: { before, after, controls } };
+}
+
+export async function compactReachability(page, safeBottom, safeTop, expectations) {
+  const before = await measure(page, safeBottom, safeTop, expectations), controls = [];
+  // Scroll only the actual auxiliary owner, never scrollIntoView (which can move
+  // ancestors). Each control is measured at its own reachable native hit point.
+  for (let index = 0; index < before.auxiliaryControls.length; index++) {
+    await page.locator('.th-chat-main-content').evaluate((element, index) => {
+      const control = element.querySelectorAll('.th-goal-bar, [data-activity-tab], .th-activity-resize')[index];
+      const r = control.getBoundingClientRect(), p = element.getBoundingClientRect();
+      const target = Math.max(0, Math.min(element.scrollHeight - element.clientHeight,
+        element.scrollTop + r.top - p.top - element.clientTop - (element.clientHeight - r.height) / 2));
+      window.mobilePending = new Promise((done, fail) => {
+        if (Math.abs(element.scrollTop - target) < 1) { done(true); return; }
+        const timer = setTimeout(() => { element.removeEventListener('scroll', finish); fail(new Error('Auxiliary scroll deadline')); }, 30000);
+        function finish() { clearTimeout(timer); done(true); }
+        element.addEventListener('scroll', finish, { once: true });
+        element.scrollTo({ top: target, behavior: 'instant' });
+      });
+    }, index);
+    await complete(page);
+    const g = await measure(page, safeBottom, safeTop, expectations);
+    controls.push({ ...g.auxiliaryControls[index], scrollTop: g.shelves.auxiliary.scrollTop });
+  }
+  const after = await measure(page, safeBottom, safeTop, expectations);
+  return compactReachabilityAssertion(before, after, controls);
+}
+
+export function editorEndAssertion(before, after, sameNode) {
+  const a = before.editor, b = after.editor;
+  return { id: 'PWA.editor-end-reachable', pass: sameNode && a.focused && b.focused && a.value === b.value
+    && a.selectionStart === b.selectionStart && a.selectionEnd === b.selectionEnd
+    && b.clientHeight > 0 && b.scrollHeight > b.clientHeight && ['auto', 'scroll'].includes(b.overflowY)
+    && Math.abs(b.scrollTop + b.clientHeight - b.scrollHeight) <= 1
+    && (a.scrollTop + a.clientHeight >= a.scrollHeight - 1 || b.scrollTop > a.scrollTop)
+    && sameRect(a.rect, b.rect) && sameRect(before.composer.rect, after.composer.rect)
+    && after.root.scrollTop === before.root.scrollTop && after.draft === before.draft
+    && after.composerControls.every(c => c.bounded && c.unclipped && c.hit),
+    actual: { before, after, sameNode } };
+}
+
+export async function editorEndReachability(page, safeBottom, safeTop, expectations) {
+  const before = await measure(page, safeBottom, safeTop, expectations);
+  const sameNode = await page.locator('.th-pane--focused textarea').evaluate(async element => {
+    await new Promise((done, fail) => {
+      const target = element.scrollHeight - element.clientHeight;
+      if (Math.abs(element.scrollTop - target) < 1) { done(true); return; }
+      const timer = setTimeout(() => { element.removeEventListener('scroll', finish); fail(new Error('Editor end deadline')); }, 30000);
+      function finish() { clearTimeout(timer); done(true); }
+      element.addEventListener('scroll', finish, { once: true });
+      element.scrollTo({ top: target, behavior: 'instant' });
+    });
+    return element.isConnected && element === document.querySelector('.th-pane--focused textarea');
+  });
+  return editorEndAssertion(before, await measure(page, safeBottom, safeTop, expectations), sameNode);
+}
 
 export async function openActivityTab(page) {
   if (await page.locator('[data-activity-tab="agents"]').getAttribute('aria-selected') === 'true'
     && await page.locator('.th-activity-resize').count()) return;
   // Resize chrome witnesses open intent even when the compact allocator omits the panel.
-  // Positive panel allocations are still required by the combined-layout assertion.
+  // Feasible scenarios and adequate-space restoration still require both panels.
   await arm(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true'
     && !!document.querySelector('.th-activity-resize'));
   await page.locator('[data-activity-tab="agents"]').click(); await complete(page);
@@ -150,12 +242,13 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         rows.push({ scenario: name, id: 'PWA.served-byte-binding', pass: assets.pass, actual: assets });
         cdp = await q.context.newCDPSession(page);
         await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: input.insets });
-        let width = input.width, height = input.height;
+        let width = input.width, height = input.height, shelvesOpened = false;
         const draft = `PWA retained draft ${name}`;
         await page.locator('.th-pane--focused textarea').fill(draft);
         const capture = async (state, keyboard = false, top = 0, visualHeight = height, sidebarOpen = false) => {
           const surface = { top: keyboard ? top : 0, left: 0, right: width, bottom: keyboard ? top + visualHeight : height };
-          const expectations = { expectedKeyboard: keyboard, safeInsets: input.insets, surface, mode: input.mode, sidebarOpen, bothShelves: state === 'goal-activity-long-transcript',
+          const expectations = { expectedKeyboard: keyboard, safeInsets: input.insets, surface, mode: input.mode, sidebarOpen,
+            ...shelfExpectations(input, state, shelvesOpened),
             inputProfile: input.hasTouch ? 'touch' : 'fine',
             drawerSurface: input.mode === 'standalone' && !keyboard ? surface : { top, left: 0, right: width, bottom: top + visualHeight } };
           if (sidebarOpen && width > 768 && (await page.locator('.th-sidebar').getAttribute('class')).includes('th-sidebar--collapsed')) {
@@ -163,8 +256,10 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
             await page.locator('.th-sidebar-rail .th-sidebar-toggle').click(); await complete(page);
           }
           await settle(page);
-          if (expectations.bothShelves) rows.push({ scenario: `${name}-${state}`,
+          if (expectations.bothShelves || expectations.compactShelves) rows.push({ scenario: `${name}-${state}`,
             ...await transcriptReachability(page, input.insets.bottom, input.insets.top, expectations) });
+          if (['compact-controls-reachable', 'compact-return'].includes(state)) rows.push({ scenario: `${name}-${state}`,
+            ...await compactReachability(page, input.insets.bottom, input.insets.top, expectations) });
           const g = await measure(page, input.insets.bottom, input.insets.top, expectations);
           rows.push(...pwaAssertions(g, draft).map(row => ({ scenario: `${name}-${state}`, ...row })));
           const image = `${name}-${state}.png`, imagePath = resolve(evidence, image);
@@ -194,12 +289,28 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         rows.push({ scenario: name, ...await settingsReachability(page, input.insets.bottom, input.insets.top, settingsExpectations) });
         await arm(page, () => !document.querySelector('.th-settings-panel'));
         await page.keyboard.press('Escape'); await complete(page); await closeDrawer();
-        if (await page.locator('.th-goal-bar').getAttribute('aria-expanded') !== 'true') {
-          await arm(page, () => document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded') === 'true');
-          await page.locator('.th-goal-bar').click(); await complete(page);
-        }
+        await openGoalBar(page);
         await openActivityTab(page);
+        shelvesOpened = true;
         await capture('goal-activity-long-transcript', false, 0, restingHeight, width > 768);
+        if (input.compactShelves) {
+          await capture('compact-controls-reachable', false, 0, height, true);
+          // A subsequent real viewport, not a taller original compact root.
+          // No Goal/tab open action occurs anywhere in this restoration cycle.
+          for (const adequate of [true, false]) {
+            ({ width, height } = adequate ? input.restorationViewport : input);
+            await page.evaluate(({ width, height, adequate }) => {
+              window.compactResizePending = window.mobileSignal(() => innerWidth === width && innerHeight === height
+                && Math.abs(document.querySelector('#root').getBoundingClientRect().height - height) < 1
+                && (adequate ? ['.th-goal-panel', '.th-activity-panel'].every(s => document.querySelector(s)?.getBoundingClientRect().height > 0)
+                  : !document.querySelector('.th-goal-panel, .th-activity-panel')));
+            }, { width, height, adequate });
+            await page.setViewportSize({ width, height });
+            await visualInput(page, { width, height, offsetTop: 0 });
+            await page.evaluate(() => window.compactResizePending);
+            await capture(adequate ? 'compact-adequate-space' : 'compact-return', false, 0, height, true);
+          }
+        }
         await page.locator('.th-pane--focused textarea').focus();
         let keyboardHeight = Math.max(270, height - 340), keyboardTop = height > 500 ? 60 : 20;
         await visualInput(page, { width, height: keyboardHeight, offsetTop: keyboardTop, offsetLeft: 0, scale: 1 });
@@ -220,7 +331,16 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
             keyboardHeight = Math.max(270, height - 340); keyboardTop = keyboard ? (height > 500 ? 60 : 20) : 0;
             const visible = keyboard ? keyboardHeight : height;
             await visualInput(page, { width, height: visible, offsetTop: keyboardTop }, 'orientationchange');
-            await capture(`rotation-${keyboard ? 'open' : 'closed'}-${rotated ? 'away' : 'back'}`, keyboard, keyboardTop, visible, width > 768);
+            const rotatedState = await capture(`rotation-${keyboard ? 'open' : 'closed'}-${rotated ? 'away' : 'back'}`, keyboard, keyboardTop, visible, width > 768);
+            if (input.compactShelves && keyboard && !rotated) {
+              // Preserve the original capture first. Drawer/rail actions can move
+              // focus during rotation; explicitly focus this same unchanged editor
+              // for the internal-scroll exercise, without scrolling its ancestors.
+              await page.locator('.th-pane--focused textarea').evaluate(element => element.focus({ preventScroll: true }));
+              actions.push({ name, action: 'focus-editor-for-end-reachability', priorActive: rotatedState.activeElement });
+              rows.push({ scenario: name, ...await editorEndReachability(page, input.insets.bottom, input.insets.top, rotatedState.expectations) });
+              await capture('rotation-open-back-editor-end', true, keyboardTop, visible, width > 768);
+            }
           }
         }
         await visualInput(page, { width, height, offsetTop: 0 }, 'pagehide');
@@ -248,7 +368,15 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   } catch (error) { failures.push({ name: 'runner', error: String(error), stack: error.stack }); }
   finally {
     if (browser) { await browser.close(); cleanup.push({ browserClosed: !browser.isConnected() }); }
-    const completeInventory = captures.length === cases.length * 2 * 12 && bindings.length === cases.length * 2;
+    const originalStates = ['cold-draft', 'drawer-open', 'goal-activity-long-transcript', 'keyboard', 'keyboard-width-drift',
+      'pageshow-shrunk', 'dismiss-without-blur', 'rotation-closed-away', 'rotation-closed-back', 'rotation-open-away',
+      'rotation-open-back', 'foreground-restored'];
+    const compactStates = ['compact-controls-reachable', 'compact-adequate-space', 'compact-return', 'rotation-open-back-editor-end'];
+    const completeInventory = bindings.length === cases.length * 2 && ['dark', 'light'].every(theme => cases.every(input => {
+      const name = `${theme}-${input.mode}-${input.width}x${input.height}-${input.list}`;
+      const states = [...originalStates, ...(input.compactShelves ? compactStates : [])];
+      return states.every(state => captures.filter(c => c.name === name && c.state === state).length === 1);
+    })) && captures.length === cases.length * 2 * 12 + cases.filter(c => c.compactShelves).length * 2 * 4;
     const clean = cleanup.filter(c => c.contextClosed && c.serverStopped && c.portReboundAndReleased
       && c.pendingWebSockets === 0 && c.pendingOpens === 0 && c.pendingCreates === 0).length === cases.length * 2 && cleanup.at(-1)?.browserClosed;
     const failed = rows.filter(r => !r.pass);

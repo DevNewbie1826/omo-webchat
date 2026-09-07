@@ -210,7 +210,20 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
         composerReserve: composer && capsule ? rect(composer).bottom - rect(capsule).bottom : null,
         backdrop: node('.th-backdrop'), sidebarOpen: sidebar.getAttribute('aria-hidden') !== 'true',
         shelves: { goal: node('.th-goal-panel'), activity: node('.th-activity-panel'), transcript: node('.th-chat-body'),
-          scrollport: node('.th-chat-scrollport') },
+          scrollport: node('.th-chat-scrollport'), auxiliary: node('.th-chat-main-content') },
+        shelfIntent: {
+          goalOpen: !!document.querySelector('.th-goal-bar .th-activity-caret--open'),
+          activityOpen: !!document.querySelector('.th-activity-resize'),
+          selectedTab: document.querySelector('[data-activity-tab][aria-selected="true"]')?.getAttribute('data-activity-tab') ?? null,
+        },
+        auxiliaryControls: [...document.querySelectorAll('.th-goal-bar, [data-activity-tab], .th-activity-resize')]
+          .map(e => ({ ...button(e, settingsSafe), key: e.matches('.th-goal-bar') ? 'goal'
+            : e.getAttribute('data-activity-tab') ?? 'resize' })),
+        editor: composer?.querySelector('textarea') ? (() => {
+          const editor = composer.querySelector('textarea');
+          return { ...read(editor), value: editor.value, focused: document.activeElement === editor,
+            selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd };
+        })() : null,
         composerControls: composer ? [...composer.querySelectorAll('textarea, button')].filter(e => e.getBoundingClientRect().width > 0).map(e => button(e)) : [],
         bottomHits, viewportUnitHeights: units, resolvedSafeInsets: insets,
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,

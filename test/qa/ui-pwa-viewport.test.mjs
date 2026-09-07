@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { syntheticKeyboard } from './ui-mobile-footer-polish.mjs';
 import * as mobile from './ui-mobile-helpers.mjs';
 const { measure, footerAssertions } = mobile;
-import { pwaAssertions, cases, openActivityTab } from './ui-pwa-viewport.mjs';
+import { pwaAssertions, cases, openActivityTab, openGoalBar, shelfExpectations,
+  compactReachabilityAssertion, editorEndAssertion } from './ui-pwa-viewport.mjs';
 
 const bounds = (left, top, right, bottom) => ({ x: left, y: top, left, top, right, bottom,
   width: right - left, height: bottom - top });
@@ -36,8 +37,8 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
         ${settingsBottom === undefined ? '' : '<div class="th-settings-panel"><button id="setting-option">Option</button></div>'}
       </div><button id="logout">Logout</button>
     </footer></aside><main class="th-main"><div class="th-chat-pane th-pane--focused">
-      <div class="th-goal-panel"></div><div class="th-activity-panel"></div>
-      <div class="th-chat-scrollport"><div class="th-chat-body"></div></div>
+      <div class="th-chat-main-content"><div class="th-goal-panel"></div><div class="th-activity-panel"></div>
+      <div class="th-chat-scrollport"><div class="th-chat-body"></div></div></div>
       <div class="th-chat-input"><div class="th-chat-input-inner"><textarea>retained draft</textarea><button>Send</button></div></div>
     </div></main><div class="th-backdrop"></div></div></div></body></html>`, { runScripts: 'outside-only' });
   const { window: w } = dom, d = w.document;
@@ -55,6 +56,7 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
   put('.th-goal-panel', bounds(12, 246.84375, 363, 486.265625));
   put('.th-activity-panel', bounds(12, 565.40625, 363, 613.40625));
   put('.th-chat-scrollport, .th-chat-body', bounds(0, 94, 375, 214));
+  put('.th-chat-main-content', bounds(0, 94, 375, 614));
   if (settingsBottom !== undefined) {
     put('.th-settings-panel', bounds(12, settingsBottom - 274.40625, 252, settingsBottom));
     put('#setting-option', bounds(20, settingsBottom - 40, 100, settingsBottom - 10));
@@ -72,6 +74,8 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
     e.style.padding = '0px'; e.style.border = '0px';
   }
   d.querySelector('.th-chat-scrollport').style.overflow = 'clip';
+  const auxiliary = d.querySelector('.th-chat-main-content'); auxiliary.style.overflowY = 'auto';
+  Object.defineProperty(auxiliary, 'scrollHeight', { value: 1400, configurable: true });
   const transcript = d.querySelector('.th-chat-body'); transcript.style.overflowY = 'auto';
   Object.defineProperty(transcript, 'scrollHeight', { value: 1200, configurable: true });
   transcript.scrollTo = ({ top }) => {
@@ -365,5 +369,115 @@ for (const [selected, open, compact] of [['agents', true, false], ['agents', fal
       expect(current).toBe('agents'); expect(expanded).toBe(true);
       expect(clicks).toBe(selected === 'agents' && open ? 0 : 1);
     } finally { w.close(); }
+  });
+}
+
+test('compact contract is declared from the input; ten feasible themed scenarios still demand both panels', () => {
+  expect(cases.filter(c => shelfExpectations(c, 'goal-activity-long-transcript', true).bothShelves).length * 2).toBe(10);
+  const compact = cases.filter(c => c.compactShelves);
+  expect(compact.map(c => [c.width, c.height])).toEqual([[812, 375]]);
+  expect(compact[0].restorationViewport).toEqual({ width: 812, height: 844 });
+  expect(shelfExpectations(compact[0], 'compact-adequate-space', true).bothShelves).toBe(true);
+  expect(shelfExpectations(compact[0], 'compact-return', true).compactShelves).toBe(true);
+});
+
+test('compact auxiliary measurement selects its actual shell rather than the transcript or clip wrapper', async () => {
+  const g = await captured();
+  expect(g.shelves.auxiliary.clientHeight).toBe(520);
+  expect(g.shelves.auxiliary.scrollHeight).toBe(1400);
+  expect(g.shelves.auxiliary.overflowY).toBe('auto');
+  expect(g.shelves.transcript.scrollHeight).toBe(1200);
+  expect(g.shelves.scrollport.scrollHeight).toBe(120);
+});
+
+for (const initial of [false, true]) test(`Goal normalization uses retained intent with floor-clamped aria-expanded: ${initial}`, async () => {
+  const dom = new JSDOM('<button class="th-goal-bar" aria-expanded="false"><span class="th-activity-caret"></span></button>', { runScripts: 'outside-only' });
+  const w = dom.window, d = w.document, caret = d.querySelector('span');
+  let open = initial, clicks = 0;
+  const render = () => caret.classList.toggle('th-activity-caret--open', open);
+  render(); signalOnAction(w, d, 'goal-action-complete');
+  const page = { evaluate: (fn, args) => { w.args = args; return w.eval(`(${fn})(args)`); },
+    locator: selector => ({ count: () => d.querySelectorAll(selector).length,
+      getAttribute: name => d.querySelector(selector).getAttribute(name), click: () => {
+        clicks++; open = !open; render(); d.dispatchEvent(new w.Event('goal-action-complete'));
+      } }) };
+  try {
+    await openGoalBar(page);
+    expect(open).toBe(true); expect(clicks).toBe(initial ? 0 : 1);
+    expect(d.querySelector('button').getAttribute('aria-expanded')).toBe('false');
+  } finally { w.close(); }
+});
+
+for (const field of ['goalOpen', 'activityOpen', 'selectedTab']) test(`compact retained intent rejects lost ${field}`, async () => {
+  const g = await captured();
+  Object.assign(g.expectations, shelfExpectations(cases.find(c => c.compactShelves), 'goal-activity-long-transcript', true));
+  g.shelves.goal = null; g.shelves.activity = null;
+  g.shelfIntent = { goalOpen: true, activityOpen: true, selectedTab: 'agents' };
+  const rows = () => pwaAssertions(g, 'retained draft');
+  expect(rows().find(r => r.id === 'PWA.compact-floor-collapse').pass).toBe(true);
+  expect(rows().some(r => r.id === 'PWA.both-shelves-with-transcript')).toBe(false);
+  expect(rows().find(r => r.id === 'PWA.retained-shelf-intent').pass).toBe(true);
+  g.shelfIntent[field] = field === 'selectedTab' ? 'todo' : false;
+  expect(rows().find(r => r.id === 'PWA.retained-shelf-intent').pass).toBe(false);
+});
+
+for (const panel of ['goal', 'activity']) test(`adequate-space restoration still rejects missing ${panel}`, async () => {
+  const g = await captured();
+  Object.assign(g.expectations, shelfExpectations(cases.find(c => c.compactShelves), 'compact-adequate-space', true));
+  g.shelfIntent = { goalOpen: true, activityOpen: true, selectedTab: 'agents' };
+  const row = () => pwaAssertions(g, 'retained draft').find(r => r.id === 'PWA.both-shelves-with-transcript');
+  expect(row().pass).toBe(true); g.shelves[panel] = null; expect(row().pass).toBe(false);
+});
+
+async function compactSamples() {
+  const before = await captured();
+  before.shelfIntent = { goalOpen: true, activityOpen: true, selectedTab: 'agents' };
+  before.shelves.auxiliary = { clientHeight: 200, scrollHeight: 240, overflowY: 'auto', scrollTop: 0 };
+  before.editor = { rect: bounds(12, 237, 300, 281), clientHeight: 44, scrollHeight: 61, scrollTop: 0,
+    overflowY: 'auto', value: before.draft, focused: true, selectionStart: 14, selectionEnd: 14 };
+  const after = structuredClone(before); after.shelves.auxiliary.scrollTop = 40; after.editor.scrollTop = 17;
+  const controls = ['goal', 'todo', 'agents', 'dag', 'resize'].map(key => ({ key, bounded: true, unclipped: true, hit: true, disabled: false, scrollTop: 40 }));
+  return { before, after, controls };
+}
+
+for (const defect of ['goalOpen', 'activityOpen', 'selectedTab', 'overflow', 'no-scroll', 'transcript', 'scrollport', 'root',
+  'missing-control', 'bounded', 'unclipped', 'hit', 'disabled', 'draft', 'composer-top', 'composer-bottom', 'composer-safe']) {
+  test(`compact auxiliary oracle rejects ${defect}`, async () => {
+    const { before, after, controls } = await compactSamples();
+    const row = () => compactReachabilityAssertion(before, after, controls);
+    expect(row().pass).toBe(true);
+    if (['goalOpen', 'activityOpen', 'selectedTab'].includes(defect)) after.shelfIntent[defect] = false;
+    else if (defect === 'overflow') before.shelves.auxiliary.overflowY = 'clip';
+    else if (defect === 'no-scroll') { after.shelves.auxiliary.scrollTop = 0; controls.forEach(c => { c.scrollTop = 0; }); }
+    else if (['transcript', 'scrollport'].includes(defect)) after.shelves[defect].scrollTop++;
+    else if (defect === 'root') after.root.scrollTop++;
+    else if (defect === 'missing-control') controls.pop();
+    else if (['bounded', 'unclipped', 'hit'].includes(defect)) controls[0][defect] = false;
+    else if (defect === 'disabled') controls[0].disabled = true;
+    else if (defect === 'draft') after.draft = 'lost';
+    else if (defect === 'composer-safe') after.composerControls[0].bounded = false;
+    else after.composer.rect[defect === 'composer-top' ? 'top' : 'bottom'] += 2;
+    expect(row().pass).toBe(false);
+  });
+}
+
+for (const defect of ['no-scroll', 'overflow', 'value', 'focus', 'selection', 'rect', 'composer', 'draft', 'root', 'hit', 'clip', 'bounds', 'remount']) {
+  test(`compact editor end oracle rejects ${defect}`, async () => {
+    const { before, after } = await compactSamples();
+    let sameNode = true;
+    const row = () => editorEndAssertion(before, after, sameNode);
+    expect(row().pass).toBe(true);
+    if (defect === 'no-scroll') after.editor.scrollTop = 0;
+    else if (defect === 'overflow') after.editor.overflowY = 'hidden';
+    else if (defect === 'value') after.editor.value = 'lost';
+    else if (defect === 'focus') after.editor.focused = false;
+    else if (defect === 'selection') after.editor.selectionEnd++;
+    else if (defect === 'rect') after.editor.rect.top += 2;
+    else if (defect === 'composer') after.composer.rect.top += 2;
+    else if (defect === 'draft') after.draft = 'lost';
+    else if (defect === 'root') after.root.scrollTop++;
+    else if (defect === 'remount') sameNode = false;
+    else after.composerControls[0][{ hit: 'hit', clip: 'unclipped', bounds: 'bounded' }[defect]] = false;
+    expect(row().pass).toBe(false);
   });
 }
