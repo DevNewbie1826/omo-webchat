@@ -117,7 +117,12 @@ async function click(q, selector, predicate) {
 async function select(q, id) {
   await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('${panel(id)}') && !document.querySelector('${panel(id)}').hidden`));
 }
-async function open(q) { await select(q, 'todo'); }
+async function open(q) {
+  // Idempotent ensure-open: a selected-tab click would CLOSE an already-open
+  // shelf, so inspect current state before activating anything.
+  if (await q.page.evaluate(() => !!document.querySelector('.th-activity-panel'))) return;
+  await select(q, 'todo');
+}
 async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
 }
@@ -324,6 +329,24 @@ async function tabs(q) {
   assert.equal(closed.activityIntent, false);
   assert.equal(closed.tabs.find(t => t.selected === 'true').id, 'dag');
   await click(q, selectedTab, () => !!document.querySelector('.th-activity-panel'));
+  assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
+  // Native button activation: Enter and Space must each toggle exactly once,
+  // exactly like a click, from the shelf's own selected tab.
+  await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+  for (const key of ['Enter', ' ']) {
+    await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
+    await arm(q.page, () => !!document.querySelector('.th-activity-panel'));
+    await q.page.keyboard.press(key); await complete(q.page);
+    const opened = await state(q.page);
+    assert.equal(opened.activityOpen, 'true');
+    assert.deepEqual(opened.visible, ['dag']);
+    await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
+    await arm(q.page, () => !document.querySelector('.th-activity-panel'));
+    await q.page.keyboard.press(key); await complete(q.page);
+    assert.equal((await state(q.page)).activityOpen, 'false');
+    q.record.actions.push({ action: 'tab-native-activation', key, opened: opened.activityOpen, closed: 'false' });
+  }
+  await select(q, 'dag');
   assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
   // Switching while open keeps the panel open.
   await select(q, 'agents');
