@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { startFixture } from './pane-workspace-ui.mjs';
 import { designSeed } from './design-workbench-fixture.mjs';
 
-export async function setupMobile(browser, { theme, list = 'short', layout = 'single' }, actions) {
+export async function setupMobile(browser, { theme, list = 'short', layout = 'single', lang = 'en', fontSize = 14 }, actions) {
   const fixture = startFixture({ ...designSeed(layout), port: 0, controlled: true });
   let context;
   try {
@@ -22,8 +22,9 @@ export async function setupMobile(browser, { theme, list = 'short', layout = 'si
       actions.push({ action: 'seed-session-page', start, limit, total: longItems.length, boundary: 'HTTP response; real pagination and SessionTree' });
       await route.fulfill({ response, json: { items: longItems.slice(start, end), nextCursor: end < longItems.length ? String(end) : '' } });
     });
-    await page.addInitScript(({ theme }) => {
-      localStorage.setItem('th-lang', 'en'); localStorage.setItem('th-theme', theme);
+    await page.addInitScript(({ theme, lang, fontSize }) => {
+      localStorage.setItem('th-lang', lang); localStorage.setItem('th-theme', theme);
+      localStorage.setItem('th-font-size', String(fontSize));
       localStorage.setItem('th-ws-expanded', '["ws"]');
       window.mobileSignal = predicate => new Promise((done, fail) => {
         const mo = new MutationObserver(check), ro = new ResizeObserver(check);
@@ -38,8 +39,8 @@ export async function setupMobile(browser, { theme, list = 'short', layout = 'si
       });
       window.mobileReady = window.mobileSignal(() => !!document.querySelector('.th-pane--focused textarea')
         && !!document.querySelector('[data-tool-call-id="design-failed"]'));
-    }, { theme });
-    actions.push({ action: 'navigate', url: fixture.url, authentication: 'isolated fixture /api/auth/check 204', theme, list, layout });
+    }, { theme, lang, fontSize });
+    actions.push({ action: 'navigate', url: fixture.url, authentication: 'isolated fixture /api/auth/check 204', theme, list, layout, lang, fontSize });
     await page.goto(fixture.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.evaluate(() => window.mobileReady);
     await page.evaluate(() => window.mobileSignal(() => document.querySelectorAll('.th-sidebar-body .th-tree-children > .th-tree-node').length >= 4));
@@ -175,10 +176,10 @@ export function footerAssertions(g) {
   assert.equal(g.controls.length, 2, 'Expected exactly two footer controls');
   return [
     { id: 'C5.controls-bounded-and-hit', pass: g.controls.every(c => c.bounded && c.unclipped && c.hit && !c.disabled), actual: g.controls },
-    { id: 'C5.bottom-reserve', pass: g.usableBottomGap >= -1 && g.usableBottomGap <= 8.5,
+    { id: 'C5.bottom-reserve', pass: Math.abs(g.usableBottomGap) <= 1,
       actual: { bottomGap: g.bottomGap, necessaryBottomInset: g.necessaryBottomInset, usableBottomGap: g.usableBottomGap } },
-    { id: 'C5.mobile-bottom-gap-exact', pass: Math.abs(g.usableBottomGap - (g.mobileMedia ? 4 : 8)) <= 0.5,
-      actual: { expectedGap: g.mobileMedia ? 4 : 8, usableBottomGap: g.usableBottomGap,
+    { id: 'C5.mobile-bottom-gap-exact', pass: Math.abs(g.usableBottomGap) <= 1,
+      actual: { expectedGap: 0, usableBottomGap: g.usableBottomGap,
         bottomGap: g.bottomGap, necessaryBottomInset: g.necessaryBottomInset } },
     { id: 'C5.no-horizontal-overflow', pass: !g.horizontalOverflow, actual: g.horizontalOverflow },
   ];

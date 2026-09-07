@@ -11,8 +11,8 @@
   .th-backdrop {
     display: block;
     position: fixed;
-    top: 0;
-    left: 0;
+    top: var(--th-vv-top, 0px);
+    left: var(--th-vv-left, 0px);
     height: 100vh;
     height: calc(var(--th-vh-unit, 1vh) * 100);
     width: 100%;
@@ -24,6 +24,12 @@
   .th-mobile-menu {
     display: inline-flex;
   }
+}
+
+/* Match the drawer: the transformed #root already supplies this origin. */
+html[data-th-keyboard-open] .th-backdrop {
+  top: 0;
+  left: 0;
 }
 
 @keyframes th-fade-in {
