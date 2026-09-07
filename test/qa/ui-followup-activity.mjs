@@ -21,10 +21,10 @@ import { exerciseShelves } from './design-workbench-controls.mjs';
 import { shelfRegressionScenarios } from './pane-workspace-composer.mjs';
 
 const ROOT = resolve(import.meta.dir, '../..');
-const DRIVER = '/Users/mirage/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs';
+export const DRIVER = '/Users/mirage/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = promisify(execFile);
-async function identity() {
+export async function identity() {
   const commands = [['head', ['rev-parse', 'HEAD']], ['tree', ['rev-parse', 'HEAD^{tree}']], ['status', ['status', '--porcelain']], ['files', ['ls-files']]];
   const facts = Object.fromEntries(await Promise.all(commands.map(async ([name, args]) => [name, (await git('git', args, { cwd: ROOT })).stdout.trim()])));
   facts.source = Object.fromEntries(facts.files.split('\n').map(path => [path, sha(readFileSync(join(ROOT, path)))]));
@@ -91,7 +91,7 @@ async function state(page) {
       overflow: document.documentElement.scrollWidth > innerWidth };
   });
 }
-async function settled(page, selector = '.th-activity-shelf') {
+export async function settled(page, selector = '.th-activity-shelf') {
   return page.evaluate(async selector => {
     await document.fonts.ready;
     const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.(selector) && a.effect.getTiming().iterations !== Infinity);
@@ -114,7 +114,7 @@ async function click(q, selector, predicate) {
   await complete(q.page);
   q.record.actions.at(-1).after = await state(q.page);
 }
-async function select(q, id) {
+export async function select(q, id) {
   const selected = await q.page.locator(tab(id)).evaluate(e => e.getAttribute('aria-selected') === 'true' && e.closest('.th-activity-shelf').dataset.open === 'true');
   if (!selected) await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && document.querySelector('.th-activity-shelf')?.dataset.open === 'true' && document.querySelector('.th-activity-shelf')?.style.flexShrink === '0'`));
 }
@@ -125,7 +125,7 @@ async function open(q) {
 async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
 }
-async function subjectBounds(q, subject) {
+export async function subjectBounds(q, subject) {
   const proof = await q.page.evaluate(({ id, future }) => {
     const node = document.querySelector(`[data-node="${id}"]`);
     if (future ? node !== null : node === null) throw new Error(`Unexpected subject presence: ${id}/${future}`);
@@ -223,7 +223,7 @@ async function portClosed(port) {
   catch (error) { if (error.code !== 'ECONNREFUSED') throw error; return error.code; }
   finally { socket.destroy(); }
 }
-async function session(browser, receipt, options, body) {
+export async function session(browser, receipt, options, body) {
   const fixture = startFixture({ port: 0, layout: options.layout ?? 'single', shelves: true, longLabels: options.longLabels ?? false });
   const record = { id: receipt.fixtures.length, options: { viewport: { width: 1280, height: 800 }, theme: 'dark', lang: 'en', fontSize: 13, layout: 'single', reduced: false, ...options }, url: fixture.url, navigation: [], actions: [], assets: [], errors: [], cleanup: {}, traffic: fixture.traffic };
   receipt.fixtures.push(record);

@@ -657,6 +657,7 @@ button.th-activity-bar:hover {
 }
 
 .th-activity-gstatus--running {
+  fill: none;
   transform-box: fill-box;
   transform-origin: center;
   animation: th-dag-run-spin 1.2s linear infinite;
