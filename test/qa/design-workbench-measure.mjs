@@ -11,7 +11,7 @@ export async function measure(page) {
     const color = value => /^#[\da-f]{6}$/i.test(value)
       ? `rgb(${[1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16)).join(', ')})` : value;
     const roles = [['.th-chat-pane', '--th-bg'], ['.th-termhead', '--th-surface'],
-      ['.th-chat-input-inner', '--th-surface'], ['.th-sidebar', innerWidth <= 768 ? '--th-surface-overlay' : '--th-surface'],
+      ['.th-chat-input-inner', '--th-surface-composer'], ['.th-sidebar', innerWidth <= 768 ? '--th-surface-overlay' : '--th-surface'],
       ['.th-model-picker-popover', document.querySelector('.th-model-picker-popover--sheet') ? '--th-surface-overlay' : '--th-surface-raised']]
       .map(([selector, name]) => { const element = document.querySelector(selector);
         return { selector, token: name, expected: color(token(name)), actual: element && getComputedStyle(element).backgroundColor }; });
@@ -36,7 +36,7 @@ export async function measure(page) {
       gutter: parseFloat(columnStyle.getPropertyValue('--th-chat-gutter')) }, viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
       theme: document.documentElement.dataset.theme, fontSize: assistant && getComputedStyle(assistant).fontSize,
       coarse: matchMedia('(pointer: coarse)').matches, rows, tools, roles,
-      tokens: Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter'].map(name => [name, token(name)])),
+      tokens: Object.fromEntries(['--th-bg', '--th-surface', '--th-surface-composer', '--th-surface-raised', '--th-surface-overlay', '--th-border-strong', '--th-chat-gutter'].map(name => [name, token(name)])),
       // Only full reading bands share both edges; status occupies the row's remaining space.
       edges: { controls: rect('.th-chat-controls'), composer: rect('.th-chat-input-inner'), live: rect('.th-chat-live') },
       status: rect('.th-chat-status'),
@@ -53,7 +53,10 @@ export async function measure(page) {
 export function preservedGeometry(sample) {
   assert(sample.documentWidth <= sample.viewport.width, 'document has no horizontal overflow');
   assert.equal(sample.panes.filter(pane => pane.active).length, 1, 'exactly one active pane');
-  assert(sample.panes.find(pane => pane.active).outline.includes('solid'), 'active outline remains visible');
+  const active = sample.panes.find(pane => pane.active);
+  assert(active, 'exactly one active pane');
+  const outlineExpected = sample.viewport.width <= 768 ? 'none' : 'solid';
+  assert(active.outline.includes(outlineExpected), `active outline matches viewport contract (${outlineExpected})`);
   assert(sample.composer.bottom <= sample.viewport.height + 1, 'composer stays in viewport');
   assert(sample.trigger.top >= 0 && sample.trigger.bottom <= sample.composer.bottom, 'model control remains above input');
   assert(sample.tools.every(tool => tool.name && tool.status && tool.glyph), 'individual tool names and status text/glyphs');
