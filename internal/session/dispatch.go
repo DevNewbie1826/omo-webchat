@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"slices"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
@@ -100,7 +101,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "compaction_start":
 		s.beginCompactionLocked(raw)
 	case "compaction_end", "compaction_done":
-		s.endCompactionLocked(raw)
+		s.endCompactionLocked(ev.Type, raw)
 	case "session_unloaded", "session_closed":
 		// Provider lifecycle notices only invalidate the epoch-local routing
 		// handle. The durable chat remains attached and reopens lazily when a
@@ -195,6 +196,11 @@ func (s *Session) beginCompactionLocked(raw map[string]any) {
 	if phase == "manual" {
 		return
 	}
+	// A new automatic cycle renews anonymous diagnostic identity only. Named
+	// failures remain identifiable replays even while a successor is active.
+	s.compactionDiagnostics = slices.DeleteFunc(s.compactionDiagnostics, func(key [2]string) bool {
+		return key[0] == ""
+	})
 	s.compactionActive = true
 	s.compactSeq++
 	s.compactProviderID = id
@@ -204,27 +210,58 @@ func (s *Session) beginCompactionLocked(raw map[string]any) {
 	s.publishLocked(Frame{Kind: FrameCompactionStart, SessionID: s.durableID, RequestID: id, Data: CompactionInfo{Phase: phase}})
 }
 
-func (s *Session) endCompactionLocked(raw map[string]any) {
+func (s *Session) endCompactionLocked(eventType string, raw map[string]any) {
 	id, _ := raw["requestId"].(string)
-	if id != "" {
-		if _, done := s.completedCompactions[id]; done {
-			return
-		}
-	}
-	if !s.compactionActive {
-		return
-	}
-	// An empty requestId is only a safe fallback for provider-initiated
-	// compaction. It cannot correlate a manual compaction RPC and may belong
-	// to an older transaction.
-	if id == "" && s.compactRPCID != "" {
-		return
+	errText, _ := raw["errorMessage"].(string)
+	reason, _ := raw["reason"].(string)
+	willRetry, hasWillRetry := raw["willRetry"].(bool)
+	exhausted := eventType == "compaction_end" && reason == "overflow" && hasWillRetry && !willRetry && errText != ""
+	_, completed := s.completedCompactions[id]
+	matches := s.compactionActive && !completed
+	// An empty ID cannot correlate a manual RPC. Automatic recovery also
+	// cannot own a manual successor, even before its provider ID is paired.
+	if s.compactRPCID != "" && (id == "" || (reason != "" && reason != "manual")) {
+		matches = false
 	}
 	if id != "" && s.compactProviderID != "" && id != s.compactProviderID {
+		matches = false
+	}
+	if matches {
+		if exhausted {
+			s.rememberCompactionDiagnosticLocked(id, errText)
+		}
+		s.finishCompactionLocked(id, errText)
 		return
 	}
-	errText, _ := raw["errorMessage"].(string)
-	s.finishCompactionLocked(id, errText)
+	// Recovery can end with an explicit error after its compaction already
+	// completed for a retry. Preserve that diagnostic without completing any
+	// current lifecycle; matched errors already have a compaction.done UI.
+	if exhausted && s.rememberCompactionDiagnosticLocked(id, errText) {
+		payload := eventPayload(raw)
+		payload["kind"] = "compaction_error"
+		payload["message"] = errText
+		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
+	}
+}
+
+// rememberCompactionDiagnosticLocked records presentation independently of
+// lifecycle IDs. Its callers only pass explicit exhausted-overflow terminals,
+// so request ID and unchanged error text identify a replay across cycles.
+// Absent IDs are cycle-local. Successful retrying ends are never recorded.
+func (s *Session) rememberCompactionDiagnosticLocked(id, errText string) bool {
+	key := [2]string{id, errText}
+	for _, previous := range s.compactionDiagnostics {
+		if previous == key {
+			return false
+		}
+	}
+	if len(s.compactionDiagnostics) == maxCompletedCompactions {
+		copy(s.compactionDiagnostics, s.compactionDiagnostics[1:])
+		s.compactionDiagnostics[len(s.compactionDiagnostics)-1] = key
+	} else {
+		s.compactionDiagnostics = append(s.compactionDiagnostics, key)
+	}
+	return true
 }
 
 func (s *Session) finishCompactionLocked(requestID, errText string) {

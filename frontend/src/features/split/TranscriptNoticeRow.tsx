@@ -12,6 +12,7 @@ const WARNING_KINDS: ReadonlySet<string> = new Set([
   "retry_fallback_reverted",
   "retry_fallback_exhausted",
   "server_fallback_aborted",
+  "compaction_error",
 ]);
 
 type NoticePayload = NonNullable<ChatNotice["payload"]>;
@@ -92,6 +93,15 @@ function NoticeBody({ notice }: { readonly notice: ChatNotice }) {
           <strong className="th-notice-title">{t("notice.highReasoningWarning")}</strong>
           {line !== "" && <span className="th-notice-detail">{line}</span>}
           <span className="th-notice-detail">{t("notice.highReasoningGuidance")}</span>
+        </>
+      );
+    }
+    case "compaction_error": {
+      const message = payloadString(payload, "message");
+      return (
+        <>
+          <strong className="th-notice-title">{t("notice.compactionError")}</strong>
+          {message !== null && <span className="th-notice-detail">{message}</span>}
         </>
       );
     }
