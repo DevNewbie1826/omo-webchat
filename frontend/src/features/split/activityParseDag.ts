@@ -104,12 +104,13 @@ function parseDagRun(record: Record<string, unknown>, parentSessionId: string | 
   const status = reqString(record, "status");
   if (runId === null || runKey === null || name === null || status === null) return null;
   const createdAt = optString(record, "created_at");
-  const updatedAt = optString(record, "updated_at");
+  // Invalid revision types are unknown freshness, not missing snapshot membership.
+  const updatedAt = optString(record, "updated_at") ?? undefined;
   const counts = parseCounts(record["counts"]);
   const nodes = record["nodes"] === undefined ? [] : mapDrop(record["nodes"], parseDagNode);
   const edges = record["edges"] === undefined ? [] : mapDrop(record["edges"], parseDagEdge);
   const waves = record["waves"] === undefined ? [] : mapDrop(record["waves"], parseDagWave);
-  if (createdAt === null || updatedAt === null || counts === null || nodes === null || edges === null || waves === null) {
+  if (createdAt === null || counts === null || nodes === null || edges === null || waves === null) {
     return null;
   }
   return {
@@ -166,6 +167,12 @@ function parseRfc3339DateTime(value: string): string | null {
   }
   const epochMs = Date.parse(value);
   return Number.isNaN(epochMs) ? null : new Date(epochMs).toISOString();
+}
+
+/** Snapshot revisions use the same timezone-bearing millisecond contract as activity. */
+export function parseDagUpdatedAt(value: string | undefined): number | undefined {
+  const normalized = value === undefined ? null : parseRfc3339DateTime(value);
+  return normalized === null ? undefined : Date.parse(normalized);
 }
 
 export function parseDagActivity(data: unknown): ParsedDagActivity | null {

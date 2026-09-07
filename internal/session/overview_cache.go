@@ -13,13 +13,14 @@ const (
 )
 
 type overviewCacheEntry struct {
-	epoch     omorpc.EpochToken
-	chatID    string
-	snapshots map[string]json.RawMessage
-	oversized map[string]bool
-	task      *TaskDigest
-	dag       *DagDigest
-	used      uint64
+	epoch        omorpc.EpochToken
+	chatID       string
+	snapshots    map[string]json.RawMessage
+	oversized    map[string]bool
+	task         *TaskDigest
+	dag          *DagDigest
+	dagSnapshots dagSnapshotCache
+	used         uint64
 }
 
 type overviewUpdate struct {
@@ -267,20 +268,24 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 	}
 	m.overviewClock++
 	entry.used = m.overviewClock
-	entry.oversized[name] = len(data) > maxActivitySnapshotBytes
-	if !entry.oversized[name] {
-		entry.snapshots[name] = append(json.RawMessage(nil), data...)
-	}
 	switch name {
 	case activitySnapshotOrder[0]:
+		entry.oversized[name] = len(data) > maxActivitySnapshotBytes
+		if !entry.oversized[name] {
+			entry.snapshots[name] = append(json.RawMessage(nil), data...)
+		}
 		if digest, valid := parseTaskDigest(data); valid {
 			entry.task = digest
 		}
 	case activitySnapshotOrder[1]:
-		if digest, valid := parseDagDigest(data); valid {
-			entry.dag = digest
+		accepted, err := entry.dagSnapshots.merge(data, entry.snapshots[name], entry.dag)
+		if err != nil {
+			return Summary{}, nil
 		}
-		reconcileOverviewEntry(entry, data)
+		entry.snapshots[name] = accepted.replay
+		entry.oversized[name] = accepted.oversized
+		entry.dag = accepted.digest
+		reconcileOverviewEntry(entry, accepted.live)
 	}
 	m.evictOverviewLRULocked()
 	snapshot := entry.summary(entry.chatID, durableID)
@@ -338,6 +343,11 @@ func (entry *overviewCacheEntry) summary(chatID, durableID string) Summary {
 // mergeOverviewIntoSessionLocked transfers cached child state while the
 // caller holds Session.lifecycleMu followed by Manager.mu. That ordering makes
 // route publication and cache eviction one atomic event-loop transition.
+// Both production callers in acquire pass a fresh newSession, before releasing
+// its route publication lock. Even checked initialization is still unpublished:
+// provider DAG events reach the overview cache, not this destination. Therefore
+// transfer has no destination incumbent to compare and moves the accepted state
+// together with its freshness; subsequent bound dispatch uses the shared policy.
 func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overviewSubscriber) {
 	m.activateIdentityLocked(s)
 
@@ -357,6 +367,10 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 		}
 		s.taskDigest = cloneTaskDigest(entry.task)
 		s.dagDigest = cloneDagDigest(entry.dag)
+		s.dagSnapshots = entry.dagSnapshots
+		if entry.oversized[activitySnapshotOrder[1]] {
+			delete(s.activitySnapshots, activitySnapshotOrder[1])
+		}
 	}
 	// This replacement is the remap signal for subscribers that observed the
 	// provisional durable-keyed row before its stable chat identity was known.
