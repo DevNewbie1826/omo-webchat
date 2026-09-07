@@ -418,6 +418,7 @@ describe("visual accessibility contracts", () => {
     const sheet = ruleBody(chatPane, ".th-model-picker-popover--sheet");
     expect(declarationValue(sheet, "position")).toBe("fixed");
     expect(sheet).toMatch(/(?:^|;)\s*top\s*:/);
+    expect(declarationValue(sheet, "box-shadow")).toBe("var(--th-shadow-raised)");
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {
