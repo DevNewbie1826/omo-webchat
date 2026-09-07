@@ -7,6 +7,7 @@ import { type UiMessage } from "./chatEntries";
 import {
   applyActivityEvent,
   applyActivityHistorySnapshot,
+  applyDagHistorySnapshot,
   bufferActivityHydrationEvent,
   createActivityHydrationBuffer,
   emptyActivityState,
@@ -159,6 +160,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const activityHydrationRef = useRef<{
     readonly token: number;
     readonly buffer: ActivityHydrationBuffer;
+    readonly touchedDags: Set<string>;
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
@@ -172,6 +174,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setToolCalls(next);
   };
   const applyActivities = (next: ActivityState): void => {
+    const hydration = activityHydrationRef.current;
+    if (hydration !== null && next.dags !== activitiesRef.current.dags) {
+      for (const [id, run] of next.dags) {
+        if (run !== activitiesRef.current.dags.get(id)) hydration.touchedDags.add(id);
+      }
+    }
     activitiesRef.current = next;
     setActivities(next);
     setActivitiesVersion((version) => version + 1);
@@ -383,13 +391,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setQueueEngine,
   });
 
-  // REST is the historical base, but every activity frame received after the
-  // request began is newer and must be replayed in arrival order. Full
-  // snapshots and buffer overflow suppress REST replacement for every domain
-  // whose live mutations can no longer be replayed completely.
+  // Task hydration keeps its arrival-order fence. DAG history compares against
+  // accepted live rows at response time; actual per-ID touches survive omissions
+  // independently of the bounded progress replay buffer.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer() };
+    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set() };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
@@ -405,16 +412,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     // applies unconditionally — stale cached rows can no longer widen it.
     const protectLiveTasks = hydration.buffer.taskSuperseded
       || hydration.buffer.taskOverflowed;
-    const protectLiveDags = hydration.buffer.dagSuperseded
-      || hydration.buffer.dagOverflowed;
     if (!protectLiveTasks) {
       next = applyActivityHistorySnapshot(next, "omo.task.updated", task);
     }
-    if (!protectLiveDags) {
-      next = applyActivityHistorySnapshot(next, "omo.dag.updated", dag);
-    }
+    next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
     for (const event of hydration.buffer.events) {
-      next = applyActivityEvent(next, event.name, event.data);
+      // Accepted DAG snapshots already exist in current state. Replacing again
+      // would remove REST-only rows or reverse both-unknown legacy ordering.
+      if (event.name !== "omo.dag.updated") next = applyActivityEvent(next, event.name, event.data);
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };
