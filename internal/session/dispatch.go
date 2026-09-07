@@ -142,7 +142,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 }
 
 func (s *Session) completeProviderRunLocked(reason string) {
-	s.reconcileActivityCacheLocked(s.activitySnapshots[activitySnapshotOrder[1]])
+	s.reconcileActivityCacheLocked()
 	// Provider-run settlement bounds automatic compaction only. Manual
 	// compaction remains owned by its correlated RPC completion.
 	if s.compactionActive && s.compactRPCID == "" {
@@ -301,13 +301,11 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 	}
 	switch name {
 	case activitySnapshotOrder[0]:
-		s.activityOversized[name] = len(dataBytes) > maxActivitySnapshotBytes
-		if !s.activityOversized[name] {
-			s.activitySnapshots[name] = append(json.RawMessage(nil), dataBytes...)
-		}
-		if digest, ok := parseTaskDigest(dataBytes); ok {
-			s.taskDigest = digest
-		}
+		accepted := s.taskSnapshots.merge(dataBytes, s.activitySnapshots[name], s.taskDigest)
+		s.activitySnapshots[name] = accepted.replay
+		s.activityOversized[name] = accepted.oversized
+		s.taskDigest = accepted.digest
+		dataBytes = accepted.live
 	case activitySnapshotOrder[1]:
 		accepted, err := s.dagSnapshots.merge(dataBytes, s.activitySnapshots[name], s.dagDigest)
 		if err != nil {
@@ -317,7 +315,8 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 		s.activityOversized[name] = accepted.oversized
 		s.dagDigest = accepted.digest
 		dataBytes = accepted.live
-		s.reconcileActivityCacheLocked(dataBytes)
+		s.taskSnapshots.observe(accepted.accepted)
+		s.reconcileActivityCacheLocked()
 	}
 	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})
 	if (name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1]) && s.manager != nil {

@@ -27,6 +27,7 @@ type dagSnapshotResult struct {
 	live, replay json.RawMessage
 	digest       *DagDigest
 	oversized    bool
+	accepted     []json.RawMessage // Newly admitted rows only; replay is not new task-outcome evidence.
 }
 
 var dagTimestampPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$`)
@@ -97,6 +98,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	incumbents := maps.Clone(c.runs)
 	changed := len(c.runs) == 0
 	selected := make(map[[sha256.Size]byte]json.RawMessage)
+	accepted := make(map[[sha256.Size]byte]bool)
 	var old struct {
 		Runs []json.RawMessage `json:"runs"`
 	}
@@ -147,6 +149,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 		next.partial = incomingTruncated
 		c.runs[key] = next
 		selected[key] = raw
+		accepted[key] = true
 		changed = true
 	}
 	if !changed {
@@ -208,6 +211,11 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	result := dagSnapshotResult{live: live, replay: live, digest: digest, oversized: c.oversized}
 	if c.oversized {
 		result.replay = nil
+	}
+	for _, key := range keys {
+		if accepted[key] {
+			result.accepted = append(result.accepted, selected[key])
+		}
 	}
 	return result, nil
 }

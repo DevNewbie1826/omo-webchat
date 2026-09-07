@@ -194,7 +194,7 @@ describe("liveBadgeStore", () => {
     const requestSequence = nextLiveActivitySequence();
     act(() => {
       ingestExtensionEvent("s1", "omo.dag.updated", DAG_RUNNING_3);
-      settleLiveBadgePoll([IDLE_POLL_SUMMARY], requestSequence);
+      settleLiveBadgePoll([{ ...IDLE_POLL_SUMMARY, task: { tasks: [] } }], requestSequence);
     });
 
     expect(captured.merged[0]).toMatchObject({ runningCount: 3, dagRunning: 3 });
@@ -351,7 +351,7 @@ describe("liveBadgeStore", () => {
     expect(captured.merged.find((summary) => summary.id === "s2")?.runningCount).toBe(1);
   });
 
-  it("clears a recognized side on null data and falls back to that poll side", () => {
+  it("does not grant null task data membership authority", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
     const poll = { ...IDLE_POLL_SUMMARY, task: TASK_RUNNING_1, runningCount: 1 };
@@ -372,6 +372,8 @@ describe("liveBadgeStore", () => {
       ingestExtensionEvent("s1", "omo.task.updated", null);
     });
 
+    expect(captured.merged[0]?.runningCount).toBe(2);
+    act(() => ingestExtensionEvent("s1", "omo.task.updated", TASK_RUNNING_1));
     expect(captured.merged[0]?.runningCount).toBe(1);
   });
 

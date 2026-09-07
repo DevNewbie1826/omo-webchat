@@ -930,7 +930,7 @@ describe("live polling hooks", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okResponse({ sessions: [] }))
       .mockResolvedValueOnce(okResponse({
-        sessions: [{ id: "overflow-child", title: "Recovered", task: null, dag: null }],
+        sessions: [{ id: "overflow-child", title: "Recovered", task: { tasks: [] }, dag: null }],
       }));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(<Host enabled={true} />));
@@ -954,7 +954,7 @@ describe("live polling hooks", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okResponse({ sessions: [] }))
       .mockResolvedValueOnce(okResponse({
-        sessions: [{ id: "same-id", title: "REST", task: null, dag: null }],
+        sessions: [{ id: "same-id", title: "REST", task: { tasks: [] }, dag: null }],
       }));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(<Host enabled={true} />));
@@ -996,7 +996,7 @@ describe("live polling hooks", () => {
       overflow: false,
     });
     await act(async () => resolvePoll?.(okResponse({
-      sessions: [{ id: "split-order", title: "REST", task: null, dag: null }],
+      sessions: [{ id: "split-order", title: "REST", task: { tasks: [] }, dag: null }],
     })));
 
     expect(captured.summaries[0]).toMatchObject({
