@@ -236,6 +236,23 @@ func (h *Handler) OnMessage(sock *gws.Conn, msg *gws.Message) {
 	defer msg.Close()
 	if raw, ok := h.conns.Load(sock); ok {
 		c := raw.(*connection)
+		c.stateMu.Lock()
+		greeted := c.hello
+		c.stateMu.Unlock()
+		if !greeted {
+			// OnMessage is serial per socket. Negotiate hello (or reject the
+			// frame) here so an immediately following ping sees that result.
+			c.route(msg.Bytes())
+			return
+		}
+		if frame, err := wscontract.ParseClientFrame(msg.Bytes()); err == nil {
+			if _, ping := frame.(*wscontract.PingFrame); ping {
+				// Heartbeat is transport work, not a command completion fence.
+				// Keep the existing hello guard and serialized socket writer.
+				c.routeFrame(c.ctx, frame, "ping")
+				return
+			}
+		}
 		frame := append([]byte(nil), msg.Bytes()...)
 		select {
 		case c.work <- frame:
