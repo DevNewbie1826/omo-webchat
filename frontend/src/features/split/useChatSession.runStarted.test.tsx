@@ -82,7 +82,7 @@ describe("ChatPane run.started responding indicator", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("shows the responding label on an unsolicited run.started, clears stale errors, and run.done hides it", () => {
+	it("shows a wordless localized responding indicator on an unsolicited run.started, clears stale errors, and run.done hides it", () => {
 		expect(container.querySelector(".th-chat-status-item--live")).toBeNull();
 
 		act(() => {
@@ -96,9 +96,11 @@ describe("ChatPane run.started responding indicator", () => {
 		act(() => {
 			deliver({ type: "run.started", sessionId: "chat-1" });
 		});
-		expect(container.querySelector(".th-chat-status-item--live")?.textContent).toBe(
-			translate("ko", "chat.responding"),
-		);
+		const indicator = container.querySelector<HTMLSpanElement>(".th-chat-status-item--live");
+		expect(indicator?.textContent).toBe("");
+		expect(indicator?.getAttribute("aria-label")).toBe(translate("ko", "chat.responding"));
+		expect(indicator?.getAttribute("title")).toBe(translate("ko", "chat.responding"));
+		expect(indicator?.querySelector(".th-chat-status-spinner")).not.toBeNull();
 		expect(container.querySelector(".th-chat-error")).toBeNull();
 		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(0);
 
@@ -106,6 +108,7 @@ describe("ChatPane run.started responding indicator", () => {
 			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
 		});
 		expect(container.querySelector(".th-chat-status-item--live")).toBeNull();
+		expect(container.querySelector(".th-chat-status-spinner")).toBeNull();
 	});
 
 	it("clears a prior done banner when a provider-initiated run starts", () => {
