@@ -112,6 +112,7 @@ type Session struct {
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 	dagSnapshots                                                            dagSnapshotCache
+	taskSnapshots                                                           taskSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
 
 	todoRead todoReadState

@@ -143,7 +143,7 @@ func TestChatActivityLargeShelfReturnsBoundedSingleSnapshots(t *testing.T) {
 	if !snapshot.Truncated || len(snapshot.Tasks) == 0 {
 		t.Fatalf("task prefix = %s", body.Task)
 	}
-	if body.TaskDigest == nil || len(body.TaskDigest.Tasks) != len(snapshot.Tasks) || !body.TaskDigest.Truncated {
+	if body.TaskDigest == nil || len(body.TaskDigest.Tasks) != 120 || len(body.TaskDigest.Tasks) <= len(snapshot.Tasks) || !body.TaskDigest.Truncated {
 		t.Fatalf("task digest = %+v", body.TaskDigest)
 	}
 }

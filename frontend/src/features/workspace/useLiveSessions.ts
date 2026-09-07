@@ -3,6 +3,11 @@ import { connectChat } from "../../lib/chatWs";
 import type { ChatClient, ChatServerFrame } from "../../lib/chatWs";
 import { parseDagDigest, parseTaskDigest } from "./activityDigest";
 import {
+  acceptLiveTaskInfo,
+  canonicalLiveSessionId,
+  projectLiveTaskInfo,
+  retireLiveTaskSessions,
+  useAcceptedLiveTaskInfos,
   nextLiveActivitySequence,
   settleLiveBadgePoll,
   settleLiveBadgePush,
@@ -23,9 +28,9 @@ interface PushedSession {
   readonly dagArrival?: number;
 }
 
-// One module-level source feeds every overview/sidebar consumer. REST remains
-// the compatibility and outage fallback; sessions.activity snapshots override
-// each activity side only until a poll that started after that side arrived.
+// One module-level source owns session membership and the existing DAG-side
+// arrival fences. Every task input is admitted to the shared per-ID store;
+// retained transport payloads below never elect task status or raw revision.
 const listeners = new Set<() => void>();
 let sessions: readonly LiveSessionInfo[] = EMPTY_SESSIONS;
 let polledSessions: readonly LiveSessionInfo[] = EMPTY_SESSIONS;
@@ -53,7 +58,10 @@ function parentSessionIdOf(info: LiveSessionInfo): string | undefined {
 }
 
 function publishMerged(): void {
-  const merged = new Map(polledSessions.map((info) => [info.id, info]));
+  const merged = new Map(polledSessions.map(info => {
+    const id = canonicalLiveSessionId(info.id);
+    return [id, { ...info, id }];
+  }));
   for (const [id, pushed] of pushedSessions) {
     const polled = merged.get(id);
     const taskPushed = pushed.taskArrival !== undefined;
@@ -75,7 +83,7 @@ function publishMerged(): void {
       ...(dagDigest === undefined ? {} : { dagDigest }),
     });
   }
-  const next = [...merged.values()];
+  const next = [...merged.values()].map(projectLiveTaskInfo);
   if (JSON.stringify(next) === JSON.stringify(sessions)) return;
   sessions = next;
   emit();
@@ -120,8 +128,9 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
     pushedSessions.delete(parentId);
   }
   sessionAliases = nextAliases;
+  const previousIds = polledSessions.map(info => info.id);
   polledSessions = next;
-  const liveIds = new Set(next.map((info) => info.id));
+  const liveIds = new Set(next.map((info) => canonicalLiveSessionId(info.id)));
   for (const [id, pushed] of pushedSessions) {
     const taskArrival = pushed.taskArrival !== undefined && pushed.taskArrival > requestSequence
       ? pushed.taskArrival
@@ -145,6 +154,7 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
     // A frame that raced the request remains visible until the next success.
     if (pushed.membershipArrival <= requestSequence) pushedSessions.delete(id);
   }
+  retireLiveTaskSessions(previousIds.filter(id => !liveIds.has(id) && !pushedSessions.has(id) && !sessionAliases.has(id)));
   publishMerged();
 }
 
@@ -170,7 +180,7 @@ function frameIdentity(frame: Extract<ChatServerFrame, { readonly type: "session
   const durable = typeof record["durableSessionId"] === "string" && record["durableSessionId"].length > 0
     ? record["durableSessionId"]
     : undefined;
-  const id = sessionAliases.get(frame.sessionId) ?? frame.sessionId;
+  const id = record["tombstone"] === true ? frame.sessionId : canonicalLiveSessionId(frame.sessionId);
   return {
     id,
     sourceIds: [...new Set([replaces, durable].filter((value): value is string => value !== undefined && value !== id))],
@@ -185,6 +195,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
     const removedIds = identity.sourceIds.length > 0 ? identity.sourceIds : [identity.id];
     for (const removedId of removedIds) {
       pushedSessions.delete(removedId);
+      if (canonicalLiveSessionId(removedId) === removedId) retireLiveTaskSessions([removedId]);
       settleLiveBadgePush(removedId, [], true, true, arrival);
     }
     publishMerged();
@@ -209,6 +220,8 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
   const taskUpdated = task !== undefined || taskDigest !== null;
   const dagUpdated = dag !== undefined || dagDigest !== null;
   settleLiveBadgePush(identity.id, identity.sourceIds, taskUpdated, dagUpdated, arrival);
+  acceptLiveTaskInfo({ id: identity.id, task: task?.data,
+    ...(taskDigest === null ? {} : { taskDigest }), taskOversized: task?.oversized === true }, arrival);
   const info: LiveSessionInfo = {
     id: identity.id,
     title: previous?.title ?? "",
@@ -242,6 +255,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
     const oldest = pushedSessions.keys().next().value as string | undefined;
     if (oldest === undefined) break;
     pushedSessions.delete(oldest);
+    retireLiveTaskSessions([oldest]);
   }
   publishMerged();
   // Overflow can mean another session's latest row was displaced. Recover the
@@ -337,6 +351,7 @@ function stop(): void {
   }
   activeCtrl?.abort();
   activeCtrl = undefined;
+  retireLiveTaskSessions([...new Set([...polledSessions.map(info => info.id), ...pushedSessions.keys()])]);
   stopPush();
   polledSessions = EMPTY_SESSIONS;
   sessions = EMPTY_SESSIONS;
@@ -360,10 +375,11 @@ const getEmptySessions = (): readonly LiveSessionInfo[] => EMPTY_SESSIONS;
 
 /** Live session records merged from sessions.activity push and GET /api/sessions/live fallback. */
 export function useLiveSessionInfos(enabled: boolean): readonly LiveSessionInfo[] {
-  return useSyncExternalStore(
+  const infos = useSyncExternalStore(
     enabled ? subscribeLiveSessions : noopSubscribe,
     enabled ? getSessions : getEmptySessions,
   );
+  return useAcceptedLiveTaskInfos(infos);
 }
 
 /** Ids of the sessions with a live provider process (established contract). */

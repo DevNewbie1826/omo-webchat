@@ -189,7 +189,7 @@ describe("canonical todo hook authority", () => {
       activityResolvers[0]!(new Response(JSON.stringify({ history: {
         task: { tasks: [{ task_id: "task", name: "Task", status: "running" }] },
         dag: { runs: [{ run_id: "dag", run_key: "plan", name: "DAG", status: "running", nodes: [] }] },
-      }, task_digest: { tasks: [], truncated: false }, dag_digest: { runs: [], truncated: false } }), { status: 200 }));
+      }, task_digest: { tasks: [{ task_id: "task", status: "running" }], truncated: false }, dag_digest: { runs: [], truncated: false } }), { status: 200 }));
     });
     expect(current.activities.tasks.get("task")?.name).toBe("Task");
     expect(current.activities.dags.get("dag")?.name).toBe("DAG");

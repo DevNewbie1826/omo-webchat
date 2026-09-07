@@ -479,6 +479,8 @@ type TaskDigest struct {
 }
 
 type TaskDigestEntry struct {
+	// Original nonterminal status, present only when webchat applies a terminal DAG-derived correction. updated_at remains the original raw task revision; engine/store metadata is not trusted provenance.
+	RawStatus *string `json:"raw_status,omitempty"`
 	Status    string  `json:"status"`
 	TaskID    string  `json:"task_id"`
 	UpdatedAt *string `json:"updated_at,omitempty"`
@@ -1586,7 +1588,7 @@ func (v *TaskDigestEntry) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"status", "task_id", "updated_at"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"raw_status", "status", "task_id", "updated_at"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2455,7 +2457,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "sessions.activity":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated"}}, "durableSessionId": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "snapshots", "overflow"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated"}}, "durableSessionId": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"received_at": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"raw_status": validationSchema{Type: "string"}, "status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "snapshots", "overflow"}}); err != nil {
 				return nil, err
 			}
 		case "approval":
