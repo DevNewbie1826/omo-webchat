@@ -1,3 +1,5 @@
+import type { JsonObject, JsonValue } from "../../lib/chatWs";
+
 export const NOW_ISO = "2026-08-19T12:00:00.000Z";
 export const NOW_MS = Date.parse(NOW_ISO);
 export const FRESH_AT = "2026-08-19T11:59:00.000Z";
@@ -17,6 +19,36 @@ export function dagRun(overrides: Record<string, unknown> = {}): Record<string, 
     nodes: [{ id: "n1", prompt: "do", depends_on: [], state: "running" }],
     edges: [],
     waves: [{ index: 0, node_ids: ["n1"] }],
+    ...overrides,
+  };
+}
+
+export const UNKNOWN_DAG_TIMESTAMPS = [
+  { label: "missing", value: undefined },
+  { label: "empty", value: "" },
+  { label: "invalid string", value: "invalid" },
+  { label: "null", value: null },
+  { label: "number", value: 42 },
+  { label: "object", value: {} },
+  { label: "array", value: [] },
+  { label: "boolean", value: false },
+] as const satisfies readonly { readonly label: string; readonly value: JsonValue | undefined }[];
+
+export function orderingDagRun(
+  updatedAt: JsonValue | undefined,
+  status = "completed",
+  overrides: JsonObject = {},
+): JsonObject {
+  return {
+    run_id: "ordering-run",
+    run_key: "plan",
+    name: "Ship",
+    edges: [],
+    waves: [{ index: 0, node_ids: ["n1"] }],
+    ...(updatedAt === undefined ? {} : { updated_at: updatedAt }),
+    status,
+    counts: { total: 1, running: status === "running" ? 1 : 0, completed: status === "completed" ? 1 : 0 },
+    nodes: [{ id: "n1", prompt: "do", depends_on: [], state: status, attempt: status === "running" ? 2 : 1 }],
     ...overrides,
   };
 }

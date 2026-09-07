@@ -110,6 +110,7 @@ type Session struct {
 	queueHistoryEstablished                                                 bool
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
+	dagSnapshots                                                            dagSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
 
 	broadcast broadcaster
