@@ -149,6 +149,54 @@ describe("mobile safe area", () => {
     page.check(true);
   });
 
+  test.each(["dismissal", "pageshow"] as const)("UR-10 mixed layout height recovers at %s with focus retained", (recovery) => {
+    const page = viewportPage();
+    const input = page.document.createElement("textarea");
+    page.document.body.appendChild(input);
+    input.value = "mixed rotation draft";
+    input.focus();
+    page.check(false);
+    page.update({ height: 504 });
+    page.check(true);
+    // Exact lead/reviewer counterexample: layout width changes before height.
+    page.layout(844, 844);
+    page.update({ width: 844, height: 200 });
+    page.check(true);
+    page.layout(844, 390);
+    page.windowEvent("resize");
+    page.check(true);
+    page.update({ height: 390 });
+    if (recovery === "pageshow") page.windowEvent("pageshow");
+    page.check(false);
+    expect(page.document.activeElement).toBe(input);
+    expect(input.value).toBe("mixed rotation draft");
+  });
+
+  test.each([false, true])("mixed layout height is replaceable through closed/open rotation keyboard=%s", (open) => {
+    const page = viewportPage();
+    page.update({ height: open ? 504 : 844 });
+    page.check(open);
+    page.rotate("landscape-primary");
+    page.layout(844, 844);
+    page.update({ width: 844, height: open ? 200 : 390 });
+    // This mixed frame cannot establish the final unobscured height.
+    page.layout(844, 390);
+    page.windowEvent("resize");
+    page.check(open);
+    // A late tall layout sample at the same width must also be replaceable.
+    page.layout(844, 844);
+    page.windowEvent("resize");
+    page.layout(844, 390);
+    page.windowEvent("pageshow");
+    page.check(open);
+    page.update({ height: 390 });
+    page.check(false);
+    page.update({ height: 200 });
+    page.check(true);
+    page.update({ height: 390 });
+    page.check(false);
+  });
+
   test("layout resize is not gated by the physical screen orientation", () => {
     const page = viewportPage();
     page.update({ height: 504 });

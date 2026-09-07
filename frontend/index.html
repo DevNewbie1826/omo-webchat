@@ -103,9 +103,12 @@
         var layoutHeight = window.innerHeight;
         var visibleHeight = h * scale;
         if (Math.abs(w * scale - layoutWidth) > 1 || visibleHeight > layoutHeight + 1) return;
-        if (!baselineWidth || Math.abs(layoutWidth - baselineWidth) > 1) {
-          // Reset only after layout and visual width agree, not merely on
-          // orientationchange/pageshow (which may arrive while still shrunk).
+        if (vv || !baselineWidth || Math.abs(layoutWidth - baselineWidth) > 1) {
+          // With VisualViewport, the current layout height witnesses the
+          // unoccluded viewport. Replace it on each compatible sample: mixed
+          // layout width/height can settle separately, so a maximum can stick.
+          // Without VV, retain the width-reset/max-height fallback below since
+          // innerHeight itself shrinks; pageshow alone must not erase it.
           baselineWidth = layoutWidth;
           baselineHeight = layoutHeight;
         } else {
