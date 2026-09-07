@@ -91,10 +91,10 @@ async function state(page) {
       overflow: document.documentElement.scrollWidth > innerWidth };
   });
 }
-async function settled(page) {
-  return page.evaluate(async () => {
+async function settled(page, selector = '.th-activity-shelf') {
+  return page.evaluate(async selector => {
     await document.fonts.ready;
-    const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf') && a.effect.getTiming().iterations !== Infinity);
+    const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.(selector) && a.effect.getTiming().iterations !== Infinity);
     let timer;
     try {
       const outcomes = await Promise.race([Promise.allSettled(animations.map(a => a.finished)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Finite animation deadline')), 8000); })]);
@@ -104,7 +104,7 @@ async function settled(page) {
         return { name: animation.animationName ?? animation.transitionProperty, outcome: outcome.status === 'fulfilled' ? 'finished' : 'cancelled', playState: animation.playState, reason: outcome.status === 'rejected' ? String(outcome.reason) : null };
       });
     } finally { clearTimeout(timer); }
-  });
+  }, selector);
 }
 async function click(q, selector, predicate) {
   assert.equal(await q.page.locator(selector).count(), 1, `missing or ambiguous control ${selector}`);
@@ -115,13 +115,12 @@ async function click(q, selector, predicate) {
   q.record.actions.at(-1).after = await state(q.page);
 }
 async function select(q, id) {
-  await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('${panel(id)}') && !document.querySelector('${panel(id)}').hidden`));
+  const selected = await q.page.locator(tab(id)).evaluate(e => e.getAttribute('aria-selected') === 'true' && e.closest('.th-activity-shelf').dataset.open === 'true');
+  if (!selected) await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && document.querySelector('.th-activity-shelf')?.dataset.open === 'true' && document.querySelector('.th-activity-shelf')?.style.flexShrink === '0'`));
 }
 async function open(q) {
-  // Idempotent ensure-open: a selected-tab click would CLOSE an already-open
-  // shelf, so inspect current state before activating anything.
-  if (await q.page.evaluate(() => !!document.querySelector('.th-activity-panel'))) return;
-  await select(q, 'todo');
+  // Open intent survives an allocation-hidden panel; never toggle it off.
+  await select(q, await q.page.locator(selectedTab).getAttribute('data-activity-tab'));
 }
 async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
@@ -271,8 +270,19 @@ async function session(browser, receipt, options, body) {
       record.navigation.push({ url: fixture.url, at: new Date().toISOString() }); console.log(`navigate ${fixture.url}`);
       await page.goto(fixture.url); await page.evaluate(() => window.activityReady);
       if (!options.noTodo) {
-        await arm(page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent.includes('32'));
-        fixture.deliver('stored-a', { type: 'tool', toolCallId: 'r2-todo', toolName: 'todo', phase: 'end', result: { details: { phases: seeds.todo } } });
+        const bindingId = `activity-${record.id}-${record.navigation.length}`;
+        let requestGeneration = 0;
+        q.deliverTodo = phases => {
+          const frame = { type: 'chat.todo', durableSessionId: 'stored-a', bindingId, requestGeneration: ++requestGeneration, status: 'ready',
+            source: { leafId: 'activity-todo', entryId: 'activity-todo', entryIndex: 0, kind: 'custom' }, phases };
+          record.actions.push({ action: 'todo-frame', frame: structuredClone(frame) });
+          fixture.deliver('stored-a', frame);
+        };
+        await arm(page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent === '1/32');
+        const ready = { type: 'ready', resumed: true, piSessionId: 'stored-a', bindingId };
+        record.actions.push({ action: 'todo-binding', frame: ready });
+        fixture.deliver('stored-a', ready);
+        q.deliverTodo(seeds.todo);
         await complete(page);
       }
       if (options.paneWidth) {
@@ -310,6 +320,10 @@ async function session(browser, receipt, options, body) {
   }
 }
 async function tabs(q) {
+  const composer = q.page.locator('.th-chat-input textarea');
+  const draft = 'Preserve this typed activity draft';
+  await composer.focus(); await q.page.keyboard.type(draft);
+  assert.equal(await composer.inputValue(), draft);
   const initial = await state(q.page);
   assert.deepEqual(initial.tabs.map(t => t.id), ['todo', 'agents', 'dag']);
   assert.equal(initial.tabs.find(t => t.selected === 'true').id, 'todo');
@@ -358,18 +372,54 @@ async function tabs(q) {
     await q.page.keyboard.press(key); await complete(q.page);
     q.record.actions.push({ action: 'tab-key', key, state: await state(q.page) });
   }
-  // Same-target boundary navigation (Home on the first tab) must not close.
-  await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
-  await q.page.keyboard.press('Home');
-  const boundary = await state(q.page);
-  assert.equal(boundary.tabs.find(t => t.selected === 'true').id, 'todo');
-  assert.deepEqual(boundary.visible, ['todo']);
-  q.record.actions.push({ action: 'tab-key-boundary', key: 'Home', state: boundary });
+  // Reach each endpoint, then repeat its SAME key while already selected.
+  for (const [key, id] of [['Home', 'todo'], ['End', 'dag']]) {
+    await q.page.locator(selectedTab).focus();
+    await arm(q.page, new Function(`return document.activeElement?.getAttribute('data-activity-tab') === '${id}'`));
+    await q.page.keyboard.press(key); await complete(q.page);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const before = await state(q.page);
+      assert.equal(before.tabs.find(t => t.selected === 'true').id, id);
+      assert.deepEqual(before.visible, [id]);
+      await q.page.keyboard.press(key);
+      const after = await state(q.page);
+      assert.equal(after.tabs.find(t => t.selected === 'true').id, id);
+      assert.deepEqual(after.visible, [id]);
+      assert.equal(await q.page.locator(tab(id)).evaluate(e => e === document.activeElement), true);
+      q.record.actions.push({ action: 'tab-key-boundary', key, repeat, before, after });
+    }
+  }
   await select(q, 'dag');
   await arm(q.page, () => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === '4/9');
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.task.updated', data: { parent_session_id: 'qa', truncated_tasks: false, tasks: [...q.seeds.tasks, { task_id: 'new', name: 'Live addition', status: 'running' }] } });
   await complete(q.page); assert.deepEqual((await state(q.page)).visible, ['dag']);
-  return { initial, final: await state(q.page) };
+  // A second authoritative snapshot uses the same binding and a newer generation.
+  await arm(q.page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent === '2/32');
+  q.deliverTodo(q.seeds.todo.map(phase => ({ ...phase, tasks: phase.tasks.map((task, i) => i === 1 ? { ...task, status: 'completed' } : task) })));
+  await complete(q.page);
+  assert.deepEqual((await state(q.page)).visible, ['dag']);
+  await select(q, 'dag'); await open(q); await open(q);
+  assert.deepEqual((await state(q.page)).visible, ['dag']);
+  assert.equal(await composer.inputValue(), draft);
+  // Real allocation collapse, not synthetic markup: both ensure helpers must
+  // preserve intent and selection until viewport space becomes available again.
+  await arm(q.page, () => document.querySelector('.th-activity-shelf')?.dataset.expanded === 'false');
+  await q.page.setViewportSize({ width: 1280, height: 220 }); await complete(q.page);
+  const allocationHidden = await state(q.page);
+  assert(allocationHidden.activityIntent && !allocationHidden.activity);
+  await open(q); await select(q, 'dag');
+  assert.equal((await state(q.page)).activityIntent, true);
+  await select(q, 'agents'); await select(q, 'agents'); await open(q);
+  const hiddenAfterHelpers = await state(q.page);
+  assert(hiddenAfterHelpers.activityIntent && !hiddenAfterHelpers.activity);
+  assert.equal(hiddenAfterHelpers.tabs.find(t => t.selected === 'true').id, 'agents');
+  await arm(q.page, () => document.querySelector('.th-activity-shelf')?.dataset.expanded === 'true');
+  await q.page.setViewportSize(q.record.options.viewport); await complete(q.page);
+  assert.deepEqual((await state(q.page)).visible, ['agents']);
+  assert.equal(await composer.inputValue(), draft);
+  q.record.actions.push({ action: 'ensure-open-select-allocation-hidden-draft', allocationHidden, hiddenAfterHelpers, restored: await state(q.page), draft: await composer.inputValue() });
+  await capture(q, 'tabs-draft-restored');
+  return { initial, final: await state(q.page), draft: await composer.inputValue() };
 }
 async function resize(q) {
   await open(q); const grip = q.page.locator('.th-activity-resize');
@@ -689,23 +739,38 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         await capture(q, 'font-live-24'); return { before, after };
       });
       await scenario('goal-hover-feedback-tabs-interactive', {}, async q => {
-        const paint = () => q.page.evaluate(() => { const style = s => { const e = document.querySelector(s), c = getComputedStyle(e); return { tag: e.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor }; }; return { goal: style('.th-goal-bar'), tab: style('.th-activity-shelf [role="tab"][aria-selected="false"]') }; });
-        await q.page.mouse.move(0, 0); const before = await paint();
-        await q.page.locator('.th-goal-bar').hover();
-        await q.page.evaluate(() => Promise.all(document.querySelector('.th-goal-bar').getAnimations().map(a => a.finished)));
-        const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
-        await capture(q, 'goal-hover-feedback');
-        // The activity shelf has no summary pill left to be read-only about;
-        // its tabs are the interactive surface, with visible hover feedback
-        // (an unselected tab: transparent turns to the shared hover fill).
-        await q.page.locator('.th-activity-shelf [role="tab"][aria-selected="false"]').first().hover();
-        await q.page.evaluate(() => Promise.all(document.querySelector('.th-activity-shelf [role="tab"][aria-selected="false"]').getAnimations().map(a => a.finished)));
-        const tabHover = await paint(); assert.equal(tabHover.tab.tag, 'BUTTON'); assert.equal(tabHover.tab.cursor, 'pointer');
-        assert.notEqual(before.tab.background, tabHover.tab.background);
-        await capture(q, 'activity-tab-interactive');
-        assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0);
-        assert.equal(await q.page.locator('button.th-activity-fold').count(), 0);
-        return { before, hovered, tabHover };
+        // Hydration changes Agents from selected to unselected. Pin its DOM
+        // identity and settle that finite transition before measuring baseline.
+        const target = q.page.locator(tab('agents'));
+        const handle = await target.elementHandle();
+        const paint = () => handle.evaluate(e => {
+          const style = element => { const c = getComputedStyle(element); return { tag: element.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor, hover: element.matches(':hover') }; };
+          return { goal: style(document.querySelector('.th-goal-bar')), tab: { ...style(e), id: e.id, selected: e.getAttribute('aria-selected'), sameTarget: e === document.querySelector('[data-activity-tab="agents"]'),
+            animations: e.getAnimations().map(a => ({ property: a.transitionProperty, state: a.playState })) } };
+        });
+        try {
+          await q.page.mouse.move(0, 0);
+          const hydration = await paint();
+          const baselineSettlement = await settled(q.page, '.th-activity-shelf,.th-goal-shelf');
+          const before = await paint();
+          assert.equal(before.tab.selected, 'false'); assert.equal(before.tab.hover, false);
+          assert.equal(before.tab.sameTarget, true); assert.deepEqual(before.tab.animations, []);
+          await q.page.locator('.th-goal-bar').hover();
+          await settled(q.page, '.th-goal-shelf');
+          const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
+          assert.equal(hovered.goal.hover, true);
+          await capture(q, 'goal-hover-feedback');
+          await target.hover();
+          const hoverSettlement = await settled(q.page);
+          const tabHover = await paint(); assert.equal(tabHover.tab.tag, 'BUTTON'); assert.equal(tabHover.tab.cursor, 'pointer');
+          assert.equal(tabHover.tab.id, before.tab.id); assert.equal(tabHover.tab.sameTarget, true);
+          assert.equal(tabHover.tab.selected, 'false'); assert.equal(tabHover.tab.hover, true); assert.deepEqual(tabHover.tab.animations, []);
+          assert.notEqual(before.tab.background, tabHover.tab.background);
+          await capture(q, 'activity-tab-interactive');
+          assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0);
+          assert.equal(await q.page.locator('button.th-activity-fold').count(), 0);
+          return { hydration, baselineSettlement, before, hovered, hoverSettlement, tabHover };
+        } finally { await handle.dispose(); }
       });
       await scenario('shared-hooks', {}, async q => ({ actions: await exerciseShelves(q, name => capture(q, `shared-${name}`)) }));
       for (const [name, viewport, layout] of [['desktop', { width: 1280, height: 800 }, 'single'], ['mobile', { width: 390, height: 844 }, 'single'], ['340', { width: 1280, height: 800 }, 'two'], ['short', { width: 1280, height: 420 }, 'single']]) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
