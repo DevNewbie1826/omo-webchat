@@ -1,5 +1,9 @@
 .th-sidebar {
   position: relative;
+  /* The in-flow column already starts below #root's safe top. Pair the
+     visible height with its origin, including when no keyboard is open. */
+  top: var(--th-vv-top, 0px);
+  height: calc(var(--th-vh-unit, 1vh) * 100 - env(safe-area-inset-top));
   width: var(--th-sidebar-w);
   flex: none;
   display: flex;
@@ -113,36 +117,31 @@
   display: flex;
   align-items: center;
   gap: var(--th-space-1);
-  padding: var(--th-space-2) var(--th-space-3);
+  padding: var(--th-space-2) var(--th-space-3) 0;
   border-top: 1px solid var(--th-border);
+}
+
+/* Do not let the inherited text line box add space below the icon at large
+   font settings. The popup keeps its own typography and absolute anchor. */
+.th-sidebar-footer > .th-settings-menu {
+  display: flex;
 }
 
 @media (max-width: 768px) {
   .th-sidebar {
     position: fixed;
-    top: 0;
-    left: 0;
-    /* fixed positioning anchors to the layout viewport, which on iOS extends
-       behind the URL bar / keyboard — size to the visual viewport instead so
-       the footer stays visible. */
+    left: var(--th-vv-left, 0px);
+    /* Unlike the in-flow column, the drawer owns its safe top inside the
+       full visual height. The base rule supplies the matching origin. */
     height: calc(var(--th-vh-unit, 1vh) * 100);
     width: var(--th-sidebar-w);
     transform: translateX(0);
     background: var(--th-surface-overlay);
     border-right-color: var(--th-border-overlay);
     box-shadow: var(--th-shadow-overlay);
-    /* Fixed elements are contained by #root's padding box (it has a
-       transform), so #root's safe-area padding does not reach the sidebar;
-       carve the top inset out here (the bottom inset comes from the base
-       rule, and the keyboard rule below drops it). */
+    /* Fixed positioning bypasses #root's safe padding, both against the
+       viewport and against #root when its keyboard transform is active. */
     padding-top: env(safe-area-inset-top);
-  }
-
-  /* The intentional bottom gap target on mobile is 4px; the shell's single
-     safe inset (released while the keyboard is open) provides everything
-     below the controls. */
-  .th-sidebar-footer {
-    padding-bottom: var(--th-space-1);
   }
 
   .th-sidebar-inner {
@@ -165,5 +164,8 @@
    inset is pure reserve while it is open; mirror the #root keyboard contract
    in global.css. Higher specificity wins over both inset declarations. */
 html[data-th-keyboard-open] .th-sidebar {
+  /* #root already translates both coordinates while the keyboard is open. */
+  top: 0;
+  left: 0;
   padding-bottom: 0;
 }

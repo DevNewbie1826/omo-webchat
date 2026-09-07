@@ -2,12 +2,12 @@ import { test, expect } from 'bun:test';
 import { runInNewContext } from 'node:vm';
 import { footerAssertions, measure, settle } from './ui-mobile-helpers.mjs';
 
-for (const [gap, pass] of [[8, true], [9, false], [42, false], [-26, false]]) {
+for (const [gap, pass] of [[0, true], [1, true], [4, false], [8, false], [9, false], [42, false], [-26, false]]) {
   test(`bottom reserve assertion classifies usable gap ${gap}`, () => {
     // Given measured control bounds and an independently supplied usable gap.
     const geometry = { controls: Array.from({ length: 2 }, () => ({ bounded: true, unclipped: true, hit: true, disabled: false })),
       usableBottomGap: gap, bottomGap: gap + 34, necessaryBottomInset: 34, horizontalOverflow: false };
-    // When the intended bottom-reserve contract is evaluated, then only <=8px plus rounding fits.
+    // Only zero extra reserve, allowing one CSS pixel of rounding, fits.
     expect(footerAssertions(geometry).find(row => row.id === 'C5.bottom-reserve').pass).toBe(pass);
   });
 }
@@ -50,7 +50,7 @@ test('capture subscribes to concurrent transitions before cancellation and await
   expect(subscriptions).toBe(2);
 });
 
-for (const [mobileMedia, gap, pass] of [[true, 4, true], [true, 8, false], [false, 8, true], [false, 4, false]]) {
+for (const [mobileMedia, gap, pass] of [[true, 0, true], [true, 4, false], [true, 8, false], [false, 0, true], [false, 8, false], [false, 4, false]]) {
   test(`exact gap at mobile=${mobileMedia}, gap=${gap}`, () => {
     const g = { controls: [{}, {}], mobileMedia, usableBottomGap: gap };
     expect(footerAssertions(g).find(r => r.id === 'C5.mobile-bottom-gap-exact').pass).toBe(pass);

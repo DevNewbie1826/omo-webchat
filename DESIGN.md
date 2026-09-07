@@ -293,17 +293,19 @@ Choose a tested foreground/background token pair instead.
   overlay drawer without the rail. The shared `--th-space-11` token is the
   coarse-pointer touch size and must not be re-valued to remove the expanded
   rail; only the expanded shell's allocation changes. The mobile drawer is
-  sized to the visual viewport, and the sidebar shell reserves the bottom
+  sized and positioned to the visual viewport: sidebar and backdrop consume
+  its height and origin together, without repeating the translation already
+  supplied by `#root` while the keyboard is open. The desktop sidebar also
+  follows the visible bottom. The sidebar shell reserves the bottom
   home-indicator inset at every width (`env(safe-area-inset-bottom)` — zero
   wherever the hardware has none, and the only protection on landscape phones
   beyond the 768px drawer breakpoint, where `#root` intentionally keeps a 0
   bottom inset for the full-bleed input bar). While the software keyboard is
   open the bottom inset is dropped (`html[data-th-keyboard-open]`) because
-  the keyboard covers the gesture zone. The intentional reserve below the
-  settings/logout row is the footer's own block padding — 4px (`--th-space-1`)
-  at mobile widths, 8px (`--th-space-2`) beyond them — and never a second
-  inset; the footer spacer stretches that row horizontally and never adds
-  vertical reserve. The upward-opening Settings panel budgets its height from
+  the keyboard covers the gesture zone. The settings/logout row ends exactly
+  at the usable visible bottom: footer bottom padding is zero at every width,
+  leaving only the shell's necessary safe inset. The footer spacer stretches
+  that row horizontally and never adds vertical reserve. The upward-opening Settings panel budgets its height from
   the visual viewport minus the safe top, the necessary closed-state bottom
   inset, and its footer anchor/offset. The keyboard marker releases only the
   obsolete bottom contribution, never top protection. Overflow belongs to the
@@ -711,7 +713,7 @@ widths confirms:
     never overflow;
 12. at mobile widths no active-pane outline paints while desktop split panes
     keep theirs, and the sidebar settings/logout row sits inside usable
-    bounds with only the necessary safe inset plus the footer's 4px mobile
+    bounds with only the necessary safe inset and zero extra footer bottom
     padding, with the software keyboard open or closed and in either
     orientation. Settings must also pass independently supplied top insets
     0/59px crossed with bottom insets 0/34px, both keyboard states, both themes,
