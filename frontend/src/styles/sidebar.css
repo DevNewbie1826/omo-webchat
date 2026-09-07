@@ -10,6 +10,12 @@
   transition: width var(--th-dur-slow) var(--th-ease),
     transform var(--th-dur-slow) var(--th-ease);
   z-index: 40;
+  /* Reserve the bottom home-indicator inset inside the shell at every width:
+     landscape phones exceed the 768px drawer breakpoint, and #root keeps a 0
+     bottom inset there (the input bar owns it), so without this the footer
+     controls sit inside the gesture zone. env() resolves to 0 wherever no
+     inset exists, so desktop rendering is unchanged. */
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 .th-sidebar--collapsed {
@@ -127,9 +133,16 @@
     box-shadow: var(--th-shadow-overlay);
     /* Fixed elements are contained by #root's padding box (it has a
        transform), so #root's safe-area padding does not reach the sidebar;
-       carve the insets out here too. */
+       carve the top inset out here (the bottom inset comes from the base
+       rule, and the keyboard rule below drops it). */
     padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* The intentional bottom gap target on mobile is 4px; the shell's single
+     safe inset (released while the keyboard is open) provides everything
+     below the controls. */
+  .th-sidebar-footer {
+    padding-bottom: var(--th-space-1);
   }
 
   .th-sidebar-inner {
@@ -146,4 +159,11 @@
       visibility 0s linear var(--th-dur-slow);
     visibility: hidden;
   }
+}
+
+/* The software keyboard covers the home-indicator zone, so the bottom safe
+   inset is pure reserve while it is open; mirror the #root keyboard contract
+   in global.css. Higher specificity wins over both inset declarations. */
+html[data-th-keyboard-open] .th-sidebar {
+  padding-bottom: 0;
 }
