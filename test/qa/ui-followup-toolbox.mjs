@@ -276,7 +276,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
 
       // Grow the live output with a long Korean streaming update, then expand
       // the running record: live output must stay bounded inside the card.
-      await arm(page, () => (document.querySelector(`[data-tool-call-id="design-running"] .th-tool-output`)?.scrollHeight ?? 0) > 300);
+      // The record is collapsed here, so observe growth through the visible
+      // latest-output preview line (the output element only exists expanded).
+      await arm(page, () => (document.querySelector('[data-tool-call-id="design-running"] .th-tool-preview')?.textContent ?? '').includes('record 69'));
       fixture.deliver('stored-a', { type: 'tool', toolCallId: 'design-running', toolName: 'bash',
         phase: 'update', partial: { content: [{ text: `\n${longOutput}` }] } });
       await complete(page);
