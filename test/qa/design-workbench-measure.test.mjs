@@ -17,11 +17,32 @@ function sample({ viewportWidth = 1280, columnWidth = 506, gutter = 24, userTop 
     edges: Object.fromEntries(['controls', 'composer', 'live'].map(key => [key, { left, right }])),
     status: { left, right: right - 108, top: 800, bottom: 830 },
     historyAxis: left, liveAxis: left, roles: [],
-    panes: [{ active: true, outline: '1px solid rgb(1, 1, 1)' }],
+    panes: [{ active: true, outline: viewportWidth <= 768 ? 'none' : '1px solid rgb(1, 1, 1)' }],
     composer: { bottom: 900 }, trigger: { left: right - 100, right, top: 800, bottom: 830 }, coarse: false,
   };
 }
 const assertion = (value, id) => designAssertions(value).find(result => result.id === id);
+
+test('active outline is suppressed at the mobile viewport boundary and visible above it', () => {
+  expect(() => preservedGeometry(sample({ viewportWidth: 768 }))).not.toThrow();
+  expect(() => preservedGeometry(sample({ viewportWidth: 769 }))).not.toThrow();
+});
+
+test('wrong outline role fails at both sides of the viewport contract', () => {
+  const mobile = sample({ viewportWidth: 768 }); mobile.panes[0].outline = '1px solid black';
+  expect(() => preservedGeometry(mobile)).toThrow(/viewport contract/);
+  const desktop = sample({ viewportWidth: 769 }); desktop.panes[0].outline = 'none';
+  expect(() => preservedGeometry(desktop)).toThrow(/viewport contract/);
+});
+
+test('composer surface uses its dedicated semantic role', () => {
+  const value = sample();
+  value.roles = [{ selector: '.th-chat-input-inner', token: '--th-surface-composer',
+    expected: 'rgb(1, 2, 3)', actual: 'rgb(1, 2, 3)' }];
+  expect(assertion(value, 'semantic-surfaces').pass).toBe(true);
+  value.roles[0].actual = 'rgb(9, 9, 9)';
+  expect(assertion(value, 'semantic-surfaces').pass).toBe(false);
+});
 
 test('aligned full reading bands accept a narrower status beside the right-pinned trigger', () => {
   const value = sample();
