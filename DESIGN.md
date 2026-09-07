@@ -313,14 +313,18 @@ Choose a tested foreground/background token pair instead.
   obsolete bottom contribution, never top protection. Overflow belongs to the
   Settings interior so every control remains fully visible and hit-testable
   when scrolled into view, without scrolling or escaping clipping ancestors.
-- Installed PWA surface: in standalone mode with the keyboard closed, `#root`
-  paints the full physical screen (the large viewport, not the collapsed
-  dynamic viewport), so the shell background, drawer and backdrop cover the
+- Installed PWA surface: on the recorded installed device (iPhone 13 mini,
+  iOS 26.6.1) the screen and large viewport measure 812 CSS px tall while
+  the dynamic viewport and visual viewport measure 762. That is an observed
+  geometry split from one resting device, not a claim about how WebKit
+  computes those values internally. The intended contract: in standalone
+  mode with the keyboard closed, `#root` uses the large-viewport basis
+  (`100lvh`) so the shell background, drawer and backdrop cover the
   home-indicator zone instead of leaving it to the body background.
   Control-safe space is reserved once, inside the surface, never by
   shortening a painted background: the composer stays full-bleed while its
-  internal bottom reserve is exactly the necessary
-  `env(safe-area-inset-bottom)` on coarse pointers, and the sidebar keeps
+  internal bottom reserve is the larger of its existing breathing padding
+  and the necessary `env(safe-area-inset-bottom)`, and the sidebar keeps
   its single existing inset reserve with zero footer bottom padding. While
   the software keyboard is open, `#root` switches to VisualViewport height
   and origin (`--th-vh-unit`, `--th-vv-top`/`--th-vv-left`) and the bottom
@@ -329,7 +333,10 @@ Choose a tested foreground/background token pair instead.
   geometry without corrupting a compatible unobscured baseline, and recovery
   preserves focus and draft text. The raw visual variables keep their
   visual-viewport meaning for existing dialog and Settings consumers, and
-  ordinary browsers keep the dynamic-viewport policy.
+  ordinary browsers keep the dynamic-viewport policy. The max-reserve
+  contract above is intended behavior, verified so far only in synthetic
+  Chrome captures of the changed build; changed-device verification on an
+  installed iOS PWA remains outstanding.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
@@ -392,11 +399,17 @@ Choose a tested foreground/background token pair instead.
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
   reading column. Bottom breathing room is an internal, painted reserve,
-  never a shortened background: 4px base, 16px on fine-pointer desktop, and
-  exactly the necessary `env(safe-area-inset-bottom)` on coarse pointers in
-  an installed PWA with the keyboard closed, where the inset subsumes the
-  breathing budget. Keyboard-open, ordinary-browser and desktop-standalone
-  states keep the base padding.
+  never a shortened background: 4px base, 16px on fine-pointer desktop.
+  Whenever the keyboard is closed, the total bottom reserve is
+  `max(base breathing, env(safe-area-inset-bottom))`, never their sum and
+  never less than the base. The unchanged base padding stays, and an empty
+  in-flow physical-reserve slot (a `flex: none` `::after` item at the end
+  of the composer form) adds only the shortfall, `max(0, inset - base)`.
+  The slot is not standalone-gated: an ordinary browser with a real bottom
+  inset gets the same single reserve, while `#root` keeps its ordinary
+  `100dvh` height policy. While the keyboard is open the slot is absent and
+  only the base padding remains, because the keyboard covers the gesture
+  zone.
 - The composer is one unified capsule: a single `--th-surface` pill
   (`--th-radius-pill`, one `--th-border` outline) that owns the plus
   attachment action, the multiline input, and the send/stop slot. The capsule
