@@ -379,9 +379,8 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(slotPicker, "flex")).toBe("0 0 auto");
     expect(declarationValue(slotPicker, "min-width")).toBe("0");
     expect(declarationValue(slotPicker, "max-width")).toBe("45%");
-    // Secondary metrics keep a disclosure whose marker is suppressed; the
-    // summary is the disclosure's only control.
-    expect(chatPane).toMatch(/\.th-chat-status-details summary\s*\{[^}]*list-style:\s*none/);
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status"), "flex-wrap")).toBe("wrap");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status-metrics"), "display")).toBe("contents");
 
     // The header no longer sizes the picker; nothing may remove it from the
     // composer band on either side of the 600px container breakpoint.
@@ -407,22 +406,18 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(popup, "right")).toBe("0");
     expect(declarationValue(popup, "max-height")).toBe("min(280px, 50dvh)");
     expect(popup).not.toMatch(/(?:^|;)\s*top\s*:/);
-    // Mobile keeps its pinned chrome and list scrollport. Desktop lets the
-    // chrome scroll too, so it cannot squeeze options to an unreadable strip.
+    // Desktop always keeps chrome fixed and only the list scrolls.
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list"), "overflow-y")).toBe("auto");
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-search"), "flex")).toBe("none");
     const desktop = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet)");
-    expect(declarationValue(desktop, "overflow-y")).toBe("auto");
-    expect(declarationValue(desktop, "overscroll-behavior")).toBe("contain");
+    expect(declarationValue(desktop, "overflow")).toBe("hidden");
     const desktopList = ruleBody(chatPane, ".th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list");
-    expect(declarationValue(desktopList, "flex")).toBe("none");
-    expect(declarationValue(desktopList, "overflow-y")).toBe("visible");
+    expect(declarationValue(desktopList, "overscroll-behavior")).toBe("contain");
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list"), "flex")).toBe("1 1 auto");
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list > button"), "flex")).toBe("none");
-    const shortRow = ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-list > button");
-    expect(declarationValue(shortRow, "flex-direction")).toBe("row");
-    expect(declarationValue(shortRow, "padding")).toBe("var(--th-space-0-5) var(--th-space-2)");
-    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--short .th-model-picker-search"), "padding-block"))
-      .toBe("var(--th-space-0-5)");
+    const panel = ruleBody(chatPane, ".th-model-picker-popover--panel");
+    expect(declarationValue(panel, "position")).toBe("fixed");
+    expect(declarationValue(panel, "max-height")).toBe("calc(var(--th-vh-unit, 1dvh) * 100 - 8px)");
     const sheet = ruleBody(chatPane, ".th-model-picker-popover--sheet");
     expect(declarationValue(sheet, "position")).toBe("fixed");
     expect(sheet).toMatch(/(?:^|;)\s*top\s*:/);
@@ -460,13 +455,12 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(sheet, "box-shadow")).toBe("var(--th-shadow-raised)");
   });
 
-  it("reserves the Details peer outside primary overflow", () => {
+  it("wraps whole status items without a scrollport and reserves a stable run slot", () => {
     expect(declarationValue(ruleBody(chatPane, ".th-chat-status"), "overflow-x")).toBe("");
-    const primary = ruleBody(chatPane, ".th-chat-status-primary");
-    expect(declarationValue(primary, "overflow-x")).toBe("auto");
-    expect(declarationValue(primary, "min-width")).toBe("0");
-    expect(declarationValue(primary, "flex")).toBe("1 1 0");
-    expect(declarationValue(ruleBody(chatPane, ".th-chat-status-details"), "flex")).toBe("none");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status-primary"), "display")).toBe("contents");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status-metrics"), "display")).toBe("contents");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-run-indicator"), "flex")).toBe("none");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-run-indicator"), "width")).toBe("12px");
   });
 
   it("reflows the sheet header by local width without shrinking the close or fragmenting identity", () => {

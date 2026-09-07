@@ -84,6 +84,9 @@ export function ChatPane({
     ? [...THINKING_LEVELS, chat.thinkingLevel]
     : THINKING_LEVELS;
 
+  const runState = !chat.connected ? "reconnecting" : chat.serverRunning ? "responding" : "idle";
+  const runLabel = runState === "idle" ? undefined : t(`chat.${runState}`);
+
   const modelPicker = (
     <ModelPicker
       compact={narrow}
@@ -237,20 +240,12 @@ export function ChatPane({
            composer band and short panes retain a complete readable row. */}
         <div className="th-chat-controls">
           <div className="th-chat-status" role="status" aria-live="polite">
-            <div className="th-chat-status-primary" onFocus={event => {
-              // Only the primary strip owns request-focus scrolling. Broad
-              // scrollIntoView can move hidden pane/composer ancestors too.
-              const owner = event.currentTarget;
-              const left = owner.getBoundingClientRect().left + owner.clientLeft;
-              const rect = event.target.getBoundingClientRect();
-              if (rect.left < left) owner.scrollLeft += rect.left - left;
-              else if (rect.right > left + owner.clientWidth) {
-                owner.scrollLeft += Math.min(rect.left - left, rect.right - left - owner.clientWidth);
-              }
-            }}>
-            {!chat.connected && (
-              <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.reconnecting")}</span>
-            )}
+            <span className={`th-chat-run-indicator${runState === "reconnecting" ? " th-chat-status-item--warn" : runState === "responding" ? " th-chat-status-item--live" : ""}`}
+              data-chat-run-state={runState} role={runLabel ? "img" : undefined}
+              aria-label={runLabel} title={runLabel}>
+              {runState !== "idle" && <span className="th-chat-status-spinner" aria-hidden="true" />}
+            </span>
+            <div className="th-chat-status-primary">
             {chat.isCompacting && (
               <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.compacting")}</span>
             )}
@@ -258,7 +253,6 @@ export function ChatPane({
               <span key={request.requestId} className="th-chat-status-item th-chat-send-status"
                 data-request-id={request.requestId} data-send-phase={request.phase}
                 title={request.draft.text || request.draft.image?.name}>
-                {request.phase !== "unknown" && <span className="th-chat-status-spinner" aria-hidden="true" />}
                 <span className="th-chat-status-label">{t(`chat.send.${request.phase}`)}:</span>
                 <button type="button" className="th-chat-send-preview" aria-label={t("chat.send.inspect")}
                   aria-haspopup="dialog"
@@ -273,12 +267,6 @@ export function ChatPane({
                 </>}
               </span>
             ))}
-            {chat.serverRunning && (
-              <span className="th-chat-status-item th-chat-status-item--live">
-                <span className="th-chat-status-spinner" aria-hidden="true" />
-                {t("chat.responding")}
-              </span>
-            )}
             {chat.steerPending.map((item) => (
               <span key={item.requestId} className="th-chat-status-item th-chat-status-item--steer" title={item.text}>
                 <span className="th-chat-status-label">{t("chat.steerPending", { text: "" })}</span>
@@ -290,12 +278,7 @@ export function ChatPane({
             ))}
             </div>
 
-          {/* Secondary metrics live in a keyboard-accessible disclosure so
-              urgent states keep the compact strip (DESIGN.md "Conversation
-              anatomy"). They remain part of the announced status region. */}
-          <details className="th-chat-status-details">
-            <summary>{t("chat.statusDetails")}</summary>
-            <div className="th-chat-status-metrics">
+          <div className="th-chat-status-metrics">
             {chat.contextUsage && (
               <span className="th-chat-status-item">
                 {t("chat.contextUsage")}
@@ -308,8 +291,7 @@ export function ChatPane({
                 <span className="th-chat-status-num">{Math.round(chat.cacheHitRate * 100)}%</span>
               </span>
             )}
-            </div>
-          </details>
+          </div>
           </div>
           {modelPicker}
         </div>

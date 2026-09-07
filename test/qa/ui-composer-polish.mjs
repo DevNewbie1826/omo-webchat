@@ -72,7 +72,7 @@ const rowGeometry = () => {
     status: rect(document.querySelector(".th-chat-status")),
     trigger: rect(document.querySelector(".th-model-picker-btn")),
     capsule: rect(document.querySelector(".th-chat-input-inner")),
-    details: rect(document.querySelector(".th-chat-status-details")),
+    metrics: [...document.querySelectorAll('.th-chat-status-num')].map(el => ({ text: el.textContent, rect: rect(el), visible: el.checkVisibility() })),
     sameRow: (() => {
       const row = document.querySelector(".th-chat-controls");
       const status = document.querySelector(".th-chat-status");
@@ -101,10 +101,9 @@ const rowGeometry = () => {
 };
 const within = (value, bound) => Math.abs(value - bound) <= 2;
 
-/** The whole disclosure target must remain inside every clipping ancestor,
- * not merely have a viewport-contained center after focus scrolls it. */
-const detailsTarget = () => {
-  const el = document.querySelector('.th-chat-status-details summary');
+/** Status geometry and ancestor offsets must remain stable on request focus. */
+const statusTarget = () => {
+  const el = document.querySelector('.th-chat-status');
   const rect = el.getBoundingClientRect();
   const ancestors = [];
   for (let owner = el.parentElement; owner; owner = owner.parentElement) {
@@ -143,7 +142,7 @@ async function focusByKey(page, key, selector) {
   await Promise.all([page.evaluate(() => window.qaFocusPending), page.keyboard.press(key)]);
 }
 
-/** C3: one compact row — statuses left, model pinned right, details and
+/** C3: compact wrapping controls — inline metrics, model pinned right, originals and
  * recovery reachable, model/thinking/search and send behavior intact. */
 async function c3Scenario(browser, { width, height, coarse, paneWidth, label, keyboardHeight }) {
   if (!selected(label)) return;
@@ -175,12 +174,12 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     const reconnectStart = fixture.traffic.length;
     const closed = fixture.wait('subscription', event => event.sessionId === 'stored-a' && event.action === 'close');
     await Promise.all([closed, transition(page,
-      "() => !navigator.onLine && [...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].some(el => /reconnect/i.test(el.textContent))",
+      "() => !navigator.onLine && !!document.querySelector('[data-chat-run-state=reconnecting]')",
       async () => { await q.context.setOffline(true); fixture.disconnect('stored-a'); })]);
     const disconnected = await page.evaluate(rowGeometry);
     const offline = await page.evaluate(() => ({ online: navigator.onLine,
       urgent: [...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].map(el => {
-        const rect = el.getBoundingClientRect(), owner = (el.closest('.th-chat-status-primary') ?? el.closest('.th-chat-status')).getBoundingClientRect();
+        const rect = el.getBoundingClientRect(), owner = el.closest('.th-chat-status').getBoundingClientRect();
         const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
         return { text: el.textContent, rect: rect.toJSON(), hit: el === at || el.contains(at),
           contained: rect.left >= owner.left && rect.right <= owner.right && rect.top >= owner.top && rect.bottom <= owner.bottom };
@@ -192,7 +191,7 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     await shot(page, `c3-${label}-reconnecting.png`);
     const reattached = fixture.wait('subscription', event => event.sessionId === 'stored-a' && event.action === 'attach');
     await Promise.all([reattached, transition(page,
-      "() => navigator.onLine && ![...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].some(el => /reconnect/i.test(el.textContent)) && !!document.querySelector('.th-chat-status-item--live')",
+      "() => navigator.onLine && !!document.querySelector('[data-chat-run-state=responding]')",
       () => q.context.setOffline(false))]);
     const focusAfterReconnect = await page.locator('.th-chat-input textarea').evaluate(el => document.activeElement === el);
     record(`c3-${label}-reconnected-no-resend`, sendFrames().length === 0 && fixture.subscribers('stored-a') === 1
@@ -216,7 +215,7 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     if (paneWidth) record(`c3-${label}-actual-desktop-split`, Math.abs(geometry.pane.width - paneWidth) < 1
       && geometry.viewport.width === 1280 && !coarse, geometry);
     const compacting = await page.locator('.th-chat-status-item--warn').evaluate(el => {
-      const rect = el.getBoundingClientRect(), owner = el.closest('.th-chat-status-primary').getBoundingClientRect();
+      const rect = el.getBoundingClientRect(), owner = el.closest('.th-chat-status').getBoundingClientRect();
       const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
       return { rect: rect.toJSON(), owner: owner.toJSON(), text: el.textContent,
         hit: at === el || el.contains(at), primary: !el.closest('.th-chat-status-details'),
@@ -224,12 +223,9 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     });
     record(`c3-${label}-compacting-priority`, compacting.primary && compacting.hit && compacting.complete, compacting);
     await shot(page, `c3-${label}-row.png`);
-    const metrics = await page.evaluate(() => ({
-      collapsed: !document.querySelector('.th-chat-status-details').open,
-      direct: [...document.querySelectorAll('.th-chat-status .th-chat-status-num')].filter(el => !el.closest('.th-chat-status-details')).map(el => ({ text: el.textContent, rect: el.getBoundingClientRect().toJSON() })),
-      disclosed: [...document.querySelectorAll('.th-chat-status-details .th-chat-status-num')].map(el => el.textContent),
-    }));
-    record(`c3-${label}-secondary-metrics-disclosure-only`, metrics.collapsed && metrics.direct.length === 0 && metrics.disclosed.length === 2 && metrics.disclosed.includes('42%') && metrics.disclosed.includes('70%'), metrics);
+    const metrics = geometry.metrics;
+    record(`c3-${label}-inline-metrics-visible`, metrics.length === 2 && metrics.every(m => m.visible)
+      && metrics.some(m => m.text === '42%') && metrics.some(m => m.text === '70%'), metrics);
     record(`c3-${label}-shared-row`, geometry.sameRow && geometry.order && geometry.liveScope && geometry.composerDetached, geometry);
     record(`c3-${label}-right-edge`, !!geometry.trigger && !!geometry.capsule
       && within(geometry.trigger.right, geometry.capsule.right), geometry);
@@ -241,63 +237,11 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
       && geometry.trigger.height >= (coarse ? 44 : 20), geometry);
     record(`c3-${label}-no-overflow`, geometry.overflow <= 0, geometry);
 
-    const restingSummary = await page.evaluate(detailsTarget);
-    record(`c3-${label}-details-rest-target`, restingSummary.hit && restingSummary.visible && restingSummary.complete
-      && (!coarse || (restingSummary.rect.width >= 44 && restingSummary.rect.height >= 44)), restingSummary);
     const modelIdentity = await page.locator('.th-model-picker-label').evaluate(el => ({
       width: el.getBoundingClientRect().width, natural: el.scrollWidth, text: el.textContent }));
     record(`c3-${label}-model-identity-allocation`, modelIdentity.width >= Math.min(48, modelIdentity.natural) - 1, modelIdentity);
 
-    // Establish focus through actual UI, then reach the fixed Details peer.
-    // Neither focus nor disclosure may scroll hidden outer ancestors.
-    await transition(page, "() => !!document.querySelector('.th-model-picker-popover')",
-      () => page.locator('.th-model-picker-btn').click());
-    await transition(page, "() => !document.querySelector('.th-model-picker-popover') && document.activeElement.matches('.th-model-picker-btn')",
-      () => page.keyboard.press('Escape'));
-    await focusByKey(page, 'Shift+Tab', '.th-chat-status-details summary');
-    const summary = await page.evaluate(detailsTarget);
-    record(`c3-${label}-details-target`, summary.coarse === coarse && summary.hit && summary.visible && summary.complete
-      && (!coarse || (summary.rect.width >= 44 && summary.rect.height >= 44)), summary);
-    record(`c3-${label}-details-focus-stable`, within(restingSummary.rect.left, summary.rect.left)
-      && JSON.stringify(restingSummary.ancestors.map(a => [a.className, a.scrollLeft, a.scrollTop]))
-        === JSON.stringify(summary.ancestors.map(a => [a.className, a.scrollLeft, a.scrollTop])), { restingSummary, summary });
-    await transition(page, "() => document.querySelector('.th-chat-status-details').open && document.activeElement.matches('.th-chat-status-details summary')",
-      () => page.keyboard.press('Enter'));
-    const openMetrics = await page.evaluate(() => ({
-      direct: [...document.querySelectorAll('.th-chat-status .th-chat-status-num')].filter(el => !el.closest('.th-chat-status-details')).map(el => el.textContent),
-      disclosed: [...document.querySelectorAll('.th-chat-status-details .th-chat-status-num')].map(el => el.textContent) }));
-    record(`c3-${label}-open-secondary-metrics-disclosure-only`, openMetrics.direct.length === 0
-      && openMetrics.disclosed.length === 2 && openMetrics.disclosed.includes('42%') && openMetrics.disclosed.includes('70%'), openMetrics);
-    const disclosedContent = await page.locator('.th-chat-status-details').evaluate(details => {
-      const owner = details.querySelector('.th-chat-status-metrics').getBoundingClientRect();
-      return { urgent: details.querySelectorAll('.th-chat-status-item--warn, .th-chat-send-status, .th-chat-status-item--live, .th-chat-status-item--steer').length,
-        metrics: [...details.querySelectorAll('.th-chat-status-item')].map(el => {
-          const rect = el.getBoundingClientRect();
-          return { rect: rect.toJSON(), owner: owner.toJSON(), text: el.textContent,
-            complete: rect.left >= owner.left && rect.right <= owner.right
-              && rect.top >= owner.top && rect.bottom <= owner.bottom };
-        }) };
-    });
-    record(`c3-${label}-details-secondary-content`, disclosedContent.urgent === 0
-      && disclosedContent.metrics.length === 2 && disclosedContent.metrics.every(item => item.complete), disclosedContent);
-    const openedSummary = await page.evaluate(detailsTarget);
-    const openedGeometry = await page.evaluate(rowGeometry);
-    record(`c3-${label}-details-open-stable`, openedSummary.complete && openedSummary.hit
-      && within(openedSummary.rect.left, summary.rect.left) && within(openedSummary.rect.width, summary.rect.width)
-      && within(openedGeometry.trigger.right, geometry.trigger.right)
-      && within(openedGeometry.trigger.width, geometry.trigger.width), { openedSummary, openedGeometry });
-    await shot(page, `c3-${label}-details-keyboard.png`);
-    await transition(page, "() => !document.querySelector('.th-chat-status-details').open && document.activeElement.matches('.th-chat-status-details summary')",
-      () => page.keyboard.press('Space'));
-    record(`c3-${label}-details-keyboard`, true, { keys: ['Shift+Tab', 'Enter', 'Space'], focus: 'summary', summary });
-
-    await transition(page, "() => document.querySelector('.th-chat-status-details')?.open === true",
-      () => page.locator('.th-chat-status-details summary').click());
-    const details = await page.evaluate(() => ({ text: document.querySelector('.th-chat-status-details')?.textContent,
-      directUrgent: !!document.querySelector('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)') }));
-    record(`c3-${label}-details-content`, details.text.includes('42%') && details.text.includes('70%') && details.directUrgent, details);
-    await transition(page, "() => document.querySelector('.th-chat-status-details')?.open === false",
-      () => page.locator('.th-chat-status-details summary').click());
+    record(`c3-${label}-no-metric-disclosure`, await page.locator('.th-chat-status details, .th-chat-status summary').count() === 0, metrics);
 
     await transition(page, "() => !!document.querySelector('.th-model-picker-popover')",
       () => page.locator('.th-model-picker-btn').click());
@@ -360,17 +304,16 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
         && after.focusRestored && after.sends === before.sends && after.status === before.status
         && JSON.stringify(after.queue) === JSON.stringify(before.queue), { original, inspected, before, after });
     }
-    // Request actions may require local horizontal scrolling; native Tab must
-    // reveal the complete recovery target without moving any outer ancestor.
-    const beforeRecoveryFocus = await page.evaluate(detailsTarget);
+    // Wrapped request actions stay reachable without scrolling ancestors.
+    const beforeRecoveryFocus = await page.evaluate(statusTarget);
     await focusByKey(page, 'Tab', `${selector} .th-send-restore`);
-    const afterRecoveryFocus = await page.evaluate(detailsTarget);
+    const afterRecoveryFocus = await page.evaluate(statusTarget);
     record(`c3-${label}-primary-focus-local`, JSON.stringify(beforeRecoveryFocus.ancestors)
       === JSON.stringify(afterRecoveryFocus.ancestors), { beforeRecoveryFocus, afterRecoveryFocus });
     const recoveryBounds = await probe('.th-send-restore').evaluate(el => {
       const rect = el.getBoundingClientRect();
       const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      const owner = el.closest('.th-chat-status-primary').getBoundingClientRect();
+      const owner = el.closest('.th-chat-status').getBoundingClientRect();
       return { rect: rect.toJSON(), owner: owner.toJSON(), inRow: !!el.closest('.th-chat-controls'), hit: el === at || el.contains(at),
         primary: !el.closest('.th-chat-status-details'),
         complete: rect.left >= owner.left - 0.5 && rect.right <= owner.right + 0.5,

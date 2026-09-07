@@ -94,14 +94,14 @@ describe("ChatPane session_unloaded quiet handling", () => {
 			deliver({ type: "run.started", sessionId: "chat-1" });
 			deliver({ type: "compaction.started", sessionId: "chat-1" });
 		});
-		expect(container.textContent).toContain("chat.responding");
+		expect(container.querySelector('[data-chat-run-state="responding"]')?.getAttribute("aria-label")).toBe("chat.responding");
 		expect(container.textContent).toContain("chat.compacting");
 
 		act(() => {
 			deliver(sessionUnloadedFrame());
 		});
 
-		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.querySelector('[data-chat-run-state="responding"]')).toBeNull();
 		expect(container.textContent).not.toContain("chat.compacting");
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
 
@@ -148,7 +148,7 @@ describe("ChatPane session_unloaded quiet handling", () => {
 			});
 		});
 
-		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.querySelector('[data-chat-run-state="responding"]')).toBeNull();
 		expect(textarea().value).toBe("");
 		expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe("chat.send");
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
@@ -181,7 +181,7 @@ describe("ChatPane session_unloaded quiet handling", () => {
 
 		expect(container.querySelectorAll(".th-chat-msg--user")).toHaveLength(0);
 		expect(textarea().value).toBe("recover this draft");
-		expect(container.textContent).not.toContain("chat.responding");
+		expect(container.querySelector('[data-chat-run-state="responding"]')).toBeNull();
 		expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.textContent).toBe("chat.send");
 		expect(container.querySelector(".th-unloaded-banner")).toBeNull();
 		expect(container.querySelector(".th-send-error-banner")).toBeNull();

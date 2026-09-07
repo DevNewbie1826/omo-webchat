@@ -445,14 +445,12 @@ Choose a tested foreground/background token pair instead.
   formula, and every band centers in the same column. The selector's right
   edge and the capsule's edge agree within 2 CSS px at every pane width, the
   row is one line in the normal case, and there is no document horizontal
-  overflow. Only the inner primary status strip scrolls under width pressure;
-  Details remains a complete fixed peer inside the announced status region,
-  immediately before the right-pinned model, at rest and on keyboard focus.
-  The selector retains a meaningful bounded share independent of preview
-  minima, including at 340px panes and with long Korean labels. Request focus
-  reveals only its primary scroll owner, never hidden outer ancestors.
-  Opening Details may add a second metrics line without reallocating either
-  control; the normal row remains compact.
+  overflow. Context/cache metrics remain visible at rest, including zero,
+  using Micro typography without truncation or an overflow scrollport. Under
+  pressure whole metric/state items wrap within the control area. The selector
+  retains a meaningful bounded share, including at 340px panes and with long
+  Korean labels. Request-original inspection remains separate and preserves
+  original text, draft, queue and focus.
 - One bottom trigger shows the current model and reported reasoning level in
   both its visible and accessible state at every pane width. There is no header
   thinking select. Before catalog hydration, the exact reported model key is
@@ -466,17 +464,21 @@ Choose a tested foreground/background token pair instead.
   (Raised elevation, bounded to `min(280px, 50dvh)`), so the list never
   covers the composer or send action. On narrow screens the existing
   viewport-contained sheet behavior is retained.
-  Measured space inside the actual clipping chat column can only tighten the
-  desktop height cap; no minimum may exceed that space. Desktop chrome and
-  options share one scrollport. Even short v3/v4/mixed panes retain a complete
-  readable pointer-selectable row, with one-line model/provider rows below 60px
-  of available space. Popup navigation never scrolls hidden ancestors or moves
-  the composer. Mobile keeps its pinned current identity and list scrollport.
+  Current identity, thinking controls and search stay fixed; only the list
+  scrolls, including initial/keyboard option reveal. If the local upward bound
+  cannot fit fixed chrome plus one whole option, use a viewport-contained
+  desktop selection panel with trapped focus and Escape/close restoration.
+  Short full viewports use one-line identity, a fixed native thinking select
+  exposing every level, and compact Label-tier controls without reducing the
+  user's base font. At 1440x150 and font24 at least one whole option remains.
+  Popup navigation never scrolls hidden ancestors or moves the composer.
+  Mobile keeps its existing pinned current identity and sheet behavior.
   Both presentations initially focus the non-text popup container. Forward Tab
-  reaches reasoning before search; the mobile close action precedes reasoning.
+  reaches reasoning before search; sheet/panel close precedes reasoning.
   Search accepts text, Arrow navigation and Enter selection after it receives
-  focus. Desktop forward exit from search reaches attachment; reverse exit from
-  the first control restores the trigger. Mobile retains its sheet focus trap.
+  focus. Anchored desktop forward exit from search reaches attachment; reverse
+  exit from the first control restores the trigger. Sheets and fallback panels
+  retain trapped focus.
   Escape restores the trigger in both presentations. Opening never focuses
   search or summons the mobile keyboard.
 - Search, exact provider/model identity, thinking-level controls, keyboard
@@ -489,17 +491,17 @@ Choose a tested foreground/background token pair instead.
 - Conversation rows come only from canonical RPC/history messages. Original
   submissions remain in request-identified feedback outside the scrollport.
 - The status strip distinguishes sending, admitted (awaiting result), and
-  unknown (outcome unconfirmed). Only sending/admitted animate. Unknown offers
+  unknown (outcome unconfirmed). Request words do not add progress rings. Unknown offers
   explicit original-draft recovery with a duplicate-submission warning; it
   never retries or fills the composer automatically. A completed send ACK
   retires that request, not an independently running assistant response.
-- Running, reconnecting, compacting, and uncertain-send states stay primary
-  strip content outside Details at any nesting depth. Reconnect and compaction
-  warnings precede variable previews. Request inspection, steer feedback and
-  recovery actions remain outside Details; only secondary metrics (context
-  usage, cache hit) live in its native keyboard-accessible disclosure within
-  the announced status region. Details retains its full 44px coarse-pointer
-  target.
+- One stable indicator slot represents disconnected (warning-yellow spinner),
+  otherwise server-running (muted spinner), otherwise idle (empty). Reconnect
+  takes priority over stale running state. Localized accessible text and a
+  descriptive tooltip replace visible Responding/Reconnecting words. Reduced
+  motion retains a static recognizable ring. State changes do not move metrics
+  or the model. Compacting, uncertain-send recovery, request inspection and
+  steer feedback remain visible; context/cache need no disclosure.
 - Failed originals follow their logical workspace/chat while panes move or
   remount. Recovery restores text, image, and command identity without sending.
 

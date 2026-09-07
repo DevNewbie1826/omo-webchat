@@ -68,7 +68,7 @@ export async function runRPC46Stats({ evidenceDir, chromium, headless = true, sm
   evidenceDir = resolve(evidenceDir); await mkdir(evidenceDir, { recursive: true });
   await access(join(assetsDir, 'index.html'));
   const report = { startedAt: new Date().toISOString(), mode: smoke ? 'preparation-smoke' : 'C3',
-    appURL: 'http://127.0.0.1:25263', assetsDir, assets: await assetManifest(assetsDir),
+    appURLs: [], assetsDir, assets: await assetManifest(assetsDir),
     scenarios: [], cleanup: [], errors: [], error: undefined };
   const save = (name, data) => writeFile(join(evidenceDir, name), JSON.stringify(data, null, 2) + '\n');
   let browser, failure;
@@ -78,12 +78,13 @@ export async function runRPC46Stats({ evidenceDir, chromium, headless = true, sm
     for (const mobile of [false, true]) {
       const name = mobile ? 'mobile' : 'desktop';
       const pane = mobile ? '.th-chat-pane' : '[data-pane-id="a"]';
-      const metric = `${pane} .th-chat-status-details .th-chat-status-num`;
+      const metric = `${pane} .th-chat-status .th-chat-status-num`;
       let fixture, context, page, observed, scenarioFailure;
       const result = { name, viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 800 }, checks: [], screenshots: [] };
       report.scenarios.push(result);
       try {
-        fixture = await startStatsFixture({ mobile, assetsDir });
+        fixture = await startStatsFixture({ mobile, assetsDir, port: 0 });
+        report.appURLs.push(fixture.url); // Record the actual port0 URL before navigation.
         context = await browser.newContext({ viewport: result.viewport, isMobile: mobile, hasTouch: mobile });
         page = await context.newPage(); page.setDefaultTimeout(deadline);
         page.on('pageerror', error => report.errors.push(String(error)));
@@ -97,11 +98,9 @@ export async function runRPC46Stats({ evidenceDir, chromium, headless = true, sm
         assert.equal(entries.frame.entries.length, 240);
         await doneDOM(page, await armDOM(page, hasMetric, { selector: metric, percent: 34 }));
         await doneDOM(page, await armDOM(page, pane => document.querySelector(`${pane} .th-chat-body`)?.textContent.includes('stored-a-history-240'), pane));
-        await page.locator(`${pane} .th-chat-status-details > summary`).click();
         assert.equal(await page.locator(metric).first().isVisible(), true);
         if (!mobile) {
           await doneDOM(page, await armDOM(page, () => document.querySelector('[data-pane-id="b"] .th-chat-body')?.textContent.includes('newer-history-240')));
-          await page.locator('[data-pane-id="b"] .th-chat-status-details > summary').click();
           assert.equal(await page.locator('[data-pane-id="b"] .th-chat-status-num').first().textContent(), '23%');
           await page.locator('[data-pane-id="b"] .th-chat-input textarea').fill('RPC46 sibling draft');
         }
