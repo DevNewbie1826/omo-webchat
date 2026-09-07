@@ -24,7 +24,8 @@ import { captureFrame, closeResources, exposeTranscript, judgeFill, missingSurfa
 /** Measured authenticated reference (authenticated-pixel-measurements.json
  *  plus the report's computed foreground values), CSS 0-255 samples. The tool
  *  shell maps to the scoped tool material (P4): dark reuses the measured
- *  elevated-chrome fill; light steps lightly gray off the white Canvas. */
+ *  elevated-chrome fill; light is an app-specific requested distinction (a
+ *  lightly gray step off the white Canvas), not a measured native value. */
 const REFERENCE = {
   dark: {
     canvas: [24, 24, 24], sidebar: [40, 40, 40], composer: [42, 42, 42],

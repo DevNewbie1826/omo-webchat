@@ -16,8 +16,12 @@
  *   O7  disclosure choice, collapsed latest-output preview, localized status
  *       word and non-colour glyph stay intact;
  *   O8  expanded long (Korean) output stays bounded in an internally scrolled
- *       region capped at min(360px, 45dvh);
+ *       region capped at min(360px, 45dvh) — including live streaming output
+ *       inside an expanded running record;
  *   O9  no horizontal page overflow at 390px with long Korean content.
+ *
+ * State matrix: running/completed/error x collapsed/expanded captured as real
+ * screenshots — 6 state PNGs per scenario, 24 per phase.
  *
  * --phase red   succeeds only while the unchanged build still MISSES the P4
  *               material/boundary observables, recording which seam fails.
@@ -33,11 +37,11 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { promisify } from 'node:util';
-import { designSeed, installSignals, arm, complete, seedLive } from './design-workbench-fixture.mjs';
+import { designSeed, installSignals, arm, complete, seedLive, output as longOutput } from './design-workbench-fixture.mjs';
 import { startFixture } from './pane-workspace-ui.mjs';
 import { closeResources, exposeTranscript, settleFrame } from './ui-theme-evidence.mjs';
 
@@ -47,6 +51,23 @@ const SCENARIOS = [
   { label: '390x844-dark', viewport: { width: 390, height: 844 }, theme: 'dark' },
   { label: '390x844-light', viewport: { width: 390, height: 844 }, theme: 'light' },
 ];
+
+/** Async git + built-asset snapshots: source and artifact stability of one
+ *  run is recorded at start and end, never through synchronous process APIs. */
+const git = promisify(execFile);
+const gitSnapshot = async () => ({
+  sha: (await git('git', ['rev-parse', 'HEAD'])).stdout.trim(),
+  tree: (await git('git', ['rev-parse', 'HEAD^{tree}'])).stdout.trim(),
+  dirty: (await git('git', ['status', '--porcelain'])).stdout,
+});
+const assetsSnapshot = async () => {
+  const dir = resolve(process.cwd(), 'frontend/dist/assets');
+  const files = {};
+  for (const name of (await readdir(dir)).sort()) {
+    files[name] = createHash('sha256').update(await readFile(resolve(dir, name))).digest('hex');
+  }
+  return { dir, files };
+};
 
 const parseColor = value => {
   const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(value ?? '');
@@ -118,14 +139,10 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   out = resolve(out);
   await mkdir(out, { recursive: true });
   const save = (name, value) => writeFile(resolve(out, name), JSON.stringify(value, null, 2) + '\n');
-  const git = promisify(execFile);
-  const [sha, tree, dirty] = await Promise.all([
-    git('git', ['rev-parse', 'HEAD']).then(({ stdout }) => stdout.trim()),
-    git('git', ['rev-parse', 'HEAD^{tree}']).then(({ stdout }) => stdout.trim()),
-    git('git', ['status', '--porcelain']).then(({ stdout }) => stdout),
-  ]);
+  const [startSource, startAssets] = await Promise.all([gitSnapshot(), assetsSnapshot()]);
   const receipt = {
-    phase, out, driver, cwd: process.cwd(), sha, tree, dirty,
+    phase, out, driver, cwd: process.cwd(),
+    startSource, startAssets,
     command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-followup-toolbox.mjs --phase ${phase} --out ${out}`,
   };
   const observations = [], shots = [], actions = [], resources = [], sessions = [], failures = [];
@@ -241,6 +258,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       await complete(page);
       await scroll(`${failed} > .th-tool-head`);
       const collapsedFailed = await probe(failed);
+      await shoot('failed-collapsed');
       expectMaterial('design-failed', 'collapsed', collapsedFailed, proseSurface, [
         ['o7DisclosureCollapses', collapsedFailed.expanded === 'false' && !collapsedFailed.hasBody, collapsedFailed.expanded],
       ]);
@@ -256,6 +274,33 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
           && (collapsedRunning.statusWord ?? '').length > 0, `${collapsedRunning.statusWord} (${collapsedRunning.glyphClass})`],
       ]);
 
+      // Grow the live output with a long Korean streaming update, then expand
+      // the running record: live output must stay bounded inside the card.
+      await arm(page, () => (document.querySelector(`[data-tool-call-id="design-running"] .th-tool-output`)?.scrollHeight ?? 0) > 300);
+      fixture.deliver('stored-a', { type: 'tool', toolCallId: 'design-running', toolName: 'bash',
+        phase: 'update', partial: { content: [{ text: `\n${longOutput}` }] } });
+      await complete(page);
+      await arm(page, () => !!document.querySelector(`[data-tool-call-id="design-running"] > .th-tool-body`));
+      await page.locator(`${running} > .th-tool-head`).click();
+      await complete(page);
+      await scroll(`${running} > .th-tool-head`);
+      const expandedRunning = await probe(running);
+      await shoot('running-expanded');
+      expectMaterial('design-running', 'expanded', expandedRunning, proseSurface, [
+        ['o3PersistentMaterial', expandedRunning.background === collapsedRunning.background
+          && expandedRunning.borderColor === collapsedRunning.borderColor
+          && expandedRunning.borderWidth === collapsedRunning.borderWidth,
+          `collapsed ${collapsedRunning.background}/${collapsedRunning.borderColor} vs expanded ${expandedRunning.background}/${expandedRunning.borderColor}`],
+        ['o7RunningStatusPreserved', expandedRunning.statusClass === 'th-tool-status--running'
+          && expandedRunning.glyphClass === 'th-tool-glyph--running'
+          && expandedRunning.expanded === 'true', `${expandedRunning.statusWord} (${expandedRunning.glyphClass})`],
+        ['o8BoundedOutput', expandedRunning.output !== null
+          && expandedRunning.output.overflowY === 'auto'
+          && expandedRunning.output.paintedHeight <= expandedRunning.output.cap + 1
+          && expandedRunning.output.scrollHeight > expandedRunning.output.clientHeight,
+          JSON.stringify(expandedRunning.output)],
+      ]);
+
       if (viewport.width <= 768) {
         const overflow = await page.evaluate(() => ({
           scrollWidth: document.documentElement.scrollWidth, innerWidth }));
@@ -265,6 +310,14 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         unexpected: fixture.unexpected.length });
     }
     mismatches = observations.filter(row => !row.pass);
+    const [endSource, endAssets] = await Promise.all([gitSnapshot(), assetsSnapshot()]);
+    receipt.endSource = endSource;
+    receipt.endAssets = endAssets;
+    receipt.stability = {
+      source: startSource.sha === endSource.sha && startSource.tree === endSource.tree
+        && startSource.dirty === endSource.dirty,
+      assets: JSON.stringify(startAssets.files) === JSON.stringify(endAssets.files),
+    };
     await save('observations.json', { ...receipt, mismatches: mismatches.map(row => `${row.scenario}/${row.observable}`),
       observations, shots, actions });
     if (phase === 'red') {

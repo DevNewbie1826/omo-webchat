@@ -191,7 +191,7 @@ current level, modals migrate to Overlay, and neither uses Raised merely because
 | --- | --- | --- | --- |
 | Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | Measured canvas `#181818`; no border or shadow | Measured canvas `#ffffff`; no border or shadow |
 | Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
-| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | The measured elevated-chrome fill `#282828` with the default white-alpha hairline; no shadow | A lightly gray step off the measured white Canvas (`#f5f6f7`) with the default foreground-alpha hairline; no shadow |
+| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | The measured elevated-chrome fill `#282828` with the default white-alpha hairline; no shadow | An app-specific requested light gray (`#f5f6f7`, not a measured native output-card value) with the default foreground-alpha hairline; no shadow |
 | Composer / `--th-surface-composer` | The composer capsule only: an opaque approximation of the native composer material (`#2a2a2a` dark, white light) | The Surface border and shadow treatment on its own fill | The Surface border and shadow treatment on its own fill |
 | Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Measured menu/chooser fill `#2d2d2d` with the default border; no box shadow (the measured chooser carries none) | White with the default border; no box shadow, matching the measured chooser |
 | User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like dark: the strong border alone, because the Raised shadow is none in both themes (the measured menu carries none) |
@@ -575,11 +575,11 @@ tool chooser (a menu, not an executed output card): both disclosure states
 share one scoped tool material, `--th-tool-surface` behind `--th-tool-border`,
 and the expanded body insets Canvas, so the boundary and material never
 depend on the disclosure state. The dark tool fill reuses the measured
-elevated-chrome role and the light tool fill is a lightly gray step off the
-measured white Canvas; both stay inside the app's fill/border idiom instead
-of inventing an unmeasured card treatment or moving the global palette.
-Status hues used as text are the theme-scoped status tokens and keep the
-contrast matrix below on the tool fill.
+elevated-chrome role; the light tool fill's light gray step is an
+app-specific distinction requested for P4, not a measured native output-card
+value. Both stay inside the app's fill/border idiom and do not move the
+global palette. Status hues used as text are the theme-scoped status tokens
+and keep the contrast matrix below on the tool fill.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
