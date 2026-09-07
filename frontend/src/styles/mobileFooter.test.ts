@@ -67,8 +67,16 @@ describe("mobile sidebar footer bounds", () => {
     // control reachable by scrolling instead of clipping.
     const panelBody = settingsCss.match(/^\.th-settings-panel \{([^}]*)\}/m)?.[1] ?? "";
     expect(panelBody).toContain(
-      "max-height: calc(var(--th-vh-unit, 1vh) * 100 - var(--th-space-12) - var(--th-space-1))",
+      "max-height: calc(var(--th-vh-unit, 1vh) * 100 - env(safe-area-inset-top) - env(safe-area-inset-bottom) - var(--th-space-12) - var(--th-space-1))",
     );
     expect(panelBody).toContain("overflow-y: auto");
+  });
+
+  test("releases only the obsolete bottom budget while the keyboard is open", () => {
+    const keyboardPanel = settingsCss.match(/html\[data-th-keyboard-open\] \.th-settings-panel \{([^}]*)\}/)?.[1] ?? "";
+    expect(keyboardPanel).toContain(
+      "max-height: calc(var(--th-vh-unit, 1vh) * 100 - env(safe-area-inset-top) - var(--th-space-12) - var(--th-space-1))",
+    );
+    expect(keyboardPanel).not.toContain("safe-area-inset-bottom");
   });
 });

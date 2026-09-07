@@ -3,18 +3,16 @@
  * RED intentionally exits 1 only after collecting the intended assertion failures; infrastructure
  * errors exit 2. GREEN requires every scoped, strict and settings assertion green — settings rows
  * are part of C5 (footer scope per the governing brief) and are never excluded or classified.
- * Lead verification detail: the shared helper's <=8px guard cannot prove the tighter mobile
- * target, so every capture also asserts the exact intentional bottom gap — 4px at mobile widths
- * and wherever the platform reports a bottom safe inset, 8px only on inset-less desktop —
- * additively (id C5.mobile-bottom-gap-exact). No existing guard is weakened; the shared harness
- * stays read-only. CDP safe insets and native viewport resize are browser emulation.
+ * Both runners share the exact intentional gap (4px mobile, 8px wider) and
+ * full Settings safe-bound, ancestor-clipping, hit and interior-scroll checks.
+ * CDP safe insets and native viewport resize are browser emulation.
  */
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar } from './ui-mobile-helpers.mjs';
+import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability } from './ui-mobile-helpers.mjs';
 
 const git = async (...args) => {
   const child = Bun.spawn(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });
@@ -25,20 +23,6 @@ const git = async (...args) => {
   return stdout.trim();
 };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-
-// Observable stricter target: the measured gap from the usable safe bottom to
-// the lowest footer control is exactly the intentional padding — 4px at mobile
-// widths (the closed tightened target), 8px outside mobile width where the
-// brief preserves normal spacing and the shell carries the platform's bottom
-// safe inset. Tolerance 0.5px absorbs subpixel rounding only.
-const strictGapRow = (key, g) => {
-  const expectedGap = g.mobileMedia ? 4 : 8;
-  return { scenario: key, id: 'C5.mobile-bottom-gap-exact',
-    pass: Math.abs(g.usableBottomGap - expectedGap) <= 0.5,
-    actual: { expectedGap, usableBottomGap: g.usableBottomGap, bottomGap: g.bottomGap,
-      necessaryBottomInset: g.necessaryBottomInset, safeBottom: g.safe.bottom, mobileMedia: g.mobileMedia,
-      footerPaddingBottom: g.footer.paddingBottom, sidebarPaddingBottom: g.sidebar.paddingBottom } };
-};
 
 const SCOPED = ['C5.bottom-reserve', 'C5.controls-bounded-and-hit'];
 const SANITY = ['C5.no-horizontal-overflow', 'C5.session-row-coverage', 'C5.list-overflow-owner', 'C5.list-scroll-preserves-footer'];
@@ -60,6 +44,10 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       [file, hash(await readFile(resolve('test/qa', file)))]))),
     scopeNote: 'split-view.css / mobileOutline.test.ts changes in productDiff belong to the parallel outline producer; '
       + 'C5 footer geometry is independent of active-pane outline paint.',
+    productSources: Object.fromEntries(await Promise.all(['frontend/src/styles/settings-menu.css',
+      'frontend/src/styles/sidebar.css', 'frontend/index.html', 'frontend/dist/index.html',
+      ...Array.from(new Bun.Glob('frontend/dist/assets/*.{css,js}').scanSync('.'))].map(async file =>
+      [file, hash(await readFile(file))]))),
     limitations: [
       'Installed playwright-core preserves the existing real-App fixture API; headless Chrome is a disposable profile.',
       'Chrome emulates viewport/safe-area geometry; it is not iOS browser-bar, physical-keyboard or home-indicator hardware.',
@@ -68,9 +56,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       'Keyboard-open necessary bottom inset is zero (keyboard occludes the home-indicator region).',
     ] };
   let browser;
-  async function capture(q, name, inset, extra = {}) {
+  async function capture(q, name, inset, extra = {}, safeTop = 0) {
     const motion = await settle(q.page);
-    const geometry = await measure(q.page, inset);
+    const geometry = await measure(q.page, inset, safeTop);
     const image = `${name}.png`, path = resolve(evidence, image);
     await q.page.screenshot({ path, animations: 'allow' });
     const bytes = await readFile(path);
@@ -132,13 +120,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               actions.push({ action: 'native-keyboard-resize', scenario: name, width, layoutHeight: keyboardHeight,
                 originalHeight: height, limitation: 'Chrome resizes layout and visual viewport together; no OS keyboard rendered' });
             }
-            for (const inset of [0, 34]) {
-              await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, left: 0, right: 0, bottom: inset } });
-              actions.push({ action: 'CDP-safe-area', scenario: name, method: 'Emulation.setSafeAreaInsetsOverride', insets: { bottom: inset } });
-              const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-safe${inset}`;
-              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' });
+            for (const safeTop of [0, 59]) for (const inset of [0, 34]) {
+              await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: safeTop, left: 0, right: 0, bottom: inset } });
+              actions.push({ action: 'CDP-safe-area', scenario: name, method: 'Emulation.setSafeAreaInsetsOverride', insets: { top: safeTop, bottom: inset } });
+              const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-top${safeTop}-safe${inset}`;
+              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' }, safeTop);
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
-              results.push(strictGapRow(key, g));
               results.push({ scenario: key, id: 'C5.session-row-coverage',
                 pass: g.sessionRows === (list === 'long' ? 24 : 4), actual: { expected: list === 'long' ? 24 : 4, count: g.sessionRows } });
               if (list === 'long') results.push({ scenario: key, id: 'C5.list-overflow-owner',
@@ -154,33 +141,24 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                   });
                 });
                 await complete(page);
-                const scrolled = await measure(page, inset);
+                const scrolled = await measure(page, inset, safeTop);
                 results.push({ scenario: key, id: 'C5.list-scroll-preserves-footer', pass: Math.abs(scrolled.footer.rect.bottom - g.footer.rect.bottom) < 1,
                   actual: { before: g.footer.rect, after: scrolled.footer.rect, listScrollTop: scrolled.body.scrollTop } });
                 actions.push({ action: 'scroll-session-list', scenario: key, scrollTop: scrolled.body.scrollTop });
               }
               await arm(page, () => !!document.querySelector('.th-settings-panel'));
               await page.locator('.th-settings-menu > button').click(); await complete(page);
-              const settings = await capture(q, `C5-${phase}-${key}-settings`, inset);
-              const panel = settings.settings, p = panel.rect, safe = settings.safe;
-              const panelBounded = p.top >= safe.top - 1 && p.bottom <= safe.bottom + 1 && p.left >= safe.left - 1 && p.right <= safe.right + 1;
-              let reachable = panel.controls.every(c => c.hit && c.bounded);
-              if (panelBounded && ['auto', 'scroll'].includes(panel.overflowY)) {
-                const controls = page.locator('.th-settings-panel').locator('button, select');
-                const scrolledControls = [];
-                for (let index = 0; index < await controls.count(); index++) {
-                  await controls.nth(index).scrollIntoViewIfNeeded();
-                  scrolledControls.push((await measure(page, inset)).settings.controls[index]);
-                }
-                reachable = scrolledControls.every(c => c.hit && c.bounded);
-                actions.push({ action: 'reach-scrollable-settings-controls', scenario: key, controls: scrolledControls });
-              }
-              results.push({ scenario: key, id: SETTINGS, pass: panelBounded && reachable, actual: panel });
+              await capture(q, `C5-${phase}-${key}-settings`, inset, {}, safeTop);
+              const reachable = await settingsReachability(page, inset, safeTop);
+              results.push({ scenario: key, ...reachable });
+              actions.push({ action: 'reach-scrollable-settings-controls', scenario: key, ...reachable.actual });
+              await capture(q, `C5-${phase}-${key}-settings-scrolled`, inset, {}, safeTop);
               await arm(page, () => !document.querySelector('.th-settings-panel'));
               await page.keyboard.press('Escape'); await complete(page);
               actions.push({ action: 'settings-open-close', scenario: key, closed: true, logoutClicked: false });
             }
             if (keyboard) {
+              await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, left: 0, right: 0, bottom: 34 } });
               await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
               await page.setViewportSize({ width, height }); await complete(page);
               await arm(page, () => document.documentElement.style.getPropertyValue('--th-vv-top') === '60px');
@@ -193,10 +171,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               const key = `${name}-${width}x${height}-synthetic-pan60-safe34`;
               const g = await capture(q, `C5-${phase}-${key}`, 34, { keyboardEmulation: 'synthetic visualViewport height and offsetTop=60 inside original layout viewport' });
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
-              results.push(strictGapRow(key, g));
               actions.push({ action: 'synthetic-visual-viewport-pan', scenario: key, offsetTop: 60, measured: g.visualViewport });
-              await page.evaluate(() => { delete visualViewport.offsetTop; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); });
               await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
+              await page.evaluate(() => { delete visualViewport.offsetTop; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); });
               await page.setViewportSize({ width, height }); await complete(page);
             }
           }
@@ -218,12 +195,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       settings: { pass: settings.filter(r => r.pass).length, total: settings.length } };
     receipt.status = failures.length ? 'INFRASTRUCTURE_FAILURE'
       : phase === 'red'
-        ? sanity.length && sanity.every(r => r.pass) && (scoped.some(r => !r.pass) || strict.some(r => !r.pass))
+        ? sanity.length && sanity.every(r => r.pass) && (scoped.some(r => !r.pass) || strict.some(r => !r.pass) || settings.some(r => !r.pass))
           && cleanup.filter(c => c.contextClosed).length === 4 ? 'RED_CONFIRMED' : 'UNEXPECTED_BASELINE'
         : sanity.length && sanity.every(r => r.pass) && scoped.every(r => r.pass) && strict.every(r => r.pass)
           && settings.every(r => r.pass) ? 'GREEN_SCOPED' : 'ASSERTION_FAILURE';
     receipt.exitStatus = failures.length ? 2 : receipt.status === 'RED_CONFIRMED' ? 1
-      : receipt.status === 'GREEN_SCOPED' || receipt.status === 'UNEXPECTED_BASELINE' ? 0 : 1;
+      : receipt.status === 'GREEN_SCOPED' ? 0 : receipt.status === 'UNEXPECTED_BASELINE' ? 2 : 1;
     await save('receipt.json', receipt); await save('results.json', results); await save('failures.json', failures);
     await save('actions.json', actions); await save('cleanup.json', cleanup); await save('screenshots.json', screenshots);
   }

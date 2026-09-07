@@ -249,7 +249,12 @@ Choose a tested foreground/background token pair instead.
   settings/logout row is the footer's own block padding — 4px (`--th-space-1`)
   at mobile widths, 8px (`--th-space-2`) beyond them — and never a second
   inset; the footer spacer stretches that row horizontally and never adds
-  vertical reserve.
+  vertical reserve. The upward-opening Settings panel budgets its height from
+  the visual viewport minus the safe top, the necessary closed-state bottom
+  inset, and its footer anchor/offset. The keyboard marker releases only the
+  obsolete bottom contribution, never top protection. Overflow belongs to the
+  Settings interior so every control remains fully visible and hit-testable
+  when scrolled into view, without scrolling or escaping clipping ancestors.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
@@ -610,4 +615,7 @@ widths confirms:
     keep theirs, and the sidebar settings/logout row sits inside usable
     bounds with only the necessary safe inset plus the footer's 4px mobile
     padding, with the software keyboard open or closed and in either
-    orientation.
+    orientation. Settings must also pass independently supplied top insets
+    0/59px crossed with bottom insets 0/34px, both keyboard states, both themes,
+    and short/long lists: full control rectangles inside safe and ancestor
+    clipping bounds, native hits, and interior-scroll reachability.
