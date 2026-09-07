@@ -328,6 +328,15 @@ async function tabs(q) {
   assert.deepEqual(initial.tabs.map(t => t.id), ['todo', 'agents', 'dag']);
   assert.equal(initial.tabs.find(t => t.selected === 'true').id, 'todo');
   assert.deepEqual(initial.tabs.map(t => t.count), ['1/32', '3/8', '2/6']);
+  await select(q, 'todo');
+  assert.deepEqual((await state(q.page)).visible, ['todo']);
+  await click(q, tab('todo'), () => document.querySelector('.th-activity-shelf')?.dataset.open === 'false');
+  const todoClosed = await capture(q, 'tabs-todo-collapsed');
+  assert.equal(todoClosed.activityIntent, false); assert.equal(todoClosed.activity, null);
+  assert.deepEqual(todoClosed.tabs.map(t => [t.id, t.count]), initial.tabs.map(t => [t.id, t.count]));
+  assert.equal(todoClosed.tabs.find(t => t.selected === 'true').id, 'todo');
+  assert(todoClosed.tabs.every(t => t.rect.height > 0));
+  assert.equal(await composer.inputValue(), draft);
   for (const id of ['todo', 'agents', 'dag']) {
     await select(q, id); const s = await capture(q, `tab-${id}`);
     assert.deepEqual(s.visible, [id]); assert(Math.max(...s.tabs.map(t => t.rect.width)) - Math.min(...s.tabs.map(t => t.rect.width)) <= 1);
