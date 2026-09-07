@@ -443,6 +443,8 @@ try {
     await c3Scenario(browser, { width: 390, height: 844, coarse: true, label: "mobile-390" });
     await c3Scenario(browser, { width: 1280, height: 800, coarse: false, paneWidth: 600, label: "pane-600" });
     await c3Scenario(browser, { width: 1280, height: 800, coarse: false, paneWidth: 340, label: "pane-340" });
+    await c3Scenario(browser, { width: 844, height: 270, coarse: false, label: "landscape-270",
+      shortViewport: true, keyboardHeight: 150 });
   }
   if (phase === "all" || phase === "c4") {
     await c4Scenario(browser, { width: 390, height: 844, label: "portrait-zero-insets" });
