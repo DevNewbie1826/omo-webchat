@@ -1,25 +1,44 @@
 import { test, expect } from 'bun:test';
 import { JSDOM } from '../../frontend/node_modules/jsdom/lib/api.js';
+import { readFileSync } from 'node:fs';
+import { syntheticKeyboard } from './ui-mobile-footer-polish.mjs';
 import * as mobile from './ui-mobile-helpers.mjs';
 const { measure, footerAssertions } = mobile;
-import { pwaAssertions } from './ui-pwa-viewport.mjs';
+import { pwaAssertions, cases, openActivityTab } from './ui-pwa-viewport.mjs';
 
 const bounds = (left, top, right, bottom) => ({ x: left, y: top, left, top, right, bottom,
   width: right - left, height: bottom - top });
 const expected = (overrides = {}) => ({ expectedKeyboard: false, mode: 'standalone',
   safeInsets: { top: 50, right: 0, bottom: 34, left: 0 },
-  surface: bounds(0, 0, 375, 812), sidebarOpen: true, ...overrides });
+  surface: bounds(0, 0, 375, 812), sidebarOpen: true, inputProfile: 'touch', ...overrides });
+
+function signalOnAction(w, target, event) {
+  w.mobileSignal = predicate => new Promise((resolve, reject) => {
+    if (predicate()) { resolve(true); return; }
+    const timer = setTimeout(() => { target.removeEventListener(event, finish); reject(new Error('Fixture action deadline')); }, 1000);
+    function finish() {
+      clearTimeout(timer);
+      if (predicate()) resolve(true); else reject(new Error('Unsatisfied state after exact action event'));
+    }
+    target.addEventListener(event, finish, { once: true });
+  });
+}
 
 // A real DOM supplies selectors, ancestry and style. Geometry alone is a fixture:
 // independent input rectangles, not CSS emulation and never physical-device proof.
 // The 762/812 baseline below comes from physical-diagnosis.json, not a product formula.
 async function captured({ marker = false, bottom = 812, reserve = 34, expectation = expected(),
-  mutations = {}, occlude = false, clip = false, mode = 'standalone' } = {}) {
+  mutations = {}, occlude = false, clip = false, mode = 'standalone', visualHeight,
+  settingsBottom, entrance = false, capsuleReserve = 34, scrollDefect, exercise } = {}) {
   const dom = new JSDOM(`<html><body><div id="root"><div class="th-app">
     <aside class="th-sidebar"><div class="th-sidebar-body"></div><footer class="th-sidebar-footer">
-      <div class="th-settings-menu"><button id="settings">Settings</button></div><button id="logout">Logout</button>
+      <div class="th-settings-menu"><button id="settings">Settings</button>
+        ${settingsBottom === undefined ? '' : '<div class="th-settings-panel"><button id="setting-option">Option</button></div>'}
+      </div><button id="logout">Logout</button>
     </footer></aside><main class="th-main"><div class="th-chat-pane th-pane--focused">
-      <div class="th-chat-input"><textarea>retained draft</textarea><button>Send</button></div>
+      <div class="th-goal-panel"></div><div class="th-activity-panel"></div>
+      <div class="th-chat-scrollport"><div class="th-chat-body"></div></div>
+      <div class="th-chat-input"><div class="th-chat-input-inner"><textarea>retained draft</textarea><button>Send</button></div></div>
     </div></main><div class="th-backdrop"></div></div></div></body></html>`, { runScripts: 'outside-only' });
   const { window: w } = dom, d = w.document;
   const boxes = new Map(), top = expectation.surface.top, left = expectation.surface.left;
@@ -32,6 +51,14 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
   put('.th-settings-menu, #settings', bounds(left + 12, bottom - reserve - 29, left + 40, bottom - reserve));
   put('#logout', bounds(left + 60, bottom - reserve - 29, left + 88, bottom - reserve));
   put('.th-chat-input', bounds(left, bottom - 100, left + 375, bottom));
+  put('.th-chat-input-inner', bounds(left + 12, bottom - 90, left + 350, bottom - capsuleReserve));
+  put('.th-goal-panel', bounds(12, 246.84375, 363, 486.265625));
+  put('.th-activity-panel', bounds(12, 565.40625, 363, 613.40625));
+  put('.th-chat-scrollport, .th-chat-body', bounds(0, 94, 375, 214));
+  if (settingsBottom !== undefined) {
+    put('.th-settings-panel', bounds(12, settingsBottom - 274.40625, 252, settingsBottom));
+    put('#setting-option', bounds(20, settingsBottom - 40, 100, settingsBottom - 10));
+  }
   put('textarea', bounds(left + 12, bottom - 90, left + 300, bottom - 45));
   put('.th-chat-input button', bounds(left + 310, bottom - 70, left + 340, bottom - 34));
   for (const [selector, patch] of Object.entries(mutations)) {
@@ -44,6 +71,34 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
       scrollWidth: r.width, scrollHeight: r.height })) Object.defineProperty(e, key, { value, configurable: true });
     e.style.padding = '0px'; e.style.border = '0px';
   }
+  d.querySelector('.th-chat-scrollport').style.overflow = 'clip';
+  const transcript = d.querySelector('.th-chat-body'); transcript.style.overflowY = 'auto';
+  Object.defineProperty(transcript, 'scrollHeight', { value: 1200, configurable: true });
+  transcript.scrollTo = ({ top }) => {
+    transcript.scrollTop = top;
+    if (scrollDefect === 'wrapper') d.querySelector('.th-chat-scrollport').scrollTop = top;
+    if (scrollDefect === 'draft') d.querySelector('textarea').value = 'lost';
+    transcript.dispatchEvent(new w.Event('scroll'));
+  };
+  if (scrollDefect === 'clip') transcript.style.overflowY = 'clip';
+  const panel = d.querySelector('.th-settings-panel');
+  let premature = false, subscriptions = 0;
+  const animation = { playState: entrance ? 'running' : 'finished', animationName: 'th-settings-in',
+    effect: { getComputedTiming: () => ({ endTime: 120 }) },
+    get finished() { subscriptions++; return Promise.resolve().then(() => { animation.playState = 'finished'; }); } };
+  if (panel) {
+    panel.style.overflowY = 'auto';
+    const r = boxes.get(panel);
+    panel.getBoundingClientRect = () => {
+      const shift = animation.playState === 'running' ? 4 : 0;
+      if (shift) { premature = true; animation.playState = 'finished'; }
+      const value = { ...r, y: r.y + shift, top: r.top + shift, bottom: r.bottom + shift };
+      return { ...value, toJSON: () => value };
+    };
+    panel.scrollTo = ({ top }) => { panel.scrollTop = top; panel.dispatchEvent(new w.Event('scroll')); };
+  }
+  d.querySelector('.th-sidebar').getAnimations = () => [animation];
+  Object.defineProperty(d, 'fonts', { value: { ready: Promise.resolve() } });
   if (marker) d.documentElement.setAttribute('data-th-keyboard-open', '');
   if (clip) { d.querySelector('.th-settings-menu').style.overflowY = 'hidden';
     Object.defineProperty(d.querySelector('.th-settings-menu'), 'clientHeight', { value: 10 }); }
@@ -53,13 +108,19 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
     return [...controls, d.querySelector('.th-sidebar'), d.querySelector('.th-backdrop'), d.querySelector('#root')]
       .find(e => { const r = boxes.get(e); return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }) ?? null;
   };
-  Object.defineProperty(w, 'visualViewport', { value: { width: 375, height: bottom === 762 ? 762 : expectation.surface.height,
+  Object.defineProperty(w, 'visualViewport', { value: { width: 375, height: visualHeight ?? (bottom === 762 ? 762 : expectation.surface.height),
     offsetTop: top, offsetLeft: left, scale: 1 } });
   Object.defineProperty(w, 'innerWidth', { value: 375 }); Object.defineProperty(w, 'innerHeight', { value: 762 });
   Object.defineProperty(w.navigator, 'standalone', { value: mode === 'standalone' });
   w.matchMedia = query => ({ matches: query === '(max-width: 768px)' });
-  const page = { evaluate: (fn, args) => { w.captureArgs = args; return w.eval(`(${fn})(captureArgs)`); } };
-  try { return await measure(page, expectation.safeInsets.bottom, expectation.safeInsets.top, expectation); }
+  const page = { evaluate: (fn, args) => { w.captureArgs = args; return w.eval(`(${fn})(captureArgs)`); },
+    locator: selector => ({ evaluate: (fn, args) => {
+      w.element = d.querySelector(selector); w.captureArgs = args; return w.eval(`(${fn})(element, captureArgs)`);
+    } }) };
+  try {
+    if (exercise) return await exercise(page, () => ({ premature, subscriptions }));
+    return await measure(page, expectation.safeInsets.bottom, expectation.safeInsets.top, expectation);
+  }
   finally { dom.window.close(); }
 }
 const row = (g, id) => footerAssertions(g).find(r => r.id === id);
@@ -164,3 +225,145 @@ test('explicit QA driver uses installed Chrome without session-report dependency
   expect(options).toEqual({ driver: '/fixture/explicit-playwright/index.js',
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
 });
+
+for (const [width, height, rawHeight, safeTop, safeBottom, panelBottom] of [
+  [375, 812, 762, 50, 34, 746], [390, 844, 794, 0, 0, 812],
+]) test(`R1 Settings ${width}: raw height budget is not the permitted surface bottom`, async () => {
+  const e = expected({ surface: bounds(0, 0, width, height), safeInsets: { top: safeTop, right: 0, bottom: safeBottom, left: 0 } });
+  const result = await captured({ bottom: height, visualHeight: rawHeight, expectation: e, settingsBottom: panelBottom,
+    exercise: page => mobile.settingsReachability(page, safeBottom, safeTop, e) });
+  expect(result.actual.safe.bottom).toBe(height - safeBottom);
+  expect(result.actual.panelBounded).toBe(true);
+  expect(result.pass).toBe(true);
+});
+
+test('Settings entrance is finished before the first geometry sample, including stable scroll checks', async () => {
+  const e = expected();
+  const { result, state } = await captured({ settingsBottom: 746, entrance: true, exercise: async (page, state) => ({
+    result: await mobile.settingsReachability(page, 34, 50, e), state: state(),
+  }) });
+  expect(state.premature).toBe(false);
+  expect(state.subscriptions).toBe(1);
+  expect(result.actual.stable).toBe(true);
+  expect(result.pass).toBe(true);
+});
+
+for (const defect of ['bounds', 'hit', 'clip']) test(`Settings still rejects real ${defect} failure`, async () => {
+  const e = expected();
+  const result = await captured({ settingsBottom: defect === 'bounds' ? 800 : 746,
+    occlude: defect === 'hit', clip: defect === 'clip',
+    exercise: page => mobile.settingsReachability(page, 34, 50, e) });
+  expect(result.pass).toBe(false);
+});
+
+test('R1 combined-panel capture measures the scrolling child, not its 120px clip wrapper', async () => {
+  const g = await captured({ expectation: expected({ bothShelves: true }) });
+  expect(g.shelves.goal.rect.height).toBeGreaterThan(0);
+  expect(g.shelves.activity.rect.height).toBeGreaterThan(0);
+  expect(g.shelves.transcript.overflowY).toBe('auto');
+  expect(g.shelves.transcript.scrollHeight).toBe(1200);
+  expect(pwaAssertions(g, 'retained draft').find(r => r.id === 'PWA.both-shelves-with-transcript').pass).toBe(true);
+});
+
+for (const defect of [undefined, 'wrapper', 'draft', 'clip']) test(`transcript exercise preserves wrapper/composer/draft: ${defect ?? 'correct owner'}`, async () => {
+  const e = expected({ bothShelves: true });
+  const result = await captured({ scrollDefect: defect,
+    exercise: page => mobile.transcriptReachability(page, 34, 50, e) });
+  expect(result.pass).toBe(defect === undefined);
+  if (!defect) {
+    expect(result.actual.before.transcript.scrollTop).toBe(0);
+    expect(result.actual.after.transcript.scrollTop).toBe(1080);
+    expect(result.actual.after.scrollport.scrollTop).toBe(0);
+  }
+});
+
+test('composer reserve cannot pass without an independently declared input profile or a capsule', async () => {
+  const g = await captured();
+  const assertion = () => pwaAssertions(g, 'retained draft').find(r => r.id === 'PWA.composer-reserve');
+  expect(assertion().pass).toBe(true);
+  delete g.expectations.inputProfile; expect(assertion().pass).toBe(false);
+  g.expectations.inputProfile = 'touch'; g.composerCapsule = null; expect(assertion().pass).toBe(false);
+});
+
+for (const [profile, inset, keyboard, reserve, pass] of [
+  ['touch', 0, false, 0, false], ['touch', 0, false, 4, true],
+  ['touch', 34, false, 34, true], ['touch', 34, false, 38, false],
+  ['touch', 34, true, 4, true], ['touch', 34, true, 0, false],
+  ['fine', 0, false, 16, true], ['fine', 34, false, 34, true], ['fine', 34, true, 16, true],
+]) test(`composer capsule independently reserves max(breathing, necessary inset): ${profile}/${inset}/${keyboard}/${reserve}`, async () => {
+  const g = await captured({ capsuleReserve: reserve, expectation: expected({ inputProfile: profile,
+    expectedKeyboard: keyboard, safeInsets: { top: 50, right: 0, bottom: inset, left: 0 } }) });
+  const assertion = pwaAssertions(g, 'retained draft').find(r => r.id === 'PWA.composer-reserve');
+  expect(assertion).toBeDefined();
+  expect(assertion.pass).toBe(pass);
+});
+
+test('phone identity is explicit in portrait and landscape; boundary and desktop inventory is retained', () => {
+  expect(cases.map(c => c.width)).toEqual([375, 390, 768, 769, 812, 1280]);
+  for (const width of [375, 390, 812]) {
+    const input = cases.find(c => c.width === width);
+    expect(input.isMobile).toBe(true); expect(input.hasTouch).toBe(true);
+  }
+  expect(cases.find(c => c.width === 769).insets.bottom).toBe(34);
+  expect(cases.find(c => c.width === 1280).hasTouch).toBe(false);
+});
+
+for (const [width, height, visible] of [[390, 844, 500], [844, 390, 270]]) {
+  test(`footer keyboard driver preserves the unoccluded layout witness ${width}x${height}`, async () => {
+    const html = readFileSync(new URL('../../frontend/index.html', import.meta.url), 'utf8');
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])
+      .find(source => source.includes('data-th-keyboard-open'));
+    const dom = new JSDOM('<textarea>retained draft</textarea>', { runScripts: 'outside-only' });
+    const w = dom.window, vv = new w.EventTarget();
+    let layoutHeight = height;
+    Object.defineProperties(w, { innerWidth: { get: () => width }, innerHeight: { get: () => layoutHeight },
+      visualViewport: { value: vv } });
+    const prototype = Object.create(Object.getPrototypeOf(vv));
+    Object.defineProperties(prototype, { width: { get: () => width }, height: { get: () => layoutHeight },
+      offsetTop: { get: () => 0 }, offsetLeft: { get: () => 0 }, scale: { get: () => 1 } });
+    Object.setPrototypeOf(vv, prototype);
+    signalOnAction(w, vv, 'resize');
+    const page = { evaluate: (fn, args) => { w.args = args; return w.eval(`(${fn})(args)`); },
+      setViewportSize: ({ height }) => { layoutHeight = height; vv.dispatchEvent(new w.Event('resize')); w.dispatchEvent(new w.Event('resize')); } };
+    try {
+      w.eval(script); w.document.querySelector('textarea').focus();
+      await syntheticKeyboard(page, { width, height, keyboard: true });
+      expect(w.innerHeight).toBe(height); expect(vv.height).toBe(visible);
+      expect(w.document.documentElement.hasAttribute('data-th-keyboard-open')).toBe(true);
+      await syntheticKeyboard(page, { width, height, keyboard: false });
+      expect(w.innerHeight).toBe(height); expect(vv.height).toBe(height);
+      expect(Object.hasOwn(vv, 'height')).toBe(false);
+      expect(w.document.documentElement.hasAttribute('data-th-keyboard-open')).toBe(false);
+      expect(w.document.activeElement.value).toBe('retained draft');
+    } finally { w.close(); }
+  });
+}
+
+for (const [selected, open, compact] of [['agents', true, false], ['agents', false, true], ['todo', true, false]]) {
+  test(`activity tab normalization selected=${selected} open=${open} compact=${compact}`, async () => {
+    const dom = new JSDOM('<button data-activity-tab="agents"></button>', { runScripts: 'outside-only' });
+    const w = dom.window, d = w.document, tab = d.querySelector('button');
+    let current = selected, expanded = open, clicks = 0;
+    const render = () => {
+      tab.setAttribute('aria-selected', String(current === 'agents'));
+      d.querySelector('.th-activity-resize')?.remove(); d.querySelector('[data-activity-tabpanel]')?.remove();
+      if (expanded) {
+        const grip = d.createElement('div'); grip.className = 'th-activity-resize'; d.body.append(grip);
+        if (!compact) { const panel = d.createElement('div'); panel.dataset.activityTabpanel = current; d.body.append(panel); }
+      }
+    };
+    render();
+    signalOnAction(w, d, 'activity-action-complete');
+    const page = { evaluate: (fn, args) => { w.args = args; return w.eval(`(${fn})(args)`); },
+      locator: selector => ({ getAttribute: name => d.querySelector(selector).getAttribute(name),
+        count: () => d.querySelectorAll(selector).length, click: () => {
+          clicks++; expanded = current === 'agents' ? !expanded : true; current = 'agents'; render();
+          d.dispatchEvent(new w.Event('activity-action-complete'));
+        } }) };
+    try {
+      await openActivityTab(page);
+      expect(current).toBe('agents'); expect(expanded).toBe(true);
+      expect(clicks).toBe(selected === 'agents' && open ? 0 : 1);
+    } finally { w.close(); }
+  });
+}

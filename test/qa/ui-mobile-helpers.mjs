@@ -13,12 +13,12 @@ export async function mobileBrowserOptions(driver = process.env.QA_PLAYWRIGHT) {
   return { driver: entry, executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' };
 }
 
-export async function setupMobile(browser, { theme, list = 'short', layout = 'single', lang = 'en', fontSize = 14, beforeNavigate, viewport, isMobile = layout !== 'two' }, actions) {
+export async function setupMobile(browser, { theme, list = 'short', layout = 'single', lang = 'en', fontSize = 14, beforeNavigate, viewport, isMobile = layout !== 'two', hasTouch = isMobile }, actions) {
   const fixture = startFixture({ ...designSeed(layout), port: 0, controlled: true });
   let context;
   try {
     context = await browser.newContext({ viewport: viewport ?? { width: layout === 'two' ? 1280 : 390, height: layout === 'two' ? 800 : 844 },
-      isMobile, hasTouch: isMobile, colorScheme: theme });
+      isMobile, hasTouch, colorScheme: theme });
     const page = await context.newPage(); page.setDefaultTimeout(30000);
     const errors = []; page.on('pageerror', error => errors.push(String(error)));
     let longItems;
@@ -50,7 +50,7 @@ export async function setupMobile(browser, { theme, list = 'short', layout = 'si
       window.mobileReady = window.mobileSignal(() => !!document.querySelector('.th-pane--focused textarea')
         && !!document.querySelector('[data-tool-call-id="design-failed"]'));
     }, { theme, lang, fontSize });
-    actions.push({ action: 'navigate', url: fixture.url, authentication: 'isolated fixture /api/auth/check 204', theme, list, layout, lang, fontSize });
+    actions.push({ action: 'navigate', url: fixture.url, authentication: 'isolated fixture /api/auth/check 204', theme, list, layout, lang, fontSize, isMobile, hasTouch });
     if (beforeNavigate) await beforeNavigate(page, fixture.url);
     await page.goto(fixture.url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.evaluate(() => window.mobileReady);
@@ -90,9 +90,10 @@ export async function settle(page) {
     let timer;
     const finished = async () => {
       await document.fonts.ready;
-      let finite;
-      while ((finite = sidebar.getAnimations({ subtree: true }).filter(a =>
-        Number.isFinite(a.effect.getComputedTiming().endTime) && a.playState !== 'finished' && a.playState !== 'idle')).length) {
+      while (true) {
+        const finite = sidebar.getAnimations({ subtree: true }).filter(a =>
+          Number.isFinite(a.effect.getComputedTiming().endTime) && a.playState !== 'finished' && a.playState !== 'idle');
+        if (!finite.length) break;
         // Visibility:hidden legitimately cancels the drawer's transform transition.
         // Await exact finish/cancel signals, then inspect replacement animations; no timer readiness.
         await Promise.all(finite.map(async animation => {
@@ -145,9 +146,11 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
     const surface = expectations?.surface ?? viewport, drawerSurface = expectations?.drawerSurface ?? surface;
     const safe = { top: drawerSurface.top + safeTop, left: drawerSurface.left + (expectations?.safeInsets.left ?? 0),
       right: drawerSurface.right - (expectations?.safeInsets.right ?? 0), bottom: drawerSurface.bottom - necessaryBottomInset };
-    // Settings/dialogs intentionally consume raw visual variables, not resting PWA surface height.
-    const settingsSafe = { ...safe, top: viewport.top + safeTop, bottom: viewport.bottom - necessaryBottomInset,
-      left: viewport.left + (expectations?.safeInsets.left ?? 0), right: viewport.right - (expectations?.safeInsets.right ?? 0) };
+    // Raw visual height is a Settings max-height BUDGET, not its absolute bottom.
+    // Its footer anchor can live on the independently declared full PWA surface.
+    // Ordinary/keyboard scenarios declare their own usable surface in the same coordinates.
+    const settingsSafe = { top: surface.top + safeTop, bottom: surface.bottom - necessaryBottomInset,
+      left: surface.left + (expectations?.safeInsets.left ?? 0), right: surface.right - (expectations?.safeInsets.right ?? 0) };
     const button = (element, bounds = safe) => {
       const r = rect(element), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       const clippingAncestors = [];
@@ -201,9 +204,13 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
           withinRoot: !!hit && (hit === appRoot || appRoot.contains(hit)) };
       });
       const composer = document.querySelector('.th-pane--focused .th-chat-input') ?? document.querySelector('.th-chat-input');
+      const capsule = composer?.querySelector('.th-chat-input-inner');
       independent = { expectations, app: node('.th-app'), main: node('.th-main'), composer: composer ? read(composer) : null,
+        composerCapsule: capsule ? read(capsule) : null,
+        composerReserve: composer && capsule ? rect(composer).bottom - rect(capsule).bottom : null,
         backdrop: node('.th-backdrop'), sidebarOpen: sidebar.getAttribute('aria-hidden') !== 'true',
-        shelves: { goal: node('.th-goal-panel'), activity: node('.th-activity-panel'), transcript: node('.th-chat-scrollport') },
+        shelves: { goal: node('.th-goal-panel'), activity: node('.th-activity-panel'), transcript: node('.th-chat-body'),
+          scrollport: node('.th-chat-scrollport') },
         composerControls: composer ? [...composer.querySelectorAll('textarea, button')].filter(e => e.getBoundingClientRect().width > 0).map(e => button(e)) : [],
         bottomHits, viewportUnitHeights: units, resolvedSafeInsets: insets,
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
@@ -276,6 +283,7 @@ export function surfaceAssertions(g) {
 }
 
 export async function settingsReachability(page, safeBottom, safeTop, expectations) {
+  await settle(page);
   const before = await measure(page, safeBottom, safeTop, expectations), panel = before.settings, p = panel.rect, safe = before.settingsSafe ?? before.safe;
   const panelBounded = p.top >= safe.top - 1 && p.bottom <= safe.bottom + 1
     && p.left >= safe.left - 1 && p.right <= safe.right + 1;
@@ -311,6 +319,29 @@ export async function settingsReachability(page, safeBottom, safeTop, expectatio
     && controls.every(c => c.bounded && c.unclipped && c.hit) && stable
     && (panel.scrollHeight <= panel.clientHeight || interiorScrolled),
     actual: { panel, safe, controls, panelBounded, interiorScrolled, stable } };
+}
+
+export async function transcriptReachability(page, safeBottom, safeTop, expectations) {
+  const before = await measure(page, safeBottom, safeTop, expectations), owner = before.shelves.transcript;
+  const scrollable = owner?.clientHeight > 0 && owner.scrollHeight > owner.clientHeight
+    && ['auto', 'scroll'].includes(owner.overflowY);
+  if (scrollable) {
+    await page.locator('.th-chat-body').evaluate(element => {
+      window.mobilePending = new Promise((done, fail) => {
+        const timer = setTimeout(() => { element.removeEventListener('scroll', finish); fail(new Error('Transcript scroll deadline')); }, 30000);
+        function finish() { clearTimeout(timer); done(true); }
+        element.addEventListener('scroll', finish, { once: true });
+        element.scrollTo({ top: element.scrollTop > 0 ? 0 : element.scrollHeight - element.clientHeight, behavior: 'instant' });
+      });
+    });
+    await complete(page);
+  }
+  const after = await measure(page, safeBottom, safeTop, expectations);
+  return { id: 'PWA.transcript-scroll-owner', pass: !!scrollable && after.shelves.transcript.scrollTop !== owner.scrollTop
+    && after.shelves.scrollport.scrollTop === before.shelves.scrollport.scrollTop && after.root.scrollTop === before.root.scrollTop
+    && after.draft === before.draft && Math.abs(after.composer.rect.bottom - before.composer.rect.bottom) < 1,
+    actual: { before: before.shelves, after: after.shelves, draftBefore: before.draft, draftAfter: after.draft,
+      composerBefore: before.composer, composerAfter: after.composer } };
 }
 
 export async function openSidebar(page) {

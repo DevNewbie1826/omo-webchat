@@ -8,7 +8,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setupMobile, arm, complete, settle, measure, footerAssertions, surfaceAssertions,
-  openSidebar, settingsReachability, mobileBrowserOptions } from './ui-mobile-helpers.mjs';
+  openSidebar, settingsReachability, transcriptReachability, mobileBrowserOptions } from './ui-mobile-helpers.mjs';
 import { bindingAssertion } from './ui-followup-sidebar.mjs';
 
 const ROOT = resolve(import.meta.dir, '../..');
@@ -49,7 +49,11 @@ export function observeAssets(page, url) {
 export function pwaAssertions(g, draft) {
   const e = g.expectations, rows = e.sidebarOpen ? footerAssertions(g) : surfaceAssertions(g);
   const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= 1;
+  const breathing = { touch: 4, fine: 16 }[e.inputProfile];
+  const reserve = Math.max(breathing, e.expectedKeyboard ? 0 : e.safeInsets.bottom);
   return [...rows,
+    { id: 'PWA.composer-reserve', pass: g.composerCapsule?.rect.height > 0 && near(g.composerReserve, reserve),
+      actual: { inputProfile: e.inputProfile, minimumBreathing: breathing, expected: reserve, measured: g.composerReserve, capsule: g.composerCapsule } },
     { id: 'PWA.independent-insets', pass: Object.entries(e.safeInsets).every(([edge, value]) => near(g.resolvedSafeInsets[edge], value)), actual: g.resolvedSafeInsets },
     { id: 'PWA.raw-visual-variables', pass: near(parseFloat(g.cssViewport.heightUnit) * 100, g.visualViewport.height)
       && near(parseFloat(g.cssViewport.width), g.visualViewport.width)
@@ -63,14 +67,24 @@ export function pwaAssertions(g, draft) {
   ];
 }
 
-const cases = [
-  { width: 375, height: 812, mode: 'standalone', list: 'long', insets: { top: 50, right: 0, bottom: 34, left: 0 } },
-  { width: 390, height: 844, mode: 'standalone', list: 'short', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
-  { width: 768, height: 844, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
-  { width: 769, height: 844, mode: 'browser', list: 'short', insets: { top: 0, right: 0, bottom: 34, left: 0 } },
-  { width: 812, height: 375, mode: 'standalone', list: 'short', insets: { top: 0, right: 44, bottom: 21, left: 44 } },
-  { width: 1280, height: 800, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
+export const cases = [
+  { width: 375, height: 812, isMobile: true, hasTouch: true, mode: 'standalone', list: 'long', insets: { top: 50, right: 0, bottom: 34, left: 0 } },
+  { width: 390, height: 844, isMobile: true, hasTouch: true, mode: 'standalone', list: 'short', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
+  { width: 768, height: 844, isMobile: true, hasTouch: true, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
+  { width: 769, height: 844, isMobile: false, hasTouch: false, mode: 'browser', list: 'short', insets: { top: 0, right: 0, bottom: 34, left: 0 } },
+  { width: 812, height: 375, isMobile: true, hasTouch: true, mode: 'standalone', list: 'short', insets: { top: 0, right: 44, bottom: 21, left: 44 } },
+  { width: 1280, height: 800, isMobile: false, hasTouch: false, mode: 'browser', list: 'long', insets: { top: 0, right: 0, bottom: 0, left: 0 } },
 ];
+
+export async function openActivityTab(page) {
+  if (await page.locator('[data-activity-tab="agents"]').getAttribute('aria-selected') === 'true'
+    && await page.locator('.th-activity-resize').count()) return;
+  // Resize chrome witnesses open intent even when the compact allocator omits the panel.
+  // Positive panel allocations are still required by the combined-layout assertion.
+  await arm(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true'
+    && !!document.querySelector('.th-activity-resize'));
+  await page.locator('[data-activity-tab="agents"]').click(); await complete(page);
+}
 
 // Only browser API getters/events are synthesized. CSS, DOM and product markers
 // remain untouched. Chrome's dvh/lvh do NOT reproduce WebKit's native divergence.
@@ -116,7 +130,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       let q, cdp, binding;
       try {
         q = await setupMobile(browser, { theme, list: input.list, viewport: { width: input.width, height: input.height },
-          isMobile: input.width <= 768, async beforeNavigate(page, url) {
+          isMobile: input.isMobile, hasTouch: input.hasTouch, async beforeNavigate(page, url) {
             binding = observeAssets(page, url);
             await page.addInitScript(mode => {
               Object.defineProperty(navigator, 'standalone', { configurable: true, get: () => mode === 'standalone' });
@@ -142,12 +156,15 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         const capture = async (state, keyboard = false, top = 0, visualHeight = height, sidebarOpen = false) => {
           const surface = { top: keyboard ? top : 0, left: 0, right: width, bottom: keyboard ? top + visualHeight : height };
           const expectations = { expectedKeyboard: keyboard, safeInsets: input.insets, surface, mode: input.mode, sidebarOpen, bothShelves: state === 'goal-activity-long-transcript',
+            inputProfile: input.hasTouch ? 'touch' : 'fine',
             drawerSurface: input.mode === 'standalone' && !keyboard ? surface : { top, left: 0, right: width, bottom: top + visualHeight } };
           if (sidebarOpen && width > 768 && (await page.locator('.th-sidebar').getAttribute('class')).includes('th-sidebar--collapsed')) {
             await arm(page, () => !document.querySelector('.th-sidebar').classList.contains('th-sidebar--collapsed'));
             await page.locator('.th-sidebar-rail .th-sidebar-toggle').click(); await complete(page);
           }
           await settle(page);
+          if (expectations.bothShelves) rows.push({ scenario: `${name}-${state}`,
+            ...await transcriptReachability(page, input.insets.bottom, input.insets.top, expectations) });
           const g = await measure(page, input.insets.bottom, input.insets.top, expectations);
           rows.push(...pwaAssertions(g, draft).map(row => ({ scenario: `${name}-${state}`, ...row })));
           const image = `${name}-${state}.png`, imagePath = resolve(evidence, image);
@@ -172,17 +189,16 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         await openSidebar(page); await capture('drawer-open', false, 0, restingHeight, true);
         await arm(page, () => !!document.querySelector('.th-settings-panel'));
         await page.locator('.th-settings-menu > button').click(); await complete(page);
-        const settings = await measure(page, input.insets.bottom, input.insets.top, { expectedKeyboard: false, mode: input.mode,
-          safeInsets: input.insets, surface: { top: 0, left: 0, right: width, bottom: height }, sidebarOpen: true });
-        rows.push({ scenario: name, ...await settingsReachability(page, input.insets.bottom, input.insets.top, settings.expectations) });
+        const settingsExpectations = { expectedKeyboard: false, mode: input.mode,
+          safeInsets: input.insets, surface: { top: 0, left: 0, right: width, bottom: height }, sidebarOpen: true };
+        rows.push({ scenario: name, ...await settingsReachability(page, input.insets.bottom, input.insets.top, settingsExpectations) });
         await arm(page, () => !document.querySelector('.th-settings-panel'));
         await page.keyboard.press('Escape'); await complete(page); await closeDrawer();
         if (await page.locator('.th-goal-bar').getAttribute('aria-expanded') !== 'true') {
           await arm(page, () => document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded') === 'true');
           await page.locator('.th-goal-bar').click(); await complete(page);
         }
-        await arm(page, () => !!document.querySelector('[data-activity-tabpanel="agents"]:not([hidden])'));
-        await page.locator('[data-activity-tab="agents"]').click(); await complete(page);
+        await openActivityTab(page);
         await capture('goal-activity-long-transcript', false, 0, restingHeight, width > 768);
         await page.locator('.th-pane--focused textarea').focus();
         let keyboardHeight = Math.max(270, height - 340), keyboardTop = height > 500 ? 60 : 20;

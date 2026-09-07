@@ -153,7 +153,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       let q, cdp;
       try {
         const responses = [], responseJobs = [];
-        q = await setupMobile(browser, { theme, lang, fontSize, list, beforeNavigate(page, url) {
+        q = await setupMobile(browser, { theme, lang, fontSize, list, isMobile: true, hasTouch: true, beforeNavigate(page, url) {
           page.on('response', response => {
             const path = new URL(response.url()).pathname;
             if (new URL(response.url()).origin !== url || !(path === '/' || /\.(js|css)$/.test(path))) return;

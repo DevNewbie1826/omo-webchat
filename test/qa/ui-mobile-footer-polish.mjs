@@ -5,7 +5,7 @@
  * are part of C5 (footer scope per the governing brief) and are never excluded or classified.
  * Both runners share the exact zero-extra-gap footer contract and
  * full Settings safe-bound, ancestor-clipping, hit and interior-scroll checks.
- * CDP safe insets and native viewport resize are browser emulation.
+ * CDP safe insets and visual-only keyboard occlusion are browser emulation.
  */
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -30,6 +30,22 @@ const SANITY = ['C5.no-horizontal-overflow', 'C5.session-row-coverage', 'C5.list
 const STRICT = ['C5.mobile-bottom-gap-exact'];
 const SETTINGS = 'C5.settings-reachable';
 
+export async function syntheticKeyboard(page, { width, height, keyboard }) {
+  await page.evaluate(({ width, height, keyboard }) => {
+    const visualHeight = keyboard ? (height === 844 ? 500 : 270) : height;
+    window.mobilePending = window.mobileSignal(() => innerWidth === width && innerHeight === height
+      && document.documentElement.hasAttribute('data-th-keyboard-open') === keyboard
+      && Math.abs(parseFloat(document.documentElement.style.getPropertyValue('--th-vh-unit')) * 100 - visualHeight) < 1
+      && document.documentElement.style.getPropertyValue('--th-vv-top') === '0px');
+    if (keyboard) {
+      Object.defineProperty(visualViewport, 'height', { configurable: true, get: () => visualHeight });
+      Object.defineProperty(visualViewport, 'offsetTop', { configurable: true, get: () => 0 });
+    } else { delete visualViewport.height; delete visualViewport.offsetTop; }
+    visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll'));
+  }, { width, height, keyboard });
+  await complete(page);
+}
+
 export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   assert(['red', 'green'].includes(phase), '--phase must be red or green');
   assert(out, '--out required');
@@ -52,7 +68,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     limitations: [
       'Installed playwright-core preserves the existing real-App fixture API; headless Chrome is a disposable profile.',
       'Chrome emulates viewport/safe-area geometry; it is not iOS browser-bar, physical-keyboard or home-indicator hardware.',
-      'Keyboard emulation resizes layout and visual viewport together; no OS keyboard is rendered.',
+      'Synthetic keyboard occlusion reduces only VisualViewport; the layout remains an unoccluded witness. No OS keyboard is rendered.',
       'Pan probe overrides only visualViewport height/offsetTop and dispatches its scroll event; explicitly synthetic.',
       'Keyboard-open necessary bottom inset is zero (keyboard occludes the home-indicator region).',
     ] };
@@ -102,7 +118,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     browser = await chromium.launch({ executablePath: browserOptions.executablePath, headless: true, timeout: 90000 });
     receipt.browserVersion = browser.version();
     for (const theme of ['dark', 'light']) for (const list of ['short', 'long']) {
-      await scenario(`mobile-${theme}-${list}`, { theme, list }, async (q, name) => {
+      await scenario(`mobile-${theme}-${list}`, { theme, list, isMobile: true, hasTouch: true }, async (q, name) => {
         const { page, context } = q, cdp = await context.newCDPSession(page);
         await openSidebar(page);
         // Chrome accepts this feature but does not implement display-mode emulation.
@@ -120,10 +136,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
           for (const keyboard of [false, true]) {
             if (keyboard) {
               const keyboardHeight = height === 844 ? 500 : 270;
-              await arm(page, () => document.documentElement.hasAttribute('data-th-keyboard-open'));
-              await page.setViewportSize({ width, height: keyboardHeight }); await complete(page);
-              actions.push({ action: 'native-keyboard-resize', scenario: name, width, layoutHeight: keyboardHeight,
-                originalHeight: height, limitation: 'Chrome resizes layout and visual viewport together; no OS keyboard rendered' });
+              await syntheticKeyboard(page, { width, height, keyboard: true });
+              actions.push({ action: 'synthetic-visual-only-keyboard', scenario: name, width, layoutHeight: height,
+                visualHeight: keyboardHeight, limitation: 'Synthetic VisualViewport occlusion; no OS keyboard rendered' });
             }
             for (const safeTop of [0, 59]) for (const inset of [0, 34]) {
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: safeTop, left: 0, right: 0, bottom: inset } });
@@ -132,7 +147,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                 safeInsets: { top: safeTop, bottom: inset, left: 0, right: 0 },
                 surface: { top: 0, left: 0, right: width, bottom: keyboard ? (height === 844 ? 500 : 270) : height } };
               const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-top${safeTop}-safe${inset}`;
-              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' }, safeTop);
+              const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'synthetic-visual-only' : 'closed' }, safeTop);
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
               results.push({ scenario: key, id: 'C5.session-row-coverage',
                 pass: g.sessionRows === (list === 'long' ? 24 : 4), actual: { expected: list === 'long' ? 24 : 4, count: g.sessionRows } });
@@ -167,8 +182,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
             }
             if (keyboard) {
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, left: 0, right: 0, bottom: 34 } });
-              await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
-              await page.setViewportSize({ width, height }); await complete(page);
+              await syntheticKeyboard(page, { width, height, keyboard: false });
               await arm(page, () => document.documentElement.style.getPropertyValue('--th-vv-top') === '60px');
               await page.evaluate(visibleHeight => {
                 Object.defineProperty(visualViewport, 'height', { configurable: true, value: visibleHeight });
@@ -183,9 +197,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               const g = await capture(q, `C5-${phase}-${key}`, 34, { keyboardEmulation: 'synthetic visualViewport height and offsetTop=60 inside original layout viewport' });
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
               actions.push({ action: 'synthetic-visual-viewport-pan', scenario: key, offsetTop: 60, measured: g.visualViewport });
-              await arm(page, () => !document.documentElement.hasAttribute('data-th-keyboard-open'));
-              await page.evaluate(() => { delete visualViewport.offsetTop; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); });
-              await page.setViewportSize({ width, height }); await complete(page);
+              await syntheticKeyboard(page, { width, height, keyboard: false });
             }
           }
           await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 0, left: 0, right: 0, bottom: 0 } });
