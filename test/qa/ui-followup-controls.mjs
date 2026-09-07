@@ -4,8 +4,11 @@ import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { startFixture, models } from './pane-workspace-ui.mjs';
-import { designSeed, installSignals, wheel } from './design-workbench-fixture.mjs';
+import { designSeed, installSignals, wheel, arm, complete } from './design-workbench-fixture.mjs';
 import { transition } from './ui-composer-fixture.mjs';
+import { confirmControl, installControlSignals } from './model-control-confirmation.mjs';
+import { pressureScenario, motionEvidence } from './ui-followup-controls-status.mjs';
+import { pickerRegression } from './ui-followup-controls-picker.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
@@ -18,7 +21,7 @@ export const inventory = ['dark', 'light'].flatMap(theme => ['en', 'ko'].flatMap
     .map(v => ({ kind: 'picker', ...v, theme, lang, fontSize })),
 ])));
 
-function statusGeometry() {
+export function statusGeometry() {
   const status = document.querySelector('.th-chat-status'), row = document.querySelector('.th-chat-controls');
   const rect = el => el?.getBoundingClientRect().toJSON();
   return { row: rect(row), model: rect(document.querySelector('.th-model-picker-btn')),
@@ -47,37 +50,41 @@ function pickerGeometry() {
     thinking: popup.querySelector('select') ? [...popup.querySelector('select').options].map(o => o.value)
       : [...popup.querySelectorAll('.th-thinking-level')].map(el => el.textContent),
     close: rect(popup.querySelector('.th-model-picker-current .th-btn-icon')),
-    ancestorScroll: [...document.querySelectorAll('.th-chat-main,.th-chat-scrollport,.th-chat-pane')].map(el => [el.scrollTop, el.scrollLeft]),
+    ancestorScroll: [...document.querySelectorAll('.th-chat-main,.th-chat-scrollport,.th-chat-body,.th-chat-pane')].map(el => [el.scrollTop, el.scrollLeft]),
   };
 }
-export async function run({ phase, out }) {
+export async function run({ phase, out, scenarios = inventory }) {
   if (!['red', 'green'].includes(phase) || !out || !out.startsWith('/')) throw new Error('Use --phase red|green --out ABSOLUTE_E');
   await mkdir(out, { recursive: true });
   const save = (name, value) => writeFile(resolve(out, name), JSON.stringify(value, null, 2) + '\n');
-  const sourceFiles = [...new Set([...git('ls-files').split('\n'), 'test/qa/ui-followup-controls.mjs'])]
+  const sourceFiles = [...new Set([...git('ls-files').split('\n'), ...(await readdir('test/qa')).filter(p => p.endsWith('.mjs')).map(p => `test/qa/${p}`)])]
     .filter(p => /^(frontend\/src\/.*\.(tsx?|css)|test\/qa\/.*\.mjs|DESIGN.md)$/.test(p));
   const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async p => [p, hash(await readFile(p))])));
   const assets = Object.fromEntries(await Promise.all((await readdir('frontend/dist/assets')).map(async p => [p, hash(await readFile(`frontend/dist/assets/${p}`))])));
-  const receipt = { phase, command: process.argv.join(' '), head: git('rev-parse', 'HEAD'), tree: git('rev-parse', 'HEAD^{tree}'),
+  const receipt = { phase, startedAt: new Date().toISOString(), command: process.argv.join(' '), head: git('rev-parse', 'HEAD'), tree: git('rev-parse', 'HEAD^{tree}'),
     dirty: git('status', '--short'), diffSha256: hash(git('diff', 'HEAD')), cwd: process.cwd(), driver: process.env.QA_PLAYWRIGHT,
-    indexHtmlSha256: hash(await readFile('frontend/dist/index.html')), sources, assets, inventory, results: [], captures: [], cleanup: [] };
+    indexHtmlSha256: hash(await readFile('frontend/dist/index.html')), sources, assets, inventory: scenarios, results: [], captures: [], cleanup: [] };
   await save('inputs.json', receipt);
   const { chromium } = await import(process.env.QA_PLAYWRIGHT);
   let browser;
   try {
     browser = await chromium.launch({ channel: 'chrome', headless: true });
-    for (const [index, scenario] of inventory.entries()) {
+    receipt.browserVersion = browser.version();
+    for (const [index, scenario] of scenarios.entries()) {
       const name = `${String(index).padStart(2, '0')}-${scenario.kind}-${scenario.theme}-${scenario.lang}-f${scenario.fontSize}-${scenario.width}x${scenario.height}${scenario.paneWidth ? `-pane${scenario.paneWidth}` : scenario.layout ? `-${scenario.layout}` : ''}`;
       const result = { name, scenario, checks: [], errors: [], observations: {} };
       receipt.results.push(result);
       const check = (name, pass, data) => result.checks.push({ name, pass: !!pass, ...(data === undefined ? {} : { data }) });
       const fixture = startFixture({ ...designSeed(scenario.paneWidth ? 'two' : scenario.layout ?? 'single'), shelves: false,
-        running: [], controlled: true, port: 0, runs: { 'stored-a': { entries: [],
+        running: [], controlled: true, port: 0, runs: { 'stored-a': { entries: designSeed().runs['stored-a'].entries,
           stats: { contextUsage: { tokens: 42, contextWindow: 100, percent: 42 }, tokens: { input: 30, cacheRead: 70, output: 5 } } } } });
       let context;
       const shot = async (page, state) => {
+        const observedBefore = await page.evaluate(() => document.querySelector('[data-chat-run-state]')?.dataset.chatRunState);
         const file = `${name}-${state}.png`, bytes = await page.screenshot({ path: resolve(out, file) });
-        receipt.captures.push({ file, sha256: hash(bytes), scenario: name, state });
+        const observedAfter = await page.evaluate(() => document.querySelector('[data-chat-run-state]')?.dataset.chatRunState);
+        receipt.captures.push({ file, sha256: hash(bytes), scenario: name, state, observedBefore, observedAfter });
+        if (state === 'disconnected') check('disconnected-capture-state-held', observedBefore === 'reconnecting' && observedAfter === 'reconnecting');
       };
       try {
         result.url = fixture.url; // Record port0 URL before navigation.
@@ -87,8 +94,16 @@ export async function run({ phase, out }) {
         const page = await context.newPage(); page.setDefaultTimeout(8000);
         page.on('pageerror', e => result.errors.push(String(e)));
         await installSignals(page, scenario);
+        await installControlSignals(page);
         const attached = fixture.wait('frame', f => f.type === 'chat.stats');
+        const served = [];
+        page.on('response', response => {
+          const path = new URL(response.url()).pathname;
+          if (path === '/' || /^\/assets\/.*\.(js|css)$/.test(path)) served.push(response.body().then(bytes => ({ path, sha256: hash(bytes) })));
+        });
         await page.goto(fixture.url); await attached;
+        result.served = await Promise.all(served);
+        check('served-build-identity', result.served.length === 3 && result.served.every(r => r.sha256 === (r.path === '/' ? receipt.indexHtmlSha256 : assets[r.path.slice('/assets/'.length)])));
         await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-model-picker-label')?.textContent === 'Model A'
           && [...document.querySelectorAll('.th-chat-status-num')].some(n => n.textContent === '70%')));
         if (scenario.paneWidth) {
@@ -101,35 +116,39 @@ export async function run({ phase, out }) {
           }); await persisted;
         }
         if (scenario.kind === 'status') {
+          const draft = page.locator('.th-chat-input textarea'); await draft.fill('preserved unsent draft');
           const before = await page.evaluate(statusGeometry); result.observations.idle = before;
           check('metrics-visible-at-rest', !before.details && before.metrics.length === 2 && before.metrics.every(m => m.visible && !m.clipped));
           check('model-right-and-no-page-overflow', Math.abs(before.model.right - before.capsule.right) <= 2 && before.pageWidth <= before.viewport);
           check('whole-items-contained', before.metrics.every(m => m.item.left >= before.row.left && m.item.right <= before.model.left && m.item.bottom <= before.row.bottom));
           await shot(page, 'idle');
-          const draft = page.locator('.th-chat-input textarea'); await draft.fill('preserved unsent draft');
           await transition(page, () => !!document.querySelector('.th-chat-status-item--live'), async () => fixture.deliver('stored-a', { type: 'run.started' }));
           const running = await page.evaluate(statusGeometry); result.observations.running = running;
           check('one-accessible-wordless-running-slot', running.state === 'responding' && running.spinners === 1 && !!running.label && running.label === running.title && !running.text.includes(running.label));
           await shot(page, 'running');
-          await page.emulateMedia({ reducedMotion: 'reduce' });
-          check('reduced-motion-static-ring', await page.locator('.th-chat-status-spinner').evaluate(el => getComputedStyle(el).animationName === 'none' || parseFloat(getComputedStyle(el).animationDuration) <= .001));
-          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          if (scenario.width === 390 && scenario.fontSize === 24) result.observations.motion = await motionEvidence(page, state => shot(page, state));
           const reattached = fixture.wait('subscription', e => e.action === 'attach' && e.sessionId === 'stored-a');
-          const disconnected = page.evaluate(() => window.qaSignal(() => !!document.querySelector('[data-chat-run-state="reconnecting"]')
-            || [...document.querySelectorAll('.th-chat-status-item--warn')].some(el => /Reconnecting|재연결/.test(el.textContent))).then(() => ({
-              state: document.querySelector('[data-chat-run-state]')?.dataset.chatRunState,
-              spinners: document.querySelectorAll('.th-chat-status-spinner').length,
-              label: document.querySelector('[data-chat-run-state]')?.getAttribute('aria-label'),
-              color: document.querySelector('.th-chat-status-spinner') && getComputedStyle(document.querySelector('.th-chat-status-spinner')).color,
-            })));
-          fixture.disconnect('stored-a');
-          const offline = await disconnected; await reattached;
+          await page.evaluate(source => { window.qaStatusGeometry = new Function(`return (${source})`)(); }, String(statusGeometry));
+          await arm(page, () => {
+            if (!document.querySelector('[data-chat-run-state="reconnecting"]')) return false;
+            window.qaOffline = window.qaStatusGeometry(); return true;
+          });
+          await Promise.all([complete(page), Promise.resolve().then(() => fixture.disconnect('stored-a'))]);
+          const offline = await page.evaluate(() => window.qaOffline);
           result.observations.disconnected = offline;
-          check('transport-reconnect-priority', offline.state === 'reconnecting' && offline.spinners === 1 && !!offline.label && offline.color !== running.spinnerColor);
+          await shot(page, 'disconnected');
+          await reattached;
+          check('transport-reconnect-priority', offline.state === 'reconnecting' && offline.spinners === 1 && !!offline.label
+            && offline.label === offline.title && !offline.text.includes(offline.label) && offline.spinnerColor !== running.spinnerColor);
           await page.evaluate(() => window.qaSignal(() => !document.querySelector('[data-chat-run-state="reconnecting"]') && !!document.querySelector('.th-chat-status-item--live')));
           check('draft-survives-transport', await draft.inputValue() === 'preserved unsent draft');
           const after = await page.evaluate(statusGeometry);
-          check('stable-slot-metrics-model', before.slot && running.slot && Math.abs(before.model.left - running.model.left) <= 1 && Math.abs(before.metrics[0].rect.left - running.metrics[0].rect.left) <= 1 && Math.abs(after.model.left - running.model.left) <= 1);
+          result.observations.reconnected = after;
+          await shot(page, 'reconnected');
+          const stable = (a, b) => ['left', 'right', 'top', 'bottom', 'width', 'height'].every(k => Math.abs(a[k] - b[k]) <= 1);
+          check('stable-slot-metrics-model', before.slot && [running, offline, after].every(s => stable(s.slot, before.slot)
+            && stable(s.model, before.model) && s.metrics.every((m, i) => stable(m.rect, before.metrics[i].rect))));
+          if (scenario.paneWidth === 340 && scenario.fontSize === 24) result.observations.pressure = await pressureScenario(page, fixture, state => shot(page, state));
           await transition(page, () => [...document.querySelectorAll('.th-chat-status-num')].every(el => el.textContent === '0%'), async () => fixture.deliver('stored-a', { type: 'stats', contextUsage: { tokens: 0, contextWindow: 100, percent: 0 }, tokens: { input: 30, cacheRead: 0, output: 0 } }));
           check('zero-metrics-visible', (await page.evaluate(statusGeometry)).metrics.every(m => m.text === '0%' && m.visible));
         } else {
@@ -158,23 +177,25 @@ export async function run({ phase, out }) {
             const navigated = await page.evaluate(pickerGeometry); result.observations.navigated = navigated;
             const last = navigated.options.at(-1).rect;
             check('keyboard-list-owned-last-reveal', last.top >= navigated.list.top && last.bottom <= navigated.list.bottom + 1 && navigated.popupScroll === 0
-              && navigated.chrome.every((r, i) => Math.abs(r.top - initial.chrome[i].top) <= 1));
+              && navigated.chrome.every((r, i) => Math.abs(r.top - initial.chrome[i].top) <= 1)
+              && JSON.stringify(navigated.ancestorScroll) === JSON.stringify(initial.ancestorScroll));
             await shot(page, 'last');
             await search.fill('provider-b');
-            const selected = fixture.wait('frame', f => f.type === 'chat.set' && !!f.model);
-            await transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Enter'));
-            const frame = await selected;
-            check('query-exact-selection', frame.model.provider === 'provider-b' && frame.model.modelId === 'model-b');
+            const selected = await confirmControl(page, fixture, { model: { provider: 'provider-b', modelId: 'model-b' } }, () =>
+              transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Enter')));
+            result.observations.selection = selected;
+            check('query-exact-selection', selected.result.success);
             check('selection-focus-restored', await trigger.evaluate(el => document.activeElement === el));
             await transition(page, () => !!document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Enter'));
-            const thinking = fixture.wait('frame', f => f.type === 'chat.set' && f.thinkingLevel === 'max');
-            if (await page.locator('.th-thinking-in-picker select').count()) await page.locator('.th-thinking-in-picker select').selectOption('max');
-            else await page.locator('.th-thinking-level').filter({ hasText: /^max$/ }).click();
-            await thinking;
-            await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-model-picker-thinking')?.textContent === 'max'));
-            check('thinking-confirmed', true);
+            const thinking = await confirmControl(page, fixture, { thinkingLevel: 'max' }, async () => {
+              if (await page.locator('.th-thinking-in-picker select').count()) await page.locator('.th-thinking-in-picker select').selectOption('max');
+              else await page.locator('.th-thinking-level').filter({ hasText: /^max$/ }).click();
+            });
+            result.observations.thinking = thinking;
+            check('thinking-confirmed', thinking.result.success);
             await page.keyboard.press('Escape');
             check('escape-focus-restored', await trigger.evaluate(el => document.activeElement === el) && await page.locator('.th-model-picker-popover').count() === 0);
+            if (scenario.height === 900 && !scenario.layout && scenario.fontSize === 24) result.observations.regression = await pickerRegression(page, fixture, state => shot(page, state));
           } else {
             check('mobile-close-44px', initial.close.width >= 44 && initial.close.height >= 44);
             await page.locator('.th-model-picker-current .th-btn-icon').click();
@@ -195,7 +216,8 @@ export async function run({ phase, out }) {
   } finally {
     if (browser) await browser.close();
     receipt.browserClosed = !browser?.isConnected();
-    receipt.pass = receipt.results.length === inventory.length && receipt.results.every(r => r.checks.every(c => c.pass) && !r.errors.length);
+    receipt.finishedAt = new Date().toISOString();
+    receipt.pass = receipt.results.length === scenarios.length && receipt.results.every(r => r.checks.every(c => c.pass) && !r.errors.length);
     receipt.failed = receipt.results.flatMap(r => r.checks.filter(c => !c.pass).map(c => ({ scenario: r.name, ...c })));
     await save('results.json', receipt);
   }

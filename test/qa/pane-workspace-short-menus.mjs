@@ -4,6 +4,7 @@ import { mixedInputScenario } from './model-control-mixed-input.mjs';
 import { focusedFitScenarios } from './model-control-fit.mjs';
 import { wheel } from './design-workbench-fixture.mjs';
 import { transition } from './ui-composer-fixture.mjs';
+import { confirmControl } from './model-control-confirmation.mjs';
 
 /** Fixed desktop chrome with list-owned wheel/reveal, including short local panes. */
 export async function shortMenuScenarios(q) {
@@ -29,7 +30,7 @@ export async function shortMenuScenarios(q) {
           column: pane.querySelector('.th-chat-main').getBoundingClientRect().toJSON(),
           composer: pane.querySelector('.th-chat-input').getBoundingClientRect().toJSON(),
           trigger: pane.querySelector('.th-model-picker-btn').getBoundingClientRect().toJSON(),
-          ancestors: [...pane.querySelectorAll('.th-chat-main,.th-chat-scrollport')].map(e => [e.scrollTop, e.scrollLeft]),
+          ancestors: [...pane.querySelectorAll('.th-chat-main,.th-chat-scrollport,.th-chat-body')].map(e => [e.scrollTop, e.scrollLeft]),
           rows: list && [...list.children].map(e => { const r = e.getBoundingClientRect(), at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
             return { rect: r.toJSON(), complete: r.top >= bounds.top && r.bottom <= bounds.bottom, hit: at === e || e.contains(at) }; }),
           documentWidth: document.documentElement.scrollWidth };
@@ -65,29 +66,17 @@ export async function shortMenuScenarios(q) {
       assert(bottom.listScroll > opened.listScroll); assert.equal(bottom.popupScroll, 0); assert.deepEqual(bottom.chrome, opened.chrome);
       assert.deepEqual(bottom.ancestors, before.ancestors); assert.deepEqual(bottom.composer, before.composer);
       assert.equal(bottom.documentWidth, width); await shot('SCROLLED');
-      const last = bottom.rows.at(-1).rect, selection = fixture.wait('frame', f => f.type === 'chat.set' && !!f.model);
-      await transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.mouse.click(last.x + last.width / 2, last.y + last.height / 2));
-      const selected = await selection; assert.deepEqual(selected.model, { provider: 'long-provider', modelId: 'long-49' });
+      const last = bottom.rows.at(-1).rect;
+      const selected = await confirmControl(page, fixture, { model: { provider: 'long-provider', modelId: 'long-49' } }, () =>
+        transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.mouse.click(last.x + last.width / 2, last.y + last.height / 2)));
       await open();
       // All reasoning controls remain complete pointer targets, without scrolling chrome.
+      const thinkingResults = [];
       for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
         const button = page.locator('.th-thinking-level').filter({ hasText: new RegExp(`^${level}$`) });
         const r = await button.boundingBox(), p = await page.locator('.th-model-picker-popover').boundingBox();
         assert(r.y >= p.y && r.y + r.height <= p.y + p.height);
-        const changed = fixture.wait('frame', f => f.type === 'chat.set' && f.thinkingLevel === level);
-        await page.evaluate(() => {
-          window.qaThinkingResult = new Promise((done, fail) => {
-            const timer = setTimeout(() => { window.removeEventListener('qa:wire', received); fail(new Error('Thinking result deadline')); }, 8000);
-            function received({ detail: frame }) {
-              if (frame.type !== 'control.result' || frame.command !== 'set_thinking_level') return;
-              clearTimeout(timer); window.removeEventListener('qa:wire', received); done(frame);
-            }
-            window.addEventListener('qa:wire', received);
-          });
-        });
-        await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2);
-        await Promise.all([changed, page.evaluate(() => window.qaThinkingResult)]);
-        await page.evaluate(level => window.qaSignal(() => document.querySelector('.th-model-picker-thinking')?.textContent === level), level);
+        thinkingResults.push(await confirmControl(page, fixture, { thinkingLevel: level }, () => page.mouse.click(r.x + r.width / 2, r.y + r.height / 2)));
       }
       await page.keyboard.press('Escape'); assert(await trigger.evaluate(e => e === document.activeElement));
       await open(); const panel = await page.locator('.th-model-picker-popover--panel').count();
@@ -105,11 +94,10 @@ export async function shortMenuScenarios(q) {
         assert(await page.locator('.th-chat-attach-btn').evaluate(e => e === document.activeElement));
       }
       await open(); await page.locator('.th-model-picker-search').fill('provider-b');
-      const exactModel = fixture.wait('frame', f => f.type === 'chat.set' && !!f.model);
-      await transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Enter'));
-      const searched = await exactModel; assert.deepEqual(searched.model, { provider: 'provider-b', modelId: 'model-b' });
+      const searched = await confirmControl(page, fixture, { model: { provider: 'provider-b', modelId: 'model-b' } }, () =>
+        transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.keyboard.press('Enter')));
       assert(await trigger.evaluate(e => e === document.activeElement));
-      const receipt = { name, before, opened, bottom, selected, searched, tabExit: panel ? 'panel-close' : 'attachment' };
+      const receipt = { name, before, opened, bottom, selected, searched, thinkingResults, tabExit: panel ? 'panel-close' : 'attachment' };
       await q.save(`model-${name}.json`, receipt); return receipt;
     });
   }

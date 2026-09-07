@@ -8,6 +8,7 @@
  * holdHistory(id), releaseHistory(token, page), disconnect(id), traffic and subscription events support canonical QA.
  * Deferred creation: seed { deferredCreate: true }; wait("create"), resolveCreate(index).
  * Per-session seeds: runs: { [id]: { entries, queue, stats, running, model, thinkingLevel } }.
+ * controlResult(request, result) can replace or withhold (null) an isolated control response.
  * Entries use provider history shapes; queue/stats use server-frame payloads without type/sessionId.
  */
 import { EventEmitter } from "node:events";
@@ -216,12 +217,18 @@ export function startFixture(options = {}) {
             break;
           case "chat.stats": send({ type: "stats", ...(runFor(frame.sessionId).stats ?? { cost: 0 }) }); break;
           case "chat.models": send({ type: "models", models }); break;
-          case "chat.set":
-            if (frame.model) runFor(frame.sessionId).model = frame.model;
-            if (frame.thinkingLevel) runFor(frame.sessionId).thinkingLevel = frame.thinkingLevel;
-            send({ type: "ack", requestId: frame.requestId, command: frame.model ? "set_model" : "set_thinking_level" });
-            send({ type: "control.result", requestId: frame.requestId,
-              command: frame.model ? "set_model" : "set_thinking_level", success: true }); break;
+          case "chat.set": {
+            const normal = { sessionId: frame.sessionId, type: "control.result", requestId: frame.requestId,
+              command: frame.model ? "set_model" : "set_thinking_level", success: true };
+            const result = options.controlResult ? options.controlResult(frame, normal) : normal;
+            if (result?.success && result.sessionId === frame.sessionId && result.requestId === frame.requestId && result.command === normal.command) {
+              if (frame.model) runFor(frame.sessionId).model = frame.model;
+              if (frame.thinkingLevel) runFor(frame.sessionId).thinkingLevel = frame.thinkingLevel;
+            }
+            send({ type: "ack", requestId: frame.requestId, command: normal.command });
+            if (result) send(result);
+            break;
+          }
           case "chat.send":
             if (options.controlled) break;
             send({ type: "ack", requestId: frame.requestId, command: "chat.send" });

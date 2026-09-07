@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { models } from './pane-workspace-ui.mjs';
 import { wheel } from './design-workbench-fixture.mjs';
 import { transition } from './ui-composer-fixture.mjs';
+import { confirmControl } from './model-control-confirmation.mjs';
 
 /** Native keyboard reasoning -> list wheel -> raw model hover/click in the SPA. */
 export async function mixedInputScenario(q) {
@@ -33,7 +34,7 @@ export async function mixedInputScenario(q) {
       chrome: popup && [...popup.children].filter(e => e !== list).map(e => e.getBoundingClientRect().toJSON()),
       composer: pane.querySelector('.th-chat-input').getBoundingClientRect().toJSON(),
       trigger: pane.querySelector('.th-model-picker-btn').getBoundingClientRect().toJSON(),
-      ancestors: [...pane.querySelectorAll('.th-chat-main,.th-chat-scrollport')].map(e => [e.scrollTop, e.scrollLeft]),
+      ancestors: [...pane.querySelectorAll('.th-chat-main,.th-chat-scrollport,.th-chat-body')].map(e => [e.scrollTop, e.scrollLeft]),
       target: target ? { rect: rect.toJSON(), active: target.dataset.active === 'true', hit: target === hit || target.contains(hit),
         complete: rect.top >= bounds.top && rect.bottom <= bounds.bottom } : null };
   });
@@ -48,10 +49,10 @@ export async function mixedInputScenario(q) {
   const hovered = await measure(); await shot('after-hover');
   assert(hovered.sameFocus && hovered.target.complete && hovered.target.hit);
   assert.equal(hovered.scrollTop, bottom.scrollTop); assert.deepEqual(hovered.chrome, focused.chrome);
-  const requested = fixture.wait('frame', f => f.type === 'chat.set' && f.sessionId === 'stored-a');
-  await transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.mouse.click(point.x, point.y));
-  const request = await requested, after = await measure(); await shot('after-click');
   const intended = { provider: 'long-provider', modelId: 'long-49' };
+  const confirmation = await confirmControl(page, fixture, { model: intended }, () =>
+    transition(page, () => !document.querySelector('.th-model-picker-popover'), () => page.mouse.click(point.x, point.y)));
+  const { request, result, final } = confirmation, after = await measure(); await shot('after-click');
   const sets = fixture.frames.slice(baseline).filter(f => f.type === 'chat.set');
   assert.deepEqual(sets, [{ type: 'chat.set', sessionId: 'stored-a', requestId: request.requestId, model: intended }]);
   for (const state of [bottom, hovered, after]) {
@@ -59,6 +60,6 @@ export async function mixedInputScenario(q) {
     assert.deepEqual([state.trigger.top, state.trigger.right, state.trigger.bottom], [focused.trigger.top, focused.trigger.right, focused.trigger.bottom]);
   }
   assert.equal(after.popup, null); assert(await trigger.evaluate(e => e === document.activeElement));
-  const receipt = { focused, bottom, hovered, after, point, intended, request, sets };
+  const receipt = { focused, bottom, hovered, after, point, intended, request, result, final, sets };
   await q.save('model-mixed-input-v4-700.json', receipt); return receipt;
 }

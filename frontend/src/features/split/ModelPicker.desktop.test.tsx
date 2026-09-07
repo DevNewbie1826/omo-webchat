@@ -25,8 +25,10 @@ describe("bounded desktop ModelPicker", () => {
   let root: Root;
   let resize: () => void;
   let anchorTop: number;
+  const originalScrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    if (!originalScrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value() {} });
     vi.stubGlobal("innerHeight", 900);
     vi.stubGlobal("ResizeObserver", class {
       constructor(callback: () => void) { resize = callback; }
@@ -48,6 +50,8 @@ describe("bounded desktop ModelPicker", () => {
   });
   afterEach(() => {
     act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals();
+    if (originalScrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", originalScrollIntoView);
+    else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
   });
   function render() {
     const selected = vi.fn(), changed = vi.fn();
@@ -69,13 +73,20 @@ describe("bounded desktop ModelPicker", () => {
   it("moves to a panel on local resize, preserving query, navigation and focused thinking", () => {
     const { popup, selected, changed } = render();
     const search = required(popup.querySelector<HTMLInputElement>("input"));
-    act(() => { search.focus(); key("ArrowUp"); });
+    act(() => {
+      search.focus();
+      required(Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set).call(search, "long-provider");
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => key("ArrowUp"));
     const active = search.getAttribute("aria-activedescendant");
     const high = required(popup.querySelector<HTMLButtonElement>(".th-thinking-level:nth-child(5)"));
     act(() => high.focus());
     act(() => { anchorTop = 89; resize(); });
     const panel = required(document.querySelector<HTMLElement>(".th-model-picker-popover--panel"));
     expect(panel.parentElement).toBe(document.body);
+    expect(panel.querySelector("input")?.value).toBe("long-provider");
+    expect(panel.querySelectorAll('[role="option"]')).toHaveLength(50);
     expect(panel.querySelector("input")?.getAttribute("aria-activedescendant")).toBe(active);
     expect(document.activeElement?.textContent).toBe("high");
     expect(selected).not.toHaveBeenCalled(); expect(changed).not.toHaveBeenCalled();
@@ -97,7 +108,7 @@ describe("bounded desktop ModelPicker", () => {
     expect(document.activeElement).toBe(trigger);
   });
   it("scrolls only the desktop list to reveal the active option, never chrome or a hidden ancestor", () => {
-    const scrollIntoView = vi.fn(); vi.stubGlobal("scrollIntoView", scrollIntoView);
+    const scrollIntoView = vi.spyOn(Element.prototype, "scrollIntoView");
     const { popup } = render();
     const list = required(popup.querySelector<HTMLElement>(".th-model-picker-list"));
     const options = popup.querySelectorAll<HTMLElement>('[role="option"]');
