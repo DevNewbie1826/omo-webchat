@@ -376,9 +376,9 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(rowStatus, "flex")).toMatch(/^1 1 /);
     expect(declarationValue(rowStatus, "min-width")).toBe("0");
     const slotPicker = ruleBody(chatPane, ".th-chat-controls .th-model-picker");
-    expect(declarationValue(slotPicker, "flex")).toMatch(/^0 1 /);
+    expect(declarationValue(slotPicker, "flex")).toBe("0 0 auto");
     expect(declarationValue(slotPicker, "min-width")).toBe("0");
-    expect(declarationValue(slotPicker, "max-width")).toBe("60%");
+    expect(declarationValue(slotPicker, "max-width")).toBe("45%");
     // Secondary metrics keep a disclosure whose marker is suppressed; the
     // summary is the disclosure's only control.
     expect(chatPane).toMatch(/\.th-chat-status-details summary\s*\{[^}]*list-style:\s*none/);
@@ -458,6 +458,30 @@ describe("visual accessibility contracts", () => {
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--sheet .th-model-picker-list"), "min-height"))
       .toBe("var(--th-space-11)");
     expect(declarationValue(sheet, "box-shadow")).toBe("var(--th-shadow-raised)");
+  });
+
+  it("reserves the Details peer outside primary overflow", () => {
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status"), "overflow-x")).toBe("");
+    const primary = ruleBody(chatPane, ".th-chat-status-primary");
+    expect(declarationValue(primary, "overflow-x")).toBe("auto");
+    expect(declarationValue(primary, "min-width")).toBe("0");
+    expect(declarationValue(primary, "flex")).toBe("1 1 0");
+    expect(declarationValue(ruleBody(chatPane, ".th-chat-status-details"), "flex")).toBe("none");
+  });
+
+  it("reflows the sheet header by local width without shrinking the close or fragmenting identity", () => {
+    expect(declarationValue(ruleBody(chatPane, ".th-model-picker-popover--sheet"), "container"))
+      .toBe("model-sheet / inline-size");
+    let narrow = "";
+    postcss.parse(chatPane).walkAtRules("container", rule => {
+      if (rule.params === "model-sheet (max-width: 180px)") narrow = rule.toString();
+    });
+    expect(declarationValue(ruleBody(narrow, ".th-model-picker-current"), "flex-direction")).toBe("column-reverse");
+    expect(declarationValue(ruleBody(narrow, ".th-model-picker-current > div"), "width")).toBe("100%");
+    const identity = ruleBody(narrow, ".th-model-picker-current > div > *");
+    expect(declarationValue(identity, "white-space")).toBe("nowrap");
+    expect(declarationValue(identity, "overflow")).toBe("hidden");
+    expect(declarationValue(identity, "text-overflow")).toBe("ellipsis");
   });
 
   it("keeps resync compact with a 44px header target on narrow panes", () => {

@@ -125,23 +125,32 @@
 }
 
 .th-chat-status {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--th-space-3);
+  gap: var(--th-space-2);
   min-width: 0;
   min-height: 24px;
   padding: 0 var(--th-space-0-5);
-  overflow-x: auto;
   color: var(--th-text-dim);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
   line-height: var(--th-type-micro-line);
   letter-spacing: var(--th-type-micro-tracking);
-  scrollbar-width: none;
   white-space: nowrap;
 }
 
-.th-chat-status::-webkit-scrollbar {
+.th-chat-status-primary {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: var(--th-space-3);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.th-chat-status-primary::-webkit-scrollbar {
   display: none;
 }
 
@@ -881,14 +890,33 @@
 }
 
 .th-chat-controls .th-chat-status {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
 .th-chat-controls .th-model-picker {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
-  max-width: 60%;
+  max-width: 45%;
+}
+
+/* Disclosure adds a second line without changing either control's allocation.
+   Its content is still natively hidden/announced by the owning details. */
+.th-chat-controls:has(.th-chat-status-details[open]) {
+  padding-bottom: var(--th-space-6);
+}
+
+.th-chat-status-metrics {
+  position: absolute;
+  top: 100%;
+  left: var(--th-space-0-5);
+  right: var(--th-space-0-5);
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-3);
+  height: var(--th-space-6);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 /* Secondary context/cache metrics collapse into a keyboard-accessible
@@ -984,6 +1012,7 @@
    fits, flex sizing makes the sheet content fit exactly and nothing scrolls.
    The identity header is pinned inside that scrollport below. */
 .th-model-picker-popover--sheet {
+  container: model-sheet / inline-size;
   position: fixed;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1011,4 +1040,23 @@
 .th-model-picker-popover--sheet .th-model-picker-list > button {
   flex: none;
   min-height: var(--th-space-11);
+}
+
+/* Zoom/pan can leave an 85px sheet even in a 390px layout viewport. Use
+   the actual sheet width, keeping the 44px close in its own full row. */
+@container model-sheet (max-width: 180px) {
+  .th-model-picker-current {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+
+  .th-model-picker-current > div {
+    width: 100%;
+  }
+
+  .th-model-picker-current > div > * {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }

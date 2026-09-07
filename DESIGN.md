@@ -441,10 +441,14 @@ Choose a tested foreground/background token pair instead.
   formula, and every band centers in the same column. The selector's right
   edge and the capsule's edge agree within 2 CSS px at every pane width, the
   row is one line in the normal case, and there is no document horizontal
-  overflow. The status strip scrolls internally under width pressure so the
-  selector stays visible without scrolling, including at 340px panes and with
-  long Korean labels; the selector's label truncates within a bounded share
-  of the row.
+  overflow. Only the inner primary status strip scrolls under width pressure;
+  Details remains a complete fixed peer inside the announced status region,
+  immediately before the right-pinned model, at rest and on keyboard focus.
+  The selector retains a meaningful bounded share independent of preview
+  minima, including at 340px panes and with long Korean labels. Request focus
+  reveals only its primary scroll owner, never hidden outer ancestors.
+  Opening Details may add a second metrics line without reallocating either
+  control; the normal row remains compact.
 - One bottom trigger shows the current model and reported reasoning level in
   both its visible and accessible state at every pane width. There is no header
   thinking select. Before catalog hydration, the exact reported model key is
@@ -485,10 +489,13 @@ Choose a tested foreground/background token pair instead.
   explicit original-draft recovery with a duplicate-submission warning; it
   never retries or fills the composer automatically. A completed send ACK
   retires that request, not an independently running assistant response.
-- Running, reconnecting, compacting, and uncertain-send states stay direct
-  strip items; secondary metrics (context usage, cache hit) render inside a
-  keyboard-accessible disclosure within the strip and remain part of its
-  announced status region.
+- Running, reconnecting, compacting, and uncertain-send states stay primary
+  strip content outside Details at any nesting depth. Reconnect and compaction
+  warnings precede variable previews. Request inspection, steer feedback and
+  recovery actions remain outside Details; only secondary metrics (context
+  usage, cache hit) live in its native keyboard-accessible disclosure within
+  the announced status region. Details retains its full 44px coarse-pointer
+  target.
 - Failed originals follow their logical workspace/chat while panes move or
   remount. Recovery restores text, image, and command identity without sending.
 
@@ -636,7 +643,11 @@ At 390x844 and comparable narrow sizes:
   or summoning its keyboard. When the bound is over-constrained the fixed
   chrome scrolls beneath the pinned identity header and the list keeps a
   bounded minimum scrollport, so no content paints outside the sheet. Current
-  model/provider identity stays pinned above the scrolling options. Selection
+  model/provider identity stays pinned above the scrolling options. When the
+  sheet itself is very narrow (including an 85px panned sheet), its local width
+  query puts the unchanged 44px close on its own row and gives identity the
+  full inset content width with single-line ellipsis, never character fragments.
+  Safe insets, type sizes and viewport handling are unchanged. Selection
   uses exact provider/model identity, independent of navigation focus, and
   the current row is visible on opening;
 - header controls remain reachable with 44px touch targets;
