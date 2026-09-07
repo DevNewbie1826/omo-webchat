@@ -365,14 +365,18 @@
   }
 }
 
-/* Installed PWA, keyboard closed: #root paints the full physical screen, so
-   the composer docks at the true bottom edge. Its controls need the
-   home-indicator inset as internal reserve - the necessary inset subsumes
-   the breathing-room budget wherever the inset exists - while the element's
-   own background stays full-bleed. The keyboard-open state, ordinary
-   browsers, and desktop standalone windows keep the base padding. */
-@media (pointer: coarse) {
-  html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input {
-    padding-bottom: env(safe-area-inset-bottom);
+/* An in-flow physical-reserve slot supplements, never replaces, the base
+   breathing padding. Together they reserve max(breathing, necessary inset)
+   inside the full-bleed background, including ordinary browsers. The empty
+   slot is absent while the keyboard is open, leaving only base breathing. */
+html:not([data-th-keyboard-open]) .th-chat-input::after {
+  content: "";
+  flex: none;
+  height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-1)));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html:not([data-th-keyboard-open]) .th-chat-input::after {
+    height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-4)));
   }
 }

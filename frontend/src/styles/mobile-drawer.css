@@ -21,11 +21,9 @@
     animation: th-fade-in var(--th-dur) var(--th-ease);
   }
 
-  /* Mirror #root's standalone gate: shade the installed app's whole
-     physical screen (keyboard closed) instead of stopping above the
-     home-indicator gesture zone. */
+  /* Share #root's closed standalone large-height basis so the backdrop
+     covers the same surface as the drawer. */
   html[data-th-standalone]:not([data-th-keyboard-open]) .th-backdrop {
-    height: 100vh;
     height: 100lvh;
   }
 

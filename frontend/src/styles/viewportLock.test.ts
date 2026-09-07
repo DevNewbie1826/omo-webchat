@@ -23,15 +23,13 @@ describe("mobile viewport lock", () => {
   });
 
   it("shades the installed standalone PWA's full screen with the drawer backdrop", () => {
-    // Mirrors #root's standalone gate: with the dynamic viewport collapsed
-    // above the gesture zone, the fixed backdrop must consume the large
-    // viewport (keyboard closed) or the bottom of the physical screen stays
-    // unshaded. Ordinary browsers keep the visual-viewport height.
+    // The closed standalone backdrop shares the root's large-height basis.
+    // Ordinary browser and keyboard rules retain raw visual height.
     const drawerCss = readFileSync("src/styles/mobile-drawer.css", "utf8");
     const backdrop = drawerCss.match(
       /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) \.th-backdrop \{([^}]*)\}/,
     )?.[1] ?? "";
-    expect(backdrop).toContain("height: 100lvh");
+    expect(backdrop.match(/height:\s*[^;]+;/g)).toEqual(["height: 100lvh;"]);
   });
 
   it("opts the shell out of touch gesture zoom", () => {

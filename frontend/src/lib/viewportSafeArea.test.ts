@@ -25,39 +25,35 @@ describe("mobile safe area", () => {
   });
 
   test("paints the installed standalone PWA's full screen only while the keyboard is closed", () => {
-    // Installed PWAs collapse the dynamic viewport above the home-indicator
-    // gesture zone, so the 100dvh shell ended 50px short of the physical
-    // 812px screen and the body background showed through below the
-    // composer. The large viewport is the installed app's real paintable
-    // screen; gate it on the script's standalone marker with a closed
-    // keyboard so the keyboard-open VisualViewport contract and the
-    // ordinary-browser dvh policy stay untouched.
+    // The recorded installed device measured screen/lvh 812 and dvh/visual
+    // 762. Only the closed standalone surface uses lvh; raw visual geometry
+    // and ordinary-browser dvh remain separate policies.
     const standalone = globalCss.match(
       /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) #root \{([^}]*)\}/,
     )?.[1] ?? "";
-    expect(standalone).toContain("height: 100vh");
-    expect(standalone).toContain("height: 100lvh");
+    expect(standalone.match(/height:\s*[^;]+;/g)).toEqual(["height: 100lvh;"]);
     // dvh remains the only ungated full-surface height.
     const base = globalCss.match(/^#root \{([^}]*)\}/m)?.[1] ?? "";
     expect(base).toContain("height: 100dvh");
     expect(base).not.toContain("lvh");
   });
 
-  test("reserves the standalone composer's control-safe inset once behind a full-bleed background", () => {
-    // Once #root paints the full physical screen the composer docks at the
-    // true bottom edge: its controls need the home-indicator inset as
-    // internal padding - the necessary inset subsumes the breathing-room
-    // budget wherever the inset exists - while the element's background
-    // stays full-bleed. Coarse pointers only: a desktop standalone window
-    // keeps its hover breathing room, and the keyboard-open and
-    // ordinary-browser policies keep the base padding.
+  test("reserves only the additional physical inset after the composer's unchanged breathing padding", () => {
     const composerCss = readFileSync("src/styles/chat-composer.css", "utf8");
-    const reserve = composerCss.match(
-      /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) \.th-chat-input \{([^}]*)\}/,
-    )?.[1] ?? "";
-    expect(reserve).toContain("padding-bottom: env(safe-area-inset-bottom)");
     const base = composerCss.match(/^\.th-chat-input \{([^}]*)\}/m)?.[1] ?? "";
     expect(base).toContain("padding: var(--th-space-3) 0 var(--th-space-1)");
+    expect(base).toContain("background: var(--th-bg)");
+    // A non-shrinking final flex item adds only the inset exceeding the base
+    // padding. The keyboard has no physical slot; browser mode is protected too.
+    const slot = composerCss.match(
+      /^html:not\(\[data-th-keyboard-open\]\) \.th-chat-input::after \{([^}]*)\}/m,
+    )?.[1] ?? "";
+    expect(slot).toContain('content: ""');
+    expect(slot).toContain("flex: none");
+    expect(slot).toContain("height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-1)))");
+    const fine = composerCss.match(/@media \(hover: hover\) and \(pointer: fine\) \{([\s\S]*?)\n\}/g)?.join("\n") ?? "";
+    expect(fine).toMatch(/\.th-chat-input \{[^}]*padding-bottom: var\(--th-space-4\)/);
+    expect(fine).toMatch(/html:not\(\[data-th-keyboard-open\]\) \.th-chat-input::after \{[^}]*height: max\(0px, calc\(env\(safe-area-inset-bottom\) - var\(--th-space-4\)\)\)/);
   });
 
   test("keeps the safe inset when focus outlives the software keyboard", () => {

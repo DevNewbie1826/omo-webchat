@@ -24,11 +24,8 @@ body {
   top: 0;
   left: 0;
   width: 100%;
-  /* 100dvh is the layout viewport (ICB). On iOS PWAs the physical screen is
-     taller (home-indicator gesture zone sits below the ICB and only the body
-     background can paint there), so the large-viewport unit would push the
-     composer into that zone and clip it. dvh keeps every control inside the
-     renderable area. */
+  /* Ordinary browsers retain their dynamic-viewport surface. Standalone
+     coverage and keyboard geometry have separate rules below. */
   height: 100dvh;
   overflow: hidden;
   /* Keep header and side controls clear of cutouts. The mobile input bar
@@ -37,13 +34,10 @@ body {
 }
 
 html[data-th-standalone]:not([data-th-keyboard-open]) #root {
-  /* Installed PWAs collapse the dynamic viewport above the home-indicator
-     gesture zone, so 100dvh leaves the bottom of the physical screen to the
-     body background (measured: root ends at 762 of the 812 screen). The
-     large viewport is the installed app's real paintable screen while no
-     keyboard is open; the keyboard rule below keeps VisualViewport geometry
-     and ordinary browsers never set the standalone marker. */
-  height: 100vh;
+  /* The recorded installed device measured screen/lvh 812 and dvh/visual
+     762. Use the large-height basis for the closed standalone surface;
+     composer/sidebar controls own their internal safe reserve. Raw visual
+     variables and ordinary-browser height keep their existing meanings. */
   height: 100lvh;
 }
 
