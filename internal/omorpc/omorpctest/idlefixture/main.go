@@ -77,6 +77,7 @@ type controls struct {
 func (c *controls) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /state", c.state)
+	mux.HandleFunc("POST /close/await", c.awaitClose)
 	mux.HandleFunc("POST /notice", c.notice)
 	mux.HandleFunc("POST /silent", c.silent)
 	mux.HandleFunc("POST /history", c.history)
@@ -147,8 +148,9 @@ func (c *controls) state(w http.ResponseWriter, _ *http.Request) {
 		"root": c.root, "agentDir": filepath.Join(c.root, "agent"),
 		"workspaceA": filepath.Join(c.root, "workspaces", "chat-a"),
 		"workspaceB": filepath.Join(c.root, "workspaces", "chat-b"),
-		"openCount":  c.daemon.OpenCount(), "promptCount": c.daemon.RequestCount(omorpc.CmdPrompt),
-		"sessions": c.daemon.SessionSnapshots(),
+		"openCount":  c.daemon.OpenCount(), "closeCount": c.daemon.CloseCount(), "promptCount": c.daemon.RequestCount(omorpc.CmdPrompt),
+		"openRequestCount": c.daemon.RequestCount(omorpc.CmdOpenSession),
+		"sessions":         c.daemon.SessionSnapshots(),
 	})
 }
 
