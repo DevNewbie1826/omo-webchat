@@ -41,6 +41,12 @@
   /* Overlay - the highest captured surface; the scrim and strong border do
      the separating work. */
   --th-surface-overlay: #2d2d2d;
+  /* Tool block - scoped material for executed tool records in both
+     disclosure states: the measured elevated-chrome fill behind the default
+     white-alpha hairline, visibly distinct from the Canvas without moving
+     the global palette (DESIGN.md "Tool-execution block anatomy"). */
+  --th-tool-surface: #282828;
+  --th-tool-border: rgba(255, 255, 255, 0.084);
   /* State treatments are the measured highlighted row (#3d3d3d) plus one
      alpha tier for press/selection. */
   --th-hover: #3d3d3d;
@@ -200,6 +206,13 @@
      separated on white. */
   --th-surface-user: #ffffff;
   --th-surface-overlay: #ffffff;
+  /* Tool block - scoped material for executed tool records in both
+     disclosure states: a lightly gray step off the measured white Canvas
+     behind the default foreground-alpha hairline. Every text and status
+     tier keeps the 4.5:1 matrix on this fill (faint is the binding pair at
+     5.0:1). */
+  --th-tool-surface: #f5f6f7;
+  --th-tool-border: rgba(26, 28, 31, 0.078);
   /* State treatments darken: the measured highlighted row, then one alpha
      tier further. */
   --th-hover: #f2f3f3;

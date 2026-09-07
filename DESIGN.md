@@ -83,7 +83,8 @@ styles must not create a second competing global palette.
 | Role | Token |
 | --- | --- |
 | App canvas | `--th-bg` |
-| Sidebar / top bar / tool shell | `--th-surface` |
+| Sidebar / top bar | `--th-surface` |
+| Tool block material | `--th-tool-surface`, `--th-tool-border` |
 | Composer capsule | `--th-surface-composer` |
 | Raised modal / selected surface | `--th-surface-raised` |
 | Hover / active | `--th-hover`, `--th-active` |
@@ -189,7 +190,8 @@ current level, modals migrate to Overlay, and neither uses Raised merely because
 | Level and tokens | Job | Dark-theme technique | Light-theme technique |
 | --- | --- | --- | --- |
 | Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | Measured canvas `#181818`; no border or shadow | Measured canvas `#ffffff`; no border or shadow |
-| Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, tool shell | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
+| Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
+| Tool block / `--th-tool-surface`, `--th-tool-border` | Executed tool records in both disclosure states; the expanded body insets Canvas | The measured elevated-chrome fill `#282828` with the default white-alpha hairline; no shadow | A lightly gray step off the measured white Canvas (`#f5f6f7`) with the default foreground-alpha hairline; no shadow |
 | Composer / `--th-surface-composer` | The composer capsule only: an opaque approximation of the native composer material (`#2a2a2a` dark, white light) | The Surface border and shadow treatment on its own fill | The Surface border and shadow treatment on its own fill |
 | Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Measured menu/chooser fill `#2d2d2d` with the default border; no box shadow (the measured chooser carries none) | White with the default border; no box shadow, matching the measured chooser |
 | User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like dark: the strong border alone, because the Raised shadow is none in both themes (the measured menu carries none) |
@@ -510,10 +512,10 @@ Choose a tested foreground/background token pair instead.
   hook) pads its top with `--th-space-5`, so spacing before a user turn
   (28px total) visibly exceeds the 16px within-assistant rhythm without
   reordering the transcript.
-- Tool calls use one compact disclosure per tool: collapsed records read as
-  quiet transcript rows with no enclosure, and expanded records take the
-  bounded Surface well. Status color is secondary to the label and never the
-  only signal.
+- Tool calls use one compact disclosure per tool: both collapsed and expanded
+  records share one persistent scoped tool material behind a subtle hairline
+  boundary, visibly distinct from transparent prose on Canvas. Status color
+  is secondary to the label and never the only signal.
 - Thinking uses a collapsed disclosure with a subtle left rule.
 - The completion status is metadata, not a separate message.
 - Long words, URLs, code, Korean, and mixed-width text wrap without causing
@@ -526,12 +528,13 @@ addressable transcript block keyed by `toolCallId`. Invocation and result must
 never render as detached rows or neighboring cards, and restored history and
 live execution must converge on the same structure. The block spans the
 available reading-column width and uses one disclosure control and one shared
-state. A collapsed record carries no enclosure of its own -- transparent
-background, no border, no shadow -- so consecutive executions read as
-inspectable transcript rows rather than a wall of cards; hover and keyboard
-focus keep a rounded treatment on the header itself. The Surface enclosure
-appears only when the expanded body is present, so running output is visibly
-bounded.
+state. Every record carries one persistent enclosure of its own -- the scoped
+`--th-tool-surface` fill behind a `--th-tool-border` hairline -- so collapsed
+and expanded tools alike read as a material visibly distinct from the
+transparent prose around them in both themes, without becoming a wall of
+heavy cards; hover and keyboard focus keep a rounded treatment on the header
+itself. The expanded body insets Canvas inside that enclosure, so running
+output is visibly bounded.
 
 Collapsed blocks show two compact lines inside the 48px disclosure header:
 
@@ -568,20 +571,24 @@ only as a third, redundant cue. Under reduced motion the running ring remains
 distinct but static.
 
 Colour roles come from the measured reference mapping, not from the captured
-tool chooser (a menu, not an executed output card): collapsed records stay
-transparent on Canvas, the expanded shell takes the elevated-chrome Surface
-role, and the expanded body insets Canvas, so output surfaces reuse measured
-roles instead of inventing an unmeasured card treatment. Status hues used as
-text are the theme-scoped status tokens and carry the contrast matrix below.
+tool chooser (a menu, not an executed output card): both disclosure states
+share one scoped tool material, `--th-tool-surface` behind `--th-tool-border`,
+and the expanded body insets Canvas, so the boundary and material never
+depend on the disclosure state. The dark tool fill reuses the measured
+elevated-chrome role and the light tool fill is a lightly gray step off the
+measured white Canvas; both stay inside the app's fill/border idiom instead
+of inventing an unmeasured card treatment or moving the global palette.
+Status hues used as text are the theme-scoped status tokens and keep the
+contrast matrix below on the tool fill.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
-captions use Micro. Collapsed records sit directly on Canvas at no elevation.
-An expanded block sits at Surface elevation with a `--th-border` outline,
-`--th-radius-sm`, and no independent shadow, while its expanded body
-uses Canvas as an inset, so the output boundary is unmistakable without
-re-enclosing the collapsed rows above it. It recedes behind transparent Body-tier assistant
-prose through smaller type, compact spacing, and dim or muted text tokens --
+captions use Micro. Every block sits on the scoped tool material with a
+`--th-tool-border` outline, `--th-radius-sm`, and no independent shadow or
+whole-card status glow, while its expanded body uses Canvas as an inset, so
+the output boundary is unmistakable without re-enclosing the rows above it. It
+recedes behind transparent Body-tier assistant prose through smaller type,
+compact spacing, and dim or muted text tokens --
 never whole-block opacity -- but stays scannable through fixed alignment,
 monospace command text, the persistent status glyph and word, and one block per
 invocation.
