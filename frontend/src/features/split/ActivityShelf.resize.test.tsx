@@ -6,6 +6,7 @@ import { I18nContext } from "../../i18n";
 import type { ActivityState, ActivityTask } from "./activityTypes";
 import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
+import { openShelf as ensureShelfOpen } from "./ActivityShelf.support";
 
 const PANEL_MIN = 120;
 /** 60vh against the jsdom viewport — the same ceiling as the sized-panel CSS. */
@@ -555,6 +556,29 @@ describe("ActivityShelf resize", () => {
       HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
       expect(container.querySelector(".th-activity-panel")).not.toBeNull();
       expect(shelfOf().getAttribute("data-expanded")).toBe("true");
+    });
+
+    it("ensure-open preserves selected-tab intent while allocation hides the panel", () => {
+      const fixture = mountInColumn();
+      renderShelf();
+      ensureShelfOpen(container);
+      fixtureRects(fixture);
+      mockRect(fixture.column, 300);
+      HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 300);
+      expect(shelfOf().dataset["open"]).toBe("true");
+      expect(shelfOf().dataset["expanded"]).toBe("false");
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+
+      const selected = ensureShelfOpen(container);
+      expect(selected.dataset["activityTab"]).toBe("agents");
+      expect(shelfOf().dataset["open"]).toBe("true");
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+      mockRect(fixture.column, 800);
+      HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
+      expect(shelfOf().dataset["expanded"]).toBe("true");
+      expect(container.querySelector(".th-activity-panel")).not.toBeNull();
+      expect(ensureShelfOpen(container)).toBe(selected);
+      expect(shelfOf().dataset["open"]).toBe("true");
     });
 
     it("clears the inline clamp and the shelf's no-yield shrink when the shelf closes", () => {

@@ -82,7 +82,7 @@ export function click(element: Element): void {
  *  opens the panel. Inspects current state — an already-open shelf is left
  *  open (a selected-tab click would close it). */
 export function openShelf(container: ParentNode): HTMLButtonElement {
-  if (container.querySelector(".th-activity-panel") === null) {
+  if (container.querySelector(".th-activity-shelf")?.getAttribute("data-open") !== "true") {
     const tab = requireElement(
       container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
       "selected activity tab",
