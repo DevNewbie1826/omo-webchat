@@ -3,6 +3,7 @@ import { parseConversationFrame } from "./chatWsParseConversation";
 import { isRecord, reqString } from "./chatWsParseFields";
 import { parseLifecycleFrame } from "./chatWsParseLifecycle";
 import { parseSessionFrame } from "./chatWsParseSession";
+import { parseTodoFrame } from "./chatWsParseTodo";
 import { parseServerFrame, SERVER_FRAME_TYPES } from "./contract/types_gen";
 
 export { sanitizeJson } from "./chatWsParseFields";
@@ -38,6 +39,8 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
   const sessionId = reqString(validated, "sessionId");
   if (!sessionOptional && sessionId === null) return null;
   switch (type) {
+    case "chat.todo":
+      return parseTodoFrame(validated);
     case "ready":
     case "chat.name":
     case "messageDelta":

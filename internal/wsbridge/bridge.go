@@ -108,6 +108,7 @@ type Config struct {
 	// ActivitySource defaults to Manager when it implements ActivitySource.
 	// The explicit field keeps the manager-cache seam independently testable.
 	ActivitySource ActivitySource
+	todoWatch      *todoWatchOptions
 }
 
 // Handler is a gws event handler and an HTTP WebSocket endpoint.
@@ -305,6 +306,8 @@ type connection struct {
 	sess              *session.Session
 	detach            func()
 	goalCancel        context.CancelFunc
+	todoBindingID     string
+	todo              *todoWatch
 	activityMu        sync.Mutex
 	activity          *activitySubscription
 	hello             bool
@@ -408,6 +411,7 @@ func (c *connection) unbind() (string, *session.Session) {
 	c.stopGoalWatch()
 	c.stateMu.Lock()
 	id, s, detach := c.chatID, c.sess, c.detach
+	c.invalidateTodoWatchLocked()
 	c.wsID, c.chatID, c.sess, c.detach = "", "", nil, nil
 	c.bindingGeneration++
 	c.stateMu.Unlock()
@@ -638,6 +642,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 	case *wscontract.ChatStatsFrame:
 		c.queryRecovering(ctx, recoveryBinding{workspaceID: workspaceID, stale: queryBinding{chatID: bound, generation: bindingGeneration, session: sess}}, recoverableQuery{command: "get_session_stats", run: c.queryStats})
 	case *wscontract.ActivityRefreshFrame:
+		c.markTodoDirty(queryBinding{chatID: bound, generation: bindingGeneration, session: sess})
 		if sess != nil {
 			for _, x := range sess.ActivitySnapshot() {
 				_ = c.sub.DeliverFrame(x)
@@ -793,6 +798,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 		return false
 	}
 	oldDetach := op.conn.detach
+	op.conn.invalidateTodoWatchLocked()
 	op.conn.sess, op.conn.detach, op.conn.sub = acquired, wrappedDetach, sub
 	op.conn.stateMu.Unlock()
 	if !sub.activate(ctx, !started) {
@@ -1055,6 +1061,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			return nil
 		}
 		c.bindingGeneration++
+		c.invalidateTodoWatchLocked()
 		c.wsID, c.chatID, c.sess, c.detach = f.WsID, f.ChatID, acquired, wrappedDetach
 		c.stateMu.Unlock()
 		if !sub.activate(ctx, !started) {
@@ -1540,6 +1547,7 @@ type queryBinding struct {
 	chatID     string
 	generation uint64
 	session    *session.Session
+	bindingID  string
 }
 
 func (c *connection) beginQuery(s *session.Session) (queryBinding, bool) {
@@ -1548,7 +1556,7 @@ func (c *connection) beginQuery(s *session.Session) (queryBinding, bool) {
 }
 
 func (c *connection) queryCurrentLocked(q queryBinding) bool {
-	return !c.closed.Load() && c.chatID == q.chatID && c.bindingGeneration == q.generation && c.sess == q.session
+	return !c.closed.Load() && c.chatID == q.chatID && c.bindingGeneration == q.generation && c.sess == q.session && (q.bindingID == "" || c.todoBindingID == q.bindingID)
 }
 
 // writeIfCurrent keeps the binding claim through the socket write, so a rebind

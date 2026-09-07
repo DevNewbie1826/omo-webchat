@@ -51,7 +51,11 @@ function validateSchemaDocument(fileID, root) {
     if ("items" in node && node.type !== "array") throw new Error(`${fileID}${path}: items require array type`);
     if (node.type === "array" && !("items" in node)) throw new Error(`${fileID}${path}: array type requires items`);
     if ("type" in node && (!SCHEMA_TYPES.has(node.type))) throw new Error(`${fileID}${path}: invalid schema type ${JSON.stringify(node.type)}`);
-    if ("format" in node && (node.format !== "rfc3339nano" || node.type !== "string")) throw new Error(`${fileID}${path}: unsupported format ${JSON.stringify(node.format)}`);
+    if ("format" in node) {
+      const valid = node.format === "rfc3339nano" && node.type === "string"
+        || ["chat-todo", "todo-binding-ready"].includes(node.format) && node.type === "object";
+      if (!valid) throw new Error(`${fileID}${path}: unsupported format ${JSON.stringify(node.format)}`);
+    }
     if ("properties" in node) {
       if (!node.properties || typeof node.properties !== "object" || Array.isArray(node.properties)) throw new Error(`${fileID}${path}/properties: must be an object`);
       for (const [name, child] of Object.entries(node.properties)) walk(child, `${path}/properties/${name}`);
@@ -278,6 +282,26 @@ async function main() {
   b.push("  if (month < 1 || month > 12 || day < 1 || day > monthDays[month - 1]! || hour > 23 || minute > 59 || second > 59) return false;");
   b.push("  return match[8] === undefined || (Number(match[8]) <= 24 && Number(match[9]) <= 60);");
   b.push("}");
+  b.push(`// Object formats validate combinations after structural validation, not source ordering.
+function validTodoFormat(object: Record<string, unknown>, format: string | undefined): boolean {
+  const nonempty = (value: unknown): boolean => typeof value === "string" && value.length > 0;
+  const coordinate = (value: unknown): boolean => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  const owns = (key: string): boolean => Object.prototype.hasOwnProperty.call(object, key);
+  if (format === "todo-binding-ready") {
+    return !owns("bindingId") || nonempty(object["bindingId"]) && nonempty(object["sessionId"]) && nonempty(object["piSessionId"]);
+  }
+  if (format !== "chat-todo") return true;
+  if (!nonempty(object["sessionId"]) || !nonempty(object["durableSessionId"]) || !nonempty(object["bindingId"]) || !coordinate(object["requestGeneration"])) return false;
+  if (object["status"] === "unavailable") return owns("error") && !owns("source") && !owns("phases");
+  if (!owns("source") || !owns("phases") || owns("error")) return false;
+  const source = object["source"];
+  if (typeof source !== "object" || source === null || Array.isArray(source)) return false;
+  const cursor = source as Record<string, unknown>;
+  if (cursor["kind"] === "absent") {
+    return (cursor["leafId"] === null || nonempty(cursor["leafId"])) && cursor["entryId"] === null && cursor["entryIndex"] === null && object["phases"] === null;
+  }
+  return nonempty(cursor["leafId"]) && nonempty(cursor["entryId"]) && coordinate(cursor["entryIndex"]) && Array.isArray(object["phases"]);
+}`);
   b.push("function validates(value: unknown, spec: ValidationSchema): boolean {");
   b.push("  if (spec.anyOf) return spec.anyOf.some((branch) => validates(value, branch));");
   b.push("  if (spec.json) return isJsonValue(value);");
@@ -294,7 +318,7 @@ async function main() {
   b.push("      if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;");
   b.push("      const object = value as Record<string, unknown>;");
   b.push("      if (spec.required?.some((key) => !Object.prototype.hasOwnProperty.call(object, key))) return false;");
-  b.push("      return Object.entries(spec.properties ?? {}).every(([key, child]) => !Object.prototype.hasOwnProperty.call(object, key) || validates(object[key], child));");
+  b.push("      return Object.entries(spec.properties ?? {}).every(([key, child]) => !Object.prototype.hasOwnProperty.call(object, key) || validates(object[key], child)) && validTodoFormat(object, spec.format);");
   b.push("    }");
   b.push("    default: return true;");
   b.push("  }");
