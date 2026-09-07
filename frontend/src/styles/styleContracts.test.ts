@@ -676,24 +676,30 @@ describe("chat reading rhythm and tool width contracts", () => {
     expect(io).toMatch(/font-family:\s*var\(--th-font-mono\)/);
   });
 
-  it("keeps collapsed tool records unboxed and bounds expanded output in a Surface well", () => {
-    // DESIGN.md "Tool-execution block anatomy": a collapsed record carries no
-    // enclosure (transparent, borderless, shadowless) so executions read as
-    // transcript rows; the Surface well appears only with the expanded body.
+  it("gives every tool record the scoped persistent material and subtle boundary", () => {
+    // DESIGN.md "Tool-execution block anatomy" (P4): collapsed and expanded
+    // records share one scoped tool material behind a 1px hairline, visibly
+    // distinct from transparent prose on Canvas, with no independent shadow
+    // or whole-card status glow; the expanded body insets Canvas.
     const block = toolCard.match(/\.th-tool\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(block).toMatch(/overflow:\s*hidden/);
     expect(block).toMatch(/border-radius:\s*var\(--th-radius-sm\)/);
-    expect(block).not.toMatch(/(?:^|;)\s*background:/);
-    expect(block).not.toMatch(/(?:^|;)\s*border(?:-\w+)?:/);
+    expect(block).toMatch(/border:\s*1px solid var\(--th-tool-border\)/);
+    expect(block).toMatch(/background:\s*var\(--th-tool-surface\)/);
     expect(block).not.toMatch(/box-shadow/);
-    const well = toolCard.match(/\.th-tool:has\(> \.th-tool-body\)\s*\{([^}]*)\}/)?.[1] ?? "";
-    expect(well).toMatch(/background:\s*var\(--th-surface\)/);
-    expect(well).toMatch(/border:\s*1px solid var\(--th-border\)/);
-    expect(well).not.toMatch(/box-shadow/);
+    // The scoped material replaces the global Surface role on tool records.
+    expect(toolCard).not.toMatch(/\.th-tool[^{]*\{[^}]*background:\s*var\(--th-surface\)/);
     const body = toolCard.match(/\.th-tool-body\s*\{([^}]*)\}/)?.[1] ?? "";
     expect(body).toMatch(/background:\s*var\(--th-bg\)/);
     expect(body).toMatch(/padding:\s*var\(--th-space-3/);
     expect(body).toMatch(/gap:\s*var\(--th-space-3/);
+  });
+
+  it("declares the scoped tool material tokens in both theme scopes", () => {
+    for (const name of ["--th-tool-surface", "--th-tool-border"]) {
+      expect(tokens).toMatch(new RegExp(`:root\\s*\\{[^}]*${name}:`));
+      expect(tokens).toMatch(new RegExp(`\\[data-theme="light"\\]\\s*\\{[^}]*${name}:`));
+    }
   });
 
   it("aligns model, composer, status, and transcript rows to one reading-column lane", () => {

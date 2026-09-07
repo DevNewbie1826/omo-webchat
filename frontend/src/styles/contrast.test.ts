@@ -240,6 +240,9 @@ describe("token contrast contracts (WCAG 2.1)", () => {
   const ELEVATION_FILLS = [
     "--th-bg", "--th-surface", "--th-surface-composer", "--th-surface-raised",
     "--th-surface-user", "--th-surface-overlay",
+    // Scoped tool material (P4): tool title, preview, status word, and status
+    // hues land on it in both disclosure states and both themes.
+    "--th-tool-surface",
   ] as const;
   const STATE_FILLS = ["--th-hover", "--th-active"] as const;
   const TEXT_BACKGROUNDS = [...ELEVATION_FILLS, ...STATE_FILLS] as const;

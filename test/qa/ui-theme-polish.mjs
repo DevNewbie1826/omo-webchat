@@ -3,7 +3,7 @@
  * Theme reference harness (brief C2). Boots the real built App through
  * an idle controlled fixture, toggles dark/light through the actual Settings theme radio
  * group, and samples the semantic surfaces the authenticated Codex desktop
- * reference measured (canvas, sidebar, composer, expanded tool shell, model
+ * reference measured (canvas, sidebar, composer, tool shell, model
  * menu, highlighted menu row, primary action and text). Surface fills are read:
  * as resolved computed style tokens and as real screenshot pixels decoded by
  * the browser itself. No DOM/style substitution and no synthetic pages.
@@ -22,8 +22,10 @@ import { startFixture } from './pane-workspace-ui.mjs';
 import { captureFrame, closeResources, exposeTranscript, judgeFill, missingSurfaces, near, parseComputedColor, settleFrame } from './ui-theme-evidence.mjs';
 
 /** Measured authenticated reference (authenticated-pixel-measurements.json
- *  plus the report's computed foreground values), CSS 0-255 samples. The
- *  expanded tool shell maps to the measured elevated-chrome role (sidebar). */
+ *  plus the report's computed foreground values), CSS 0-255 samples. The tool
+ *  shell maps to the scoped tool material (P4): dark reuses the measured
+ *  elevated-chrome fill; light is an app-specific requested distinction (a
+ *  lightly gray step off the white Canvas), not a measured native value. */
 const REFERENCE = {
   dark: {
     canvas: [24, 24, 24], sidebar: [40, 40, 40], composer: [42, 42, 42],
@@ -32,11 +34,10 @@ const REFERENCE = {
   },
   light: {
     canvas: [255, 255, 255], sidebar: [255, 255, 255], composer: [255, 255, 255],
-    toolShell: [255, 255, 255], menu: [255, 255, 255], highlightedRow: [242, 243, 243],
+    toolShell: [245, 246, 247], menu: [255, 255, 255], highlightedRow: [242, 243, 243],
     text: [26, 28, 31], send: [26, 28, 31],
   },
 };
-const COLLAPSED_TOOL_BACKGROUND_ALPHA = 0; // transparent collapsed records
 
 const SCENARIOS = [
   { width: 1280, height: 800 }, { width: 390, height: 844 }, { width: 844, height: 390 },
@@ -337,8 +338,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
           toolShell: judgeFill(toolShell, REFERENCE[theme].toolShell),
           menu: judgeFill(menu.menu, REFERENCE[theme].menu),
           highlightedRow: judgeFill(menu.highlightedRow, REFERENCE[theme].highlightedRow),
-          collapsedTool: { ...painted(collapsed), matches: painted(collapsed).matches
-            && (parseComputedColor(collapsed.computed)?.alpha ?? 1) === COLLAPSED_TOOL_BACKGROUND_ALPHA },
+          collapsedTool: (collapsedJudge => ({ ...collapsedJudge,
+            matches: collapsedJudge.matches && collapsed.borderStyle === 'solid'
+              && collapsed.borderWidth === '1px' }))(judgeFill(collapsed, REFERENCE[theme].toolShell)),
           text: { ...painted(text), referenceRgb: REFERENCE[theme].text,
             matches: painted(text).matches && near(color(text), REFERENCE[theme].text, 0) },
           menuShadow: { present: menu.menu.present, computed: menu.menu.boxShadow, matches: menu.menu.boxShadow === 'none' },
