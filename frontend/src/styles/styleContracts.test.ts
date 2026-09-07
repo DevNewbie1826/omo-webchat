@@ -264,8 +264,9 @@ describe("spacing and elevation contracts", () => {
   it("consumes the dedicated user surface pair for the user bubble", () => {
     // The user bubble separates authorship by its OWN surface step - one
     // above Raised - defined as --th-surface-user / --th-border-user per
-    // theme. The shadow stays the Raised level (the light theme's soft lift
-    // still applies; the dark theme remains shadowless).
+    // theme. The shadow declaration stays the Raised level, which resolves
+    // to none in both themes (the measured menu carries none); the strong
+    // border does the separating.
     const body = ruleBody(chatTranscript, ".th-chat-msg--user");
     const userViolations: string[] = [];
     if (wholeVarToken(declarationValue(body, "background")) !== "--th-surface-user") {

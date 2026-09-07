@@ -106,7 +106,7 @@ describe("ChatComposer capsule geometry contracts", () => {
 		expect(send).toMatch(/color:\s*var\(--th-send-fg\)/);
 		expect(tokens).toMatch(/--th-send:/);
 		expect(tokens).toMatch(/--th-send-hover:/);
-		// The reference blue lives only in tokens, never in component CSS.
+		// The send fill lives only in tokens, never in component CSS.
 		expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
 	});
 

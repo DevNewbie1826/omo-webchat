@@ -49,6 +49,7 @@ measured roles and this app's tokens map as follows:
 | Menu / chooser surface | `#ffffff` | `#2d2d2d` | `--th-surface-raised` (and `--th-surface-overlay`) |
 | Highlighted menu row | `#f2f3f3` | `#3d3d3d` | `--th-hover` |
 | Foreground | `#1a1c1f` | `#dfdfdf` | `--th-text` |
+| Composer primary action | `#1a1c1f` | `#dfdfdf` | `--th-send` |
 | Default border | fg at 7.8% | white at 8.4% | `--th-border-surface` |
 | Strong border | fg at 11.7% | white at 15.6% | `--th-border-strong`, `--th-border-user`, `--th-border-overlay` |
 
@@ -66,10 +67,13 @@ web-rendering constraint, never by taste:
   surfaces are far brighter than the previous dark ladder. Contrast wins over
   native transparency; the deviation is deliberate and tested.
 - Roles the capture could not exercise (executed tool cards, user bubble,
-  modals) inherit the measured role hierarchy conservatively: uncaptured
+  modals, the send glyph and its hover) inherit the measured role hierarchy
+  conservatively: uncaptured
   surfaces reuse the nearest measured fill, and derived values (the user
   surface one step above the menu fill, the active state one step above the
-  measured highlight) stay inside the app's white/foreground-alpha idiom.
+  measured highlight, the send glyph inverted to the canvas role and its
+  hover stepped toward it) stay inside the app's white/foreground-alpha
+  idiom.
 
 ## Tokens
 
@@ -188,7 +192,7 @@ current level, modals migrate to Overlay, and neither uses Raised merely because
 | Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, tool shell | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
 | Composer / `--th-surface-composer` | The composer capsule only: an opaque approximation of the native composer material (`#2a2a2a` dark, white light) | The Surface border and shadow treatment on its own fill | The Surface border and shadow treatment on its own fill |
 | Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Measured menu/chooser fill `#2d2d2d` with the default border; no box shadow (the measured chooser carries none) | White with the default border; no box shadow, matching the measured chooser |
-| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like the measured composer on white: the strong border plus the Raised shadow |
+| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like dark: the strong border alone, because the Raised shadow is none in both themes (the measured menu carries none) |
 | Overlay / `--th-surface-overlay`, `--th-shadow-overlay`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Reuses the measured menu fill (the highest captured surface) with the strong border, separated by the Canvas-derived scrim | White with the strong border, a downward black low-alpha shadow, and the scrim |
 
 Hover, selection, focus, and status are state treatments on a level, not extra
@@ -200,8 +204,9 @@ lifts toward white).
 Elevation in both themes now follows the measured app: every opaque fill sits
 in one narrow luminance band, separation comes from hairline foreground-alpha
 borders plus the measured composer shadow (`0 3px 7.5px` black at 4% and
-`0 0 20px` at 5%, present in both captured themes), and menus carry borders
-without shadows. Dark is not shadowless: the captured runtime uses these exact
+`0 0 20px` at 5%, present in both captured themes), menus carry borders
+without shadows, and the Raised shadow token is `none` in both themes. Dark
+is not shadowless: the captured runtime uses these exact
 shadows. Percentages are resolved inside theme token declarations; component
 CSS sees only semantic tokens resolved from `--th-shadow-color` (`#000000`, as
 measured).
@@ -557,9 +562,13 @@ invocation.
   narrow ones): the up-arrow glyph sends, the X glyph stops, and only the glyph
   swaps — the circle's geometry never changes between states. The visible label
   is screen-reader-only; the accessible name always matches the action.
-- Send is the reference blue through `--th-send` / `--th-send-hover` /
-  `--th-send-fg`; Stop keeps `--th-error`. Composer CSS never hardcodes the
-  blue — it exists only as tokens.
+- Send's default fill is the measured primary action (`#dfdfdf` dark,
+  `#1a1c1f` light) through `--th-send`, with the glyph inverted to the
+  theme's canvas role through `--th-send-fg` (`#181818` dark, `#ffffff`
+  light); the reference does not capture hover, so `--th-send-hover` is a
+  documented 10% step toward the canvas. Stop keeps `--th-error`, and
+  disabled semantics are unchanged. Composer CSS never hardcodes the fill —
+  it exists only as tokens.
 - Attachments open through the icon-only plus action at the capsule's leading
   edge. A pending image renders as a thumbnail chip in its own row above the
   input row, inside the capsule; drag-and-drop and queued drafts keep working
