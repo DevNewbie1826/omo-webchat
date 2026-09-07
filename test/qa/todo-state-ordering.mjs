@@ -54,6 +54,22 @@ export function assertProjection(frame, binding, phases) {
   assert.deepEqual(frame.phases, phases);
 }
 
+/** A later native-socket frame plus its new DOM marker fences synchronous App
+ * handling of the earlier frame; unchanged retained todo text is not a signal. */
+export async function applicationBarrier(observed, { after, marker }, { arm, publish, done }) {
+  const token = await arm(marker);
+  const pending = observed.wait(row => row.socketId === after.socketId && row.direction === 'received'
+    && row.frame?.type === 'tool' && row.frame.sessionId === after.frame.sessionId
+    && row.frame.toolCallId === marker && row.frame.phase === 'end',
+  { after: after.sequence, timeout: deadline, label: `application marker ${marker}` });
+  try {
+    await publish(marker);
+    const row = await pending;
+    await done(token);
+    return row;
+  } finally { pending.cancel(); }
+}
+
 export async function bounded(promise, label, timeout = deadline) {
   let timer;
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Deadline: ${label}`)), timeout); })]); }
@@ -197,7 +213,7 @@ export async function run({ fixtureBin, evidenceDir, browser: suppliedBrowser, c
       await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame);
     }), 'font/animation/paint settlement');
   }
-  async function capture(name) {
+  async function capture(name, proof) {
     await paint();
     const dom = await page.evaluate(() => {
       const rect = selector => { const node = document.querySelector(selector); if (!node) return null; const box = node.getBoundingClientRect();
@@ -216,8 +232,33 @@ export async function run({ fixtureBin, evidenceDir, browser: suppliedBrowser, c
       && box.x >= 0 && box.y >= 0 && box.right <= dom.viewport.width + 1 && box.bottom <= dom.viewport.height + 1, 'bounded visible application regions');
     assert.ok(dom.composer.hit, 'composer remains usable'); assert.ok(dom.documentWidth <= dom.viewport.width, 'no horizontal document overflow');
     if (dom.viewport.width === 390) assert.ok(dom.drawerClosed, 'mobile drawer closed');
-    const receipt = { name, ...dom, screenshot: { bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') } };
+    const receipt = { name, ...dom, ...(proof ? { proof } : {}), screenshot: { bytes: png.length, sha256: createHash('sha256').update(png).digest('hex') } };
     report.captures.push(receipt); await save(evidenceDir, name + '.json', receipt); await writeFile(join(evidenceDir, name + '.html'), await page.content());
+  }
+  async function captureUnavailable(name, row, expected, detail = {}) {
+    assert.equal(row.frame.type, 'chat.todo'); assert.equal(row.frame.status, 'unavailable');
+    assert.equal(row.frame.sessionId, chatId); assert.equal(row.frame.durableSessionId, durableSessionId);
+    assert.equal(row.frame.bindingId, binding); assert.equal(row.frame.error, 'history-unavailable');
+    assert.ok(Number.isSafeInteger(row.frame.requestGeneration) && row.frame.requestGeneration >= generation);
+    assert.equal(row.frame.source, undefined); assert.equal(row.frame.phases, undefined);
+    const ready = observed.timeline.findLast(item => item.sequence < row.sequence && item.socketId === row.socketId && received(item, 'ready'));
+    assert.equal(ready?.frame.bindingId, binding); assert.equal(ready.frame.piSessionId, durableSessionId);
+    assert.deepEqual(current.phases, expected);
+    const marker = `qa-barrier-${name}`;
+    assert.equal(await page.locator(`[data-tool-call-id="${marker}"]`).count(), 0, 'render marker is new');
+    const markerRow = await applicationBarrier(observed, { after: row, marker }, {
+      arm: marker => arm(page, marker => !!document.querySelector(`[data-tool-call-id="${marker}"].th-tool--ok`), marker),
+      publish: marker => control('/events', { events: [{ type: 'tool_execution_end', toolCallId: marker, toolName: 'read',
+        result: { content: [{ type: 'text', text: marker }] }, isError: false }] }),
+      done: token => done(page, token),
+    });
+    await rendered(expected);
+    const proof = { unavailable: row, ready, retained: current, marker: markerRow, ...detail };
+    await capture(name, proof);
+    assert.equal(observed.timeline.filter(item => item.sequence > row.sequence && item.socketId === row.socketId
+      && (received(item, 'ready') || (received(item, 'chat.todo') && item.frame.status === 'ready'))).length, 0,
+    'capture precedes any recovery or replacement binding');
+    record({ action: 'unavailable-retained-capture', name, proof });
   }
   async function reload(expected) {
     const after = observed.mark(), pending = nextProjection(expected, after);
@@ -286,6 +327,7 @@ export async function run({ fixtureBin, evidenceDir, browser: suppliedBrowser, c
     await control('/read/failure', { enabled: true });
     await control('/append', { entry: custom(A), persist: true });
     const failedRead = await unavailable; assert.equal(failedRead.frame.bindingId, binding); await paint(); await rendered(B);
+    await captureUnavailable('desktop-provider-unavailable', failedRead, B);
     const recovered = nextProjection(A, observed.mark()); await control('/read/failure', { enabled: false });
     await control('/append', { entry: custom(A), persist: true }); await consume(await recovered, A); await rendered(A);
     // Capture A behind a real provider read gate, then replace the binding and
@@ -302,6 +344,42 @@ export async function run({ fixtureBin, evidenceDir, browser: suppliedBrowser, c
       && row.frame.source?.leafId === held.snapshot.data.leafId).length, 0, 'held old acquisition never published');
     // Concrete provider epoch recovery, not merely a new frontend fixture.
     await control('/drop-provider'); await reload(B); await rendered(B); record({ action: 'provider-epoch-recovery' });
+    // Manual rebind keeps the mounted App and its whole-list incumbent. Hold a
+    // failed provider acquisition until after the unavailable pixels are saved.
+    const retainedBinding = binding;
+    await control('/read/failure', { enabled: true });
+    const rebindStart = observed.mark(), rebound = observed.wait(row => received(row, 'ready') && row.frame.bindingId !== retainedBinding,
+      { after: rebindStart, timeout: deadline, label: 'manual rebind ready' });
+    const rebindUnavailable = observed.wait(row => received(row, 'chat.todo') && row.frame.status === 'unavailable'
+      && row.frame.bindingId !== retainedBinding,
+    { after: rebindStart, timeout: deadline, label: 'replacement binding unavailable' });
+    await page.locator('.th-chat-resync-btn').click();
+    const reboundReady = await rebound;
+    binding = reboundReady.frame.bindingId; generation = -1; assert.notEqual(binding, retainedBinding);
+    const reboundFailure = await rebindUnavailable;
+    const recoveryGate = await control('/read/arm');
+    const recoveryEntered = control('/read/await', { token: recoveryGate.token });
+    const recoverySource = await control('/append', { entry: custom(A), persist: true });
+    const recoveryHeld = await recoveryEntered;
+    assert.equal(recoveryHeld.snapshot.success, false); assert.equal(recoveryHeld.snapshot.error, 'QA_READ_FAILURE');
+    await shelf();
+    await captureUnavailable('desktop-rebinding-unavailable', reboundFailure, B,
+      { retainedBinding, gate: recoveryGate, held: recoveryHeld, recoverySource });
+    await control('/read/release', { token: recoveryGate.token });
+    const rebindRecovered = nextProjection(A, observed.mark());
+    await control('/read/failure', { enabled: false });
+    await control('/append', { entry: custom(A), persist: true });
+    await consume(await rebindRecovered, A); await rendered(A);
+    record({ action: 'blocked-rebind-recovered', retainedBinding, frame: current });
+    await append(custom(B), B, 'restore-B-after-rebind-proof');
+    // Disk descriptor failure while resident allows a real provider marker to
+    // reach the App. The original idle/no-wake failure scenario remains below.
+    const residentDiskFailure = nextProjection(null, observed.mark(), 'unavailable');
+    await control('/disk/failure', { enabled: true });
+    await captureUnavailable('desktop-disk-unavailable', await residentDiskFailure, B);
+    const residentDiskRecovery = nextProjection(B, observed.mark());
+    await control('/disk/failure', { enabled: false });
+    await consume(await residentDiskRecovery, B); await rendered(B);
     // A live-only source must not roll back to older disk after provider eviction.
     const liveC = nextProjection(C, observed.mark());
     await control('/append', { entry: custom(C), persist: false });
