@@ -50,18 +50,25 @@ function parseLiveProgress(value: unknown): ActivityLiveProgress | null | undefi
   };
 }
 
-function parseTask(record: Record<string, unknown>, parentSessionId: string | undefined): ActivityTask | null {
+function parseTask(record: Record<string, unknown>, parentSessionId: string | undefined, partial: boolean): ActivityTask | null {
   const taskId = reqString(record, "task_id");
   const name = reqString(record, "name");
   const status = reqString(record, "status");
-  if (taskId === null || name === null || status === null) return null;
+  if (taskId === null || status === null) return null;
+  const rawStatus = taskRawStatus(status, record["raw_status"]);
+  // Webchat may publish a digest-only DAG correction beside a rich prefix.
+  // Only this exact partial/provenance shape can omit name; malformed raw rows
+  // still fail, and compact authority remains eligible for rich enrichment.
+  const compact = partial && record["name"] === undefined && taskId !== "" && rawStatus !== undefined
+    && optString(record, "updated_at") !== null
+    && Object.keys(record).every(key => ["task_id", "status", "raw_status", "updated_at"].includes(key));
+  if (name === null && !compact) return null;
   const taskSummary = optString(record, "task_summary");
   const agentType = optString(record, "agent_type");
   const category = optString(record, "category");
   const model = optString(record, "model");
   const createdAt = optString(record, "created_at");
   const updatedAt = optString(record, "updated_at") ?? undefined;
-  const rawStatus = taskRawStatus(status, record["raw_status"]);
   const finalResponse = optString(record, "final_response");
   const errorMessage = optString(record, "error_message");
   const liveProgress = parseLiveProgress(record["live_progress"]);
@@ -78,8 +85,9 @@ function parseTask(record: Record<string, unknown>, parentSessionId: string | un
   }
   return {
     taskId,
-    name,
+    name: name ?? taskId,
     status,
+    ...(compact ? { compact: true } : {}),
     ...(rawStatus === undefined ? {} : { rawStatus }),
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
     ...(taskSummary !== undefined ? { taskSummary } : {}),
@@ -99,7 +107,7 @@ export function parseTaskUpdated(data: unknown): ParsedTaskUpdated | null {
   const parentSessionId = optString(data, "parent_session_id");
   const truncatedTasks = optBoolean(data, "truncated_tasks");
   if (parentSessionId === null || truncatedTasks === null) return null;
-  const tasks = mapDrop(data["tasks"], (item) => parseTask(item, parentSessionId));
+  const tasks = mapDrop(data["tasks"], (item) => parseTask(item, parentSessionId, truncatedTasks === true));
   if (tasks === null) return null;
   return {
     tasks,
