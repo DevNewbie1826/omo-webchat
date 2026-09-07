@@ -63,6 +63,18 @@ describe("derived DAG dependency edges", () => {
     show(run);
     expect(lines()).toHaveLength(4);
     [[true, true], [false, false], [true, false], [false, false]].forEach(([fulfilled, flow], i) => check(lines()[i]!, fulfilled!, flow!));
+    // This legal four-node layout has collinear a -> c flow and static a -> d.
+    const [flow, , fanOut] = lines();
+    expect(flow!.getAttribute("y1")).toBe(flow!.getAttribute("y2"));
+    expect(fanOut!.getAttribute("y1")).toBe(flow!.getAttribute("y1"));
+    expect(fanOut!.getAttribute("y2")).toBe(flow!.getAttribute("y2"));
+    // Emphasizing the moving stroke must not magnify either arrow variant.
+    for (const marker of harness.container.querySelectorAll("marker")) {
+      expect(marker.getAttribute("markerUnits")).toBe("userSpaceOnUse");
+      expect(marker.getAttribute("markerWidth")).toBe("7");
+      expect(marker.getAttribute("markerHeight")).toBe("6");
+      expect(marker.getAttribute("viewBox")).toBe("0 0 8 6");
+    }
   });
   it("recomputes retries without latching color and keeps DOM, geometry, keys and markers through elapsed ticks", () => {
     vi.useFakeTimers();

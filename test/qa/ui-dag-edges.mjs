@@ -53,6 +53,7 @@ export function assertEdges(data, runs, active = true) {
       assert(data.markerIds.includes(markerId), 'referenced marker exists');
       assert.equal(actual.markerComputed, `url("#${markerId}")`, 'computed marker reference remains usable');
       assert.equal(actual.orient, 'auto');
+      assert.deepEqual(actual.markerViewport, [7, 6], 'stroke emphasis must not scale the arrowhead');
       assert.equal(actual.animation, flowing ? 'th-dag-edge-flow' : 'none');
       assert.equal(actual.live, flowing, 'actual CSSAnimation, not just class/attribute');
       assert.equal(actual.dash, flowing ? '8px, 4px' : 'none');
@@ -77,6 +78,8 @@ async function inspect(page) {
           const head = marker?.querySelector('path'), a = e.getAnimations().find(a => a.animationName === 'th-dag-edge-flow');
           return { stroke: s.stroke, strokeRGBA: rgba(s.stroke), head: head ? getComputedStyle(head).fill : null, headRGBA: head ? rgba(getComputedStyle(head).fill) : null,
             marker: ref, markerComputed: s.markerEnd, markerLocal: marker?.closest('svg') === svg, orient: marker?.getAttribute('orient'),
+            strokeWidth: s.strokeWidth, markerUnits: marker?.getAttribute('markerUnits') ?? 'strokeWidth',
+            markerViewport: marker ? ['markerWidth', 'markerHeight'].map(k => +marker.getAttribute(k) * (marker.getAttribute('markerUnits') === 'userSpaceOnUse' ? 1 : parseFloat(s.strokeWidth))) : null,
             animation: s.animationName, live: !!a && a.playState === 'running', duration: s.animationDuration, iterations: a?.effect.getTiming().iterations === Infinity ? 'Infinity' : null,
             dash: s.strokeDasharray, offset: s.strokeDashoffset, geometry: ['x1', 'y1', 'x2', 'y2'].map(k => +e.getAttribute(k)), rect: e.getBoundingClientRect().toJSON() };
         }) })) };
@@ -86,7 +89,7 @@ async function capture(q, name, runs, active = true, visible = true) {
   const data = await inspect(q.page);
   assertEdges(data, runs, active);
   const geometry = [];
-  if (visible) for (const id of ['a', 'b', 'c', 'd', 'e']) geometry.push(await subjectBounds(q, { id }));
+  if (visible) for (const node of runs.flatMap(run => run.nodes)) geometry.push(await subjectBounds(q, { id: node.id }));
   const path = join(q.out, `${name}.png`);
   await q.page.screenshot({ path, animations: 'allow' });
   q.manifest.push({ name: `${name}.png`, sha256: sha(readFileSync(path)), fixture: q.record.id, sourceIdentity: q.identityHash });
@@ -300,6 +303,61 @@ async function adversarialVisibility(q, theme, mode) {
   return { mode, returned, newVisible };
 }
 
+export function assertCollinearProfiles(profiles) {
+  assert.deepEqual(profiles.map(p => p.time), [0, 300, 600]);
+  for (const profile of profiles) {
+    const expected = profile.distances.map(distance => ((distance + .5 - profile.time / 100) % 12 + 12) % 12 < 8);
+    for (const row of profile.rows) {
+      const actual = row.pixels.map(pixel => pixel.every((value, i) => value === profile.green[i]));
+      // The static fulfilled edge keeps the center solid; motion must paint a
+      // distinct footprint outside it, in both rails, not just change CSS time.
+      assert.deepEqual(actual, row.dy === 0 ? expected.map(() => true) : expected, `visible directional footprint at ${profile.time}ms, row ${row.dy}`);
+    }
+    assert.deepEqual(profile.rows.map(row => row.dy), [-1, 0, 1]);
+    assert(profile.distances.length >= 12, 'sample a full dash period');
+  }
+}
+async function collinearPixels(q, file, edge, time) {
+  const encoded = readFileSync(join(q.out, file)).toString('base64');
+  return q.page.evaluate(async ({ encoded, edge, time }) => {
+    const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(encoded), c => c.charCodeAt(0))], { type: 'image/png' }));
+    try {
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d'); ctx.drawImage(bitmap, 0, 0);
+      const distances = Array.from({ length: 14 }, (_, i) => i + 2);
+      return { time, distances, green: edge.strokeRGBA.slice(0, 3), rect: edge.rect,
+        rows: [-1, 0, 1].map(dy => ({ dy, pixels: distances.map(distance => [...ctx.getImageData(Math.floor(edge.rect.x + distance), Math.floor(edge.rect.y) + dy, 1, 1).data].slice(0, 3)) })) };
+    } finally { bitmap.close(); }
+  }, { encoded, edge, time });
+}
+async function collinear(q, theme) {
+  let run = q.record.seed.history.dag.runs[0];
+  await select(q, 'dag'); await settled(q.page);
+  const before = await capture(q, `${theme}-collinear-before`, [run]);
+  const [flow, , fanOut] = before.data.graphs[0].edges;
+  assert.equal(flow.geometry[1], flow.geometry[3]);
+  assert.deepEqual(fanOut.geometry.slice(0, 2), flow.geometry.slice(0, 2));
+  assert.equal(fanOut.geometry[3], flow.geometry[3]);
+  assert(fanOut.geometry[2] > flow.geometry[2], 'original long static fan-out covers the entire short flow lane');
+  assert.equal(fanOut.animation, 'none');
+  const line = await q.page.locator('line.th-activity-gedge').first().elementHandle();
+  try {
+    const motion = await direction(q, `${theme}-collinear`);
+    const profiles = [];
+    for (const frame of motion.timeline) profiles.push(await collinearPixels(q, frame.png, flow, frame.time));
+    run = await deliver(q, { ...run, status: 'failed' });
+    const stopped = await capture(q, `${theme}-collinear-stopped`, [run]);
+    const stoppedPixels = await collinearPixels(q, `${theme}-collinear-stopped.png`, stopped.data.graphs[0].edges[0], 0);
+    assert(await line.evaluate(e => e === document.querySelector('line.th-activity-gedge')));
+    assert.deepEqual(stopped.data.graphs[0].edges.map(e => [e.geometry, e.marker, e.markerViewport]), before.data.graphs[0].edges.map(e => [e.geometry, e.marker, e.markerViewport]));
+    q.record.result = { before, motion, profiles, stopped, stoppedPixels };
+    for (const row of stoppedPixels.rows.filter(row => row.dy !== 0)) {
+      assert(row.pixels.every(pixel => !pixel.every((value, i) => value === stoppedPixels.green[i])), 'terminal run removes the wider footprint');
+    }
+    assertCollinearProfiles(profiles);
+    return q.record.result;
+  } finally { await line.dispose(); }
+}
+
 export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) {
   assert.equal(phase, 'green'); assert(out); out = resolve(out); mkdirSync(out, { recursive: true });
   const receipt = { phase, out, command: `bun test/qa/ui-dag-edges.mjs --phase ${phase} --out ${out}`, startedAt: new Date().toISOString(), identity: await sourceIdentity(), fixtures: [], scenarios: [], manifest: [] };
@@ -354,6 +412,16 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       } catch (error) { scenario.ok = false; scenario.error = String(error.stack ?? error); }
       console.log(`${scenario.ok ? 'PASS' : 'FAIL'} ${scenario.name}${scenario.error ? ': ' + scenario.error.split('\n')[0] : ''}`);
     }
+    for (const theme of ['dark', 'light']) {
+      const scenario = { name: `${theme}-legal-collinear-flow` }; receipt.scenarios.push(scenario);
+      const base = edgeRun();
+      const original = { ...base, nodes: base.nodes.filter(n => n.id !== 'e'), edges: base.edges.filter(e => e.to !== 'e'), counts: { ...base.counts, total: 4, pending: 1 } };
+      try {
+        await session(browser, receipt, { theme, history: history([original]) }, q => collinear(q, theme));
+        scenario.ok = true;
+      } catch (error) { scenario.ok = false; scenario.error = String(error.stack ?? error); }
+      console.log(`${scenario.ok ? 'PASS' : 'FAIL'} ${scenario.name}${scenario.error ? ': ' + scenario.error.split('\n')[0] : ''}`);
+    }
   } catch (error) { receipt.failure = String(error.stack ?? error); }
   finally {
     if (browser) {
@@ -363,8 +431,8 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       receipt.cleanup = { browserClosed: !browser.isConnected(), contexts: browser.contexts().length, processGone, profileRemoved: !!profile && !existsSync(profile) };
     }
     receipt.identityAfter = await sourceIdentity(); receipt.sourceStable = JSON.stringify(receipt.identity) === JSON.stringify(receipt.identityAfter);
-    receipt.pendingWorkZero = receipt.fixtures.length === 11 && receipt.fixtures.every(f => f.cleanup.contextClosed && f.cleanup.fixture?.serverStopped && f.cleanup.portClosed === 'ECONNREFUSED' && ['pendingWebSockets', 'pendingOpens', 'pendingCreates'].every(k => f.cleanup.fixture[k] === 0) && f.cleanup.errors.length === 0);
-    receipt.verdict = !receipt.failure && receipt.scenarios.length === 11 && receipt.scenarios.every(s => s.ok) && receipt.sourceStable && receipt.pendingWorkZero && receipt.cleanup?.browserClosed && receipt.cleanup.contexts === 0 && receipt.cleanup.processGone && receipt.cleanup.profileRemoved ? 'PASS' : 'FAIL';
+    receipt.pendingWorkZero = receipt.fixtures.length === 13 && receipt.fixtures.every(f => f.cleanup.contextClosed && f.cleanup.fixture?.serverStopped && f.cleanup.portClosed === 'ECONNREFUSED' && ['pendingWebSockets', 'pendingOpens', 'pendingCreates'].every(k => f.cleanup.fixture[k] === 0) && f.cleanup.errors.length === 0);
+    receipt.verdict = !receipt.failure && receipt.scenarios.length === 13 && receipt.scenarios.every(s => s.ok) && receipt.sourceStable && receipt.pendingWorkZero && receipt.cleanup?.browserClosed && receipt.cleanup.contexts === 0 && receipt.cleanup.processGone && receipt.cleanup.profileRemoved ? 'PASS' : 'FAIL';
     receipt.finishedAt = new Date().toISOString();
     writeFileSync(join(out, 'receipt.json'), JSON.stringify(receipt, null, 2)); writeFileSync(join(out, 'manifest.json'), JSON.stringify(receipt.manifest, null, 2));
   }

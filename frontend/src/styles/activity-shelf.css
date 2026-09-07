@@ -614,6 +614,8 @@ button.th-activity-bar:hover {
 
 @media (prefers-reduced-motion: no-preference) {
   .th-activity-gedge--flow {
+    /* Remain visible beside a collinear solid dependency's 1px stroke. */
+    stroke-width: 3;
     stroke-dasharray: 8 4;
     animation: th-dag-edge-flow 1.2s linear infinite;
   }

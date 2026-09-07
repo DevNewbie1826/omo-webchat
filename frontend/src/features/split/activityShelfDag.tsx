@@ -305,6 +305,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
               refY={3}
               markerWidth={7}
               markerHeight={6}
+              markerUnits="userSpaceOnUse"
               orient="auto"
             >
               <path d="M0,0L8,3L0,6Z" className={`th-activity-gedge-head${variant ? " th-activity-gedge-head--fulfilled" : ""}`} />
