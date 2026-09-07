@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applicationBarrier, assertProjection, bounded, completion, custom, legacy, parseArgs, phase, startOwnedFixture } from './todo-state-ordering.mjs';
+import { applicationBarrier, assertProjection, bounded, completion, custom, exactKeyRetention, legacy, parseArgs, phase, startOwnedFixture } from './todo-state-ordering.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
 
 const binding = 'bound-1';
@@ -103,4 +103,58 @@ test('application barrier ignores retained DOM, old markers and other sockets un
     assert.equal(receipt.socketId, after.socketId); assert.ok(receipt.sequence > after.sequence);
     assert.equal(receipt.frame.toolCallId, marker);
   } finally { dom.resolve(true); observed.stop(); }
+});
+
+for (const falseClear of [false, true]) test(`exact-key carrier captures post-barrier state before ${falseClear ? 'rejecting a false clear' : 'accepting retention'}`, async () => {
+  const page = new EventEmitter(), observed = observeSockets(page), socket = new EventEmitter();
+  socket.url = () => 'ws://fixture/chat'; page.emit('websocket', socket);
+  const emit = frame => socket.emit('framereceived', { payload: JSON.stringify(frame) });
+  emit(ready(phase('incumbent', 'in_progress')));
+  const incumbent = observed.timeline.at(-1), entryId = 'malformed-entry';
+  const appended = Promise.withResolvers(), checkingDOM = Promise.withResolvers(), dom = Promise.withResolvers();
+  let published = false, domCompleted = false, read = false, proof;
+  const pending = exactKeyRetention(observed, incumbent, {
+    append: async input => {
+      assert.deepEqual(input, { entry: { type: 'custom', customType: 'senpi.todo-state', data: { schema: 'v2', Phases: [] } }, persist: true });
+      assert.equal(Object.hasOwn(input.entry.data, 'phases'), false);
+      appended.resolve(); return { ok: true, entryId };
+    },
+    barrier: (after, marker) => {
+      assert.ok(published, 'canonical publication precedes the App barrier');
+      assert.equal(after.frame.source.leafId, entryId);
+      return applicationBarrier(observed, { after, marker }, {
+        arm: async () => ({ signal: dom.promise }),
+        publish: async () => emit({ type: 'tool', sessionId: 'todo-qa-chat', toolCallId: marker, phase: 'end' }),
+        done: async () => { checkingDOM.resolve(); await dom.promise; domCompleted = true; },
+      });
+    },
+    read: async () => { assert.ok(domCompleted); read = true; return falseClear ? [] : incumbent.frame.phases; },
+    capture: async value => { assert.ok(read); proof = value; },
+  });
+  // Capture the outcome immediately so an early assertion cannot be unhandled.
+  const outcome = pending.then(value => ({ value }), error => ({ error }));
+  try {
+    await bounded(Promise.race([appended.promise, outcome]), 'malformed append');
+    // An unchanged source response is not evidence that the malformed leaf was read.
+    emit(incumbent.frame);
+    published = true;
+    emit({ ...ready(falseClear ? [] : incumbent.frame.phases, {
+      leafId: entryId, ...(falseClear ? { entryId } : {}),
+    }), requestGeneration: 2 });
+    await bounded(Promise.race([checkingDOM.promise, outcome]), 'marker DOM subscription');
+    assert.equal(read, false); assert.equal(proof, undefined);
+    dom.resolve();
+    const result = await bounded(outcome, 'post-barrier retention verdict');
+    assert.ok(proof, 'malformed input and actual DOM are captured even on RED');
+    assert.deepEqual(proof.input.entry.data, { schema: 'v2', Phases: [] });
+    assert.equal(proof.marker.socketId, proof.projection.socketId);
+    assert.ok(proof.marker.sequence > proof.projection.sequence);
+    assert.deepEqual(proof.retained, falseClear ? [] : incumbent.frame.phases);
+    if (falseClear) {
+      assert.equal(result.error?.code, 'ERR_ASSERTION');
+      assert.deepEqual(result.error.actual, []); assert.deepEqual(result.error.expected, incumbent.frame.phases);
+    } else {
+      assert.equal(result.error, undefined); assert.equal(result.value, proof.projection);
+    }
+  } finally { dom.resolve(); observed.stop(); }
 });
