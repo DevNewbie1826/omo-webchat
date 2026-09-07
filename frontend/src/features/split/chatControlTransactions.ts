@@ -27,8 +27,8 @@ export interface ControlLedger {
   has(command: string): boolean;
   /** Discard a stale restore point once an authoritative state frame lands. */
   dropRestore(command: string): void;
-  /** Discard the restore point committed under a requestId (provider confirmed). */
-  dropRestoreRequest(requestId: string): void;
+  /** Discard the restore point; a matching model confirmation returns its command once. */
+  dropRestoreRequest(requestId: string, confirmedCommand?: string): "set_model" | undefined;
   /** Disconnect: roll back every armed transaction and forget restore points. */
   failAll(): void;
 }
@@ -38,6 +38,8 @@ export function controlLedger(): ControlLedger {
   const armedByCommand = new Map<string, string>();
   const restorePoints = new Map<string, () => void>();
   const restoreByCommand = new Map<string, string>();
+  // Model state may retire rollback before the correlated result arrives.
+  const awaitingConfirmation = new Map<string, "set_model">();
 
   const forgetRestoreCommand = (requestId: string): void => {
     for (const [command, id] of restoreByCommand) {
@@ -59,6 +61,7 @@ export function controlLedger(): ControlLedger {
     arm(requestId, command, rollback, commit) {
       if (armedByCommand.has(command)) return false;
       pending.set(requestId, { command, rollback, commit });
+      if (command === "set_model") awaitingConfirmation.set(requestId, command);
       armedByCommand.set(command, requestId);
       return true;
     },
@@ -72,11 +75,15 @@ export function controlLedger(): ControlLedger {
       // so a late error for the older request can never revert the newer value.
       const prior = restoreByCommand.get(transaction.command);
       if (prior && prior !== requestId) restorePoints.delete(prior);
+      if (transaction.command === "set_model") {
+        for (const id of awaitingConfirmation.keys()) if (id !== requestId) awaitingConfirmation.delete(id);
+      }
       restorePoints.set(requestId, transaction.rollback);
       restoreByCommand.set(transaction.command, requestId);
       return true;
     },
     reject(requestId) {
+      awaitingConfirmation.delete(requestId);
       const transaction = pending.get(requestId);
       if (transaction) {
         pending.delete(requestId);
@@ -120,13 +127,18 @@ export function controlLedger(): ControlLedger {
         restoreByCommand.delete(command);
       }
     },
-    dropRestoreRequest(requestId) {
+    dropRestoreRequest(requestId, confirmedCommand) {
+      const command = awaitingConfirmation.get(requestId);
+      if (command !== undefined && confirmedCommand !== undefined && command !== confirmedCommand) return undefined;
+      awaitingConfirmation.delete(requestId);
       restorePoints.delete(requestId);
       forgetRestoreCommand(requestId);
+      return command === confirmedCommand ? command : undefined;
     },
     failAll() {
       const transactions = [...pending.values()];
       pending.clear();
+      awaitingConfirmation.clear();
       armedByCommand.clear();
       restorePoints.clear();
       restoreByCommand.clear();

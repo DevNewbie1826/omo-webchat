@@ -6,6 +6,7 @@ import type {
 	ChatConnector,
 	ChatServerFrame,
 } from "../../lib/chatWs";
+import { controlLedger } from "./chatControlTransactions";
 import { useChatSession } from "./useChatSession";
 
 const session = {
@@ -283,4 +284,112 @@ describe("useChatSession control transactions", () => {
 		expect(stopped).toBe(false);
 		expect(current?.error).not.toBe("");
 	});
+
+	it.each(["rejected", "foreign", "unknown", "disconnected", "superseded", "superseded-after-state"] as const)("does not refresh stats for a %s model result", (outcome) => {
+		act(() => {
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false,
+				model: { provider: "mock", modelId: "m1" } });
+			deliver({ type: "stats", sessionId: session.id,
+				contextUsage: { tokens: 136000, contextWindow: 400000, percent: 34 } });
+			current?.changeModel("mock/m2");
+		});
+		const requestId = lastRequestId("chat.set");
+		act(() => deliver({ type: "ack", sessionId: session.id, command: "set_model", requestId }));
+		expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+		if (outcome === "rejected") act(() => deliver({ type: "control.result", sessionId: session.id,
+			command: "set_model", requestId, success: false, message: "MODEL_REJECTED" }));
+		if (outcome === "disconnected") act(() => disconnect());
+		if (outcome === "superseded-after-state") act(() => deliver({ type: "state", sessionId: session.id,
+			isStreaming: false, isCompacting: false, model: { provider: "mock", modelId: "m2" } }));
+		if (outcome === "superseded" || outcome === "superseded-after-state") {
+			act(() => current?.changeModel("mock/m3"));
+			act(() => deliver({ type: "ack", sessionId: session.id, command: "set_model", requestId: lastRequestId("chat.set") }));
+		}
+		act(() => deliver({ type: "control.result", sessionId: outcome === "foreign" ? "chat-other" : session.id,
+			command: "set_model", requestId: outcome === "unknown" ? "unknown-request" : requestId, success: true }));
+		expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+		expect(current?.contextUsage?.percent).toBe(34);
+		if (outcome === "rejected") expect(current?.currentModelKey).toBe("mock/m1");
+	});
+
+	it("refreshes an owned model confirmation once even when state already replaced its rollback baseline", () => {
+		act(() => current?.changeModel("mock/m2"));
+		const requestId = lastRequestId("chat.set");
+		act(() => {
+			deliver({ type: "ack", sessionId: session.id, command: "set_model", requestId });
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false,
+				model: { provider: "mock", modelId: "m2" } });
+		});
+		const success = { type: "control.result", sessionId: session.id, command: "set_model", requestId, success: true } as const;
+		act(() => { deliver(success); deliver(success); });
+		expect(sent.filter(frame => frame.type === "chat.stats")).toEqual([{ type: "chat.stats", sessionId: session.id }]);
+		act(() => deliver({ type: "error", sessionId: session.id, command: "set_model", requestId, message: "late error" }));
+		expect(current?.currentModelKey).toBe("mock/m2");
+	});
+
+	it("does not refresh for a rejected old model result while a successor is pending", () => {
+		act(() => {
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false,
+				model: { provider: "mock", modelId: "m1" } });
+			current?.changeModel("mock/m2");
+		});
+		const first = lastRequestId("chat.set");
+		act(() => deliver({ type: "ack", sessionId: session.id, command: "set_model", requestId: first }));
+		act(() => current?.changeModel("mock/m3"));
+		const second = lastRequestId("chat.set");
+		act(() => {
+			deliver({ type: "control.result", sessionId: session.id, command: "set_model", requestId: first, success: false });
+			deliver({ type: "control.result", sessionId: session.id, command: "set_model", requestId: first, success: true });
+		});
+		expect(current?.currentModelKey).toBe("mock/m3");
+		expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+		act(() => deliver({ type: "control.result", sessionId: session.id, command: "set_model", requestId: second, success: false }));
+		expect(current?.currentModelKey).toBe("mock/m1");
+	});
+
+	it("does not refresh stats for thinking-level confirmation or a failed local model send", () => {
+		act(() => current?.changeThinkingLevel("high"));
+		const requestId = lastRequestId("chat.set");
+		act(() => {
+			deliver({ type: "ack", sessionId: session.id, command: "set_thinking", requestId });
+			deliver({ type: "control.result", sessionId: session.id, command: "set_thinking", requestId, success: true });
+		});
+		send = (frame) => { sent.push(frame); return false; };
+		act(() => expect(current?.changeModel("mock/m2")).toBe(false));
+		act(() => deliver({ type: "control.result", sessionId: session.id, command: "set_model",
+			requestId: lastRequestId("chat.set"), success: true }));
+		expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+	});
+	it.each(["compact", "extension_ui_response", "set_thinking_level"])("does not retain stats confirmation ownership for %s", (command) => {
+		const ledger = controlLedger();
+		ledger.arm("non-model", command, () => undefined, () => undefined);
+		ledger.commit("non-model");
+		expect(ledger.dropRestoreRequest("non-model")).toBeUndefined();
+	});
+
+	it("ignores a mismatched success command without consuming the model confirmation", () => {
+		act(() => {
+			deliver({ type: "state", sessionId: session.id, isStreaming: false, isCompacting: false,
+				model: { provider: "mock", modelId: "m1" } });
+			deliver({ type: "stats", sessionId: session.id,
+				contextUsage: { tokens: 136000, contextWindow: 400000, percent: 34 } });
+			current?.changeModel("mock/m2");
+		});
+		const requestId = lastRequestId("chat.set");
+		act(() => {
+			deliver({ type: "ack", sessionId: session.id, command: "set_model", requestId });
+			deliver({ type: "control.result", sessionId: session.id, command: "set_thinking", requestId, success: true });
+		});
+		expect(sent.filter(frame => frame.type === "chat.stats")).toHaveLength(0);
+		expect(current?.contextUsage?.percent).toBe(34);
+		act(() => deliver({ type: "control.result", sessionId: session.id, command: "set_model", requestId, success: true }));
+		const requests = sent.filter(frame => frame.type === "chat.stats");
+		expect(requests).toEqual([{ type: "chat.stats", sessionId: session.id }]);
+		act(() => {
+			for (const frame of requests) if (frame.type === "chat.stats") deliver({ type: "stats", sessionId: frame.sessionId,
+				contextUsage: { tokens: 136000, contextWindow: 272000, percent: 50 } });
+		});
+		expect(current?.contextUsage?.percent).toBe(50);
+	});
+
 });
