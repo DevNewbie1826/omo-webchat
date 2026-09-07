@@ -115,6 +115,8 @@ type Session struct {
 	taskSnapshots                                                           taskSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
 
+	todoRead todoReadState
+
 	broadcast broadcaster
 }
 

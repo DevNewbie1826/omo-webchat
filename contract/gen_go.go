@@ -227,7 +227,9 @@ func validateSchemaDocument(fileID string, doc schema) {
 			}
 		}
 		if format, ok := node["format"]; ok {
-			if format != "rfc3339nano" || node["type"] != "string" {
+			valid := format == "rfc3339nano" && node["type"] == "string" ||
+				(format == "chat-todo" || format == "todo-binding-ready") && node["type"] == "object"
+			if !valid {
 				fatal("%s%s: unsupported format %v", fileID, path, format)
 			}
 		}
@@ -504,12 +506,15 @@ func (g *gen) emitStruct(node schema, ctxFile, name, doc string) {
 			fd.Doc = d
 		}
 		fd.Type = g.goType(pn, ctxFile, name+goIdent(key))
-		fd.Pointer = (!req[key] || nullable(pn)) && fd.Type != "json.RawMessage" && !strings.HasPrefix(fd.Type, "[]")
+		// Optional nullable arrays need three constructor states: omitted (nil
+		// pointer), null (pointer to nil slice), and [] (pointer to empty slice).
+		fd.Pointer = (!req[key] || nullable(pn)) && fd.Type != "json.RawMessage" &&
+			(!strings.HasPrefix(fd.Type, "[]") || !req[key] && nullable(pn))
 		fd.OmitEmpty = !req[key]
 		if !req[key] && nullable(pn) {
 			fd.PreserveMode = "nullable"
 		}
-		if !req[key] && strings.HasPrefix(fd.Type, "[]") {
+		if !req[key] && strings.HasPrefix(fd.Type, "[]") && !nullable(pn) {
 			fd.PreserveMode = "array"
 		}
 		sd.Fields = append(sd.Fields, fd)
@@ -871,8 +876,34 @@ func validateValue(value any, spec validationSchema, path string) error {
 		object, ok := value.(map[string]any); if !ok { return fmt.Errorf("%s must be an object", path) }
 		for _, key := range spec.Required { if _, exists := object[key]; !exists { return fmt.Errorf("%s.%s is required", path, key) } }
 		for key, child := range spec.Properties { if item, exists := object[key]; exists { if err := validateValue(item, child, path+"."+key); err != nil { return err } } }
+		if !validTodoFormat(object, spec.Format) { return fmt.Errorf("%s has invalid %s field combinations", path, spec.Format) }
 	}
 	return nil
+}
+
+// Named object formats supplement structural schema validation. They do not
+// assign ordering authority: requestGeneration only fences acquisitions.
+func validTodoFormat(object map[string]any, format string) bool {
+	nonempty := func(value any) bool { text, ok := value.(string); return ok && text != "" }
+	coordinate := func(value any) bool { number, ok := value.(float64); return ok && number >= 0 && number <= 9007199254740991 && math.Trunc(number) == number }
+	if format == "todo-binding-ready" {
+		binding, present := object["bindingId"]
+		return !present || nonempty(binding) && nonempty(object["sessionId"]) && nonempty(object["piSessionId"])
+	}
+	if format != "chat-todo" { return true }
+	if !nonempty(object["sessionId"]) || !nonempty(object["durableSessionId"]) || !nonempty(object["bindingId"]) || !coordinate(object["requestGeneration"]) { return false }
+	_, hasSource := object["source"]
+	phases, hasPhases := object["phases"]
+	_, hasError := object["error"]
+	if object["status"] == "unavailable" { return hasError && !hasSource && !hasPhases }
+	if !hasSource || !hasPhases || hasError { return false }
+	source, ok := object["source"].(map[string]any)
+	if !ok { return false }
+	if source["kind"] == "absent" {
+		return (source["leafId"] == nil || nonempty(source["leafId"])) && source["entryId"] == nil && source["entryIndex"] == nil && phases == nil
+	}
+	_, array := phases.([]any)
+	return nonempty(source["leafId"]) && nonempty(source["entryId"]) && coordinate(source["entryIndex"]) && array
 }
 
 `)

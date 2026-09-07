@@ -2,8 +2,9 @@ import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
-import { applyActivityEvent, applyRunFlight, applyTodoToolDetails, validatedActivityEvent } from "./activityState";
+import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";
+import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import { type UiMessage } from "./chatEntries";
 import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
@@ -39,6 +40,7 @@ interface ChatFrameHandlerBindings {
   readonly toolCallsRef: Current<Readonly<Record<string, ToolEntry>>>;
   readonly historyLoadedRef: Current<boolean>;
   readonly activitiesRef: Current<ActivityState>;
+  readonly todoAuthorityRef: Current<TodoAuthority>;
   readonly bufferActivityEvent: (event: NonNullable<ReturnType<typeof validatedActivityEvent>>) => void;
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
@@ -174,6 +176,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
   const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
     switch (frame.type) {
       case "ready": {
+        bindings.todoAuthorityRef.current = bindTodoAuthority(bindings.todoAuthorityRef.current, frame);
         const generation = bindings.claimReadyGeneration(connectionGeneration);
         if (bindings.externalRecoveryPendingRef.current) {
           bindings.externalRecoveryReadyRef.current = true;
@@ -209,12 +212,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "tool": {
         bindings.setError("");
         bindings.replaceToolCalls(chatState.nextToolEntry(bindings.toolCallsRef.current, frame));
-        if (frame.toolName === "todo") {
-          const details = frame.phase === "end" ? frame.result?.details : frame.partial?.details;
-          if (details !== undefined) {
-            const next = applyTodoToolDetails(bindings.activitiesRef.current, details);
-            if (next !== bindings.activitiesRef.current) bindings.applyActivities(next);
-          }
+        return;
+      }
+      case "chat.todo": {
+        const previous = bindings.todoAuthorityRef.current;
+        const next = applyTodoAuthority(previous, frame);
+        bindings.todoAuthorityRef.current = next;
+        if (next.todo !== previous.todo) {
+          bindings.applyActivities({ ...bindings.activitiesRef.current, todo: next.todo });
         }
         return;
       }
@@ -454,16 +459,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           entries,
           current: suffix,
           preserveCurrent,
-          hasLiveTodo: bindings.activitiesRef.current.todo !== null,
           steerMarks: steerMarks(frame.sessionId),
         });
         bindings.replaceMessages(reconciliation.history.messages);
         // A committed snapshot is not another live receipt on a repeated terminal.
         bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
         bindings.setRestoreVersion((version) => version + 1);
-        if (reconciliation.todo !== null) {
-          bindings.applyActivities({ ...bindings.activitiesRef.current, todo: reconciliation.todo });
-        }
         return;
       }
       default:
