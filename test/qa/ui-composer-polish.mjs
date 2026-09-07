@@ -101,6 +101,32 @@ const rowGeometry = () => {
 };
 const within = (value, bound) => Math.abs(value - bound) <= 2;
 
+/** The whole disclosure target must remain inside every clipping ancestor,
+ * not merely have a viewport-contained center after focus scrolls it. */
+const detailsTarget = () => {
+  const el = document.querySelector('.th-chat-status-details summary');
+  const rect = el.getBoundingClientRect();
+  const ancestors = [];
+  for (let owner = el.parentElement; owner; owner = owner.parentElement) {
+    const style = getComputedStyle(owner), box = owner.getBoundingClientRect();
+    const clipsX = /auto|scroll|hidden|clip/.test(style.overflowX);
+    const clipsY = /auto|scroll|hidden|clip/.test(style.overflowY);
+    ancestors.push({ className: owner.className, scrollLeft: owner.scrollLeft, scrollTop: owner.scrollTop,
+      contained: (!clipsX || (rect.left >= box.left - 0.5 && rect.right <= box.right + 0.5))
+        && (!clipsY || (rect.top >= box.top - 0.5 && rect.bottom <= box.bottom + 0.5)) });
+  }
+  const owns = (x, y) => { const at = document.elementFromPoint(x, y); return at === el || el.contains(at); };
+  return { rect: rect.toJSON(), coarse: matchMedia('(pointer: coarse)').matches,
+    hit: owns(rect.x + rect.width / 2, rect.y + rect.height / 2),
+    complete: ancestors.every(owner => owner.contained)
+      // Rounded corners are not painted targets; all four edge midpoints are.
+      && [[rect.left + 1, rect.y + rect.height / 2], [rect.right - 1, rect.y + rect.height / 2],
+        [rect.x + rect.width / 2, rect.top + 1], [rect.x + rect.width / 2, rect.bottom - 1]]
+        .every(([x, y]) => owns(x, y)),
+    visible: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
+    ancestors };
+};
+
 /** Focus alone need not mutate or resize the DOM. Observe the actual focus event. */
 async function focusByKey(page, key, selector) {
   await page.evaluate(selector => {
@@ -149,12 +175,12 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     const reconnectStart = fixture.traffic.length;
     const closed = fixture.wait('subscription', event => event.sessionId === 'stored-a' && event.action === 'close');
     await Promise.all([closed, transition(page,
-      "() => !navigator.onLine && [...document.querySelectorAll('.th-chat-status > .th-chat-status-item--warn')].some(el => /reconnect/i.test(el.textContent))",
+      "() => !navigator.onLine && [...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].some(el => /reconnect/i.test(el.textContent))",
       async () => { await q.context.setOffline(true); fixture.disconnect('stored-a'); })]);
     const disconnected = await page.evaluate(rowGeometry);
     const offline = await page.evaluate(() => ({ online: navigator.onLine,
-      urgent: [...document.querySelectorAll('.th-chat-status > .th-chat-status-item--warn')].map(el => {
-        const rect = el.getBoundingClientRect(), owner = el.closest('.th-chat-status').getBoundingClientRect();
+      urgent: [...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].map(el => {
+        const rect = el.getBoundingClientRect(), owner = (el.closest('.th-chat-status-primary') ?? el.closest('.th-chat-status')).getBoundingClientRect();
         const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
         return { text: el.textContent, rect: rect.toJSON(), hit: el === at || el.contains(at),
           contained: rect.left >= owner.left && rect.right <= owner.right && rect.top >= owner.top && rect.bottom <= owner.bottom };
@@ -166,14 +192,14 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     await shot(page, `c3-${label}-reconnecting.png`);
     const reattached = fixture.wait('subscription', event => event.sessionId === 'stored-a' && event.action === 'attach');
     await Promise.all([reattached, transition(page,
-      "() => navigator.onLine && ![...document.querySelectorAll('.th-chat-status > .th-chat-status-item--warn')].some(el => /reconnect/i.test(el.textContent)) && !!document.querySelector('.th-chat-status-item--live')",
+      "() => navigator.onLine && ![...document.querySelectorAll('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')].some(el => /reconnect/i.test(el.textContent)) && !!document.querySelector('.th-chat-status-item--live')",
       () => q.context.setOffline(false))]);
     const focusAfterReconnect = await page.locator('.th-chat-input textarea').evaluate(el => document.activeElement === el);
     record(`c3-${label}-reconnected-no-resend`, sendFrames().length === 0 && fixture.subscribers('stored-a') === 1
       && focusBeforeReconnect && focusAfterReconnect,
       { focusBeforeReconnect, focusAfterReconnect, frames: sendFrames(), traffic: fixture.traffic.slice(reconnectStart) });
     await deliver({ type: "compaction.started" },
-      "() => !!document.querySelector('.th-chat-status > .th-chat-status-item--warn')");
+      "() => !!document.querySelector('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)')");
 
     // Meta+Enter is the public steer action on both touch and fine-pointer devices.
     // A running composer's arrow button is STOP, not send.
@@ -189,6 +215,14 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     const geometry = await page.evaluate(rowGeometry);
     if (paneWidth) record(`c3-${label}-actual-desktop-split`, Math.abs(geometry.pane.width - paneWidth) < 1
       && geometry.viewport.width === 1280 && !coarse, geometry);
+    const compacting = await page.locator('.th-chat-status-item--warn').evaluate(el => {
+      const rect = el.getBoundingClientRect(), owner = el.closest('.th-chat-status-primary').getBoundingClientRect();
+      const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+      return { rect: rect.toJSON(), owner: owner.toJSON(), text: el.textContent,
+        hit: at === el || el.contains(at), primary: !el.closest('.th-chat-status-details'),
+        complete: rect.left >= owner.left && rect.right <= owner.right };
+    });
+    record(`c3-${label}-compacting-priority`, compacting.primary && compacting.hit && compacting.complete, compacting);
     await shot(page, `c3-${label}-row.png`);
     const metrics = await page.evaluate(() => ({
       collapsed: !document.querySelector('.th-chat-status-details').open,
@@ -207,21 +241,26 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
       && geometry.trigger.height >= (coarse ? 44 : 20), geometry);
     record(`c3-${label}-no-overflow`, geometry.overflow <= 0, geometry);
 
-    // Establish focus through actual UI, then reach Details with Shift+Tab.
-    // Keyboard focus scrolls the narrow status strip itself into view.
+    const restingSummary = await page.evaluate(detailsTarget);
+    record(`c3-${label}-details-rest-target`, restingSummary.hit && restingSummary.visible && restingSummary.complete
+      && (!coarse || (restingSummary.rect.width >= 44 && restingSummary.rect.height >= 44)), restingSummary);
+    const modelIdentity = await page.locator('.th-model-picker-label').evaluate(el => ({
+      width: el.getBoundingClientRect().width, natural: el.scrollWidth, text: el.textContent }));
+    record(`c3-${label}-model-identity-allocation`, modelIdentity.width >= Math.min(48, modelIdentity.natural) - 1, modelIdentity);
+
+    // Establish focus through actual UI, then reach the fixed Details peer.
+    // Neither focus nor disclosure may scroll hidden outer ancestors.
     await transition(page, "() => !!document.querySelector('.th-model-picker-popover')",
       () => page.locator('.th-model-picker-btn').click());
     await transition(page, "() => !document.querySelector('.th-model-picker-popover') && document.activeElement.matches('.th-model-picker-btn')",
       () => page.keyboard.press('Escape'));
     await focusByKey(page, 'Shift+Tab', '.th-chat-status-details summary');
-    const summary = await page.locator('.th-chat-status-details summary').evaluate(el => {
-      const rect = el.getBoundingClientRect();
-      const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      return { rect: rect.toJSON(), coarse: matchMedia('(pointer: coarse)').matches,
-        hit: hit === el || el.contains(hit), visible: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight };
-    });
-    record(`c3-${label}-details-target`, summary.coarse === coarse && summary.hit && summary.visible
+    const summary = await page.evaluate(detailsTarget);
+    record(`c3-${label}-details-target`, summary.coarse === coarse && summary.hit && summary.visible && summary.complete
       && (!coarse || (summary.rect.width >= 44 && summary.rect.height >= 44)), summary);
+    record(`c3-${label}-details-focus-stable`, within(restingSummary.rect.left, summary.rect.left)
+      && JSON.stringify(restingSummary.ancestors.map(a => [a.className, a.scrollLeft, a.scrollTop]))
+        === JSON.stringify(summary.ancestors.map(a => [a.className, a.scrollLeft, a.scrollTop])), { restingSummary, summary });
     await transition(page, "() => document.querySelector('.th-chat-status-details').open && document.activeElement.matches('.th-chat-status-details summary')",
       () => page.keyboard.press('Enter'));
     const openMetrics = await page.evaluate(() => ({
@@ -229,6 +268,24 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
       disclosed: [...document.querySelectorAll('.th-chat-status-details .th-chat-status-num')].map(el => el.textContent) }));
     record(`c3-${label}-open-secondary-metrics-disclosure-only`, openMetrics.direct.length === 0
       && openMetrics.disclosed.length === 2 && openMetrics.disclosed.includes('42%') && openMetrics.disclosed.includes('70%'), openMetrics);
+    const disclosedContent = await page.locator('.th-chat-status-details').evaluate(details => {
+      const owner = details.querySelector('.th-chat-status-metrics').getBoundingClientRect();
+      return { urgent: details.querySelectorAll('.th-chat-status-item--warn, .th-chat-send-status, .th-chat-status-item--live, .th-chat-status-item--steer').length,
+        metrics: [...details.querySelectorAll('.th-chat-status-item')].map(el => {
+          const rect = el.getBoundingClientRect();
+          return { rect: rect.toJSON(), owner: owner.toJSON(), text: el.textContent,
+            complete: rect.left >= owner.left && rect.right <= owner.right
+              && rect.top >= owner.top && rect.bottom <= owner.bottom };
+        }) };
+    });
+    record(`c3-${label}-details-secondary-content`, disclosedContent.urgent === 0
+      && disclosedContent.metrics.length === 2 && disclosedContent.metrics.every(item => item.complete), disclosedContent);
+    const openedSummary = await page.evaluate(detailsTarget);
+    const openedGeometry = await page.evaluate(rowGeometry);
+    record(`c3-${label}-details-open-stable`, openedSummary.complete && openedSummary.hit
+      && within(openedSummary.rect.left, summary.rect.left) && within(openedSummary.rect.width, summary.rect.width)
+      && within(openedGeometry.trigger.right, geometry.trigger.right)
+      && within(openedGeometry.trigger.width, geometry.trigger.width), { openedSummary, openedGeometry });
     await shot(page, `c3-${label}-details-keyboard.png`);
     await transition(page, "() => !document.querySelector('.th-chat-status-details').open && document.activeElement.matches('.th-chat-status-details summary')",
       () => page.keyboard.press('Space'));
@@ -237,7 +294,7 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     await transition(page, "() => document.querySelector('.th-chat-status-details')?.open === true",
       () => page.locator('.th-chat-status-details summary').click());
     const details = await page.evaluate(() => ({ text: document.querySelector('.th-chat-status-details')?.textContent,
-      directUrgent: !!document.querySelector('.th-chat-status > .th-chat-status-item--warn') }));
+      directUrgent: !!document.querySelector('.th-chat-status .th-chat-status-item--warn:not(.th-chat-status-details *)') }));
     record(`c3-${label}-details-content`, details.text.includes('42%') && details.text.includes('70%') && details.directUrgent, details);
     await transition(page, "() => document.querySelector('.th-chat-status-details')?.open === false",
       () => page.locator('.th-chat-status-details summary').click());
@@ -303,10 +360,20 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
         && after.focusRestored && after.sends === before.sends && after.status === before.status
         && JSON.stringify(after.queue) === JSON.stringify(before.queue), { original, inspected, before, after });
     }
+    // Request actions may require local horizontal scrolling; native Tab must
+    // reveal the complete recovery target without moving any outer ancestor.
+    const beforeRecoveryFocus = await page.evaluate(detailsTarget);
+    await focusByKey(page, 'Tab', `${selector} .th-send-restore`);
+    const afterRecoveryFocus = await page.evaluate(detailsTarget);
+    record(`c3-${label}-primary-focus-local`, JSON.stringify(beforeRecoveryFocus.ancestors)
+      === JSON.stringify(afterRecoveryFocus.ancestors), { beforeRecoveryFocus, afterRecoveryFocus });
     const recoveryBounds = await probe('.th-send-restore').evaluate(el => {
       const rect = el.getBoundingClientRect();
       const at = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-      return { rect: rect.toJSON(), inRow: !!el.closest('.th-chat-controls'), hit: el === at || el.contains(at),
+      const owner = el.closest('.th-chat-status-primary').getBoundingClientRect();
+      return { rect: rect.toJSON(), owner: owner.toJSON(), inRow: !!el.closest('.th-chat-controls'), hit: el === at || el.contains(at),
+        primary: !el.closest('.th-chat-status-details'),
+        complete: rect.left >= owner.left - 0.5 && rect.right <= owner.right + 0.5,
         inViewport: rect.top >= 0 && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight };
     });
     await transition(page, `() => !document.querySelector('${selector}') && document.querySelector('textarea').value === ${JSON.stringify(original)} && document.activeElement === document.querySelector('textarea')`,
@@ -314,7 +381,8 @@ async function c3Scenario(browser, { width, height, coarse, paneWidth, label, ke
     const recovered = { text: await textarea.inputValue(), sends: sendFrames().length, bounds: recoveryBounds,
       focus: await textarea.evaluate(el => document.activeElement === el) };
     record(`c3-${label}-recovery`, recovered.text === original && recovered.focus && recovered.sends === before.sends
-      && recoveryBounds.inRow && recoveryBounds.hit && recoveryBounds.inViewport, recovered);
+      && recoveryBounds.inRow && recoveryBounds.hit && recoveryBounds.inViewport
+      && recoveryBounds.primary && recoveryBounds.complete, recovered);
     await shot(page, `c3-${label}-recovered.png`);
     // Deliberate resubmit is the next and only send: prove restored text really
     // traverses the public transport, rather than only changing the DOM.
@@ -504,6 +572,28 @@ async function c4Scenario(browser, { width, height, insets, keyboard, pan, keybo
     await checkpoint('before-capture');
     const readout = await page.evaluate(read);
     const bounds = safeBounds(readout.vv, safe);
+    if (pan) {
+      const identity = await page.locator('.th-model-picker-current').evaluate(header => {
+        const box = header.getBoundingClientRect(), style = getComputedStyle(header);
+        const metadata = header.querySelector('div').getBoundingClientRect();
+        const close = header.querySelector('button').getBoundingClientRect();
+        return { header: box.toJSON(), metadata: metadata.toJSON(), close: close.toJSON(),
+          available: box.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+          labels: [...header.querySelectorAll('strong, span')].map(el => {
+            const range = document.createRange(); range.selectNodeContents(el);
+            const lines = [...new Set([...range.getClientRects()].map(rect => Math.round(rect.top * 10) / 10))];
+            const css = getComputedStyle(el);
+            return { text: el.textContent, lines, rect: el.getBoundingClientRect().toJSON(),
+              whiteSpace: css.whiteSpace, overflow: css.overflow, textOverflow: css.textOverflow };
+          }) };
+      });
+      await save(`c4-${label}-header-identity.json`, identity);
+      record(`c4-${label}-header-readable`, identity.labels.length === 2
+        && identity.labels.every(label => label.lines.length === 1 && label.whiteSpace === 'nowrap'
+          && label.overflow === 'hidden' && label.textOverflow === 'ellipsis')
+        && within(identity.metadata.width, identity.available)
+        && identity.close.bottom <= identity.metadata.top, identity);
+    }
     await shot(page, `c4-${label}-sheet.png`);
     await checkpoint('after-capture');
     // At every scale and offset, the complete sheet and 44px close header

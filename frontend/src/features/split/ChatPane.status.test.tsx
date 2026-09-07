@@ -162,7 +162,7 @@ describe("ChatPane status row", () => {
     expect(status.contains(trigger)).toBe(false);
   });
 
-  it("keeps secondary context/cache metrics in an accessible details disclosure while urgent states stay direct", () => {
+  it("keeps secondary context/cache metrics in an accessible details disclosure while urgent states stay outside at any depth", () => {
     const { deliver } = renderChatPane(root);
     act(() => {
       deliver({ type: "stats", sessionId: "chat-1",
@@ -175,8 +175,9 @@ describe("ChatPane status row", () => {
     const summary = requireElement(details.querySelector("summary"), "details summary");
     expect(status.contains(details)).toBe(true);
     expect(summary.textContent).toBe(i18n.t("chat.statusDetails"));
-    // Urgent compaction state stays a direct status item, outside the disclosure.
-    const direct = Array.from(status.querySelectorAll(":scope > .th-chat-status-item"));
+    // Urgent states remain primary content regardless of wrapper depth.
+    const direct = Array.from(status.querySelectorAll(".th-chat-status-item"))
+      .filter(item => !item.closest(".th-chat-status-details"));
     expect(direct.some(item => item.textContent?.includes("chat.compacting"))).toBe(true);
     // The disclosure starts collapsed; the summary is what opens it.
     expect(details.open).toBe(false);
@@ -200,21 +201,71 @@ describe("ChatPane status row", () => {
     expect(translate("ko", "chat.statusDetails")).not.toBe("chat.statusDetails");
   });
 
-  it("does not render context/cache metrics as direct status children", () => {
+  it("does not render context/cache metrics outside Details at any nesting depth", () => {
     const { deliver } = renderChatPane(root);
     act(() => deliver({ type: "stats", sessionId: "chat-1",
       contextUsage: { tokens: 42, contextWindow: 100, percent: 42 },
       tokens: { input: 30, cacheRead: 70, output: 5 } }));
     const status = requireElement(container.querySelector(".th-chat-status"), "status strip");
     const details = requireElement(container.querySelector<HTMLDetailsElement>(".th-chat-status-details"), "status details");
-    const directText = () => [...status.children]
-      .filter(child => child !== details)
+    const primaryMetrics = () => [...status.querySelectorAll(".th-chat-status-num")]
+      .filter(item => !item.closest(".th-chat-status-details"));
+    const directText = () => [...status.querySelectorAll("*")]
+      .filter(child => !child.closest(".th-chat-status-details") && !child.contains(details))
       .map(child => child.textContent ?? "").join(" ");
+    expect(primaryMetrics()).toEqual([]);
     expect(directText()).not.toContain("chat.contextUsage");
     expect(directText()).not.toContain("chat.cacheHit");
     act(() => details.querySelector("summary")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(primaryMetrics()).toEqual([]);
     expect(directText()).not.toContain("chat.contextUsage");
     expect(directText()).not.toContain("chat.cacheHit");
+  });
+
+  it("reserves Details outside the primary scroller and puts warnings before variable previews", () => {
+    const { deliver } = renderChatPane(root);
+    const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "composer");
+    act(() => setTextareaValue(input, "variable preview"));
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    act(() => deliver({ type: "compaction.started", sessionId: "chat-1" }));
+    const status = requireElement(container.querySelector(".th-chat-status"), "announced status");
+    const primary = requireElement(status.querySelector(".th-chat-status-primary"), "primary scroll owner");
+    const details = requireElement(status.querySelector("details"), "Details peer");
+    expect(primary.parentElement).toBe(status);
+    expect(details.parentElement).toBe(status);
+    expect(primary.contains(details)).toBe(false);
+    expect(primary.firstElementChild?.classList.contains("th-chat-status-item--warn")).toBe(true);
+    expect(primary.textContent).toContain("chat.compacting");
+    expect(primary.querySelector(".th-chat-send-preview")).not.toBeNull();
+    expect(details.querySelector(".th-chat-status-item--warn, .th-chat-send-status, .th-chat-status-item--live, .th-chat-status-item--steer")).toBeNull();
+  });
+
+  it.each([
+    { left: 190, right: 234, scroll: 40, expected: 74 },
+    { left: 80, right: 124, scroll: 40, expected: 20 },
+    { left: 120, right: 164, scroll: 40, expected: 40 },
+  ])("reveals a focused request only within its primary owner: $left to $right", ({ left, right, scroll, expected }) => {
+    renderChatPane(root);
+    const input = requireElement(container.querySelector<HTMLTextAreaElement>("textarea"), "composer");
+    act(() => setTextareaValue(input, "original request"));
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    const primary = requireElement(container.querySelector<HTMLElement>(".th-chat-status-primary"), "primary owner");
+    const preview = requireElement(primary.querySelector<HTMLButtonElement>(".th-chat-send-preview"), "preview");
+    vi.spyOn(primary, "getBoundingClientRect").mockReturnValue({ left: 100, right: 200 } as DOMRect);
+    Object.defineProperty(primary, "clientWidth", { configurable: true, value: 100 });
+    vi.spyOn(preview, "getBoundingClientRect").mockReturnValue({ left, right } as DOMRect);
+    primary.scrollLeft = scroll;
+    const ancestors: HTMLElement[] = [];
+    for (let parent = primary.parentElement; parent; parent = parent.parentElement) {
+      parent.scrollLeft = 7;
+      parent.scrollTop = 9;
+      ancestors.push(parent);
+    }
+    act(() => preview.focus({ preventScroll: true }));
+    expect(document.activeElement).toBe(preview);
+    expect(primary.scrollLeft).toBe(expected);
+    expect(ancestors.map(parent => [parent.scrollLeft, parent.scrollTop]))
+      .toEqual(ancestors.map(() => [7, 9]));
   });
 
   it("keeps unknown-send recovery and original inspection reachable inside the merged row", async () => {
@@ -231,6 +282,10 @@ describe("ChatPane status row", () => {
     expect(row.contains(status)).toBe(true);
     const preview = requireElement(status.querySelector<HTMLButtonElement>("button.th-chat-send-preview"), "original preview");
     expect(status.querySelector(".th-send-restore")?.textContent).toBe(i18n.t("chat.send.restore"));
+    for (const control of status.querySelectorAll(".th-chat-send-preview, .th-send-restore, .th-send-dismiss")) {
+      expect(control.closest(".th-chat-status-primary")).not.toBeNull();
+      expect(control.closest(".th-chat-status-details")).toBeNull();
+    }
     // Inspection stays non-mutating from inside the merged row.
     await act(async () => { preview.focus(); preview.click(); });
     const dialog = requireElement(document.querySelector('[role="dialog"]'), "original dialog");
