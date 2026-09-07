@@ -12,7 +12,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability } from './ui-mobile-helpers.mjs';
+import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability, mobileBrowserOptions } from './ui-mobile-helpers.mjs';
+import { observeAssets } from './ui-pwa-viewport.mjs';
 
 const git = async (...args) => {
   const child = Bun.spawn(['git', ...args], { stdout: 'pipe', stderr: 'pipe' });
@@ -31,19 +32,19 @@ const SETTINGS = 'C5.settings-reachable';
 
 export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   assert(['red', 'green'].includes(phase), '--phase must be red or green');
-  assert(out && driver, '--out and QA_PLAYWRIGHT are required');
+  assert(out, '--out required');
+  const browserOptions = await mobileBrowserOptions(driver);
   const evidence = resolve(out); await mkdir(evidence, { recursive: true });
   const save = (name, data) => writeFile(resolve(evidence, name), JSON.stringify(data, null, 2) + '\n');
-  const actions = [], results = [], cleanup = [], failures = [], screenshots = [];
+  const actions = [], results = [], cleanup = [], failures = [], screenshots = [], bindings = [];
   const [sha, tree, productDiff] = await Promise.all([git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}'),
     git('diff', 'HEAD', '--', 'frontend', 'DESIGN.md')]);
-  const receipt = { phase, cwd: process.cwd(), sha, tree, productDiff, started: new Date().toISOString(),
-    command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-mobile-footer-polish.mjs --phase ${phase} --out ${out}`,
+  const receipt = { phase, browserOptions, cwd: process.cwd(), sha, tree, productDiff, started: new Date().toISOString(),
+    command: `QA_PLAYWRIGHT=${browserOptions.driver} bun test/qa/ui-mobile-footer-polish.mjs --phase ${phase} --out ${out}`,
     sources: Object.fromEntries(await Promise.all(['ui-mobile-footer-polish.mjs', 'ui-mobile-helpers.mjs',
       'design-workbench-fixture.mjs', 'pane-workspace-ui.mjs'].map(async file =>
       [file, hash(await readFile(resolve('test/qa', file)))]))),
-    scopeNote: 'split-view.css / mobileOutline.test.ts changes in productDiff belong to the parallel outline producer; '
-      + 'C5 footer geometry is independent of active-pane outline paint.',
+    scopeNote: 'Independent keyboard/inset/surface expectations; legacy C5 IDs remain intact. Browser emulation only.',
     productSources: Object.fromEntries(await Promise.all(['frontend/src/styles/settings-menu.css',
       'frontend/src/styles/sidebar.css', 'frontend/index.html', 'frontend/dist/index.html',
       ...Array.from(new Bun.Glob('frontend/dist/assets/*.{css,js}').scanSync('.'))].map(async file =>
@@ -58,7 +59,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   let browser;
   async function capture(q, name, inset, extra = {}, safeTop = 0) {
     const motion = await settle(q.page);
-    const geometry = await measure(q.page, inset, safeTop);
+    const geometry = await measure(q.page, inset, safeTop, q.expectations);
     const image = `${name}.png`, path = resolve(evidence, image);
     await q.page.screenshot({ path, animations: 'allow' });
     const bytes = await readFile(path);
@@ -69,16 +70,20 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     return geometry;
   }
   async function scenario(name, options, exercise) {
-    let q;
+    let q, binding;
     try {
-      q = await setupMobile(browser, options, actions);
+      q = await setupMobile(browser, { ...options, beforeNavigate(page, url) { binding = observeAssets(page, url); } }, actions);
+      const assets = await binding(); bindings.push({ scenario: name, ...assets });
+      results.push({ scenario: name, id: 'C5.served-byte-binding', pass: assets.pass, actual: assets });
+      q.expectations = { expectedKeyboard: false, mode: 'browser', sidebarOpen: true,
+        safeInsets: { top: 0, bottom: 0, left: 0, right: 0 }, surface: { top: 0, left: 0, right: 390, bottom: 844 } };
       await exercise(q, name);
       assert.deepEqual(q.errors, [], `${name}: browser exceptions`);
       assert.deepEqual(q.fixture.unexpected, [], `${name}: unexpected fixture traffic`);
       assert.equal(q.fixture.requests.some(r => r.path.includes('logout')), false, 'Never invoke logout');
     } catch (error) {
       failures.push({ scenario: name, error: String(error), cause: String(error.cause ?? ''), stack: error.stack });
-      if (q) await capture(q, `${name}-infrastructure-failure`, 0);
+      if (q) await capture(q, `${name}-infrastructure-failure`, q.expectations.safeInsets.bottom, {}, q.expectations.safeInsets.top);
     } finally {
       if (q) {
         await save(`${name}-traffic.json`, { requests: q.fixture.requests, frameTypes: q.fixture.frames.map(f => f.type),
@@ -93,8 +98,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     }
   }
   try {
-    const { chromium } = await import(driver);
-    browser = await chromium.launch({ channel: 'chrome', headless: true, timeout: 90000 });
+    const { chromium } = await import(browserOptions.driver);
+    browser = await chromium.launch({ executablePath: browserOptions.executablePath, headless: true, timeout: 90000 });
     receipt.browserVersion = browser.version();
     for (const theme of ['dark', 'light']) for (const list of ['short', 'long']) {
       await scenario(`mobile-${theme}-${list}`, { theme, list }, async (q, name) => {
@@ -123,6 +128,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
             for (const safeTop of [0, 59]) for (const inset of [0, 34]) {
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: safeTop, left: 0, right: 0, bottom: inset } });
               actions.push({ action: 'CDP-safe-area', scenario: name, method: 'Emulation.setSafeAreaInsetsOverride', insets: { top: safeTop, bottom: inset } });
+              q.expectations = { expectedKeyboard: keyboard, mode: 'browser', sidebarOpen: true,
+                safeInsets: { top: safeTop, bottom: inset, left: 0, right: 0 },
+                surface: { top: 0, left: 0, right: width, bottom: keyboard ? (height === 844 ? 500 : 270) : height } };
               const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-top${safeTop}-safe${inset}`;
               const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'native-resize' : 'closed' }, safeTop);
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
@@ -141,7 +149,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                   });
                 });
                 await complete(page);
-                const scrolled = await measure(page, inset, safeTop);
+                const scrolled = await measure(page, inset, safeTop, q.expectations);
                 results.push({ scenario: key, id: 'C5.list-scroll-preserves-footer', pass: Math.abs(scrolled.footer.rect.bottom - g.footer.rect.bottom) < 1,
                   actual: { before: g.footer.rect, after: scrolled.footer.rect, listScrollTop: scrolled.body.scrollTop } });
                 actions.push({ action: 'scroll-session-list', scenario: key, scrollTop: scrolled.body.scrollTop });
@@ -149,7 +157,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               await arm(page, () => !!document.querySelector('.th-settings-panel'));
               await page.locator('.th-settings-menu > button').click(); await complete(page);
               await capture(q, `C5-${phase}-${key}-settings`, inset, {}, safeTop);
-              const reachable = await settingsReachability(page, inset, safeTop);
+              const reachable = await settingsReachability(page, inset, safeTop, q.expectations);
               results.push({ scenario: key, ...reachable });
               actions.push({ action: 'reach-scrollable-settings-controls', scenario: key, ...reachable.actual });
               await capture(q, `C5-${phase}-${key}-settings-scrolled`, inset, {}, safeTop);
@@ -168,6 +176,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                 visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll'));
               }, height === 844 ? 500 : 270);
               await complete(page);
+              q.expectations = { expectedKeyboard: true, mode: 'browser', sidebarOpen: true,
+                safeInsets: { top: 0, bottom: 34, left: 0, right: 0 },
+                surface: { top: 60, left: 0, right: width, bottom: 60 + (height === 844 ? 500 : 270) } };
               const key = `${name}-${width}x${height}-synthetic-pan60-safe34`;
               const g = await capture(q, `C5-${phase}-${key}`, 34, { keyboardEmulation: 'synthetic visualViewport height and offsetTop=60 inside original layout viewport' });
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
@@ -186,6 +197,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   finally {
     if (browser) { await browser.close(); cleanup.push({ browserClosed: !browser.isConnected(), disposableProfileManagedByPlaywright: true }); }
     receipt.productDiffAfter = await git('diff', 'HEAD', '--', 'frontend', 'DESIGN.md');
+    receipt.inputsUnchanged = (await Promise.all(Object.entries(receipt.productSources).map(async ([path, digest]) => hash(await readFile(path)) === digest))).every(Boolean);
     receipt.finished = new Date().toISOString();
     const scoped = results.filter(r => SCOPED.includes(r.id)), sanity = results.filter(r => SANITY.includes(r.id)),
       strict = results.filter(r => STRICT.includes(r.id)), settings = results.filter(r => r.id === SETTINGS);
@@ -193,16 +205,16 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       strict: { pass: strict.filter(r => r.pass).length, total: strict.length },
       sanity: { pass: sanity.filter(r => r.pass).length, total: sanity.length },
       settings: { pass: settings.filter(r => r.pass).length, total: settings.length } };
-    receipt.status = failures.length ? 'INFRASTRUCTURE_FAILURE'
+    receipt.status = failures.length || !receipt.inputsUnchanged ? 'INFRASTRUCTURE_FAILURE'
       : phase === 'red'
         ? sanity.length && sanity.every(r => r.pass) && (scoped.some(r => !r.pass) || strict.some(r => !r.pass) || settings.some(r => !r.pass))
           && cleanup.filter(c => c.contextClosed).length === 4 ? 'RED_CONFIRMED' : 'UNEXPECTED_BASELINE'
         : sanity.length && sanity.every(r => r.pass) && scoped.every(r => r.pass) && strict.every(r => r.pass)
-          && settings.every(r => r.pass) ? 'GREEN_SCOPED' : 'ASSERTION_FAILURE';
-    receipt.exitStatus = failures.length ? 2 : receipt.status === 'RED_CONFIRMED' ? 1
+          && settings.every(r => r.pass) && results.every(r => r.pass) ? 'GREEN_SCOPED' : 'ASSERTION_FAILURE';
+    receipt.exitStatus = receipt.status === 'INFRASTRUCTURE_FAILURE' ? 2 : receipt.status === 'RED_CONFIRMED' ? 1
       : receipt.status === 'GREEN_SCOPED' ? 0 : receipt.status === 'UNEXPECTED_BASELINE' ? 2 : 1;
     await save('receipt.json', receipt); await save('results.json', results); await save('failures.json', failures);
-    await save('actions.json', actions); await save('cleanup.json', cleanup); await save('screenshots.json', screenshots);
+    await save('actions.json', actions); await save('cleanup.json', cleanup); await save('screenshots.json', screenshots); await save('served-bindings.json', bindings);
   }
   console.log(JSON.stringify({ status: receipt.status, exitStatus: receipt.exitStatus, phase, assertions: results.length,
     tally: receipt.tally, scopedFailures: results.filter(r => SCOPED.includes(r.id) && !r.pass)

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability } from './ui-mobile-helpers.mjs';
+import { setupMobile, arm, complete, settle, measure, footerAssertions, openSidebar, settingsReachability, mobileBrowserOptions } from './ui-mobile-helpers.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = async (...args) => {
@@ -118,14 +118,15 @@ async function drawerMotion(page, { context, reduced, direction }, capture, acti
 
 export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   assert(['red', 'green'].includes(phase), 'phase must be red or green');
-  assert(out && isAbsolute(out) && driver, 'absolute --out and QA_PLAYWRIGHT required');
+  assert(out && isAbsolute(out), 'absolute --out required');
+  const browserOptions = await mobileBrowserOptions(driver);
   await mkdir(out, { recursive: true });
   const save = (name, data) => writeFile(resolve(out, name), JSON.stringify(data, null, 2) + '\n');
   const results = [], failures = [], actions = [], cleanup = [], screenshots = [], bindings = [], motion = [];
   const sources = [...productPaths, 'DESIGN.md', 'test/qa/ui-followup-sidebar.mjs', 'test/qa/ui-mobile-helpers.mjs',
     'test/qa/design-workbench-fixture.mjs', 'test/qa/pane-workspace-ui.mjs', 'frontend/dist/index.html',
     ...new Bun.Glob('frontend/dist/assets/*.{css,js}').scanSync('.')];
-  const receipt = { phase, command: `QA_PLAYWRIGHT=${driver} bun test/qa/ui-followup-sidebar.mjs --phase ${phase} --out ${out}`,
+  const receipt = { phase, browserOptions, command: `QA_PLAYWRIGHT=${browserOptions.driver} bun test/qa/ui-followup-sidebar.mjs --phase ${phase} --out ${out}`,
     cwd: process.cwd(), head: await git('rev-parse', 'HEAD'), tree: await git('rev-parse', 'HEAD^{tree}'),
     dirty: await git('status', '--short'), productDiff: await git('diff', 'HEAD', '--', ...productPaths),
     inputHashes: Object.fromEntries(await Promise.all(sources.map(async path => [path, hash(await readFile(path))]))),
@@ -144,8 +145,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     screenshots.push({ path, sha256: hash(bytes), width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) });
   }
   try {
-    const { chromium } = await import(driver);
-    browser = await chromium.launch({ channel: 'chrome', headless: true, timeout: 90000 });
+    const { chromium } = await import(browserOptions.driver);
+    browser = await chromium.launch({ executablePath: browserOptions.executablePath, headless: true, timeout: 90000 });
     receipt.browserVersion = browser.version();
     for (const theme of ['dark', 'light']) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) for (const list of ['short', 'long']) {
       const contextName = `${theme}-${lang}-font${fontSize}-${list}`;
@@ -192,7 +193,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         await page.emulateMedia({ reducedMotion: 'no-preference' });
         await openSidebar(page);
         actions.push({ action: 'menu-open', context: contextName, result: await actionState(page) });
-        const dimensions = (await measure(page, 0)).controls.map(c => ({ width: c.rect.width, height: c.rect.height }));
+        const dimensions = (await measure(page, 0, 0, { expectedKeyboard: false, mode: 'browser', sidebarOpen: true,
+          safeInsets: { top: 0, bottom: 0, left: 0, right: 0 }, surface: { top: 0, left: 0, right: 390, bottom: 844 } })).controls.map(c => ({ width: c.rect.width, height: c.rect.height }));
         for (const [width, height] of viewports) {
           await page.evaluate(() => {
             delete visualViewport.height; delete visualViewport.offsetTop;
@@ -219,7 +221,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { top: safeTop, bottom: safeBottom, left: 0, right: 0 } });
               const name = `${contextName}-${width}x${height}-${state}-top${safeTop}-safe${safeBottom}`;
               await settle(page);
-              const g = await measure(page, safeBottom, safeTop);
+              const expectations = { expectedKeyboard: state === 'keyboard-origin', mode: 'browser', sidebarOpen: true,
+                safeInsets: { top: safeTop, bottom: safeBottom, left: 0, right: 0 },
+                surface: { top: state === 'keyboard-origin' ? top : 0, left: 0, right: width,
+                  bottom: state === 'keyboard-origin' ? top + visualHeight : height },
+                drawerSurface: { top, left: 0, right: width, bottom: top + visualHeight } };
+              const g = await measure(page, safeBottom, safeTop, expectations);
               const backdrop = await page.locator('.th-backdrop').evaluateAll(elements => elements.map(e => ({
                 display: getComputedStyle(e).display, rect: e.getBoundingClientRect().toJSON() })));
               check(name, 'P3.input', Math.abs(g.visualViewport.height - visualHeight) <= 1 && g.visualViewport.top === top
@@ -244,7 +251,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                   });
                 });
                 await complete(page);
-                const after = await measure(page, safeBottom, safeTop);
+                const after = await measure(page, safeBottom, safeTop, expectations);
                 check(name, 'P3.list-scroll-owner', g.body.overflowY === 'auto' && Math.abs(after.footer.rect.bottom - g.footer.rect.bottom) <= 1
                   && after.body.scrollTop !== g.body.scrollTop && after.sidebar.scrollTop === g.sidebar.scrollTop && after.root.scrollTop === g.root.scrollTop,
                   { before: g.body, after: after.body });
@@ -255,7 +262,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               await arm(page, () => !!document.querySelector('.th-settings-panel'));
               await page.locator('.th-settings-menu > button').click(); await complete(page); await settle(page);
               actions.push({ action: 'settings-open', scenario: name, before: beforeSettings, result: await actionState(page) });
-              const settings = await settingsReachability(page, safeBottom, safeTop);
+              const settings = await settingsReachability(page, safeBottom, safeTop, expectations);
               results.push({ scenario: name, ...settings });
               if (width === 390 && safeTop === 59 && safeBottom === 34 && ['nonkeyboard-origin34', 'keyboard-origin'].includes(state)) {
                 await capture(page, `${name}-settings`);
@@ -310,6 +317,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   } catch (error) { failures.push({ scenario: 'runner', error: String(error), stack: error.stack }); }
   finally {
     if (browser) { await browser.close(); cleanup.push({ browserClosed: !browser.isConnected() }); }
+    receipt.inputsUnchanged = (await Promise.all(Object.entries(receipt.inputHashes).map(async ([path, digest]) => hash(await readFile(path)) === digest))).every(Boolean);
     const expectedScenarios = 16 * (20 + 5 * 10);
     const completeInventory = results.filter(r => r.id === 'P3.input').length === expectedScenarios
       && motion.length === 64 && bindings.length === 16 && screenshots.length === 704;
@@ -322,7 +330,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     receipt.summary = { scenarios: results.filter(r => r.id === 'P3.input').length, expectedScenarios, assertions: results.length,
       failed: failed.length, screenshots: screenshots.length, completeInventory, clean,
       failureIds: Object.fromEntries([...new Set(failed.map(r => r.id))].map(id => [id, failed.filter(r => r.id === id).length])) };
-    receipt.status = failures.length || !completeInventory || !clean ? 'INFRASTRUCTURE_FAILURE'
+    receipt.status = failures.length || !receipt.inputsUnchanged || !completeInventory || !clean ? 'INFRASTRUCTURE_FAILURE'
       : phase === 'red' ? failed.some(r => r.id === 'P3.sidebar-coordinates') && failed.some(r => r.id === 'P3.zero-footer-padding')
         ? 'RED_CONFIRMED' : 'UNEXPECTED_BASELINE'
         : failed.length ? 'ASSERTION_FAILURE' : 'GREEN';
