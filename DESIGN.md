@@ -33,6 +33,44 @@ The chat surface adapts the layout grammar and neutral token roles from
 The workspace shell remains omo-webchat's own interface. No reference branding,
 logos, text, or proprietary assets are copied.
 
+## Colour reference
+
+Surface, text, and border colours are calibrated against an authenticated
+capture of the installed Codex desktop app (com.openai.codex 26.810.52044;
+real Settings dark→light toggles; CDP pixel samples and runtime computed
+styles; see `.omo/evidence/ui-polish-20260907/theme/implementation.md`). The
+measured roles and this app's tokens map as follows:
+
+| Measured reference role | Light | Dark | omo-webchat tokens |
+| --- | --- | --- | --- |
+| Canvas | `#ffffff` | `#181818` | `--th-bg` |
+| Sidebar / elevated chrome | `#ffffff` | `#282828` | `--th-surface` |
+| Composer fill | `#ffffff` | `#2a2a2a` | `--th-surface-composer` |
+| Menu / chooser surface | `#ffffff` | `#2d2d2d` | `--th-surface-raised` (and `--th-surface-overlay`) |
+| Highlighted menu row | `#f2f3f3` | `#3d3d3d` | `--th-hover` |
+| Foreground | `#1a1c1f` | `#dfdfdf` | `--th-text` |
+| Default border | fg at 7.8% | white at 8.4% | `--th-border-surface` |
+| Strong border | fg at 11.7% | white at 15.6% | `--th-border-strong`, `--th-border-user`, `--th-border-overlay` |
+
+Three documented deviations exist, each forced by an existing contract or a
+web-rendering constraint, never by taste:
+
+- The native composer fill is a translucent material over an unknown underlay.
+  The web composer uses an opaque approximation (`#2a2a2a` dark, `#ffffff`
+  light) labelled as such; the measured alpha treatment is reproduced only when
+  an underlay is actually known.
+- The native secondary/tertiary text tiers (65%/50% foreground) fall below the
+  app's 4.5:1 matrix on the brighter elevated fills, so `--th-text-dim`,
+  `--th-muted`, and `--th-faint` are brightened above the native alpha mixes.
+  Likewise the dark status hues are brightened because the measured elevated
+  surfaces are far brighter than the previous dark ladder. Contrast wins over
+  native transparency; the deviation is deliberate and tested.
+- Roles the capture could not exercise (executed tool cards, user bubble,
+  modals) inherit the measured role hierarchy conservatively: uncaptured
+  surfaces reuse the nearest measured fill, and derived values (the user
+  surface one step above the menu fill, the active state one step above the
+  measured highlight) stay inside the app's white/foreground-alpha idiom.
+
 ## Tokens
 
 Use the existing `--th-*` application tokens as the canonical source. Chat
@@ -41,7 +79,8 @@ styles must not create a second competing global palette.
 | Role | Token |
 | --- | --- |
 | App canvas | `--th-bg` |
-| Sidebar / composer / tool surface | `--th-surface` |
+| Sidebar / top bar / tool shell | `--th-surface` |
+| Composer capsule | `--th-surface-composer` |
 | Raised modal / selected surface | `--th-surface-raised` |
 | Hover / active | `--th-hover`, `--th-active` |
 | Primary / secondary / muted text | `--th-text`, `--th-text-dim`, `--th-muted` |
@@ -145,23 +184,30 @@ current level, modals migrate to Overlay, and neither uses Raised merely because
 
 | Level and tokens | Job | Dark-theme technique | Light-theme technique |
 | --- | --- | --- | --- |
-| Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | Opaque lowest-luminance neutral; no border or shadow | Opaque low-chroma light neutral; no border or shadow |
-| Surface / `--th-surface`, `--th-shadow-surface` | Persistent chrome and contained work: sidebar, top bar, composer, tool shell | Resolve the fill as a 2% white luminance lift over Canvas, use a 1px 6%-white border, and set the level shadow to `none` | Use an opaque neutral surface one luminance step above Canvas, a 1px border from the theme's shadow tint at 10%, and a downward `0 1px 2px` shadow at 8% tint |
-| Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Resolve the fill as a 4% white luminance lift over Canvas, use a 1px 8%-white border, and set the level shadow to `none` | Use the theme's highest opaque neutral surface, a 1px border at 12% shadow tint, and a downward `0 6px 18px -6px` shadow at 12% tint |
-| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one step above Raised so the bubble separates at a glance without accent decoration | One step above Raised (an 8% white luminance lift over Canvas) with a 1px 12%-white border; the shadow stays the Raised level (`none`) | Pure white with a 1px 14% shadow-tint border; the Raised soft shadow still applies |
-| Overlay / `--th-surface-overlay`, `--th-shadow-overlay`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Resolve the fill as a 5% white luminance lift over Canvas, use a 1px 10%-white border and no box shadow, then separate it with a Canvas-derived 60% scrim | Use the highest opaque neutral surface, a 1px border at 14% shadow tint, a downward `0 18px 48px -12px` shadow at 18% tint, and a 28% theme-shadow-tint scrim |
+| Canvas / `--th-bg` | Base application and transcript; also an inset output well inside a tool block | Measured canvas `#181818`; no border or shadow | Measured canvas `#ffffff`; no border or shadow |
+| Surface / `--th-surface`, `--th-shadow-surface` | Persistent elevated chrome: sidebar, top bar, tool shell | Measured sidebar fill `#282828` with the measured default white-alpha border; carries the measured composer shadow geometry | White with the measured default foreground-alpha border and the measured composer shadow geometry |
+| Composer / `--th-surface-composer` | The composer capsule only: an opaque approximation of the native composer material (`#2a2a2a` dark, white light) | The Surface border and shadow treatment on its own fill | The Surface border and shadow treatment on its own fill |
+| Raised / `--th-surface-raised`, `--th-shadow-raised` | Menus, palettes, file panels, and floating controls — surfaces that must read as sitting above the canvas | Measured menu/chooser fill `#2d2d2d` with the default border; no box shadow (the measured chooser carries none) | White with the default border; no box shadow, matching the measured chooser |
+| User / `--th-surface-user`, `--th-border-user`, `--th-shadow-raised` | The user chat bubble only: an authorship surface one visible step above Raised so the bubble separates at a glance without accent decoration | One step above the menu fill inside the measured white-alpha idiom with the strong border | White, separated exactly like the measured composer on white: the strong border plus the Raised shadow |
+| Overlay / `--th-surface-overlay`, `--th-shadow-overlay`, `--th-backdrop` | Modal dialogs and blocking drawers that must separate from every pane | Reuses the measured menu fill (the highest captured surface) with the strong border, separated by the Canvas-derived scrim | White with the strong border, a downward black low-alpha shadow, and the scrim |
 
-The percentages above are resolved inside theme token declarations; component
-CSS sees only semantic tokens. Light-theme shadow percentages use
-`--th-shadow-color`, a low-chroma neutral shadow tint defined in both theme
-scopes, inside the complete semantic shadow token. In particular, dark
-elevation is communicated by luminance stepping and whisper borders because
-dark-on-dark shadows do not
-communicate depth. Light elevation is communicated primarily by low-chroma,
-downward shadows; it must not reuse a white lift intended for a black canvas.
+Hover, selection, focus, and status are state treatments on a level, not extra
+elevation levels. `--th-hover` is the measured highlighted-row treatment
+(`#f2f3f3` light, `#3d3d3d` dark); `--th-active` steps one alpha tier beyond it
+in each theme's own direction (light darkens toward the foreground mix, dark
+lifts toward white).
+
+Elevation in both themes now follows the measured app: every opaque fill sits
+in one narrow luminance band, separation comes from hairline foreground-alpha
+borders plus the measured composer shadow (`0 3px 7.5px` black at 4% and
+`0 0 20px` at 5%, present in both captured themes), and menus carry borders
+without shadows. Dark is not shadowless: the captured runtime uses these exact
+shadows. Percentages are resolved inside theme token declarations; component
+CSS sees only semantic tokens resolved from `--th-shadow-color` (`#000000`, as
+measured).
 
 All existing chromatic and effect tokens must move from an unqualified `:root`
-into both theme scopes: `--th-bg`, `--th-surface`,
+into both theme scopes: `--th-bg`, `--th-surface`, `--th-surface-composer`,
 `--th-surface-raised`, `--th-hover`, `--th-active`, `--th-border`,
 `--th-border-strong`, `--th-text`, `--th-text-dim`, `--th-muted`,
 `--th-faint`, `--th-accent`, `--th-accent-fg`, `--th-accent-hover`,
@@ -191,9 +237,10 @@ semantic token instead. `transparent` and `currentColor` are allowed because
 they introduce no palette choice. Dark and light scopes define exactly the same
 color, state, elevation, focus, status, and shadow token names, and each scope
 sets its matching `color-scheme`; switching themes changes values, never which
-tokens a component requests. The design source's layered-graphite direction
-applies only to dark-theme values; the light theme expresses the same roles
-with light neutral fills and the light column of the elevation ladder.
+tokens a component requests. Both themes follow the measured reference fills:
+dark resolves the layered-graphite direction through the captured dark values,
+and the light theme uses the measured white surfaces with foreground-alpha
+borders and shadows rather than a warm luminance ladder.
 
 An automated token test must parse both theme scopes, assert that their token
 name sets are identical, resolve alpha and `color-mix()` values against the
@@ -211,7 +258,7 @@ and the token pair must be re-valued or the usage changed.
 
 | Foreground text token | Intended background tokens that must be tested |
 | --- | --- |
-| `--th-text`, `--th-text-dim`, `--th-muted`, `--th-faint` | `--th-bg`, `--th-surface`, `--th-surface-raised`, `--th-surface-user`, `--th-surface-overlay`, `--th-hover`, `--th-active` |
+| `--th-text`, `--th-text-dim`, `--th-muted`, `--th-faint` | `--th-bg`, `--th-surface`, `--th-surface-composer`, `--th-surface-raised`, `--th-surface-user`, `--th-surface-overlay`, `--th-hover`, `--th-active` |
 | `--th-accent` when used for link or emphasis text | Canvas, Surface, Raised, and Overlay fills |
 | `--th-accent-fg` | `--th-accent`, `--th-accent-hover` |
 | `--th-send-fg` | `--th-send`, `--th-send-hover` at 3:1 under the icon-only exception above; 4.5:1 if ever used as visible text |
@@ -475,6 +522,13 @@ and failed states use a distinct glyph plus a visible localized word -- spinner
 ring and Running, check mark and Done, exclamation mark and Failed -- with color
 only as a third, redundant cue. Under reduced motion the running ring remains
 distinct but static.
+
+Colour roles come from the measured reference mapping, not from the captured
+tool chooser (a menu, not an executed output card): collapsed records stay
+transparent on Canvas, the expanded shell takes the elevated-chrome Surface
+role, and the expanded body insets Canvas, so output surfaces reuse measured
+roles instead of inventing an unmeasured card treatment. Status hues used as
+text are the theme-scoped status tokens and carry the contrast matrix below.
 
 The operation title and invocation preview use Label, status uses Micro, and
 expanded command and output use Secondary with `--th-font-mono`; section
