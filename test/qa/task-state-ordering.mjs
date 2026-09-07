@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { boundaryScenarios, loadProducerReceipt, runBoundary } from './task-compact-boundary.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
 import { confirmPortReleased, dagRow, installDOMSignals, launchChild, snapshotAssets } from './dag-state-ordering.mjs';
 import { activityPath, chat, createTaskRequestGate, deadline, pollPath, startTaskFixture } from './task-state-fixture.mjs';
@@ -15,9 +16,10 @@ const script = fileURLToPath(import.meta.url), root = resolve(dirname(script), '
 const save = (dir, name, body) => writeFile(join(dir, name), JSON.stringify(body, null, 2) + '\n');
 export const scenarios = ['raw-stale', 'heartbeat-completion', 'derived-revival', 'rest-first', 'ws-first', 'digest-alias', 'reconnect-clear'];
 export function parseArgs(args) {
-  assert.equal(args.length, 2, 'Usage: node test/qa/task-state-ordering.mjs --evidence-dir ABSOLUTE_PATH');
+  assert.ok(args.length === 2 || args.length === 4, 'Usage: node test/qa/task-state-ordering.mjs --evidence-dir ABSOLUTE_PATH [--producer-dir ABSOLUTE_PATH]');
   assert.equal(args[0], '--evidence-dir'); assert.ok(args[1] && !args[1].startsWith('--'));
-  return { evidenceDir: resolve(args[1]) };
+  if (args.length === 4) { assert.equal(args[2], '--producer-dir'); assert.ok(args[3] && !args[3].startsWith('--')); }
+  return { evidenceDir: resolve(args[1]), ...(args.length === 4 ? { producerDir: resolve(args[3]) } : {}) };
 }
 export const stamp = minute => `2026-09-07T10:${String(minute).padStart(2, '0')}:00.000Z`;
 export function taskRow(status, minute, extra = {}) {
@@ -77,12 +79,12 @@ export function assertTaskDOM(dom, status, { tool, total = 2 } = {}) {
 }
 
 /** Caller-owned browser is retained; every invocation owns its contexts. */
-export async function run({ evidenceDir, browser: suppliedBrowser, chromium, headless = true } = {}) {
+export async function run({ evidenceDir, producerDir, browser: suppliedBrowser, chromium, headless = true } = {}) {
   assert.ok(evidenceDir, 'evidenceDir is required'); evidenceDir = resolve(evidenceDir);
   await mkdir(evidenceDir, { recursive: true });
   if (!globalThis.Bun) {
     assert.ok(!suppliedBrowser && !chromium && headless, 'Injected/headed browser requires Bun run()');
-    const child = await launchChild('/opt/homebrew/bin/bun', [script, '--evidence-dir', evidenceDir], { cwd: root });
+    const child = await launchChild('/opt/homebrew/bin/bun', [script, '--evidence-dir', evidenceDir, ...(producerDir ? ['--producer-dir', producerDir] : [])], { cwd: root });
     let cleanup;
     try { cleanup = JSON.parse(await readFile(join(evidenceDir, 'cleanup.json'), 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') throw error; cleanup = { errors: ['No Bun cleanup receipt'] }; }
@@ -95,13 +97,15 @@ export async function run({ evidenceDir, browser: suppliedBrowser, chromium, hea
   let browser, assets, failure;
   const record = row => report.actions.push({ sequence: report.actions.length + 1, ...row });
   try {
+    const producers = producerDir ? Object.fromEntries(await Promise.all(['compact-only', 'mixed'].map(async mode =>
+      [mode, await loadProducerReceipt(producerDir, mode)]))) : null;
     assets = await snapshotAssets(join(root, 'frontend/dist'));
     await save(evidenceDir, 'asset-hashes.json', assets);
     const driver = chromium ?? (suppliedBrowser ? null : (await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href)).chromium);
     browser = suppliedBrowser ?? await driver.launch({ executablePath: process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless, timeout: deadline });
     report.browserVersion = browser.version();
     for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-      for (const scenario of scenarios) {
+      for (const scenario of [...scenarios, ...(producers ? boundaryScenarios : [])]) {
         const name = `${scenario}-${viewport.width}x${viewport.height}`;
         const result = { name, passed: false }, receipt = { name, errors: [] };
         report.scenarios.push(result); cleanup.cases.push(receipt);
@@ -228,7 +232,11 @@ export async function run({ evidenceDir, browser: suppliedBrowser, chromium, hea
           await page.evaluate(() => window.__dagQA.done(window.__dagQA.initial));
           const [activityToken, pollToken] = await Promise.all([activity, polling]);
           const completed = taskRow('completed', 2), stale = taskRow('running', 1);
-          if (scenario === 'ws-first') {
+          if (boundaryScenarios.includes(scenario)) {
+            await runBoundary({ scenario, producer: producers[scenario.startsWith('mixed') ? 'mixed' : 'compact-only'],
+              page, viewport, pollToken, activityToken, poll, hydrate, overview, attached, capture,
+              record: row => record({ case: name, ...row }) });
+          } else if (scenario === 'ws-first') {
             await overview([overviewFrame(rows(completed))], 'newer-WS-before-held-REST');
             await attached([taskFrame(rows(completed))], 'attached-newer-before-held-history');
             // The REST-only marker is a different revision so it proves this reply was consumed.
@@ -330,6 +338,9 @@ export async function run({ evidenceDir, browser: suppliedBrowser, chromium, hea
         }
       }
     }
+    assert.equal(report.scenarios.filter(row => scenarios.some(s => row.name.startsWith(s + '-'))).length, 14, 'original matrix retained');
+    assert.equal(report.scenarios.length, producers ? 22 : 14, 'all requested viewport cases executed');
+    assert.ok(report.scenarios.every(row => row.passed));
     assert.deepEqual(cleanup.errors, []); report.passed = true;
   } catch (error) { failure = error; report.error = { message: error.message, stack: error.stack }; }
   finally {
