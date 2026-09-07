@@ -200,6 +200,23 @@ describe("ChatPane status row", () => {
     expect(translate("ko", "chat.statusDetails")).not.toBe("chat.statusDetails");
   });
 
+  it("does not render context/cache metrics as direct status children", () => {
+    const { deliver } = renderChatPane(root);
+    act(() => deliver({ type: "stats", sessionId: "chat-1",
+      contextUsage: { tokens: 42, contextWindow: 100, percent: 42 },
+      tokens: { input: 30, cacheRead: 70, output: 5 } }));
+    const status = requireElement(container.querySelector(".th-chat-status"), "status strip");
+    const details = requireElement(container.querySelector<HTMLDetailsElement>(".th-chat-status-details"), "status details");
+    const directText = () => [...status.children]
+      .filter(child => child !== details)
+      .map(child => child.textContent ?? "").join(" ");
+    expect(directText()).not.toContain("chat.contextUsage");
+    expect(directText()).not.toContain("chat.cacheHit");
+    act(() => details.querySelector("summary")!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(directText()).not.toContain("chat.contextUsage");
+    expect(directText()).not.toContain("chat.cacheHit");
+  });
+
   it("keeps unknown-send recovery and original inspection reachable inside the merged row", async () => {
     const { deliver, sent } = renderChatPane(root);
     const original = "inspectable unknown original";
