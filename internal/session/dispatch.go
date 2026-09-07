@@ -262,25 +262,25 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 	if parent.ParentSessionID != "" && parent.ParentSessionID != s.durableID {
 		return
 	}
-	if name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1] {
-		oversized := len(dataBytes) > maxActivitySnapshotBytes
-		s.activityOversized[name] = oversized
-		if !oversized {
+	switch name {
+	case activitySnapshotOrder[0]:
+		s.activityOversized[name] = len(dataBytes) > maxActivitySnapshotBytes
+		if !s.activityOversized[name] {
 			s.activitySnapshots[name] = append(json.RawMessage(nil), dataBytes...)
 		}
-		// Digests retain at most maxActivityDigestEntries rows, including when
-		// the raw payload is too large for the 64 KiB replay cache.
-		switch name {
-		case activitySnapshotOrder[0]:
-			if digest, ok := parseTaskDigest(dataBytes); ok {
-				s.taskDigest = digest
-			}
-		case activitySnapshotOrder[1]:
-			if digest, ok := parseDagDigest(dataBytes); ok {
-				s.dagDigest = digest
-			}
-			s.reconcileActivityCacheLocked(dataBytes)
+		if digest, ok := parseTaskDigest(dataBytes); ok {
+			s.taskDigest = digest
 		}
+	case activitySnapshotOrder[1]:
+		accepted, err := s.dagSnapshots.merge(dataBytes, s.activitySnapshots[name], s.dagDigest)
+		if err != nil {
+			return
+		}
+		s.activitySnapshots[name] = accepted.replay
+		s.activityOversized[name] = accepted.oversized
+		s.dagDigest = accepted.digest
+		dataBytes = accepted.live
+		s.reconcileActivityCacheLocked(dataBytes)
 	}
 	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})
 	if (name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1]) && s.manager != nil {
