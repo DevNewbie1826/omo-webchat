@@ -85,33 +85,46 @@
         var vv = window.visualViewport;
         var h = vv ? vv.height : window.innerHeight;
         var w = vv ? vv.width : window.innerWidth;
-        if (!baselineWidth || Math.abs(w - baselineWidth) > 1) {
-          baselineWidth = w;
-          baselineHeight = h;
-        } else if (h > baselineHeight) {
-          baselineHeight = h;
-        }
+        // Publish current visual geometry even during mixed rotation/zoom frames.
         rootStyle.setProperty("--th-vh-unit", h * 0.01 + "px");
         rootStyle.setProperty("--th-vv-width", w + "px");
         rootStyle.setProperty("--th-vv-top", vv ? vv.offsetTop + "px" : "0px");
         rootStyle.setProperty("--th-vv-left", vv ? vv.offsetLeft + "px" : "0px");
         document.documentElement.toggleAttribute(
-          "data-th-keyboard-open",
-          baselineHeight - h > 100,
+          "data-th-standalone",
+          navigator.standalone === true ||
+            !!window.matchMedia?.("(display-mode: standalone)").matches,
         );
-      };
-      var reset = function () {
-        baselineWidth = 0;
-        set();
+
+        // Compare in unzoomed layout coordinates. A visual-width wobble or a
+        // stale/mixed frame is not evidence of a new unobscured viewport.
+        var scale = vv ? vv.scale : 1;
+        var layoutWidth = window.innerWidth;
+        var layoutHeight = window.innerHeight;
+        var visibleHeight = h * scale;
+        if (Math.abs(w * scale - layoutWidth) > 1 || visibleHeight > layoutHeight + 1) return;
+        if (!baselineWidth || Math.abs(layoutWidth - baselineWidth) > 1) {
+          // Reset only after layout and visual width agree, not merely on
+          // orientationchange/pageshow (which may arrive while still shrunk).
+          baselineWidth = layoutWidth;
+          baselineHeight = layoutHeight;
+        } else {
+          baselineHeight = Math.max(baselineHeight, layoutHeight, visibleHeight);
+        }
+        document.documentElement.toggleAttribute(
+          "data-th-keyboard-open",
+          baselineHeight - visibleHeight > 100,
+        );
       };
       set();
       if (window.visualViewport) {
         window.visualViewport.addEventListener("resize", set);
         window.visualViewport.addEventListener("scroll", set);
       }
+      window.addEventListener("resize", set);
       window.addEventListener("scroll", set, { passive: true });
-      window.addEventListener("orientationchange", reset);
-      window.addEventListener("pageshow", reset);
+      window.addEventListener("orientationchange", set);
+      window.addEventListener("pageshow", set);
     })();
   </script>
 </head>
