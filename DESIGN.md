@@ -333,10 +333,7 @@ Choose a tested foreground/background token pair instead.
   geometry without corrupting a compatible unobscured baseline, and recovery
   preserves focus and draft text. The raw visual variables keep their
   visual-viewport meaning for existing dialog and Settings consumers, and
-  ordinary browsers keep the dynamic-viewport policy. The max-reserve
-  contract above is intended behavior, verified so far only in synthetic
-  Chrome captures of the changed build; changed-device verification on an
-  installed iOS PWA remains outstanding.
+  ordinary browsers keep the dynamic-viewport policy.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
