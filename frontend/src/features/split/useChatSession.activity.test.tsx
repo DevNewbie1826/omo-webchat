@@ -16,7 +16,7 @@ const session = {
 const TASK_DETAILS = {
   op: "write",
   storage: "memory",
-  completedTasks: 1,
+  completedTasks: [{ phase: "Live", content: "finished work" }],
   phases: [{ name: "Live", tasks: [{ content: "live work", status: "in_progress" as const }] }],
 };
 
@@ -145,7 +145,7 @@ describe("useChatSession activities", () => {
     expect(current?.activitiesVersion).toBe(2);
   });
 
-  it("sets todo phases from a todo tool end-phase result alongside toolCalls", () => {
+  it("keeps todo tool partial and end details on toolCalls without committing todo", () => {
     const startPhases = [{ name: "Start", tasks: [{ content: "starting", status: "pending" as const }] }];
     act(() => {
       deliver({ type: "tool", sessionId: session.id, toolCallId: "call-1", toolName: "todo", phase: "start" });
@@ -159,7 +159,7 @@ describe("useChatSession activities", () => {
       });
     });
 
-    expect(current?.activities.todo).toEqual(startPhases);
+    expect(current?.activities.todo).toBeNull();
     expect(current?.toolCalls["call-1"]?.phase).toBe("update");
 
     act(() => {
@@ -173,10 +173,9 @@ describe("useChatSession activities", () => {
       });
     });
 
-    expect(current?.activities.todo).toEqual(TASK_DETAILS.phases);
-    // Only the two details-bearing frames (update, end) bump the version; the
-    // bare start frame is a no-op for the activity domain.
-    expect(current?.activitiesVersion).toBe(2);
+    expect(current?.activities.todo).toBeNull();
+    // Tool results are presentation, not canonical list acquisitions.
+    expect(current?.activitiesVersion).toBe(0);
     // Existing toolCalls handling is untouched by the activity wiring.
     expect(current?.toolCalls["call-1"]).toMatchObject({
       toolName: "todo",
@@ -186,7 +185,7 @@ describe("useChatSession activities", () => {
     expect(current?.toolCalls["call-1"]?.details).toEqual(TASK_DETAILS);
   });
 
-  it("restores todo from history senpi.todo-state custom entry and todo toolResult, last one wins, without transcript rows", () => {
+  it("restores transcript without committing custom or toolResult todo carriers", () => {
     act(() =>
       deliver({
         type: "entries",
@@ -211,16 +210,14 @@ describe("useChatSession activities", () => {
       }),
     );
 
-    // Last valid payload in document order wins: the custom entry follows the
-    // toolResult, so the custom phases are authoritative.
-    expect(current?.activities.todo).toEqual(CUSTOM_HISTORY_PHASES);
-    expect(current?.activitiesVersion).toBe(1);
+    expect(current?.activities.todo).toBeNull();
+    expect(current?.activitiesVersion).toBe(0);
     // The todo-state custom entry must never become a visible transcript row.
     expect((current?.messages ?? []).every((message) => message.role !== "custom")).toBe(true);
     expect(current?.messages[0]?.role).toBe("user");
   });
 
-  it("keeps the live todo over history phases when both exist", () => {
+  it("does not grant either live results or history todo authority", () => {
     act(() => {
       deliver({
         type: "tool",
@@ -231,7 +228,7 @@ describe("useChatSession activities", () => {
         result: { details: TASK_DETAILS },
       });
     });
-    expect(current?.activities.todo).toEqual(TASK_DETAILS.phases);
+    expect(current?.activities.todo).toBeNull();
 
     act(() =>
       deliver({
@@ -247,10 +244,8 @@ describe("useChatSession activities", () => {
       }),
     );
 
-    expect(current?.activities.todo).toEqual(TASK_DETAILS.phases);
-    // History restore is fallback-only: it must not bump the version when the
-    // live todo wins.
-    expect(current?.activitiesVersion).toBe(1);
+    expect(current?.activities.todo).toBeNull();
+    expect(current?.activitiesVersion).toBe(0);
   });
 
   it("does not crash when activity events arrive before history entries", () => {
