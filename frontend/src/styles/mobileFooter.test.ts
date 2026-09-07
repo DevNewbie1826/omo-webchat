@@ -39,23 +39,14 @@ describe("mobile sidebar footer bounds", () => {
     expect(drawer).toContain("padding-top: env(safe-area-inset-top)");
   });
 
-  test("keeps the footer's intentional spacing on the spacing scale", () => {
-    // The only intentional reserve below the controls is the footer's own
-    // block padding (8px on desktop); the spacer stretches the settings/logout
-    // row horizontally and never adds vertical reserve.
-    expect(footerBody).toMatch(/padding:\s*var\(--th-space-2\)\s+var\(--th-space-3\)/);
+  test("keeps top and inline spacing but removes extra bottom reserve at every width", () => {
+    expect(footerBody).toMatch(/padding:\s*var\(--th-space-2\)\s+var\(--th-space-3\)\s+0\s*;/);
     expect(footerCss).toMatch(/\.th-sidebar-footer-spacer \{\s*flex:\s*1;\s*\}/);
   });
 
-  test("targets a 4px intentional bottom gap in the mobile drawer", () => {
-    // The mobile drawer tightens the footer's block padding to --th-space-1;
-    // everything below it is the shell's single safe inset (released while
-    // the keyboard is open), never a second spacing reserve. Outside mobile
-    // widths the shell preserves normal spacing and carries the platform's
-    // bottom safe inset itself.
+  test("does not reintroduce bottom padding in the mobile drawer", () => {
     const mobileBlock = sidebarCss.match(/@media \(max-width: 768px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
-    const footerRule = mobileBlock.match(/\.th-sidebar-footer \{([^}]*)\}/)?.[1] ?? "";
-    expect(footerRule).toContain("padding-bottom: var(--th-space-1)");
+    expect(mobileBlock).not.toMatch(/\.th-sidebar-footer\s*\{/);
   });
 
   test("bounds the settings panel to the space above its footer anchor", () => {

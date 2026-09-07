@@ -3,7 +3,7 @@
  * RED intentionally exits 1 only after collecting the intended assertion failures; infrastructure
  * errors exit 2. GREEN requires every scoped, strict and settings assertion green — settings rows
  * are part of C5 (footer scope per the governing brief) and are never excluded or classified.
- * Both runners share the exact intentional gap (4px mobile, 8px wider) and
+ * Both runners share the exact zero-extra-gap footer contract and
  * full Settings safe-bound, ancestor-clipping, hit and interior-scroll checks.
  * CDP safe insets and native viewport resize are browser emulation.
  */
