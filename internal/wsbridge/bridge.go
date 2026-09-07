@@ -957,6 +957,11 @@ func (op *chatSendOperation) publishResumeFailure(stale *session.Session, err er
 }
 
 func resumeFailureInfo(err error) session.ErrorInfo {
+	message := resumeFailedMessage
+	var stable *omorpc.StableError
+	if errors.As(err, &stable) && stable.Code == omorpc.ErrCodeOpenFailed && strings.TrimSpace(stable.Detail) != "" {
+		message = stable.Error()
+	}
 	var resumeErr *session.ResumeError
 	if errors.As(err, &resumeErr) {
 		if isSessionActiveError(err) {
@@ -964,7 +969,7 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 		}
 		info := resumeErr.Info
 		if info.Code == "resume_failed" {
-			info.Message = resumeFailedMessage
+			info.Message = message
 		}
 		return info
 	}
@@ -978,7 +983,7 @@ func resumeFailureInfo(err error) session.ErrorInfo {
 	if errors.As(err, &drift) {
 		return session.ErrorInfo{Code: "external-write-detected", Message: drift.Error(), KnownLeaf: drift.KnownLeaf, ObservedLeaf: drift.ObservedLeaf}
 	}
-	return session.ErrorInfo{Code: "resume_failed", Message: resumeFailedMessage}
+	return session.ErrorInfo{Code: "resume_failed", Message: message}
 }
 
 func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFrame) {

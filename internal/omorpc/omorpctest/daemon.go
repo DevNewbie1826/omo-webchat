@@ -129,6 +129,11 @@ func enqueueLocked(rec *daemonSession, queue *[]queuedItem, mode, text string) {
 	*queue = append(*queue, queuedItem{text: text, mode: mode, order: rec.enqueueSeq})
 }
 
+type openFailure struct {
+	code      string
+	remaining int
+}
+
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
 type Daemon struct {
 	sockPath   string
@@ -144,7 +149,7 @@ type Daemon struct {
 	handlerGate       map[string]<-chan struct{}
 	handlerGateByPath map[string]map[string]<-chan struct{}
 	failNext          map[string]string
-	pathFailures      map[string]int
+	pathFailures      map[string]openFailure
 	nextOpenIdentity  string
 	evictUsedSession  bool
 	refuse            bool
@@ -186,7 +191,7 @@ func New(dir string) *Daemon {
 		handlerGate:       map[string]<-chan struct{}{},
 		handlerGateByPath: map[string]map[string]<-chan struct{}{},
 		failNext:          map[string]string{},
-		pathFailures:      map[string]int{},
+		pathFailures:      map[string]openFailure{},
 		conns:             map[net.Conn]struct{}{},
 		registry:          map[string]*daemonSession{},
 		rpcPaths:          map[string]string{},
@@ -630,12 +635,13 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 		})
 		return
 	}
-	if n := d.pathFailures[path]; n > 0 {
-		d.pathFailures[path] = n - 1
+	if failure := d.pathFailures[path]; failure.remaining > 0 {
+		failure.remaining--
+		d.pathFailures[path] = failure
 		d.mu.Unlock()
 		d.write(conn, map[string]any{
 			"id": id, "type": "response", "command": omorpc.CmdOpenSession,
-			"success": false, "error": omorpc.ErrCodeSessionPathInUse,
+			"success": false, "error": failure.code,
 		})
 		return
 	}
@@ -1071,7 +1077,7 @@ func (d *Daemon) FailOpenPath(path, code string, times int) {
 		code = omorpc.ErrCodeSessionPathInUse
 	}
 	d.mu.Lock()
-	d.pathFailures[path] = times
+	d.pathFailures[path] = openFailure{code: code, remaining: times}
 	d.mu.Unlock()
 }
 
