@@ -127,8 +127,9 @@
 .th-chat-status {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--th-space-2);
+  gap: var(--th-space-1) var(--th-space-2);
   min-width: 0;
   min-height: 24px;
   padding: 0 var(--th-space-0-5);
@@ -141,17 +142,16 @@
 }
 
 .th-chat-status-primary {
-  display: flex;
-  flex: 1 1 0;
-  align-items: center;
-  gap: var(--th-space-3);
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  display: contents;
 }
 
-.th-chat-status-primary::-webkit-scrollbar {
-  display: none;
+.th-chat-run-indicator {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 16px;
 }
 
 .th-chat-status-item {
@@ -164,14 +164,15 @@
 
 .th-chat-send-status,
 .th-chat-status-item--steer {
-  flex: 1 1 0;
+  flex: 1 1 12ch;
+  flex-wrap: wrap;
+  min-width: 0;
   max-width: 100%;
   align-items: center;
 }
 
 /* Keep state labels/actions intact; only original previews yield space.
-   Previews widen into free strip width and shrink only under pressure;
-   the strip still scrolls when even those fixed parts cannot fit. */
+   Whole state/action items wrap instead of scrolling the metrics away. */
 .th-chat-status-label,
 .th-chat-send-status > button:not(.th-chat-send-preview) {
   flex: none;
@@ -200,11 +201,6 @@
   .th-chat-send-preview {
     min-width: 44px;
     min-height: 44px;
-  }
-
-  .th-chat-status-details summary {
-    min-width: 44px;
-    justify-content: center;
   }
 }
 
@@ -554,53 +550,24 @@
   letter-spacing: var(--th-type-micro-tracking);
 }
 
-/* One desktop scroll owner: fixed chrome must not consume the entire bound.
-   The narrow sheet retains its separate list scrollport and pinned identity. */
+/* Desktop chrome never scrolls. A short local column uses the fixed panel;
+   only the model list owns wheel and keyboard reveal in either placement. */
 .th-model-picker-popover:not(.th-model-picker-popover--sheet) {
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
 }
 
 .th-model-picker-popover:not(.th-model-picker-popover--sheet) .th-model-picker-list {
-  flex: none;
-  overflow-y: visible;
+  overscroll-behavior: contain;
 }
 
-/* At the real v4/700 bound a two-line option is taller than the whole menu.
-   Keep both model and provider on one readable row, without shrinking type. */
-.th-model-picker-popover--short .th-model-picker-list {
-  padding: var(--th-space-0-5);
-}
-
-  /* 0.5-step block padding: in the shortest panes the one-line row must stay
-     complete inside the measured popup bound (DESIGN.md "Model control
-     placement"). */
-.th-model-picker-popover--short .th-model-picker-list > button {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--th-space-1);
-  padding: var(--th-space-0-5) var(--th-space-2);
-}
-
-.th-model-picker-popover--short .th-model-picker-list strong {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.th-model-picker-popover--short .th-model-picker-list span {
-  flex: none;
-}
-
-  /* The search must stay a complete control inside the measured short-pane
-     popup bound (DESIGN.md "Model control placement"). */
-.th-model-picker-popover--short .th-model-picker-search {
-  padding-block: var(--th-space-0-5);
-}
-
-/* Short-pane reasoning chips stay one complete pointer control inside the
-   measured popup bound (DESIGN.md "Model control placement"). */
-.th-model-picker-popover--short .th-thinking-level {
-  padding-block: var(--th-space-0);
+.th-model-picker-popover--panel {
+  position: fixed;
+  z-index: 60;
+  top: calc(var(--th-vv-top, 0px) + 4px);
+  bottom: auto;
+  right: 8px;
+  height: min(480px, calc(var(--th-vh-unit, 1dvh) * 100 - 8px));
+  max-height: calc(var(--th-vh-unit, 1dvh) * 100 - 8px);
 }
 
 .th-files-toggle {
@@ -900,57 +867,9 @@
   max-width: 45%;
 }
 
-/* Disclosure adds a second line without changing either control's allocation.
-   Its content is still natively hidden/announced by the owning details. */
-.th-chat-controls:has(.th-chat-status-details[open]) {
-  padding-bottom: var(--th-space-6);
-}
-
+/* Metrics are ordinary whole flex items in the same wrapping control area. */
 .th-chat-status-metrics {
-  position: absolute;
-  top: 100%;
-  left: var(--th-space-0-5);
-  right: var(--th-space-0-5);
-  display: flex;
-  align-items: center;
-  gap: var(--th-space-3);
-  height: var(--th-space-6);
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-/* Secondary context/cache metrics collapse into a keyboard-accessible
-   disclosure so urgent states keep the compact strip; the summary inherits
-   the strip's Micro tier. */
-.th-chat-status-details {
-  flex: none;
-  min-width: 0;
-}
-
-.th-chat-status-details summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 var(--th-space-0-5);
-  border-radius: var(--th-radius-sm);
-  list-style: none;
-  cursor: pointer;
-}
-
-@media (pointer: coarse) {
-  .th-chat-status-details summary {
-    min-height: 44px;
-  }
-}
-
-.th-chat-status-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.th-chat-status-details summary:hover,
-.th-chat-status-details[open] summary {
-  background: var(--th-hover);
-  color: var(--th-text);
+  display: contents;
 }
 
 .th-model-picker-thinking {
@@ -1059,4 +978,64 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+}
+
+/* At short full-viewport heights use fixed Label-tier controls. Native
+   reasoning selection retains every level without a wrapped chip bank. */
+.th-model-picker-popover--dense {
+  width: min(420px, calc(100vw - 16px));
+}
+
+.th-model-picker-popover--dense .th-model-picker-current,
+.th-model-picker-popover--dense .th-thinking-in-picker,
+.th-model-picker-popover--dense .th-model-picker-search,
+.th-model-picker-popover--dense .th-model-picker-list > button {
+  padding: 0 var(--th-space-2);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+}
+
+.th-model-picker-popover--dense .th-model-picker-current > div,
+.th-model-picker-popover--dense .th-model-picker-list > button,
+.th-model-picker-popover--dense .th-thinking-in-picker {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--th-space-2);
+}
+
+.th-model-picker-popover--dense .th-model-picker-current strong,
+.th-model-picker-popover--dense .th-model-picker-list strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-model-picker-popover--dense .th-model-picker-current span,
+.th-model-picker-popover--dense .th-model-picker-list span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.th-model-picker-popover--dense .th-model-picker-current .th-btn-icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+}
+
+.th-model-picker-popover--dense .th-thinking-in-picker select {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: var(--th-surface-raised);
+  color: var(--th-text);
+  font: inherit;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+}
+
+.th-model-picker-popover--dense .th-model-picker-list {
+  padding-block: 0;
 }

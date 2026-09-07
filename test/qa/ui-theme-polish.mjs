@@ -227,44 +227,14 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         log('fill UNSENT draft in idle controlled fixture');
         await page.locator('.th-chat-input textarea').fill('Unsent theme QA draft');
         assert.equal(fixture.runState('stored-a').running, false);
-        const modelBeforeDetails = structuredClone(fixture.runState('stored-a').model);
-        const modelLabelBeforeDetails = await page.locator('.th-model-picker-btn').innerText();
-        assert.equal(await page.locator('.th-chat-status-details').evaluate(el => el.open), false);
+        assert.equal(await page.locator('.th-chat-status details').count(), 0);
         await page.mouse.move(viewport.width / 2, 6);
         const main = await shoot('main-idle-send', { canvas: SURFACES.canvas, composer: SURFACES.composer, send: SURFACES.send,
           status: '.th-chat-status-num', goal: '.th-goal-bar', activity: '.th-activity-bar' });
         assert.equal(main.send.type, 'submit'); assert.equal(main.send.disabled, false);
-        assert.equal(main.status.present, true); assert.equal(main.status.exposed, false);
-        log('closed Details keeps secondary status hidden', { open: false, status: main.status });
-        await change(() => document.querySelector('.th-chat-status-details')?.open === true,
-          () => page.locator('.th-chat-status-details > summary').click());
-        log('open Details through actual summary after arming open-state signal', { open: true });
-        await page.mouse.move(viewport.width / 2, 6);
-        const disclosed = await shoot('status-disclosure', { status: '.th-chat-status-num' });
-        assert.equal(painted(disclosed.status).matches, true, 'opened Details must expose required status paint');
-        await change(() => document.querySelector('.th-chat-status-details')?.open === false,
-          () => page.locator('.th-chat-status-details > summary').click());
-        await page.mouse.move(viewport.width / 2, 6);
-        await page.evaluate(settleFrame);
-        const restored = await page.evaluate(() => ({
-          open: document.querySelector('.th-chat-status-details').open,
-          status: window.themeSample('.th-chat-status-num'),
-          composer: window.themeSample('.th-chat-input-inner').rect,
-          draft: document.querySelector('.th-chat-input textarea').value,
-          sendType: document.querySelector('.th-chat-send-btn').type,
-          sendDisabled: document.querySelector('.th-chat-send-btn').disabled,
-        }));
-        assert.equal(restored.open, false);
-        assert.equal(restored.status.present, true); assert.equal(restored.status.exposed, false);
-        assert.deepEqual(restored.composer, main.composer.rect);
-        assert.equal(restored.draft, 'Unsent theme QA draft');
-        assert.equal(restored.sendType, 'submit'); assert.equal(restored.sendDisabled, false);
-        assert.deepEqual(fixture.runState('stored-a').model, modelBeforeDetails);
-        assert.equal(await page.locator('.th-model-picker-btn').innerText(), modelLabelBeforeDetails);
-        log('close Details through actual summary after arming closed-state signal; restore idle composer', {
-          ...restored, model: modelBeforeDetails, modelLabel: modelLabelBeforeDetails,
-          sends: fixture.frames.filter(frame => frame.type === 'chat.send').length,
-        });
+        assert.equal(main.status.present, true); assert.equal(main.status.exposed, true);
+        assert.equal(painted(main.status).matches, true, 'inline metrics expose status paint at rest');
+        log('inline status visible without disclosure; idle composer and draft preserved', { status: main.status });
         assert.equal(await page.locator('.th-chat-input textarea').inputValue(), 'Unsent theme QA draft');
         assert.equal(fixture.frames.filter(frame => frame.type === 'chat.send').length, 0, 'draft must remain unsent');
         log('hover enabled default send');
@@ -351,7 +321,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
           stop: { ...painted(running.stop), matches: painted(running.stop).matches && running.stop.type === 'button'
             && running.stop.disabled === false && running.stop.computed !== main.send.computed && running.stop.samples.length > 0 },
           success: painted(collapsedFrame.success), error: painted(errorState), running: painted(running.running), queue: painted(running.queue),
-          status: painted(disclosed.status), goal: painted(main.goal), activity: painted(main.activity),
+          status: painted(main.status), goal: painted(main.goal), activity: painted(main.activity),
         };
         results.push({ scenario: label, theme, pane, surfaces,
           screenshots: screenshots.filter(frame => frame.path.includes(`-${label}-${theme}-`)).map(frame => ({ path: frame.path, sha256: frame.sha256 })) });

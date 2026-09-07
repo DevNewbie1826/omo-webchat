@@ -28,14 +28,13 @@ interface ModelPickerProps {
 const keyOf = (model: ModelOption): string => `${model.provider}/${model.modelId}`;
 const labelOf = (model: ModelOption): string => model.name || model.modelId;
 
-function revealInPopup(popup: HTMLElement, control: HTMLElement): void {
-  // scrollIntoView also scrolls overflow:hidden ancestors. Only this menu owns
-  // navigation scrolling; the pane, trigger and composer must never move.
-  const top = popup.getBoundingClientRect().top + popup.clientTop;
-  const rect = control.getBoundingClientRect();
-  if (rect.top < top) popup.scrollTop += rect.top - top;
-  else if (rect.bottom > top + popup.clientHeight) {
-    popup.scrollTop += Math.min(rect.top - top, rect.bottom - top - popup.clientHeight);
+function revealInList(list: HTMLElement, option: HTMLElement): void {
+  // Never scroll popup chrome or hidden pane/transcript ancestors.
+  const top = list.getBoundingClientRect().top + list.clientTop;
+  const rect = option.getBoundingClientRect();
+  if (rect.top < top) list.scrollTop += rect.top - top;
+  else if (rect.bottom > top + list.clientHeight) {
+    list.scrollTop += Math.min(rect.top - top, rect.bottom - top - list.clientHeight);
   }
 }
 
@@ -49,38 +48,62 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const normalMinimum = useRef(0);
+  const pendingFocus = useRef<string | null>(null);
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const reactId = useId();
   const listboxId = `${reactId}-listbox`;
   const optionIdPrefix = `${reactId}-option`;
 
   const current = models.find((model) => keyOf(model) === currentModelKey);
-  // Desktop popup fit: the upward popup must stay inside the clipping
-  // .th-chat-main band, so its bound is the measured space above the trigger
-  // within that column, not the viewport. Desktop chrome scrolls with the list.
   const [fitMaxHeight, setFitMaxHeight] = useState<number | null>(null);
+  const [panel, setPanel] = useState(false);
+  const [dense, setDense] = useState(false);
+  const portalled = compact || panel;
   useLayoutEffect(() => {
     if (compact || !open || typeof ResizeObserver === "undefined") return;
     const picker = rootRef.current;
+    const popup = popoverRef.current;
     const column = picker?.closest<HTMLElement>(".th-chat-main");
-    if (!picker || !column) return;
+    if (!picker || !popup) return;
     const measure = (): void => {
-      // Measured on the picker box — the popup's actual offset parent and
-      // anchor (picker.top - 4) — with 4px clearance, so the bound ends
-      // exactly at the column top: the control shares the status row, making
-      // the space above it one band tighter than in the composer-band
-      // placement, and the tighter bound keeps a complete one-line row
-      // visible in short v3/v4 panes while the popup still opens strictly
-      // above the control. floor() only shrinks the result.
-      const above = picker.getBoundingClientRect().top - column.getBoundingClientRect().top - 4;
-      setFitMaxHeight(Math.max(0, Math.floor(above)));
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const above = picker.getBoundingClientRect().top - (column?.getBoundingClientRect().top ?? 0) - 4;
+      const bound = Math.max(0, Math.floor(Math.min(280, viewportHeight / 2, above)));
+      // Measure nonshrinking chrome and a natural option, not the already
+      // squeezed list. Keep the normal requirement while dense controls render.
+      if (!dense) {
+        const chrome = Array.from(popup.children).filter(child => child !== listRef.current)
+          .reduce((height, child) => height + child.getBoundingClientRect().height, 0);
+        const row = optionRefs.current[0]?.getBoundingClientRect().height ?? 44;
+        normalMinimum.current = chrome + row + 10;
+      }
+      const needsPanel = bound < normalMinimum.current;
+      const needsDense = needsPanel && viewportHeight - 8 < normalMinimum.current;
+      if (panel !== needsPanel || dense !== needsDense) {
+        const focused = document.activeElement;
+        pendingFocus.current = focused === searchRef.current ? "search"
+          : focused instanceof HTMLElement && focused.matches(".th-thinking-level, .th-thinking-in-picker select")
+            ? `thinking:${focused instanceof HTMLSelectElement ? focused.value : focused.textContent}` : null;
+      }
+      setFitMaxHeight(bound);
+      setPanel(needsPanel);
+      setDense(needsDense);
     };
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(column);
+    if (column) observer.observe(column);
     observer.observe(picker);
-    return () => observer.disconnect();
-  }, [compact, open]);
+    for (const child of popup.children) if (child !== listRef.current) observer.observe(child);
+    window.visualViewport?.addEventListener("resize", measure);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.removeEventListener("resize", measure);
+    };
+  }, [compact, open, panel, dense, models, thinkingLevels]);
   const matches = useMemo(() => {
     if (query === "") return models;
     const needle = query.toLowerCase();
@@ -103,18 +126,25 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
 
   useEffect(() => {
     if (!open) return;
-    popoverRef.current?.focus({ preventScroll: true });
-  }, [open, compact]);
+    const focus = pendingFocus.current;
+    pendingFocus.current = null;
+    const target = focus === "search" ? searchRef.current
+      : focus?.startsWith("thinking:") ? popoverRef.current?.querySelector<HTMLSelectElement>("select")
+        ?? Array.from(popoverRef.current?.querySelectorAll<HTMLButtonElement>(".th-thinking-level") ?? []).find(button => button.textContent === focus.slice(9))
+        : popoverRef.current;
+    target?.focus({ preventScroll: true });
+  }, [open, compact, panel, dense]);
 
   useLayoutEffect(() => {
     const deliberateNavigation = navigationKey.current === resolvedActiveKey && resolvedActiveKey !== null;
     navigationKey.current = null;
     const option = optionRefs.current[activeIndex];
     if (!open) return;
-    const target = deliberateNavigation ? option : popoverRef.current?.querySelector<HTMLElement>(".th-thinking-level:focus") ?? option;
     if (compact) option?.scrollIntoView?.({ block: "nearest" });
-    else if (popoverRef.current && target) revealInPopup(popoverRef.current, target);
-  }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight]);
+    else if (listRef.current && option && (deliberateNavigation || !popoverRef.current?.querySelector(".th-thinking-level:focus, select:focus"))) {
+      revealInList(listRef.current, option);
+    }
+  }, [activeIndex, resolvedActiveKey, open, compact, fitMaxHeight, panel, dense]);
 
   useEffect(() => {
     if (!open) return;
@@ -136,14 +166,15 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const onKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") { event.preventDefault(); close(); return; }
-    if (compact && event.key === "Tab") {
+    if (portalled && event.key === "Tab") {
       event.preventDefault();
-      const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE));
+      const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE))
+        .filter(control => control.tabIndex >= 0);
       const index = controls.findIndex((control) => control === document.activeElement);
       const next = event.shiftKey
         ? (index <= 0 ? controls.length - 1 : index - 1)
         : (index + 1) % controls.length;
-      controls[next]?.focus();
+      controls[next]?.focus({ preventScroll: !compact });
       return;
     }
     if (event.key === "Tab") {
@@ -154,7 +185,6 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
       if (next) {
         event.preventDefault();
         next.focus({ preventScroll: true });
-        revealInPopup(event.currentTarget, next);
       } else {
         // Reverse returns to the trigger; forward continues natively into the
         // composer from that same trigger, without walking a long catalog.
@@ -183,7 +213,11 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
   const thinking = thinkingLevels && onThinkingChange ? (
     <div className="th-thinking-in-picker" role="group" aria-label={thinkingLabel}>
       <span className="th-thinking-in-picker-label">{thinkingLabel}</span>
-      <div className="th-thinking-in-picker-levels">
+      {dense && !compact ? <select aria-label={thinkingLabel} value={thinkingLevel ?? ""}
+        onChange={event => onThinkingChange(event.target.value)}>
+        {!thinkingLevel && <option value="" disabled>{thinkingLabel}</option>}
+        {thinkingLevels.map(level => <option key={level} value={level}>{level}</option>)}
+      </select> : <div className="th-thinking-in-picker-levels">
         {thinkingLevels.map((level) => (
           <button
             key={level}
@@ -196,18 +230,18 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
             {level}
           </button>
         ))}
-      </div>
+      </div>}
     </div>
   ) : null;
 
   const popover = (
     <div ref={popoverRef} tabIndex={-1} onKeyDown={onKeyDown}
-      role={compact ? "dialog" : undefined} aria-label={compact ? buttonLabel : undefined}
-      style={!compact && fitMaxHeight !== null ? { maxHeight: `min(280px, 50dvh, ${fitMaxHeight}px)` } : undefined}
-      className={`th-model-picker-popover${compact ? " th-model-picker-popover--sheet" : fitMaxHeight !== null && fitMaxHeight < 60 ? " th-model-picker-popover--short" : ""}`}>
+      role={portalled ? "dialog" : undefined} aria-label={portalled ? buttonLabel : undefined}
+      style={!portalled && fitMaxHeight !== null ? { maxHeight: `${fitMaxHeight}px` } : undefined}
+      className={`th-model-picker-popover${compact ? " th-model-picker-popover--sheet" : panel ? ` th-model-picker-popover--panel${dense ? " th-model-picker-popover--dense" : ""}` : ""}`}>
       <div className="th-model-picker-current">
         <div><strong>{buttonLabel}</strong><span>{current?.provider ?? currentModelKey}</span></div>
-        {compact && <button type="button" className="th-btn-icon" aria-label={t("common.close")} onClick={close}><IconX size={16} /></button>}
+        {portalled && <button type="button" className="th-btn-icon" aria-label={t("common.close")} onClick={close}><IconX size={16} /></button>}
       </div>
       {thinking}
       <input
@@ -227,7 +261,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
           setActiveKey(null);
         }}
       />
-      <div className="th-model-picker-list" id={listboxId} role="listbox">
+      <div ref={listRef} className="th-model-picker-list" id={listboxId} role="listbox">
         {matches.map((model, index) => {
           const active = index === activeIndex;
           return (
@@ -259,7 +293,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         ref={triggerRef}
         type="button"
         className="th-model-picker-btn"
-        aria-haspopup={compact ? "dialog" : "listbox"}
+        aria-haspopup={portalled ? "dialog" : "listbox"}
         aria-expanded={open}
         aria-label={triggerLabel}
         title={triggerLabel}
@@ -278,7 +312,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
         {thinkingLevel && <span className="th-model-picker-thinking">{thinkingLevel}</span>}
         <IconChevron size={14} />
       </button>
-      {open && (compact ? createPortal(popover, document.body) : popover)}
+      {open && (portalled ? createPortal(popover, document.body) : popover)}
     </div>
   );
 }
