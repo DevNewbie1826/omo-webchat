@@ -351,11 +351,36 @@ func (s *Session) reconcileActivityCacheLocked() {
 	} else {
 		s.activitySnapshots[name] = raw
 	}
-	if len(raw) == 0 && digest != nil {
-		raw, _ = json.Marshal(struct {
-			Tasks     []TaskDigestEntry `json:"tasks"`
-			Truncated bool              `json:"truncated_tasks"`
-		}{digest.Tasks, true})
+	// Rich replay can retain only a prefix (or nothing). Publish every missing
+	// corrected compact winner as well, but never cache these description-less
+	// rows as rich data: an equal raw row must still be able to enrich the cache.
+	if digest != nil {
+		doc := make(map[string]json.RawMessage)
+		var rows []map[string]json.RawMessage
+		if len(raw) > 0 {
+			_ = json.Unmarshal(raw, &doc)
+			_ = json.Unmarshal(doc["tasks"], &rows)
+		}
+		present := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			present[rawString(row["task_id"])] = true
+		}
+		added := false
+		for _, row := range digest.Tasks {
+			if row.RawStatus == "" || present[row.TaskID] {
+				continue
+			}
+			encoded, _ := json.Marshal(row)
+			var compact map[string]json.RawMessage
+			_ = json.Unmarshal(encoded, &compact)
+			rows = append(rows, compact)
+			added = true
+		}
+		if added {
+			doc["tasks"], _ = json.Marshal(rows)
+			doc["truncated_tasks"] = json.RawMessage("true")
+			raw, _ = json.Marshal(doc)
+		}
 	}
 	if len(raw) > 0 {
 		s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, raw, s.activityOversized[name])})
