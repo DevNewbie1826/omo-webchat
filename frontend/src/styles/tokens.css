@@ -207,10 +207,11 @@
   --th-surface-user: #ffffff;
   --th-surface-overlay: #ffffff;
   /* Tool block - scoped material for executed tool records in both
-     disclosure states: a lightly gray step off the measured white Canvas
-     behind the default foreground-alpha hairline. Every text and status
-     tier keeps the 4.5:1 matrix on this fill (faint is the binding pair at
-     5.0:1). */
+     disclosure states. Light value is an app-specific distinction requested
+     for P4 (a lightly gray step off the measured white Canvas), not a
+     measured native output-card value; behind the default foreground-alpha
+     hairline. Every text and status tier keeps the 4.5:1 matrix on this
+     fill (faint is the binding pair, measured by contrast.test.ts). */
   --th-tool-surface: #f5f6f7;
   --th-tool-border: rgba(26, 28, 31, 0.078);
   /* State treatments darken: the measured highlighted row, then one alpha
