@@ -218,6 +218,18 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
 
   const expanded = open && (columnClampPx === null || columnClampPx >= PANEL_NATURAL_MIN_PX);
 
+  // Snapshots can arrive while Graph is hidden or unmounted. Advance only
+  // previously painted nodes so returning never settles an old transition;
+  // unseen nodes must still get their first entry when Graph is displayed.
+  if (!expanded || selectedTab !== "dag" || view !== "graph") {
+    for (const run of dags) for (const node of run.nodes) {
+      const key = `${run.runId}\u0000${node.id}`;
+      if (nodeHistory.current.has(key)) {
+        nodeHistory.current.set(key, { state: node.state, entering: false, settling: false });
+      }
+    }
+  }
+
   if (!hasActivity) return null;
 
   const applyHeight = (px: number | null): void => {

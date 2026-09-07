@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useT, type Translate } from "../../i18n";
+import { useMediaQuery } from "../../lib/useMediaQuery";
 import { statusKind, statusLabel, type DagView } from "./activityShelfModel";
 import { ActivityChip } from "./activityShelfSections";
 import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
@@ -199,6 +200,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   readonly t: Translate;
 }) {
   const { font, fontSize, lang } = useT();
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const graphRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<SVGTextElement>(null);
   const [type, setType] = useState<GraphType>({ width: NODE_WIDTH, height: NODE_HEIGHT, fontPx: DEFAULT_TYPE_PX, row: 16, labels: new Map() });
@@ -276,9 +278,13 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   const nodeMotion = new Map<string, DagNodeMotion>();
   for (const node of run.nodes) {
     const key = `${run.runId}\u0000${node.id}`;
-    const motion = nextDagNodeMotion(history.get(key), node.state);
+    const motion = active && !reducedMotion
+      ? nextDagNodeMotion(history.get(key), node.state)
+      : { state: node.state, entering: false, settling: false };
     nodeMotion.set(node.id, motion);
-    history.set(key, motion);
+    // A reduced-motion paint consumes its one-shot without waiting for a
+    // nonexistent animationend. A hidden node has not had its first paint.
+    if (active) history.set(key, motion);
   }
   return (
     <div ref={graphRef} className="th-activity-graph">

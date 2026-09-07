@@ -100,6 +100,41 @@ describe("derived DAG dependency edges", () => {
     check(lines()[0]!, true, true);
     expect(harness.container.querySelectorAll(".th-activity-gnode--enter,.th-activity-gnode--settle")).toHaveLength(0);
   });
+  it.each(["tab", "close", "list"])("consumes seen-node transitions arriving during %s but preserves new-node first entry", exit => {
+    const initial = makeDag();
+    show(initial);
+    if (exit === "tab") press('[data-activity-tab="todo"]');
+    if (exit === "close") press('[data-activity-tab="dag"]');
+    if (exit === "list") press('[data-view="list"]');
+    const updated = { ...initial, nodes: [
+      ...initial.nodes.map(n => n.id === "b" ? { ...n, state: "failed" } : n),
+      { id: "new", prompt: "First visible entry", dependsOn: ["a"], state: "running" },
+    ], edges: [...initial.edges, { from: "a", to: "new" }] };
+    renderShelf(harness, activityState({ dags: [updated] }));
+    expect(harness.container.querySelectorAll(".th-activity-gnode--enter,.th-activity-gnode--settle")).toHaveLength(0);
+    if (exit === "list") press('[data-view="graph"]'); else press('[data-activity-tab="dag"]');
+    check(lines()[0]!, true, true);
+    expect([...harness.container.querySelectorAll(".th-activity-gnode--enter")].map(n => n.getAttribute("data-node"))).toEqual(["new"]);
+    expect(harness.container.querySelectorAll(".th-activity-gnode--settle")).toHaveLength(0);
+  });
+  it("defers unseen nodes' first entry until Graph is actually selected", () => {
+    renderShelf(harness, activityState({ dags: [makeDag()] }));
+    openShelf(harness.container); // Workflow task rows initially select Subagents.
+    expect(harness.container.querySelectorAll(".th-activity-gnode--enter")).toHaveLength(0);
+    press('[data-activity-tab="dag"]');
+    expect(harness.container.querySelectorAll(".th-activity-gnode--enter")).toHaveLength(3);
+  });
+  it("consumes initial reduced-motion paints and suppressed transitions before normal motion resumes", () => {
+    const original = window.matchMedia;
+    const media = Object.assign(new EventTarget(), { matches: true, media: "(prefers-reduced-motion: reduce)", onchange: null, addListener() {}, removeListener() {} });
+    vi.stubGlobal("matchMedia", (query: string) => query === media.media ? media : original(query));
+    show(makeDag());
+    expect(harness.container.querySelectorAll(".th-activity-gnode--enter,.th-activity-gnode--settle")).toHaveLength(0);
+    show(makeDag({ nodes: makeDag().nodes.map(n => n.id === "b" ? { ...n, state: "failed" } : n) }));
+    act(() => { media.matches = false; media.dispatchEvent(new Event("change")); });
+    check(lines()[0]!, true, true);
+    expect(harness.container.querySelectorAll(".th-activity-gnode--enter,.th-activity-gnode--settle")).toHaveLength(0);
+  });
   it("uses safe shelf/run-scoped marker variants even with unsafe raw IDs and sibling unmount", async () => {
     const sibling = mountActivityShelf();
     try {

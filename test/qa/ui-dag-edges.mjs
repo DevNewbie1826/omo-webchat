@@ -94,10 +94,12 @@ async function capture(q, name, runs, active = true, visible = true) {
   q.record.actions.push({ action: 'capture', ...result });
   return result;
 }
-async function deliver(q, run) {
+async function deliver(q, run, closed = false) {
   q.revision = Math.max(Date.now(), (q.revision ?? 0) + 1);
   run = { ...run, name: `${run.run_id} revision ${q.revision}`, updated_at: new Date(q.revision).toISOString() };
-  await arm(q.page, new Function(`return [...document.querySelectorAll('.th-activity-dag-name')].some(e => e.textContent === ${JSON.stringify(run.name)})`));
+  await arm(q.page, closed
+    ? new Function(`return document.querySelector('[data-activity-tab="dag"] .th-activity-tab-count')?.textContent === ${JSON.stringify(`${run.counts.completed}/${run.counts.total}`)}`)
+    : new Function(`return [...document.querySelectorAll('.th-activity-dag-name')].some(e => e.textContent === ${JSON.stringify(run.name)})`));
   q.record.actions.push({ action: 'dag-frame', run: structuredClone(run) });
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa', truncated_runs: false, runs: [run] } });
   await complete(q.page); await settled(q.page);
@@ -237,6 +239,67 @@ async function single(q, theme) {
   return { forward, tick, exits, backward };
 }
 
+async function observeVisibilityReturn(page, expectedNew) {
+  await page.evaluate(expectedNew => {
+    window.visibilityStarts = [];
+    let flow = false, entered = false;
+    window.visibilitySignal = new Promise((done, fail) => {
+      window.visibilityTimer = setTimeout(() => fail(new Error('Visibility animationstart deadline')), 8000);
+      window.visibilityListener = event => {
+        const item = { name: event.animationName, id: event.target.getAttribute('data-node') };
+        window.visibilityStarts.push(item);
+        flow ||= item.name === 'th-dag-edge-flow';
+        entered ||= item.name === 'th-dag-node-enter' && item.id === 'new';
+        if (flow && (!expectedNew || entered)) { clearTimeout(window.visibilityTimer); done(true); }
+      };
+      document.addEventListener('animationstart', window.visibilityListener, true);
+    });
+  }, expectedNew);
+}
+async function visibilityReturn(q, label, run, expectedNew, action) {
+  await observeVisibilityReturn(q.page, expectedNew);
+  try {
+    const latest = await action(); await q.page.evaluate(() => window.visibilitySignal); await settled(q.page);
+    const after = await capture(q, label, [latest ?? run]);
+    const starts = await q.page.evaluate(() => window.visibilityStarts);
+    const oneShots = starts.filter(e => /^th-dag-node-(enter|settle)$/.test(e.name));
+    q.record.actions.push({ action: 'visibility-return-events', label, starts });
+    assert.deepEqual(oneShots, expectedNew ? [{ name: 'th-dag-node-enter', id: 'new' }] : [], 'seen node one-shots never replay; new node enters exactly once');
+    if (expectedNew) await subjectBounds(q, { id: 'new' });
+    return { after, starts };
+  } finally {
+    await q.page.evaluate(() => { clearTimeout(window.visibilityTimer); document.removeEventListener('animationstart', window.visibilityListener, true); });
+  }
+}
+function withNewNode(run) {
+  return { ...run, nodes: [...run.nodes, { id: 'new', label: 'First visible entry', prompt: 'First visible entry', depends_on: ['a'], state: 'running' }],
+    edges: [...run.edges, { from: 'a', to: 'new' }], counts: { ...run.counts, total: run.counts.total + 1, running: run.counts.running + 1 } };
+}
+async function adversarialVisibility(q, theme, mode) {
+  let run = q.record.seed.history.dag.runs[0];
+  await select(q, 'dag'); await settled(q.page);
+  await capture(q, `${theme}-${mode}-before`, [run]);
+  if (mode === 'tab') await select(q, 'todo');
+  if (mode === 'close') await click(q, '[data-activity-tab="dag"]', () => !document.querySelector('.th-activity-panel'));
+  if (mode === 'list') await click(q, '[data-view="list"]', () => !document.querySelector('.th-activity-graph'));
+  run = { ...run, nodes: run.nodes.map(n => n.id === 'b' ? { ...n, state: 'failed' } : n), counts: { ...run.counts, completed: run.counts.completed - 1, failed: run.counts.failed + 1 } };
+  if (mode !== 'initial-reduced') run = withNewNode(run);
+  run = await deliver(q, run, mode === 'close');
+  await capture(q, `${theme}-${mode}-snapshot`, mode === 'close' || mode === 'list' ? [] : [run], mode === 'initial-reduced', mode === 'initial-reduced');
+  const returned = await visibilityReturn(q, `${theme}-${mode}-fresh-return`, run, mode !== 'initial-reduced', async () => {
+    if (mode === 'tab' || mode === 'close') await select(q, 'dag');
+    if (mode === 'list') await click(q, '[data-view="graph"]', () => !!document.querySelector('.th-activity-graph'));
+    if (mode === 'initial-reduced') await q.page.emulateMedia({ reducedMotion: 'no-preference' });
+  });
+  let newVisible = null;
+  if (mode === 'initial-reduced') {
+    run = withNewNode(run);
+    // Subscribe before the live snapshot; don't infer first entry from a leftover class.
+    newVisible = await visibilityReturn(q, `${theme}-${mode}-new-live-entry`, run, true, async () => { run = await deliver(q, run); return run; });
+  }
+  return { mode, returned, newVisible };
+}
+
 export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) {
   assert.equal(phase, 'green'); assert(out); out = resolve(out); mkdirSync(out, { recursive: true });
   const receipt = { phase, out, command: `bun test/qa/ui-dag-edges.mjs --phase ${phase} --out ${out}`, startedAt: new Date().toISOString(), identity: await sourceIdentity(), fixtures: [], scenarios: [], manifest: [] };
@@ -283,6 +346,14 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       return { data, surviving };
     });
     scenario.ok = true; console.log(`PASS ${scenario.name}`);
+    for (const theme of ['dark', 'light']) for (const mode of ['initial-reduced', 'tab', 'close', 'list']) {
+      const scenario = { name: `${theme}-adversarial-${mode}` }; receipt.scenarios.push(scenario);
+      try {
+        await session(browser, receipt, { theme, reduced: mode === 'initial-reduced', history: history([edgeRun({ source: 'completed' })]) }, q => adversarialVisibility(q, theme, mode));
+        scenario.ok = true;
+      } catch (error) { scenario.ok = false; scenario.error = String(error.stack ?? error); }
+      console.log(`${scenario.ok ? 'PASS' : 'FAIL'} ${scenario.name}${scenario.error ? ': ' + scenario.error.split('\n')[0] : ''}`);
+    }
   } catch (error) { receipt.failure = String(error.stack ?? error); }
   finally {
     if (browser) {
@@ -292,8 +363,8 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
       receipt.cleanup = { browserClosed: !browser.isConnected(), contexts: browser.contexts().length, processGone, profileRemoved: !!profile && !existsSync(profile) };
     }
     receipt.identityAfter = await sourceIdentity(); receipt.sourceStable = JSON.stringify(receipt.identity) === JSON.stringify(receipt.identityAfter);
-    receipt.pendingWorkZero = receipt.fixtures.length === 3 && receipt.fixtures.every(f => f.cleanup.contextClosed && f.cleanup.fixture?.serverStopped && f.cleanup.portClosed === 'ECONNREFUSED' && ['pendingWebSockets', 'pendingOpens', 'pendingCreates'].every(k => f.cleanup.fixture[k] === 0) && f.cleanup.errors.length === 0);
-    receipt.verdict = !receipt.failure && receipt.scenarios.length === 3 && receipt.scenarios.every(s => s.ok) && receipt.sourceStable && receipt.pendingWorkZero && receipt.cleanup?.browserClosed && receipt.cleanup.contexts === 0 && receipt.cleanup.processGone && receipt.cleanup.profileRemoved ? 'PASS' : 'FAIL';
+    receipt.pendingWorkZero = receipt.fixtures.length === 11 && receipt.fixtures.every(f => f.cleanup.contextClosed && f.cleanup.fixture?.serverStopped && f.cleanup.portClosed === 'ECONNREFUSED' && ['pendingWebSockets', 'pendingOpens', 'pendingCreates'].every(k => f.cleanup.fixture[k] === 0) && f.cleanup.errors.length === 0);
+    receipt.verdict = !receipt.failure && receipt.scenarios.length === 11 && receipt.scenarios.every(s => s.ok) && receipt.sourceStable && receipt.pendingWorkZero && receipt.cleanup?.browserClosed && receipt.cleanup.contexts === 0 && receipt.cleanup.processGone && receipt.cleanup.profileRemoved ? 'PASS' : 'FAIL';
     receipt.finishedAt = new Date().toISOString();
     writeFileSync(join(out, 'receipt.json'), JSON.stringify(receipt, null, 2)); writeFileSync(join(out, 'manifest.json'), JSON.stringify(receipt.manifest, null, 2));
   }
