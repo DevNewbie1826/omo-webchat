@@ -1,0 +1,5 @@
+{
+  "type": "chat.todo", "sessionId": "chat-1", "durableSessionId": "durable-1",
+  "bindingId": "binding-1", "requestGeneration": 4, "status": "unavailable",
+  "error": "history-unavailable"
+}

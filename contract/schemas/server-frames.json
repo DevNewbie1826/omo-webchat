@@ -76,12 +76,17 @@
       "$ref": "#/$defs/ChatGoalFrame"
     },
     {
+      "$ref": "#/$defs/ChatTodoFrame"
+    },
+    {
       "$ref": "#/$defs/QueueFrame"
     }
   ],
   "$defs": {
     "ReadyFrame": {
       "type": "object",
+      "format": "todo-binding-ready",
+      "description": "bindingId is optional for legacy peers. Todo-capable bindings announce a nonempty bindingId with nonempty sessionId and piSessionId (the durable identity) before any chat.todo publication; replace it on every binding or recovered route replacement.",
       "additionalProperties": false,
       "required": [
         "type",
@@ -108,6 +113,9 @@
         },
         "resumed": {
           "type": "boolean"
+        },
+        "bindingId": {
+          "type": "string"
         }
       }
     },
@@ -806,6 +814,57 @@
         "sessionId": {
           "type": "string"
         }
+      }
+    },
+    "TodoTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content", "status"],
+      "properties": {
+        "content": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "abandoned"] }
+      }
+    },
+    "TodoPhase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tasks"],
+      "properties": {
+        "name": { "type": "string" },
+        "tasks": { "type": "array", "items": { "$ref": "#/$defs/TodoTask" } }
+      }
+    },
+    "TodoSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leafId", "entryId", "entryIndex", "kind"],
+      "description": "Opaque selected-branch coordinates, never comparable across branches. absent requires null entryId/entryIndex; custom and legacy-tool require nonempty leafId/entryId and a nonnegative safe-integer entryIndex.",
+      "properties": {
+        "leafId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "entryId": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "entryIndex": { "anyOf": [{ "type": "integer" }, { "type": "null" }] },
+        "kind": { "type": "string", "enum": ["custom", "legacy-tool", "absent"] }
+      }
+    },
+    "ChatTodoFrame": {
+      "type": "object",
+      "format": "chat-todo",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "durableSessionId", "bindingId", "requestGeneration", "status"],
+      "description": "Whole-list canonical projection. ready requires source and phases and forbids error; unavailable requires error and forbids source/phases. absent requires phases:null; other sources require an atomic valid array (including explicit clear []). Identity strings are nonempty. Named format enforces combinations in both generated boundary parsers.",
+      "properties": {
+        "type": { "const": "chat.todo" },
+        "sessionId": { "type": "string" },
+        "durableSessionId": { "type": "string" },
+        "bindingId": { "type": "string" },
+        "requestGeneration": {
+          "type": "integer",
+          "description": "Nonnegative safe integer correlating serialized acquisitions within this binding. An acquisition fence, NOT a source revision. Equal delivery is idempotent."
+        },
+        "status": { "type": "string", "enum": ["ready", "unavailable"] },
+        "source": { "$ref": "#/$defs/TodoSource" },
+        "phases": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/TodoPhase" } }, { "type": "null" }] },
+        "error": { "type": "string", "enum": ["history-unavailable", "invalid-state", "oversized"] }
       }
     },
     "ChatGoalFrame": {

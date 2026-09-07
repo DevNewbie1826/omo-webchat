@@ -177,7 +177,7 @@ func testQueueLargeHistory(t *testing.T, recovery bool) {
 	if recovery {
 		wantCursor = "new-branch"
 	}
-	if request := h.daemon.LastRequest(omorpc.CmdGetEntries); request["since"] != wantCursor {
+	if request := lastEntriesForPath(t, h.daemon, a); request["since"] != wantCursor {
 		t.Fatalf("queue validation did not use file-order end: %v", request)
 	}
 	assertSiblingRoutable(t, peer, peerFrames, historyE2ETestBudget)
@@ -227,14 +227,14 @@ func TestQueueHistoryOversizedFreshTailStaysDurableAndPeerLive(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			before := h.daemon.RequestCount(omorpc.CmdGetEntries)
+			before := h.daemon.RequestCountForPath(omorpc.CmdGetEntries, path)
 			release := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, path)
 			defer release()
 			h.handler.SessionRunSettled("growing-queue", nil)
-			if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, before+1, historyE2ETestBudget) {
+			if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, path, before+1, historyE2ETestBudget) {
 				t.Fatal("no queue validation request")
 			}
-			if req := h.daemon.LastRequest(omorpc.CmdGetEntries); req["since"] != "entry-2" {
+			if req := lastEntriesForPath(t, h.daemon, path); req["since"] != "entry-2" {
 				t.Fatalf("queue queried stale/root cursor: %v", req)
 			}
 			for i := 0; i < 160; i++ {

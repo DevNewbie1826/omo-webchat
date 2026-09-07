@@ -1259,7 +1259,7 @@ func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T)
 	awaitCommandFence(t, conn, frames)
 
 	beforeOpens := h.daemon.RequestCount(omorpc.CmdOpenSession)
-	beforeEntries := h.daemon.RequestCount(omorpc.CmdGetEntries)
+	clearCollector(frames)
 	beforePrompts := h.daemon.RequestCount(omorpc.CmdPrompt)
 	h.daemon.SetPromptScript(h.path,
 		map[string]any{"type": omorpctest.EventAgentStart},
@@ -1280,9 +1280,8 @@ func TestChatSendSilentEvictionReopensAndRetriesWithoutSocketError(t *testing.T)
 	if got := h.daemon.RequestCount(omorpc.CmdOpenSession) - beforeOpens; got != 1 {
 		t.Fatalf("reopen attempts = %d, want exactly 1", got)
 	}
-	if got := h.daemon.RequestCount(omorpc.CmdGetEntries) - beforeEntries; got != 1 {
-		t.Fatalf("history replays = %d, want exactly 1", got)
-	}
+	// Todo acquisitions also use get_entries; only transcript terminals are replays.
+	assertTerminalHistory(t, frames, 1)
 	if got := h.daemon.RequestCount(omorpc.CmdPrompt) - beforePrompts; got != 2 {
 		t.Fatalf("prompt attempts = %d, want initial plus one retry", got)
 	}

@@ -114,6 +114,8 @@ type Session struct {
 	dagSnapshots                                                            dagSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
 
+	todoRead todoReadState
+
 	broadcast broadcaster
 }
 

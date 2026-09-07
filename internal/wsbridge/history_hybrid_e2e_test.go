@@ -369,7 +369,7 @@ func TestSubscribedSocketPrioritizesHistoryReplayOverActivity(t *testing.T) {
 	writeClient(t, conn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "activity-history",
 	})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, historyE2ETestBudget) {
+	if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, path, 1, historyE2ETestBudget) {
 		t.Fatal("history replay did not reach daemon tail")
 	}
 	source.publish(activitySummary("activity-history"))
@@ -510,10 +510,10 @@ func TestHistoryHybridReplayThroughWebSocketMergesDaemonTailExactlyOnce(t *testi
 	writeClient(t, conn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "large-history",
 	})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, time.Until(deadline)) {
+	if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, path, 1, time.Until(deadline)) {
 		t.Fatal("incremental history request was not observed")
 	}
-	request := h.daemon.LastRequest(omorpc.CmdGetEntries)
+	request := lastEntriesForPath(t, h.daemon, path)
 	since, present := request["since"]
 	if !present || since == nil || since == "" || since != diskLeaf {
 		t.Fatalf("get_entries cursor = %#v, want present non-empty %q", request, diskLeaf)
@@ -592,14 +592,16 @@ func TestHistoryHybridSecondSocketReplayAndLateControlOutcome(t *testing.T) {
 
 	releaseTail := h.daemon.BlockHandlerForPath(omorpc.CmdGetEntries, path)
 	defer releaseTail()
+	beforeTail := h.daemon.RequestCountForPath(omorpc.CmdGetEntries, path)
 	secondConn, secondFrames := h.connect(t, 1024)
 	writeClient(t, secondConn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "combined-history",
 	})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 2, time.Until(deadline)) {
+	secondFrames.nextWithin(t, "ready", time.Until(deadline))
+	if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, path, beforeTail+1, time.Until(deadline)) {
 		t.Fatal("reattach tail request was not observed")
 	}
-	if request := h.daemon.LastRequest(omorpc.CmdGetEntries); request["since"] != diskLeaf {
+	if request := lastEntriesForPath(t, h.daemon, path); request["since"] != diskLeaf {
 		t.Fatalf("reattach cursor = %#v, want %q", request["since"], diskLeaf)
 	}
 
@@ -765,10 +767,10 @@ func TestHistoryHybridTimeoutThroughWebSocketStaysLocal(t *testing.T) {
 	writeClient(t, conn, map[string]any{
 		"type": "chat.create", "wsId": h.workspace.ID, "chatId": "delayed-history",
 	})
-	if !h.daemon.AwaitRequestCount(omorpc.CmdGetEntries, 1, time.Until(deadline)) {
+	if !h.daemon.AwaitRequestCountForPath(omorpc.CmdGetEntries, path, 1, time.Until(deadline)) {
 		t.Fatal("delayed get_entries request was not observed")
 	}
-	request := h.daemon.LastRequest(omorpc.CmdGetEntries)
+	request := lastEntriesForPath(t, h.daemon, path)
 	if since, present := request["since"]; !present || since == nil || since == "" || since != leaf {
 		t.Fatalf("delayed get_entries cursor = %#v, want present non-empty %q", request, leaf)
 	}
@@ -790,4 +792,26 @@ func TestHistoryHybridTimeoutThroughWebSocketStaysLocal(t *testing.T) {
 	if !h.client.EpochCurrent(epoch) || h.daemon.CloseCount() != 0 {
 		t.Fatalf("local history timeout changed provider epoch or closed a session: closes=%d", h.daemon.CloseCount())
 	}
+}
+
+// The transcript and todo readers share get_entries, and peers issue their own
+// reads. Match the fixture's route rather than the global last RPC arrival.
+func lastEntriesForPath(t *testing.T, daemon *omorpctest.Daemon, path string) map[string]any {
+	t.Helper()
+	route := ""
+	for _, snapshot := range daemon.SessionSnapshots() {
+		if snapshot.Path == path {
+			route = snapshot.RoutingID
+			break
+		}
+	}
+	requests := daemon.Requests()
+	for i := len(requests) - 1; i >= 0; i-- {
+		request := requests[i]
+		if request["type"] == omorpc.CmdGetEntries && request["sessionId"] == route {
+			return request
+		}
+	}
+	t.Fatalf("no get_entries for fixture path %q", path)
+	return nil
 }

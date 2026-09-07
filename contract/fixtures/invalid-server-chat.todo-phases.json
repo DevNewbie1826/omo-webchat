@@ -1,0 +1,6 @@
+{
+  "type": "chat.todo", "sessionId": "chat-1", "durableSessionId": "durable-1",
+  "bindingId": "binding-1", "requestGeneration": 1, "status": "ready",
+  "source": { "leafId": "leaf", "entryId": "entry", "entryIndex": 0, "kind": "custom" },
+  "phases": [{}]
+}

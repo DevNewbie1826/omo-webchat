@@ -218,6 +218,22 @@ type ChatNameFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+// ChatTodoFrame — Whole-list canonical projection. ready requires source and phases and forbids error; unavailable requires error and forbids source/phases. absent requires phases:null; other sources require an atomic valid array (including explicit clear []). Identity strings are nonempty. Named format enforces combinations in both generated boundary parsers.
+type ChatTodoFrame struct {
+	BindingID        string       `json:"bindingId"`
+	DurableSessionID string       `json:"durableSessionId"`
+	Error            *string      `json:"error,omitempty"`
+	Phases           *[]TodoPhase `json:"phases,omitempty"`
+	// Nonnegative safe integer correlating serialized acquisitions within this binding. An acquisition fence, NOT a source revision. Equal delivery is idempotent.
+	RequestGeneration int64       `json:"requestGeneration"`
+	SessionID         string      `json:"sessionId"`
+	Source            *TodoSource `json:"source,omitempty"`
+	Status            string      `json:"status"`
+	Type              string      `json:"type"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type CommandsFrame struct {
 	Commands  []CommandEntry `json:"commands"`
 	SessionID string         `json:"sessionId"`
@@ -384,7 +400,9 @@ type QueueItem struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+// ReadyFrame — bindingId is optional for legacy peers. Todo-capable bindings announce a nonempty bindingId with nonempty sessionId and piSessionId (the durable identity) before any chat.todo publication; replace it on every binding or recovered route replacement.
 type ReadyFrame struct {
+	BindingID   *string `json:"bindingId,omitempty"`
 	PISessionID *string `json:"piSessionId"`
 	Resumed     bool    `json:"resumed"`
 	SessionID   string  `json:"sessionId"`
@@ -464,6 +482,30 @@ type TaskDigestEntry struct {
 	Status    string  `json:"status"`
 	TaskID    string  `json:"task_id"`
 	UpdatedAt *string `json:"updated_at,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type TodoPhase struct {
+	Name  string     `json:"name"`
+	Tasks []TodoTask `json:"tasks"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// TodoSource — Opaque selected-branch coordinates, never comparable across branches. absent requires null entryId/entryIndex; custom and legacy-tool require nonempty leafId/entryId and a nonnegative safe-integer entryIndex.
+type TodoSource struct {
+	EntryID    *string `json:"entryId"`
+	EntryIndex *int64  `json:"entryIndex"`
+	Kind       string  `json:"kind"`
+	LeafID     *string `json:"leafId"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type TodoTask struct {
+	Content string `json:"content"`
+	Status  string `json:"status"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1071,6 +1113,24 @@ func (v ChatNameFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *ChatTodoFrame) UnmarshalJSON(data []byte) error {
+	type plain ChatTodoFrame
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"bindingId", "durableSessionId", "error", "phases", "requestGeneration", "sessionId", "source", "status", "type"}, []string{"phases"}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ChatTodoFrame) MarshalJSON() ([]byte, error) {
+	type plain ChatTodoFrame
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *CommandsFrame) UnmarshalJSON(data []byte) error {
 	type plain CommandsFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1382,7 +1442,7 @@ func (v *ReadyFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"piSessionId", "resumed", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"bindingId", "piSessionId", "resumed", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -1536,6 +1596,60 @@ func (v *TaskDigestEntry) UnmarshalJSON(data []byte) error {
 
 func (v TaskDigestEntry) MarshalJSON() ([]byte, error) {
 	type plain TaskDigestEntry
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TodoPhase) UnmarshalJSON(data []byte) error {
+	type plain TodoPhase
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"name", "tasks"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TodoPhase) MarshalJSON() ([]byte, error) {
+	type plain TodoPhase
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TodoSource) UnmarshalJSON(data []byte) error {
+	type plain TodoSource
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"entryId", "entryIndex", "kind", "leafId"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TodoSource) MarshalJSON() ([]byte, error) {
+	type plain TodoSource
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *TodoTask) UnmarshalJSON(data []byte) error {
+	type plain TodoTask
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"content", "status"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v TodoTask) MarshalJSON() ([]byte, error) {
+	type plain TodoTask
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
@@ -2007,8 +2121,49 @@ func validateValue(value any, spec validationSchema, path string) error {
 				}
 			}
 		}
+		if !validTodoFormat(object, spec.Format) {
+			return fmt.Errorf("%s has invalid %s field combinations", path, spec.Format)
+		}
 	}
 	return nil
+}
+
+// Named object formats supplement structural schema validation. They do not
+// assign ordering authority: requestGeneration only fences acquisitions.
+func validTodoFormat(object map[string]any, format string) bool {
+	nonempty := func(value any) bool { text, ok := value.(string); return ok && text != "" }
+	coordinate := func(value any) bool {
+		number, ok := value.(float64)
+		return ok && number >= 0 && number <= 9007199254740991 && math.Trunc(number) == number
+	}
+	if format == "todo-binding-ready" {
+		binding, present := object["bindingId"]
+		return !present || nonempty(binding) && nonempty(object["sessionId"]) && nonempty(object["piSessionId"])
+	}
+	if format != "chat-todo" {
+		return true
+	}
+	if !nonempty(object["sessionId"]) || !nonempty(object["durableSessionId"]) || !nonempty(object["bindingId"]) || !coordinate(object["requestGeneration"]) {
+		return false
+	}
+	_, hasSource := object["source"]
+	phases, hasPhases := object["phases"]
+	_, hasError := object["error"]
+	if object["status"] == "unavailable" {
+		return hasError && !hasSource && !hasPhases
+	}
+	if !hasSource || !hasPhases || hasError {
+		return false
+	}
+	source, ok := object["source"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if source["kind"] == "absent" {
+		return (source["leafId"] == nil || nonempty(source["leafId"])) && source["entryId"] == nil && source["entryIndex"] == nil && phases == nil
+	}
+	_, array := phases.([]any)
+	return nonempty(source["leafId"]) && nonempty(source["entryId"]) && coordinate(source["entryIndex"]) && array
 }
 
 // ServerFrame is implemented by every server->client frame struct.
@@ -2041,6 +2196,7 @@ func (NoticeFrame) serverFrame()            {}
 func (PongFrame) serverFrame()              {}
 func (HelloFrame) serverFrame()             {}
 func (ChatGoalFrame) serverFrame()          {}
+func (ChatTodoFrame) serverFrame()          {}
 func (QueueFrame) serverFrame()             {}
 func (u UnknownFrame) serverFrame()         {}
 
@@ -2243,6 +2399,8 @@ func NewServerFrame(wireType string) ServerFrame {
 		return new(HelloFrame)
 	case "chat.goal":
 		return new(ChatGoalFrame)
+	case "chat.todo":
+		return new(ChatTodoFrame)
 	case "queue":
 		return new(QueueFrame)
 	}
@@ -2265,7 +2423,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 	if target := NewServerFrame(probe.Type); target != nil {
 		switch probe.Type {
 		case "ready":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"piSessionId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "null"}, validationSchema{Type: "string"}}}, "resumed": validationSchema{Type: "boolean"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ready"}}, Required: []string{"type", "sessionId", "piSessionId", "resumed"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Format: "todo-binding-ready", Properties: map[string]validationSchema{"bindingId": validationSchema{Type: "string"}, "piSessionId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "null"}, validationSchema{Type: "string"}}}, "resumed": validationSchema{Type: "boolean"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "ready"}}, Required: []string{"type", "sessionId", "piSessionId", "resumed"}}); err != nil {
 				return nil, err
 			}
 		case "chat.name":
@@ -2360,6 +2518,10 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"goal": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "object", Properties: map[string]validationSchema{"blockedReason": validationSchema{Type: "string"}, "completedAt": validationSchema{Type: "integer"}, "createdAt": validationSchema{Type: "integer"}, "objective": validationSchema{Type: "string"}, "objectiveTruncated": validationSchema{Type: "boolean"}, "status": validationSchema{Type: "string"}, "updatedAt": validationSchema{Type: "integer"}}, Required: []string{"objective", "status"}}, validationSchema{Type: "null"}}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "chat.goal"}}, Required: []string{"type", "sessionId", "goal"}}); err != nil {
 				return nil, err
 			}
+		case "chat.todo":
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Format: "chat-todo", Properties: map[string]validationSchema{"bindingId": validationSchema{Type: "string"}, "durableSessionId": validationSchema{Type: "string"}, "error": validationSchema{Type: "string", Enum: []string{"history-unavailable", "invalid-state", "oversized"}}, "phases": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"name": validationSchema{Type: "string"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"content": validationSchema{Type: "string"}, "status": validationSchema{Type: "string", Enum: []string{"pending", "in_progress", "completed", "abandoned"}}}, Required: []string{"content", "status"}}}}, Required: []string{"name", "tasks"}}}, validationSchema{Type: "null"}}}, "requestGeneration": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "source": validationSchema{Type: "object", Properties: map[string]validationSchema{"entryId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "string"}, validationSchema{Type: "null"}}}, "entryIndex": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "integer"}, validationSchema{Type: "null"}}}, "kind": validationSchema{Type: "string", Enum: []string{"custom", "legacy-tool", "absent"}}, "leafId": validationSchema{AnyOf: []validationSchema{validationSchema{Type: "string"}, validationSchema{Type: "null"}}}}, Required: []string{"leafId", "entryId", "entryIndex", "kind"}}, "status": validationSchema{Type: "string", Enum: []string{"ready", "unavailable"}}, "type": validationSchema{Const: "chat.todo"}}, Required: []string{"type", "sessionId", "durableSessionId", "bindingId", "requestGeneration", "status"}}); err != nil {
+				return nil, err
+			}
 		case "queue":
 			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"engine": validationSchema{Type: "object", Properties: map[string]validationSchema{"ordered": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"mode": validationSchema{Type: "string", Enum: []string{"followUp", "steer"}}, "text": validationSchema{Type: "string"}}, Required: []string{"text", "mode"}}}, "pendingMessageCount": validationSchema{Type: "integer"}}, Required: []string{"pendingMessageCount", "ordered"}}, "items": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"createdAt": validationSchema{Type: "integer"}, "hasImage": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}}, Required: []string{"id", "text", "hasImage", "createdAt"}}}, "revision": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "queue"}}, Required: []string{"type", "sessionId", "revision", "items", "engine"}}); err != nil {
 				return nil, err
@@ -2404,6 +2566,7 @@ func ServerFrameTypes() []string {
 		"pong",
 		"hello",
 		"chat.goal",
+		"chat.todo",
 		"queue",
 	}
 }
