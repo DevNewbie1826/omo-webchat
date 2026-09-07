@@ -786,6 +786,27 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         const label = `allocation-${name}-${lang}-${fontSize}`;
         await scenario(label, { viewport, layout, lang, fontSize, ...(name === '340' ? { paneWidth: 340 } : {}) }, q => allocation(q, label));
       }
+      for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
+        const label = `allocation-desktop-light-${lang}-${fontSize}`;
+        await scenario(label, { viewport: { width: 1280, height: 800 }, theme: 'light', lang, fontSize }, async q => {
+          const s = await allocation(q, label);
+          assert.equal(s.settings.theme, 'light'); assert.equal(s.settings.lang, lang); assert.equal(s.settings.fontSize, String(fontSize));
+          assert.equal(s.goalOpen, 'true'); assert.equal(s.activityOpen, 'true');
+          assert(s.goal.height > 0 && s.activity.height > 0);
+          const transcript = await q.page.locator('.th-chat-scrollport .th-chat-body').evaluate(e => ({ height: e.clientHeight, scrollHeight: e.scrollHeight, fontSize: getComputedStyle(e).fontSize }));
+          assert.equal(q.fixture.runState('stored-a').entries.length, 40);
+          assert(transcript.scrollHeight > transcript.height, 'actual long transcript overflows its reserved scrollport');
+          assert.equal(transcript.fontSize, `${fontSize}px`, 'rendered font matches the requested size');
+          const composer = q.page.locator('.th-chat-input textarea'), draft = `Desktop light ${lang} ${fontSize}`;
+          await composer.click(); await q.page.keyboard.type(draft);
+          assert.equal(await composer.inputValue(), draft);
+          assert(await composer.evaluate(e => e === document.activeElement), 'composer accepts native focus and typing with both shelves open');
+          const reached = await state(q.page);
+          assert.equal(reached.goalOpen, 'true'); assert.equal(reached.activityOpen, 'true');
+          assert(reached.composer.top >= 0 && reached.composer.bottom <= 800 && !reached.overflow);
+          return { ...s, transcriptProof: transcript, composerReachability: { draft: await composer.inputValue(), state: reached } };
+        });
+      }
       let shared;
       await shelfRegressionScenarios({
         fixture: { wait: (...args) => shared.fixture.wait(...args) },
