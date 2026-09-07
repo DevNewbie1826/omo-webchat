@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/dirsync"
 )
 
 var ErrItemNotFound = errors.New("sendqueue: item not found")
@@ -410,7 +412,7 @@ func (s *Store) persistLocked() error {
 	if err := s.runPersistHook("sync-dir"); err != nil {
 		return closeDirOnFailure(err)
 	}
-	if err := dir.Sync(); err != nil {
+	if err := dirsync.Handle(dir); err != nil {
 		return closeDirOnFailure(err)
 	}
 	if err := dir.Close(); err != nil {
