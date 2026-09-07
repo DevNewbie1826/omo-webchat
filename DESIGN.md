@@ -311,6 +311,13 @@ Choose a tested foreground/background token pair instead.
   box-shadow ring, never a border that shifts layout, and never a change to
   pane geometry. Divider focus and portal/menu focus are separate states and
   must not steal or imitate the pane active outline.
+- The active-pane outline is width-bound: at viewport widths up to 768px it
+  is suppressed entirely (`.th-pane--focused` paints `outline-style: none`)
+  because the single full-screen pane has no sibling pane to disambiguate.
+  Active-pane identity itself is preserved — session routing still tracks
+  exactly one active destination — desktop split panes keep their outline,
+  and keyboard `:focus-visible` affordances are never suppressed by this
+  rule.
 - Sidebar interaction never moves the active destination by itself: the
   sidebar captures the active pane at click time and assigns the selected
   session there, instead of focusing whichever pane already hosts it.
