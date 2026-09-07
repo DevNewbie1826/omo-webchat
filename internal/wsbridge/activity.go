@@ -294,6 +294,9 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 		tasks := make([]wscontract.TaskDigestEntry, len(digest.Tasks))
 		for i, task := range digest.Tasks {
 			tasks[i] = wscontract.TaskDigestEntry{TaskID: task.TaskID, Status: task.Status}
+			if task.RawStatus != "" {
+				tasks[i].RawStatus = &task.RawStatus
+			}
 			if task.UpdatedAt != "" {
 				tasks[i].UpdatedAt = &task.UpdatedAt
 			}
