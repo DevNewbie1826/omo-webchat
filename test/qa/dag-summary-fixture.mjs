@@ -6,11 +6,12 @@ import { startTaskFixture, chat } from './task-state-fixture.mjs';
 import { dagRow } from './dag-state-ordering.mjs';
 
 export const stages = Object.freeze(['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2',
-  'compact-duplicate-ids', 'compact-no-ids', 'compact-mixed-ids', 'complete2-recovery']);
+  'compact-duplicate-ids', 'compact-no-ids', 'complete2-empty-optional-ids', 'compact-mixed-ids',
+  'required-empty-run-id', 'required-empty-node-id', 'complete2-recovery']);
 export const viewports = Object.freeze([{ width: 1280, height: 800 }, { width: 390, height: 844 }]);
 export function summaryInput(stage) {
   const index = stages.indexOf(stage); assert.ok(index >= 0, `Unknown summary stage: ${stage}`);
-  const marker = `dag-summary-${stage}`, updatedAt = `2026-09-08T10:0${index + 1}:00.000Z`;
+  const marker = `dag-summary-${stage}`, updatedAt = `2026-09-08T10:${String(index + 1).padStart(2, '0')}:00.000Z`;
   const run = dagRow('running', '01');
   Object.assign(run, { run_id: 'summary-run', run_key: 'summary', name: 'Summary fixture', updated_at: updatedAt,
     counts: { ...run.counts, total: 2, running: 2 },
@@ -21,6 +22,12 @@ export function summaryInput(stage) {
     run.nodes = []; run.edges = []; run.waves = []; run.counts.total = 0; run.counts.running = 0;
   }
   if (stage === 'malformed-node') delete run.nodes[1].depends_on;
+  // Keep literal optional empty IDs on the wire: only the product may interpret them.
+  if (stage === 'complete2-empty-optional-ids') for (const node of run.nodes) node.task_id = '';
+  if (stage === 'required-empty-run-id') run.run_id = '';
+  if (stage === 'required-empty-node-id') {
+    run.nodes[1].id = ''; run.edges[0].to = ''; run.waves[1].node_ids = [''];
+  }
   // Synthetic outputs at the real Go digest boundary, not a JS digest generator.
   // Source -> digest generation (including >64 KiB omission) is proved by Go tests.
   // Duplicate active runs share two task identities; missing identities require

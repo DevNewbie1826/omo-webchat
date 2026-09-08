@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseChatServerFrame } from '../../frontend/src/lib/chatWsParse.ts';
 import { parseTaskUpdated } from '../../frontend/src/features/split/activityParseTask.ts';
+import { parseDagUpdated } from '../../frontend/src/features/split/activityParseDag.ts';
 import { parseDagDigest } from '../../frontend/src/features/workspace/activityDigest.ts';
 import { listLiveSessions } from '../../frontend/src/features/workspace/workspace.ts';
-import { stages, summaryInput, summaryFrame, startSummaryFixture } from './dag-summary-fixture.mjs';
+import { stages, summaryInput, summaryFrame, startSummaryFixture, viewports } from './dag-summary-fixture.mjs';
 import { assertSummaryDOM } from './dag-summary-surface.mjs';
 import { parseArgs, run } from './dag-summary.mjs';
 import { confirmPortReleased } from './dag-state-ordering.mjs';
@@ -19,7 +20,10 @@ const dom = (text, aria) => ({ sidebar: { text, aria }, overview: { text, aria }
 
 test('summary scenario inputs preserve original running2, retained1, zero-retained and complete topology', () => {
   assert.deepEqual(stages, ['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2',
-    'compact-duplicate-ids', 'compact-no-ids', 'compact-mixed-ids', 'complete2-recovery']);
+    'compact-duplicate-ids', 'compact-no-ids', 'complete2-empty-optional-ids', 'compact-mixed-ids',
+    'required-empty-run-id', 'required-empty-node-id', 'complete2-recovery']);
+  assert.deepEqual(viewports, [{ width: 1280, height: 800 }, { width: 390, height: 844 }]);
+  assert.equal(stages.length * viewports.length * 2, 44);
   const partial = summaryInput(stages[0]);
   assert.equal(partial.dag.runs[0].counts.running, 2);
   assert.equal(partial.dag.runs[0].counts.total, 2);
@@ -65,7 +69,7 @@ test('marker is accepted by the actual parser and contributes no running task; n
 });
 
 test('binary oracle rejects falsely exact partial counts, zero, absent badges and mismatched accessible qualification', () => {
-  for (const stage of stages.slice(0, 3)) {
+  for (const stage of [...stages.slice(0, 3), 'required-empty-run-id', 'required-empty-node-id']) {
     for (const bad of [dom('1', 'exact:1'), dom('0', 'exact:0'), dom('2', 'exact:2'), dom(null, null), dom('1+', 'exact:1'), dom('?', 'exact:0'), dom('3+', 'partial:3')]) {
       assert.throws(() => assertSummaryDOM(bad, stage, copy));
     }
@@ -112,6 +116,7 @@ test('compact stages use actual snake_case poll and camelCase WS digest envelope
 test('compact boundary oracle requires exact2, unknown, qualified1, then exact2 recovery on both surfaces', () => {
   for (const [stage, text, aria] of [
     ['compact-duplicate-ids', '2', 'exact:2'], ['compact-no-ids', '?', 'unknown'],
+    ['complete2-empty-optional-ids', '2', 'exact:2'],
     ['compact-mixed-ids', '1+', 'partial:1'], ['complete2-recovery', '2', 'exact:2'],
   ]) {
     const result = assertSummaryDOM(dom(text, aria), stage, copy);
@@ -121,6 +126,56 @@ test('compact boundary oracle requires exact2, unknown, qualified1, then exact2 
       if (other !== text) assert.throws(() => assertSummaryDOM(dom(other, otherAria), stage, copy));
     }
     assert.throws(() => assertSummaryDOM({ sidebar: { text, aria }, overview: null }, stage, copy));
+  }
+});
+
+test('rich identity fixtures preserve literal empty IDs through actual REST, WS and DAG parsers', async () => {
+  assert.equal(stages[stages.indexOf('compact-no-ids') + 1], 'complete2-empty-optional-ids');
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const stage of ['complete2-empty-optional-ids', 'required-empty-run-id', 'required-empty-node-id']) {
+      const { marker, ...session } = summaryInput(stage);
+      assert.equal(session.dag_oversized, undefined); assert.equal(session.dag_digest, undefined);
+      assert.equal(session.dag.truncated_runs, false);
+      const run = session.dag.runs[0];
+      assert.equal(run.counts.total, 2); assert.equal(run.counts.running, 2);
+      assert.equal(run.nodes.length, 2);
+      assert.deepEqual(run.nodes.map(n => n.state), ['running', 'running']);
+      assert.equal(run.run_id, stage === 'required-empty-run-id' ? '' : 'summary-run');
+      assert.deepEqual(run.nodes.map(n => n.id), ['a', stage === 'required-empty-node-id' ? '' : 'b']);
+      assert.deepEqual(run.nodes.map(n => n.depends_on), [[], ['a']]);
+      assert.deepEqual(run.edges, [{ from: run.nodes[0].id, to: run.nodes[1].id }]);
+      assert.deepEqual(run.waves, [{ index: 0, node_ids: [run.nodes[0].id] }, { index: 1, node_ids: [run.nodes[1].id] }]);
+      for (const node of run.nodes) {
+        assert.equal(Object.hasOwn(node, 'task_id'), stage === 'complete2-empty-optional-ids');
+        if (stage === 'complete2-empty-optional-ids') assert.equal(node.task_id, '');
+      }
+      globalThis.fetch = async (path, init) => {
+        assert.equal(path, '/api/sessions/live'); assert.equal(init.method, 'GET');
+        return Response.json({ sessions: [session] });
+      };
+      const [rest] = await listLiveSessions();
+      const ws = parseChatServerFrame(JSON.parse(JSON.stringify(summaryFrame(stage))));
+      const wsDag = ws.snapshots.find(s => s.name === 'omo.dag.updated').data;
+      assert.deepEqual(rest.dag, session.dag); assert.deepEqual(wsDag, session.dag);
+      assert.equal(parseTaskUpdated(rest.task).tasks[0].liveProgress.lastAssistantLine, marker);
+      for (const raw of [rest.dag, wsDag]) {
+        const parsed = parseDagUpdated(raw).runs[0];
+        assert.equal(parsed.runId, run.run_id);
+        assert.deepEqual(parsed.nodes.map(n => n.id), run.nodes.map(n => n.id));
+        assert.deepEqual(parsed.nodes.map(n => n.taskId), stage === 'complete2-empty-optional-ids' ? ['', ''] : [undefined, undefined]);
+      }
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('every stage has a valid strictly increasing revision, including double-digit minutes', () => {
+  let previous = -Infinity;
+  for (const stage of stages) {
+    const input = summaryInput(stage), at = input.task.tasks[0].updated_at;
+    const ms = Date.parse(at);
+    assert.ok(Number.isFinite(ms)); assert.ok(ms > previous); previous = ms;
+    assert.equal(input.dag_oversized ? input.dag_digest.received_at : input.dag.runs[0].updated_at, at);
   }
 });
 

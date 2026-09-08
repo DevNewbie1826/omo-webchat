@@ -28,7 +28,7 @@ export function readSummaryDOM() {
  */
 export function assertSummaryDOM(dom, stage, copy, surfaces = ['sidebar', 'overview']) {
   assert.ok(stages.includes(stage), `Unknown summary stage: ${stage}`);
-  const exact = ['complete2', 'compact-duplicate-ids', 'complete2-recovery'].includes(stage);
+  const exact = ['complete2', 'compact-duplicate-ids', 'complete2-empty-optional-ids', 'complete2-recovery'].includes(stage);
   const expected = exact ? '2' : stage === 'compact-no-ids' ? '?' : stage === 'compact-mixed-ids' ? '1+' : null;
   const result = {};
   for (const surface of surfaces) {
@@ -40,7 +40,7 @@ export function assertSummaryDOM(dom, stage, copy, surfaces = ['sidebar', 'overv
     assert.equal(badge.aria, copy[key].replace('{n}', String(count)), `${surface}: accessible qualification matches visible count`);
     if (expected !== null) assert.equal(badge.text, expected, `${surface}: ${stage} must yield ${expected}`);
     else {
-      assert.ok(qualified, `${surface}: incomplete data must be visibly qualified, never exact1/zero`);
+      assert.ok(qualified, `${surface}: incomplete data must be visibly qualified, never exact/zero`);
       if (lowerBound) assert.ok(count <= 2, `${surface}: lower bound cannot exceed the full two-node fixture`);
     }
     result[surface] = { qualified, unknown, exact2: badge.text === '2', falseExact: !exact && !qualified,
