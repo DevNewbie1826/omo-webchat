@@ -187,74 +187,41 @@ export async function openActivityTab(page) {
 
 // Only browser API getters/events are synthesized. CSS, DOM and product markers
 // remain untouched. Chrome's dvh/lvh do NOT reproduce WebKit's native divergence.
-async function visualInput(page, input, event = 'resize', resizeViewport) {
-  await page.evaluate(({ input, event, deferred }) => {
+async function visualInput(page, input, event = 'resize', beforeAuxiliary = false) {
+  await page.evaluate(({ input, event, beforeAuxiliary }) => {
     window.mobilePending = new Promise((done, fail) => {
       const target = ['pageshow', 'orientationchange', 'pagehide'].includes(event) ? window : visualViewport;
-      let transcript = document.querySelector('.th-pane--focused .th-chat-body');
-      const priorTop = transcript.scrollTop;
-      let reading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
-      let inputSeen = false, inputApplied = false, resized = false, intentUpdated = false;
-      const observer = new ResizeObserver(() => { resized = true; check(); });
-      // Native anchoring and virtual row remeasurement can change reading intent
-      // during real resize. Observe the product's completed intent update, not
-      // a frozen offset or a QA copy of its bottom-distance tolerance.
-      const intentObserver = new MutationObserver(() => {
-        const current = document.querySelector('.th-pane--focused .th-chat-body');
-        if (current && current !== transcript) {
-          // Crossing the split-view breakpoint remounts ChatPane and restores
-          // history. A detached zero-sized scrollport is not completion.
-          transcript.removeEventListener('scroll', check); observer.disconnect();
-          transcript = current; resized = false; intentUpdated = false;
-          reading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
-          transcript.addEventListener('scroll', check); observer.observe(transcript);
-        }
-        const currentReading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
-        if (currentReading !== reading) { reading = currentReading; intentUpdated = true; }
-        check();
-      });
+      // Only the compact keyboard resize is followed by auxiliary isolation
+      // sampling. Other viewport states must not require exact transcript pixels:
+      // completed virtualizer reflow can legitimately leave a following offset.
+      const transcript = beforeAuxiliary ? document.querySelector('.th-pane--focused .th-chat-body') : null;
+      const reading = beforeAuxiliary && !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
+      let inputSeen = false, resized = false;
+      const observer = beforeAuxiliary ? new ResizeObserver(() => { resized = true; check(); }) : null;
       const timer = setTimeout(() => {
-        const state = { inputSeen, resized, reading, intentUpdated, priorTop, currentTop: transcript.scrollTop,
-          clientHeight: transcript.clientHeight, scrollHeight: transcript.scrollHeight, connected: transcript.isConnected,
-          currentTranscript: transcript === document.querySelector('.th-pane--focused .th-chat-body') };
-        cleanup(); fail(new Error('Viewport resize-follow deadline ' + JSON.stringify(state)));
+        const state = { inputSeen, resized, reading, currentTop: transcript?.scrollTop,
+          clientHeight: transcript?.clientHeight, scrollHeight: transcript?.scrollHeight };
+        cleanup(); fail(new Error((beforeAuxiliary ? 'Auxiliary resize-follow deadline ' : 'Viewport input event deadline ') + JSON.stringify(state)));
       }, 30000);
       function cleanup() {
-        clearTimeout(timer); observer.disconnect(); intentObserver.disconnect();
-        target.removeEventListener(event, finish); transcript.removeEventListener('scroll', check);
-        delete window.pwaDispatchInput;
+        clearTimeout(timer); observer?.disconnect();
+        target.removeEventListener(event, finish); transcript?.removeEventListener('scroll', check);
       }
       function check() {
-        if (!inputSeen || !resized || !transcript.isConnected
-          || transcript !== document.querySelector('.th-pane--focused .th-chat-body')
-          || transcript.querySelector('.th-chat-loading')) return;
-        // Without a product intent transition, follow still owes the exact
-        // bottom. Reading may legitimately re-anchor or clamp during reflow.
-        if (!reading && !intentUpdated && transcript.scrollTop !== Math.max(0, transcript.scrollHeight - transcript.clientHeight)) return;
+        if (!inputSeen) return;
+        // Pending follow must complete naturally before the baseline. Reading
+        // may re-anchor or clamp during resize; never force its old pixel offset.
+        if (beforeAuxiliary && (!resized || !reading
+          && transcript.scrollTop !== Math.max(0, transcript.scrollHeight - transcript.clientHeight))) return;
         cleanup(); done(true);
       }
-      function finish() { if (inputApplied) { inputSeen = true; check(); } }
-      // Arm before BOTH real layout resize and synthetic visual input. Otherwise
-      // the reading -> follow transition can finish before QA even subscribes.
-      target.addEventListener(event, finish);
-      transcript.addEventListener('scroll', check); observer.observe(transcript);
-      intentObserver.observe(document.querySelector('.th-main'), { childList: true, subtree: true });
-      window.pwaDispatchInput = () => {
-        for (const [key, value] of Object.entries(input)) Object.defineProperty(visualViewport, key, { configurable: true, get: () => value });
-        inputApplied = true; target.dispatchEvent(new Event(event));
-      };
-      if (!deferred) window.pwaDispatchInput();
+      function finish() { inputSeen = true; check(); }
+      target.addEventListener(event, finish, { once: true });
+      if (beforeAuxiliary) { transcript.addEventListener('scroll', check); observer.observe(transcript); }
+      for (const [key, value] of Object.entries(input)) Object.defineProperty(visualViewport, key, { configurable: true, get: () => value });
+      target.dispatchEvent(new Event(event));
     });
-    if (deferred) window.pwaViewportPending = window.mobilePending;
-  }, { input, event, deferred: !!resizeViewport });
-  if (resizeViewport) {
-    await resizeViewport();
-    await page.evaluate(() => {
-      // Drawer normalization uses mobilePending too; retain this subscription.
-      window.mobilePending = window.pwaViewportPending; delete window.pwaViewportPending;
-      window.pwaDispatchInput();
-    });
-  }
+  }, { input, event, beforeAuxiliary });
   await complete(page); await settle(page);
 }
 
@@ -381,14 +348,18 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                 && (adequate ? ['.th-goal-panel', '.th-activity-panel'].every(s => document.querySelector(s)?.getBoundingClientRect().height > 0)
                   : !document.querySelector('.th-goal-panel, .th-activity-panel')));
             }, { width, height, adequate });
-            await visualInput(page, { width, height, offsetTop: 0 }, 'resize', () => page.setViewportSize({ width, height }));
+            await page.setViewportSize({ width, height });
+            await visualInput(page, { width, height, offsetTop: 0 });
             await page.evaluate(() => window.compactResizePending);
             await capture(adequate ? 'compact-adequate-space' : 'compact-return', false, 0, height, true);
           }
         }
         await page.locator('.th-pane--focused textarea').focus();
         let keyboardHeight = Math.max(270, height - 340), keyboardTop = height > 500 ? 60 : 20;
-        await visualInput(page, { width, height: keyboardHeight, offsetTop: keyboardTop, offsetLeft: 0, scale: 1 });
+        // This height-only input immediately precedes compactReachability's
+        // strict transcript baseline. Arm natural follow before dispatching it.
+        await visualInput(page, { width, height: keyboardHeight, offsetTop: keyboardTop, offsetLeft: 0, scale: 1 },
+          'resize', input.compactShelves === true);
         await capture('keyboard', true, keyboardTop, keyboardHeight, width > 768);
         await visualInput(page, { width: width + 2, height: keyboardHeight, offsetTop: keyboardTop });
         await capture('keyboard-width-drift', true, keyboardTop, keyboardHeight, width > 768);
@@ -401,12 +372,11 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         for (const keyboard of [false, true]) {
           for (const rotated of [true, false]) {
             [width, height] = rotated ? [input.height, input.width] : [input.width, input.height];
+            await page.setViewportSize({ width, height });
+            if (width <= 768 && await page.locator('.th-sidebar').getAttribute('aria-hidden') !== 'true') await closeDrawer();
             keyboardHeight = Math.max(270, height - 340); keyboardTop = keyboard ? (height > 500 ? 60 : 20) : 0;
             const visible = keyboard ? keyboardHeight : height;
-            await visualInput(page, { width, height: visible, offsetTop: keyboardTop }, 'orientationchange', async () => {
-              await page.setViewportSize({ width, height });
-              if (width <= 768 && await page.locator('.th-sidebar').getAttribute('aria-hidden') !== 'true') await closeDrawer();
-            });
+            await visualInput(page, { width, height: visible, offsetTop: keyboardTop }, 'orientationchange');
             const rotatedState = await capture(`rotation-${keyboard ? 'open' : 'closed'}-${rotated ? 'away' : 'back'}`, keyboard, keyboardTop, visible, width > 768);
             if (input.compactShelves && keyboard && !rotated) {
               // Preserve the original capture first. Drawer/rail actions can move

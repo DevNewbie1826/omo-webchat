@@ -628,7 +628,7 @@ for (const mode of ['following', 'pending-follow', 'interference', 'reading']) {
         return originalRect();
       };
       const work = (async () => {
-        await visualInput(page, { height: 270, offsetTop: 20 });
+        await visualInput(page, { height: 270, offsetTop: 20 }, 'resize', true);
         return compactReachability(page, 34, 50, e);
       })();
       // Either the driver arms its scroll listener or the old driver reaches
@@ -671,132 +671,54 @@ test('compact matrix independently requires overflow only in the smaller keyboar
   expect(shelfExpectations(input, 'keyboard', true).auxiliaryScrollRequired).toBe(true);
 });
 
-for (const mode of ['reflow-intent', 'reading-reanchor', 'reading-clamp']) {
-  test(`real viewport readiness observes reflow completion rather than frozen pixels: ${mode}`, async () => {
-    const trace = [];
+for (const event of ['resize', 'orientationchange', 'pageshow', 'pagehide']) {
+  test(`non-auxiliary viewport input does not impose transcript settlement: ${event}`, async () => {
     await captured({ exercise: async (page, _, { window: w }) => {
-      const d = w.document, transcript = d.querySelector('.th-chat-body'), port = transcript.parentElement;
-      const button = d.createElement('button'); button.className = 'th-chat-scroll-bottom';
-      const initiallyReading = mode !== 'reflow-intent';
-      if (initiallyReading) port.append(button);
-      let top = initiallyReading ? 1000 : 6544;
-      const priorTop = top, observers = new Set(), completing = Promise.withResolvers();
-      Object.defineProperties(transcript, {
-        clientHeight: { value: 120, configurable: true }, scrollHeight: { value: 6664, configurable: true },
-        scrollTop: { get: () => top, set: () => { throw new Error('QA must not force transcript scrolling'); } },
-      });
+      const transcript = w.document.querySelector('.th-chat-body');
+      // Captured completed rotation reflow: follow intent, but not exact bottom.
+      Object.defineProperties(transcript, { scrollTop: { value: 6448 },
+        clientHeight: { value: 152, configurable: true }, scrollHeight: { value: 6611, configurable: true } });
       w.ResizeObserver = class {
-        constructor(callback) { this.callback = callback; observers.add(this); }
-        observe() {}
-        disconnect() { observers.delete(this); }
+        constructor() { throw new Error('Unexpected transcript barrier outside auxiliary resize'); }
       };
-      const resize = () => { for (const observer of [...observers]) observer.callback([{ target: transcript }]); };
-      const evaluate = page.evaluate;
-      page.evaluate = (fn, args) => {
-        const result = evaluate(fn, args);
-        if (String(fn) === '() => window.mobilePending') completing.resolve();
-        return result;
-      };
-      const changeIntent = async reading => {
-        // Subscribe to this exact DOM mutation before the simulated product update.
-        const changed = new Promise(resolve => {
-          const observer = new w.MutationObserver(() => { observer.disconnect(); resolve(); });
-          observer.observe(port, { childList: true });
-        });
-        if (reading) port.append(button); else button.remove();
-        await changed;
-      };
-      let triggered = false;
-      const trigger = async () => {
-        triggered = true;
-        trace.push({ event: 'real-viewport', subscribed: observers.size > 0 });
-        // Mobile Chrome also emits a native orientation event during setViewportSize.
-        w.dispatchEvent(new w.Event('orientationchange'));
-        // Captured Chrome sequence: native anchoring moves 6544 -> 6448,
-        // then content remeasurement reduces 6664 -> 6611. Product intent
-        // changes to reading (64px gap), then back to follow (11px gap).
-        top = mode === 'reflow-intent' ? 6448 : mode === 'reading-reanchor' ? 947 : 700;
-        Object.defineProperty(transcript, 'clientHeight', { value: 152, configurable: true });
-        transcript.dispatchEvent(new w.Event('scroll')); resize();
-        if (!initiallyReading) await changeIntent(true);
-        Object.defineProperty(transcript, 'scrollHeight', { value: mode === 'reading-clamp' ? 852 : 6611, configurable: true });
-        resize();
-        if (!initiallyReading || mode === 'reading-clamp') await changeIntent(false);
-      };
-      const work = visualInput(page, { width: 768, height: 844, offsetTop: 0 }, 'orientationchange', trigger);
-      work.catch(error => completing.reject(error));
-      await completing.promise;
-      const triggeredBeforeAwait = triggered;
-      // The old driver ignores the real trigger argument. Deliver the same
-      // sequence anyway, so RED also identifies its impossible pixel predicate.
-      if (!triggered) await trigger();
-      resize();
-      const status = Bun.peek.status(w.mobilePending), completedTop = top;
-      trace.push({ event: 'completion', status, top, triggeredBeforeAwait });
-      if (status === 'pending') {
-        // Release only the failing old implementation for deterministic teardown;
-        // this is controlled product delivery, never a driver scroll write.
-        top = initiallyReading ? priorTop : transcript.scrollHeight - transcript.clientHeight;
-        transcript.dispatchEvent(new w.Event('scroll'));
-      }
-      await work;
-      expect(observers.size).toBe(0);
-      console.log(JSON.stringify({ rotationReflow: mode, trace }));
-      expect(triggeredBeforeAwait).toBe(true);
-      expect(status).toBe('fulfilled');
-      expect(completedTop).toBe(mode === 'reflow-intent' ? 6448 : mode === 'reading-reanchor' ? 947 : 700);
+      await visualInput(page, { width: 768, height: 844, offsetTop: 0 }, event);
+      expect(transcript.scrollTop).toBe(6448);
+      expect(w.visualViewport.width).toBe(768); expect(w.visualViewport.height).toBe(844);
     } });
   });
 }
 
-test('real viewport readiness follows the mounted transcript through responsive history restore', async () => {
-  await captured({ exercise: async (page, _, { window: w }) => {
-    const d = w.document, oldTranscript = d.querySelector('.th-chat-body');
-    const observers = new Set(), completing = Promise.withResolvers();
-    w.ResizeObserver = class {
-      constructor(callback) { this.callback = callback; this.targets = new Set(); observers.add(this); }
-      observe(element) { this.targets.add(element); observers.add(this); }
-      disconnect() { observers.delete(this); this.targets.clear(); }
-    };
-    const resize = () => { for (const observer of [...observers]) observer.callback([...observer.targets].map(target => ({ target }))); };
-    const evaluate = page.evaluate;
-    page.evaluate = (fn, args) => {
-      const result = evaluate(fn, args);
-      if (String(fn) === '() => window.mobilePending') completing.resolve();
-      return result;
-    };
-    let current, top = 0;
-    const work = visualInput(page, { width: 1280, height: 800 }, 'orientationchange', async () => {
-      const port = oldTranscript.parentElement, replacement = d.createElement('div');
-      replacement.className = 'th-chat-scrollport';
-      current = d.createElement('div'); current.className = 'th-chat-body'; replacement.append(current);
-      current.innerHTML = '<div class="th-chat-loading"></div>';
-      Object.defineProperties(current, { clientHeight: { value: 656, configurable: true },
-        scrollHeight: { value: 656, configurable: true },
-        scrollTop: { get: () => top, set: () => { throw new Error('QA must not force transcript scrolling'); } } });
-      const mounted = new Promise(resolve => {
-        const observer = new w.MutationObserver(() => { observer.disconnect(); resolve(); });
-        observer.observe(port.parentElement, { childList: true });
-      });
-      port.replaceWith(replacement);
-      for (const key of ['scrollTop', 'clientHeight', 'scrollHeight']) Object.defineProperty(oldTranscript, key, { value: 0, configurable: true });
-      await mounted;
-      resize();
-    });
-    work.catch(error => completing.reject(error));
-    await completing.promise;
-    const loadingStatus = Bun.peek.status(w.mobilePending);
-    const currentObserved = [...observers].some(observer => observer.targets.has(current));
-    // Restore content first; an unfulfilled natural follow must still block.
-    Object.defineProperty(current, 'scrollHeight', { value: 6154, configurable: true });
-    current.querySelector('.th-chat-loading').remove(); resize();
-    const followStatus = Bun.peek.status(w.mobilePending);
-    top = 5498; current.dispatchEvent(new w.Event('scroll'));
-    await work;
-    console.log(JSON.stringify({ responsiveRestore: { oldConnected: oldTranscript.isConnected,
-      currentObserved, loadingStatus, followStatus, restoredTop: top } }));
-    expect(currentObserved).toBe(true);
-    expect(loadingStatus).toBe('pending'); expect(followStatus).toBe('pending');
-    expect(observers.size).toBe(0);
-  } });
-});
+for (const mode of ['reanchor', 'clamp']) {
+  test(`auxiliary resize readiness preserves reading through ${mode}`, async () => {
+    await captured({ exercise: async (page, _, { window: w }) => {
+      const d = w.document, transcript = d.querySelector('.th-chat-body');
+      const button = d.createElement('button'); button.className = 'th-chat-scroll-bottom';
+      transcript.parentElement.append(button);
+      let top = 1000, observer, disconnected = false;
+      const triggered = Promise.withResolvers();
+      Object.defineProperties(transcript, { scrollTop: { get: () => top,
+        set: () => { throw new Error('QA must not force transcript scrolling'); } } });
+      w.ResizeObserver = class {
+        constructor(callback) { observer = callback; }
+        observe() {}
+        disconnect() { disconnected = true; }
+      };
+      w.visualViewport.addEventListener('resize', () => {
+        top = mode === 'reanchor' ? 947 : 700;
+        if (mode === 'clamp') {
+          Object.defineProperty(transcript, 'scrollHeight', { value: 820, configurable: true });
+          button.remove();
+        }
+        triggered.resolve();
+      }, { once: true });
+      const work = visualInput(page, { height: 270, offsetTop: 20 }, 'resize', true);
+      work.catch(error => triggered.reject(error));
+      await triggered.promise;
+      observer([{ target: transcript }]);
+      expect(Bun.peek.status(w.mobilePending)).toBe('fulfilled');
+      await work;
+      expect(top).toBe(mode === 'reanchor' ? 947 : 700);
+      expect(disconnected).toBe(true);
+    } });
+  });
+}
