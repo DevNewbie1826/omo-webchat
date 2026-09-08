@@ -474,7 +474,7 @@
   right: 0;
   z-index: 30;
   width: min(260px, 80vw);
-  max-height: min(280px, 50dvh);
+  max-height: min(480px, 70dvh);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--th-border-raised);
