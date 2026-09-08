@@ -5,7 +5,13 @@ import { syntheticKeyboard } from './ui-mobile-footer-polish.mjs';
 import * as mobile from './ui-mobile-helpers.mjs';
 const { measure, footerAssertions } = mobile;
 import { pwaAssertions, cases, openActivityTab, openGoalBar, shelfExpectations,
-  compactReachabilityAssertion, editorEndAssertion } from './ui-pwa-viewport.mjs';
+  compactReachability, compactReachabilityAssertion, editorEndAssertion } from './ui-pwa-viewport.mjs';
+
+// Execute the private driver verbatim, including in failing-first runs before
+// adding synchronization; only browser geometry/event delivery is controlled.
+const visualInputSource = readFileSync(new URL('./ui-pwa-viewport.mjs', import.meta.url), 'utf8')
+  .match(/async function visualInput\([\s\S]*?\n}/)[0];
+const visualInput = new Function('complete', 'settle', `return (${visualInputSource})`)(mobile.complete, mobile.settle);
 
 const bounds = (left, top, right, bottom) => ({ x: left, y: top, left, top, right, bottom,
   width: right - left, height: bottom - top });
@@ -112,8 +118,9 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
     return [...controls, d.querySelector('.th-sidebar'), d.querySelector('.th-backdrop'), d.querySelector('#root')]
       .find(e => { const r = boxes.get(e); return x >= r.left && x < r.right && y >= r.top && y < r.bottom; }) ?? null;
   };
-  Object.defineProperty(w, 'visualViewport', { value: { width: 375, height: visualHeight ?? (bottom === 762 ? 762 : expectation.surface.height),
-    offsetTop: top, offsetLeft: left, scale: 1 } });
+  Object.defineProperty(w, 'visualViewport', { value: Object.assign(new w.EventTarget(), {
+    width: 375, height: visualHeight ?? (bottom === 762 ? 762 : expectation.surface.height),
+    offsetTop: top, offsetLeft: left, scale: 1 }) });
   Object.defineProperty(w, 'innerWidth', { value: 375 }); Object.defineProperty(w, 'innerHeight', { value: 762 });
   Object.defineProperty(w.navigator, 'standalone', { value: mode === 'standalone' });
   w.matchMedia = query => ({ matches: query === '(max-width: 768px)' });
@@ -122,7 +129,7 @@ async function captured({ marker = false, bottom = 812, reserve = 34, expectatio
       w.element = d.querySelector(selector); w.captureArgs = args; return w.eval(`(${fn})(element, captureArgs)`);
     } }) };
   try {
-    if (exercise) return await exercise(page, () => ({ premature, subscriptions }));
+    if (exercise) return await exercise(page, () => ({ premature, subscriptions }), { window: w, boxes });
     return await measure(page, expectation.safeInsets.bottom, expectation.safeInsets.top, expectation);
   }
   finally { dom.window.close(); }
@@ -542,6 +549,121 @@ for (const defect of [null, 'overflow', 'scroll', 'hit', 'clip', 'bounds', 'miss
     expect(compactReachabilityAssertion(before, after, controls).pass).toBe(defect === null);
   });
 }
+for (const mode of ['following', 'pending-follow', 'interference', 'reading']) {
+  test(`viewport resize-follow finishes before auxiliary baseline: ${mode}`, async () => {
+    const e = expected({ auxiliaryScrollRequired: true });
+    const trace = [];
+    const result = await captured({ exercise: async (page, _, { window: w, boxes }) => {
+      const d = w.document, transcript = d.querySelector('.th-chat-body');
+      const auxiliary = d.querySelector('.th-chat-main-content');
+      const reading = mode === 'reading';
+      if (reading) {
+        const button = d.createElement('button'); button.className = 'th-chat-scroll-bottom';
+        transcript.parentElement.append(button);
+      }
+      let top = reading ? 1000 : 7768, baselineTaken = false;
+      Object.defineProperties(transcript, {
+        clientHeight: { value: mode === 'pending-follow' ? 48 : 70, configurable: true },
+        scrollHeight: { value: 7838, configurable: true },
+        scrollTop: { get: () => top, set: () => { throw new Error('QA must not force transcript scrolling'); } },
+      });
+      Object.defineProperties(auxiliary, { clientHeight: { value: 200, configurable: true },
+        scrollHeight: { value: 249, configurable: true } });
+      Object.assign(boxes.get(auxiliary), bounds(0, 94, 375, 294));
+      for (const [index, key] of ['goal', 'todo', 'agents', 'dag', 'resize'].entries()) {
+        const control = d.createElement('button');
+        if (key === 'goal') {
+          control.className = 'th-goal-bar';
+          control.innerHTML = '<span class="th-activity-caret--open"></span>';
+        } else if (key === 'resize') control.className = 'th-activity-resize';
+        else { control.dataset.activityTab = key; control.setAttribute('aria-selected', String(key === 'agents')); }
+        auxiliary.append(control);
+        const r = bounds(12, 200 + index * 20, 100, 220 + index * 20);
+        boxes.set(control, r);
+        control.getBoundingClientRect = () => {
+          const shifted = bounds(r.left, r.top - auxiliary.scrollTop, r.right, r.bottom - auxiliary.scrollTop);
+          boxes.set(control, shifted);
+          return { ...shifted, toJSON: () => shifted };
+        };
+        control.style.padding = '0px'; control.style.border = '0px';
+      }
+      // Native hit-testing sees the same scrolled rectangles as measurement.
+      d.elementFromPoint = (x, y) => [...d.querySelectorAll('button, textarea')].find(control => {
+        const r = control.getBoundingClientRect(); return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+      }) ?? d.querySelector('#root');
+      auxiliary.scrollTo = ({ top: target }) => {
+        trace.push({ event: 'auxiliary-action', transcriptTop: top });
+        auxiliary.scrollTop = target;
+        if (mode === 'interference' && top === 7790) top -= 22;
+        auxiliary.dispatchEvent(new w.Event('scroll'));
+      };
+      const subscribed = Promise.withResolvers(), baseline = Promise.withResolvers();
+      const listeners = new Set(), observers = new Set();
+      const add = transcript.addEventListener.bind(transcript), remove = transcript.removeEventListener.bind(transcript);
+      transcript.addEventListener = (type, listener, options) => {
+        if (type === 'scroll') { listeners.add(listener); subscribed.resolve('subscribed'); }
+        add(type, listener, options);
+      };
+      transcript.removeEventListener = (type, listener, options) => {
+        if (type === 'scroll') listeners.delete(listener);
+        remove(type, listener, options);
+      };
+      w.ResizeObserver = class {
+        constructor(callback) { this.callback = callback; this.targets = new Set(); observers.add(this); }
+        observe(element) { this.targets.add(element); }
+        disconnect() { observers.delete(this); }
+      };
+      w.visualViewport.addEventListener('resize', () => {
+        trace.push({ event: 'viewport-input', subscribed: listeners.size > 0,
+          observed: [...observers].some(observer => observer.targets.has(transcript)) });
+        Object.defineProperty(transcript, 'clientHeight', { value: 48, configurable: true });
+      });
+      const originalRect = transcript.getBoundingClientRect;
+      transcript.getBoundingClientRect = () => {
+        if (!baselineTaken) {
+          baselineTaken = true;
+          trace.push({ event: 'baseline', transcriptTop: top });
+          baseline.resolve('baseline');
+        }
+        return originalRect();
+      };
+      const work = (async () => {
+        await visualInput(page, { height: 270, offsetTop: 20 });
+        return compactReachability(page, 34, 50, e);
+      })();
+      // Either the driver arms its scroll listener or the old driver reaches
+      // the premature baseline. No clock, frame count or polling chooses this.
+      let timer;
+      try {
+        await Promise.race([subscribed.promise, baseline.promise,
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Resize fixture deadline')), 1000); })]);
+        trace.push({ event: 'resize-delivery', transcriptTop: top });
+        for (const observer of [...observers]) observer.callback([...observer.targets].map(target => ({ target })));
+        // Inspect the actual promise state synchronously: a resize notification
+        // alone must not release a still-pending follow. No microtask flushing.
+        trace.push({ event: 'after-resize', pending: Bun.peek.status(w.mobilePending) });
+        // The product's delayed ResizeObserver follow, not an auxiliary action,
+        // is the sole writer before the independently sampled baseline.
+        if (!reading) { top = 7790; trace.push({ event: 'natural-follow', transcriptTop: top });
+          transcript.dispatchEvent(new w.Event('scroll')); }
+        const row = await work;
+        expect(listeners.size).toBe(0); expect(observers.size).toBe(0);
+        return row;
+      } finally { clearTimeout(timer); }
+    } });
+    console.log(JSON.stringify({ resizeFollow: mode, trace, pass: result.pass,
+      before: result.actual.before.shelves.transcript.scrollTop, after: result.actual.after.shelves.transcript.scrollTop }));
+    expect(trace[0]).toEqual({ event: 'viewport-input', subscribed: true, observed: true });
+    expect(trace.find(event => event.event === 'after-resize').pending).toBe(mode === 'reading' ? 'fulfilled' : 'pending');
+    expect(result.actual.before.shelves.transcript.scrollTop).toBe(mode === 'reading' ? 1000 : 7790);
+    expect(result.actual.after.shelves.auxiliary.scrollTop).toBe(49);
+    expect(result.pass).toBe(mode !== 'interference');
+    if (mode === 'reading') expect(result.actual.after.shelves.transcript.scrollTop).toBe(1000);
+    else expect(trace.findIndex(event => event.event === 'natural-follow'))
+      .toBeLessThan(trace.findIndex(event => event.event === 'baseline'));
+  });
+}
+
 test('compact matrix independently requires overflow only in the smaller keyboard surface', () => {
   const input = cases.find(c => c.compactShelves);
   expect(shelfExpectations(input, 'compact-controls-reachable', true).auxiliaryScrollRequired).toBe(false);

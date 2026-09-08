@@ -191,9 +191,28 @@ async function visualInput(page, input, event = 'resize') {
   await page.evaluate(({ input, event }) => {
     window.mobilePending = new Promise((done, fail) => {
       const target = ['pageshow', 'orientationchange', 'pagehide'].includes(event) ? window : visualViewport;
-      const timer = setTimeout(() => { target.removeEventListener(event, finish); fail(new Error('Viewport input event deadline')); }, 30000);
-      function finish() { clearTimeout(timer); done(true); }
+      const pane = document.querySelector('.th-pane--focused'), transcript = pane.querySelector('.th-chat-body');
+      // The affordance witnesses reading intent even if a previous resize has
+      // already changed geometry but natural follow has not yet reached bottom.
+      const reading = !!pane.querySelector('.th-chat-scroll-bottom'), priorTop = transcript.scrollTop;
+      let inputSeen = false, resized = false;
+      const observer = new ResizeObserver(() => { resized = true; check(); });
+      const timer = setTimeout(() => { cleanup(); fail(new Error('Viewport resize-follow deadline')); }, 30000);
+      function cleanup() {
+        clearTimeout(timer); observer.disconnect();
+        target.removeEventListener(event, finish); transcript.removeEventListener('scroll', check);
+      }
+      function check() {
+        if (!inputSeen || !resized) return;
+        const expectedTop = reading ? priorTop : Math.max(0, transcript.scrollHeight - transcript.clientHeight);
+        if (transcript.scrollTop !== expectedTop) return;
+        cleanup(); done(true);
+      }
+      function finish() { inputSeen = true; }
+      // Subscribe before changing the viewport. Resize delivery alone is not
+      // completion: useChatScroll may still owe its followed transcript a scroll.
       target.addEventListener(event, finish, { once: true });
+      transcript.addEventListener('scroll', check); observer.observe(transcript);
       for (const [key, value] of Object.entries(input)) Object.defineProperty(visualViewport, key, { configurable: true, get: () => value });
       target.dispatchEvent(new Event(event));
     });
