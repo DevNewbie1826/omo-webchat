@@ -15,6 +15,28 @@
 
 </div>
 
+## 실행 화면 · Screenshots
+
+### 데스크톱 · Desktop
+
+<p align="center">
+  <a href="docs/images/pc.png">
+    <img src="docs/images/pc.png" width="960" alt="omo-webchat 데스크톱 실행 화면 / Desktop screenshot" />
+  </a>
+</p>
+
+### 모바일 · Mobile
+
+<p align="center">
+  <a href="docs/images/mo.jpeg">
+    <img src="docs/images/mo.jpeg" width="320" alt="omo-webchat 모바일 실행 화면 / Mobile screenshot" />
+  </a>
+</p>
+
+<p align="center">
+  <sub>이미지를 클릭하면 원본 크기로 볼 수 있습니다. · Click an image to view it at full size.</sub>
+</p>
+
 ---
 
 ## 한국어
