@@ -18,7 +18,7 @@ func TestWindowsRealOmoReconnectTrace(t *testing.T) {
 	dir := t.TempDir()
 	replacements := make(map[string]string)
 	originals := make(map[string][]byte)
-	for _, name := range []string{"pipe_io_windows.go", "ensure_peercred_windows.go"} {
+	for _, name := range []string{"pipe_io_windows.go", "ensure_peercred_windows.go", "real_reconnect_windows_test.go"} {
 		source, err := filepath.Abs(name)
 		if err != nil {
 			t.Fatal(err)
@@ -36,7 +36,8 @@ func TestWindowsRealOmoReconnectTrace(t *testing.T) {
 			}
 			patched = strings.Replace(patched, old, next, 1)
 		}
-		if name == "pipe_io_windows.go" {
+		switch name {
+		case "pipe_io_windows.go":
 			replace("import (", "import (\n\"encoding/json\"\n\"fmt\"\n\"golang.org/x/sys/windows\"")
 			replace("return n, pipeIOError(\"read\", err)", `if err != nil {
 				var peek uintptr
@@ -52,9 +53,35 @@ func TestWindowsRealOmoReconnectTrace(t *testing.T) {
 			decoded := json.Unmarshal(data, &request) == nil
 			fmt.Fprintf(os.Stderr, "NATIVE_WRITE conn=%p peer=%d bytes=%d wanted=%d error=%v request=%t type=%s id=%s\n", p, p.pid, n, len(data), err, decoded, request.Type, request.ID)
 			return n, pipeIOError("write", err)`)
-		} else {
+		case "ensure_peercred_windows.go":
 			replace("p.closeErr = errors.Join(p.Conn.Close(), windows.CloseHandle(p.process))", `fmt.Fprintf(os.Stderr, "NATIVE_CLOSE conn=%p peer=%d local-close-start=true\n", p, p.pid)
 			p.closeErr = errors.Join(p.Conn.Close(), windows.CloseHandle(p.process))`)
+		case "real_reconnect_windows_test.go":
+			replace(`t.Fatalf("real reconnect open_session: %v", err)`, `probeCtx, probeCancel := context.WithTimeout(ctx, 2*time.Second)
+			preserved, preservedEpoch, probeErr := owner.Client.CallInEpochToken(probeCtx, ownerEpoch, GetProtocolInfo{})
+			probeCancel()
+			t.Logf("NATIVE_OWNER_PROTOCOL epoch=%d same=%t success=%t error=%v", ownerEpoch.epoch.number, preservedEpoch == ownerEpoch, preserved != nil && preserved.Success, probeErr)
+			t.Fatalf("real reconnect open_session: %v", err)`)
+			replace(`[]string{"EPIPE",`, `[]string{"MODULE_NOT_FOUND", "ERR_DLOPEN_FAILED", "Error:", "queue", "shutdown", "EPIPE",`)
+			replace("windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID", "windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, entry.ProcessID")
+			const descendantLog = `t.Logf("runtime comparison: requested=%s role=owned-descendant pid=%d parent=%d image=%s", requested, entry.ProcessID, entry.ParentProcessID, image)`
+			replace(descendantLog, descendantLog+`
+				var retained windows.Handle
+				if err := windows.DuplicateHandle(windows.CurrentProcess(), h, windows.CurrentProcess(), &retained, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+					t.Fatal(err)
+				}
+				pid, parent, image := entry.ProcessID, entry.ParentProcessID, image
+				t.Cleanup(func() {
+					if t.Failed() {
+						state, waitErr := windows.WaitForSingleObject(retained, 0)
+						var code uint32
+						codeErr := windows.GetExitCodeProcess(retained, &code)
+						t.Logf("NATIVE_DESCENDANT pid=%d parent=%d image=%s state=%d code=%d wait-error=%v code-error=%v", pid, parent, image, state, code, waitErr, codeErr)
+					}
+					if err := windows.CloseHandle(retained); err != nil {
+						t.Error(err)
+					}
+				})`)
 		}
 		target := filepath.Join(dir, name)
 		if err := os.WriteFile(target, []byte(patched), 0600); err != nil {
