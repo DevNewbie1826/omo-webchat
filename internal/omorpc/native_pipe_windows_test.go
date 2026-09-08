@@ -344,6 +344,11 @@ func nativeStalledPipe(t *testing.T, negotiate bool) (string, func()) {
 	var active net.Conn
 	stopping := false
 	done := make(chan struct{})
+	listener = &shutdownOrderListener{
+		Listener:      listener,
+		workerDone:    done,
+		acceptEntered: make(chan struct{}),
+	}
 	t.Cleanup(func() {
 		release()
 		mu.Lock()
