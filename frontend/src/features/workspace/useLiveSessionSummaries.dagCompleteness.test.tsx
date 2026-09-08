@@ -24,6 +24,8 @@ const fullRun = {
   nodes: [nodeA, nodeB], edges: [{ from: "a", to: "b" }], waves: [],
 };
 const full = { runs: [fullRun], truncated_runs: false };
+const emptyTaskIdRun = { ...fullRun, nodes: [nodeA, nodeB].map((node) => ({ ...node, task_id: "" })) };
+const emptyTaskIds = { runs: [emptyTaskIdRun], truncated_runs: false };
 const partial = { runs: [{ ...fullRun, nodes: [nodeA], edges: [] }], partial: true };
 const incompleteZero = { runs: [{ ...fullRun, nodes: [], counts: { ...counts, total: 0, running: 0 }, edges: [] }], partial: true };
 const malformedNode = { runs: [{ ...fullRun, nodes: [nodeA, { id: "b", prompt: "Lost", state: "running" }] }] };
@@ -64,6 +66,49 @@ describe("DAG summary completeness", () => {
 
   it("returns exact2 for full authoritative topology", () => {
     expect(summarizeLiveSession(info(full), NOW)).toMatchObject({ runningCount: 2, truncatedTasks: false, dagOversized: false });
+  });
+
+  it.each([
+    { name: "within one run", dag: emptyTaskIds },
+    { name: "across runs with the same node ID", dag: { runs: ["r1", "r2"].map((runId) => ({
+      ...emptyTaskIdRun, run_id: runId, nodes: [emptyTaskIdRun.nodes[0]],
+      counts: { ...counts, total: 1, running: 1 }, edges: [],
+    })) } },
+  ])("counts distinct valid nodes with empty optional task IDs $name", ({ dag }) => {
+    expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({
+      runningCount: 2, dagRunning: 2, truncatedTasks: false, dagOversized: false,
+    });
+  });
+
+  it.each([
+    { name: "run", run: { ...fullRun, run_id: "" }, count: 0 },
+    { name: "node", run: { ...fullRun,
+      nodes: [{ ...nodeA, id: "" }, { ...nodeB, depends_on: [""] }],
+      edges: [{ from: "", to: "b" }],
+    }, count: 1 },
+  ])("qualifies an empty required $name ID and excludes unidentified work", ({ run, count }) => {
+    const summary = summarizeLiveSession(info({ runs: [run] }), NOW);
+    expect.soft(summary.runningCount).toBe(count);
+    expect.soft(summary.truncatedTasks).toBe(true);
+    const withValidRun = summarizeLiveSession(info({ runs: [run, {
+      ...fullRun, run_id: "valid", nodes: [{ ...nodeA, task_id: "valid-task" }],
+      counts: { ...counts, total: 1, running: 1 }, edges: [],
+    }] }), NOW);
+    expect(withValidRun).toMatchObject({ runningCount: count + 1, truncatedTasks: true });
+  });
+
+  it("preserves nonempty opaque run, node and task IDs without trimming", () => {
+    const nodes = [" ", "  "].map((id) => ({ ...nodeA, id, task_id: "" }));
+    const runs = [" ", "  "].map((run_id) => ({ ...fullRun, run_id, nodes, edges: [] }));
+    expect(summarizeLiveSession(info({ runs }), NOW)).toMatchObject({ runningCount: 4, truncatedTasks: false });
+    const dag = { runs: [{ ...fullRun, nodes: nodes.map((node) => ({ ...node, task_id: node.id })), edges: [] }] };
+    expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 2, truncatedTasks: false });
+  });
+
+  it.each(["completed", "failed", "cancelled"])("excludes %s runs with empty optional task IDs", (status) => {
+    expect(summarizeLiveSession(info({ runs: [{ ...emptyTaskIdRun, status }] }), NOW)).toMatchObject({
+      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+    });
   });
 
   it("keeps a genuinely absent DAG and an authoritative empty run collection idle", () => {
@@ -181,8 +226,8 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(dag: unknown): void {
-    vi.mocked(useLiveSessionInfos).mockReturnValue([info(dag)]);
+  function render(dag: unknown, overrides: Partial<LiveSessionInfo> = {}): void {
+    vi.mocked(useLiveSessionInfos).mockReturnValue([{ ...info(dag), ...overrides }]);
     act(() => root.render(
       <Sidebar collapsed={false} onToggleCollapse={() => undefined} workspaces={[workspace]}
         activeTerminalId={null} placedSessions={new Set()} liveSessions={new Set(["s1"])} expanded={new Set(["ws"])}
@@ -194,6 +239,24 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
       />,
     ));
   }
+
+  it("recovers compact unknown to rich full empty-ID exact2 on session, workspace and overview", () => {
+    const dagDigest = parseDagDigest({ runs: [{ run_id: "r1", status: "running", running_task_ids: [] }], truncated: true });
+    if (dagDigest === null) throw new Error("Invalid compact DAG fixture");
+    render(emptyTaskIds, { dagOversized: true, dagDigest });
+    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
+    const badges = () => [
+      container.querySelector(".th-tree-children .th-tree-running"),
+      container.querySelector(".th-tree-running--workspace"),
+      document.body.querySelector(".th-overview-card-running"),
+    ];
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["?", "?", "?"]);
+    render(emptyTaskIds, { dagOversized: false, dagDigest });
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2", "2"]);
+    expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+    ]);
+  });
 
   it.each([
     { name: "retained1", dag: partial, expected: "1+", key: "Partial" },

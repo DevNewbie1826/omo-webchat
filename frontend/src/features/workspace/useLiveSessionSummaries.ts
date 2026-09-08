@@ -74,7 +74,7 @@ function dagCountPartial(data: unknown, parsed: ParsedDagUpdated | null): boolea
   const runIds = new Set<string>();
   return parsed.runs.some((run, index) => {
     const raw = rawRuns[index];
-    if (!isRecord(raw) || raw["partial"] === true || runIds.has(run.runId)) return true;
+    if (!isRecord(raw) || raw["partial"] === true || run.runId === "" || runIds.has(run.runId)) return true;
     runIds.add(run.runId);
     if (!Array.isArray(raw["nodes"]) || run.nodes.length === 0 || raw["nodes"].length !== run.nodes.length) return true;
     for (const key of ["edges", "waves"] as const) {
@@ -82,7 +82,7 @@ function dagCountPartial(data: unknown, parsed: ParsedDagUpdated | null): boolea
       if (members !== undefined && (!Array.isArray(members) || members.length !== run[key].length)) return true;
     }
     const nodeIds = new Set(run.nodes.map((node) => node.id));
-    if (nodeIds.size !== run.nodes.length || run.counts.total !== run.nodes.length) return true;
+    if (nodeIds.has("") || nodeIds.size !== run.nodes.length || run.counts.total !== run.nodes.length) return true;
     const states = new Map<string, number>();
     for (const node of run.nodes) {
       if (!Object.hasOwn(run.counts, node.state) || node.state === "total" || node.dependsOn.some((id) => !nodeIds.has(id))) return true;
@@ -103,14 +103,15 @@ function dagRunningOf(runs: readonly ActivityDagRun[], taskIds: ReadonlySet<stri
   const seenTasks = new Set(taskIds);
   const seenRuns = new Set<string>();
   for (const run of runs) {
-    if (TERMINAL_DAG_STATUSES.has(run.status) || seenRuns.has(run.runId)) continue;
+    if (run.runId === "" || TERMINAL_DAG_STATUSES.has(run.status) || seenRuns.has(run.runId)) continue;
     seenRuns.add(run.runId);
     const seenNodes = new Set<string>();
     for (const node of run.nodes) {
-      if (seenNodes.has(node.id)) continue;
+      if (node.id === "" || seenNodes.has(node.id)) continue;
       seenNodes.add(node.id);
       if (node.state !== "running") continue;
-      if (node.taskId !== undefined) {
+      // An empty optional task ID has only the run/node identity above.
+      if (node.taskId !== undefined && node.taskId !== "") {
         if (seenTasks.has(node.taskId)) continue;
         seenTasks.add(node.taskId);
       }
