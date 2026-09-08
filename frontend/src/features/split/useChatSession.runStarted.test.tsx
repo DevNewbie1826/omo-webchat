@@ -98,9 +98,11 @@ describe("ChatPane run.started responding indicator", () => {
 		});
 		const indicator = container.querySelector<HTMLSpanElement>(".th-chat-status-item--live");
 		expect(indicator?.textContent).toBe("");
+		expect(indicator?.getAttribute("role")).toBe("img");
 		expect(indicator?.getAttribute("aria-label")).toBe(translate("ko", "chat.responding"));
 		expect(indicator?.getAttribute("title")).toBe(translate("ko", "chat.responding"));
 		expect(indicator?.querySelector(".th-chat-status-spinner")).not.toBeNull();
+		expect(indicator?.querySelector(".th-chat-status-spinner")?.getAttribute("aria-hidden")).toBe("true");
 		expect(container.querySelector(".th-chat-error")).toBeNull();
 		expect(sent.filter((frame) => frame.type === "chat.send")).toHaveLength(0);
 
