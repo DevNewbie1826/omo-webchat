@@ -27,6 +27,15 @@ html[data-th-standalone] .th-sidebar {
      the in-flow column and its fixed mobile drawer. */
   top: 0;
   left: 0;
+  padding-bottom: 0;
+}
+
+/* Keep only the inset still inside the visual viewport; excluded space
+   must not be reserved a second time inside the drawer. */
+html[data-th-standalone]:not([data-th-keyboard-open]) .th-sidebar-inner::after {
+  content: "";
+  flex: none;
+  height: max(0px, calc(env(safe-area-inset-bottom) - max(0px, 100lvh - var(--th-vv-top, 0px) - var(--th-vh-unit, 1vh) * 100)));
 }
 
 .th-sidebar--collapsed {

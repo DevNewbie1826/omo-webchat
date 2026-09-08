@@ -48,7 +48,8 @@ describe("mobile sidebar footer bounds", () => {
     expect(standaloneBody).toContain("left: 0");
     const mobileBlock = sidebarCss.match(/@media \(max-width: 768px\) \{([\s\S]*?)\n\}/)?.[1] ?? "";
     expect(mobileBlock).toContain("height: calc(var(--th-vh-unit, 1vh) * 100)");
-    expect(sidebarCss).not.toContain("100lvh");
+    expect(baseSidebarBody).not.toContain("100lvh");
+    expect(standaloneBody).not.toMatch(/\bheight\s*:/);
   });
 
   test("keeps top and inline spacing but removes extra bottom reserve at every width", () => {

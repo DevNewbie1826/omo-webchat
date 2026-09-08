@@ -375,8 +375,16 @@ html:not([data-th-keyboard-open]) .th-chat-input::after {
   height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-1)));
 }
 
+html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input::after {
+  height: max(0px, calc(env(safe-area-inset-bottom) - max(0px, 100lvh - var(--th-vv-top, 0px) - var(--th-vh-unit, 1vh) * 100) - var(--th-space-1)));
+}
+
 @media (hover: hover) and (pointer: fine) {
   html:not([data-th-keyboard-open]) .th-chat-input::after {
     height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-4)));
+  }
+
+  html[data-th-standalone]:not([data-th-keyboard-open]) .th-chat-input::after {
+    height: max(0px, calc(env(safe-area-inset-bottom) - max(0px, 100lvh - var(--th-vv-top, 0px) - var(--th-vh-unit, 1vh) * 100) - var(--th-space-4)));
   }
 }
