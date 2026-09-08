@@ -80,7 +80,6 @@ describe("canonical todo hook authority", () => {
 
   it("renders canonical replacement, unavailable retention, reopen and clear on the permanent todo tab", () => {
     act(() => { deliver(ready()); deliver(projection(A)); });
-    act(() => container.querySelector<HTMLButtonElement>(".th-activity-fold")!.click());
     act(() => container.querySelector<HTMLButtonElement>('[data-activity-tab="todo"]')!.click());
     expect(container.querySelector(".th-activity-todo-task--completed .th-activity-todo-text")?.textContent).toBe("old completed");
     act(() => deliver(projection(B, 2)));

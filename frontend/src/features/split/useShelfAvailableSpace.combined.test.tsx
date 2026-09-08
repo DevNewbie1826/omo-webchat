@@ -57,7 +57,7 @@ function render(): void {
 }
 function open(order: "goal" | "activity"): void {
   for (const shelf of order === "goal" ? ["goal", "activity"] : ["activity", "goal"]) {
-    click(shelf === "goal" ? ".th-goal-bar" : ".th-activity-shelf button.th-activity-fold");
+    click(shelf === "goal" ? ".th-goal-bar" : '.th-activity-shelf [role="tab"][aria-selected="true"]');
     ColumnObserver.measure();
   }
 }

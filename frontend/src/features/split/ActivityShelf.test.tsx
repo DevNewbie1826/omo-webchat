@@ -43,7 +43,7 @@ describe("ActivityShelf", () => {
     expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
   });
 
-  it("renders retained prefix rows and marks truncated history as partial", () => {
+  it("renders retained prefix rows and marks truncated history as partial in the affected contents", () => {
     renderShelf(harness, activityState({
       tasks: [makeTask({ name: "Retained prefix task" })],
       dags: [makeDag({ name: "Retained prefix DAG" })],
@@ -54,42 +54,74 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelector(".th-activity-agent-name")?.textContent).toContain("Retained prefix task");
     expect(harness.container.querySelector(".th-activity-dag-name")?.textContent).toContain("Retained prefix DAG");
-    expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+    // The notice now lives inside the affected Agents/DAG contents.
+    const partials = [...harness.container.querySelectorAll(".th-activity-partial")];
+    expect(partials.length).toBe(2);
+    for (const partial of partials) {
+      expect(partial.textContent).toBe("activity.partial");
+      expect(partial.closest("[data-activity-tabpanel]")?.getAttribute("data-activity-tabpanel")).toMatch(/agents|dag/);
+    }
   });
 
-  it("renders the partial marker even when no retained rows fit", () => {
+  it("renders the partial marker in the DAG content even when no retained rows fit", () => {
     renderShelf(harness, activityState({ truncatedDags: true }));
 
     expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
-    expect(harness.container.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+    // Zero retained rows still reach the notice through the DAG tab.
+    click(
+      requireElement(
+        harness.container.querySelector<HTMLButtonElement>('[role="tab"][data-activity-tab="dag"]'),
+        "dag tab",
+      ),
+    );
+    const dagPanel = requireElement(
+      harness.container.querySelector<HTMLElement>('[data-activity-tabpanel="dag"]'),
+      "dag tabpanel",
+    );
+    expect(dagPanel.querySelector(".th-activity-empty")?.textContent).toBe("activity.emptyDag");
+    expect(dagPanel.querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
   });
 
-  it("renders a collapsed summary bar as a live status region while activity exists", () => {
-    renderShelf(harness, activityState({ tasks: [makeTask()] }));
-    // P5: the summary row is status text; the fold control is a separate button.
-    const bar = requireElement(harness.container.querySelector(".th-activity-bar"), "summary bar");
-    const fold = requireElement(
-      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "separate fold control",
-    );
-    expect(fold.getAttribute("aria-expanded")).toBe("false");
+  it("keeps the permanent tab strip as the collapsed shelf's information surface", () => {
+    renderShelf(harness, activityState({
+      todo: [{ name: "phase", tasks: [{ content: "done item", status: "completed" }] }],
+      tasks: [makeTask()],
+      dags: [makeDag()],
+    }));
+    // The summary pill row and its separate fold control are removed; the
+    // counts that lived there now ride in the always-visible tabs.
+    expect(harness.container.querySelector(".th-activity-bar-row")).toBeNull();
+    expect(harness.container.querySelector("button.th-activity-fold")).toBeNull();
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
-    const status = requireElement(harness.container.querySelector('[role="status"]'), "status region");
-    expect(status.contains(bar)).toBe(true);
-    expect(bar.textContent).toContain("activity.summaryAgents");
+    const tablist = requireElement(harness.container.querySelector("[role='tablist']"), "tablist");
+    expect(tablist.getAttribute("aria-label")).toBe("activity.tabs");
+    const counts = [...harness.container.querySelectorAll("[data-activity-tab]")].map(
+      (tab) => tab.querySelector(".th-activity-tab-count")?.textContent,
+    );
+    expect(counts).toEqual(["1/1", "2/4", "2/3"]);
   });
 
-  it("expands and collapses via the separate fold control", () => {
+  it("opens and closes through the tabs, exposing open and expanded state on the root", () => {
     renderShelf(harness, activityState({ tasks: [makeTask()] }));
-    const fold = requireElement(
-      harness.container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "separate fold control",
-    );
-    click(fold);
-    expect(fold.getAttribute("aria-expanded")).toBe("true");
+    const shelf = requireElement(harness.container.querySelector(".th-activity-shelf"), "shelf");
+    const selectedTab = () =>
+      requireElement(
+        harness.container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+        "selected activity tab",
+      );
+    expect(shelf.getAttribute("data-open")).toBe("false");
+    expect(shelf.getAttribute("data-expanded")).toBe("false");
+
+    click(selectedTab());
+    expect(shelf.getAttribute("data-open")).toBe("true");
+    expect(shelf.getAttribute("data-expanded")).toBe("true");
     expect(harness.container.querySelector(".th-activity-panel")).not.toBeNull();
-    click(fold);
-    expect(fold.getAttribute("aria-expanded")).toBe("false");
+
+    click(selectedTab());
+    expect(shelf.getAttribute("data-open")).toBe("false");
+    expect(shelf.getAttribute("data-expanded")).toBe("false");
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
+    // The selection survives the close.
+    expect(selectedTab().getAttribute("data-activity-tab")).toBe("agents");
   });
 });

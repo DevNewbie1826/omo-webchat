@@ -1,10 +1,10 @@
 /** Activity real-SPA acceptance. Baseline is a new run, never historical evidence.
  * bun test/qa/ui-followup-activity.mjs --phase baseline|regression|green --out DIR
- * Inventory: baseline old controls; tabs/counts/empty/keyboard/history/freshness;
- * per-view scroll, List/fold, resize/reload; both-open desktop/mobile/340/short;
+ * Inventory: baseline tab-only disclosure; tabs/counts/empty/keyboard/history/freshness;
+ * per-view scroll, close/reopen, resize/reload; both-open desktop/mobile/340/short;
  * dark/light x en/ko x font13/24 graph/agents/tabs; directional/horizontal graph;
  * actual entry/completed/failed/running frames, six independently seeded
- * interrupted tab/fold/List cases with viewport/ancestor-clip proof,
+ * interrupted tab/close/List cases with viewport/ancestor-clip proof,
  * elapsed-only identity/no-replay, hidden and reduced motion. No readiness polling.
  */
 import assert from 'node:assert/strict';
@@ -21,10 +21,10 @@ import { exerciseShelves } from './design-workbench-controls.mjs';
 import { shelfRegressionScenarios } from './pane-workspace-composer.mjs';
 
 const ROOT = resolve(import.meta.dir, '../..');
-const DRIVER = '/Users/mirage/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs';
+export const DRIVER = '/Users/mirage/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs';
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = promisify(execFile);
-async function identity() {
+export async function identity() {
   const commands = [['head', ['rev-parse', 'HEAD']], ['tree', ['rev-parse', 'HEAD^{tree}']], ['status', ['status', '--porcelain']], ['files', ['ls-files']]];
   const facts = Object.fromEntries(await Promise.all(commands.map(async ([name, args]) => [name, (await git('git', args, { cwd: ROOT })).stdout.trim()])));
   facts.source = Object.fromEntries(facts.files.split('\n').map(path => [path, sha(readFileSync(join(ROOT, path)))]));
@@ -58,9 +58,11 @@ function seed() {
 }
 const tab = id => `[data-activity-tab="${id}"]`;
 const panel = id => `[data-activity-tabpanel="${id}"]`;
-const fold = 'button.th-activity-fold';
+// The selected tab is the shelf's only close control: open + click closes
+// while closed + click opens. Exactly one tab is selected at all times.
+const selectedTab = '.th-activity-shelf [role="tab"][aria-selected="true"]';
 const view = id => `.th-activity-view-btn[data-view="${id}"]`;
-const interruptionCases = ['tab', 'fold', 'list'].flatMap(switchName => [false, true].map(terminal => ({ switchName, terminal })));
+const interruptionCases = ['tab', 'close', 'list'].flatMap(switchName => [false, true].map(terminal => ({ switchName, terminal })));
 async function state(page) {
   return page.evaluate(() => {
     const box = s => document.querySelector(s)?.getBoundingClientRect().toJSON() ?? null;
@@ -77,8 +79,8 @@ async function state(page) {
     return { at: performance.now(), fixed, usable: column.getBoundingClientRect().height - fixed, tabs, visible: [...document.querySelectorAll('[data-activity-tabpanel]')].filter(e => !e.hidden && e.getClientRects().length).map(e => e.dataset.activityTabpanel),
       settings: { theme: document.documentElement.dataset.theme, lang: document.documentElement.lang, fontSize: localStorage.getItem('th-font-size'), font: getComputedStyle(document.documentElement).getPropertyValue('--th-font-mono') },
       pane: box('.th-chat-pane'), column: box('.th-chat-main'), transcript: box('.th-chat-scrollport'), goal: box('.th-goal-panel'), activity: box('.th-activity-panel'), composer: box('.th-chat-input'),
-      goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('button.th-activity-fold')?.getAttribute('aria-expanded'),
-      goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: !!document.querySelector('.th-activity-shelf .th-activity-caret--open'),
+      goalOpen: document.querySelector('.th-goal-bar')?.getAttribute('aria-expanded'), activityOpen: document.querySelector('.th-activity-shelf')?.dataset.expanded,
+      goalIntent: !!document.querySelector('.th-goal-shelf .th-activity-caret--open'), activityIntent: document.querySelector('.th-activity-shelf')?.dataset.open === 'true',
       allocated: [...document.querySelectorAll('.th-goal-shelf,.th-activity-shelf')].map(e => e.style.flexShrink),
       panelMax: document.querySelector('.th-activity-panel')?.style.maxHeight, stored: localStorage.getItem('th-activity-panel-height'),
       scroll: [...document.querySelectorAll('[data-activity-tabpanel],.th-activity-graph')].map(e => ({ owner: e.dataset.activityTabpanel ?? 'graph', top: e.scrollTop, left: e.scrollLeft, height: e.clientHeight, width: e.clientWidth, scrollHeight: e.scrollHeight, scrollWidth: e.scrollWidth })),
@@ -89,10 +91,10 @@ async function state(page) {
       overflow: document.documentElement.scrollWidth > innerWidth };
   });
 }
-async function settled(page) {
-  return page.evaluate(async () => {
+export async function settled(page, selector = '.th-activity-shelf') {
+  return page.evaluate(async selector => {
     await document.fonts.ready;
-    const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf') && a.effect.getTiming().iterations !== Infinity);
+    const animations = document.getAnimations().filter(a => a.effect?.target?.closest?.(selector) && a.effect.getTiming().iterations !== Infinity);
     let timer;
     try {
       const outcomes = await Promise.race([Promise.allSettled(animations.map(a => a.finished)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Finite animation deadline')), 8000); })]);
@@ -102,7 +104,7 @@ async function settled(page) {
         return { name: animation.animationName ?? animation.transitionProperty, outcome: outcome.status === 'fulfilled' ? 'finished' : 'cancelled', playState: animation.playState, reason: outcome.status === 'rejected' ? String(outcome.reason) : null };
       });
     } finally { clearTimeout(timer); }
-  });
+  }, selector);
 }
 async function click(q, selector, predicate) {
   assert.equal(await q.page.locator(selector).count(), 1, `missing or ambiguous control ${selector}`);
@@ -112,14 +114,18 @@ async function click(q, selector, predicate) {
   await complete(q.page);
   q.record.actions.at(-1).after = await state(q.page);
 }
-async function select(q, id) {
-  await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && !!document.querySelector('${panel(id)}') && !document.querySelector('${panel(id)}').hidden`));
+export async function select(q, id) {
+  const selected = await q.page.locator(tab(id)).evaluate(e => e.getAttribute('aria-selected') === 'true' && e.closest('.th-activity-shelf').dataset.open === 'true');
+  if (!selected) await click(q, tab(id), new Function(`return document.querySelector('${tab(id)}')?.getAttribute('aria-selected') === 'true' && document.querySelector('.th-activity-shelf')?.dataset.open === 'true' && document.querySelector('.th-activity-shelf')?.style.flexShrink === '0'`));
 }
-async function open(q) { await select(q, 'todo'); }
+async function open(q) {
+  // Open intent survives an allocation-hidden panel; never toggle it off.
+  await select(q, await q.page.locator(selectedTab).getAttribute('data-activity-tab'));
+}
 async function changeView(q, id) {
   await click(q, view(id), new Function(`return document.querySelector('${view(id)}')?.getAttribute('aria-pressed') === 'true'`));
 }
-async function subjectBounds(q, subject) {
+export async function subjectBounds(q, subject) {
   const proof = await q.page.evaluate(({ id, future }) => {
     const node = document.querySelector(`[data-node="${id}"]`);
     if (future ? node !== null : node === null) throw new Error(`Unexpected subject presence: ${id}/${future}`);
@@ -217,7 +223,7 @@ async function portClosed(port) {
   catch (error) { if (error.code !== 'ECONNREFUSED') throw error; return error.code; }
   finally { socket.destroy(); }
 }
-async function session(browser, receipt, options, body) {
+export async function session(browser, receipt, options, body) {
   const fixture = startFixture({ port: 0, layout: options.layout ?? 'single', shelves: true, longLabels: options.longLabels ?? false });
   const record = { id: receipt.fixtures.length, options: { viewport: { width: 1280, height: 800 }, theme: 'dark', lang: 'en', fontSize: 13, layout: 'single', reduced: false, ...options }, url: fixture.url, navigation: [], actions: [], assets: [], errors: [], cleanup: {}, traffic: fixture.traffic };
   receipt.fixtures.push(record);
@@ -264,8 +270,19 @@ async function session(browser, receipt, options, body) {
       record.navigation.push({ url: fixture.url, at: new Date().toISOString() }); console.log(`navigate ${fixture.url}`);
       await page.goto(fixture.url); await page.evaluate(() => window.activityReady);
       if (!options.noTodo) {
-        await arm(page, () => document.querySelector('.th-activity-shelf .th-activity-bar')?.textContent.includes('32'));
-        fixture.deliver('stored-a', { type: 'tool', toolCallId: 'r2-todo', toolName: 'todo', phase: 'end', result: { details: { phases: seeds.todo } } });
+        const bindingId = `activity-${record.id}-${record.navigation.length}`;
+        let requestGeneration = 0;
+        q.deliverTodo = phases => {
+          const frame = { type: 'chat.todo', durableSessionId: 'stored-a', bindingId, requestGeneration: ++requestGeneration, status: 'ready',
+            source: { leafId: 'activity-todo', entryId: 'activity-todo', entryIndex: 0, kind: 'custom' }, phases };
+          record.actions.push({ action: 'todo-frame', frame: structuredClone(frame) });
+          fixture.deliver('stored-a', frame);
+        };
+        await arm(page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent === '1/32');
+        const ready = { type: 'ready', resumed: true, piSessionId: 'stored-a', bindingId };
+        record.actions.push({ action: 'todo-binding', frame: ready });
+        fixture.deliver('stored-a', ready);
+        q.deliverTodo(seeds.todo);
         await complete(page);
       }
       if (options.paneWidth) {
@@ -303,31 +320,115 @@ async function session(browser, receipt, options, body) {
   }
 }
 async function tabs(q) {
+  const composer = q.page.locator('.th-chat-input textarea');
+  const draft = 'Preserve this typed activity draft';
+  await composer.focus(); await q.page.keyboard.type(draft);
+  assert.equal(await composer.inputValue(), draft);
   const initial = await state(q.page);
   assert.deepEqual(initial.tabs.map(t => t.id), ['todo', 'agents', 'dag']);
   assert.equal(initial.tabs.find(t => t.selected === 'true').id, 'todo');
   assert.deepEqual(initial.tabs.map(t => t.count), ['1/32', '3/8', '2/6']);
+  await select(q, 'todo');
+  assert.deepEqual((await state(q.page)).visible, ['todo']);
+  await click(q, tab('todo'), () => document.querySelector('.th-activity-shelf')?.dataset.open === 'false');
+  const todoClosed = await capture(q, 'tabs-todo-collapsed');
+  assert.equal(todoClosed.activityIntent, false); assert.equal(todoClosed.activity, null);
+  assert.deepEqual(todoClosed.tabs.map(t => [t.id, t.count]), initial.tabs.map(t => [t.id, t.count]));
+  assert.equal(todoClosed.tabs.find(t => t.selected === 'true').id, 'todo');
+  assert(todoClosed.tabs.every(t => t.rect.height > 0));
+  assert.equal(await composer.inputValue(), draft);
   for (const id of ['todo', 'agents', 'dag']) {
     await select(q, id); const s = await capture(q, `tab-${id}`);
     assert.deepEqual(s.visible, [id]); assert(Math.max(...s.tabs.map(t => t.rect.width)) - Math.min(...s.tabs.map(t => t.rect.width)) <= 1);
   }
   await changeView(q, 'list'); await select(q, 'todo'); await select(q, 'dag');
   assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
-  await click(q, fold, () => !document.querySelector('.th-activity-panel'));
-  assert.equal((await state(q.page)).tabs.length, 3);
-  await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
+  // Tab-only disclosure: the selected-tab click closes (selection retained,
+  // strip intact), and the next selected-tab click reopens on the same view.
+  await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+  const closed = await state(q.page);
+  assert.equal(closed.tabs.length, 3);
+  assert.equal(closed.activityOpen, 'false');
+  assert.equal(closed.activityIntent, false);
+  assert.equal(closed.tabs.find(t => t.selected === 'true').id, 'dag');
+  await click(q, selectedTab, () => !!document.querySelector('.th-activity-panel'));
   assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
+  // Native button activation: Enter and Space must each toggle exactly once,
+  // exactly like a click, from the shelf's own selected tab.
+  await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+  for (const key of ['Enter', ' ']) {
+    await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
+    await arm(q.page, () => !!document.querySelector('.th-activity-panel'));
+    await q.page.keyboard.press(key); await complete(q.page);
+    const opened = await state(q.page);
+    assert.equal(opened.activityOpen, 'true');
+    assert.deepEqual(opened.visible, ['dag']);
+    await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
+    await arm(q.page, () => !document.querySelector('.th-activity-panel'));
+    await q.page.keyboard.press(key); await complete(q.page);
+    assert.equal((await state(q.page)).activityOpen, 'false');
+    q.record.actions.push({ action: 'tab-native-activation', key, opened: opened.activityOpen, closed: 'false' });
+  }
+  await select(q, 'dag');
+  assert.equal(await q.page.locator(view('list')).getAttribute('aria-pressed'), 'true');
+  // Switching while open keeps the panel open.
+  await select(q, 'agents');
+  assert.deepEqual((await state(q.page)).visible, ['agents']);
+  await select(q, 'dag');
   for (const [key, id] of [['Home', 'todo'], ['ArrowRight', 'agents'], ['End', 'dag'], ['ArrowLeft', 'agents'], ['ArrowDown', 'dag'], ['ArrowUp', 'agents']]) {
     await q.page.locator('[data-activity-tab][aria-selected="true"]').focus();
     await arm(q.page, new Function(`return document.activeElement?.getAttribute('data-activity-tab') === '${id}'`));
     await q.page.keyboard.press(key); await complete(q.page);
     q.record.actions.push({ action: 'tab-key', key, state: await state(q.page) });
   }
+  // Reach each endpoint, then repeat its SAME key while already selected.
+  for (const [key, id] of [['Home', 'todo'], ['End', 'dag']]) {
+    await q.page.locator(selectedTab).focus();
+    await arm(q.page, new Function(`return document.activeElement?.getAttribute('data-activity-tab') === '${id}'`));
+    await q.page.keyboard.press(key); await complete(q.page);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const before = await state(q.page);
+      assert.equal(before.tabs.find(t => t.selected === 'true').id, id);
+      assert.deepEqual(before.visible, [id]);
+      await q.page.keyboard.press(key);
+      const after = await state(q.page);
+      assert.equal(after.tabs.find(t => t.selected === 'true').id, id);
+      assert.deepEqual(after.visible, [id]);
+      assert.equal(await q.page.locator(tab(id)).evaluate(e => e === document.activeElement), true);
+      q.record.actions.push({ action: 'tab-key-boundary', key, repeat, before, after });
+    }
+  }
   await select(q, 'dag');
   await arm(q.page, () => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === '4/9');
   q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.task.updated', data: { parent_session_id: 'qa', truncated_tasks: false, tasks: [...q.seeds.tasks, { task_id: 'new', name: 'Live addition', status: 'running' }] } });
   await complete(q.page); assert.deepEqual((await state(q.page)).visible, ['dag']);
-  return { initial, final: await state(q.page) };
+  // A second authoritative snapshot uses the same binding and a newer generation.
+  await arm(q.page, () => document.querySelector('[data-activity-tab="todo"] .th-activity-tab-count')?.textContent === '2/32');
+  q.deliverTodo(q.seeds.todo.map(phase => ({ ...phase, tasks: phase.tasks.map((task, i) => i === 1 ? { ...task, status: 'completed' } : task) })));
+  await complete(q.page);
+  assert.deepEqual((await state(q.page)).visible, ['dag']);
+  await select(q, 'dag'); await open(q); await open(q);
+  assert.deepEqual((await state(q.page)).visible, ['dag']);
+  assert.equal(await composer.inputValue(), draft);
+  // Real allocation collapse, not synthetic markup: both ensure helpers must
+  // preserve intent and selection until viewport space becomes available again.
+  await arm(q.page, () => document.querySelector('.th-activity-shelf')?.dataset.expanded === 'false');
+  await q.page.setViewportSize({ width: 1280, height: 220 }); await complete(q.page);
+  const allocationHidden = await state(q.page);
+  assert(allocationHidden.activityIntent && !allocationHidden.activity);
+  await open(q); await select(q, 'dag');
+  assert.equal((await state(q.page)).activityIntent, true);
+  await select(q, 'agents'); await select(q, 'agents'); await open(q);
+  const hiddenAfterHelpers = await state(q.page);
+  assert(hiddenAfterHelpers.activityIntent && !hiddenAfterHelpers.activity);
+  assert.equal(hiddenAfterHelpers.tabs.find(t => t.selected === 'true').id, 'agents');
+  await arm(q.page, () => document.querySelector('.th-activity-shelf')?.dataset.expanded === 'true');
+  await q.page.setViewportSize(q.record.options.viewport); await complete(q.page);
+  assert.deepEqual((await state(q.page)).visible, ['agents']);
+  assert.equal(await composer.inputValue(), draft);
+  q.record.actions.push({ action: 'ensure-open-select-allocation-hidden-draft', allocationHidden, hiddenAfterHelpers, restored: await state(q.page), draft: await composer.inputValue() });
+  await capture(q, 'tabs-draft-restored');
+  return { initial, final: await state(q.page), draft: await composer.inputValue() };
 }
 async function resize(q) {
   await open(q); const grip = q.page.locator('.th-activity-resize');
@@ -356,7 +457,8 @@ async function resize(q) {
 }
 async function allocation(q, name) {
   await click(q, '.th-goal-bar', () => document.querySelector('.th-goal-shelf')?.style.flexShrink === '0');
-  await click(q, fold, () => document.querySelector('.th-activity-shelf')?.style.flexShrink === '0');
+  // The shelf opens through its selected tab (closed + click opens).
+  await click(q, selectedTab, () => document.querySelector('.th-activity-shelf')?.style.flexShrink === '0');
   const s = await capture(q, name);
   assert(s.goalIntent && s.activityIntent); assert(s.tabs.every(t => t.rect.height > 0));
   assert(s.composer.bottom <= q.record.options.viewport.height + 1); assert(!s.overflow);
@@ -439,7 +541,7 @@ async function motion(q, interruption = null) {
   } else {
     // Every interruption has its own browser context and unchanged six-node seed.
     const { switchName, terminal } = interruption;
-    const selector = { tab: tab('todo'), fold, list: view('list') }[switchName];
+    const selector = { tab: tab('todo'), close: selectedTab, list: view('list') }[switchName];
     {
       const id = terminal ? 'c' : `new-${switchName}`;
       const running = { ...base, nodes: base.nodes.map(n => n.id === 'c' ? { ...n, state: 'running' } : n), updated_at: new Date().toISOString() };
@@ -467,7 +569,7 @@ async function motion(q, interruption = null) {
         window.returnListener = e => { if (/^th-dag-node-(enter|settle)$/.test(e.animationName)) window.returnStarts.push({ name: e.animationName, id: e.target.getAttribute('data-node'), at: performance.now() }); };
         document.addEventListener('animationstart', window.returnListener, true);
       });
-      if (switchName === 'fold') await click(q, fold, () => !!document.querySelector('.th-activity-panel'));
+      if (switchName === 'close') await select(q, 'dag');
       if (switchName === 'tab') await select(q, 'dag');
       if (switchName === 'list') await changeView(q, 'graph');
       const returned = await state(q.page);
@@ -587,16 +689,20 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
   }
   try {
     if (phase === 'baseline') {
-      await scenario('new-baseline-old-ui', {}, async q => {
+      await scenario('new-baseline-tab-ui', {}, async q => {
         const before = await capture(q, 'baseline-collapsed');
-        await click(q, '.th-activity-shelf button.th-activity-bar', () => !!document.querySelector('.th-activity-panel'));
-        const listDefault = await q.page.locator('.th-activity-dagnodes').count() > 0;
-        await capture(q, 'baseline-mixed-list');
-        await changeView(q, 'graph'); await capture(q, 'baseline-old-graph');
-        const observed = await state(q.page);
-        const failures = { permanentTabs: before.tabs.length !== 3, graphDefault: listDefault, visibleStates: await q.page.locator('.th-activity-gstate').count() === 0, runningMotion: observed.animations.length === 0 };
-        assert(failures.permanentTabs && failures.visibleStates && failures.runningMotion);
-        return { before, observed, failures };
+        // The current baseline is the tab-only disclosure: the summary band
+        // and its separate fold control stay removed, the three tabs are
+        // permanent chrome, and the selected tab is the only close control.
+        assert.equal(before.tabs.length, 3, 'tabs are permanent chrome while closed');
+        assert.equal(before.activityOpen, 'false');
+        assert.equal(await q.page.locator('button.th-activity-fold').count(), 0, 'fold control removed');
+        assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0, 'summary band removed');
+        await click(q, tab('todo'), () => !!document.querySelector('.th-activity-panel'));
+        await capture(q, 'baseline-open-via-tab');
+        await click(q, selectedTab, () => !document.querySelector('.th-activity-panel'));
+        assert.equal((await state(q.page)).tabs.length, 3, 'strip survives the close');
+        return { before };
       });
     } else if (phase === 'regression') {
       for (const lang of ['en', 'ko']) await scenario(`font24-${lang}`, { lang, fontSize: 24 }, async q => { await select(q, 'dag'); await capture(q, `regression-${lang}-font24`); const nodes = await geometry(q); q.record.geometry = nodes; assertGeometry(nodes); return nodes; });
@@ -641,21 +747,65 @@ export async function run({ phase = 'green', out, qaPlaywright = DRIVER } = {}) 
         assert(await handle.evaluate(e => e === document.querySelector('[data-node="a"]'))); await handle.dispose();
         await capture(q, 'font-live-24'); return { before, after };
       });
-      await scenario('goal-hover-summary-readonly', {}, async q => {
-        const paint = () => q.page.evaluate(() => { const style = s => { const e = document.querySelector(s), c = getComputedStyle(e); return { tag: e.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor }; }; return { goal: style('.th-goal-bar'), summary: style('.th-activity-shelf .th-activity-bar') }; });
-        await q.page.mouse.move(0, 0); const before = await paint();
-        await q.page.locator('.th-goal-bar').hover();
-        await q.page.evaluate(() => Promise.all(document.querySelector('.th-goal-bar').getAnimations().map(a => a.finished)));
-        const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
-        await capture(q, 'goal-hover-feedback');
-        await q.page.locator('.th-activity-shelf .th-activity-bar').hover();
-        const summaryHover = await paint(); assert.deepEqual(summaryHover.summary, before.summary); assert.equal(summaryHover.summary.tag, 'SPAN');
-        await capture(q, 'activity-summary-readonly'); return { before, hovered, summaryHover };
+      await scenario('goal-hover-feedback-tabs-interactive', {}, async q => {
+        // Hydration changes Agents from selected to unselected. Pin its DOM
+        // identity and settle that finite transition before measuring baseline.
+        const target = q.page.locator(tab('agents'));
+        const handle = await target.elementHandle();
+        const paint = () => handle.evaluate(e => {
+          const style = element => { const c = getComputedStyle(element); return { tag: element.tagName, background: c.backgroundColor, border: c.borderColor, color: c.color, cursor: c.cursor, hover: element.matches(':hover') }; };
+          return { goal: style(document.querySelector('.th-goal-bar')), tab: { ...style(e), id: e.id, selected: e.getAttribute('aria-selected'), sameTarget: e === document.querySelector('[data-activity-tab="agents"]'),
+            animations: e.getAnimations().map(a => ({ property: a.transitionProperty, state: a.playState })) } };
+        });
+        try {
+          await q.page.mouse.move(0, 0);
+          const hydration = await paint();
+          const baselineSettlement = await settled(q.page, '.th-activity-shelf,.th-goal-shelf');
+          const before = await paint();
+          assert.equal(before.tab.selected, 'false'); assert.equal(before.tab.hover, false);
+          assert.equal(before.tab.sameTarget, true); assert.deepEqual(before.tab.animations, []);
+          await q.page.locator('.th-goal-bar').hover();
+          await settled(q.page, '.th-goal-shelf');
+          const hovered = await paint(); assert.notEqual(before.goal.background, hovered.goal.background); assert.equal(hovered.goal.cursor, 'pointer');
+          assert.equal(hovered.goal.hover, true);
+          await capture(q, 'goal-hover-feedback');
+          await target.hover();
+          const hoverSettlement = await settled(q.page);
+          const tabHover = await paint(); assert.equal(tabHover.tab.tag, 'BUTTON'); assert.equal(tabHover.tab.cursor, 'pointer');
+          assert.equal(tabHover.tab.id, before.tab.id); assert.equal(tabHover.tab.sameTarget, true);
+          assert.equal(tabHover.tab.selected, 'false'); assert.equal(tabHover.tab.hover, true); assert.deepEqual(tabHover.tab.animations, []);
+          assert.notEqual(before.tab.background, tabHover.tab.background);
+          await capture(q, 'activity-tab-interactive');
+          assert.equal(await q.page.locator('.th-activity-shelf .th-activity-bar-row').count(), 0);
+          assert.equal(await q.page.locator('button.th-activity-fold').count(), 0);
+          return { hydration, baselineSettlement, before, hovered, hoverSettlement, tabHover };
+        } finally { await handle.dispose(); }
       });
       await scenario('shared-hooks', {}, async q => ({ actions: await exerciseShelves(q, name => capture(q, `shared-${name}`)) }));
       for (const [name, viewport, layout] of [['desktop', { width: 1280, height: 800 }, 'single'], ['mobile', { width: 390, height: 844 }, 'single'], ['340', { width: 1280, height: 800 }, 'two'], ['short', { width: 1280, height: 420 }, 'single']]) for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
         const label = `allocation-${name}-${lang}-${fontSize}`;
         await scenario(label, { viewport, layout, lang, fontSize, ...(name === '340' ? { paneWidth: 340 } : {}) }, q => allocation(q, label));
+      }
+      for (const lang of ['en', 'ko']) for (const fontSize of [13, 24]) {
+        const label = `allocation-desktop-light-${lang}-${fontSize}`;
+        await scenario(label, { viewport: { width: 1280, height: 800 }, theme: 'light', lang, fontSize }, async q => {
+          const s = await allocation(q, label);
+          assert.equal(s.settings.theme, 'light'); assert.equal(s.settings.lang, lang); assert.equal(s.settings.fontSize, String(fontSize));
+          assert.equal(s.goalOpen, 'true'); assert.equal(s.activityOpen, 'true');
+          assert(s.goal.height > 0 && s.activity.height > 0);
+          const transcript = await q.page.locator('.th-chat-scrollport .th-chat-body').evaluate(e => ({ height: e.clientHeight, scrollHeight: e.scrollHeight, fontSize: getComputedStyle(e).fontSize }));
+          assert.equal(q.fixture.runState('stored-a').entries.length, 40);
+          assert(transcript.scrollHeight > transcript.height, 'actual long transcript overflows its reserved scrollport');
+          assert.equal(transcript.fontSize, `${fontSize}px`, 'rendered font matches the requested size');
+          const composer = q.page.locator('.th-chat-input textarea'), draft = `Desktop light ${lang} ${fontSize}`;
+          await composer.click(); await q.page.keyboard.type(draft);
+          assert.equal(await composer.inputValue(), draft);
+          assert(await composer.evaluate(e => e === document.activeElement), 'composer accepts native focus and typing with both shelves open');
+          const reached = await state(q.page);
+          assert.equal(reached.goalOpen, 'true'); assert.equal(reached.activityOpen, 'true');
+          assert(reached.composer.top >= 0 && reached.composer.bottom <= 800 && !reached.overflow);
+          return { ...s, transcriptProof: transcript, composerReachability: { draft: await composer.inputValue(), state: reached } };
+        });
       }
       let shared;
       await shelfRegressionScenarios({

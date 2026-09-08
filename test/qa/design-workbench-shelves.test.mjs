@@ -34,9 +34,17 @@ async function shelfDOM(kind, columnHeight) {
       const observer = new window.MutationObserver(() => { observer.disconnect(); resolve(); });
       observer.observe(shelf, { subtree: true, childList: true, attributes: true });
     });
-    shelf.querySelector('.th-activity-caret').classList.toggle('th-activity-caret--open', requested);
+    // The activity shelf carries its disclosure state on the root, exactly
+    // like the SPA (data-open / data-expanded); the goal shelf keeps the
+    // caret and aria-expanded on its bar button.
+    if (kind === 'activity') {
+      shelf.dataset.open = String(requested);
+      shelf.dataset.expanded = String(expanded);
+    } else {
+      shelf.querySelector('.th-activity-caret').classList.toggle('th-activity-caret--open', requested);
+      shelf.querySelector('button').setAttribute('aria-expanded', String(expanded));
+    }
     shelf.style.flexShrink = applied ? '0' : '';
-    shelf.querySelector('button').setAttribute('aria-expanded', String(expanded));
     shelf.querySelector(`.th-${kind}-panel`)?.remove();
     if (height !== null) {
       const panel = window.document.createElement('div');

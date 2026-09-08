@@ -138,7 +138,9 @@ export function assertShelfAllocation(state) {
 export async function exerciseShelves({ page }, shot) {
   const actions = [];
   for (const kind of ['goal', 'activity']) {
-    const selector = kind === 'goal' ? '.th-goal-bar' : '.th-activity-shelf button.th-activity-fold';
+    // The activity shelf's only disclosure is its selected tab: clicking it
+    // opens while closed and closes while open (retaining the selection).
+    const selector = kind === 'goal' ? '.th-goal-bar' : '.th-activity-shelf [role="tab"][aria-selected="true"]';
     const button = page.locator(selector);
     const reachable = await revealAuxiliaryControl(page, button);
     await armShelf(page, kind, true);

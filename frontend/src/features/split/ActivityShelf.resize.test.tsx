@@ -6,6 +6,7 @@ import { I18nContext } from "../../i18n";
 import type { ActivityState, ActivityTask } from "./activityTypes";
 import { i18n, requireElement } from "./chatPaneTestHarness";
 import { ActivityShelf } from "./ActivityShelf";
+import { openShelf as ensureShelfOpen } from "./ActivityShelf.support";
 
 const PANEL_MIN = 120;
 /** 60vh against the jsdom viewport — the same ceiling as the sized-panel CSS. */
@@ -46,6 +47,8 @@ const panelOf = (): HTMLElement =>
   requireElement(container.querySelector<HTMLElement>(".th-activity-panel"), "activity panel");
 const handleOf = (): HTMLElement =>
   requireElement(container.querySelector<HTMLElement>(".th-activity-resize"), "resize handle");
+const shelfOf = (): HTMLElement =>
+  requireElement(container.querySelector<HTMLElement>(".th-activity-shelf"), "activity shelf");
 
 /** jsdom layout is all-zero; fake the rendered panel height the drag maths reads. */
 function mockPanelRect(height: number): void {
@@ -192,12 +195,13 @@ describe("ActivityShelf resize", () => {
   }
 
   function openShelf(): void {
-    const bar = requireElement(
-      container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-      "separate fold control",
+    // The tab strip is the only disclosure: click the selected tab to open.
+    const tab = requireElement(
+      container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+      "selected activity tab",
     );
     act(() => {
-      bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      tab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
   }
 
@@ -391,9 +395,8 @@ describe("ActivityShelf resize", () => {
       mockRect(composer, 120);
       mockRect(status, 24);
       mockRect(goalBarRow, 30);
-      const activityBarRow = container.querySelector(".th-activity-shelf .th-activity-bar-row");
-      if (!activityBarRow) throw new Error("missing activity summary bar");
-      mockRect(activityBarRow, 30);
+      // The activity shelf no longer mounts a summary band; its measured
+      // fixed bands are the tab strip and, while open, the grip.
     }
 
     it("clamps the expanded panel to the column's real available space and stops the shelf yielding", () => {
@@ -411,15 +414,15 @@ describe("ActivityShelf resize", () => {
       expect(observer?.observed).toContain(handleOf());
       // Unmeasured so far: no inline clamp, CSS caps only.
       expect(panel.style.maxHeight).toBe("");
-      // 800 − 120 composer − 24 status − 30 goal bar − 30 activity bar − 120
-      // transcript reserve = 476; the saved 450px preference fits.
+      // 800 − 120 composer − 24 status − 30 goal bar − 120
+      // transcript reserve = 506; the saved 450px preference fits.
       mockRect(fixture.column, 800);
       observer?.fireAt(fixture.column, 800);
       expect(panel.style.maxHeight).toBe("450px");
-      // Column shrinks to 500: 500 − 204 − 120 = 176 binds below the 450 height.
+      // Column shrinks to 500: 500 − 174 − 120 = 206 binds below the 450 height.
       mockRect(fixture.column, 500);
       observer?.fireAt(fixture.column, 500);
-      expect(panel.style.maxHeight).toBe("176px");
+      expect(panel.style.maxHeight).toBe("206px");
       // While the clamp is active the shelf must not participate in flex
       // shrinking — the transcript alone absorbs the deficit.
       const shelf = container.querySelector<HTMLElement>(".th-activity-shelf");
@@ -452,10 +455,10 @@ describe("ActivityShelf resize", () => {
       ShelfMutationObserver.instances.at(-1)?.fire();
       expect(observer?.observed).toContain(siblingBar);
       expect(observer?.observed).toContain(goalPanel);
-      expect(panel.style.maxHeight).toBe("446px");
+      expect(panel.style.maxHeight).toBe("450px");
       mockRect(goalPanel, 240);
       observer?.fireAt(goalPanel, 240);
-      expect(panel.style.maxHeight).toBe("446px");
+      expect(panel.style.maxHeight).toBe("450px");
 
       siblingShelf.remove();
       ShelfMutationObserver.instances.at(-1)?.fire();
@@ -474,7 +477,7 @@ describe("ActivityShelf resize", () => {
 
       mockRect(fixture.composer, 240);
       observer?.fireAt(fixture.composer, 240);
-      expect(panelOf().style.maxHeight).toBe("356px");
+      expect(panelOf().style.maxHeight).toBe("386px");
     });
 
     it("observes and subtracts the activity grip and all in-flow shelf spacing", () => {
@@ -541,18 +544,41 @@ describe("ActivityShelf resize", () => {
       const panel = panelOf();
       fixtureRects(fixture);
       const observer = HeadroomResizeObserver.instances.at(-1);
-      // Surplus: 476 available > the 280px default cap, so the cap wins.
+      // Surplus: 506 available > the 280px default cap, so the cap wins.
       mockRect(fixture.column, 800);
       observer?.fireAt(fixture.column, 800);
       expect(panel.style.maxHeight).toBe("280px");
       mockRect(fixture.column, 300);
       observer?.fireAt(fixture.column, 300);
       expect(container.querySelector(".th-activity-panel")).toBeNull();
-      expect(container.querySelector("button.th-activity-fold")?.getAttribute("aria-expanded")).toBe("false");
+      expect(shelfOf().getAttribute("data-expanded")).toBe("false");
       mockRect(fixture.column, 800);
       HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
       expect(container.querySelector(".th-activity-panel")).not.toBeNull();
-      expect(container.querySelector("button.th-activity-fold")?.getAttribute("aria-expanded")).toBe("true");
+      expect(shelfOf().getAttribute("data-expanded")).toBe("true");
+    });
+
+    it("ensure-open preserves selected-tab intent while allocation hides the panel", () => {
+      const fixture = mountInColumn();
+      renderShelf();
+      ensureShelfOpen(container);
+      fixtureRects(fixture);
+      mockRect(fixture.column, 300);
+      HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 300);
+      expect(shelfOf().dataset["open"]).toBe("true");
+      expect(shelfOf().dataset["expanded"]).toBe("false");
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+
+      const selected = ensureShelfOpen(container);
+      expect(selected.dataset["activityTab"]).toBe("agents");
+      expect(shelfOf().dataset["open"]).toBe("true");
+      expect(container.querySelector(".th-activity-panel")).toBeNull();
+      mockRect(fixture.column, 800);
+      HeadroomResizeObserver.instances.at(-1)?.fireAt(fixture.column, 800);
+      expect(shelfOf().dataset["expanded"]).toBe("true");
+      expect(container.querySelector(".th-activity-panel")).not.toBeNull();
+      expect(ensureShelfOpen(container)).toBe(selected);
+      expect(shelfOf().dataset["open"]).toBe("true");
     });
 
     it("clears the inline clamp and the shelf's no-yield shrink when the shelf closes", () => {
@@ -563,20 +589,21 @@ describe("ActivityShelf resize", () => {
       const observer = HeadroomResizeObserver.instances.at(-1);
       mockRect(fixture.column, 500);
       observer?.fireAt(fixture.column, 500);
-      expect(panelOf().style.maxHeight).toBe("176px");
-      const bar = requireElement(
-        container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-        "separate fold control",
-      );
+      expect(panelOf().style.maxHeight).toBe("206px");
+      const selectedTab = () =>
+        requireElement(
+          container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+          "selected activity tab",
+        );
       act(() => {
-        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        selectedTab().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       });
       expect(container.querySelector(".th-activity-panel")).toBeNull();
       act(() => {
-        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        selectedTab().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       });
       // Reopening computes immediately from the current column.
-      expect(panelOf().style.maxHeight).toBe("176px");
+      expect(panelOf().style.maxHeight).toBe("206px");
       const shelf = container.querySelector<HTMLElement>(".th-activity-shelf");
       if (!shelf) throw new Error("missing activity shelf");
       expect(shelf.style.flexShrink).toBe("0");
@@ -590,7 +617,7 @@ describe("ActivityShelf resize", () => {
       fixtureRects(fixture);
       const observer = HeadroomResizeObserver.instances.at(-1);
       observer?.fireAt(fixture.column, 800);
-      // 800 − 120 − 24 − 30 − 30 − 120 = 476 available; the saved 450px preference fits.
+      // 800 − 120 − 24 − 30 − 120 = 506 available; the saved 450px preference fits.
       expect(panelOf().style.maxHeight).toBe("450px");
 
       // A collapsed queue appears between the shelves and the composer.
@@ -600,13 +627,13 @@ describe("ActivityShelf resize", () => {
       mockRect(queue, 28);
       ShelfMutationObserver.instances.at(-1)?.fire();
       expect(observer?.observed).toContain(queue);
-      // 476 − 28 queue = 448 available, below the 60vh cap.
-      expect(panelOf().style.maxHeight).toBe("448px");
+      // 506 − 28 queue = 478 still above the 450 preference, so the preference binds.
+      expect(panelOf().style.maxHeight).toBe("450px");
 
       // The queue grows (queued rows) without a column resize.
       mockRect(queue, 100);
       observer?.fireAt(queue, 100);
-      expect(panelOf().style.maxHeight).toBe("376px");
+      expect(panelOf().style.maxHeight).toBe("406px");
 
       // Expanding mounts a body inside the slot: the mutation refreshes the
       // measured set and the larger slot height feeds the clamp.
@@ -615,13 +642,13 @@ describe("ActivityShelf resize", () => {
       queue.append(body);
       mockRect(queue, 220);
       ShelfMutationObserver.instances.at(-1)?.fire();
-      expect(panelOf().style.maxHeight).toBe("256px");
+      expect(panelOf().style.maxHeight).toBe("286px");
 
       // Collapsing unmounts the body and the slot shrinks again.
       body.remove();
       mockRect(queue, 28);
       ShelfMutationObserver.instances.at(-1)?.fire();
-      expect(panelOf().style.maxHeight).toBe("448px");
+      expect(panelOf().style.maxHeight).toBe("450px");
 
       // The queue empties and the slot disappears entirely.
       queue.remove();
@@ -686,17 +713,18 @@ describe("ActivityShelf resize", () => {
       const observer = HeadroomResizeObserver.instances.at(-1);
       observer?.fire(18);
       expect(panel.getAttribute("data-headless")).toBe("true");
-      const bar = requireElement(
-        container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-        "separate fold control",
-      );
+      const selectedTab = () =>
+        requireElement(
+          container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+          "selected activity tab",
+        );
       act(() => {
-        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        selectedTab().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       });
       expect(observer?.disconnected).toBe(true);
       expect(container.querySelector(".th-activity-panel")).toBeNull();
       act(() => {
-        bar.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        selectedTab().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
       });
       const reopenedObserver = HeadroomResizeObserver.instances.at(-1);
       expect(reopenedObserver).not.toBe(observer);

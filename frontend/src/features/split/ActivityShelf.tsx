@@ -2,9 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
-  ReactElement,
 } from "react";
-import { IconChevron } from "../../components/icons";
 import { useT } from "../../i18n";
 import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection, type DagNodeMotion } from "./activityShelfDag";
@@ -26,20 +24,6 @@ import { useShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ActivityShelfProps {
   readonly activities: ActivityState;
-}
-
-/** Summary segments join through this one separator so the " · " gap stays
- *  symmetric by construction (same convention as ToolCard's .th-tool-sep). */
-function BarSeparator(): ReactElement {
-  return (
-    <>
-      {" "}
-      <span className="th-activity-bar-sep" aria-hidden="true">
-        {"·"}
-      </span>
-      {" "}
-    </>
-  );
 }
 
 const PANEL_MIN = 120;
@@ -127,9 +111,19 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     if (next !== view) consumeGraphMotion();
     setView(next);
   };
-  const toggleOpen = (): void => {
-    if (open) consumeGraphMotion();
-    setOpen(value => !value);
+  // Click activation owns the disclosure: open plus a selected-tab click
+  // cancels the open intent (never the retained selection), while any other
+  // tab click opens or switches. Keyboard selection below always opens and
+  // never routes through this close path, so boundary navigation cannot
+  // collapse the panel. The decision reads the open intent, not the expanded
+  // allocation, so a click during a clamped-down collapse still closes.
+  const activateTab = (tab: ShelfTab): void => {
+    if (open && selectedTab === tab) {
+      consumeGraphMotion();
+      setOpen(false);
+      return;
+    }
+    selectTab(tab);
   };
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
@@ -165,6 +159,10 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     setOpen(true);
     setChosenTab(tab);
   };
+  // Keyboard selection keeps the shared always-opening selectTab: it can
+  // open a closed shelf and move selection, but never closes — same-target
+  // boundary navigation (Home on the first tab, End on the last) recomputes
+  // the selected tab and leaves the panel open.
   const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>): void => {
     const index = SHELF_TABS.indexOf(selectedTab);
     let next: number | null = null;
@@ -220,6 +218,18 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
 
   const expanded = open && (columnClampPx === null || columnClampPx >= PANEL_NATURAL_MIN_PX);
 
+  // Snapshots can arrive while Graph is hidden or unmounted. Advance only
+  // previously painted nodes so returning never settles an old transition;
+  // unseen nodes must still get their first entry when Graph is displayed.
+  if (!expanded || selectedTab !== "dag" || view !== "graph") {
+    for (const run of dags) for (const node of run.nodes) {
+      const key = `${run.runId}\u0000${node.id}`;
+      if (nodeHistory.current.has(key)) {
+        nodeHistory.current.set(key, { state: node.state, entering: false, settling: false });
+      }
+    }
+  }
+
   if (!hasActivity) return null;
 
   const applyHeight = (px: number | null): void => {
@@ -270,22 +280,6 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
     }
   };
 
-  const segments: string[] = [];
-  if (activities.todo !== null) {
-    segments.push(t("activity.summaryTodo", todoCounts(activities.todo)));
-  }
-  if (tasks.length > 0) {
-    segments.push(t("activity.summaryAgents", {
-      running: tasks.filter((task) => task.status === "running").length,
-    }));
-  }
-  if (dags.length > 0) {
-    segments.push(t("activity.summaryDag", {
-      running: dags.reduce((sum, run) => sum + run.counts.running, 0),
-      done: dags.reduce((sum, run) => sum + run.counts.completed, 0),
-    }));
-  }
-
   const panelMaxPx = columnClampPx === null
     ? null
     : Math.min(
@@ -302,41 +296,16 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
       // what crushed it when the transcript ran long.
       style={columnClampPx === null ? undefined : { flexShrink: 0 }}
       data-motion-epoch={motionEpoch}
+      // Truthful root state for CSS and QA: open is the disclosure intent,
+      // expanded the actual allocated panel. The removed fold button used to
+      // carry this; the shelf itself owns it now.
+      data-open={open}
+      data-expanded={expanded}
     >
-      <div className="th-activity-bar-row">
-        <span className="th-activity-bar" role="status">
-          <span className="th-activity-bar-text">
-            {segments.map((segment, index) => (
-              <span key={segment} className="th-activity-bar-seg">
-                {index > 0 && <BarSeparator />}
-                {segment}
-              </span>
-            ))}
-            {historyPartial && (
-              <span className="th-activity-bar-seg">
-                {segments.length > 0 && <BarSeparator />}
-                <span className="th-activity-partial">{t("activity.partial")}</span>
-              </span>
-            )}
-          </span>
-        </span>
-        <button
-          type="button"
-          className="th-activity-fold"
-          aria-expanded={expanded}
-          aria-controls={panelId}
-          aria-label={t("activity.fold")}
-          onClick={toggleOpen}
-        >
-          <IconChevron
-            size={12}
-            className={`th-activity-caret${open ? " th-activity-caret--open" : ""}`}
-          />
-        </button>
-      </div>
       {/* The tab strip is the shelf's permanent chrome: visible while
           collapsed so a tab click opens the panel and selects, and kept as
-          its own measured fixed band for the shared column allocator. */}
+          its own measured fixed band for the shared column allocator. A
+          selected-tab click closes while retaining the selection. */}
       <div ref={tablistRef} role="tablist" aria-label={t("activity.tabs")} className="th-activity-tabs">
         {SHELF_TABS.map((tab) => {
           const count = tabCount(tab);
@@ -351,7 +320,7 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
               aria-selected={selectedTab === tab}
               aria-controls={`${panelElementId(tab, panelId)}`}
               tabIndex={selectedTab === tab ? 0 : -1}
-              onClick={() => selectTab(tab)}
+              onClick={() => activateTab(tab)}
               onKeyDown={onTabKeyDown}
             >
               <span className="th-activity-tab-label">{t(tab === "agents" ? "activity.subagents" : `activity.${tab}`)}</span>
@@ -417,9 +386,13 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                       t={t}
                     />
                   : <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
+                {tab === "agents" && activities.truncatedTasks === true
+                  && <p className="th-activity-partial">{t("activity.partial")}</p>}
                 {tab === "dag" && (dags.length > 0
                   ? <DagSection dags={dags} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
                   : <p className="th-activity-empty">{t("activity.emptyDag")}</p>)}
+                {tab === "dag" && activities.truncatedDags === true
+                  && <p className="th-activity-partial">{t("activity.partial")}</p>}
               </div>
             ))}
           </div>}

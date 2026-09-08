@@ -127,7 +127,8 @@ describe("useChatSession historical activity hydration", () => {
     expect(current?.activities.dags.has("dag-history-dag")).toBe(true);
     const shelf = container.querySelector(".th-activity-shelf");
     expect(shelf).not.toBeNull();
-    act(() => container.querySelector<HTMLButtonElement>("button.th-activity-fold")?.click());
+    // The tab strip is the only disclosure: click the selected tab to open.
+    act(() => container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.click());
     expect(container.querySelector(".th-activity-agent-name")?.textContent).toContain("history-task");
     expect(container.querySelector(".th-activity-dag-name")?.textContent).toContain("history-dag");
   });

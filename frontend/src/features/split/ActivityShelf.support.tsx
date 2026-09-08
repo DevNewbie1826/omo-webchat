@@ -77,14 +77,23 @@ export function click(element: Element): void {
   });
 }
 
+/** Open the shelf through its permanent tab strip: there is no separate
+ *  fold control, so a click on the currently selected tab while closed
+ *  opens the panel. Inspects current state — an already-open shelf is left
+ *  open (a selected-tab click would close it). */
 export function openShelf(container: ParentNode): HTMLButtonElement {
-  // P5: collapse lives on the separate compact chevron control.
-  const fold = requireElement(
-    container.querySelector<HTMLButtonElement>("button.th-activity-fold"),
-    "separate fold control",
+  if (container.querySelector(".th-activity-shelf")?.getAttribute("data-open") !== "true") {
+    const tab = requireElement(
+      container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+      "selected activity tab",
+    );
+    click(tab);
+    return tab;
+  }
+  return requireElement(
+    container.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]'),
+    "selected activity tab",
   );
-  click(fold);
-  return fold;
 }
 
 /** Mutable React mount — mutation is the fixture purpose. */

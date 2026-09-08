@@ -51,16 +51,16 @@ const BAR_ROW_HEIGHT_FLOOR = compactCss(
   "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px)",
 );
 
-/** Collapsed activity shelf: bar pill floor + one space-1 row gap + the
- *  permanent tab strip (label line + its padding + borders). */
+/** Collapsed activity shelf: the permanent tab strip's label line,
+ *  padding, and borders. */
 const ACTIVITY_COLLAPSED_HEIGHT_FLOOR = compactCss(
-  "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px + var(--th-space-1) + var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px)",
+  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px)",
 );
 
-/** Expanded activity shelf: collapsed floor + 10px grip + grip margin-top +
+/** Expanded activity shelf: tab-strip floor + 10px grip + grip margin-top +
  *  panel margin-top + vertical padding + 1px borders. */
 const ACTIVITY_EXPANDED_HEIGHT_FLOOR = compactCss(
-  "calc(var(--th-type-secondary-size) * var(--th-type-secondary-line) + var(--th-space-1) + var(--th-space-1) + 2px + var(--th-space-1) + var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px + 10px + var(--th-space-0-5) + var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px)",
+  "calc(var(--th-type-label-size) * var(--th-type-label-line) + var(--th-space-0-5) + var(--th-space-0-5) + 2px + 10px + var(--th-space-0-5) + var(--th-space-1) + var(--th-space-2) + var(--th-space-2) + 2px)",
 );
 
 const shelfMinHeightFloorViolations = (shelf: string): string[] => {
@@ -202,7 +202,7 @@ describe("goal shelf shrink contract", () => {
     expect(violations).toEqual([]);
   });
 
-  it("makes .th-activity-shelf a shrinkable flex column floored at the bar-row height (never flex: none)", () => {
+  it("makes .th-activity-shelf a shrinkable flex column floored at the tab-strip height (never flex: none)", () => {
     const shelf = ruleBody(activityShelf, ".th-activity-shelf");
     const violations: string[] = [];
     if (declarationValue(shelf, "display").toLowerCase() !== "flex") {
@@ -215,8 +215,8 @@ describe("goal shelf shrink contract", () => {
     if (compactCss(minHeight) !== ACTIVITY_COLLAPSED_HEIGHT_FLOOR) {
       violations.push(
         `activity-shelf.css .th-activity-shelf min-height is "${minHeight || "missing"}"; ` +
-          "expected the bar + tab strip floor (secondary line pill, one space-1 row " +
-          "gap, label line tab strip) so the chrome never collapses",
+          "expected the tab-strip floor (label line, padding, and borders) so the " +
+          "chrome never collapses",
       );
     }
     // Shrinkability: the flex shorthand must declare shrink 1 (flex: 0 1
@@ -241,16 +241,9 @@ describe("goal shelf shrink contract", () => {
     expect(violations).toEqual([]);
   });
 
-  it("keeps the activity bar row and tab strip non-shrinking with flex: none", () => {
-    const row = ruleBody(activityShelf, ".th-activity-shelf .th-activity-bar-row");
+  it("keeps the activity tab strip non-shrinking with flex: none", () => {
     const tabs = ruleBody(activityShelf, ".th-activity-shelf .th-activity-tabs");
     const violations: string[] = [];
-    if (declarationValue(row, "flex") !== "none") {
-      violations.push(
-        `activity-shelf.css .th-activity-shelf .th-activity-bar-row flex is ` +
-          `"${declarationValue(row, "flex") || "missing"}"; the bar must keep flex: none`,
-      );
-    }
     if (declarationValue(tabs, "flex") !== "none") {
       violations.push(
         `activity-shelf.css .th-activity-shelf .th-activity-tabs flex is ` +
@@ -263,7 +256,7 @@ describe("goal shelf shrink contract", () => {
   it("reserves the grip and a minimal panel box in the expanded activity-shelf floor", () => {
     const expanded = ruleBody(
       activityShelf,
-      '.th-activity-shelf:has(.th-activity-fold[aria-expanded="true"])',
+      '.th-activity-shelf[data-expanded="true"]',
     );
     const panel = ruleBody(activityShelf, ".th-activity-panel");
     const grip = ruleBody(activityShelf, ".th-activity-resize");
@@ -276,13 +269,13 @@ describe("goal shelf shrink contract", () => {
           "space-2 + space-2 padding + 2px borders so the interaction band stays inside the clip",
       );
     }
-    // Collapsed must stay the plain bar floor: the expanded calc belongs on
-    // the :has(aria-expanded) rule, not the base shelf.
+    // Collapsed must stay the plain tab-strip floor: the expanded calc belongs
+    // on the data-expanded rule, not the base shelf.
     const collapsed = declarationValue(ruleBody(activityShelf, ".th-activity-shelf"), "min-height");
     if (compactCss(collapsed) !== ACTIVITY_COLLAPSED_HEIGHT_FLOOR) {
       violations.push(
         `activity-shelf.css collapsed .th-activity-shelf min-height is "${collapsed || "missing"}"; ` +
-          "collapsed must keep the bar + tab strip floor (no blank space below the chrome)",
+          "collapsed must keep the tab-strip floor (no blank space below the chrome)",
       );
     }
     if (declarationValue(expanded, "flex") === "none") {
@@ -307,20 +300,14 @@ describe("goal shelf shrink contract", () => {
     expect(violations).toEqual([]);
   });
 
-  it("draws the activity fold control's focus outline inside the clipped shelf in either aria-expanded state", () => {
-    const focus = ruleBody(activityShelf, ".th-activity-fold:focus-visible");
+  it("draws the activity tab focus outline inside the clipped shelf", () => {
+    const focus = ruleBody(activityShelf, ".th-activity-tab:focus-visible");
     const violations: string[] = [];
     if (declarationValue(focus, "outline-offset") !== "-2px") {
       violations.push(
-        `activity-shelf.css .th-activity-fold:focus-visible outline-offset is ` +
+        `activity-shelf.css .th-activity-tab:focus-visible outline-offset is ` +
           `"${declarationValue(focus, "outline-offset") || "missing"}"; expected -2px`,
       );
-    }
-    // The selector must not depend on aria-expanded, otherwise one shelf state
-    // can silently lose its visible keyboard focus treatment.
-    if (activityShelf.includes('.th-activity-fold[aria-expanded="true"]:focus-visible') ||
-        activityShelf.includes('.th-activity-fold[aria-expanded="false"]:focus-visible')) {
-      violations.push("activity focus treatment must apply regardless of aria-expanded state");
     }
     expect(violations).toEqual([]);
   });

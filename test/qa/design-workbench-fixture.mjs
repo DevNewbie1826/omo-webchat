@@ -50,7 +50,7 @@ export const complete = async (page, readiness) => {
   return readiness ? page.evaluate(settleCapture, readiness) : state;
 };
 
-/** Observe intent separately from allocation: aria-expanded alone can be transient. */
+/** Observe intent separately from allocation: expanded state alone can be transient. */
 export const armShelf = (page, kind, open) => page.evaluate(({ kind, open }) => {
   const shelf = document.querySelector(`.th-${kind}-shelf`);
   const column = shelf.closest('.th-chat-main'), observations = [];
@@ -70,9 +70,17 @@ export const armShelf = (page, kind, open) => page.evaluate(({ kind, open }) => 
       fixed += margin(item);
       for (const band of item.querySelectorAll('.th-activity-bar-row, .th-activity-tabs, .th-activity-resize')) fixed += outer(band);
     }
-    state = { kind, requestedOpen: !!shelf.querySelector('.th-activity-caret--open'),
+    // The activity shelf owns its disclosure state on the root (data-open /
+    // data-expanded) since the fold control left; never infer it from a
+    // generic button or the removed caret. The goal shelf keeps intent on
+    // its caret and aria-expanded on its bar button.
+    const activityOwned = shelf.classList.contains('th-activity-shelf');
+    state = { kind,
+      requestedOpen: activityOwned ? shelf.dataset.open === 'true' : !!shelf.querySelector('.th-activity-caret--open'),
       allocationApplied: shelf.style.flexShrink === '0',
-      expanded: shelf.querySelector('button').getAttribute('aria-expanded'),
+      expanded: activityOwned
+        ? (shelf.dataset.expanded ?? 'false')
+        : (shelf.querySelector('button')?.getAttribute('aria-expanded') ?? 'false'),
       panel: panel?.getBoundingClientRect().toJSON() ?? null,
       panelMax: panel ? parseFloat(panel.style.maxHeight) : null,
       columnHeight: column.getBoundingClientRect().height, fixed, reservedTranscript: 120,
@@ -104,7 +112,7 @@ export async function setupDesign(browser, options = {}) {
     await installSignals(page, options);
     const attached = fixture.wait('frame', frame => frame.type === 'chat.stats');
     await page.goto(fixture.url); await attached;
-    await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-queue-header') && document.querySelector('.th-activity-bar')
+    await page.evaluate(() => window.qaSignal(() => document.querySelector('.th-queue-header') && document.querySelector('.th-activity-shelf [data-activity-tab]')
       && document.querySelector('.th-goal-bar') && document.querySelector('[data-tool-call-id="design-failed"]')
       && document.querySelector('.th-chat-status-num')?.textContent === '42%'));
     await seedLive(page, fixture);

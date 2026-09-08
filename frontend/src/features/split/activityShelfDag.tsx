@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useT, type Translate } from "../../i18n";
+import { useMediaQuery } from "../../lib/useMediaQuery";
 import { statusKind, statusLabel, type DagView } from "./activityShelfModel";
 import { ActivityChip } from "./activityShelfSections";
 import type { ActivityDagNode, ActivityDagRun } from "./activityTypes";
@@ -199,6 +200,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   readonly t: Translate;
 }) {
   const { font, fontSize, lang } = useT();
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const graphRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<SVGTextElement>(null);
   const [type, setType] = useState<GraphType>({ width: NODE_WIDTH, height: NODE_HEIGHT, fontPx: DEFAULT_TYPE_PX, row: 16, labels: new Map() });
@@ -271,13 +273,18 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
   );
   const columns = Math.max(1, layers.length);
   const rows = Math.max(1, ...layers.map((layer) => layer.length));
+  const nodesById = new Map(run.nodes.map(node => [node.id, node]));
   const history = nodeHistory.current;
   const nodeMotion = new Map<string, DagNodeMotion>();
   for (const node of run.nodes) {
     const key = `${run.runId}\u0000${node.id}`;
-    const motion = nextDagNodeMotion(history.get(key), node.state);
+    const motion = active && !reducedMotion
+      ? nextDagNodeMotion(history.get(key), node.state)
+      : { state: node.state, entering: false, settling: false };
     nodeMotion.set(node.id, motion);
-    history.set(key, motion);
+    // A reduced-motion paint consumes its one-shot without waiting for a
+    // nonexistent animationend. A hidden node has not had its first paint.
+    if (active) history.set(key, motion);
   }
   return (
     <div ref={graphRef} className="th-activity-graph">
@@ -289,17 +296,21 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
       >
         <text ref={measureRef} className="th-activity-glabel" visibility="hidden" aria-hidden="true" />
         <defs>
-          <marker
-            id={edgeMarkerId(clipIdPrefix, runIndex)}
-            viewBox="0 0 8 6"
-            refX={7}
-            refY={3}
-            markerWidth={7}
-            markerHeight={6}
-            orient="auto"
-          >
-            <path d="M0,0L8,3L0,6Z" className="th-activity-gedge-head" />
-          </marker>
+          {["", "-fulfilled"].map(variant => (
+            <marker
+              key={variant}
+              id={`${edgeMarkerId(clipIdPrefix, runIndex)}${variant}`}
+              viewBox="0 0 8 6"
+              refX={7}
+              refY={3}
+              markerWidth={7}
+              markerHeight={6}
+              markerUnits="userSpaceOnUse"
+              orient="auto"
+            >
+              <path d="M0,0L8,3L0,6Z" className={`th-activity-gedge-head${variant ? " th-activity-gedge-head--fulfilled" : ""}`} />
+            </marker>
+          ))}
           {run.nodes.flatMap((node, nodeIndex) => {
             const position = positions.get(node.id);
             if (position === undefined) return [];
@@ -316,15 +327,20 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
           const from = positions.get(edge.from);
           const to = positions.get(edge.to);
           if (from === undefined || to === undefined) return [];
+          // Fulfilled describes the dependency, not the destination's outcome.
+          // Always recompute from this snapshot, including retries and stale nodes.
+          const fulfilled = nodesById.get(edge.from)?.state === "completed";
+          const flowing = fulfilled && nodesById.get(edge.to)?.state === "running"
+            && run.status === "running" && active;
           return [
             <line
               key={`${edge.from}->${edge.to}`}
-              className="th-activity-gedge"
+              className={`th-activity-gedge${fulfilled ? " th-activity-gedge--fulfilled" : ""}${flowing ? " th-activity-gedge--flow" : ""}`}
               x1={from.x + nodeWidth}
               y1={from.y + nodeHeight / 2}
               x2={to.x}
               y2={to.y + nodeHeight / 2}
-              markerEnd={`url(#${edgeMarkerId(clipIdPrefix, runIndex)})`}
+              markerEnd={`url(#${edgeMarkerId(clipIdPrefix, runIndex)}${fulfilled ? "-fulfilled" : ""})`}
             />,
           ];
         })}

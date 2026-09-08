@@ -24,7 +24,9 @@ describe("activity rendering corrections", () => {
   it("keeps the permanent peer controls before opening", () => {
     renderShelf(harness, activityState({ dags: [makeDag()] }));
     expect(harness.container.querySelectorAll('[role="tab"]')).toHaveLength(3);
-    expect(harness.container.querySelector('.th-activity-bar')?.tagName).toBe('SPAN');
+    // The summary band is gone; the tab strip is the only collapsed chrome.
+    expect(harness.container.querySelector('.th-activity-bar-row')).toBeNull();
+    expect(harness.container.querySelector('.th-activity-tabs')).not.toBeNull();
   });
   it("uses a separate single-rectangle clip for each title row", () => {
     showGraph();
@@ -35,7 +37,7 @@ describe("activity rendering corrections", () => {
       expect(document.getElementById(ref.slice(5, -1))?.children.length).toBe(1);
     }
   });
-  it("consumes pending motion when the graph unmounts without a fold click", () => {
+  it("consumes pending motion when the graph unmounts without a close click", () => {
     showGraph();
     event('animationstart', 'th-dag-node-enter');
     const todo = [{ name: 'Retained', tasks: [{ content: 'Retained row', status: 'pending' as const }] }];
@@ -49,7 +51,7 @@ describe("activity rendering corrections", () => {
     event(type, 'th-dag-node-enter');
     expect(node().classList.contains('th-activity-gnode--enter')).toBe(false);
   });
-  it.each(['tab', 'fold', 'list'])("consumes interrupted terminal motion across %s", kind => {
+  it.each(['tab', 'close', 'list'])("consumes interrupted terminal motion across %s", kind => {
     showGraph();
     event('animationstart', 'th-dag-node-enter');
     event('animationend', 'th-dag-node-enter');
@@ -58,7 +60,7 @@ describe("activity rendering corrections", () => {
     expect(node().classList.contains('th-activity-gnode--settle')).toBe(true);
     event('animationstart', 'th-dag-node-settle');
     if (kind === 'tab') { click(button('[data-activity-tab="todo"]')); click(button('[data-activity-tab="dag"]')); }
-    if (kind === 'fold') { click(button('.th-activity-fold')); click(button('.th-activity-fold')); }
+    if (kind === 'close') { click(button('[role="tab"][aria-selected="true"]')); click(button('[role="tab"][aria-selected="true"]')); }
     if (kind === 'list') { click(button('[data-view="list"]')); click(button('[data-view="graph"]')); }
     expect(node().classList.contains('th-activity-gnode--settle')).toBe(false);
   });
