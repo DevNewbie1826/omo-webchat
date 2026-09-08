@@ -187,36 +187,74 @@ export async function openActivityTab(page) {
 
 // Only browser API getters/events are synthesized. CSS, DOM and product markers
 // remain untouched. Chrome's dvh/lvh do NOT reproduce WebKit's native divergence.
-async function visualInput(page, input, event = 'resize') {
-  await page.evaluate(({ input, event }) => {
+async function visualInput(page, input, event = 'resize', resizeViewport) {
+  await page.evaluate(({ input, event, deferred }) => {
     window.mobilePending = new Promise((done, fail) => {
       const target = ['pageshow', 'orientationchange', 'pagehide'].includes(event) ? window : visualViewport;
-      const pane = document.querySelector('.th-pane--focused'), transcript = pane.querySelector('.th-chat-body');
-      // The affordance witnesses reading intent even if a previous resize has
-      // already changed geometry but natural follow has not yet reached bottom.
-      const reading = !!pane.querySelector('.th-chat-scroll-bottom'), priorTop = transcript.scrollTop;
-      let inputSeen = false, resized = false;
+      let transcript = document.querySelector('.th-pane--focused .th-chat-body');
+      const priorTop = transcript.scrollTop;
+      let reading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
+      let inputSeen = false, inputApplied = false, resized = false, intentUpdated = false;
       const observer = new ResizeObserver(() => { resized = true; check(); });
-      const timer = setTimeout(() => { cleanup(); fail(new Error('Viewport resize-follow deadline')); }, 30000);
+      // Native anchoring and virtual row remeasurement can change reading intent
+      // during real resize. Observe the product's completed intent update, not
+      // a frozen offset or a QA copy of its bottom-distance tolerance.
+      const intentObserver = new MutationObserver(() => {
+        const current = document.querySelector('.th-pane--focused .th-chat-body');
+        if (current && current !== transcript) {
+          // Crossing the split-view breakpoint remounts ChatPane and restores
+          // history. A detached zero-sized scrollport is not completion.
+          transcript.removeEventListener('scroll', check); observer.disconnect();
+          transcript = current; resized = false; intentUpdated = false;
+          reading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
+          transcript.addEventListener('scroll', check); observer.observe(transcript);
+        }
+        const currentReading = !!document.querySelector('.th-pane--focused .th-chat-scroll-bottom');
+        if (currentReading !== reading) { reading = currentReading; intentUpdated = true; }
+        check();
+      });
+      const timer = setTimeout(() => {
+        const state = { inputSeen, resized, reading, intentUpdated, priorTop, currentTop: transcript.scrollTop,
+          clientHeight: transcript.clientHeight, scrollHeight: transcript.scrollHeight, connected: transcript.isConnected,
+          currentTranscript: transcript === document.querySelector('.th-pane--focused .th-chat-body') };
+        cleanup(); fail(new Error('Viewport resize-follow deadline ' + JSON.stringify(state)));
+      }, 30000);
       function cleanup() {
-        clearTimeout(timer); observer.disconnect();
+        clearTimeout(timer); observer.disconnect(); intentObserver.disconnect();
         target.removeEventListener(event, finish); transcript.removeEventListener('scroll', check);
+        delete window.pwaDispatchInput;
       }
       function check() {
-        if (!inputSeen || !resized) return;
-        const expectedTop = reading ? priorTop : Math.max(0, transcript.scrollHeight - transcript.clientHeight);
-        if (transcript.scrollTop !== expectedTop) return;
+        if (!inputSeen || !resized || !transcript.isConnected
+          || transcript !== document.querySelector('.th-pane--focused .th-chat-body')
+          || transcript.querySelector('.th-chat-loading')) return;
+        // Without a product intent transition, follow still owes the exact
+        // bottom. Reading may legitimately re-anchor or clamp during reflow.
+        if (!reading && !intentUpdated && transcript.scrollTop !== Math.max(0, transcript.scrollHeight - transcript.clientHeight)) return;
         cleanup(); done(true);
       }
-      function finish() { inputSeen = true; }
-      // Subscribe before changing the viewport. Resize delivery alone is not
-      // completion: useChatScroll may still owe its followed transcript a scroll.
-      target.addEventListener(event, finish, { once: true });
+      function finish() { if (inputApplied) { inputSeen = true; check(); } }
+      // Arm before BOTH real layout resize and synthetic visual input. Otherwise
+      // the reading -> follow transition can finish before QA even subscribes.
+      target.addEventListener(event, finish);
       transcript.addEventListener('scroll', check); observer.observe(transcript);
-      for (const [key, value] of Object.entries(input)) Object.defineProperty(visualViewport, key, { configurable: true, get: () => value });
-      target.dispatchEvent(new Event(event));
+      intentObserver.observe(document.querySelector('.th-main'), { childList: true, subtree: true });
+      window.pwaDispatchInput = () => {
+        for (const [key, value] of Object.entries(input)) Object.defineProperty(visualViewport, key, { configurable: true, get: () => value });
+        inputApplied = true; target.dispatchEvent(new Event(event));
+      };
+      if (!deferred) window.pwaDispatchInput();
     });
-  }, { input, event });
+    if (deferred) window.pwaViewportPending = window.mobilePending;
+  }, { input, event, deferred: !!resizeViewport });
+  if (resizeViewport) {
+    await resizeViewport();
+    await page.evaluate(() => {
+      // Drawer normalization uses mobilePending too; retain this subscription.
+      window.mobilePending = window.pwaViewportPending; delete window.pwaViewportPending;
+      window.pwaDispatchInput();
+    });
+  }
   await complete(page); await settle(page);
 }
 
@@ -343,8 +381,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                 && (adequate ? ['.th-goal-panel', '.th-activity-panel'].every(s => document.querySelector(s)?.getBoundingClientRect().height > 0)
                   : !document.querySelector('.th-goal-panel, .th-activity-panel')));
             }, { width, height, adequate });
-            await page.setViewportSize({ width, height });
-            await visualInput(page, { width, height, offsetTop: 0 });
+            await visualInput(page, { width, height, offsetTop: 0 }, 'resize', () => page.setViewportSize({ width, height }));
             await page.evaluate(() => window.compactResizePending);
             await capture(adequate ? 'compact-adequate-space' : 'compact-return', false, 0, height, true);
           }
@@ -364,11 +401,12 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         for (const keyboard of [false, true]) {
           for (const rotated of [true, false]) {
             [width, height] = rotated ? [input.height, input.width] : [input.width, input.height];
-            await page.setViewportSize({ width, height });
-            if (width <= 768 && await page.locator('.th-sidebar').getAttribute('aria-hidden') !== 'true') await closeDrawer();
             keyboardHeight = Math.max(270, height - 340); keyboardTop = keyboard ? (height > 500 ? 60 : 20) : 0;
             const visible = keyboard ? keyboardHeight : height;
-            await visualInput(page, { width, height: visible, offsetTop: keyboardTop }, 'orientationchange');
+            await visualInput(page, { width, height: visible, offsetTop: keyboardTop }, 'orientationchange', async () => {
+              await page.setViewportSize({ width, height });
+              if (width <= 768 && await page.locator('.th-sidebar').getAttribute('aria-hidden') !== 'true') await closeDrawer();
+            });
             const rotatedState = await capture(`rotation-${keyboard ? 'open' : 'closed'}-${rotated ? 'away' : 'back'}`, keyboard, keyboardTop, visible, width > 768);
             if (input.compactShelves && keyboard && !rotated) {
               // Preserve the original capture first. Drawer/rail actions can move
