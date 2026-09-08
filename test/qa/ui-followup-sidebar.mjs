@@ -225,7 +225,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
                 safeInsets: { top: safeTop, bottom: safeBottom, left: 0, right: 0 },
                 surface: { top: state === 'keyboard-origin' ? top : 0, left: 0, right: width,
                   bottom: state === 'keyboard-origin' ? top + visualHeight : height },
-                drawerSurface: { top, left: 0, right: width, bottom: top + visualHeight } };
+                drawerSurface: { top, left: 0, right: width, bottom: top + visualHeight },
+                paintedSurface: { top: 0, left: 0, right: width, bottom: height } };
               const g = await measure(page, safeBottom, safeTop, expectations);
               const backdrop = await page.locator('.th-backdrop').evaluateAll(elements => elements.map(e => ({
                 display: getComputedStyle(e).display, rect: e.getBoundingClientRect().toJSON() })));

@@ -13,18 +13,11 @@
     position: fixed;
     top: var(--th-vv-top, 0px);
     left: var(--th-vv-left, 0px);
-    height: 100vh;
     height: calc(var(--th-vh-unit, 1vh) * 100);
     width: 100%;
     background: var(--th-backdrop);
     z-index: 35;
     animation: th-fade-in var(--th-dur) var(--th-ease);
-  }
-
-  /* Share #root's closed standalone large-height basis so the backdrop
-     covers the same surface as the drawer. */
-  html[data-th-standalone]:not([data-th-keyboard-open]) .th-backdrop {
-    height: 100lvh;
   }
 
   .th-mobile-menu {
@@ -33,6 +26,7 @@
 }
 
 /* Match the drawer: the transformed #root already supplies this origin. */
+html[data-th-standalone] .th-backdrop,
 html[data-th-keyboard-open] .th-backdrop {
   top: 0;
   left: 0;

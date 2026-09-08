@@ -293,12 +293,12 @@ Choose a tested foreground/background token pair instead.
   overlay drawer without the rail. The shared `--th-space-11` token is the
   coarse-pointer touch size and must not be re-valued to remove the expanded
   rail; only the expanded shell's allocation changes. The mobile drawer is
-  sized and positioned to the visible surface: in an installed PWA with the
-  keyboard closed, sidebar, drawer and backdrop consume the full
-  large-viewport screen together, and while the keyboard is open they
-  consume the visual viewport's height and origin without repeating the
-  translation already supplied by `#root`. The desktop sidebar also
-  follows the visible bottom. The sidebar shell reserves the bottom
+  sized and positioned to the visible surface: in an installed PWA, sidebar,
+  drawer and backdrop consume the visual viewport's actual height and origin
+  whether the keyboard is open or closed, without repeating the translation
+  already supplied by `#root`. Background painting never justifies
+  extending these interactive surfaces beyond the actual visible bounds.
+  The desktop sidebar also follows the visible bottom. The sidebar shell reserves the bottom
   home-indicator inset at every width (`env(safe-area-inset-bottom)` — zero
   wherever the hardware has none, and the only protection on landscape phones
   beyond the 768px drawer breakpoint, where `#root` intentionally keeps a 0
@@ -316,24 +316,27 @@ Choose a tested foreground/background token pair instead.
 - Installed PWA surface: on the recorded installed device (iPhone 13 mini,
   iOS 26.6.1) the screen and large viewport measure 812 CSS px tall while
   the dynamic viewport and visual viewport measure 762. That is an observed
-  geometry split from one resting device, not a claim about how WebKit
-  computes those values internally. The intended contract: in standalone
-  mode with the keyboard closed, `#root` uses the large-viewport basis
-  (`100lvh`) so the shell background, drawer and backdrop cover the
-  home-indicator zone instead of leaving it to the body background.
-  Control-safe space is reserved once, inside the surface, never by
-  shortening a painted background: the composer stays full-bleed while its
-  internal bottom reserve is the larger of its existing breathing padding
-  and the necessary `env(safe-area-inset-bottom)`, and the sidebar keeps
-  its single existing inset reserve with zero footer bottom padding. While
-  the software keyboard is open, `#root` switches to VisualViewport height
-  and origin (`--th-vh-unit`, `--th-vv-top`/`--th-vv-left`) and the bottom
-  inset reserves are released because the keyboard covers the gesture zone.
-  Keyboard dismissal, rotation and foreground restoration re-publish current
-  geometry without corrupting a compatible unobscured baseline, and recovery
-  preserves focus and draft text. The raw visual variables keep their
-  visual-viewport meaning for existing dialog and Settings consumers, and
-  ordinary browsers keep the dynamic-viewport policy.
+  geometry split from one resting device, not a native usable-height
+  authority and not a claim about how WebKit computes those values
+  internally. The intended contract: in standalone mode, `#root` follows
+  the actual visible bounds, the VisualViewport height and origin
+  (`--th-vh-unit`, `--th-vv-top`/`--th-vv-left`), with the origin applied
+  exactly once, whether the keyboard is open or closed. The shell
+  background, drawer and backdrop paint within those same visible bounds;
+  background coverage is never a reason to enlarge the interactive layout
+  beyond what is actually visible. Control-safe space is reserved once,
+  inside the surface, never by shortening or lengthening a painted
+  background: the composer stays full-bleed while its internal bottom
+  reserve is the larger of its existing breathing padding and the necessary
+  `env(safe-area-inset-bottom)`, and the sidebar keeps its single existing
+  inset reserve with zero footer bottom padding. While the software
+  keyboard is open the bottom inset reserves are released because the
+  keyboard covers the gesture zone. Keyboard dismissal, rotation and
+  foreground restoration re-publish current geometry without corrupting a
+  compatible unobscured baseline, and recovery preserves focus and draft
+  text. The raw visual variables keep their visual-viewport meaning for
+  existing dialog and Settings consumers, and ordinary browsers keep the
+  dynamic-viewport policy.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.

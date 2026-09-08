@@ -92,7 +92,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
       const assets = await binding(); bindings.push({ scenario: name, ...assets });
       results.push({ scenario: name, id: 'C5.served-byte-binding', pass: assets.pass, actual: assets });
       q.expectations = { expectedKeyboard: false, mode: 'browser', sidebarOpen: true,
-        safeInsets: { top: 0, bottom: 0, left: 0, right: 0 }, surface: { top: 0, left: 0, right: 390, bottom: 844 } };
+        safeInsets: { top: 0, bottom: 0, left: 0, right: 0 }, surface: { top: 0, left: 0, right: 390, bottom: 844 },
+        paintedSurface: { top: 0, left: 0, right: 390, bottom: 844 } };
       await exercise(q, name);
       assert.deepEqual(q.errors, [], `${name}: browser exceptions`);
       assert.deepEqual(q.fixture.unexpected, [], `${name}: unexpected fixture traffic`);
@@ -145,7 +146,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               actions.push({ action: 'CDP-safe-area', scenario: name, method: 'Emulation.setSafeAreaInsetsOverride', insets: { top: safeTop, bottom: inset } });
               q.expectations = { expectedKeyboard: keyboard, mode: 'browser', sidebarOpen: true,
                 safeInsets: { top: safeTop, bottom: inset, left: 0, right: 0 },
-                surface: { top: 0, left: 0, right: width, bottom: keyboard ? (height === 844 ? 500 : 270) : height } };
+                surface: { top: 0, left: 0, right: width, bottom: keyboard ? (height === 844 ? 500 : 270) : height },
+                paintedSurface: { top: 0, left: 0, right: width, bottom: height } };
               const key = `${name}-${width}x${height}-${keyboard ? 'keyboard' : 'closed'}-top${safeTop}-safe${inset}`;
               const g = await capture(q, `C5-${phase}-${key}`, inset, { keyboardEmulation: keyboard ? 'synthetic-visual-only' : 'closed' }, safeTop);
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
@@ -192,7 +194,8 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
               await complete(page);
               q.expectations = { expectedKeyboard: true, mode: 'browser', sidebarOpen: true,
                 safeInsets: { top: 0, bottom: 34, left: 0, right: 0 },
-                surface: { top: 60, left: 0, right: width, bottom: 60 + (height === 844 ? 500 : 270) } };
+                surface: { top: 60, left: 0, right: width, bottom: 60 + (height === 844 ? 500 : 270) },
+                paintedSurface: { top: 0, left: 0, right: width, bottom: height } };
               const key = `${name}-${width}x${height}-synthetic-pan60-safe34`;
               const g = await capture(q, `C5-${phase}-${key}`, 34, { keyboardEmulation: 'synthetic visualViewport height and offsetTop=60 inside original layout viewport' });
               results.push(...footerAssertions(g).map(row => ({ scenario: key, ...row })));
