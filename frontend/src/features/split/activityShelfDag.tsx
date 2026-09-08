@@ -323,7 +323,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
             ];
           })}
         </defs>
-        {run.edges.flatMap((edge) => {
+        {run.edges.flatMap((edge, edgeIndex) => {
           const from = positions.get(edge.from);
           const to = positions.get(edge.to);
           if (from === undefined || to === undefined) return [];
@@ -334,7 +334,7 @@ function DagGraph({ run, runIndex, clipIdPrefix, nodeHistory, onMotionEnd, activ
             && run.status === "running" && active;
           return [
             <line
-              key={`${edge.from}->${edge.to}`}
+              key={edgeIndex}
               className={`th-activity-gedge${fulfilled ? " th-activity-gedge--fulfilled" : ""}${flowing ? " th-activity-gedge--flow" : ""}`}
               x1={from.x + nodeWidth}
               y1={from.y + nodeHeight / 2}

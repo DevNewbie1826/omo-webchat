@@ -6,6 +6,8 @@ import type {
 import { useT } from "../../i18n";
 import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection, type DagNodeMotion } from "./activityShelfDag";
+import { CompleteDagSection } from "./activityCompleteDag";
+import { useCompleteDag, type DagSource } from "./useCompleteDag";
 import {
   agentTimeMs,
   dagTimeMs,
@@ -24,6 +26,7 @@ import { useShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ActivityShelfProps {
   readonly activities: ActivityState;
+  readonly dagSource?: DagSource;
 }
 
 const PANEL_MIN = 120;
@@ -75,7 +78,7 @@ function detectPanelHeight(): number | null {
   }
 }
 
-export function ActivityShelf({ activities }: ActivityShelfProps) {
+export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const { t } = useT();
   const [open, setOpen] = useState(false);
   // Graph is the P6 default; the choice survives tab and fold switches.
@@ -143,17 +146,22 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
   // moment everything turns terminal. It hides only when there is genuinely
   // nothing to show, including no marker for omitted historical rows.
   const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
-  const hasActivity = activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
+  // Agent rows also include DAG nodes: omitted nodes/runs cannot certify an
+  // exact running count or an empty agents section, even with no retained rows.
+  const agentsPartial = historyPartial || dags.some(run => run.truncated === true);
+  const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
 
   const availability: Readonly<Record<ShelfTab, boolean>> = {
     todo: activities.todo !== null,
     agents: tasks.length > 0,
-    dag: dags.length > 0,
+    dag: dagSource !== undefined || dags.length > 0,
   };
   const selectedTab: ShelfTab = chosenTab
     ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
+  // Complete data/selection belong to the shelf, not its transient panel DOM.
+  const completeDag = useCompleteDag(dagSource, open && selectedTab === "dag", activities);
   const selectTab = (tab: ShelfTab): void => {
     if (selectedTab === "dag" && tab !== "dag") consumeGraphMotion();
     setOpen(true);
@@ -185,11 +193,14 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
       })();
     }
     if (tab === "agents") {
+      if (agentsPartial) return t("activity.partial");
       return tasks.length === 0
         ? null
         : `${tasks.filter((task) => task.status === "running").length}/${tasks.length}`;
     }
-    if (dags.length === 0) return null;
+    // Overview totals are not catalog totals. Exact counts live on the full selected run.
+    if (dagSource !== undefined || dags.length === 0) return null;
+    if (activities.truncatedDags || dags.some(run => run.truncated)) return t("activity.partial");
     const done = dags.reduce((sum, run) => sum + run.counts.completed, 0);
     const total = dags.reduce((sum, run) => sum + run.counts.total, 0);
     return `${done}/${total}`;
@@ -385,13 +396,17 @@ export function ActivityShelf({ activities }: ActivityShelfProps) {
                       }}
                       t={t}
                     />
-                  : <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
-                {tab === "agents" && activities.truncatedTasks === true
+                  : !agentsPartial && <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
+                {tab === "agents" && agentsPartial
                   && <p className="th-activity-partial">{t("activity.partial")}</p>}
-                {tab === "dag" && (dags.length > 0
-                  ? <DagSection dags={dags} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
-                  : <p className="th-activity-empty">{t("activity.emptyDag")}</p>)}
-                {tab === "dag" && activities.truncatedDags === true
+                {tab === "dag" && (dagSource !== undefined
+                  ? <CompleteDagSection data={completeDag} activities={activities} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
+                  : dags.length > 0 && !activities.truncatedDags && !dags.some(run => run.truncated)
+                    ? <DagSection dags={dags} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
+                    : dags.length > 0
+                      ? <p className="th-activity-dag-name">{dags.map(run => run.name).join(", ")}</p>
+                      : <p className="th-activity-empty">{t("activity.emptyDag")}</p>)}
+                {tab === "dag" && dagSource === undefined && activities.truncatedDags === true
                   && <p className="th-activity-partial">{t("activity.partial")}</p>}
               </div>
             ))}
