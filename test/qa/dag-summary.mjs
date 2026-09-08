@@ -1,4 +1,6 @@
 /** Lead-owned C3 gate: real built SPA + fresh Chrome profiles, native summary WS.
+ * Rich + oversized compact wire inputs exercise the actual SPA parser/summary.
+ * Go source -> digest generation is a separate producer proof, not simulated here.
  * Build separately after producers settle. This command never edits product files.
  */
 import assert from 'node:assert/strict';
@@ -34,7 +36,9 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
     assert.equal(child.code, 0, `Bun child exited ${child.code ?? child.signal}`);
     return { ...JSON.parse(await readFile(join(evidenceDir, 'C3-actions.json'), 'utf8')), cleanup };
   }
-  const report = { startedAt: new Date().toISOString(), passed: false, surface: 'built-SPA', actions: [], captures: [], errors: [] };
+  const report = { startedAt: new Date().toISOString(), passed: false, surface: 'built-SPA',
+    inputBoundary: 'synthetic sessions.activity / sessions.live wire; Go digest generation verified separately',
+    actions: [], captures: [], errors: [] };
   const cleanup = { fixtureInMemoryOnly: true, cases: [], errors: [] };
   const record = row => report.actions.push({ sequence: report.actions.length + 1, ...row });
   let assets, failure;

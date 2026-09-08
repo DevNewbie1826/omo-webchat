@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseChatServerFrame } from '../../frontend/src/lib/chatWsParse.ts';
 import { parseTaskUpdated } from '../../frontend/src/features/split/activityParseTask.ts';
+import { parseDagDigest } from '../../frontend/src/features/workspace/activityDigest.ts';
+import { listLiveSessions } from '../../frontend/src/features/workspace/workspace.ts';
 import { stages, summaryInput, summaryFrame, startSummaryFixture } from './dag-summary-fixture.mjs';
 import { assertSummaryDOM } from './dag-summary-surface.mjs';
 import { parseArgs, run } from './dag-summary.mjs';
@@ -16,7 +18,8 @@ const copy = { 'sidebar.tm.runningAgents': 'exact:{n}', 'sidebar.tm.runningAgent
 const dom = (text, aria) => ({ sidebar: { text, aria }, overview: { text, aria } });
 
 test('summary scenario inputs preserve original running2, retained1, zero-retained and complete topology', () => {
-  assert.deepEqual(stages, ['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2']);
+  assert.deepEqual(stages, ['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2',
+    'compact-duplicate-ids', 'compact-no-ids', 'compact-mixed-ids', 'complete2-recovery']);
   const partial = summaryInput(stages[0]);
   assert.equal(partial.dag.runs[0].counts.running, 2);
   assert.equal(partial.dag.runs[0].counts.total, 2);
@@ -45,16 +48,24 @@ test('marker is accepted by the actual parser and contributes no running task; n
     const parsed = parseChatServerFrame(frame);
     assert.equal(parsed?.type, 'sessions.activity');
     assert.equal(parsed.sessionId, input.id);
-    assert.deepEqual(parsed.snapshots.find(s => s.name === 'omo.dag.updated').data, input.dag);
+    const dag = parsed.snapshots.find(s => s.name === 'omo.dag.updated');
+    assert.equal(dag.oversized, input.dag_oversized === true);
+    if (input.dag_oversized) {
+      assert.equal(Object.hasOwn(dag, 'data'), false, 'compact-only WS must not inject a rich graph');
+      assert.deepEqual(parsed.dagDigest, input.dag_digest);
+      assert.ok(parseDagDigest(parsed.dagDigest), 'actual compact parser accepts wire shape');
+    } else assert.deepEqual(dag.data, input.dag);
     const tasks = parseTaskUpdated(input.task).tasks;
     assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'pending');
     assert.equal(tasks[0].liveProgress.lastAssistantLine, input.marker);
-    assert.ok(input.dag.runs[0].nodes.every(n => n.task_id !== tasks[0].taskId));
+    const ids = input.dag_oversized ? input.dag_digest.runs.flatMap(r => r.running_task_ids)
+      : input.dag.runs.flatMap(r => r.nodes.map(n => n.task_id));
+    assert.ok(ids.every(id => id !== tasks[0].taskId));
   }
 });
 
 test('binary oracle rejects falsely exact partial counts, zero, absent badges and mismatched accessible qualification', () => {
-  for (const stage of stages.slice(0, -1)) {
+  for (const stage of stages.slice(0, 3)) {
     for (const bad of [dom('1', 'exact:1'), dom('0', 'exact:0'), dom('2', 'exact:2'), dom(null, null), dom('1+', 'exact:1'), dom('?', 'exact:0'), dom('3+', 'partial:3')]) {
       assert.throws(() => assertSummaryDOM(bad, stage, copy));
     }
@@ -66,6 +77,51 @@ test('binary oracle rejects falsely exact partial counts, zero, absent badges an
   assertSummaryDOM(dom('2', 'exact:2'), 'complete2', copy);
   for (const bad of [dom('1', 'exact:1'), dom('?', 'unknown'), dom('2+', 'partial:2')]) assert.throws(() => assertSummaryDOM(bad, 'complete2', copy));
   assert.throws(() => assertSummaryDOM({ sidebar: dom('2', 'exact:2').sidebar, overview: null }, 'complete2', copy));
+});
+
+test('compact stages use actual snake_case poll and camelCase WS digest envelopes without rich topology', async () => {
+  const expected = [
+    ['compact-duplicate-ids', false, [['task-a', 'task-b'], ['task-a', 'task-b']]],
+    ['compact-no-ids', true, [[]]],
+    ['compact-mixed-ids', true, [['task-a']]],
+  ];
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [stage, truncated, ids] of expected) {
+      const input = summaryInput(stage), frame = parseChatServerFrame(summaryFrame(stage));
+      assert.equal(input.dag, null); assert.equal(input.dag_oversized, true);
+      assert.equal(input.dag_digest.truncated, truncated);
+      assert.deepEqual(input.dag_digest.runs.map(r => r.running_task_ids), ids);
+      const { marker, ...session } = input;
+      globalThis.fetch = async (path, init) => {
+        assert.equal(path, '/api/sessions/live'); assert.equal(init.method, 'GET');
+        return Response.json({ sessions: [session] });
+      };
+      const [parsed] = await listLiveSessions();
+      assert.equal(parsed.dagOversized, true); assert.equal(parsed.dag, null);
+      assert.deepEqual(parsed.dagDigest, parseDagDigest(frame.dagDigest));
+      assert.equal(parseTaskUpdated(parsed.task).tasks[0].liveProgress.lastAssistantLine, marker);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+  const recovered = summaryInput('complete2-recovery');
+  assert.equal(recovered.dag_oversized, undefined); assert.equal(recovered.dag_digest, undefined);
+  assert.equal(recovered.dag.truncated_runs, false); assert.equal(recovered.dag.runs[0].nodes.length, 2);
+  assert.ok(recovered.dag.runs[0].updated_at > summaryInput('complete2').dag.runs[0].updated_at);
+});
+
+test('compact boundary oracle requires exact2, unknown, qualified1, then exact2 recovery on both surfaces', () => {
+  for (const [stage, text, aria] of [
+    ['compact-duplicate-ids', '2', 'exact:2'], ['compact-no-ids', '?', 'unknown'],
+    ['compact-mixed-ids', '1+', 'partial:1'], ['complete2-recovery', '2', 'exact:2'],
+  ]) {
+    const result = assertSummaryDOM(dom(text, aria), stage, copy);
+    assert.equal(result.sidebar.falseExact, false); assert.equal(result.overview.impliesZero, false);
+    for (const [other, otherAria] of [['0', 'exact:0'], ['1', 'exact:1'], ['4', 'exact:4'],
+      ['2', 'exact:2'], ['?', 'unknown'], ['1+', 'partial:1'], ['2+', 'partial:2']]) {
+      if (other !== text) assert.throws(() => assertSummaryDOM(dom(other, otherAria), stage, copy));
+    }
+    assert.throws(() => assertSummaryDOM({ sidebar: { text, aria }, overview: null }, stage, copy));
+  }
 });
 
 test('CLI accepts only an evidence directory', () => {

@@ -30,7 +30,8 @@ test('Chrome DOM machinery observes exact post-arm mutations, rejects false exac
     for (const viewport of viewports) {
       await page.setViewportSize(viewport);
       for (const stage of stages) {
-        const text = stage === 'complete2' ? '2' : stage === 'partial-retained1' ? '1+' : '?';
+        const text = ['complete2', 'compact-duplicate-ids', 'complete2-recovery'].includes(stage) ? '2'
+          : ['partial-retained1', 'compact-mixed-ids'].includes(stage) ? '1+' : '?';
         const suffix = text === '?' ? 'Unknown' : text.endsWith('+') ? 'Partial' : '';
         const marker = `${viewport.width}-${stage}`;
         const signal = await armDOM(page, marker => document.querySelector('.th-overview-card-line').textContent === marker, marker);
