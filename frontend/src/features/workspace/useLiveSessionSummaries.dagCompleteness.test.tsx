@@ -6,6 +6,7 @@ import { Sidebar } from "../../components/Sidebar";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import { __resetLiveBadgeStoreForTests } from "./liveBadgeStore";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
+import { parseDagDigest, parseTaskDigest } from "./activityDigest";
 import type { LiveSessionInfo, Workspace } from "./workspace";
 
 vi.mock("./useLiveSessions", async (importOriginal) => ({
@@ -95,6 +96,66 @@ describe("DAG summary completeness", () => {
   it("uses authoritative compact DAG data instead of stale partial cached topology", () => {
     const summary = summarizeLiveSession({ ...info(partial), dagOversized: true, dagDigest: { runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1", "t2"] }], truncated: false } }, NOW);
     expect(summary).toMatchObject({ runningCount: 2, truncatedTasks: false, dagOversized: false });
+  });
+});
+
+describe.each(["rich", "compact"] as const)("%s DAG running task identity", (representation) => {
+  function session(taskIdsByRun: readonly (readonly string[])[], status = "running"): LiveSessionInfo {
+    const runs = taskIdsByRun.map((taskIds, index) => ({
+      ...fullRun,
+      run_id: `run-${index}`,
+      status,
+      counts: { ...counts, total: taskIds.length, running: taskIds.length },
+      nodes: taskIds.map((taskId, nodeIndex) => ({ ...nodeA, id: `node-${nodeIndex}`, task_id: taskId })),
+      edges: [],
+    }));
+    if (representation === "rich") return info({ runs, truncated_runs: false });
+    const dagDigest = parseDagDigest({
+      runs: runs.map((run) => ({
+        run_id: run.run_id, status: run.status, running_task_ids: run.nodes.map((node) => node.task_id),
+      })),
+      truncated: false,
+    });
+    if (dagDigest === null) throw new Error("Invalid compact DAG fixture");
+    return { ...info(partial), dagOversized: true, dagDigest };
+  }
+
+  it.each([
+    { name: "full2 positive control", runs: [["task-a", "task-b"]] },
+    { name: "duplicate IDs within a run", runs: [["task-a", "task-b", "task-a", "task-b"]] },
+    { name: "duplicate IDs across two active runs (exact4 regression)", runs: [["task-a", "task-b"], ["task-a", "task-b"]] },
+  ])("returns exact2 for $name", ({ runs }) => {
+    expect(summarizeLiveSession(session(runs), NOW)).toMatchObject({
+      runningCount: 2, dagRunning: 2, truncatedTasks: false, taskOversized: false, dagOversized: false,
+    });
+  });
+
+  describe.each(["rich", "compact"] as const)("%s task authority", (taskRepresentation) => {
+    it.each(["running", "pending", "completed", "failed", "cancelled", "lost", "interrupted", "error", "skipped"])(
+      "excludes repeated DAG IDs for authoritative %s task rows",
+      (status) => {
+        const source = session([["task-a", "task-b", "task-a"], ["task-a", "task-b"]]);
+        const tasks = [
+          { task_id: "task-a", name: "Authoritative", status, updated_at: "2026-09-08T10:00:00Z" },
+          { task_id: "task-b", name: "Running", status: "running", updated_at: "2026-09-08T10:00:00Z" },
+        ];
+        const taskDigest = parseTaskDigest({ tasks, truncated: false });
+        if (taskDigest === null) throw new Error("Invalid compact task fixture");
+        const input = taskRepresentation === "rich"
+          ? { ...source, task: { tasks } }
+          : { ...source, taskOversized: true, taskDigest };
+        expect(summarizeLiveSession(input, NOW)).toMatchObject({
+          runningCount: status === "running" ? 2 : 1, dagRunning: 0,
+          truncatedTasks: false, taskOversized: false, dagOversized: false,
+        });
+      },
+    );
+  });
+
+  it.each(["completed", "failed", "cancelled"])("excludes %s DAG runs with retained running IDs", (status) => {
+    expect(summarizeLiveSession(session([["task-a", "task-b"], ["task-a", "task-b"]], status), NOW)).toMatchObject({
+      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+    });
   });
 });
 

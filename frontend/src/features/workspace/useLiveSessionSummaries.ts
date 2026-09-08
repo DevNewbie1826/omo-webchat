@@ -186,10 +186,12 @@ function countDigestTaskRunning(
 
 function countDigestDagRunning(runs: readonly DagDigestRun[], taskIds: ReadonlySet<string>): number {
   let running = 0;
+  const seenTasks = new Set(taskIds);
   for (const run of runs) {
     if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
     for (const taskId of run.runningTaskIds) {
-      if (taskIds.has(taskId)) continue;
+      if (seenTasks.has(taskId)) continue;
+      seenTasks.add(taskId);
       running += 1;
     }
   }
