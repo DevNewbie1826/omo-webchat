@@ -193,7 +193,17 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
       })();
     }
     if (tab === "agents") {
-      if (agentsPartial) return t("activity.partial");
+      // Incomplete history: retained running rows are a confirmed lower
+      // bound only (`N+`), and zero retained running cannot certify an
+      // empty field (`?`). The exact running/total stays reserved for
+      // complete data; the localized explanation lives in the panel and on
+      // the tab's title — the collapsed strip cannot carry the sentence
+      // (it painted past its own button at 390px). Compact markers keep
+      // the count slot inside the tab.
+      if (agentsPartial) {
+        const running = tasks.filter((task) => task.status === "running").length;
+        return running > 0 ? `${running}+` : "?";
+      }
       return tasks.length === 0
         ? null
         : `${tasks.filter((task) => task.status === "running").length}/${tasks.length}`;
@@ -331,6 +341,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
               aria-selected={selectedTab === tab}
               aria-controls={`${panelElementId(tab, panelId)}`}
               tabIndex={selectedTab === tab ? 0 : -1}
+              title={tab === "agents" && agentsPartial ? t("activity.partial") : undefined}
               onClick={() => activateTab(tab)}
               onKeyDown={onTabKeyDown}
             >

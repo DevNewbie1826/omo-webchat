@@ -28,6 +28,17 @@ function sourceRun(overrides: Partial<ActivityDagRun> = {}): ActivityDagRun {
   });
 }
 
+/**
+ * Collapsed Subagents count-slot contract under incomplete history. The
+ * mobile tab strip cannot carry the localized "Partial history shown"
+ * sentence in the count slot (it painted past its own button and over the
+ * neighboring DAG tab at 390x844), so the slot shows a compact
+ * machine-consumed qualifier: a confirmed running lower bound `N+` when at
+ * least one retained row is running, otherwise `?` — zero retained running
+ * must never read as an exact empty field. Complete data keeps the exact
+ * `running/total` format. The localized explanation stays in the panel and
+ * on the tab's accessible title.
+ */
 describe("ActivityShelf partial DAG-derived Subagents counts", () => {
   let harness: ActivityShelfHarness;
 
@@ -57,38 +68,49 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     );
   }
 
-  it("qualifies source running2/retained1/truncatedDags and restores exact full2", () => {
+  it("qualifies source running2/retained1/truncatedDags with the confirmed lower bound and restores exact full2", () => {
     const full = sourceRun();
     const partial = sourceRun({ nodes: full.nodes.slice(0, 1), truncated: true });
     renderShelf(harness, activityState({ dags: [partial], truncatedDags: true }));
 
-    console.info("DAG count seam", JSON.stringify({
-      sourceRunning: partial.counts.running,
-      retainedRunning: partial.nodes.filter(node => node.state === "running").length,
-      truncatedDags: true,
-      observedCount: count(),
-    }));
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("1+");
+    expect(agentsTab().getAttribute("title")).toBe("activity.partial");
     expect([...harness.container.querySelectorAll("[data-activity-tab]")].map(tab =>
       tab.getAttribute("data-activity-tab"))).toEqual(["todo", "agents", "dag"]);
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
     expect(agentsPanel().querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
     click(agentsTab());
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("1+");
 
     renderShelf(harness, activityState({ dags: [full], truncatedDags: false }));
     expect(count()).toBe("2/2");
+    expect(agentsTab().getAttribute("title")).toBeNull();
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
     expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+  });
+
+  it("scales the confirmed lower bound for larger known running counts", () => {
+    const retained = Array.from({ length: 12 }, (_unused, index) => ({
+      id: `n${index}`, prompt: `child ${index}`, dependsOn: [], state: "running" as const,
+    }));
+    renderShelf(harness, activityState({
+      dags: [sourceRun({
+        counts: { ...sourceRun().counts, total: 20, running: 14 },
+        nodes: retained,
+        truncated: true,
+      })],
+    }));
+    expect(count()).toBe("12+");
+    expect(agentsTab().getAttribute("title")).toBe("activity.partial");
   });
 
   it("qualifies a run-local truncated marker without the aggregate marker", () => {
     renderShelf(harness, activityState({
       dags: [sourceRun({ nodes: sourceRun().nodes.slice(0, 1), truncated: true })],
     }));
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("1+");
   });
 
   it.each([
@@ -99,7 +121,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     renderShelf(harness, activities);
     click(agentsTab());
     expect(agentsPanel().querySelector(".th-activity-empty")).toBeNull();
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("?");
     expect(agentsPanel().querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
   });
 
@@ -112,7 +134,8 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       })],
       truncatedDags: true,
     }));
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("?");
+    expect(count()).not.toContain("0");
   });
 
   it("preserves task status authority and task-ID dedup through partial to full", () => {
@@ -125,11 +148,12 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
     expect(agentsPanel().querySelector(".th-activity-agent")?.textContent).toContain(task.name);
-    expect(count()).toBe("activity.partial");
+    expect(count()).toBe("?");
 
     renderShelf(harness, activityState({ tasks: [task], dags: [full] }));
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
     expect(count()).toBe("1/2");
+    expect(agentsTab().getAttribute("title")).toBeNull();
     expect(agentsPanel().textContent).not.toContain("retained child");
   });
 
