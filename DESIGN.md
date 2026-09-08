@@ -293,9 +293,11 @@ Choose a tested foreground/background token pair instead.
   overlay drawer without the rail. The shared `--th-space-11` token is the
   coarse-pointer touch size and must not be re-valued to remove the expanded
   rail; only the expanded shell's allocation changes. The mobile drawer is
-  sized and positioned to the visual viewport: sidebar and backdrop consume
-  its height and origin together, without repeating the translation already
-  supplied by `#root` while the keyboard is open. The desktop sidebar also
+  sized and positioned to the visible surface: in an installed PWA with the
+  keyboard closed, sidebar, drawer and backdrop consume the full
+  large-viewport screen together, and while the keyboard is open they
+  consume the visual viewport's height and origin without repeating the
+  translation already supplied by `#root`. The desktop sidebar also
   follows the visible bottom. The sidebar shell reserves the bottom
   home-indicator inset at every width (`env(safe-area-inset-bottom)` — zero
   wherever the hardware has none, and the only protection on landscape phones
@@ -311,6 +313,27 @@ Choose a tested foreground/background token pair instead.
   obsolete bottom contribution, never top protection. Overflow belongs to the
   Settings interior so every control remains fully visible and hit-testable
   when scrolled into view, without scrolling or escaping clipping ancestors.
+- Installed PWA surface: on the recorded installed device (iPhone 13 mini,
+  iOS 26.6.1) the screen and large viewport measure 812 CSS px tall while
+  the dynamic viewport and visual viewport measure 762. That is an observed
+  geometry split from one resting device, not a claim about how WebKit
+  computes those values internally. The intended contract: in standalone
+  mode with the keyboard closed, `#root` uses the large-viewport basis
+  (`100lvh`) so the shell background, drawer and backdrop cover the
+  home-indicator zone instead of leaving it to the body background.
+  Control-safe space is reserved once, inside the surface, never by
+  shortening a painted background: the composer stays full-bleed while its
+  internal bottom reserve is the larger of its existing breathing padding
+  and the necessary `env(safe-area-inset-bottom)`, and the sidebar keeps
+  its single existing inset reserve with zero footer bottom padding. While
+  the software keyboard is open, `#root` switches to VisualViewport height
+  and origin (`--th-vh-unit`, `--th-vv-top`/`--th-vv-left`) and the bottom
+  inset reserves are released because the keyboard covers the gesture zone.
+  Keyboard dismissal, rotation and foreground restoration re-publish current
+  geometry without corrupting a compatible unobscured baseline, and recovery
+  preserves focus and draft text. The raw visual variables keep their
+  visual-viewport meaning for existing dialog and Settings consumers, and
+  ordinary browsers keep the dynamic-viewport policy.
 - Chat pane: fills all remaining width and height with no horizontal overflow.
 - Header: full pane width, `--th-header-h`, one border at its bottom.
 - Conversation scrollport: fills all space between header and composer.
@@ -326,30 +349,41 @@ Choose a tested foreground/background token pair instead.
   owns the activity panel gap for the entire open intent, including hidden
   panels. Registration and preference changes recompute the complete shelf
   set; saved/requested sizes remain independent of viewport allocations.
-- Activity shelf anatomy: one summary/status row (role=status) joined by a
-  separate compact chevron fold control — the summary text is never the
-  toggle. When any activity exists, three equal primary tabs in user order
+- Activity shelf anatomy: there is no combined summary row and no separate
+  fold control; the tabs themselves are the selector and the toggle. When
+  any activity exists, three equal primary tabs in user order
   (Todo / Subagents / DAG) sit in a `tablist` with compact per-domain counts;
-  empty tabs keep their position and show a proper empty state. Initial
+  empty tabs keep their position and show a proper empty state. Activating
+  the already-active tab while the shelf is open closes it; activating
+  another tab while open switches to it. Enter and Space toggle the focused
+  tab, while Arrow/Home/End move selection and focus across tabs. Initial
   selection is the first available content in user order; after an explicit
   choice, new activity never steals the selection. All three tabpanels stay
   mounted (hidden tabs carry `hidden`), so per-view scroll state and DOM
   identity survive switching, and hidden panels run no motion. Open intent,
   tab selection, DAG view mode and the user's panel height are four separate
-  states: opening, folding, resizing and switching tabs never reset each
-  other. Real tab semantics: roving tabindex, Arrow/Home/End navigation,
+  states: opening, closing, resizing and switching tabs never reset each
+  other. Real tab semantics: roving tabindex,
   `aria-selected`/`aria-controls`/`tabpanel` wiring.
 - Activity DAG view: graph is the default; the List mode remains available
-  inside the DAG tab and the choice survives tab and fold switches. Nodes
+  inside the DAG tab and the choice survives tab switches and open/close
+  toggles. Nodes
   reuse the parsed waves/layering and size their boxes/row pitch to the user's
   type setting. Actual SVG glyph widths determine two-line title wrapping;
   separate line clips protect the status lane, and the full prompt stays in
   the `<title>`. Nodes expose their state as visible text plus a
-  non-colour glyph. Edges are directional (arrowhead markers). Motion is
-  state-purposeful only: the running node's dashed ring rotates while the
+  non-colour glyph. Edges are directional (arrowhead markers). Edges and
+  arrowheads from a completed source are green; every other edge stays gray.
+  Green means dependency satisfaction, never destination success. Edge flow
+  animates only from a completed source to a running destination, only in
+  the active Graph view while a run is running; flow stops under reduced
+  motion, in hidden or closed panels, in List mode, and once the run reaches
+  a terminal state. Motion is
+  state-purposeful only: the running node's dashed ring stays transparent
+  and rotates while the
   node is running and visible; a completion or failure plays one brief
   settle; a genuinely new node plays one restrained entry. No elapsed-time
-  tick, tab switch, or fold reopen replays the graph: completion, cancellation
+  tick, tab switch, or reopen replays the graph: completion, cancellation
   and leaving the graph consume one-shot motion. Reduced motion shows the
   static glyph/word state. The peer tabs remain visible even when inner panel
   headers are hidden for lack of headroom.
@@ -361,7 +395,18 @@ Choose a tested foreground/background token pair instead.
 - Reading column: `min(760px, 100%)`, horizontally centered. Structural
   containers remain full-width; only message content is constrained.
 - Composer: full-width structural footer with its controls in the same centered
-  reading column. Minimum 16px bottom breathing room after safe-area inset.
+  reading column. Bottom breathing room is an internal, painted reserve,
+  never a shortened background: 4px base, 16px on fine-pointer desktop.
+  Whenever the keyboard is closed, the total bottom reserve is
+  `max(base breathing, env(safe-area-inset-bottom))`, never their sum and
+  never less than the base. The unchanged base padding stays, and an empty
+  in-flow physical-reserve slot (a `flex: none` `::after` item at the end
+  of the composer form) adds only the shortfall, `max(0, inset - base)`.
+  The slot is not standalone-gated: an ordinary browser with a real bottom
+  inset gets the same single reserve, while `#root` keeps its ordinary
+  `100dvh` height policy. While the keyboard is open the slot is absent and
+  only the base padding remains, because the keyboard covers the gesture
+  zone.
 - The composer is one unified capsule: a single `--th-surface` pill
   (`--th-radius-pill`, one `--th-border` outline) that owns the plus
   attachment action, the multiline input, and the send/stop slot. The capsule

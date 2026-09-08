@@ -22,6 +22,16 @@ describe("mobile viewport lock", () => {
     expect(meta).toContain("viewport-fit=cover");
   });
 
+  it("shades the installed standalone PWA's full screen with the drawer backdrop", () => {
+    // The closed standalone backdrop shares the root's large-height basis.
+    // Ordinary browser and keyboard rules retain raw visual height.
+    const drawerCss = readFileSync("src/styles/mobile-drawer.css", "utf8");
+    const backdrop = drawerCss.match(
+      /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) \.th-backdrop \{([^}]*)\}/,
+    )?.[1] ?? "";
+    expect(backdrop.match(/height:\s*[^;]+;/g)).toEqual(["height: 100lvh;"]);
+  });
+
   it("opts the shell out of touch gesture zoom", () => {
     const css = readFileSync("src/styles/global.css", "utf8");
     const rule = css.match(/html,\s*body\s*\{([^}]*)\}/)?.[1] ?? "";
