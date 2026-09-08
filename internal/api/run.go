@@ -88,6 +88,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	}
 	recoveryDaemons := recoveryDaemonLifecycle{logger: logger}
 	ensureCfg := omorpc.EnsureConfig{
+		BinaryPath: os.Getenv("CHAT_PI_BINARY"),
 		WorkingDir: cfg.Root,
 		StateDir:   stateDir,
 		Env:        os.Environ(),
