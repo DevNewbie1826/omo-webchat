@@ -54,7 +54,7 @@ export function pwaAssertions(g, draft) {
   return [...rows,
     { id: 'PWA.composer-reserve', pass: g.composerCapsule?.rect.height > 0 && near(g.composerReserve, reserve),
       actual: { inputProfile: e.inputProfile, minimumBreathing: breathing, expected: reserve, measured: g.composerReserve, capsule: g.composerCapsule } },
-    { id: 'PWA.independent-insets', pass: Object.entries(e.safeInsets).every(([edge, value]) => near(g.resolvedSafeInsets[edge], value)), actual: g.resolvedSafeInsets },
+    { id: 'PWA.independent-insets', pass: Object.entries(e.safeInsets).every(([edge, value]) => near(g.resolvedSafeInsets[edge], edge === 'bottom' && e.expectedKeyboard ? 0 : value)), actual: g.resolvedSafeInsets },
     { id: 'PWA.raw-visual-variables', pass: near(parseFloat(g.cssViewport.heightUnit) * 100, g.visualViewport.height)
       && near(parseFloat(g.cssViewport.width), g.visualViewport.width)
       && near(parseFloat(g.cssViewport.top), g.visualViewport.top) && near(parseFloat(g.cssViewport.left), g.visualViewport.left), actual: g.cssViewport },
@@ -94,6 +94,7 @@ export function shelfExpectations(input, state, opened) {
   const combined = state === 'goal-activity-long-transcript';
   return { bothShelves: combined && !input.compactShelves || state === 'compact-adequate-space',
     compactShelves: input.compactShelves === true && (combined || ['compact-controls-reachable', 'compact-return'].includes(state)),
+    auxiliaryScrollRequired: input.compactShelves ? state === 'keyboard' : undefined,
     shelfIntent: opened && (input.compactShelves || combined) ? { goalOpen: true, activityOpen: true, selectedTab: 'agents' } : null };
 }
 
@@ -102,8 +103,14 @@ const retainedIntent = g => g.shelfIntent.goalOpen && g.shelfIntent.activityOpen
 
 export function compactReachabilityAssertion(before, after, controls) {
   const owner = before.shelves.auxiliary;
-  return { id: 'PWA.compact-auxiliary-reachable', pass: owner.clientHeight > 0 && owner.scrollHeight > owner.clientHeight
-    && ['auto', 'scroll'].includes(owner.overflowY) && after.shelves.auxiliary.scrollTop !== owner.scrollTop
+  // The tab-only header fits in the closed landscape case. A separately
+  // supplied smaller keyboard surface must still prove actual owner scrolling.
+  const scrollRequired = before.expectations.auxiliaryScrollRequired !== false;
+  const scrollContract = scrollRequired ? owner.scrollHeight > owner.clientHeight
+    && after.shelves.auxiliary.scrollTop !== owner.scrollTop
+    : owner.scrollHeight <= owner.clientHeight && after.shelves.auxiliary.scrollTop === owner.scrollTop;
+  return { id: 'PWA.compact-auxiliary-reachable', pass: owner.clientHeight > 0 && scrollContract
+    && ['auto', 'scroll'].includes(owner.overflowY)
     && ['goal', 'todo', 'agents', 'dag', 'resize'].every(key => controls.some(c => c.key === key))
     && controls.every(c => c.bounded && c.unclipped && c.hit && !c.disabled)
     && ['transcript', 'scrollport'].every(key => after.shelves[key].scrollTop === before.shelves[key].scrollTop)
@@ -204,9 +211,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
   const receipt = { phase, browserOptions, command: `bun test/qa/ui-pwa-viewport.mjs --phase ${phase} --out ${out}`, cwd: process.cwd(),
     source: { head: await git('rev-parse', 'HEAD'), tree: await git('rev-parse', 'HEAD^{tree}'), dirty: await git('status', '--short') },
     started: new Date().toISOString(), inventory: { cases, themes: ['dark', 'light'] },
-    evidenceKind: 'SYNTHETIC_CHROME_BUILT_SPA', nativePwaStatus: 'NOT_VERIFIED',
+    evidenceKind: 'SYNTHETIC_CHROME_BUILT_SPA', nativePwaStatus: 'USER_OWNED_NOT_VERIFIED',
     limitations: ['navigator.standalone, visualViewport and CDP safe insets are synthetic; no native PWA PASS.',
-      'Chrome CSS viewport units do not model the native iOS 762dvh/812lvh split. Dedicated recorded-geometry tests guard that regression.',
+      'Chrome layout/dynamic height stays distinct from the synthetic visual height; this is not native WebView clipping or status-bar mapping.',
       'pagehide/pageshow and orientation events are synthetic, not OS foreground or hardware rotation.',
       'Screenshots cover the Chrome viewport, not an iPhone display or OS keyboard. Actual iOS and same-device Safari remain separate gates.'] };
   let browser, paths;
@@ -246,11 +253,13 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         const draft = `PWA retained draft ${name}`;
         await page.locator('.th-pane--focused textarea').fill(draft);
         const capture = async (state, keyboard = false, top = 0, visualHeight = height, sidebarOpen = false) => {
-          const surface = { top: keyboard ? top : 0, left: 0, right: width, bottom: keyboard ? top + visualHeight : height };
-          const expectations = { expectedKeyboard: keyboard, safeInsets: input.insets, surface, mode: input.mode, sidebarOpen,
+          const visibleSurface = { top, left: 0, right: width, bottom: top + visualHeight };
+          const surface = input.mode === 'standalone' || keyboard ? visibleSurface : { top: 0, left: 0, right: width, bottom: height };
+          const expectations = { expectedKeyboard: keyboard, safeInsets: input.insets, surface, visibleSurface,
+            paintedSurface: { top: 0, left: 0, right: width, bottom: height }, mode: input.mode, sidebarOpen,
             ...shelfExpectations(input, state, shelvesOpened),
             inputProfile: input.hasTouch ? 'touch' : 'fine',
-            drawerSurface: input.mode === 'standalone' && !keyboard ? surface : { top, left: 0, right: width, bottom: top + visualHeight } };
+            drawerSurface: visibleSurface };
           if (sidebarOpen && width > 768 && (await page.locator('.th-sidebar').getAttribute('class')).includes('th-sidebar--collapsed')) {
             await arm(page, () => !document.querySelector('.th-sidebar').classList.contains('th-sidebar--collapsed'));
             await page.locator('.th-sidebar-rail .th-sidebar-toggle').click(); await complete(page);
@@ -258,7 +267,7 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
           await settle(page);
           if (expectations.bothShelves || expectations.compactShelves) rows.push({ scenario: `${name}-${state}`,
             ...await transcriptReachability(page, input.insets.bottom, input.insets.top, expectations) });
-          if (['compact-controls-reachable', 'compact-return'].includes(state)) rows.push({ scenario: `${name}-${state}`,
+          if (['compact-controls-reachable', 'compact-return'].includes(state) || input.compactShelves && state === 'keyboard') rows.push({ scenario: `${name}-${state}`,
             ...await compactReachability(page, input.insets.bottom, input.insets.top, expectations) });
           const g = await measure(page, input.insets.bottom, input.insets.top, expectations);
           rows.push(...pwaAssertions(g, draft).map(row => ({ scenario: `${name}-${state}`, ...row })));
@@ -285,10 +294,20 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
         await arm(page, () => !!document.querySelector('.th-settings-panel'));
         await page.locator('.th-settings-menu > button').click(); await complete(page);
         const settingsExpectations = { expectedKeyboard: false, mode: input.mode,
-          safeInsets: input.insets, surface: { top: 0, left: 0, right: width, bottom: height }, sidebarOpen: true };
+          safeInsets: input.insets, surface: { top: 0, left: 0, right: width, bottom: height },
+          visibleSurface: { top: 0, left: 0, right: width, bottom: restingHeight }, sidebarOpen: true };
         rows.push({ scenario: name, ...await settingsReachability(page, input.insets.bottom, input.insets.top, settingsExpectations) });
         await arm(page, () => !document.querySelector('.th-settings-panel'));
         await page.keyboard.press('Escape'); await complete(page); await closeDrawer();
+        if (input.mode === 'standalone') {
+          // Independent closed origin: no marker override, layout/CSS viewport stays unchanged.
+          const top = 20, visible = Math.min(restingHeight, height - top);
+          await visualInput(page, { width, height: visible, offsetTop: top });
+          await capture('closed-origin', false, top, visible, width > 768);
+          await openSidebar(page); await capture('closed-origin-drawer', false, top, visible, true);
+          await closeDrawer();
+          await visualInput(page, { width, height: restingHeight, offsetTop: 0 });
+        }
         await openGoalBar(page);
         await openActivityTab(page);
         shelvesOpened = true;
@@ -374,9 +393,9 @@ export async function run({ phase, out, driver = process.env.QA_PLAYWRIGHT }) {
     const compactStates = ['compact-controls-reachable', 'compact-adequate-space', 'compact-return', 'rotation-open-back-editor-end'];
     const completeInventory = bindings.length === cases.length * 2 && ['dark', 'light'].every(theme => cases.every(input => {
       const name = `${theme}-${input.mode}-${input.width}x${input.height}-${input.list}`;
-      const states = [...originalStates, ...(input.compactShelves ? compactStates : [])];
+      const states = [...originalStates, ...(input.mode === 'standalone' ? ['closed-origin', 'closed-origin-drawer'] : []), ...(input.compactShelves ? compactStates : [])];
       return states.every(state => captures.filter(c => c.name === name && c.state === state).length === 1);
-    })) && captures.length === cases.length * 2 * 12 + cases.filter(c => c.compactShelves).length * 2 * 4;
+    })) && captures.length === cases.length * 2 * 12 + cases.filter(c => c.compactShelves).length * 2 * 4 + cases.filter(c => c.mode === 'standalone').length * 2 * 2;
     const clean = cleanup.filter(c => c.contextClosed && c.serverStopped && c.portReboundAndReleased
       && c.pendingWebSockets === 0 && c.pendingOpens === 0 && c.pendingCreates === 0).length === cases.length * 2 && cleanup.at(-1)?.browserClosed;
     const failed = rows.filter(r => !r.pass);

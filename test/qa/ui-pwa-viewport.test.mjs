@@ -139,11 +139,11 @@ test('wrong closed marker plus stale reserve cannot agree themselves green', asy
   const g = await captured({ marker: false, reserve: 34, expectation: expected({ expectedKeyboard: true }) });
   expect(row(g, 'C5.bottom-reserve').pass).toBe(false);
 });
-test('recorded native shortened surface fails coverage separately from its correct internal 34 reserve', async () => {
-  const g = await captured({ bottom: 762 });
+test('visible 762 surface and correct internal 34 reserve pass independently of layout height 812', async () => {
+  const g = await captured({ bottom: 762, expectation: expected({ visibleSurface: bounds(0, 0, 375, 762) }) });
   expect(row(g, 'C5.bottom-reserve').pass).toBe(true);
-  expect(row(g, 'PWA.root-coverage').pass).toBe(false);
-  expect(row(g, 'PWA.sidebar-coverage').pass).toBe(false);
+  expect(row(g, 'PWA.root-coverage').pass).toBe(true);
+  expect(row(g, 'PWA.sidebar-coverage').pass).toBe(true);
 });
 for (const [selector, patch] of [
   ['#root', { bottom: 762 }], ['.th-app', { bottom: 762 }], ['.th-main', { bottom: 762 }],
@@ -232,13 +232,14 @@ test('explicit QA driver uses installed Chrome without session-report dependency
 
 for (const [width, height, rawHeight, safeTop, safeBottom, panelBottom] of [
   [375, 812, 762, 50, 34, 746], [390, 844, 794, 0, 0, 812],
-]) test(`R1 Settings ${width}: raw height budget is not the permitted surface bottom`, async () => {
-  const e = expected({ surface: bounds(0, 0, width, height), safeInsets: { top: safeTop, right: 0, bottom: safeBottom, left: 0 } });
+]) test(`Settings ${width}: a layout-sized anchor must still fit the visible safe bottom`, async () => {
+  const e = expected({ surface: bounds(0, 0, width, height), visibleSurface: bounds(0, 0, width, rawHeight),
+    safeInsets: { top: safeTop, right: 0, bottom: safeBottom, left: 0 } });
   const result = await captured({ bottom: height, visualHeight: rawHeight, expectation: e, settingsBottom: panelBottom,
     exercise: page => mobile.settingsReachability(page, safeBottom, safeTop, e) });
-  expect(result.actual.safe.bottom).toBe(height - safeBottom);
-  expect(result.actual.panelBounded).toBe(true);
-  expect(result.pass).toBe(true);
+  expect(result.actual.safe.bottom).toBe(rawHeight - safeBottom);
+  expect(result.actual.panelBounded).toBe(false);
+  expect(result.pass).toBe(false);
 });
 
 test('Settings entrance is finished before the first geometry sample, including stable scroll checks', async () => {
@@ -481,3 +482,69 @@ for (const defect of ['no-scroll', 'overflow', 'value', 'focus', 'selection', 'r
     expect(row().pass).toBe(false);
   });
 }
+
+for (const top of [0, 20]) test(`visible contract rejects correct reserve inside oversized standalone surface at origin ${top}`, async () => {
+  const e = expected({ surface: bounds(0, 0, 375, 812), visibleSurface: bounds(0, top, 375, top + 762) });
+  const g = await captured({ bottom: 812, visualHeight: 762, expectation: e });
+  expect(row(g, 'C5.bottom-reserve').pass).toBe(true);
+  expect(row(g, 'PWA.root-coverage').pass).toBe(false);
+  expect(row(g, 'PWA.sidebar-coverage').pass).toBe(false);
+  expect(row(g, 'C5.controls-bounded-and-hit').pass).toBe(false);
+});
+test('Settings cannot use an oversized declared layout to excuse invisible controls', async () => {
+  const e = expected({ visibleSurface: bounds(0, 0, 375, 762) });
+  const result = await captured({ settingsBottom: 746, visualHeight: 762, expectation: e,
+    exercise: page => mobile.settingsReachability(page, 34, 50, e) });
+  expect(result.actual.safe.bottom).toBe(728);
+  expect(result.pass).toBe(false);
+});
+test('acceptance measurement does not insert hidden geometry probes', async () => {
+  const e = expected();
+  const added = await captured({ exercise: async page => {
+    await page.evaluate(() => { window.addedQAElements = 0;
+      window.qaObserver = new MutationObserver(records => { for (const r of records) window.addedQAElements += r.addedNodes.length; });
+      window.qaObserver.observe(document.body, { childList: true, subtree: true });
+    });
+    await measure(page, 34, 50, e);
+    return page.evaluate(() => { window.qaObserver.disconnect(); return window.addedQAElements; });
+  } });
+  expect(added).toBe(0);
+});
+
+test('painted canvas coverage is separate from a correctly shortened interactive root', async () => {
+  const g = await captured({ bottom: 762, expectation: expected({ surface: bounds(0, 0, 375, 762),
+    paintedSurface: bounds(0, 0, 375, 812) }) });
+  g.canvas = { rect: bounds(0, 0, 375, 812), backgroundColor: 'rgb(24, 24, 24)', opacity: '1' };
+  const painted = () => row(g, 'PWA.canvas-painted-coverage');
+  expect(painted()?.pass).toBe(true);
+  expect(row(g, 'PWA.root-coverage').pass).toBe(true);
+  g.canvas.rect.bottom = 762; expect(painted().pass).toBe(false);
+  g.canvas.rect.bottom = 812; g.canvas.backgroundColor = 'rgba(0, 0, 0, 0)'; expect(painted().pass).toBe(false);
+});
+test('surface validation rejects page pan independently of matching rectangles', async () => {
+  const g = await captured(); g.pageScroll = { x: 0, y: 0 }; g.root.scrollTop = 0;
+  expect(row(g, 'PWA.no-page-pan')?.pass).toBe(true);
+  g.pageScroll.y = 10; expect(row(g, 'PWA.no-page-pan').pass).toBe(false);
+});
+
+for (const defect of [null, 'overflow', 'scroll', 'hit', 'clip', 'bounds', 'missing']) {
+  test(`tab-only compact controls fit without scrolling: ${defect ?? 'valid'}`, async () => {
+    const { before, after, controls } = await compactSamples();
+    before.expectations.auxiliaryScrollRequired = false;
+    for (const g of [before, after]) g.shelves.auxiliary = { clientHeight: 183, scrollHeight: 183, scrollTop: 0, overflowY: 'auto' };
+    controls.forEach(c => { c.scrollTop = 0; });
+    if (defect === 'overflow') before.shelves.auxiliary.scrollHeight++;
+    if (defect === 'scroll') after.shelves.auxiliary.scrollTop++;
+    if (defect === 'hit') controls[0].hit = false;
+    if (defect === 'clip') controls[0].unclipped = false;
+    if (defect === 'bounds') controls[0].bounded = false;
+    if (defect === 'missing') controls.pop();
+    expect(compactReachabilityAssertion(before, after, controls).pass).toBe(defect === null);
+  });
+}
+test('compact matrix independently requires overflow only in the smaller keyboard surface', () => {
+  const input = cases.find(c => c.compactShelves);
+  expect(shelfExpectations(input, 'compact-controls-reachable', true).auxiliaryScrollRequired).toBe(false);
+  expect(shelfExpectations(input, 'compact-return', true).auxiliaryScrollRequired).toBe(false);
+  expect(shelfExpectations(input, 'keyboard', true).auxiliaryScrollRequired).toBe(true);
+});

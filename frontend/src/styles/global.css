@@ -18,14 +18,13 @@ body {
 }
 
 #root {
-  /* Keep controls inside the visible viewport. The keyboard-open rule below
-     switches to VisualViewport geometry when iOS shrinks and pans it. */
+  /* Ordinary browsers use the dynamic viewport; standalone and keyboard
+     surfaces follow the current VisualViewport height and origin below. */
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
-  /* Ordinary browsers retain their dynamic-viewport surface. Standalone
-     coverage and keyboard geometry have separate rules below. */
+  /* Background coverage must not enlarge the interactive surface. */
   height: 100dvh;
   overflow: hidden;
   /* Keep header and side controls clear of cutouts. The mobile input bar
@@ -33,17 +32,10 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 
-html[data-th-standalone]:not([data-th-keyboard-open]) #root {
-  /* The recorded installed device measured screen/lvh 812 and dvh/visual
-     762. Use the large-height basis for the closed standalone surface;
-     composer/sidebar controls own their internal safe reserve. Raw visual
-     variables and ordinary-browser height keep their existing meanings. */
-  height: 100lvh;
-}
-
+html[data-th-standalone] #root,
 html[data-th-keyboard-open] #root {
-  /* Keyboard covers the bottom safe-area, so drop the inset addition and let the
-     VisualViewport pan translate keep the composer visible above the keyboard. */
+  /* Pair raw height and origin in both keyboard states. The transform also
+     makes this the containing block for fixed drawer/backdrop children. */
   height: calc(var(--th-vh-unit, 1vh) * 100);
   transform: translate(var(--th-vv-left, 0px), var(--th-vv-top, 0px));
 }

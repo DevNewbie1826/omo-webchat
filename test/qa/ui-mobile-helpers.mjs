@@ -143,14 +143,14 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
     // The keyboard occludes the home-indicator region; retain its inset only when closed.
     const necessaryBottomInset = (expectations ? expectations.expectedKeyboard : keyboardOpen) ? 0 : safeBottom;
     // Insets are supplied by the scenario, never inferred from product padding.
-    const surface = expectations?.surface ?? viewport, drawerSurface = expectations?.drawerSurface ?? surface;
+    const surface = expectations?.mode === 'standalone' ? expectations.visibleSurface ?? expectations.surface
+      : expectations?.surface ?? viewport;
+    const drawerSurface = expectations?.mode === 'standalone' ? surface : expectations?.drawerSurface ?? surface;
     const safe = { top: drawerSurface.top + safeTop, left: drawerSurface.left + (expectations?.safeInsets.left ?? 0),
       right: drawerSurface.right - (expectations?.safeInsets.right ?? 0), bottom: drawerSurface.bottom - necessaryBottomInset };
-    // Raw visual height is a Settings max-height BUDGET, not its absolute bottom.
-    // Its footer anchor can live on the independently declared full PWA surface.
-    // Ordinary/keyboard scenarios declare their own usable surface in the same coordinates.
-    const settingsSafe = { top: surface.top + safeTop, bottom: surface.bottom - necessaryBottomInset,
-      left: surface.left + (expectations?.safeInsets.left ?? 0), right: surface.right - (expectations?.safeInsets.right ?? 0) };
+    // Settings is anchored in the sidebar, not the painted canvas. Both its
+    // height budget and full rectangle must fit the independently visible region.
+    const settingsSafe = { ...safe };
     const button = (element, bounds = safe) => {
       const r = rect(element), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
       const clippingAncestors = [];
@@ -184,20 +184,11 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
     const node = selector => { const e = document.querySelector(selector); return e ? read(e) : null; };
     let independent = {};
     if (expectations) {
-      const units = {}, insets = {};
-      const probe = document.createElement('div');
-      probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;width:0;';
-      document.body.appendChild(probe);
-      try {
-        for (const unit of ['vh', 'svh', 'lvh', 'dvh']) {
-          probe.style.height = `100${unit}`; units[unit] = probe.getBoundingClientRect().height;
-        }
-        for (const edge of ['top', 'right', 'bottom', 'left']) {
-          probe.style.paddingTop = `env(safe-area-inset-${edge}, 0px)`;
-          insets[edge] = parseFloat(getComputedStyle(probe).paddingTop);
-        }
-      } finally { probe.remove(); }
-      const appRoot = document.querySelector('#root');
+      // Read existing painted elements only; acceptance never inserts probes.
+      // These are observed reserves, never inputs to the expected safe rectangle.
+      const appRoot = document.querySelector('#root'), rootStyle = getComputedStyle(appRoot);
+      const insets = { top: parseFloat(rootStyle.paddingTop), right: parseFloat(rootStyle.paddingRight),
+        bottom: s.paddingBottom, left: parseFloat(rootStyle.paddingLeft) };
       const bottomHits = [surface.left + 1, (surface.left + surface.right) / 2, surface.right - 1].map(x => {
         const y = surface.bottom - 1, hit = document.elementFromPoint(x, y);
         return { x, y, tag: hit?.tagName ?? null, className: hit?.className ?? null,
@@ -225,7 +216,8 @@ export async function measure(page, safeBottom, safeTop = 0, expectations) {
             selectionStart: editor.selectionStart, selectionEnd: editor.selectionEnd };
         })() : null,
         composerControls: composer ? [...composer.querySelectorAll('textarea, button')].filter(e => e.getBoundingClientRect().width > 0).map(e => button(e)) : [],
-        bottomHits, viewportUnitHeights: units, resolvedSafeInsets: insets,
+        bottomHits, resolvedSafeInsets: insets, canvas: node('body'),
+        pageScroll: { x: scrollX, y: scrollY },
         screen: { width: screen.width, height: screen.height, availWidth: screen.availWidth, availHeight: screen.availHeight,
           orientation: screen.orientation?.type ?? null, devicePixelRatio },
         navigatorStandalone: navigator.standalone === true,
@@ -273,12 +265,18 @@ export function footerAssertions(g) {
 }
 
 export function surfaceAssertions(g) {
-  const e = g.expectations, s = e.surface, d = e.drawerSurface ?? s, inset = e.safeInsets;
+  const e = g.expectations, s = e.mode === 'standalone' ? e.visibleSurface ?? e.surface : e.surface,
+    d = e.mode === 'standalone' ? s : e.drawerSurface ?? s, inset = e.safeInsets;
   const near = (a, b) => Number.isFinite(a) && Math.abs(a - b) <= 1;
   const box = (actual, expected) => !!actual && actual.rect.width > 0 && actual.rect.height > 0
     && Object.entries(expected).every(([edge, value]) => near(actual.rect[edge], value));
   const content = { top: s.top + inset.top, bottom: s.bottom, left: s.left + inset.left, right: s.right - inset.right };
   return [
+    ...(e.paintedSurface ? [{ id: 'PWA.canvas-painted-coverage', pass: !!g.canvas
+      && g.canvas.rect.top <= e.paintedSurface.top + 1 && g.canvas.rect.left <= e.paintedSurface.left + 1
+      && g.canvas.rect.bottom >= e.paintedSurface.bottom - 1 && g.canvas.rect.right >= e.paintedSurface.right - 1
+      && /^rgb\([^)]+\)$/.test(g.canvas.backgroundColor) && Number(g.canvas.opacity) === 1, actual: g.canvas }] : []),
+    { id: 'PWA.no-page-pan', pass: g.pageScroll?.x === 0 && g.pageScroll?.y === 0 && g.root.scrollTop === 0, actual: g.pageScroll },
     { id: 'PWA.keyboard', pass: g.keyboardOpen === e.expectedKeyboard, actual: { expected: e.expectedKeyboard, marker: g.keyboardOpen } },
     { id: 'PWA.sidebar-state', pass: g.sidebarOpen === e.sidebarOpen, actual: g.sidebarOpen },
     { id: 'PWA.mode', pass: g.displayMode === e.mode, actual: g.displayMode },

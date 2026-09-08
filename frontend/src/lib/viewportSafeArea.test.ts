@@ -24,18 +24,15 @@ describe("mobile safe area", () => {
     );
   });
 
-  test("paints the installed standalone PWA's full screen only while the keyboard is closed", () => {
-    // The recorded installed device measured screen/lvh 812 and dvh/visual
-    // 762. Only the closed standalone surface uses lvh; raw visual geometry
-    // and ordinary-browser dvh remain separate policies.
-    const standalone = globalCss.match(
-      /html\[data-th-standalone\]:not\(\[data-th-keyboard-open\]\) #root \{([^}]*)\}/,
+  test("standalone interactive height and origin use raw visual geometry independently of the keyboard", () => {
+    const visual = globalCss.match(
+      /html\[data-th-standalone\] #root,\s*html\[data-th-keyboard-open\] #root \{([^}]*)\}/,
     )?.[1] ?? "";
-    expect(standalone.match(/height:\s*[^;]+;/g)).toEqual(["height: 100lvh;"]);
-    // dvh remains the only ungated full-surface height.
+    expect(visual).toContain("height: calc(var(--th-vh-unit, 1vh) * 100)");
+    expect(visual).toContain("transform: translate(var(--th-vv-left, 0px), var(--th-vv-top, 0px))");
     const base = globalCss.match(/^#root \{([^}]*)\}/m)?.[1] ?? "";
     expect(base).toContain("height: 100dvh");
-    expect(base).not.toContain("lvh");
+    expect(globalCss).not.toContain("100lvh");
   });
 
   test("reserves only the additional physical inset after the composer's unchanged breathing padding", () => {
