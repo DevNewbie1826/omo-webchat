@@ -11,7 +11,7 @@ import { observeSockets } from './heartbeat-liveness.mjs';
 import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
-import { actionDOM, armDOM, assertSubagents, assertSurface, browserGate, capture, descriptions, doneDOM, reconnectWithoutReplay, releaseComplete, screenshotPath, setupDOM, statusIs, view } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, assertSubagents, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, reconnectWithoutReplay, releaseComplete, screenshotPath, setupDOM, statusIs, view } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
   assert.ok(globalThis.Bun, 'Run with bun test/qa/dag-complete.mjs');
@@ -92,6 +92,27 @@ export async function run({ evidenceDir }) {
   async function snap(name, mode = 'graph') {
     const observation = await assertSurface(page, expected, mode); await capture(page, evidenceDir, name, observation); record(name, { total: observation.total, mode });
   }
+  async function expandedDescriptions(name) {
+    for (const edge of ['start', 'end']) {
+      await descriptions(page, expected, edge);
+      const observation = await assertSurface(page, expected, 'graph');
+      await capture(page, evidenceDir, `${name}-description-${edge}`, observation, { node: expected.nodes.at(-1), edge });
+      record(`${name}-description-${edge}`, { expanded: true, bytes: 2048, edge, screenshot: `${name}-description-${edge}.png` });
+    }
+    await closeDescriptions(page);
+  }
+  async function subagentsProof(name, options, sourceCounts) {
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+      await actionDOM(page, size => innerWidth === size.width && innerHeight === size.height,
+        () => page.setViewportSize(viewport), viewport);
+      const counts = await assertSubagents(page, options);
+      const label = viewport.width === 1280 ? name : `${name}-mobile`;
+      await capture(page, evidenceDir, label, { ...counts, sourceCounts, viewport });
+      record(label, { ...counts, viewport, screenshot: `${label}.png` });
+    }
+    await actionDOM(page, () => innerWidth === 1280 && innerHeight === 800,
+      () => page.setViewportSize({ width: 1280, height: 800 }));
+  }
   process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   try {
     fixture = await startCompleteFixture({ evidenceDir }); interrupted.signal.throwIfAborted();
@@ -108,7 +129,7 @@ export async function run({ evidenceDir }) {
     observed = observeSockets(page); await setupDOM(page); gate = await browserGate(page, http);
     page.on('pageerror', error => report.errors.push({ type: 'pageerror', error: String(error) }));
     await visit(); await snap('C2-desktop');
-    await descriptions(page, expected); record('full-2048-byte-description-expanded');
+    await expandedDescriptions('C2-desktop'); record('full-2048-byte-description-expanded');
     await view(page, 'list'); await snap('C2-desktop-list', 'list'); await view(page, 'graph');
     await actionDOM(page, () => document.querySelector('.th-chat-body')?.scrollTop === 0,
       () => page.locator('.th-chat-body').evaluate(node => node.scrollTo({ top: 0, behavior: 'instant' })));
@@ -212,13 +233,21 @@ export async function run({ evidenceDir }) {
     await actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true',
       () => page.locator('[data-activity-tab="agents"]').click());
     await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'clear-other-DAG-derived-subagent-summaries');
+    // Reuse the owned real dense checkpoint for a two-digit lower bound; no new API or fake full response.
+    const largeSource = structuredClone(stableSource); largeSource.updatedAt = '2026-09-08T10:06:30Z'; largeSource.status = 'running';
+    for (const node of largeSource.nodes) { node.state = 'running'; delete node.completedAt; }
+    await fixture.replace('dense-64', largeSource);
+    const large = expectedRun(largeSource);
+    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
+      runs: [{ ...large, nodes: large.nodes.slice(0, 12), edges: [], waves: [], truncated_nodes: true }] } }, 'larger-retained-count-from-owned-64-node-checkpoint');
+    await subagentsProof('C2-subagents-partial-twelve', { partial: true, retained: 12 }, large.counts);
+    await fixture.replace('dense-64', stableSource);
+    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'clear-larger-count-before-original-one-zero-full-recovery');
     for (const [minute, retainedNodes, partialCounts, name] of [[7, 1, true, 'C2-subagents-partial-one'], [8, 0, true, 'C2-subagents-partial-zero'], [9, 2, false, 'C2-subagents-full-two']]) {
       pairSource.updatedAt = `2026-09-08T10:0${minute}:00Z`; await fixture.replace('long-identities', pairSource); pair = expectedRun(pairSource);
       await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: partialCounts,
         runs: [{ ...pair, nodes: pair.nodes.slice(0, retainedNodes), edges: partialCounts ? [] : pair.edges, waves: [] }] } }, name);
-      const counts = await assertSubagents(page, { partial: partialCounts, retained: retainedNodes });
-      const screenshot = await screenshotPath(page, join(evidenceDir, `${name}.png`));
-      await save(evidenceDir, `${name}.json`, { ...counts, sourceCounts: pair.counts, screenshot });
+      await subagentsProof(name, { partial: partialCounts, retained: retainedNodes }, pair.counts);
     }
     const fullTwo = gate.arm('long-identities');
     await page.locator('[data-activity-tab="dag"]').click(); await releaseComplete({ page, held: fullTwo, expected: pair });
@@ -226,9 +255,10 @@ export async function run({ evidenceDir }) {
     record('partial-Subagents-qualified-and-authoritative-full-two-restored', { running: 2, total: 2 });
     await releaseComplete({ page, held: await select('dense-64'), expected });
     await visit(true); await snap('C2-reload');
-    await page.setViewportSize({ width: 390, height: 844 });
+    await actionDOM(page, () => innerWidth === 390 && innerHeight === 844,
+      () => page.setViewportSize({ width: 390, height: 844 }));
     await visit(true); await snap('C2-mobile');
-    await descriptions(page, expected); await view(page, 'list'); await snap('C2-mobile-list', 'list'); await view(page, 'graph');
+    await expandedDescriptions('C2-mobile'); await view(page, 'list'); await snap('C2-mobile-list', 'list'); await view(page, 'graph');
     assert.equal(fixture.transport.base.frames.filter(frame => frame.type === 'chat.send').length, 0);
     assert.deepEqual(report.errors, []); report.passed = true;
   } catch (error) { failure = error; report.error = { message: error.message, stack: error.stack }; }

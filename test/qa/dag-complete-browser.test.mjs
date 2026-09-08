@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertSubagents, assertSurface, reconnectWithoutReplay, screenshotPath } from './dag-complete-browser.mjs';
+import * as proof from './dag-complete-browser.mjs';
 import { chromePath, loadDriver } from './dag-complete-fixture.mjs';
 import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
 
@@ -99,8 +100,8 @@ test('Chrome surface observer proves 64 original identities/2016 edge endpoints 
       await page.evaluate(mutation); await assert.rejects(assertSurface(page, expected, 'graph')); await page.setContent(html);
     }
     // This is observer machinery, not a second synthetic product surface.
-    for (const retained of [0, 1]) {
-      await page.setContent(`<button data-activity-tab="agents" aria-selected="true"><span class="th-activity-tab-count">${english['activity.partial']}</span></button>
+    for (const retained of [0, 1, 12]) {
+      await page.setContent(`<button data-activity-tab="agents" aria-selected="true" title="${english['activity.partial']}"><span class="th-activity-tab-count">${retained > 0 ? `${retained}+` : '?'}</span></button>
         <section data-activity-tabpanel="agents"><p class="th-activity-partial">${english['activity.partial']}</p></section>`);
       await assertSubagents(page, { partial: true, retained });
       await page.locator('.th-activity-tab-count').evaluate((node, value) => { node.textContent = value; }, `${retained}/${retained}`);
@@ -113,5 +114,54 @@ test('Chrome surface observer proves 64 original identities/2016 edge endpoints 
   } finally {
     if (browser) { await browser.close(); assert.equal(browser.isConnected(), false); }
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('painted tab bounds and expanded prompt proof reject crossing text, clipping, missing and closed bodies', { timeout: 30000 }, async () => {
+  // Synthetic HTML is a negative-control harness for the exact lead observers, not product evidence.
+  const browser = await (await loadDriver()).launch({ executablePath: chromePath, headless: true });
+  let page;
+  try {
+    assert.equal(typeof proof.assertTabBounds, 'function');
+    assert.equal(typeof proof.assertExpandedPrompt, 'function');
+    page = await browser.newPage(); await proof.setupDOM(page);
+    await page.route('**/observer', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+    await page.goto('http://dag-machinery.test/observer');
+    const node = { id: 'last', prompt: 'Description text'.repeat(128) };
+    const html = `<style>body{margin:0;font:14px sans-serif}.tabs{display:flex;width:100%;gap:4px}button{flex:1;min-width:0;height:30px;display:flex;justify-content:center;gap:4px}.panel{height:180px;overflow:auto}p{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}</style>
+      <div class="tabs">${['todo','agents','dag'].map(tab => `<button data-activity-tab="${tab}"><span class="th-activity-tab-label">${tab}</span><span class="th-activity-tab-count">12+</span></button>`).join('')}</div>
+      <div class="panel"><details data-activity-dag-total="1"><summary>Descriptions</summary><details data-activity-dag-node="last"><summary>Last node</summary><p data-activity-dag-prompt>${node.prompt}</p></details></details></div>`;
+    for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+      await page.setViewportSize(viewport); await page.setContent(html);
+      const tabs = await proof.assertTabBounds(page); assert.equal(tabs.tabs.length, 3);
+      // A small count span remains within the button while its painted text crosses the next button.
+      await page.locator('[data-activity-tab="agents"] .th-activity-tab-count').evaluate(element => {
+        element.style.width = '2px'; element.textContent = '9'.repeat(100);
+      });
+      await assert.rejects(proof.assertTabBounds(page), /tab.*(bounds|overlap)/);
+      await page.setContent(html);
+      await assert.rejects(proof.assertExpandedPrompt(page, node, 'start'), /expanded/);
+      await proof.descriptions(page, { nodes: [node] }, 'start');
+      const start = await proof.assertExpandedPrompt(page, node, 'start');
+      assert.equal(start.prompt, node.prompt); assert.equal(start.edge, 'start');
+      await proof.descriptions(page, { nodes: [node] }, 'end');
+      const end = await proof.assertExpandedPrompt(page, node, 'end');
+      assert.equal(end.edge, 'end'); assert.ok(end.scroll.some(box => box.top > 0));
+      for (const mutate of [
+        () => document.querySelector('[data-activity-dag-node]').open = false,
+        () => document.querySelector('[data-activity-dag-total]').open = false,
+        () => document.querySelector('[data-activity-dag-prompt]').remove(),
+        () => document.querySelector('[data-activity-dag-prompt]').style.visibility = 'hidden',
+        () => document.querySelector('[data-activity-dag-prompt]').textContent = 'truncated',
+        () => document.querySelector('.panel').scrollTop = 0,
+      ]) {
+        await page.evaluate(mutate);
+        await assert.rejects(proof.assertExpandedPrompt(page, node, 'end'));
+        await page.setContent(html); await proof.descriptions(page, { nodes: [node] }, 'end');
+      }
+    }
+  } finally {
+    if (page && !page.isClosed()) await page.evaluate(() => window.__dagQA?.stop());
+    await browser.close(); assert.equal(browser.isConnected(), false);
   }
 });
