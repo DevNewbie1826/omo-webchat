@@ -68,7 +68,7 @@ func TestWindowsRealOmoReconnectTrace(t *testing.T) {
 			replace(descendantLog, descendantLog+`
 				var retained windows.Handle
 				if err := windows.DuplicateHandle(windows.CurrentProcess(), h, windows.CurrentProcess(), &retained, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
-					t.Fatal(err)
+					t.Fatal(errors.Join(err, windows.CloseHandle(h)))
 				}
 				pid, parent, image := entry.ProcessID, entry.ParentProcessID, image
 				t.Cleanup(func() {

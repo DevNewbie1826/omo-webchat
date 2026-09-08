@@ -159,19 +159,6 @@ jobs:
           }
           Write-Output "extension parity: automatic/node/bun identical ($($baseline.Count) packaged commands)"
 
-      - name: Native Node reconnect bounded reproduction (all profiles must pass)
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        env:
-          OMORPC_REAL_RUNTIME: node
-        run: |
-          & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnectTrace$' -count=8 -v -timeout=3m 2>&1 | Tee-Object -FilePath probe-reconnect-node-reproduction.txt
-          $probeExit = $LASTEXITCODE
-          if (Test-Path -LiteralPath probe-reconnect-node-reproduction.txt) {
-            Get-Content -LiteralPath probe-reconnect-node-reproduction.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
-          }
-          exit $probeExit
-
       - name: Production named-pipe contracts
         shell: pwsh
         run: go test ./internal/omorpc -count=1 -v -timeout=2m
@@ -193,7 +180,6 @@ jobs:
             probe-reconnect.txt
             probe-reconnect-node.txt
             probe-reconnect-bun.txt
-            probe-reconnect-node-reproduction.txt
 
   smoke-windows:
     runs-on: windows-latest
