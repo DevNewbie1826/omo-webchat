@@ -364,3 +364,19 @@
     display: none;
   }
 }
+
+/* An in-flow physical-reserve slot supplements, never replaces, the base
+   breathing padding. Together they reserve max(breathing, necessary inset)
+   inside the full-bleed background, including ordinary browsers. The empty
+   slot is absent while the keyboard is open, leaving only base breathing. */
+html:not([data-th-keyboard-open]) .th-chat-input::after {
+  content: "";
+  flex: none;
+  height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-1)));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  html:not([data-th-keyboard-open]) .th-chat-input::after {
+    height: max(0px, calc(env(safe-area-inset-bottom) - var(--th-space-4)));
+  }
+}
