@@ -70,7 +70,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
     const measure = (): void => {
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const above = picker.getBoundingClientRect().top - (column?.getBoundingClientRect().top ?? 0) - 4;
-      const bound = Math.max(0, Math.floor(Math.min(280, viewportHeight / 2, above)));
+      const bound = Math.max(0, Math.floor(Math.min(480, viewportHeight * 0.7, above)));
       // Measure nonshrinking chrome and a natural option, not the already
       // squeezed list. Keep the normal requirement while dense controls render.
       if (!dense) {

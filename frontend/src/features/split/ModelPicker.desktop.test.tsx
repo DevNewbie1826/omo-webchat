@@ -67,8 +67,22 @@ describe("bounded desktop ModelPicker", () => {
     const { popup, trigger } = render();
     expect(popup.classList.contains("th-model-picker-popover--panel")).toBe(available < 202);
     expect(popup.parentElement).toBe(available < 202 ? document.body : trigger.parentElement);
-    expect(popup.style.maxHeight).toBe(available < 202 ? "" : "280px");
+    expect(popup.style.maxHeight).toBe(available < 202 ? "" : "480px");
     expect(popup.querySelectorAll('[role="option"]')).toHaveLength(53);
+  });
+  it("clamps the open popup to the viewport-proportional bound before the fixed 480px maximum", () => {
+    vi.stubGlobal("innerHeight", 600);
+    vi.stubGlobal("visualViewport", { height: 600, addEventListener() {}, removeEventListener() {} });
+    const { popup } = render();
+    expect(popup.classList.contains("th-model-picker-popover--panel")).toBe(false);
+    expect(popup.style.maxHeight).toBe("420px");
+  });
+  it("clamps the open popup to the measured local upward bound in normal placement", () => {
+    vi.stubGlobal("visualViewport", { height: 900, addEventListener() {}, removeEventListener() {} });
+    anchorTop = 348;
+    const { popup } = render();
+    expect(popup.classList.contains("th-model-picker-popover--panel")).toBe(false);
+    expect(popup.style.maxHeight).toBe("300px");
   });
   it("moves to a panel on local resize, preserving query, navigation and focused thinking", () => {
     const { popup, selected, changed } = render();

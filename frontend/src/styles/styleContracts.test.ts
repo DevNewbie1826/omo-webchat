@@ -404,7 +404,7 @@ describe("visual accessibility contracts", () => {
     const popup = ruleBody(chatPane, ".th-model-picker-popover");
     expect(declarationValue(popup, "bottom")).toBe("calc(100% + var(--th-space-1))");
     expect(declarationValue(popup, "right")).toBe("0");
-    expect(declarationValue(popup, "max-height")).toBe("min(280px, 50dvh)");
+    expect(declarationValue(popup, "max-height")).toBe("min(480px, 70dvh)");
     expect(popup).not.toMatch(/(?:^|;)\s*top\s*:/);
     // Desktop always keeps chrome fixed and only the list scrolls.
     expect(declarationValue(ruleBody(chatPane, ".th-model-picker-list"), "overflow-y")).toBe("auto");

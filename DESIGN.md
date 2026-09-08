@@ -536,7 +536,7 @@ Choose a tested foreground/background token pair instead.
   changes send a request; confirmation and rollback retain the existing session
   transaction contract.
 - On desktop the picker opens as an upward popup anchored above the control
-  (Raised elevation, bounded to `min(280px, 50dvh)`), so the list never
+  (Raised elevation, bounded to `min(480px, 70dvh)`), so the list never
   covers the composer or send action. On narrow screens the existing
   viewport-contained sheet behavior is retained.
   Current identity, thinking controls and search stay fixed; only the list

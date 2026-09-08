@@ -57,7 +57,7 @@ export async function shortMenuScenarios(q) {
       assert.equal(opened.rows.length, 53); assert(opened.rows.some(r => r.complete && r.hit));
       assert(opened.popup.top >= 0 && opened.popup.bottom <= height);
       if (!opened.panel) {
-        assert(opened.popup.height <= Math.min(280, height / 2));
+        assert(opened.popup.height <= Math.min(480, height * 0.7));
         assert(opened.popup.top >= opened.column.top && opened.popup.bottom <= opened.trigger.top);
       } else assert.equal(await page.locator('.th-model-picker-popover').getAttribute('role'), 'dialog');
       await shot('OPEN');
