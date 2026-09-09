@@ -4,11 +4,26 @@
 your platform. You run one command; this package picks the right binary,
 forwards all flags verbatim, and passes the exit code / signals through.
 
+## Prerequisites
+
+- **Node 18 or newer** for the `npx` path (this package's `engines` range).
+  Bun users can run `bunx omo-webchat@latest ...` or `bunx --bun
+  omo-webchat@latest ...` instead; no Node installation is required for the
+  pure Bun path. Note: `bunx --bun` was observed to fail to launch the
+  wrapper on the tested hosted Windows setup with Bun 1.4.2 (it exits after
+  installation without running the package). On that setup prefer `npx` or
+  plain `bunx`.
+- The **official `omo` CLI** at runtime to answer chats. It is an external
+  program, not bundled by default. See "Agent resolution" below.
+
 ## Usage
 
 ```sh
 npx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```
+
+Stable versions publish under the `latest` dist-tag and prereleases under
+`next`, so `npx omo-webchat@next` selects the newest release candidate.
 
 Supported server flags: `--host`, `--port`, `--password`, `--root`,
 `--state-dir`, `--provider`, `--daemon`, `--stop`, `--status`
@@ -40,9 +55,11 @@ absolute path. Windows follows the same contract with the goreleaser zip
 
 ## Agent resolution (`CHAT_PI_BINARY`)
 
-The webchat server spawns an omo agent per chat. Before launching, the shim
-resolves the agent and injects it into the child environment as
-`CHAT_PI_BINARY`, in this precedence:
+The webchat server runs every chat as a logical session on one shared
+external omo process (`omo --mode rpc --multi-session`); it does not spawn a
+separate engine per chat. Before launching, the shim resolves the agent
+binary and injects it into the child environment as `CHAT_PI_BINARY`, in
+this precedence:
 
 1. `CHAT_PI_BINARY` if already set in your environment (used as-is);
 2. `omo` found on your `PATH`;
@@ -50,6 +67,11 @@ resolves the agent and injects it into the child environment as
    present** — it is never a hard dependency;
 4. otherwise a warning is printed with fix instructions; the server still
    launches so `--status`/`--stop`/`--provider` flows remain usable.
+
+If your `PATH` already contains a different program named `omo` (a name
+collision), the shim would pick it up at step 2. Set `CHAT_PI_BINARY` to the
+absolute path of the official omo CLI to override every other resolution
+step explicitly.
 
 To override everything, point the variable at any agent binary:
 

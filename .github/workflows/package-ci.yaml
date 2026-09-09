@@ -1,0 +1,116 @@
+name: package-ci
+
+on:
+  pull_request:
+  workflow_call:
+    outputs:
+      artifact-id:
+        description: Immutable artifact ID validated by all six native jobs
+        value: ${{ jobs.gate.outputs.artifact-id }}
+      source-commit:
+        description: Exact checked-out source commit
+        value: ${{ jobs.gate.outputs.source-commit }}
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+      - run: npm install --global npm@11.12.1
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - name: Package and local publication contracts
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test npm/cli/cli.test.js test/npm_release_test.js test/npm_windows_package_test.js test/npm_pack_test.js test/npm_publish_test.js test/npm_github_release_test.mjs test/npm_registry_fixture.test.mjs 2>&1 | tee package-contracts.log
+          bun test test/release_workflow.test.mjs 2>&1 | tee workflow-contracts.log
+      - name: Preserve contract results including failures and cleanup receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-contract-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            package-contracts.log
+            workflow-contracts.log
+          retention-days: 14
+
+  build:
+    needs: [contracts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.artifacts.outputs.artifact-id }}
+      source-commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.15.0'
+      - run: npm install --global npm@11.12.1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - id: source
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Build archives without publication
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: ${{ startsWith(github.ref, 'refs/tags/v') && 'release --clean --skip=publish' || 'release --clean --skip=publish --snapshot' }}
+      - name: Pack once and bind exact source, version and archive bytes
+        run: |
+          node npm/release.mjs pack --out release-artifacts
+          cp -R frontend/dist release-artifacts/frontend-dist
+      - id: artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  native:
+    needs: [build]
+    uses: ./.github/workflows/native-check.yaml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      artifact-id: ${{ needs.build.outputs.artifact-id }}
+      run-id: ${{ github.run_id }}
+      source-commit: ${{ needs.build.outputs.source-commit }}
+      source-ref: ${{ github.ref }}
+
+  gate:
+    needs: [build, native]
+    if: ${{ success() && needs.build.result == 'success' && needs.native.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      artifact-id: ${{ needs.build.outputs.artifact-id }}
+      source-commit: ${{ needs.build.outputs.source-commit }}
+    steps:
+      - run: echo 'All six native artifact consumers succeeded.'
