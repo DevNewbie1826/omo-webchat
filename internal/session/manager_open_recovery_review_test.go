@@ -387,7 +387,9 @@ func TestReviewLateClosePrecedesFenceRelease(t *testing.T) {
 		cfg.OpenRecoveryAfter = 2 * time.Second
 	})
 	openRelease := d.BlockHandler(omorpc.CmdOpenSession)
+	defer openRelease()
 	closeRelease := d.BlockHandler(omorpc.CmdCloseSession)
+	defer closeRelease()
 	budgetedAcquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, 60*time.Millisecond)
 
 	marker := openFenceMarker(mgr, "a")
