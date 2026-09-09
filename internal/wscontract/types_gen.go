@@ -2277,6 +2277,11 @@ const (
 	DurableNoticeKindRetryFallbackExhausted DurableNoticeKind = "retry_fallback_exhausted"
 	DurableNoticeKindServerFallbackAborted  DurableNoticeKind = "server_fallback_aborted"
 	DurableNoticeKindHighReasoningWarning   DurableNoticeKind = "high_reasoning_warning"
+	DurableNoticeKindAutoRetryStart         DurableNoticeKind = "auto_retry_start"
+	DurableNoticeKindAutoRetryEnd           DurableNoticeKind = "auto_retry_end"
+	DurableNoticeKindCompactionError        DurableNoticeKind = "compaction_error"
+	DurableNoticeKindQueueDeliveryUncertain DurableNoticeKind = "queue_delivery_uncertain"
+	DurableNoticeKindExtensionNotify        DurableNoticeKind = "extension_notify"
 )
 
 // ApprovalMethod values, from shared-types.json.
