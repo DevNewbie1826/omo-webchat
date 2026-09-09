@@ -45,6 +45,8 @@ export interface ActivityDagNode {
   readonly state: string;
   readonly attempt?: number;
   readonly taskId?: string;
+  /** Explicitly lossy projection text, never an exact task identity or dedup key. */
+  readonly taskIdPrefix?: string;
   readonly startedAt?: string;
   readonly completedAt?: string;
   readonly activity?: string;

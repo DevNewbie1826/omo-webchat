@@ -68,9 +68,11 @@ function parseDagNode(record: Record<string, unknown>): ActivityDagNode | null {
   const label = optString(record, "label");
   const attempt = optNumber(record, "attempt");
   const taskId = optString(record, "task_id");
+  const taskIdTruncated = optBoolean(record, "task_id_truncated");
   const startedAt = optString(record, "started_at");
   const completedAt = optString(record, "completed_at");
   if (label === null || attempt === null || taskId === null || startedAt === null || completedAt === null) return null;
+  if (taskIdTruncated === null || (taskIdTruncated === true && !taskId)) return null;
   return {
     id,
     prompt,
@@ -78,7 +80,7 @@ function parseDagNode(record: Record<string, unknown>): ActivityDagNode | null {
     state,
     ...(label !== undefined ? { label } : {}),
     ...(attempt !== undefined ? { attempt } : {}),
-    ...(taskId !== undefined ? { taskId } : {}),
+    ...(taskId !== undefined ? (taskIdTruncated === true ? { taskIdPrefix: taskId } : { taskId }) : {}),
     ...(startedAt !== undefined ? { startedAt } : {}),
     ...(completedAt !== undefined ? { completedAt } : {}),
   };

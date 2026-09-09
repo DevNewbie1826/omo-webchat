@@ -107,6 +107,79 @@ describe("complete DAG dashboard", () => {
     for (const state of states) expect(harness.container.querySelector(`[data-activity-dag-count="${state}"]`)?.getAttribute("data-count")).toBe("8");
   });
 
+  function taskIdentityDocument(taskId: string) {
+    const doc = full("r1", revision, 64);
+    const nodes = doc.run.nodes.map((node, index) => ({ ...node,
+      id: `node-${index.toString().padStart(2, "0")}`,
+      depends_on: index === 0 ? [] : [`node-${(index - 1).toString().padStart(2, "0")}`],
+      task_id: index === 0 ? taskId : node.task_id,
+    }));
+    return { ...doc, run: { ...doc.run, nodes,
+      edges: nodes.flatMap(node => node.depends_on.map(from => ({ from, to: node.id }))),
+    } };
+  }
+  function taskIdentityOverview(doc: ReturnType<typeof taskIdentityDocument>, projectedTask: string, lossy: boolean) {
+    // Raw projection -> actual parser/reducer -> Shelf/hook, not a manually
+    // annotated ActivityDagNode. The Go HTTP test covers production emission.
+    return applyActivityEvent(activityState(), "omo.dag.updated", { truncated_runs: true, runs: [{ ...doc.run,
+      nodes: doc.run.nodes.slice(0, 1).map(node => ({ ...node, prompt: node.prompt.slice(0, 512),
+        task_id: projectedTask, ...(lossy ? { task_id_truncated: true } : {}),
+      })),
+    }] });
+  }
+
+  it.each([
+    ["ascii601", "t".repeat(600) + "a", "t".repeat(512)],
+    ["utf8Boundary", "界".repeat(201), "界".repeat(170)],
+  ])("enriches F1 %s task metadata without losing the complete graph", async (_name, taskId, fragment) => {
+    const doc = taskIdentityDocument(taskId);
+    render(taskIdentityOverview(doc, fragment, true)); open();
+    await reply(request(base), catalog());
+    await reply(request(`${base}/r1`), doc);
+    expect(status()).toBe("complete");
+    expect(nodes()).toEqual(doc.run.nodes.map(node => node.id));
+    expect(harness.container.querySelectorAll(".th-activity-gedge")).toHaveLength(63);
+    expect(harness.container.querySelector("[data-activity-dag-total]")?.getAttribute("data-activity-dag-total")).toBe("64");
+    expect([...harness.container.querySelectorAll("dd")].some(node => node.textContent === taskId)).toBe(true);
+    expect(harness.container.querySelector("[data-activity-dag-prompt]")?.textContent).toBe(doc.run.nodes[0]?.prompt);
+  });
+
+  it.each([
+    ["exact512", "t".repeat(512), "t".repeat(512) + "a"],
+    ["short", "task-exact", "task-exact-other"],
+    ["unmarked legacy loss", "t".repeat(512), "t".repeat(600) + "a"],
+  ])("keeps F1 %s task conflicts stale despite matching prefixes and aggregate partial", async (_name, known, incoming) => {
+    const doc = taskIdentityDocument(incoming);
+    render(taskIdentityOverview(doc, known, false)); open();
+    await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+  });
+
+  it.each(["state", "attempt", "started_at", "completed_at", "task_id"] as const)(
+    "keeps F1 lossy-task enrichment fenced by known %s conflicts", async field => {
+      const doc = taskIdentityDocument("t".repeat(600) + "a");
+      const known = { ...doc, run: { ...doc.run, nodes: doc.run.nodes.map((node, index) => index !== 0 ? node : {
+        ...node, ...(field === "state" ? { state: "completed" as const }
+          : field === "attempt" ? { attempt: 99 }
+          : field === "started_at" ? { started_at: newer }
+          : field === "completed_at" ? { completed_at: revision } : {}),
+      }) } };
+      render(taskIdentityOverview(known, field === "task_id" ? "other".repeat(102) + "xx" : "t".repeat(512), true)); open();
+      await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+      expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+    },
+  );
+
+  it("keeps an exact live task fact authoritative after a lossy F1 projection", async () => {
+    const doc = taskIdentityDocument("t".repeat(600) + "a");
+    const summary = taskIdentityOverview(doc, "t".repeat(512), true);
+    const exact = applyActivityEvent(summary, "omo.dag.activity", {
+      runId: "r1", nodeId: "node-00", at: newer, taskId: "t".repeat(600) + "b",
+    });
+    render(exact); open(); await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+  });
+
   it("discovers every catalog page without relying on retained snapshot membership", async () => {
     // Given no retained DAG at all; When opening the authorized catalog.
     render(activityState()); open();

@@ -22,7 +22,7 @@ interface FullState {
 function topologyKey(run: ActivityDagRun | undefined): string {
   if (!run) return "";
   return JSON.stringify([run.runId, run.updatedAt, run.status, run.truncated, run.counts, run.edges, run.waves,
-    run.nodes.map(node => [node.id, node.label, node.prompt, node.dependsOn, node.state, node.attempt, node.taskId, node.startedAt, node.completedAt])]);
+    run.nodes.map(node => [node.id, node.label, node.prompt, node.dependsOn, node.state, node.attempt, node.taskId, node.taskIdPrefix, node.startedAt, node.completedAt])]);
 }
 
 /** A bounded projection can omit topology/text, but not contradict known runtime facts. */
@@ -33,6 +33,11 @@ function conflictsWithSummary(run: ActivityDagRun, summary: ActivityDagRun): boo
     const node = nodes.get(knownNode.id);
     // Projection IDs may themselves be truncated. Never infer identity by prefix.
     if (node === undefined) return false;
+    // The parser keeps lossy task text out of exact taskId authority. Compare
+    // only metadata on this EXACT node ID; an exact live taskId still wins.
+    if (knownNode.taskId === undefined && knownNode.taskIdPrefix !== undefined
+      && (node.taskId === undefined || node.taskId === knownNode.taskIdPrefix
+        || !node.taskId.startsWith(knownNode.taskIdPrefix))) return true;
     return node.state !== knownNode.state || (["attempt", "taskId", "startedAt", "completedAt"] as const)
       .some(key => knownNode[key] !== undefined && knownNode[key] !== node[key]);
   });
