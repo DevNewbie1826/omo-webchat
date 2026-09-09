@@ -1368,16 +1368,41 @@ func (m *Manager) clearPendingOpen(chatID string) {
 }
 
 // clearPendingOpenMarker releases the pending-open fence only while marker
-// still owns it. A detached open whose fence was already recovered must
-// never clear a successor's registration or steal its detached-open slot.
-func (m *Manager) clearPendingOpenMarker(chatID string, marker chan struct{}) {
+// still owns it, together with the detached-open slot it admitted. It
+// reports whether the fence was cleared: false means either a successor
+// took over or this open's fence was already recovered - in the recovered
+// case the slot stayed held and settlement releases it separately. A
+// detached open whose fence was already recovered must never clear a
+// successor's registration or steal its detached-open slot.
+func (m *Manager) clearPendingOpenMarker(chatID string, marker chan struct{}) bool {
 	m.mu.Lock()
 	if marker != nil && m.pendingOpen[chatID] == marker {
 		delete(m.pendingOpen, chatID)
 		<-m.openSlots
 		close(marker)
+		m.mu.Unlock()
+		return true
 	}
 	m.mu.Unlock()
+	return false
+}
+
+// recoverOpenFence performs the open-fence recovery transition atomically:
+// the fence is released only while marker still owns it AND CloseAll's
+// shutdown barrier has not been crossed. Unlike clearPendingOpenMarker it
+// keeps the detached-open slot held: the retaining owner keeps RPC-ownership
+// accounting until the correlation settles, so repeated recovered attempts
+// under silence exhaust DetachedOpenLimit instead of accumulating retained
+// correlations without bound.
+func (m *Manager) recoverOpenFence(chatID string, marker chan struct{}) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || marker == nil || m.pendingOpen[chatID] != marker {
+		return false
+	}
+	delete(m.pendingOpen, chatID)
+	close(marker)
+	return true
 }
 
 func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker chan struct{}) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
@@ -1432,14 +1457,23 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker
 
 // awaitDetachedCompletion owns one cancelled open_session's detached
 // correlation after the caller's cleanup budget expired. Bounded recovery:
-// after cfg.OpenRecoveryAfter of continued silence the pending-open fence
-// is released so the next acquire can issue its own open_session, and
-// after one final OpenRecoveryAfter grace the manager stops waiting. The
-// omorpc client correlation itself persists until the response or the
+// after cfg.OpenRecoveryAfter of continued silence the per-chat fence is
+// released (atomically, never past the shutdown barrier) so the next
+// acquire for that chat can issue its own open_session, while the
+// detached-open slot stays held until settlement, bounding retained RPC
+// ownership to DetachedOpenLimit. After one final OpenRecoveryAfter grace
+// the manager stops WAITING, but a residual owner keeps the epoch-bound
+// cleanup until the response or connection-epoch death settles it, so a
+// late success is still closed and never published - even after shutdown.
+// The omorpc client correlation itself persists until the response or the
 // connection-epoch death settles it, per CallDetached's existing contract.
 func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult) {
 	settle := func(got openResult) {
-		m.clearPendingOpenMarker(chatID, marker)
+		if !m.clearPendingOpenMarker(chatID, marker) {
+			// The fence was recovered earlier: its detached-open slot stayed
+			// held, and settlement of the correlation is what releases it.
+			<-m.openSlots
+		}
 		if got.err != nil || got.response == nil {
 			return
 		}
@@ -1460,15 +1494,15 @@ func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struc
 		return
 	case <-timer.C:
 	}
-	if !m.isClosed() {
-		// Reconcile before releasing the fence: while the fence is held no
-		// successor open can register, so the reconciliation can only ever
-		// observe routes that predate recovery, never the successor's.
-		if path != "" {
-			m.reconcileStaleRoutes(chatID, path)
-		}
-		m.clearPendingOpenMarker(chatID, marker)
+	// Reconcile while the fence is still held: no successor open for this
+	// chat can register yet, so the reconciliation can only ever observe
+	// routes that predate recovery, never the successor's. Every route close
+	// and the fence release revalidate shutdown state and ownership under
+	// the manager lock immediately before acting.
+	if path != "" {
+		m.reconcileStaleRoutes(chatID, path)
 	}
+	m.recoverOpenFence(chatID, marker)
 	final := time.NewTimer(m.cfg.OpenRecoveryAfter)
 	defer final.Stop()
 	select {
@@ -1476,6 +1510,11 @@ func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struc
 		settle(got)
 	case <-final.C:
 		slog.Warn("open recovery stopped waiting for the detached open_session", "chat_id", chatID)
+		// The final grace stops the manager's bounded WAIT, not its cleanup
+		// ownership: a residual owner settles the correlation whenever it
+		// completes - even during or after shutdown - so a late success is
+		// still closed epoch-bound and never published.
+		go func() { settle(<-completion) }()
 	}
 }
 
@@ -1501,9 +1540,13 @@ func (r staleRoute) durablePath() string {
 // reconcileStaleRoutes closes live provider routes serving the targeted
 // session path. The engine may have accepted the unanswered open_session
 // and minted a route nobody owns anymore; list_sessions is a control
-// command that always answers, and every match is closed with an
+// command that always answers, and every unowned match is closed with an
 // epoch-bound close_session through the ordinary retiring machinery, so a
-// later Stop still retries any close that did not definitively settle.
+// later Stop still retries any close that did not definitively settle. A
+// route this manager currently owns and publishes - typically another
+// chat's live session on a shared path - is never this recovery's to close.
+// Each close revalidates shutdown state under the manager lock: once
+// CloseAll's barrier is crossed, recovery must not act.
 func (m *Manager) reconcileStaleRoutes(chatID, path string) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
 	resp, epoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.ListSessions{})
@@ -1522,6 +1565,19 @@ func (m *Manager) reconcileStaleRoutes(chatID, path string) {
 	for _, route := range listed.Sessions {
 		if route.SessionID == "" || route.durablePath() != path {
 			continue
+		}
+		m.mu.Lock()
+		owned := m.byRoute[route.SessionID] != nil
+		closed := m.closed
+		m.mu.Unlock()
+		if owned {
+			slog.Warn("open recovery skipped live provider route owned by this manager", "chat_id", chatID, "session_path", path, "routing_id", route.SessionID)
+			continue
+		}
+		if closed {
+			// The shutdown barrier was crossed mid-reconciliation; recovery
+			// must not act after CloseAll.
+			return
 		}
 		slog.Warn("open recovery closing stale provider route on targeted path", "chat_id", chatID, "session_path", path, "routing_id", route.SessionID)
 		m.discardRouting(chatID, route.SessionID, epoch)

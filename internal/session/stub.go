@@ -100,19 +100,24 @@ type Config struct {
 	// OpenRecoveryAfter bounds recovery of a detached open_session that
 	// stayed unanswered past its cleanup timeout (CloseTimeout) while the
 	// RPC connection kept living. After this budget the manager releases
-	// the chat's pending-open fence and its detached-open slot so the next
-	// acquire can issue its own open_session; when the original open
-	// targeted a stored session path, live provider routes on that path are
-	// first reconciled (list_sessions plus epoch-bound close_session through
-	// the ordinary retiring machinery). The detached completion wait then
-	// gets one final OpenRecoveryAfter grace, after which the manager stops
-	// waiting - the omorpc client correlation itself persists until the
-	// response or connection-epoch death settles it, per CallDetached's
-	// existing contract. Zero selects DefaultOpenRecoveryAfter; a negative
-	// value disables recovery entirely (legacy unbounded detached wait).
-	// Configured values must exceed CloseTimeout; NewManager raises smaller
-	// positive values to CloseTimeout + 1s so recovery can never fire
-	// before the ordinary cleanup path has settled.
+	// the chat's pending-open fence - atomically, and never past CloseAll's
+	// shutdown barrier - so the next acquire can issue its own open_session,
+	// while the detached-open slot stays held until the correlation settles,
+	// bounding retained RPC ownership to DetachedOpenLimit. When the
+	// original open targeted a stored session path, live unowned provider
+	// routes on that path are first reconciled (list_sessions plus
+	// epoch-bound close_session through the ordinary retiring machinery);
+	// routes this manager currently owns and publishes are never closed.
+	// The detached completion wait then gets one final OpenRecoveryAfter
+	// grace, after which the manager stops waiting but a residual owner
+	// keeps the epoch-bound cleanup until the response or connection-epoch
+	// death settles it, per CallDetached's existing contract, so a late
+	// success is still closed and never published. Zero selects
+	// DefaultOpenRecoveryAfter; a negative value disables recovery entirely
+	// (legacy unbounded detached wait). Configured values must exceed
+	// CloseTimeout; NewManager raises smaller positive values to
+	// CloseTimeout + 1s so recovery can never fire before the ordinary
+	// cleanup path has settled.
 	OpenRecoveryAfter time.Duration
 	DetachedOpenLimit int
 	// OnDetach is called exactly once after a subscription pump exits.

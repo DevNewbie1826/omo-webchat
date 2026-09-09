@@ -199,46 +199,71 @@ func TestOpenRecoveryReconcilesStaleRouteOnTargetedPath(t *testing.T) {
 	sub.next(t) // ready
 	path := owner.SessionFile()
 
-	// A second chat's cursor targets the owner's live path; its resume open
-	// is gated and never answered.
-	victim := testChat{id: "victim", cwd: t.TempDir()}
-	if err := store.SaveCursor(context.Background(), victim.id, Cursor{SessionFile: path}); err != nil {
+	// A live route the manager does not own: opened directly through the
+	// client, so no chat in this manager publishes it. This is what a
+	// genuinely stale reconciliation target looks like.
+	orphanPath := filepath.Join(t.TempDir(), "orphan-resume.jsonl")
+	rawOpen(t, client, orphanPath)
+
+	// Two gated resume opens: one targeting the owner's live path, one
+	// targeting the orphan's path. Neither is ever answered before recovery.
+	ownerVictim := testChat{id: "owner-victim", cwd: t.TempDir()}
+	orphanVictim := testChat{id: "orphan-victim", cwd: t.TempDir()}
+	if err := store.SaveCursor(context.Background(), ownerVictim.id, Cursor{SessionFile: path}); err != nil {
 		t.Fatalf("seed cursor: %v", err)
 	}
-	release := d.BlockHandlerForPath(omorpc.CmdOpenSession, path)
-	defer release()
-	budgetedAcquire(t, mgr, victim, 60*time.Millisecond)
-
-	// Recovery must reconcile: the pre-existing live route on the targeted
-	// path gets an epoch-bound close through list_sessions.
-	if !d.AwaitCloseCount(1, testTimeout) {
-		t.Fatal("recovery did not close the stale route on the targeted path")
+	if err := store.SaveCursor(context.Background(), orphanVictim.id, Cursor{SessionFile: orphanPath}); err != nil {
+		t.Fatalf("seed cursor: %v", err)
 	}
+	releaseOwner := d.BlockHandlerForPath(omorpc.CmdOpenSession, path)
+	defer releaseOwner()
+	releaseOrphan := d.BlockHandlerForPath(omorpc.CmdOpenSession, orphanPath)
+	defer releaseOrphan()
+	budgetedAcquire(t, mgr, ownerVictim, 60*time.Millisecond)
+	budgetedAcquire(t, mgr, orphanVictim, 60*time.Millisecond)
+
+	// Both reconciliations complete before their fences clear, so once both
+	// fences are gone every recovery close already happened.
+	awaitManagerState(t, mgr, "recovery of both gated opens", func() bool {
+		return openFenceCleared(mgr, ownerVictim.id) && openFenceCleared(mgr, orphanVictim.id)
+	})
+
+	// Only the unowned orphan route was recoverable: the owner's live route
+	// is owned and published by this manager and must survive with a usable
+	// route, while the genuinely stale matching route still gets closed.
 	if got := d.RequestCount(omorpc.CmdListSessions); got < 1 {
 		t.Fatalf("reconciliation list_sessions calls = %d, want >= 1", got)
 	}
-	for _, p := range d.LiveSessions() {
-		if p == path {
-			t.Fatal("targeted path still live after reconciliation")
-		}
+	if got := d.RequestCount(omorpc.CmdCloseSession); got != 1 {
+		t.Fatalf("reconciliation close_session requests = %d, want exactly the one unowned orphan close (the live owner route must survive)", got)
+	}
+	live := d.LiveSessions()
+	if !containsPath(live, path) {
+		t.Fatalf("owner's live route was closed by another chat's recovery: live = %v", live)
+	}
+	if containsPath(live, orphanPath) {
+		t.Fatalf("unowned orphan route survived reconciliation: live = %v", live)
+	}
+	if _, err := owner.QueryState(context.Background()); err != nil {
+		t.Fatalf("owner route unusable after another chat's recovery: %v", err)
 	}
 
-	// The fence is clear: the victim can retry and take over the path. The
-	// retry asserts acquisition only; the mock reassigns the shared path's
-	// routing handle when the late open unblocks, so a prompt round-trip
-	// here would race that reassignment rather than the manager.
-	second := retryAcquire(t, mgr, victim, nil)
-	if !d.AwaitRequestCountForPath(omorpc.CmdOpenSession, path, 2, testTimeout) {
+	// The fences are clear: the orphan victim can retry and take over the
+	// orphaned path. The owner-victim retry stays gated: resuming the
+	// owner's live path would reassign the shared routing handle in the
+	// mock, which is not the behavior under test here.
+	second := retryAcquire(t, mgr, orphanVictim, nil)
+	if !d.AwaitRequestCountForPath(omorpc.CmdOpenSession, orphanPath, 2, testTimeout) {
 		t.Fatal("retry resume never reached the daemon")
 	}
-	release()
+	releaseOrphan()
 	select {
 	case err := <-second:
 		if err != nil {
-			t.Fatalf("victim retry after reconciliation: %v", err)
+			t.Fatalf("orphan victim retry after reconciliation: %v", err)
 		}
 	case <-time.After(testTimeout):
-		t.Fatal("victim retry did not settle")
+		t.Fatal("orphan victim retry did not settle")
 	}
 }
 
