@@ -184,6 +184,17 @@ async function worker(file) {
   const ready = deferred();
   let tail = '', pending = '', address, child, completion, failure, http;
   let leaderJoined = false;
+  // ConPTY requests win32-input-mode (DECSET 9001). In that mode a raw 0x03
+  // byte is plain input, not Ctrl-C: the interrupt must be sent as structured
+  // KEY_EVENT_RECORD sequences (Microsoft ConPTY keyboard spec).
+  let win32InputMode = false;
+  const win32CtrlC = [
+    '\x1b[17;29;0;1;8;1_', // Ctrl down
+    '\x1b[67;46;3;1;8;1_', // C down (char 0x03)
+    '\x1b[67;46;3;0;0;1_', // C up
+    '\x1b[17;29;0;0;0;1_', // Ctrl up
+  ].join('');
+  const interrupt = () => child.terminal.write(win32InputMode ? win32CtrlC : '\x03');
   const receipt = { event: 'consumer-result', variant: config.variant, command: config.command, cleanup: {} };
   const stopped = deferred();
   // Subscribe before spawning. Fixture EOF asks the worker to clean its PTY,
@@ -199,6 +210,7 @@ async function worker(file) {
         const text = Buffer.from(bytes).toString();
         tail = (tail + text).slice(-32_768);
         pending += text;
+        if (text.includes('\x1b[?9001h')) win32InputMode = true;
         let newline;
         while ((newline = pending.indexOf('\n')) !== -1) {
           const line = pending.slice(0, newline).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
@@ -218,8 +230,8 @@ async function worker(file) {
     receipt.address = address;
     http = await bounded(Promise.race([checkHTTP(address, config.assets, process.env.TH_PASSWORD), stopped.promise]), 'HTTP contract', 60_000);
     receipt.http = http;
-    child.terminal.write('\x03');
-    receipt.interruption = 'PTY Ctrl-C';
+    interrupt();
+    receipt.interruption = win32InputMode ? 'PTY win32-input Ctrl-C' : 'PTY Ctrl-C';
     const code = await bounded(completion, 'consumer Ctrl-C exit', 15_000);
     receipt.exitCode = code;
     // npm/Bun may propagate the terminal interruption as 130; server itself
@@ -229,7 +241,7 @@ async function worker(file) {
   finally {
     if (child) {
       if (!leaderJoined) {
-        child.terminal.write('\x03');
+        interrupt();
         try { await bounded(completion, 'failure Ctrl-C cleanup', 15_000); }
         catch (error) {
           failure = new AggregateError([failure, error].filter(Boolean), 'consumer cleanup failed');

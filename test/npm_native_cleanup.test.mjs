@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { bounded } from './npm_native_smoke.mjs';
 
-for (const mode of ['normal', 'signal']) {
+for (const mode of ['normal', 'signal', 'win32-input']) {
   test(`worker joins actual Bun ${mode} completion and closes its listener`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'native cleanup '));
     let worker;
@@ -25,6 +25,16 @@ for (const mode of ['normal', 'signal']) {
           return new Response(route === '/' ? 'index.html' : route.slice(1));
         }});
         ${mode === 'normal' ? "process.on('SIGINT', () => { server.stop(true); process.exit(0); });" : ''}
+        ${mode === 'win32-input' ? `
+          process.stdin.setRawMode(true);
+          let input = '';
+          process.stdin.on('data', chunk => {
+            input += chunk.toString();
+            if (input.includes('\\x1b[67;46;3;1;8;1_')) { server.stop(true); process.exit(0); }
+            else if (input.includes('\\x03')) process.exit(42);
+          });
+          process.stdout.write('\\x1b[?9001h\\n');
+        ` : ''}
         console.log('msg=listening addr=127.0.0.1:' + server.port);
       `;
       const config = path.join(root, 'worker.json');
@@ -39,7 +49,7 @@ for (const mode of ['normal', 'signal']) {
       console.log(JSON.stringify({ mode, workerPID: worker.pid, workerExit: code, receipt, stderr: await errors }));
       assert.equal(code, 0, receipt.error);
       assert.equal(receipt.ok, true, receipt.error);
-      assert.equal(receipt.exitCode, mode === 'normal' ? 0 : 130);
+      assert.equal(receipt.exitCode, mode === 'signal' ? 130 : 0);
       assert.equal(receipt.cleanup.leaderJoined, true);
       assert.equal(receipt.cleanup.listenerClosed, true);
       assert.notEqual(receipt.cleanup.forced, true);
