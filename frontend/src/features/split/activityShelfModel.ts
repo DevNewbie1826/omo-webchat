@@ -20,6 +20,7 @@ export const TERMINAL_DAG_STATUSES: ReadonlySet<string> = new Set([
   "completed",
   "failed",
   "cancelled",
+  "canceled",
 ]);
 
 export function taskStatusCounts(

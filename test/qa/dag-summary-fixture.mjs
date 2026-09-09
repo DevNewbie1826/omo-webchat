@@ -7,7 +7,7 @@ import { dagRow } from './dag-state-ordering.mjs';
 
 export const stages = Object.freeze(['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2',
   'compact-duplicate-ids', 'compact-no-ids', 'complete2-empty-optional-ids', 'compact-mixed-ids',
-  'required-empty-run-id', 'required-empty-node-id', 'complete2-recovery']);
+  'required-empty-run-id', 'required-empty-node-id', 'canceled-retained-running2', 'complete2-recovery']);
 export const viewports = Object.freeze([{ width: 1280, height: 800 }, { width: 390, height: 844 }]);
 export function summaryInput(stage) {
   const index = stages.indexOf(stage); assert.ok(index >= 0, `Unknown summary stage: ${stage}`);
@@ -17,6 +17,8 @@ export function summaryInput(stage) {
     counts: { ...run.counts, total: 2, running: 2 },
     nodes: ['a', 'b'].map((id, i) => ({ id, prompt: `Description ${id}`, state: 'running', depends_on: i ? ['a'] : [], attempt: 1 })),
     edges: [{ from: 'a', to: 'b' }], waves: [{ index: 0, node_ids: ['a'] }, { index: 1, node_ids: ['b'] }] });
+  // Terminal run authority must suppress retained running nodes, not rewrite them.
+  if (stage === 'canceled-retained-running2') run.status = 'canceled';
   if (stage === 'partial-retained1') { run.nodes.length = 1; run.edges = []; run.waves.length = 1; }
   if (stage === 'incomplete-retained0') {
     run.nodes = []; run.edges = []; run.waves = []; run.counts.total = 0; run.counts.running = 0;
