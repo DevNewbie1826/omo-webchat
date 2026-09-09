@@ -362,7 +362,7 @@ func (m *Manager) scheduleSessionReconciliation() {
 		}
 		// Never nest lifecycleMu under Manager.mu.
 		s.lifecycleMu.Lock()
-		worthy := !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.workAtLoss ||
+		worthy := !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.recoveryWorkLocked() ||
 			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
 		resumable := !s.closed && s.resumable
 		s.lifecycleMu.Unlock()
@@ -453,7 +453,7 @@ func (m *Manager) triggerProactiveReconnect(lost omorpc.EpochToken) {
 		}
 		// Never nest lifecycleMu under Manager.mu.
 		s.lifecycleMu.Lock()
-		worthy = !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.workAtLoss ||
+		worthy = !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.recoveryWorkLocked() ||
 			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
 		s.lifecycleMu.Unlock()
 		if worthy {
@@ -2124,7 +2124,7 @@ func (m *Manager) evict(s *Session) {
 	}
 	defer unlock()
 	s.lifecycleMu.Lock()
-	if s.closed || s.closing || s.resumable || s.activeLocked() || s.broadcast.count() != 0 ||
+	if s.closed || s.closing || s.resumable || s.activeLocked() || s.recoveryWorkLocked() || s.broadcast.count() != 0 ||
 		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		s.lifecycleMu.Unlock()
 		return

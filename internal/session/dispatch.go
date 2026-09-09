@@ -56,7 +56,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 
 	switch ev.Type {
 	case "agent_start":
-		s.activityHydrationPending = false
+		s.observeLiveActivityLocked()
 		if !s.providerRunActive {
 			s.providerRunActive = true
 			s.cancelIdleLocked()
@@ -65,7 +65,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "agent_end":
 		// agent_settled is the sole provider-run terminal.
 	case "agent_settled":
-		s.activityHydrationPending = false
+		s.observeLiveActivityLocked()
 		if !s.providerRunActive && !s.promptInFlight {
 			return
 		}
@@ -101,10 +101,10 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		}
 		s.publishLocked(Frame{Kind: FrameTool, SessionID: s.durableID, Data: payload})
 	case "compaction_start":
-		s.activityHydrationPending = false
+		s.observeLiveActivityLocked()
 		s.beginCompactionLocked(raw)
 	case "compaction_end", "compaction_done":
-		s.activityHydrationPending = false
+		s.observeLiveActivityLocked()
 		s.endCompactionLocked(ev.Type, raw)
 	case "session_unloaded", "session_closed":
 		// Provider lifecycle notices only invalidate the epoch-local routing

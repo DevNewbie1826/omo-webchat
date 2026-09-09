@@ -51,6 +51,12 @@ type sendOperation struct {
 	published bool
 }
 
+// A written send can outlive its RPC completion and every activity snapshot.
+// Pointer identity also keeps independent sends without request IDs distinct.
+type sendWrite struct {
+	requestID string
+}
+
 type sendOperationOwner struct {
 	mu                     sync.Mutex
 	operations             map[string]sendOperation
@@ -59,6 +65,8 @@ type sendOperationOwner struct {
 	retryRunAdmissionToken DetachedSendRetryToken
 	nextRetryToken         uint64
 	activeDetached         atomic.Int32
+	unresolvedWrites       map[*sendWrite]struct{}
+	unresolvedWriteCount   atomic.Int32
 	detachedSettled        chan struct{}
 	sessions               map[*Session]struct{}
 }
@@ -87,6 +95,7 @@ type Session struct {
 	closed, closing, resumable, invalidated                                 bool
 	workAtLoss                                                              bool
 	activityHydrationPending                                                bool
+	activityRevision                                                        uint64
 	quarantineErr                                                           *ExternalWriteError
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
@@ -385,7 +394,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		s.lifecycleMu.Unlock()
 		return err
 	}
-	s.activityHydrationPending = false
+	s.observeLiveActivityLocked()
 	s.promptSeq++
 	seq := s.promptSeq
 	s.promptInFlight = true
@@ -415,7 +424,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				}
 			}
 			if detached {
-				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
+				if steerErr := s.callDetachedSend(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, requestID, steerComplete); steerErr != nil {
 					steerErr = s.classifySendError(steerErr)
 					s.completePrompt(seq, msg, steerErr)
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
@@ -431,7 +440,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 	}
 	if detached {
-		err = s.callDetachedMutation(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, complete)
+		err = s.callDetachedSend(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, requestID, complete)
 		if err != nil {
 			err = s.classifySendError(err)
 			s.completePrompt(seq, msg, err)
@@ -597,7 +606,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 		}
 	}
 	if detached {
-		err = s.callDetachedMutation(ctx, command(route), complete)
+		err = s.callDetachedSend(ctx, command(route), requestID, complete)
 		if err != nil {
 			err = s.classifySendError(err)
 			s.noteTransportError(err)
@@ -606,6 +615,53 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	}
 	_, err = s.client.CallRetained(ctx, command(route), complete)
 	return s.classifySendError(err)
+}
+
+func (s *Session) callDetachedSend(ctx context.Context, command omorpc.Command, requestID string, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
+	owner := s.operationOwner()
+	write := &sendWrite{requestID: requestID}
+	owner.mu.Lock()
+	if owner.unresolvedWrites == nil {
+		owner.unresolvedWrites = make(map[*sendWrite]struct{})
+	}
+	owner.unresolvedWrites[write] = struct{}{}
+	owner.unresolvedWriteCount.Store(int32(len(owner.unresolvedWrites)))
+	owner.mu.Unlock()
+	// Register before attempting the write so epoch invalidation cannot miss
+	// ownership. A synchronous failure proves no detached response is pending.
+	err := s.callDetachedMutation(ctx, command, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		if resp != nil {
+			owner.mu.Lock()
+			owner.settleSendWriteLocked(write)
+			owner.mu.Unlock()
+		}
+		complete(resp, epoch, callErr)
+	})
+	if err != nil {
+		owner.mu.Lock()
+		owner.settleSendWriteLocked(write)
+		owner.mu.Unlock()
+		owner.rearmIdle()
+	}
+	return err
+}
+
+func (o *sendOperationOwner) settleSendWriteLocked(write *sendWrite) {
+	delete(o.unresolvedWrites, write)
+	o.unresolvedWriteCount.Store(int32(len(o.unresolvedWrites)))
+}
+
+func (s *Session) hasUnresolvedSendLocked() bool {
+	return s.sendOwner != nil && s.sendOwner.unresolvedWriteCount.Load() != 0
+}
+
+func (s *Session) recoveryWorkLocked() bool {
+	return s.workAtLoss || s.hasUnresolvedSendLocked()
+}
+
+func (s *Session) observeLiveActivityLocked() {
+	s.activityRevision++
+	s.activityHydrationPending = s.hasUnresolvedSendLocked()
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
@@ -768,6 +824,13 @@ func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID
 		owner.mu.Unlock()
 		return
 	}
+	// Only this operation's authoritative outcome can retire its written
+	// ownership. Idle snapshots and unrelated lifecycle terminals cannot.
+	for write := range owner.unresolvedWrites {
+		if write.requestID == requestID {
+			owner.settleSendWriteLocked(write)
+		}
+	}
 	_, _ = s.completeSendOperationLocked(requestID, err)
 	operation, ok := owner.operations[requestID]
 	if ok && operation.phase == sendOperationTerminal && !operation.published {
@@ -777,6 +840,7 @@ func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID
 		owner.publishLocked(operation.outcome)
 	}
 	owner.mu.Unlock()
+	owner.rearmIdle()
 }
 
 func (o *sendOperationOwner) publishLocked(frame Frame) {
@@ -992,7 +1056,7 @@ func (s *Session) compact(ctx context.Context, detached bool) error {
 		s.lifecycleMu.Unlock()
 		return err
 	}
-	s.activityHydrationPending = false
+	s.observeLiveActivityLocked()
 	s.compactSeq++
 	seq := s.compactSeq
 	s.compactionActive = true
@@ -1111,6 +1175,7 @@ func (s *Session) completeControl(command, requestID string, callErr error) {
 func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
+	activityRevision := s.activityRevision
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -1127,10 +1192,10 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	}
 	s.lifecycleMu.Lock()
 	s.engineQueue = engineQueueFromState(out)
-	if s.activityHydrationPending && !s.resumable && !s.closed {
+	if (s.activityHydrationPending || s.hasUnresolvedSendLocked()) && activityRevision == s.activityRevision && !s.resumable && !s.closed {
 		s.hydrateActivityLocked(out)
-		s.activityHydrationPending = out.IsStreaming == nil || out.IsCompacting == nil
-		if s.activeLocked() || s.workAtLoss {
+		s.activityHydrationPending = out.IsStreaming == nil || out.IsCompacting == nil || s.hasUnresolvedSendLocked()
+		if s.activeLocked() || s.recoveryWorkLocked() {
 			s.cancelIdleLocked()
 		} else {
 			s.scheduleIdleLocked()
@@ -1771,7 +1836,7 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.workAtLoss || s.broadcast.count() != 0 ||
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.recoveryWorkLocked() || s.broadcast.count() != 0 ||
 		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		return
 	}
