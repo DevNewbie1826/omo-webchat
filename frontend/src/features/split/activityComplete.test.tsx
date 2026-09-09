@@ -206,6 +206,123 @@ describe("complete DAG dashboard", () => {
     expect(nodes()).toEqual(completed.run.nodes.map(node => node.id));
   });
 
+  // Observe the exact terminal DOM commit before completing the controlled
+  // request. The timer is only a failure deadline, never synchronization.
+  async function replyF2(item: Request, body: unknown) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let observer: MutationObserver | undefined;
+    const committed = new Promise<void>((resolve, reject) => {
+      observer = new MutationObserver(() => {
+        if (["complete", "stale", "error"].includes(status() ?? "")) resolve();
+      });
+      observer.observe(harness.container, { subtree: true, attributes: true, attributeFilter: ["data-activity-dag-status"] });
+      timer = setTimeout(() => reject(new Error("F2 terminal hook commit deadline")), 2000);
+    });
+    try {
+      await reply(item, body);
+      await committed;
+    } finally {
+      clearTimeout(timer);
+      observer?.disconnect();
+    }
+  }
+  function documentF2(state: "running" | "completed", updatedAt = revision, token = "z") {
+    const doc = uniform(state, updatedAt, token);
+    return { ...doc, run: { ...doc.run, run_id: "a", name: "a" } };
+  }
+  async function roundTripF2(doc = documentF2("completed")) {
+    // Historical a is entirely absent from overview and dagFreshness.
+    render(activityState()); open(); await reply(request(base), catalog(["a", "b"]));
+    await replyF2(request(`${base}/a`), doc);
+    expect(status()).toBe("complete");
+    select("b"); await replyF2(request(`${base}/b`), full("b"));
+    expect(status()).toBe("complete");
+    select("a");
+    expect(status()).toBe("loading");
+    expect(nodes()).toEqual([]);
+  }
+
+  it.each(["state", "attempt", "task", "prompt", "older", "missing", "invalid"])(
+    "keeps F2 historical a->b->a fenced against %s replacement", async kind => {
+      await roundTripF2();
+      const doc = documentF2(kind === "state" ? "running" : "completed", kind === "older" ? "2026-09-08T09:00:00Z" : revision, "a");
+      doc.run.nodes = doc.run.nodes.map(node => ({ ...node,
+        ...(kind === "attempt" ? { attempt: 2 } : {}),
+        ...(kind === "task" ? { task_id: "other-task" } : {}),
+        ...(kind === "prompt" ? { prompt: "changed full description" } : {}),
+      }));
+      await replyF2(request(`${base}/a`, 1), { ...doc, run: { ...doc.run,
+        updated_at: kind === "missing" ? undefined : kind === "invalid" ? "unknown" : doc.run.updated_at,
+      } });
+      expect(status()).toBe("stale");
+      expect(nodes()).toEqual([]);
+      expect(harness.container.querySelector('[role="alert"]')).not.toBeNull();
+    },
+  );
+
+  it("accepts F2 equal facts with a different lower token after a picker round trip", async () => {
+    await roundTripF2();
+    await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"));
+    expect(status()).toBe("complete");
+    expect(harness.container.querySelector("[data-content-token]")?.getAttribute("data-content-token")).toBe("a");
+    expect(harness.container.querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
+  });
+
+  it("accepts F2 strictly newer retry and then fences that revision across another round trip", async () => {
+    await roundTripF2();
+    const retry = documentF2("running", newer, "a");
+    retry.run.nodes = retry.run.nodes.map(node => ({ ...node, attempt: 2 }));
+    await replyF2(request(`${base}/a`, 1), retry);
+    expect(status()).toBe("complete");
+    expect(harness.container.querySelector("[data-activity-dag-attempt]")?.textContent).toBe("2");
+    select("b"); await replyF2(request(`${base}/b`, 1), full("b")); select("a");
+    await replyF2(request(`${base}/a`, 2), documentF2("completed", newer, "z"));
+    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+  });
+
+  it("does not let an F2 rejection poison the accepted facts on explicit retry", async () => {
+    await roundTripF2();
+    await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "a"));
+    expect(status()).toBe("stale");
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "retry"));
+    await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"));
+    expect(status()).toBe("complete");
+  });
+
+  it.each(["fold", "reconnect"])("preserves F2 accepted facts across %s after returning to a", async kind => {
+    await roundTripF2();
+    await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"));
+    if (kind === "fold") { open(); open(); }
+    else { render(activityState(), false); render(activityState(), true); }
+    await replyF2(request(`${base}/a`, 2), documentF2("running", revision, "b"));
+    expect(status()).toBe("stale");
+    expect(harness.container.querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
+  });
+
+  it("does not let an F2 cancelled newer response poison per-run authority", async () => {
+    await roundTripF2();
+    const cancelled = request(`${base}/a`, 1);
+    select("b"); expect(cancelled.signal?.aborted).toBe(true);
+    await replyF2(request(`${base}/b`, 1), full("b"));
+    await reply(cancelled, documentF2("running", newer, "a"));
+    select("a"); await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"));
+    expect(status()).toBe("complete");
+  });
+
+  it.each(["chat", "workspace"])("resets F2 equality authority for a new %s binding", async kind => {
+    await roundTripF2();
+    const cancelled = request(`${base}/a`, 1);
+    const source = { wsId: kind === "workspace" ? "other" : "ws", chatId: kind === "chat" ? "other" : "chat", connected: true };
+    act(() => harness.root.render(<I18nContext.Provider value={i18n}><ActivityShelf activities={activityState()} dagSource={source} /></I18nContext.Provider>));
+    expect(cancelled.signal?.aborted).toBe(true); expect(nodes()).toEqual([]);
+    const otherBase = `/api/workspaces/${source.wsId}/chats/${source.chatId}/dag-runs`;
+    await reply(request(otherBase), catalog(["a"]));
+    await reply(cancelled, documentF2("running", newer, "cancelled"));
+    await replyF2(request(`${otherBase}/a`), documentF2("running", revision, "a"));
+    expect(status()).toBe("complete");
+    expect(harness.container.querySelector('[data-activity-dag-count="running"]')?.getAttribute("data-count")).toBe("2");
+  });
+
   it("rejects a same-revision running full response conflicting with known partial completed state", async () => {
     render(projected(uniform("completed"))); open(); await reply(request(base), catalog());
     await reply(request(`${base}/r1`), uniform("running"));

@@ -64,6 +64,9 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
   const fingerprint = topologyKey(summary);
   const membership = JSON.stringify([...activities.dags.keys()].sort());
   const known = useRef(new Map<string, number>());
+  // Accepted full authority outlives picker changes, but never a source binding.
+  // Retain equality facts, not opaque tokens or another run's display document.
+  const accepted = useRef(new Map<string, { revision: number | undefined; facts: string }>());
   // React restarts this render before committing children, so a new chat can
   // never paint the previous binding's graph. Panel folding does not reset it.
   if (binding !== base) {
@@ -74,15 +77,15 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
     setChosen({ id: activities.dags.keys().next().value ?? null, explicit: false });
     setFull({ selected: null, document: null, fingerprint: "", status: "loading", error: false });
     known.current = new Map();
+    accepted.current = new Map();
   }
   for (const [id, revision] of activities.dagFreshness ?? []) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
   for (const [id, run] of activities.dags) {
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
   }
-  const incumbent = full.selected === selected ? full.document : null;
-  const latest = useRef({ fingerprint, connected, summary, incumbent });
-  latest.current = { fingerprint, connected, summary, incumbent };
+  const latest = useRef({ fingerprint, connected, summary });
+  latest.current = { fingerprint, connected, summary };
   const refresh = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -156,14 +159,17 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
             const revision = parseDagUpdatedAt(document.run.updatedAt);
             const highWater = known.current.get(selected);
             if (highWater !== undefined && (revision === undefined || revision < highWater)) throw new CompleteDagError("stale");
-            const { summary: knownSummary, incumbent: prior } = latest.current;
+            const { summary: knownSummary } = latest.current;
+            const prior = accepted.current.get(selected);
+            const facts = fullFactsKey(document.run);
             // Equal revisions permit enrichment, not conflicting state replacement.
             // Opaque tokens prove equality only; a different token supplies no order.
             if (knownSummary !== undefined && revision === parseDagUpdatedAt(knownSummary.updatedAt)
               && conflictsWithSummary(document.run, knownSummary)) throw new CompleteDagError("stale");
-            if (prior !== null && revision === parseDagUpdatedAt(prior.run.updatedAt)
-              && fullFactsKey(document.run) !== fullFactsKey(prior.run)) throw new CompleteDagError("stale");
+            if (prior !== undefined && revision === prior.revision
+              && facts !== prior.facts) throw new CompleteDagError("stale");
             if (revision !== undefined) known.current.set(selected, revision);
+            accepted.current.set(selected, { revision, facts });
             setFull({ selected, document, fingerprint: inputKey, status: "complete", error: false });
           } catch (error: unknown) {
             if (controller.signal.aborted) return;
