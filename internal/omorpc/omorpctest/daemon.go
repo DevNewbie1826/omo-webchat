@@ -175,6 +175,7 @@ type Daemon struct {
 	requests            []map[string]any
 
 	legacyEmptyUnknownHistory bool
+	omitActivityFields        bool
 
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
@@ -597,9 +598,9 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetState:
 		d.mu.Lock()
 		followUp, ordered, pending := queueSnapshotLocked(rec)
-		running, compacting := rec.runActive, rec.compactActive
+		running, compacting, omitActivity := rec.runActive, rec.compactActive, d.omitActivityFields
 		d.mu.Unlock()
-		d.write(conn, d.resp(id, cmd, sid, map[string]any{
+		state := map[string]any{
 			"isStreaming": running, "isCompacting": compacting,
 			"sessionId":     recDurable,
 			"sessionFile":   recPath,
@@ -609,7 +610,12 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 			"followUp":            followUp,
 			"ordered":             ordered,
 			"pendingMessageCount": pending,
-		}))
+		}
+		if omitActivity {
+			delete(state, "isStreaming")
+			delete(state, "isCompacting")
+		}
+		d.write(conn, d.resp(id, cmd, sid, state))
 		return
 
 	case omorpc.CmdGetAvailableModels:
@@ -711,9 +717,22 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"pendingMessageCount": 0,
 		},
 	})
+	if d.omitActivityFields {
+		state := response["data"].(map[string]any)["state"].(map[string]any)
+		delete(state, "isStreaming")
+		delete(state, "isCompacting")
+	}
 	d.mu.Unlock()
 
 	d.write(conn, response)
+}
+
+// SetOmitActivityFields models engines that omit optional activity snapshots
+// without changing their actual run/compaction state or live lifecycle events.
+func (d *Daemon) SetOmitActivityFields(omit bool) {
+	d.mu.Lock()
+	d.omitActivityFields = omit
+	d.mu.Unlock()
 }
 
 // OverrideNextOpenIdentity corrupts only the next successful open response,

@@ -94,6 +94,7 @@ type Session struct {
 	writePrepared                                                           bool
 	closed, closing, resumable, invalidated                                 bool
 	workAtLoss                                                              bool
+	runAtLoss, compactionAtLoss                                             bool
 	activityHydrationPending                                                bool
 	activityRevision                                                        uint64
 	quarantineErr                                                           *ExternalWriteError
@@ -168,6 +169,12 @@ func (s *Session) inheritWork(prior *Session, state omorpc.SessionState) {
 	}
 	prior.lifecycleMu.Lock()
 	s.workAtLoss = prior.workAtLoss || prior.activeLocked()
+	s.compactionAtLoss = prior.compactionAtLoss || prior.compactionActive
+	s.runAtLoss = prior.runAtLoss || prior.promptInFlight || prior.providerRunActive || prior.localCommandActive || (prior.workAtLoss && !s.compactionAtLoss)
+	if s.compactionAtLoss {
+		s.compactSeq = prior.compactSeq
+		s.compactRPCID, s.compactProviderID, s.compactPhase = prior.compactRPCID, prior.compactProviderID, prior.compactPhase
+	}
 	prior.lifecycleMu.Unlock()
 	s.hydrateActivityLocked(state)
 }
@@ -176,18 +183,22 @@ func (s *Session) inheritWork(prior *Session, state omorpc.SessionState) {
 func (s *Session) hydrateActivityLocked(state omorpc.SessionState) {
 	if state.IsStreaming != nil {
 		s.providerRunActive = *state.IsStreaming
-	} else if s.workAtLoss {
-		// Missing state cannot license idle eviction, queue drain, or loss of
-		// headless recovery eligibility. A later query/terminal can settle it.
-		s.providerRunActive = true
 	}
 	if state.IsCompacting != nil {
 		s.compactionActive = *state.IsCompacting
 	}
-	if state.IsStreaming != nil && state.IsCompacting != nil {
-		s.workAtLoss = s.workAtLoss && (s.providerRunActive || s.compactionActive)
-	} else if s.workAtLoss && !s.compactionActive {
-		s.providerRunActive = true
+	if state.IsStreaming == nil || state.IsCompacting == nil {
+		// Unknown activity preserves the kind of work lost, including its
+		// compaction correlation. It must not invent a prompt run that a
+		// later compaction terminal cannot settle.
+		s.providerRunActive = s.providerRunActive || s.runAtLoss
+		s.compactionActive = s.compactionActive || s.compactionAtLoss
+	}
+	s.workAtLoss = s.workAtLoss && (s.providerRunActive || s.compactionActive)
+	s.runAtLoss = s.workAtLoss && s.providerRunActive
+	s.compactionAtLoss = s.workAtLoss && s.compactionActive
+	if !s.compactionActive {
+		s.compactRPCID, s.compactProviderID = "", ""
 	}
 }
 
@@ -1819,6 +1830,8 @@ func (s *Session) invalidate(code, message string) {
 		return
 	}
 	s.workAtLoss = s.workAtLoss || s.activeLocked()
+	s.runAtLoss = s.runAtLoss || s.promptInFlight || s.providerRunActive || s.localCommandActive
+	s.compactionAtLoss = s.compactionAtLoss || s.compactionActive
 	s.invalidated = true
 	s.resumable = true
 	s.promptInFlight = false

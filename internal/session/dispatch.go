@@ -65,10 +65,10 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "agent_end":
 		// agent_settled is the sole provider-run terminal.
 	case "agent_settled":
-		s.observeLiveActivityLocked()
 		if !s.providerRunActive && !s.promptInFlight {
 			return
 		}
+		s.observeLiveActivityLocked()
 		reason, _ := raw["reason"].(string)
 		s.completeProviderRunLocked(reason)
 	case "command_invocation":
@@ -104,7 +104,6 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.observeLiveActivityLocked()
 		s.beginCompactionLocked(raw)
 	case "compaction_end", "compaction_done":
-		s.observeLiveActivityLocked()
 		s.endCompactionLocked(ev.Type, raw)
 	case "session_unloaded", "session_closed":
 		// Provider lifecycle notices only invalidate the epoch-local routing
@@ -156,6 +155,7 @@ func (s *Session) completeProviderRunLocked(reason string) {
 	s.promptInFlight = false
 	s.localCommandActive = false
 	s.promptResponse = false
+	s.runAtLoss = false
 	s.workAtLoss = s.compactionActive
 	s.publishLocked(Frame{Kind: FrameRunDone, SessionID: s.durableID, Data: RunInfo{Reason: reason}})
 	s.scheduleIdleLocked()
@@ -232,6 +232,7 @@ func (s *Session) endCompactionLocked(eventType string, raw map[string]any) {
 		matches = false
 	}
 	if matches {
+		s.observeLiveActivityLocked()
 		if exhausted {
 			s.rememberCompactionDiagnosticLocked(id, errText)
 		}
@@ -279,6 +280,7 @@ func (s *Session) finishCompactionLocked(requestID, errText string) {
 	s.rememberCompletedCompactionLocked(s.compactRPCID, s.compactProviderID, requestID)
 	phase := s.compactPhase
 	s.compactionActive = false
+	s.compactionAtLoss = false
 	s.workAtLoss = s.workAtLoss && (s.providerRunActive || s.promptInFlight || s.localCommandActive)
 	s.compactRPCID = ""
 	s.compactProviderID = ""
