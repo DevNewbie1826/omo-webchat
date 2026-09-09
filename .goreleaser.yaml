@@ -29,6 +29,10 @@ archives:
       - tar.gz
     # Must match the asset name install.sh downloads: omo-webchat_<os>_<arch>.tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - README.md
     format_overrides:
       - goos: windows
         formats:

@@ -21,16 +21,12 @@
  * the shipped binary silently untrackable.
  *
  * Usage:
- *   node npm/platform/generate.mjs                  # goreleaser build + populate
- *   node npm/platform/generate.mjs --skip-build     # reuse archives already in dist/
- *   node npm/platform/generate.mjs --version 1.2.3  # stamp package.json versions
+ *   node npm/platform/generate.mjs                  # goreleaser snapshot + populate
+ *   node npm/platform/generate.mjs --skip-build     # require all six dist/ archives
+ *   node npm/platform/generate.mjs --skip-build --version 1.2.3
  *
- * Build strategy per target:
- *   1. dist/omo-webchat_<goos>_<goarch>.tar.gz (goreleaser snapshot output,
- *      or produced here via `goreleaser release --snapshot`) is extracted; or
- *   2. fallback: build the frontend once, then run a direct
- *      `GOOS=<goos> GOARCH=<goarch> go build` of ./cmd/server (pure Go,
- *      CGO_ENABLED=0 — equivalent flags to .goreleaser.yaml).
+ * Versions come from dist/metadata.json; --version asserts an exact match.
+ * All inputs are validated before any package is changed. No fallback builds.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -42,7 +38,6 @@ import { fileURLToPath } from 'node:url'
 const PLATFORM_DIR = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(PLATFORM_DIR, '..', '..')
 const DIST_DIR = path.join(REPO_ROOT, 'dist')
-const GO_MODULE_PATH = './cmd/server'
 
 /**
  * One row per npm platform package. Adding a platform is a purely additive
@@ -70,7 +65,7 @@ const TARGETS = [
 // hardcode this name; it should use the package's index.js entrypoint.
 const BIN_BASE = 'omo-webchat-bin'
 
-const DEFAULT_VERSION = '0.1.0'
+const NOTICE_FILES = ['LICENSE', 'THIRD_PARTY_NOTICES.md']
 const REPOSITORY_URL = 'https://github.com/DevNewbie1826/omo-webchat'
 
 // ---------------------------------------------------------------------------
@@ -78,10 +73,10 @@ const REPOSITORY_URL = 'https://github.com/DevNewbie1826/omo-webchat'
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = { skipBuild: false, version: DEFAULT_VERSION }
+  const args = { skipBuild: false, version: undefined }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--skip-build') args.skipBuild = true
-    else if (argv[i] === '--version') args.version = argv[++i]
+    else if (argv[i] === '--version') args.version = parseVersion(argv[++i])
     else if (argv[i] === '--help' || argv[i] === '-h') {
       console.log('Usage: node generate.mjs [--skip-build] [--version x.y.z]')
       process.exit(0)
@@ -91,6 +86,18 @@ function parseArgs(argv) {
     }
   }
   return args
+}
+
+function parseVersion(version) {
+  // Canonical npm versions: no tag prefix, ranges, whitespace or leading zeros.
+  const numeric = '(0|[1-9][0-9]*)'
+  const identifier = '(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+  const semver = new RegExp(`^${numeric}\\.${numeric}\\.${numeric}(?:-${identifier}(?:\\.${identifier})*)?$`)
+  if (typeof version !== 'string' || !semver.test(version) ||
+      version.split(/[.-]/).slice(0, 3).some((part) => !Number.isSafeInteger(Number(part)))) {
+    throw new Error(`Invalid npm release version: ${JSON.stringify(version)}`)
+  }
+  return version
 }
 
 // ---------------------------------------------------------------------------
@@ -104,20 +111,6 @@ function sh(cmd, cmdArgs, { cwd = REPO_ROOT, env } = {}) {
   }
 }
 
-function hasCmd(cmd) {
-  return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0
-}
-
-let frontendReady = false
-
-function buildFrontend() {
-  if (frontendReady) return
-  console.log('[generate] building frontend required by frontend/embed.go')
-  sh('npm', ['ci'], { cwd: path.join(REPO_ROOT, 'frontend') })
-  sh('npm', ['run', 'build'], { cwd: path.join(REPO_ROOT, 'frontend') })
-  frontendReady = true
-}
-
 function archiveFor(target) {
   // goreleaser archive name template: omo-webchat_<os>_<arch> (Go tokens),
   // tar.gz everywhere except windows, which format_overrides to zip.
@@ -125,75 +118,83 @@ function archiveFor(target) {
   return path.join(DIST_DIR, `omo-webchat_${target.goos}_${target.goarch}${ext}`)
 }
 
-// bsdtar (macOS, Windows 10+) reads zip; GNU tar does not, so prefer unzip
-// wherever it exists and keep tar as the fallback.
-function unpack(archive, destDir) {
+// GNU tar cannot read ZIP. Use unzip when installed, bsdtar otherwise;
+// an invalid archive must not be retried with a more permissive extractor.
+function archiveCommand(archive, destDir) {
+  let result
   if (archive.endsWith('.zip')) {
-    const unzipped = spawnSync('unzip', ['-q', '-o', archive, '-d', destDir], { stdio: 'inherit' })
-    if (unzipped.status === 0) return
-    sh('tar', ['-xf', archive, '-C', destDir])
-    return
+    result = spawnSync('unzip', destDir ? ['-q', archive, '-d', destDir] : ['-Z1', archive], { encoding: 'utf8' })
   }
-  sh('tar', ['-xzf', archive, '-C', destDir])
+  if (!result || result.error?.code === 'ENOENT') {
+    result = spawnSync('tar', destDir ? ['-xf', archive, '-C', destDir] : ['-tf', archive], { encoding: 'utf8' })
+  }
+  if (result.error) throw result.error
+  if (result.status !== 0) throw new Error(`Cannot read ${archive}: ${result.stderr}`)
+  return result.stdout
 }
 
 /**
- * Extract the goreleaser archive. Returns { binary, tmpDir } where tmpDir is a
- * generator-created scratch directory the caller must clean up, or null when
- * no archive exists.
+ * Validate the flat GoReleaser payload before extracting. Restricting members
+ * prevents traversal and duplicate entries from overwriting an earlier file.
  */
-function extractBinary(target) {
+function extractBinary(target, notices) {
   const archive = archiveFor(target)
-  if (!fs.existsSync(archive)) return null
+  const name = `omo-webchat${target.ext ?? ''}`
+  const members = archiveCommand(archive).trim().split(/\r?\n/)
+  const required = [name, ...NOTICE_FILES]
+  const allowed = [...required, 'README.md']
+  if (new Set(members).size !== members.length ||
+      members.some((member) => !allowed.includes(member)) ||
+      required.some((member) => !members.includes(member))) {
+    throw new Error(`${archive}: expected one binary and both notice files at archive root`)
+  }
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-'))
   try {
-    unpack(archive, tmpDir)
-    // goreleaser `binary: omo-webchat` (+ .exe on windows).
-    return { binary: findFile(tmpDir, `omo-webchat${target.ext ?? ''}`), tmpDir }
+    archiveCommand(archive, tmpDir)
+    for (const member of members) {
+      if (!fs.lstatSync(path.join(tmpDir, member)).isFile()) {
+        throw new Error(`${archive}: ${member} must be a regular file`)
+      }
+    }
+    for (const notice of NOTICE_FILES) {
+      if (!fs.readFileSync(path.join(tmpDir, notice)).equals(notices[notice])) {
+        throw new Error(`${archive}: ${notice} differs from the release source`)
+      }
+    }
+    const binary = path.join(tmpDir, name)
+    validateBinary(fs.readFileSync(binary), target)
+    return { binary, tmpDir }
   } catch (err) {
     fs.rmSync(tmpDir, { recursive: true, force: true })
     throw err
   }
 }
 
-function findFile(dir, name) {
-  const stack = [dir]
-  while (stack.length) {
-    const cur = stack.pop()
-    for (const entry of fs.readdirSync(cur, { withFileTypes: true })) {
-      const full = path.join(cur, entry.name)
-      if (entry.isDirectory()) stack.push(full)
-      else if (entry.name === name) return full
+function validateBinary(bytes, target) {
+  let valid = false
+  if (bytes.length >= 64) {
+    if (target.goos === 'darwin') {
+      valid = bytes.readUInt32LE(0) === 0xfeedfacf && bytes.readUInt32LE(12) === 2 &&
+        bytes.readUInt32LE(4) === (target.goarch === 'amd64' ? 0x01000007 : 0x0100000c)
+    } else if (target.goos === 'linux') {
+      valid = bytes.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) &&
+        bytes[4] === 2 && bytes[5] === 1 && [2, 3].includes(bytes.readUInt16LE(16)) &&
+        bytes.readUInt16LE(18) === (target.goarch === 'amd64' ? 62 : 183)
+    } else {
+      const pe = bytes.readUInt32LE(0x3c)
+      valid = bytes.subarray(0, 2).toString() === 'MZ' && pe >= 64 && pe + 6 <= bytes.length &&
+        bytes.readUInt32LE(pe) === 0x00004550 &&
+        bytes.readUInt16LE(pe + 4) === (target.goarch === 'amd64' ? 0x8664 : 0xaa64)
     }
   }
-  return null
-}
-
-/**
- * Fallback: build exactly what .goreleaser.yaml would, per target, into a
- * dedicated scratch directory. Returns { binary, tmpDir } so the caller can
- * clean up the generator-created directory (never a shared parent like /tmp).
- */
-function goBuild(target) {
-  buildFrontend()
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'omo-platform-'))
-  const dest = path.join(tmpDir, `omo-webchat_${target.goos}_${target.goarch}${target.ext ?? ''}`)
-  try {
-    sh('go', ['build', '-trimpath', '-ldflags', '-s -w', '-o', dest, GO_MODULE_PATH], {
-      env: { CGO_ENABLED: '0', GOOS: target.goos, GOARCH: target.goarch },
-    })
-  } catch (err) {
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-    throw err
-  }
-  return { binary: dest, tmpDir }
+  if (!valid) throw new Error(`Invalid executable for ${target.goos}/${target.goarch}`)
 }
 
 // ---------------------------------------------------------------------------
 // package writing
 // ---------------------------------------------------------------------------
 
-function writePackage(target, version, rawBinary) {
+function writePackage(target, version, produced, notices) {
   const pkgDir = path.join(PLATFORM_DIR, `${target.osNode}-${target.cpuNode}`)
   const binName = BIN_BASE + (target.ext ?? '')
   const exeDir = path.join(pkgDir, 'exe')
@@ -201,14 +202,16 @@ function writePackage(target, version, rawBinary) {
 
   fs.rmSync(pkgDir, { recursive: true, force: true })
   fs.mkdirSync(exeDir, { recursive: true })
-  fs.copyFileSync(rawBinary, binPath)
+  fs.copyFileSync(produced.binary, binPath)
   fs.chmodSync(binPath, 0o755)
+  for (const notice of NOTICE_FILES) fs.writeFileSync(path.join(pkgDir, notice), notices[notice])
 
   const pkg = {
     name: `omo-webchat-${target.osNode}-${target.cpuNode}`,
     version,
     description: `Prebuilt omo-webchat server binary for ${target.osNode}/${target.cpuNode} (Go ${target.goos}/${target.goarch}).`,
     repository: REPOSITORY_URL,
+    license: 'MIT',
     os: [target.osNode],
     cpu: [target.cpuNode],
     main: 'index.js',
@@ -216,7 +219,7 @@ function writePackage(target, version, rawBinary) {
       '.': './index.js',
       './package.json': './package.json',
     },
-    files: ['exe', 'index.js'],
+    files: ['exe', 'index.js', ...NOTICE_FILES],
     scripts: {
       prepack: `node -e "const fs=require('node:fs');const p='exe/${binName}';try{if(!fs.statSync(p).isFile())throw 0;fs.accessSync(p,fs.constants.X_OK)}catch{console.error('prepack: expected executable '+p+' is missing or not executable');process.exit(1)}"`,
     },
@@ -242,58 +245,47 @@ function writePackage(target, version, rawBinary) {
 // main
 // ---------------------------------------------------------------------------
 
-function updateCliVersion(version) {
+function updateCliVersion(version, notices) {
   const cliManifestPath = path.join(REPO_ROOT, 'npm', 'cli', 'package.json')
   const cliManifest = JSON.parse(fs.readFileSync(cliManifestPath, 'utf8'))
   cliManifest.version = version
+  cliManifest.license = 'MIT'
+  cliManifest.repository = REPOSITORY_URL
+  cliManifest.files = [...new Set([...cliManifest.files, ...NOTICE_FILES])]
   for (const target of TARGETS) {
     const dependency = `omo-webchat-${target.osNode}-${target.cpuNode}`
     cliManifest.optionalDependencies[dependency] = version
   }
   fs.writeFileSync(cliManifestPath, JSON.stringify(cliManifest, null, 2) + '\n')
+  for (const notice of NOTICE_FILES) fs.writeFileSync(path.join(path.dirname(cliManifestPath), notice), notices[notice])
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2))
-  updateCliVersion(args.version)
-
-  if (args.skipBuild) {
-    console.log('[generate] --skip-build: consuming whatever is in dist/, go build fallback for anything missing.')
-  } else if (hasCmd('goreleaser')) {
+  if (!args.skipBuild) {
     console.log('[generate] running: goreleaser release --snapshot --clean')
     sh('goreleaser', ['release', '--snapshot', '--clean'])
-    frontendReady = true
-  } else {
-    console.log('[generate] goreleaser not found on PATH; falling back to direct go build per target.')
   }
-
-  let fallbacks = 0
-  for (const target of TARGETS) {
-    const label = `${target.osNode}-${target.cpuNode} (go ${target.goos}/${target.goarch})`
-    let produced = extractBinary(target)
-    if (produced) {
-      console.log(`[generate] ${label}: extracted binary from ${path.basename(archiveFor(target))}`)
-    } else {
-      fallbacks++
-      console.log(`[generate] ${label}: no archive at dist/, using go build fallback`)
-      produced = goBuild(target)
+  const metadata = JSON.parse(fs.readFileSync(path.join(DIST_DIR, 'metadata.json'), 'utf8'))
+  const version = parseVersion(metadata?.version)
+  if (args.version !== undefined && args.version !== version) {
+    throw new Error(`Requested version ${args.version} differs from release metadata ${version}`)
+  }
+  const notices = Object.fromEntries(NOTICE_FILES.map((name) => [name, fs.readFileSync(path.join(REPO_ROOT, name))]))
+  const produced = []
+  try {
+    for (const target of TARGETS) produced.push(extractBinary(target, notices))
+    updateCliVersion(version, notices)
+    for (const [i, target] of TARGETS.entries()) {
+      const { binPath } = writePackage(target, version, produced[i], notices)
+      console.log(`[generate] wrote ${path.relative(REPO_ROOT, binPath)}`)
     }
-    try {
-      if (!produced.binary || !fs.existsSync(produced.binary)) {
-        throw new Error(`${label}: no binary produced (archive missing the omo-webchat file?)`)
-      }
-      const { binPath } = writePackage(target, args.version, produced.binary)
-      console.log(`[generate] ${label}: wrote ${path.relative(REPO_ROOT, binPath)}`)
-    } finally {
-      // Only ever remove the generator-created scratch dir, never a shared parent.
-      fs.rmSync(produced.tmpDir, { recursive: true, force: true })
+  } finally {
+    for (const { tmpDir } of produced) {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
     }
   }
-
-  if (fallbacks > 0) {
-    console.log(`[generate] note: ${fallbacks} target(s) used the go build fallback (no goreleaser archive).`)
-  }
-  console.log(`[generate] done — ${TARGETS.length} platform package(s) at version ${args.version}.`)
+  console.log(`[generate] done — ${TARGETS.length} platform package(s) at version ${version}.`)
 }
 
 main()

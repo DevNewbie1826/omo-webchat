@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,10 +16,11 @@ type shutdownOrderListener struct {
 	net.Listener
 	workerDone    <-chan struct{}
 	acceptEntered chan struct{}
+	acceptOnce    sync.Once
 }
 
 func (l *shutdownOrderListener) Accept() (net.Conn, error) {
-	close(l.acceptEntered)
+	l.acceptOnce.Do(func() { close(l.acceptEntered) })
 	return l.Listener.Accept()
 }
 

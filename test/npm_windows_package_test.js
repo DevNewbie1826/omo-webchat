@@ -11,6 +11,7 @@ const zlib = require('node:zlib');
 
 const REPO = path.resolve(__dirname, '..');
 const VERSION = '9.9.9-windows-contract';
+const NOTICE_FILES = ['LICENSE', 'THIRD_PARTY_NOTICES.md'];
 const PE_AMD64 = 0x8664;
 const PE_ARM64 = 0xaa64;
 const TARGETS = [
@@ -88,23 +89,27 @@ function makeZip(entries) {
   return Buffer.concat([...locals, ...centrals, eocd]);
 }
 
-function makeTarGz(fileName, data) {
-  const header = Buffer.alloc(512);
-  Buffer.from(fileName).copy(header, 0, 0, 100);
-  header.write('0000644\0', 100, 8, 'ascii');
-  header.write('0000000\0', 108, 8, 'ascii');
-  header.write('0000000\0', 116, 8, 'ascii');
-  header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
-  header.write('00000000000\0', 136, 12, 'ascii');
-  header.write('        ', 148, 8, 'ascii');
-  header.write('0', 156, 1, 'ascii');
-  header.write('ustar\0', 257, 6, 'ascii');
-  header.write('00', 263, 2, 'ascii');
-  let sum = 0;
-  for (const byte of header) sum += byte;
-  header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
-  const pad = (512 - (data.length % 512)) % 512;
-  return zlib.gzipSync(Buffer.concat([header, data, Buffer.alloc(pad), Buffer.alloc(1024)]));
+function makeTarGz(entries) {
+  const members = [];
+  for (const { name, data } of entries) {
+    const header = Buffer.alloc(512);
+    Buffer.from(name).copy(header, 0, 0, 100);
+    header.write(name === 'omo-webchat' ? '0000755\0' : '0000644\0', 100, 8, 'ascii');
+    header.write('0000000\0', 108, 8, 'ascii');
+    header.write('0000000\0', 116, 8, 'ascii');
+    header.write(`${data.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+    header.write('00000000000\0', 136, 12, 'ascii');
+    header.write('        ', 148, 8, 'ascii');
+    header.write('0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    let sum = 0;
+    for (const byte of header) sum += byte;
+    header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+    const pad = (512 - (data.length % 512)) % 512;
+    members.push(header, data, Buffer.alloc(pad));
+  }
+  return zlib.gzipSync(Buffer.concat([...members, Buffer.alloc(1024)]));
 }
 
 function peMachine(buf) {
@@ -131,6 +136,7 @@ function run(command, args, options = {}) {
     encoding: 'utf8',
     shell: false,
     windowsHide: true,
+    timeout: 120_000,
     env: process.env,
     ...spawnOptions,
   });
@@ -168,6 +174,8 @@ function isolatedEnv(work) {
 
 function writeArchives(distDir, binaries, { swapWindows = false } = {}) {
   fs.mkdirSync(distDir, { recursive: true });
+  fs.writeFileSync(path.join(distDir, 'metadata.json'), JSON.stringify({ version: VERSION }));
+  const notices = NOTICE_FILES.map((name) => ({ name, data: fs.readFileSync(path.join(distDir, '..', name)) }));
   let winX64 = binaries.get('win32-x64');
   let winArm64 = binaries.get('win32-arm64');
   if (swapWindows) {
@@ -184,17 +192,15 @@ function writeArchives(distDir, binaries, { swapWindows = false } = {}) {
         ? `omo-webchat_${target.goos}_${target.goarch}.zip`
         : `omo-webchat_${target.goos}_${target.goarch}.tar.gz`,
     );
-    if (target.goos === 'windows') {
-      const zipPath = target.goarch === 'arm64' ? 'nested/omo-webchat.exe' : 'omo-webchat.exe';
-      fs.writeFileSync(archive, makeZip([{ name: zipPath, data }]));
-    } else {
-      fs.writeFileSync(archive, makeTarGz('omo-webchat', data));
-    }
+    const entries = [{ name: `omo-webchat${target.ext ?? ''}`, data }, ...notices];
+    fs.writeFileSync(archive, target.goos === 'windows' ? makeZip(entries) : makeTarGz(entries));
   }
 }
 
 function copyGeneratorTree(workRepo) {
   fs.cpSync(path.join(REPO, 'npm'), path.join(workRepo, 'npm'), { recursive: true });
+  // Independent fixture inputs; root licensing files belong to the release source.
+  for (const notice of NOTICE_FILES) fs.writeFileSync(path.join(workRepo, notice), `fixture copy: ${notice}\n`);
   assert.equal(
     sha256(fs.readFileSync(path.join(workRepo, 'npm/platform/generate.mjs'))),
     sha256(fs.readFileSync(path.join(REPO, 'npm/platform/generate.mjs'))),
@@ -202,11 +208,12 @@ function copyGeneratorTree(workRepo) {
   assert.equal(sha256(fs.readFileSync(path.join(workRepo, 'npm/cli/cli.js'))), sha256(fs.readFileSync(path.join(REPO, 'npm/cli/cli.js'))));
 }
 
-function generatePackages(workRepo, binaries, options) {
-  writeArchives(path.join(workRepo, 'dist'), binaries, options);
-  run(process.execPath, [path.join(workRepo, 'npm/platform/generate.mjs'), '--skip-build', '--version', VERSION], {
+function generatePackages(workRepo, binaries, { swapWindows = false, expected = 0 } = {}) {
+  writeArchives(path.join(workRepo, 'dist'), binaries, { swapWindows });
+  return run(process.execPath, [path.join(workRepo, 'npm/platform/generate.mjs'), '--skip-build', '--version', VERSION], {
     cwd: workRepo,
     env: isolatedEnv(path.dirname(workRepo)),
+    expected,
   });
 }
 
@@ -302,6 +309,16 @@ function packPackages(workRepo, tarballDir, env) {
   }).stdout.trim();
   packed.cli = path.join(tarballDir, cliFilename);
   assertOptionalDependencies(JSON.parse(tarExtract(packed.cli, 'package/package.json').toString('utf8')));
+  for (const tarball of Object.values(packed)) {
+    const manifest = JSON.parse(tarExtract(tarball, 'package/package.json').toString('utf8'));
+    assert.equal(manifest.version, VERSION);
+    assert.equal(manifest.license, 'MIT');
+    assert.equal(manifest.repository, 'https://github.com/DevNewbie1826/omo-webchat');
+    for (const notice of NOTICE_FILES) {
+      assert.ok(manifest.files.includes(notice));
+      assert.deepEqual(tarExtract(tarball, `package/${notice}`), fs.readFileSync(path.join(workRepo, notice)));
+    }
+  }
   return packed;
 }
 
@@ -456,11 +473,33 @@ test('archive to packed npx contract', { timeout: 180_000 }, async (t) => {
     assertNativeNpx(project, env);
   });
 
-  await t.test('swapped Windows ZIP bytes fail PE and exact-byte contract', () => {
+  await t.test('swapped Windows ZIP bytes fail generation without modifying valid packages', () => {
     const mutRepo = path.join(work, 'mutation-swap');
-    fs.mkdirSync(mutRepo);
-    copyGeneratorTree(mutRepo);
-    generatePackages(mutRepo, binaries, { swapWindows: true });
+    fs.cpSync(workRepo, mutRepo, { recursive: true });
+    const before = fingerprint(path.join(mutRepo, 'npm'));
+    const result = generatePackages(mutRepo, binaries, { swapWindows: true, expected: 1 });
+    assert.match(result.stderr, /windows\/amd64/);
+    assert.deepEqual(fingerprint(path.join(mutRepo, 'npm')), before);
+    assertGeneratedContract(mutRepo, binaries);
+  });
+
+  await t.test('wrong final Windows architecture fails generation without modifying valid packages', () => {
+    const mutRepo = path.join(work, 'mutation-last-architecture');
+    fs.cpSync(workRepo, mutRepo, { recursive: true });
+    const before = fingerprint(path.join(mutRepo, 'npm'));
+    const wrongArch = new Map(binaries);
+    wrongArch.set('win32-arm64', binaries.get('win32-x64'));
+    const result = generatePackages(mutRepo, wrongArch, { expected: 1 });
+    assert.match(result.stderr, /windows\/arm64/);
+    assert.deepEqual(fingerprint(path.join(mutRepo, 'npm')), before);
+    assertGeneratedContract(mutRepo, binaries);
+  });
+
+  await t.test('swapped packaged Windows bytes still fail PE and exact-byte contract', () => {
+    const mutRepo = path.join(work, 'mutation-packed-swap');
+    fs.cpSync(workRepo, mutRepo, { recursive: true });
+    fs.writeFileSync(path.join(mutRepo, 'npm/platform/win32-x64/exe/omo-webchat-bin.exe'), binaries.get('win32-arm64'));
+    fs.writeFileSync(path.join(mutRepo, 'npm/platform/win32-arm64/exe/omo-webchat-bin.exe'), binaries.get('win32-x64'));
     assert.throws(() => assertGeneratedContract(mutRepo, binaries), /PE machine|shipped bytes differ/);
   });
 
