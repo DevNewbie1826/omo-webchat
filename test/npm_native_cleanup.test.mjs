@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { bounded } from './npm_native_smoke.mjs';
 
-for (const mode of ['normal', 'signal', 'win32-input']) {
+for (const mode of ['normal', 'signal', 'win32-input', 'close-channel']) {
   test(`worker joins actual Bun ${mode} completion and closes its listener`, async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'native cleanup '));
     let worker;
@@ -35,10 +35,11 @@ for (const mode of ['normal', 'signal', 'win32-input']) {
           });
           process.stdout.write('\\x1b[?9001h\\n');
         ` : ''}
+        ${mode === 'close-channel' ? "process.on('SIGHUP', () => { server.stop(true); process.exit(0); });" : ''}
         console.log('msg=listening addr=127.0.0.1:' + server.port);
       `;
       const config = path.join(root, 'worker.json');
-      await writeFile(config, JSON.stringify({ root, variant: mode, command: [process.execPath, '-e', source], assets }));
+      await writeFile(config, JSON.stringify({ root, variant: mode, command: [process.execPath, '-e', source], assets, ...(mode === 'close-channel' ? { interrupt: 'close' } : {}) }));
       worker = Bun.spawn([process.execPath, path.resolve('test/npm_native_smoke.mjs'), '--worker', config], {
         cwd: root, env: { PATH: process.env.PATH, TH_PASSWORD: 'fixture' }, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe',
       });

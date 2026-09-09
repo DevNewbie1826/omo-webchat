@@ -197,6 +197,12 @@ async function worker(file) {
   // Send both encodings: some ConPTY input paths only dispatch the console
   // CTRL_C_EVENT from the raw 0x03 byte, others from the structured records.
   const interrupt = () => child.terminal.write(win32InputMode ? win32CtrlC + '\x03' : '\x03');
+  // Closing the terminal is the faithful owned interruption on ConPTY hosts
+  // where input-encoded Ctrl-C never dispatches: the closed pseudoconsole
+  // delivers the platform close event to the whole client chain.
+  const closeTerminal = () => { if (child?.terminal) { try { child.terminal.close(); } catch { /* already closed */ } } };
+  const channel = config.interrupt ?? (process.platform === 'win32' ? 'close' : 'input');
+  const halt = () => { if (channel === 'close') closeTerminal(); else interrupt(); };
   const receipt = { event: 'consumer-result', variant: config.variant, command: config.command, cleanup: {} };
   const stopped = deferred();
   // Subscribe before spawning. Fixture EOF asks the worker to clean its PTY,
@@ -232,8 +238,8 @@ async function worker(file) {
     receipt.address = address;
     http = await bounded(Promise.race([checkHTTP(address, config.assets, process.env.TH_PASSWORD), stopped.promise]), 'HTTP contract', 60_000);
     receipt.http = http;
-    interrupt();
-    receipt.interruption = win32InputMode ? 'PTY win32-input Ctrl-C' : 'PTY Ctrl-C';
+    halt();
+    receipt.interruption = channel === 'close' ? 'PTY terminal close' : (win32InputMode ? 'PTY win32-input Ctrl-C' : 'PTY Ctrl-C');
     const code = await bounded(completion, 'consumer Ctrl-C exit', 20_000);
     receipt.exitCode = code;
     // npm/Bun may propagate the terminal interruption as 130; server itself
@@ -243,7 +249,7 @@ async function worker(file) {
   finally {
     if (child) {
       if (!leaderJoined) {
-        interrupt();
+        halt();
         try { await bounded(completion, 'failure Ctrl-C cleanup', 15_000); }
         catch (error) {
           failure = new AggregateError([failure, error].filter(Boolean), 'consumer cleanup failed');
