@@ -54,7 +54,10 @@ const DAG_PAYLOAD = {
       name: "Ship",
       status: "running",
       counts: { total: 2, pending: 0, blocked: 0, scheduled: 0, running: 1, completed: 1, failed: 0, cancelled: 0, skipped: 0 },
-      nodes: [],
+      nodes: [
+        { id: "n1", prompt: "Run", depends_on: [], state: "running", task_id: "dag-child" },
+        { id: "n2", prompt: "Done", depends_on: [], state: "completed" },
+      ],
       edges: [],
       waves: [],
     },
@@ -62,9 +65,9 @@ const DAG_PAYLOAD = {
       run_id: "r2",
       run_key: "verify",
       name: "Verify",
-      status: "pending",
-      counts: { total: 1, pending: 1, blocked: 0, scheduled: 0, running: 0, completed: 1, failed: 0, cancelled: 0, skipped: 0 },
-      nodes: [],
+      status: "completed",
+      counts: { total: 1, pending: 0, blocked: 0, scheduled: 0, running: 0, completed: 1, failed: 0, cancelled: 0, skipped: 0 },
+      nodes: [{ id: "n3", prompt: "Verified", depends_on: [], state: "completed" }],
       edges: [],
       waves: [],
     },
@@ -139,7 +142,7 @@ describe("summarizeLiveSession", () => {
     expect(garbage.dagTotal).toBe(0);
     expect(garbage.lastLine).toBeNull();
     expect(garbage.dagRunning).toBe(0);
-    expect(garbage.truncatedTasks).toBe(false);
+    expect(garbage.truncatedTasks).toBe(true);
     expect(garbage.taskOversized).toBe(false);
     expect(garbage.dagOversized).toBe(false);
   });
@@ -245,7 +248,7 @@ describe("summarizeLiveSession", () => {
     expect(summary.lastLine).toBe("latest activity");
   });
 
-  it("counts dag running children when there are no task rows", () => {
+  it("qualifies aggregate-only dag data instead of counting unidentified children", () => {
     const summary = summarizeLiveSession({
       id: "dag-only",
       title: "Workflow",
@@ -277,8 +280,9 @@ describe("summarizeLiveSession", () => {
       ...NOT_OVERSIZED,
     });
 
-    expect(summary.runningCount).toBe(3);
-    expect(summary.dagRunning).toBe(3);
+    expect(summary.runningCount).toBe(0);
+    expect(summary.dagRunning).toBe(0);
+    expect(summary.truncatedTasks).toBe(true);
   });
 
   it("counts a taskId present in both a running task row and a running dag node once", () => {
