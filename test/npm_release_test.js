@@ -205,14 +205,14 @@ test('ships six exact payloads, package entrypoints, metadata and both notices i
   const root = fixture(t);
   ok(generate(root));
   const cli = JSON.parse(fs.readFileSync(path.join(root, 'npm/cli/package.json')));
-  assert.deepEqual(Object.keys(cli.optionalDependencies).sort(), TARGETS.map((target) => `omo-webchat-${target.osNode}-${target.cpu}`).sort());
+  assert.deepEqual(Object.keys(cli.optionalDependencies).sort(), TARGETS.map((target) => `omo-webchat-${target.osNode === 'win32' ? 'windows' : target.osNode}-${target.cpu}`).sort());
   assert.deepEqual(Object.values(cli.optionalDependencies), Array(6).fill(VERSION));
   const dirs = [path.join(root, 'npm/cli')];
   for (const target of TARGETS) {
     const dir = path.join(root, 'npm/platform', `${target.osNode}-${target.cpu}`);
     dirs.push(dir);
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'package.json')));
-    assert.equal(manifest.name, `omo-webchat-${target.osNode}-${target.cpu}`);
+    assert.equal(manifest.name, `omo-webchat-${target.osNode === 'win32' ? 'windows' : target.osNode}-${target.cpu}`);
     assert.deepEqual(manifest.os, [target.osNode]);
     assert.deepEqual(manifest.cpu, [target.cpu]);
     const exe = path.join(dir, 'exe', `omo-webchat-bin${target.goos === 'windows' ? '.exe' : ''}`);

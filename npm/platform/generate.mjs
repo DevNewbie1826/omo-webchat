@@ -8,7 +8,7 @@
  * npm's "os"/"cpu" fields make npm install only the matching package.
  *
  * Layout contract (shared with the npm/cli wrapper lane — keep in sync):
- *   npm name:    omo-webchat-<osNode>-<cpuNode>     (npm tokens: darwin/linux/win32, x64/arm64)
+ *   npm name:    omo-webchat-<npmOs|osNode>-<cpuNode> (npm tokens: darwin/linux/windows, x64/arm64)
  *   binary:      <pkg>/exe/omo-webchat-bin (+ ".exe" on win32)
  *   entrypoint:  <pkg>/index.js exports the absolute binary path, so the
  *                wrapper never hardcodes the filename:
@@ -56,8 +56,11 @@ const TARGETS = [
   { osNode: 'darwin', cpuNode: 'x64',   goos: 'darwin',  goarch: 'amd64'  },
   { osNode: 'linux',  cpuNode: 'x64',   goos: 'linux',   goarch: 'amd64'  },
   { osNode: 'linux',  cpuNode: 'arm64', goos: 'linux',   goarch: 'arm64'  },
-  { osNode: 'win32',  cpuNode: 'x64',   goos: 'windows', goarch: 'amd64', ext: '.exe' },
-  { osNode: 'win32',  cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe' },
+  // npm package names use "windows" for win32 targets: the npm registry's
+  // spam filter blocks new "omo-webchat-win32-<arch>" package names, so the
+  // published name deliberately differs from the Node.js platform token.
+  { osNode: 'win32',  cpuNode: 'x64',   goos: 'windows', goarch: 'amd64', ext: '.exe', npmOs: 'windows' },
+  { osNode: 'win32',  cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe', npmOs: 'windows' },
 ]
 
 // Deliberately not `omo-webchat` and not under `bin/` — both are gitignored
@@ -207,7 +210,7 @@ function writePackage(target, version, produced, notices) {
   for (const notice of NOTICE_FILES) fs.writeFileSync(path.join(pkgDir, notice), notices[notice])
 
   const pkg = {
-    name: `omo-webchat-${target.osNode}-${target.cpuNode}`,
+    name: `omo-webchat-${target.npmOs ?? target.osNode}-${target.cpuNode}`,
     version,
     description: `Prebuilt omo-webchat server binary for ${target.osNode}/${target.cpuNode} (Go ${target.goos}/${target.goarch}).`,
     repository: REPOSITORY_URL,
@@ -253,7 +256,7 @@ function updateCliVersion(version, notices) {
   cliManifest.repository = REPOSITORY_URL
   cliManifest.files = [...new Set([...cliManifest.files, ...NOTICE_FILES])]
   for (const target of TARGETS) {
-    const dependency = `omo-webchat-${target.osNode}-${target.cpuNode}`
+    const dependency = `omo-webchat-${target.npmOs ?? target.osNode}-${target.cpuNode}`
     cliManifest.optionalDependencies[dependency] = version
   }
   fs.writeFileSync(cliManifestPath, JSON.stringify(cliManifest, null, 2) + '\n')

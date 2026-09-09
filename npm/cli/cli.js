@@ -22,7 +22,7 @@ const path = require('path');
 const PLATFORM_PACKAGES = {
   darwin: { arm64: 'omo-webchat-darwin-arm64', x64: 'omo-webchat-darwin-x64' },
   linux: { arm64: 'omo-webchat-linux-arm64', x64: 'omo-webchat-linux-x64' },
-  win32: { arm64: 'omo-webchat-win32-arm64', x64: 'omo-webchat-win32-x64' },
+  win32: { arm64: 'omo-webchat-windows-arm64', x64: 'omo-webchat-windows-x64' },
 };
 
 const AGENT_HINT = [

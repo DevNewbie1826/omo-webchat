@@ -12,12 +12,18 @@ import { isDeepStrictEqual } from 'node:util';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64', 'win32-x64', 'win32-arm64'];
+// npm package names deliberately use "windows" for win32 platform directories:
+// the npm registry's spam filter blocks new "omo-webchat-win32-<arch>" package
+// names, so the published name differs from the Node.js platform token. The
+// platform directories and package.json "os" fields keep the Node.js tokens.
+const npmName = (target) => `omo-webchat-${target.replace(/^win32-/, 'windows-')}`;
+const dirOf = (name) => name.slice('omo-webchat-'.length).replace(/^windows-/, 'win32-');
 const NOTICES = ['LICENSE', 'THIRD_PARTY_NOTICES.md'];
 const ARCHIVES = TARGETS.map((target) => {
   const [os, cpu] = target.split('-');
   return `omo-webchat_${os === 'win32' ? 'windows' : os}_${cpu === 'x64' ? 'amd64' : cpu}.${os === 'win32' ? 'zip' : 'tar.gz'}`;
 });
-const NAMES = [...TARGETS.map((target) => `omo-webchat-${target}`), 'omo-webchat'];
+const NAMES = [...TARGETS.map(npmName), 'omo-webchat'];
 const digest = (bytes, algorithm, encoding) => createHash(algorithm).update(bytes).digest(encoding);
 const hashes = (bytes) => ({ sha256: digest(bytes, 'sha256', 'hex'), integrity: `sha512-${digest(bytes, 'sha512', 'base64')}` });
 function requireValue(condition, message) { if (!condition) throw new Error(message); }
@@ -80,7 +86,7 @@ async function pack(out) {
     await run(process.execPath, [path.join(source, 'npm/platform/generate.mjs'), '--skip-build', '--version', releaseVersion]);
     const packages = [];
     for (const name of NAMES) {
-      const target = name === 'omo-webchat' ? undefined : name.slice('omo-webchat-'.length);
+      const target = name === 'omo-webchat' ? undefined : dirOf(name);
       const cwd = path.join(source, 'npm', target ? `platform/${target}` : 'cli');
       const packed = JSON.parse(await npm(['pack', '--json', '--pack-destination', output], { cwd }));
       requireValue(packed.length === 1 && packed[0].name === name && packed[0].version === releaseVersion, `npm pack identity mismatch: ${name}`);
@@ -145,7 +151,7 @@ async function validate(manifestFile) {
   for (const name of NAMES) {
     const entry = manifest.packages.find((p) => p.name === name);
     requireValue(entry.version === releaseVersion, `Package version mismatch: ${name}`);
-    const target = TARGETS.find((target) => name === `omo-webchat-${target}`);
+    const target = TARGETS.find((target) => name === npmName(target));
     const expected = target ? { os: target.split('-')[0], cpu: target.split('-')[1] } : undefined;
     requireValue(isDeepStrictEqual(entry.platform, expected), `Invalid platform metadata: ${name}`);
     const file = await checkedFile(directory, entry, `${name}-${releaseVersion}.tgz`);

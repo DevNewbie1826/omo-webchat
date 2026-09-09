@@ -20,8 +20,8 @@ Seven npm packages, always at the same version:
 | `omo-webchat-darwin-x64` | `os: darwin`, `cpu: x64` |
 | `omo-webchat-linux-x64` | `os: linux`, `cpu: x64` |
 | `omo-webchat-linux-arm64` | `os: linux`, `cpu: arm64` |
-| `omo-webchat-win32-x64` | `os: win32`, `cpu: x64` |
-| `omo-webchat-win32-arm64` | `os: win32`, `cpu: arm64` |
+| `omo-webchat-windows-x64` | `os: win32`, `cpu: x64` |
+| `omo-webchat-windows-arm64` | `os: win32`, `cpu: arm64` |
 
 The wrapper lists the six platform packages in `optionalDependencies` pinned
 to its own version, so npm installs exactly the one matching the consumer's

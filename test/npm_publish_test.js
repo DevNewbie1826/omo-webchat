@@ -109,7 +109,7 @@ for (const issue of ['bad last hash', 'bad last bytes', 'bad integrity', 'traver
       const file = path.join(dir, 'package/package.json');
       const payload = JSON.parse(fs.readFileSync(file));
       if (issue === 'payload metadata') payload.version = '9.9.9';
-      else payload.optionalDependencies['omo-webchat-win32-arm64'] = '9.9.9';
+      else payload.optionalDependencies['omo-webchat-windows-arm64'] = '9.9.9';
       fs.writeFileSync(file, JSON.stringify(payload));
       const npmCli = ctx.env.RELEASE_NPM_CLI || path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js');
       const [packed] = JSON.parse(sync(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', ctx.out], { cwd: path.join(dir, 'package'), env: ctx.env }));
