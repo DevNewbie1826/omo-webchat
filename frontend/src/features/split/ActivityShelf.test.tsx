@@ -54,12 +54,13 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelector(".th-activity-agent-name")?.textContent).toContain("Retained prefix task");
     expect(harness.container.querySelector(".th-activity-dag-name")?.textContent).toContain("Retained prefix DAG");
-    // The notice now lives inside the affected Agents/DAG contents.
+    // The notice now lives inside the affected DAG contents; the Agents
+    // tab shows exact scalar-authority counts only.
     const partials = [...harness.container.querySelectorAll(".th-activity-partial")];
-    expect(partials.length).toBe(2);
+    expect(partials.length).toBe(1);
     for (const partial of partials) {
       expect(partial.textContent).toBe("activity.partial");
-      expect(partial.closest("[data-activity-tabpanel]")?.getAttribute("data-activity-tabpanel")).toMatch(/agents|dag/);
+      expect(partial.closest("[data-activity-tabpanel]")?.getAttribute("data-activity-tabpanel")).toMatch(/dag/);
     }
   });
 

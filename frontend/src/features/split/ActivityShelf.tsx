@@ -154,6 +154,12 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const [nowMs, setNowMs] = useState(Date.now);
   const taskRows = [...activities.tasks.values()];
   const workflow = workflowNodeTasks([...activities.dags.values()], new Set(taskRows.map((task) => task.taskId)));
+  // ActivityState is also the task authority at runtime. Keep this local view
+  // until the shared UI state type exposes the authority scalars directly.
+  const taskCounts = activities as ActivityState & {
+    readonly taskRunningCount?: number;
+    readonly taskTotalCount?: number;
+  };
   const tasks = orderActivities(
     [...taskRows, ...workflow.tasks],
     (task) => TERMINAL_TASK_STATUSES.has(task.status),
@@ -169,16 +175,14 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   // moment everything turns terminal. It hides only when there is genuinely
   // nothing to show, including no marker for omitted historical rows.
   const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
-  // Agent rows also include DAG nodes: omitted nodes/runs cannot certify an
-  // exact running count or an empty agents section, even with no retained rows.
-  const agentsPartial = historyPartial || workflow.identityPartial || dags.some(run => run.truncated === true);
-  const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
+  const hasTaskCount = taskCounts.taskTotalCount !== undefined && taskCounts.taskTotalCount > 0;
+  const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || hasTaskCount || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
 
   const availability: Readonly<Record<ShelfTab, boolean>> = {
     todo: activities.todo !== null,
-    agents: tasks.length > 0,
+    agents: tasks.length > 0 || hasTaskCount,
     dag: dagSource !== undefined || dags.length > 0,
   };
   const selectedTab: ShelfTab = chosenTab
@@ -220,20 +224,16 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
       })();
     }
     if (tab === "agents") {
-      // Incomplete history: retained running rows are a confirmed lower
-      // bound only (`N+`), and zero retained running cannot certify an
-      // empty field (`?`). The exact running/total stays reserved for
-      // complete data; the localized explanation lives in the panel and on
-      // the tab's title — the collapsed strip cannot carry the sentence
-      // (it painted past its own button at 390px). Compact markers keep
-      // the count slot inside the tab.
-      if (agentsPartial) {
-        const running = tasks.filter((task) => task.status === "running").length;
-        return running > 0 ? `${running}+` : "?";
-      }
-      return tasks.length === 0
-        ? null
-        : `${tasks.filter((task) => task.status === "running").length}/${tasks.length}`;
+      const hasTaskScalars = taskCounts.taskRunningCount !== undefined
+        && taskCounts.taskTotalCount !== undefined;
+      const workflowRunning = workflow.tasks.filter((task) => task.status === "running").length;
+      const running = hasTaskScalars
+        ? taskCounts.taskRunningCount! + workflowRunning
+        : tasks.filter((task) => task.status === "running").length;
+      const total = hasTaskScalars
+        ? taskCounts.taskTotalCount! + workflow.tasks.length
+        : tasks.length;
+      return total === 0 ? null : `${running}/${total}`;
     }
     // Overview totals are not catalog totals. Exact counts live on the full selected run.
     if (dagSource !== undefined || dags.length === 0) return null;
@@ -368,7 +368,6 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
               aria-selected={selectedTab === tab}
               aria-controls={`${panelElementId(tab, panelId)}`}
               tabIndex={selectedTab === tab ? 0 : -1}
-              title={tab === "agents" && agentsPartial ? t("activity.partial") : undefined}
               onClick={() => activateTab(tab)}
               onKeyDown={onTabKeyDown}
             >
@@ -441,9 +440,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                         }}
                         t={t}
                       />
-                    : !agentsPartial && <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
-                {tab === "agents" && agentsPartial && taskRoster.status === "idle"
-                  && <p className="th-activity-partial">{t("activity.partial")}</p>}
+                    : <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
                 {tab === "dag" && (dagSource !== undefined
                   ? <CompleteDagSection data={completeDag} activities={activities} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
                   : dags.length > 0 && !activities.truncatedDags && !dags.some(run => run.truncated)
