@@ -1635,8 +1635,9 @@ func sessionErrorFrame(err error, command, requestID, sessionID string) any {
 // attachment and automatic rebinding; replay alone contains no live state.
 func (c *connection) initializeBinding(ctx context.Context, chatID string, s *session.Session) {
 	c.bridge.publishQueueToConnection(c, s)
-	c.bridge.scheduleIdleDrain(chatID, s)
-	c.queryState(ctx, s)
+	if err := c.queryState(ctx, s); err == nil {
+		c.bridge.scheduleIdleDrain(chatID, s)
+	}
 	c.queryModels(ctx, s)
 	c.queryCommands(ctx, s)
 	c.queryStats(ctx, s)

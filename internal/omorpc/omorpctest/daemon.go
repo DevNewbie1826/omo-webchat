@@ -84,10 +84,11 @@ type daemonSession struct {
 	// active run parks the message in the steering queue; follow_up parks
 	// it in the follow-up queue. abort leaves both intact. After a run's agent_settled exactly one head follow-up item is consumed
 	// as the next run. enqueueSeq assigns each entry its enqueueOrder.
-	steering   []queuedItem
-	followUp   []queuedItem
-	enqueueSeq int
-	runActive  bool
+	steering      []queuedItem
+	followUp      []queuedItem
+	enqueueSeq    int
+	runActive     bool
+	compactActive bool
 }
 
 // queueSnapshotLocked is the session's queue as the wire sees it: the
@@ -596,8 +597,10 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetState:
 		d.mu.Lock()
 		followUp, ordered, pending := queueSnapshotLocked(rec)
+		running, compacting := rec.runActive, rec.compactActive
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{
+			"isStreaming": running, "isCompacting": compacting,
 			"sessionId":     recDurable,
 			"sessionFile":   recPath,
 			"thinkingLevel": "off",
@@ -694,6 +697,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
 		"sessionId": rec.rpcID,
 		"state": map[string]any{
+			"isStreaming": rec.runActive, "isCompacting": rec.compactActive,
 			"sessionId":     durableID,
 			"sessionFile":   rec.path,
 			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
@@ -812,11 +816,11 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 			e[k] = v
 		}
 		e["sessionId"] = rpcID
+		d.mu.Lock()
+		applyActivityEventLocked(rec, ev)
+		d.mu.Unlock()
 		d.write(conn, e)
 		if typ, _ := ev["type"].(string); typ == EventAgentSettled {
-			d.mu.Lock()
-			rec.runActive = false
-			d.mu.Unlock()
 			d.consumeNextFollowUp(conn, rec)
 		}
 	}
@@ -874,6 +878,7 @@ func (d *Daemon) EmitSession(path string, event map[string]any) {
 	rpcID := ""
 	if rec != nil {
 		rpcID = rec.rpcID
+		applyActivityEventLocked(rec, event)
 	}
 	d.mu.Unlock()
 	e := make(map[string]any, len(event)+1)
@@ -882,6 +887,21 @@ func (d *Daemon) EmitSession(path string, event map[string]any) {
 	}
 	e["sessionId"] = rpcID
 	d.Emit(e)
+}
+
+// Keep engine state authoritative even when an event's transport is gone.
+func applyActivityEventLocked(rec *daemonSession, event map[string]any) {
+	switch event["type"] {
+	case EventAgentStart:
+		rec.runActive = true
+	case EventAgentSettled:
+		rec.runActive = false
+		rec.compactActive = false
+	case "compaction_start":
+		rec.compactActive = true
+	case "compaction_end", "compaction_done":
+		rec.compactActive = false
+	}
 }
 
 // UnloadSession evicts the live session opened from path: subsequent

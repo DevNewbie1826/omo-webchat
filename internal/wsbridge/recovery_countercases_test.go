@@ -7,6 +7,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 )
 
 func awaitRecoverySignal(t *testing.T, signal <-chan struct{}) {
@@ -73,25 +74,39 @@ func TestAutomaticRecoveryWithoutBrowserBinding(t *testing.T) {
 	}
 	frames.next(t, "run.started")
 	server.unbind()
-	before := h.daemon.OpenCount()
-	release := h.daemon.BlockHandler(omorpc.CmdOpenSession)
-	defer release()
-	h.daemon.DropConnections()
-	if !h.daemon.AwaitRequestCount(omorpc.CmdOpenSession, before+1, heartbeatTestTimeout) {
-		t.Fatal("unbound accepted work was not automatically reopened")
+	beforeAll := h.daemon.OpenCount()
+	for loss := 1; loss <= 2; loss++ {
+		before := h.daemon.OpenCount()
+		release := h.daemon.BlockHandler(omorpc.CmdOpenSession)
+		defer release()
+		h.daemon.DropConnections()
+		if !h.daemon.AwaitRequestCount(omorpc.CmdOpenSession, before+1, heartbeatTestTimeout) {
+			t.Fatalf("loss %d: unbound accepted work was not automatically reopened", loss)
+		}
+		done := make(chan struct{})
+		h.manager.EnqueueChat(chatID, func() { close(done) })
+		release()
+		awaitRecoverySignal(t, done)
+		recovered, ok := h.manager.Get(chatID)
+		if !ok || recovered == stale || recovered.Resumable() || recovered.ID() != stale.ID() || recovered.SessionFile() != stale.SessionFile() {
+			t.Fatalf("loss %d: headless recovery = %v, stale %v", loss, recovered, stale)
+		}
+		if run := recovered.RunSnapshot(); !run.Streaming || run.Compacting {
+			t.Fatalf("loss %d: still-running headless snapshot = %+v", loss, run)
+		}
+		if got := h.daemon.OpenCount() - before; got != 1 {
+			t.Fatalf("loss %d: recovery opens = %d", loss, got)
+		}
+		stale = recovered
 	}
-	done := make(chan struct{})
-	h.manager.EnqueueChat(chatID, func() { close(done) })
-	release()
-	awaitRecoverySignal(t, done)
-	recovered, ok := h.manager.Get(chatID)
-	if !ok || recovered == stale || recovered.Resumable() || recovered.ID() != stale.ID() || recovered.SessionFile() != stale.SessionFile() {
-		t.Fatalf("headless recovery = %v, stale %v", recovered, stale)
-	}
+	clearCollector(frames)
 	attachAndAwaitHistory(t, conn, frames, chatID)
 	awaitCommandFence(t, conn, frames)
-	if got := h.daemon.OpenCount() - before; got != 1 {
-		t.Fatalf("recovery + later attach opens = %d", got)
+	if state := frames.next(t, "state"); state["isStreaming"] != true || state["isCompacting"] != false {
+		t.Fatalf("running recovery wire state = %v", state)
+	}
+	if got := h.daemon.OpenCount() - beforeAll; got != 2 {
+		t.Fatalf("two recoveries + later attach opens = %d", got)
 	}
 }
 
@@ -125,4 +140,41 @@ func TestAutomaticRebindingResynchronizesSettledState(t *testing.T) {
 	frames.next(t, "models")
 	frames.next(t, "commands")
 	frames.next(t, "stats")
+}
+
+func TestAutomaticRebindingPreservesRunningStateAndBacklog(t *testing.T) {
+	const chatID = "running-during-loss"
+	h := newInPlaceBridgeHarness(t, chatID)
+	queue := configureSendQueue(t, h)
+	conn, frames := h.connect(t)
+	attachAndAwaitHistory(t, conn, frames, chatID)
+	awaitCommandFence(t, conn, frames)
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
+	frames.next(t, "run.started")
+	if _, _, err := queue.Append(chatID, sendqueue.Item{Text: "must wait for running work", RequestID: "backlog"}); err != nil {
+		t.Fatal(err)
+	}
+	clearCollector(frames)
+	h.daemon.DropConnections()
+	awaitTransportLoss(t, frames)
+	awaitRecoveredHistory(t, frames)
+	awaitCommandFence(t, conn, frames)
+	done := make(chan struct{})
+	h.manager.EnqueueChat(chatID, func() { close(done) })
+	awaitRecoverySignal(t, done)
+	if state := frames.next(t, "state"); state["isStreaming"] != true || state["isCompacting"] != false {
+		t.Fatalf("running rebound state = %v", state)
+	}
+	if got := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path); got != 0 {
+		t.Fatalf("recovery drained running queue: %d prompts", got)
+	}
+	if got := queue.Snapshot(chatID); len(got.Items) != 1 || got.Dispatching != nil {
+		t.Fatalf("running backlog = %+v", got)
+	}
+	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
+	frames.next(t, "run.done")
+	frames.nextMatching(t, "ack", heartbeatTestTimeout, func(f map[string]any) bool { return f["requestId"] == "backlog" && f["phase"] == "completed" })
+	if got := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path); got != 1 {
+		t.Fatalf("settled queue sends = %d", got)
+	}
 }

@@ -86,6 +86,7 @@ type Session struct {
 	writePrepared                                                           bool
 	closed, closing, resumable, invalidated                                 bool
 	workAtLoss                                                              bool
+	activityHydrationPending                                                bool
 	quarantineErr                                                           *ExternalWriteError
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
@@ -143,7 +144,42 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	// An initially absent native path is different from later disappearance.
 	s.queueFileIdentity, s.queueFileErr = os.Lstat(s.sessionFile)
 	s.broadcast.onDetach = m.cfg.OnDetach
+	s.hydrateActivityLocked(data.State)
+	// A recovery query closes the gap between open's snapshot and route
+	// publication. Subsequent live lifecycle activity supersedes hydration.
+	s.activityHydrationPending = resumed
 	return s
+}
+
+// inheritWork preserves unconfirmed ownership, not stale client run latches.
+// Only explicit engine idle state or a live terminal can settle that ownership.
+func (s *Session) inheritWork(prior *Session, state omorpc.SessionState) {
+	if prior == nil || prior.durableID != s.durableID || prior.sessionFile != s.sessionFile || prior.cwd != s.cwd {
+		return
+	}
+	prior.lifecycleMu.Lock()
+	s.workAtLoss = prior.workAtLoss || prior.activeLocked()
+	prior.lifecycleMu.Unlock()
+	s.hydrateActivityLocked(state)
+}
+
+// Called before publication, or with lifecycleMu held before live activity.
+func (s *Session) hydrateActivityLocked(state omorpc.SessionState) {
+	if state.IsStreaming != nil {
+		s.providerRunActive = *state.IsStreaming
+	} else if s.workAtLoss {
+		// Missing state cannot license idle eviction, queue drain, or loss of
+		// headless recovery eligibility. A later query/terminal can settle it.
+		s.providerRunActive = true
+	}
+	if state.IsCompacting != nil {
+		s.compactionActive = *state.IsCompacting
+	}
+	if state.IsStreaming != nil && state.IsCompacting != nil {
+		s.workAtLoss = s.workAtLoss && (s.providerRunActive || s.compactionActive)
+	} else if s.workAtLoss && !s.compactionActive {
+		s.providerRunActive = true
+	}
 }
 
 func (s *Session) ChatID() string      { return s.chatID }
@@ -349,6 +385,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		s.lifecycleMu.Unlock()
 		return err
 	}
+	s.activityHydrationPending = false
 	s.promptSeq++
 	seq := s.promptSeq
 	s.promptInFlight = true
@@ -955,6 +992,7 @@ func (s *Session) compact(ctx context.Context, detached bool) error {
 		s.lifecycleMu.Unlock()
 		return err
 	}
+	s.activityHydrationPending = false
 	s.compactSeq++
 	seq := s.compactSeq
 	s.compactionActive = true
@@ -1089,6 +1127,15 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	}
 	s.lifecycleMu.Lock()
 	s.engineQueue = engineQueueFromState(out)
+	if s.activityHydrationPending && !s.resumable && !s.closed {
+		s.hydrateActivityLocked(out)
+		s.activityHydrationPending = out.IsStreaming == nil || out.IsCompacting == nil
+		if s.activeLocked() || s.workAtLoss {
+			s.cancelIdleLocked()
+		} else {
+			s.scheduleIdleLocked()
+		}
+	}
 	s.lifecycleMu.Unlock()
 	return &out, nil
 }
@@ -1706,7 +1753,7 @@ func (s *Session) invalidate(code, message string) {
 		s.lifecycleMu.Unlock()
 		return
 	}
-	s.workAtLoss = s.activeLocked()
+	s.workAtLoss = s.workAtLoss || s.activeLocked()
 	s.invalidated = true
 	s.resumable = true
 	s.promptInFlight = false
@@ -1724,7 +1771,7 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 ||
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.workAtLoss || s.broadcast.count() != 0 ||
 		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		return
 	}

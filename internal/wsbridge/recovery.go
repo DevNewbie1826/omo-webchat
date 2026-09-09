@@ -207,7 +207,10 @@ func (h *Handler) reconcileRecoveredSession(chatID string, stale *session.Sessio
 				ctx, chatRef{id: rec.ID, cwd: rec.CWD}, nil, nil, validate, nil, nil,
 			)
 			if err == nil {
-				h.scheduleIdleDrain(chatID, recovered)
+				_, err = recovered.QueryState(ctx)
+				if err == nil {
+					h.scheduleIdleDrain(chatID, recovered)
+				}
 			}
 		}
 	}
