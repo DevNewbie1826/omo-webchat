@@ -46,8 +46,9 @@ const incompleteCases = [
   { name: "empty truncated run collection", dag: { runs: [], truncated_runs: true }, count: 0 },
   { name: "run-local partial flag", dag: { runs: [{ ...fullRun, partial: true }] }, count: 2 },
   { name: "total mismatch without a partial flag", dag: { runs: [{ ...fullRun, nodes: [nodeA], edges: [] }] }, count: 1 },
-  { name: "duplicate node identity", dag: { runs: [{ ...fullRun, nodes: [nodeA, nodeA], edges: [] }] }, count: 1 },
-  { name: "duplicate run identity", dag: { runs: [fullRun, fullRun] }, count: 2 },
+  // Quarantined duplicate raw identities contribute no confirmed running node; truncation keeps the count qualified.
+  { name: "duplicate node identity", dag: { runs: [{ ...fullRun, nodes: [nodeA, nodeA], edges: [] }] }, count: 0 },
+  { name: "duplicate run identity", dag: { runs: [fullRun, fullRun] }, count: 0 },
   { name: "dangling dependency", dag: { runs: [{ ...fullRun, nodes: [nodeA, { ...nodeB, depends_on: ["missing"] }] }] }, count: 2 },
   { name: "malformed edge dropped by parser", dag: { runs: [{ ...fullRun, edges: [{}] }] }, count: 2 },
   { name: "malformed wave dropped by parser", dag: { runs: [{ ...fullRun, waves: [{}] }] }, count: 2 },
