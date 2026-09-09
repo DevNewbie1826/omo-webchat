@@ -330,6 +330,7 @@ export function useChatSession(
     historyLoaded: frameState.historyLoaded,
     historyStatus: frameState.historyStatus,
     connected: frameState.connected,
+    recovery: frameState.recovery,
     commands: frameState.commands,
     thinkingLevel: frameState.thinkingLevel,
     models: frameState.models,

@@ -366,6 +366,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           return;
         }
         if (frame.code === "decode_failed" || frame.code === "incomplete_history" || frame.code === "adoption_required") bindings.pageBuffer.reset();
+        // A server-observed transport loss is surfaced by the recovery status
+        // item, not the transient error text: the text would otherwise stay
+        // red after the automatic recovery it announced has already completed.
+        if (frame.code === "provider_disconnected") return;
         // Send-path command failures persist in a dedicated banner slot instead
         // of the transient error surface or capped transcript notices.
         const sendFailure = sendCommandFailureOf(frame);

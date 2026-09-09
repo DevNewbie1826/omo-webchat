@@ -51,6 +51,12 @@ type sendOperation struct {
 	published bool
 }
 
+// A written send can outlive its RPC completion and every activity snapshot.
+// Pointer identity also keeps independent sends without request IDs distinct.
+type sendWrite struct {
+	requestID string
+}
+
 type sendOperationOwner struct {
 	mu                     sync.Mutex
 	operations             map[string]sendOperation
@@ -59,6 +65,8 @@ type sendOperationOwner struct {
 	retryRunAdmissionToken DetachedSendRetryToken
 	nextRetryToken         uint64
 	activeDetached         atomic.Int32
+	unresolvedWrites       map[*sendWrite]struct{}
+	unresolvedWriteCount   atomic.Int32
 	detachedSettled        chan struct{}
 	sessions               map[*Session]struct{}
 }
@@ -85,6 +93,10 @@ type Session struct {
 	writePrepareMu                                                          sync.Mutex
 	writePrepared                                                           bool
 	closed, closing, resumable, invalidated                                 bool
+	workAtLoss                                                              bool
+	runAtLoss, compactionAtLoss                                             bool
+	activityHydrationPending                                                bool
+	activityRevision                                                        uint64
 	quarantineErr                                                           *ExternalWriteError
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
@@ -142,7 +154,52 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	// An initially absent native path is different from later disappearance.
 	s.queueFileIdentity, s.queueFileErr = os.Lstat(s.sessionFile)
 	s.broadcast.onDetach = m.cfg.OnDetach
+	s.hydrateActivityLocked(data.State)
+	// A recovery query closes the gap between open's snapshot and route
+	// publication. Subsequent live lifecycle activity supersedes hydration.
+	s.activityHydrationPending = resumed
 	return s
+}
+
+// inheritWork preserves unconfirmed ownership, not stale client run latches.
+// Only explicit engine idle state or a live terminal can settle that ownership.
+func (s *Session) inheritWork(prior *Session, state omorpc.SessionState) {
+	if prior == nil || prior.durableID != s.durableID || prior.sessionFile != s.sessionFile || prior.cwd != s.cwd {
+		return
+	}
+	prior.lifecycleMu.Lock()
+	s.workAtLoss = prior.workAtLoss || prior.activeLocked()
+	s.compactionAtLoss = prior.compactionAtLoss || prior.compactionActive
+	s.runAtLoss = prior.runAtLoss || prior.promptInFlight || prior.providerRunActive || prior.localCommandActive || (prior.workAtLoss && !s.compactionAtLoss)
+	if s.compactionAtLoss {
+		s.compactSeq = prior.compactSeq
+		s.compactRPCID, s.compactProviderID, s.compactPhase = prior.compactRPCID, prior.compactProviderID, prior.compactPhase
+	}
+	prior.lifecycleMu.Unlock()
+	s.hydrateActivityLocked(state)
+}
+
+// Called before publication, or with lifecycleMu held before live activity.
+func (s *Session) hydrateActivityLocked(state omorpc.SessionState) {
+	if state.IsStreaming != nil {
+		s.providerRunActive = *state.IsStreaming
+	}
+	if state.IsCompacting != nil {
+		s.compactionActive = *state.IsCompacting
+	}
+	if state.IsStreaming == nil || state.IsCompacting == nil {
+		// Unknown activity preserves the kind of work lost, including its
+		// compaction correlation. It must not invent a prompt run that a
+		// later compaction terminal cannot settle.
+		s.providerRunActive = s.providerRunActive || s.runAtLoss
+		s.compactionActive = s.compactionActive || s.compactionAtLoss
+	}
+	s.workAtLoss = s.workAtLoss && (s.providerRunActive || s.compactionActive)
+	s.runAtLoss = s.workAtLoss && s.providerRunActive
+	s.compactionAtLoss = s.workAtLoss && s.compactionActive
+	if !s.compactionActive {
+		s.compactRPCID, s.compactProviderID = "", ""
+	}
 }
 
 func (s *Session) ChatID() string      { return s.chatID }
@@ -348,6 +405,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		s.lifecycleMu.Unlock()
 		return err
 	}
+	s.observeLiveActivityLocked()
 	s.promptSeq++
 	seq := s.promptSeq
 	s.promptInFlight = true
@@ -377,7 +435,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 				}
 			}
 			if detached {
-				if steerErr := s.callDetachedMutation(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, steerComplete); steerErr != nil {
+				if steerErr := s.callDetachedSend(ctx, omorpc.Steer{SessionID: route, Message: msg, Images: images}, requestID, steerComplete); steerErr != nil {
 					steerErr = s.classifySendError(steerErr)
 					s.completePrompt(seq, msg, steerErr)
 					s.finishDetachedSend(steerErr, "chat.send", requestID, sendComplete)
@@ -393,7 +451,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 		}
 	}
 	if detached {
-		err = s.callDetachedMutation(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, complete)
+		err = s.callDetachedSend(ctx, omorpc.Prompt{SessionID: route, Message: msg, Images: images}, requestID, complete)
 		if err != nil {
 			err = s.classifySendError(err)
 			s.completePrompt(seq, msg, err)
@@ -559,7 +617,7 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 		}
 	}
 	if detached {
-		err = s.callDetachedMutation(ctx, command(route), complete)
+		err = s.callDetachedSend(ctx, command(route), requestID, complete)
 		if err != nil {
 			err = s.classifySendError(err)
 			s.noteTransportError(err)
@@ -568,6 +626,53 @@ func (s *Session) sendDuringRun(ctx context.Context, detached bool, requestID st
 	}
 	_, err = s.client.CallRetained(ctx, command(route), complete)
 	return s.classifySendError(err)
+}
+
+func (s *Session) callDetachedSend(ctx context.Context, command omorpc.Command, requestID string, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
+	owner := s.operationOwner()
+	write := &sendWrite{requestID: requestID}
+	owner.mu.Lock()
+	if owner.unresolvedWrites == nil {
+		owner.unresolvedWrites = make(map[*sendWrite]struct{})
+	}
+	owner.unresolvedWrites[write] = struct{}{}
+	owner.unresolvedWriteCount.Store(int32(len(owner.unresolvedWrites)))
+	owner.mu.Unlock()
+	// Register before attempting the write so epoch invalidation cannot miss
+	// ownership. A synchronous failure proves no detached response is pending.
+	err := s.callDetachedMutation(ctx, command, func(resp *omorpc.Response, epoch omorpc.EpochToken, callErr error) {
+		if resp != nil {
+			owner.mu.Lock()
+			owner.settleSendWriteLocked(write)
+			owner.mu.Unlock()
+		}
+		complete(resp, epoch, callErr)
+	})
+	if err != nil {
+		owner.mu.Lock()
+		owner.settleSendWriteLocked(write)
+		owner.mu.Unlock()
+		owner.rearmIdle()
+	}
+	return err
+}
+
+func (o *sendOperationOwner) settleSendWriteLocked(write *sendWrite) {
+	delete(o.unresolvedWrites, write)
+	o.unresolvedWriteCount.Store(int32(len(o.unresolvedWrites)))
+}
+
+func (s *Session) hasUnresolvedSendLocked() bool {
+	return s.sendOwner != nil && s.sendOwner.unresolvedWriteCount.Load() != 0
+}
+
+func (s *Session) recoveryWorkLocked() bool {
+	return s.workAtLoss || s.hasUnresolvedSendLocked()
+}
+
+func (s *Session) observeLiveActivityLocked() {
+	s.activityRevision++
+	s.activityHydrationPending = s.hasUnresolvedSendLocked()
 }
 
 func (s *Session) callDetachedMutation(ctx context.Context, command omorpc.Command, complete func(*omorpc.Response, omorpc.EpochToken, error)) error {
@@ -623,8 +728,14 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 			case s.quarantineErr != nil:
 				err = s.quarantineErr
 			case s.resumable:
-				if !errors.Is(err, ErrSessionResumable) {
-					err = ErrSessionResumable
+				// A detached completion only fires after the frame was written,
+				// so an error that was not already classified as a definitive
+				// provider rejection is an ambiguous post-write loss: the provider
+				// may still apply the original request. Preserve that
+				// ambiguity — rewriting it into ErrSessionResumable would license
+				// an automatic resend that can duplicate the prompt.
+				if !errors.Is(err, ErrSessionResumable) && !errors.Is(err, ErrSendOutcomeUnknown) {
+					err = fmt.Errorf("%w: %w", ErrSendOutcomeUnknown, err)
 				}
 			case s.closed || s.closing:
 				if !errors.Is(err, ErrSessionClosed) {
@@ -710,7 +821,9 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 }
 
 func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID string, suppressResumable bool) {
-	if suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
+	// Every completion path (including a recovery retry) must withhold an
+	// ambiguous post-write result. Only explicit replay may deduplicate it.
+	if errors.Is(err, ErrSendOutcomeUnknown) || suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
 		return
 	}
 	owner := s.operationOwner()
@@ -722,6 +835,13 @@ func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID
 		owner.mu.Unlock()
 		return
 	}
+	// Only this operation's authoritative outcome can retire its written
+	// ownership. Idle snapshots and unrelated lifecycle terminals cannot.
+	for write := range owner.unresolvedWrites {
+		if write.requestID == requestID {
+			owner.settleSendWriteLocked(write)
+		}
+	}
 	_, _ = s.completeSendOperationLocked(requestID, err)
 	operation, ok := owner.operations[requestID]
 	if ok && operation.phase == sendOperationTerminal && !operation.published {
@@ -731,6 +851,7 @@ func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID
 		owner.publishLocked(operation.outcome)
 	}
 	owner.mu.Unlock()
+	owner.rearmIdle()
 }
 
 func (o *sendOperationOwner) publishLocked(frame Frame) {
@@ -741,6 +862,19 @@ func (o *sendOperationOwner) publishLocked(frame Frame) {
 		}
 		target.lifecycleMu.Unlock()
 	}
+}
+
+// SendOperationResult checks the shared request ledger without admitting a
+// mutation. Queue admission uses this before re-enqueueing an explicit replay.
+func (s *Session) SendOperationResult(requestID string) (error, bool) {
+	if requestID == "" {
+		return nil, false
+	}
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	operation, ok := owner.operations[requestID]
+	return operation.err, ok
 }
 
 func (s *Session) beginSendOperation(requestID string) (error, bool) {
@@ -933,6 +1067,7 @@ func (s *Session) compact(ctx context.Context, detached bool) error {
 		s.lifecycleMu.Unlock()
 		return err
 	}
+	s.observeLiveActivityLocked()
 	s.compactSeq++
 	seq := s.compactSeq
 	s.compactionActive = true
@@ -1051,6 +1186,7 @@ func (s *Session) completeControl(command, requestID string, callErr error) {
 func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
+	activityRevision := s.activityRevision
 	s.lifecycleMu.Unlock()
 	if err != nil {
 		return nil, err
@@ -1067,6 +1203,15 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	}
 	s.lifecycleMu.Lock()
 	s.engineQueue = engineQueueFromState(out)
+	if (s.activityHydrationPending || s.hasUnresolvedSendLocked()) && activityRevision == s.activityRevision && !s.resumable && !s.closed {
+		s.hydrateActivityLocked(out)
+		s.activityHydrationPending = out.IsStreaming == nil || out.IsCompacting == nil || s.hasUnresolvedSendLocked()
+		if s.activeLocked() || s.recoveryWorkLocked() {
+			s.cancelIdleLocked()
+		} else {
+			s.scheduleIdleLocked()
+		}
+	}
 	s.lifecycleMu.Unlock()
 	return &out, nil
 }
@@ -1684,6 +1829,9 @@ func (s *Session) invalidate(code, message string) {
 		s.lifecycleMu.Unlock()
 		return
 	}
+	s.workAtLoss = s.workAtLoss || s.activeLocked()
+	s.runAtLoss = s.runAtLoss || s.promptInFlight || s.providerRunActive || s.localCommandActive
+	s.compactionAtLoss = s.compactionAtLoss || s.compactionActive
 	s.invalidated = true
 	s.resumable = true
 	s.promptInFlight = false
@@ -1701,7 +1849,7 @@ func (s *Session) cancelIdleLocked() {
 	}
 }
 func (s *Session) scheduleIdleLocked() {
-	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.broadcast.count() != 0 ||
+	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.recoveryWorkLocked() || s.broadcast.count() != 0 ||
 		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
 		return
 	}

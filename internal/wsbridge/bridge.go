@@ -140,6 +140,7 @@ func New(cfg Config) *Handler {
 	h := &Handler{cfg: cfg}
 	if cfg.Manager != nil {
 		cfg.Manager.SetQueueCallbacks(h.SessionRunSettled, h.SessionQueueUpdated)
+		cfg.Manager.SetSessionReconciler(h.reconcileRecoveredSession)
 	}
 	h.upgrader = gws.NewUpgrader(h, &gws.ServerOption{
 		Recovery:          gws.Recovery,
@@ -692,6 +693,15 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 	run := sess.RunSnapshot()
 	backlog := c.bridge.cfg.SendQueue != nil && c.bridge.cfg.SendQueue.HasBacklog(op.chatID)
 	if op.kind != "steer" && (run.Streaming || run.Compacting || backlog) && c.bridge.cfg.SendQueue != nil {
+		if prior, duplicate := sess.SendOperationResult(op.requestID); duplicate {
+			release()
+			if prior != nil {
+				c.sendSessionError(prior, "chat.send", op.requestID)
+			} else {
+				c.sendAck("chat.send", op.requestID)
+			}
+			return
+		}
 		_, _, err := c.bridge.cfg.SendQueue.Append(op.chatID, sendqueue.Item{Text: op.message, Images: op.images, RequestID: op.requestID})
 		if err != nil {
 			release()
@@ -707,6 +717,15 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 		return
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
+		if errors.Is(completionErr, session.ErrSendOutcomeUnknown) {
+			// The frame was written and the outcome was lost with the transport
+			// epoch: the provider may still apply the original request, so an
+			// automatic resend could duplicate the prompt. Withhold the outcome —
+			// the operation stays admitted in the request-ID ledger, and an
+			// explicit client replay with the same request ID deduplicates
+			// against it instead of reaching the provider again.
+			return
+		}
 		if isResumableSendError(completionErr) {
 			op.enqueueRecovery(sess, true, completionErr)
 			return
@@ -813,12 +832,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 	if oldDetach != nil {
 		oldDetach()
 	}
-	op.bridge.publishQueueToConnection(op.conn, acquired)
-	op.bridge.scheduleIdleDrain(op.chatID, acquired)
-	op.conn.queryState(ctx, acquired)
-	op.conn.queryModels(ctx, acquired)
-	op.conn.queryCommands(ctx, acquired)
-	op.conn.queryStats(ctx, acquired)
+	op.conn.initializeBinding(ctx, op.chatID, acquired)
 	return true
 }
 
@@ -1071,12 +1085,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			}
 			return session.ErrSubscriberDetached
 		}
-		c.bridge.publishQueueToConnection(c, acquired)
-		c.bridge.scheduleIdleDrain(f.ChatID, acquired)
-		c.queryState(ctx, acquired)
-		c.queryModels(ctx, acquired)
-		c.queryCommands(ctx, acquired)
-		c.queryStats(ctx, acquired)
+		c.initializeBinding(ctx, f.ChatID, acquired)
 		return nil
 	}
 	var sess *session.Session
@@ -1327,10 +1336,15 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 	if current, ok := h.cfg.Manager.Get(chatID); ok {
 		sess = current
 	}
+	dispatch := h.cfg.SendQueue.Snapshot(chatID).Dispatching
 	if run := sess.RunSnapshot(); run.Streaming || run.Compacting {
-		return
+		// Positive history may retire an attempted delivery even during its
+		// run, but no new/reserved delivery may start until settlement.
+		if dispatch == nil || dispatch.DispatchState != sendqueue.DispatchAttempted {
+			return
+		}
 	}
-	wasDispatching := h.cfg.SendQueue.Snapshot(chatID).Dispatching != nil
+	wasDispatching := dispatch != nil
 	item, ok, err := h.cfg.SendQueue.BeginDispatch(chatID)
 	if err != nil {
 		h.cfg.Logger.Error("beginning send queue dispatch", "chat_id", chatID, "error", err)
@@ -1364,9 +1378,15 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 				}
 				h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
 				h.publishQueue(chatID, sess)
+				sess.CompleteDetachedSend(item.RequestID, nil)
 				h.scheduleIdleDrain(chatID, sess)
 				return
 			}
+			// A written request can still apply on the dead epoch. Absence
+			// from history is not rejection; keep its ledger admission and
+			// durable dispatch parked until positive settlement evidence.
+			park(nil)
+			return
 		case sendqueue.DispatchReserved:
 			// The durable reservation proves no provider call began.
 		default:
@@ -1445,7 +1465,8 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 }
 
 func deliveryUncertain(err error) bool {
-	if errors.Is(err, omorpc.ErrDisconnected) || errors.Is(err, omorpc.ErrWrittenUnanswered) {
+	if errors.Is(err, session.ErrSendOutcomeUnknown) ||
+		errors.Is(err, omorpc.ErrDisconnected) || errors.Is(err, omorpc.ErrWrittenUnanswered) {
 		return true
 	}
 	var stable *omorpc.StableError
@@ -1608,6 +1629,18 @@ func sessionErrorFrame(err error, command, requestID, sessionID string) any {
 		frame["requestId"] = requestID
 	}
 	return frame
+}
+
+// initializeBinding restores authoritative controls after both explicit
+// attachment and automatic rebinding; replay alone contains no live state.
+func (c *connection) initializeBinding(ctx context.Context, chatID string, s *session.Session) {
+	c.bridge.publishQueueToConnection(c, s)
+	if err := c.queryState(ctx, s); err == nil {
+		c.bridge.scheduleIdleDrain(chatID, s)
+	}
+	c.queryModels(ctx, s)
+	c.queryCommands(ctx, s)
+	c.queryStats(ctx, s)
 }
 
 func (c *connection) queryState(ctx context.Context, s *session.Session) error {

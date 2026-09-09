@@ -370,15 +370,17 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		sub.next(t) // ready
 		stored := store.stored(chat.id)
 
-		// Park the daemon handler, then kill the epoch mid-call: the
-		// pending prompt fails typed, the manager invalidates, and the
-		// session becomes resumable from the durable cursor.
-		releasePrompt := d.BlockHandler(omorpc.CmdPrompt)
+		// Park an accepted route before application, then kill the epoch:
+		// the call fails typed, but provider work can still apply later.
+		beforeEntries := d.SessionSnapshots()[0].EntryCount
+		entered, releasePrompt := d.BlockPromptBeforeApply(sess.SessionFile())
 		defer releasePrompt()
 		errCh := make(chan error, 1)
 		go func() { errCh <- sess.SendPrompt(context.Background(), "lost", nil) }()
-		if !d.AwaitRequestCount(omorpc.CmdPrompt, 1, testTimeout) {
-			t.Fatalf("daemon never saw the prompt")
+		select {
+		case <-entered:
+		case <-time.After(testTimeout):
+			t.Fatal("daemon never accepted the prompt route")
 		}
 		d.DropConnections()
 		select {
@@ -389,10 +391,13 @@ func TestEdgePromptSendFailureLatchesAndSequenceGuard(t *testing.T) {
 		case <-time.After(testTimeout):
 			t.Fatal("prompt never failed after epoch death")
 		}
-		// Unpark the daemon handler: the first prompt is already settled
-		// by the disconnect, and the post-resume prompt below must reach
-		// the daemon (deferred release alone would deadlock it).
+		// Only authoritative engine settlement, not transport loss, makes
+		// the replacement idle and permits the next prompt.
 		releasePrompt()
+		if !d.AwaitSessionEntryCount(sess.SessionFile(), beforeEntries+1, testTimeout) {
+			t.Fatal("lost prompt did not apply")
+		}
+		d.EmitSession(sess.SessionFile(), map[string]any{"type": omorpctest.EventAgentSettled, "reason": "end_turn"})
 		if !sess.Resumable() {
 			t.Fatal("session was not resumable when the failed call returned")
 		}

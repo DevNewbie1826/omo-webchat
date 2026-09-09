@@ -84,10 +84,11 @@ type daemonSession struct {
 	// active run parks the message in the steering queue; follow_up parks
 	// it in the follow-up queue. abort leaves both intact. After a run's agent_settled exactly one head follow-up item is consumed
 	// as the next run. enqueueSeq assigns each entry its enqueueOrder.
-	steering   []queuedItem
-	followUp   []queuedItem
-	enqueueSeq int
-	runActive  bool
+	steering      []queuedItem
+	followUp      []queuedItem
+	enqueueSeq    int
+	runActive     bool
+	compactActive bool
 }
 
 // queueSnapshotLocked is the session's queue as the wire sees it: the
@@ -134,44 +135,53 @@ type openFailure struct {
 	remaining int
 }
 
+type promptApplyBarrier struct {
+	entered     chan struct{}
+	enteredOnce sync.Once
+	release     chan struct{}
+}
+
 // Daemon is the mock engine. The zero value is not usable; use New + Start.
 type Daemon struct {
 	sockPath   string
 	sessionsDn string
 
-	mu                sync.Mutex
-	ln                net.Listener
-	conns             map[net.Conn]struct{}
-	serverVersion     string
-	protocolVersion   int
-	capabilities      []string
-	mode              string
-	handlerGate       map[string]<-chan struct{}
-	handlerGateByPath map[string]map[string]<-chan struct{}
-	failNext          map[string]string
-	pathFailures      map[string]openFailure
-	nextOpenIdentity  string
-	evictUsedSession  bool
-	refuse            bool
-	connections       int
-	handshakes        int
-	refusals          int
-	opens             int
-	closes            int
-	rpcCounter        int
-	registry          map[string]*daemonSession
-	rpcPaths          map[string]string // every minted routing id -> durable path
-	promptScripts     map[string][]map[string]any
-	compactScripts    map[string][]map[string]any
-	promptHolds       map[string]chan struct{}
-	requests          []map[string]any
+	mu                  sync.Mutex
+	ln                  net.Listener
+	conns               map[net.Conn]struct{}
+	serverVersion       string
+	protocolVersion     int
+	capabilities        []string
+	mode                string
+	handlerGate         map[string]<-chan struct{}
+	handlerGateByPath   map[string]map[string]<-chan struct{}
+	failNext            map[string]string
+	pathFailures        map[string]openFailure
+	nextOpenIdentity    string
+	evictUsedSession    bool
+	refuse              bool
+	connections         int
+	handshakes          int
+	refusals            int
+	opens               int
+	closes              int
+	rpcCounter          int
+	registry            map[string]*daemonSession
+	rpcPaths            map[string]string // every minted routing id -> durable path
+	promptScripts       map[string][]map[string]any
+	compactScripts      map[string][]map[string]any
+	promptHolds         map[string]chan struct{}
+	promptApplyBarriers map[string]*promptApplyBarrier
+	requests            []map[string]any
 
 	legacyEmptyUnknownHistory bool
+	omitActivityFields        bool
 
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
 
 	requestFeed   chan map[string]any
+	historyFeed   chan struct{}
 	handshakeFeed chan struct{}
 	refusalFeed   chan struct{}
 	closeFeed     chan struct{}
@@ -182,26 +192,28 @@ type Daemon struct {
 // begin accepting connections.
 func New(dir string) *Daemon {
 	return &Daemon{
-		sockPath:          filepath.Join(dir, "d.sock"),
-		sessionsDn:        filepath.Join(dir, "sessions"),
-		serverVersion:     "1.2.3",
-		protocolVersion:   1,
-		capabilities:      []string{"multi_session", "extension_events", "custom_unsupported"},
-		mode:              "multi",
-		handlerGate:       map[string]<-chan struct{}{},
-		handlerGateByPath: map[string]map[string]<-chan struct{}{},
-		failNext:          map[string]string{},
-		pathFailures:      map[string]openFailure{},
-		conns:             map[net.Conn]struct{}{},
-		registry:          map[string]*daemonSession{},
-		rpcPaths:          map[string]string{},
-		promptScripts:     map[string][]map[string]any{},
-		compactScripts:    map[string][]map[string]any{},
-		promptHolds:       map[string]chan struct{}{},
-		requestFeed:       make(chan map[string]any, 256),
-		handshakeFeed:     make(chan struct{}, 1),
-		refusalFeed:       make(chan struct{}, 1),
-		closeFeed:         make(chan struct{}, 256),
+		sockPath:            filepath.Join(dir, "d.sock"),
+		sessionsDn:          filepath.Join(dir, "sessions"),
+		serverVersion:       "1.2.3",
+		protocolVersion:     1,
+		capabilities:        []string{"multi_session", "extension_events", "custom_unsupported"},
+		mode:                "multi",
+		handlerGate:         map[string]<-chan struct{}{},
+		handlerGateByPath:   map[string]map[string]<-chan struct{}{},
+		failNext:            map[string]string{},
+		pathFailures:        map[string]openFailure{},
+		conns:               map[net.Conn]struct{}{},
+		registry:            map[string]*daemonSession{},
+		rpcPaths:            map[string]string{},
+		promptScripts:       map[string][]map[string]any{},
+		compactScripts:      map[string][]map[string]any{},
+		promptHolds:         map[string]chan struct{}{},
+		promptApplyBarriers: map[string]*promptApplyBarrier{},
+		requestFeed:         make(chan map[string]any, 256),
+		historyFeed:         make(chan struct{}, 256),
+		handshakeFeed:       make(chan struct{}, 1),
+		refusalFeed:         make(chan struct{}, 1),
+		closeFeed:           make(chan struct{}, 256),
 	}
 }
 
@@ -449,6 +461,13 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	case omorpc.CmdPrompt:
 		d.mu.Lock()
+		applyBarrier := d.promptApplyBarriers[recPath]
+		d.mu.Unlock()
+		if applyBarrier != nil {
+			applyBarrier.enteredOnce.Do(func() { close(applyBarrier.entered) })
+			<-applyBarrier.release
+		}
+		d.mu.Lock()
 		script = takeScript(d.promptScripts, recPath)
 		if script == nil && d.defaultPromptScript != nil {
 			script = append([]map[string]any(nil), d.defaultPromptScript...)
@@ -579,8 +598,10 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetState:
 		d.mu.Lock()
 		followUp, ordered, pending := queueSnapshotLocked(rec)
+		running, compacting, omitActivity := rec.runActive, rec.compactActive, d.omitActivityFields
 		d.mu.Unlock()
-		d.write(conn, d.resp(id, cmd, sid, map[string]any{
+		state := map[string]any{
+			"isStreaming": running, "isCompacting": compacting,
 			"sessionId":     recDurable,
 			"sessionFile":   recPath,
 			"thinkingLevel": "off",
@@ -589,7 +610,12 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 			"followUp":            followUp,
 			"ordered":             ordered,
 			"pendingMessageCount": pending,
-		}))
+		}
+		if omitActivity {
+			delete(state, "isStreaming")
+			delete(state, "isCompacting")
+		}
+		d.write(conn, d.resp(id, cmd, sid, state))
 		return
 
 	case omorpc.CmdGetAvailableModels:
@@ -677,6 +703,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	response := d.resp(id, omorpc.CmdOpenSession, "", map[string]any{
 		"sessionId": rec.rpcID,
 		"state": map[string]any{
+			"isStreaming": rec.runActive, "isCompacting": rec.compactActive,
 			"sessionId":     durableID,
 			"sessionFile":   rec.path,
 			"model":         map[string]any{"provider": "anthropic", "modelId": "claude-fake"},
@@ -690,9 +717,22 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 			"pendingMessageCount": 0,
 		},
 	})
+	if d.omitActivityFields {
+		state := response["data"].(map[string]any)["state"].(map[string]any)
+		delete(state, "isStreaming")
+		delete(state, "isCompacting")
+	}
 	d.mu.Unlock()
 
 	d.write(conn, response)
+}
+
+// SetOmitActivityFields models engines that omit optional activity snapshots
+// without changing their actual run/compaction state or live lifecycle events.
+func (d *Daemon) SetOmitActivityFields(omit bool) {
+	d.mu.Lock()
+	d.omitActivityFields = omit
+	d.mu.Unlock()
 }
 
 // OverrideNextOpenIdentity corrupts only the next successful open response,
@@ -746,6 +786,7 @@ func (d *Daemon) appendHistoryEntryLocked(rec *daemonSession, payload map[string
 	entry := map[string]any{"type": "message", "id": id, "parentId": parent, "message": message}
 	rec.history = append(rec.history, entry)
 	rec.leafID = id
+	d.notify(d.historyFeed)
 	file, err := os.OpenFile(rec.path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err == nil {
 		_ = json.NewEncoder(file).Encode(entry)
@@ -794,11 +835,11 @@ func (d *Daemon) emitScript(conn net.Conn, rpcID string, rec *daemonSession, scr
 			e[k] = v
 		}
 		e["sessionId"] = rpcID
+		d.mu.Lock()
+		applyActivityEventLocked(rec, ev)
+		d.mu.Unlock()
 		d.write(conn, e)
 		if typ, _ := ev["type"].(string); typ == EventAgentSettled {
-			d.mu.Lock()
-			rec.runActive = false
-			d.mu.Unlock()
 			d.consumeNextFollowUp(conn, rec)
 		}
 	}
@@ -856,6 +897,7 @@ func (d *Daemon) EmitSession(path string, event map[string]any) {
 	rpcID := ""
 	if rec != nil {
 		rpcID = rec.rpcID
+		applyActivityEventLocked(rec, event)
 	}
 	d.mu.Unlock()
 	e := make(map[string]any, len(event)+1)
@@ -864,6 +906,21 @@ func (d *Daemon) EmitSession(path string, event map[string]any) {
 	}
 	e["sessionId"] = rpcID
 	d.Emit(e)
+}
+
+// Keep engine state authoritative even when an event's transport is gone.
+func applyActivityEventLocked(rec *daemonSession, event map[string]any) {
+	switch event["type"] {
+	case EventAgentStart:
+		rec.runActive = true
+	case EventAgentSettled:
+		rec.runActive = false
+		rec.compactActive = false
+	case "compaction_start":
+		rec.compactActive = true
+	case "compaction_end", "compaction_done":
+		rec.compactActive = false
+	}
 }
 
 // UnloadSession evicts the live session opened from path: subsequent
@@ -1107,6 +1164,25 @@ func (d *Daemon) SetCompactScript(sessionFile string, events ...map[string]any) 
 	d.mu.Unlock()
 }
 
+// BlockPromptBeforeApply holds one prompt after its route has been accepted
+// but before it mutates durable history or writes a response. entered closes
+// at that exact boundary; release is idempotent.
+func (d *Daemon) BlockPromptBeforeApply(sessionFile string) (entered <-chan struct{}, release func()) {
+	barrier := &promptApplyBarrier{entered: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	d.mu.Lock()
+	d.promptApplyBarriers[sessionFile] = barrier
+	d.mu.Unlock()
+	return barrier.entered, func() {
+		once.Do(func() {
+			d.mu.Lock()
+			delete(d.promptApplyBarriers, sessionFile)
+			d.mu.Unlock()
+			close(barrier.release)
+		})
+	}
+}
+
 // HoldPrompt delays a prompt's scripted event stream AFTER the accepted
 // response has been written, keeping the run observably active until the
 // returned release function fires. Idempotent release.
@@ -1267,6 +1343,27 @@ func (d *Daemon) AwaitRequestCountForPath(cmd, path string, n int, timeout time.
 		}
 		select {
 		case <-d.requestFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
+}
+
+// AwaitSessionEntryCount waits until path has at least n durable entries. It
+// subscribes to the append signal rather than polling or relying on elapsed time.
+func (d *Daemon) AwaitSessionEntryCount(path string, n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		d.mu.Lock()
+		rec := d.registry[path]
+		reached := rec != nil && len(rec.history) >= n
+		d.mu.Unlock()
+		if reached {
+			return true
+		}
+		select {
+		case <-d.historyFeed:
 		case <-deadline.C:
 			return false
 		}

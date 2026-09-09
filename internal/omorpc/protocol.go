@@ -370,6 +370,9 @@ type SessionState struct {
 	SessionName   string          `json:"sessionName,omitempty"`
 	Entries       json.RawMessage `json:"entries,omitempty"`
 	MessageCount  int             `json:"messageCount,omitempty"`
+	// Omission is not authoritative idle evidence on older engines.
+	IsStreaming  *bool `json:"isStreaming,omitempty"`
+	IsCompacting *bool `json:"isCompacting,omitempty"`
 
 	// Pending queue, as observed engine behavior: the follow-up texts in
 	// queue order, every pending entry (steer and followUp) in enqueue

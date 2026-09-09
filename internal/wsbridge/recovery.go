@@ -48,35 +48,45 @@ func (c *connection) queryRecovering(ctx context.Context, binding recoveryBindin
 	}
 }
 
-func (c *connection) recoverBindingInFlight(ctx context.Context, binding *recoveryBinding) (*session.Session, error) {
+// prepareRecovery is shared by browser rebinding and headless work recovery.
+// Both honor metadata generations and only reopen a retained durable cursor.
+func (h *Handler) prepareRecovery(ctx context.Context, workspaceID, chatID string) (cursorstore.Chat, func() error, error) {
 	var preparedGeneration uint64
-	guarded := c.bridge.cfg.PrepareChatVersion != nil && c.bridge.cfg.ChatVersion != nil
+	guarded := h.cfg.PrepareChatVersion != nil && h.cfg.ChatVersion != nil
 	if guarded {
 		var err error
-		preparedGeneration, err = c.bridge.cfg.PrepareChatVersion(ctx, binding.workspaceID, binding.stale.chatID)
+		preparedGeneration, err = h.cfg.PrepareChatVersion(ctx, workspaceID, chatID)
 		if err != nil {
-			return nil, err
+			return cursorstore.Chat{}, nil, err
 		}
-	} else if c.bridge.cfg.PrepareChat != nil {
-		if err := c.bridge.cfg.PrepareChat(ctx, binding.workspaceID, binding.stale.chatID); err != nil {
-			return nil, err
+	} else if h.cfg.PrepareChat != nil {
+		if err := h.cfg.PrepareChat(ctx, workspaceID, chatID); err != nil {
+			return cursorstore.Chat{}, nil, err
 		}
 	}
-	rec, err := c.bridge.cfg.Store.GetChat(binding.stale.chatID)
+	rec, err := h.cfg.Store.GetChat(chatID)
 	if err != nil {
-		return nil, err
+		return cursorstore.Chat{}, nil, err
 	}
-	if rec.WorkspaceID != binding.workspaceID || !cursorstore.IsLaunchableProvider(rec.Provider) {
-		return nil, errors.New("chat metadata changed while resuming")
+	if rec.WorkspaceID != workspaceID || !cursorstore.IsLaunchableProvider(rec.Provider) {
+		return cursorstore.Chat{}, nil, errors.New("chat metadata changed while resuming")
 	}
 	validate := func() error { return nil }
 	if guarded {
 		validate = func() error {
-			if c.bridge.cfg.ChatVersion(binding.stale.chatID) != preparedGeneration {
+			if h.cfg.ChatVersion(chatID) != preparedGeneration {
 				return ErrChatDeleted
 			}
 			return nil
 		}
+	}
+	return rec, validate, nil
+}
+
+func (c *connection) recoverBindingInFlight(ctx context.Context, binding *recoveryBinding) (*session.Session, error) {
+	rec, validate, err := c.bridge.prepareRecovery(ctx, binding.workspaceID, binding.stale.chatID)
+	if err != nil {
+		return nil, err
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		staged := &stagedRecovery{sub: newSubscriber(c)}
@@ -130,4 +140,81 @@ func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding
 	}
 	c.bridge.publishQueueToConnection(c, staged.session)
 	return true
+}
+
+// reconcileRecoveredSession rebinds every browser connection still bound to
+// stale after the transport recovered. The manager invokes it while holding
+// the chat's per-chat flight, so the transparent recovery below preserves its
+// FIFO position and shares the single recovery open with any concurrent
+// in-flight send recovery or user request. The recovery acquisition reopens
+// the SAME durable session: the rebinding replay (ready + durable history) is
+// the recovery-state surface the client observes, and a genuine resume
+// failure surfaces through the existing error mapping without unbinding, so
+// the next user operation still drives its own recovery.
+func (h *Handler) reconcileRecoveredSession(chatID string, stale *session.Session) {
+	if stale == nil {
+		return
+	}
+	boundConnection := false
+	h.conns.Range(func(_, value any) bool {
+		c, ok := value.(*connection)
+		if !ok {
+			return true
+		}
+		c.stateMu.Lock()
+		// Only a fully installed binding (live session-detach hook still in
+		// place) is rebound automatically; a half-transitioned binding lets its
+		// next user operation drive recovery through the query path.
+		matches := !c.closed.Load() && c.chatID == chatID && c.sess == stale
+		bound := matches && c.detach != nil
+		wsID, generation := c.wsID, c.bindingGeneration
+		c.stateMu.Unlock()
+		// A half-installed binding is not headless work: its in-flight user
+		// operation still owns the transition and must keep that FIFO fence.
+		boundConnection = boundConnection || matches
+		if !bound {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(h.cfg.Context, h.cfg.HistoryTimeout)
+		defer cancel()
+		binding := &recoveryBinding{workspaceID: wsID, stale: queryBinding{chatID: chatID, generation: generation, session: stale}}
+		recovered, err := c.recoverBindingInFlight(ctx, binding)
+		if err == nil {
+			c.initializeBinding(ctx, chatID, recovered)
+		} else if !errors.Is(ctx.Err(), context.Canceled) {
+			h.cfg.Logger.Warn("reconciling recovered v2 chat session", "chat_id", chatID, "error", err)
+			frame, mapErr := mapError("error", chatID, session.Frame{Kind: session.FrameError, Data: resumeFailureInfo(err)})
+			if mapErr == nil {
+				_ = c.writeIfCurrent(binding.stale, frame)
+			}
+		}
+		return true
+	})
+	if boundConnection {
+		return
+	}
+	// Accepted provider work outlives its browser. Re-establish its route in
+	// this same per-chat FIFO even when there is no connection to rebind.
+	ctx, cancel := context.WithTimeout(h.cfg.Context, h.cfg.HistoryTimeout)
+	defer cancel()
+	rec, err := h.cfg.Store.GetChat(chatID)
+	if err == nil {
+		var validate func() error
+		rec, validate, err = h.prepareRecovery(ctx, rec.WorkspaceID, chatID)
+		if err == nil {
+			var recovered *session.Session
+			recovered, _, _, err = h.cfg.Manager.ResumeInitializedCheckedAndRunInFlight(
+				ctx, chatRef{id: rec.ID, cwd: rec.CWD}, nil, nil, validate, nil, nil,
+			)
+			if err == nil {
+				_, err = recovered.QueryState(ctx)
+				if err == nil {
+					h.scheduleIdleDrain(chatID, recovered)
+				}
+			}
+		}
+	}
+	if err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		h.cfg.Logger.Warn("reconciling unbound work session", "chat_id", chatID, "error", err)
+	}
 }

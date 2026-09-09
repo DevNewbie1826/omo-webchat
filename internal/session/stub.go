@@ -11,15 +11,20 @@ import (
 )
 
 var (
-	ErrNotImplemented       = errors.New("not implemented")
-	ErrPromptInFlight       = errors.New("session: prompt in flight")
-	ErrCompactionInFlight   = errors.New("session: compaction in flight")
-	ErrSessionClosed        = errors.New("session: closed")
-	ErrSessionResumable     = errors.New("session: provider session is resumable")
-	ErrNoDurableCursor      = errors.New("session: no durable cursor")
-	ErrManagerClosed        = errors.New("session: manager closed")
-	ErrOpenBusy             = errors.New("session: detached open limit reached")
-	ErrSendBackpressure     = errors.New("session: detached mutation limit reached")
+	ErrNotImplemented     = errors.New("not implemented")
+	ErrPromptInFlight     = errors.New("session: prompt in flight")
+	ErrCompactionInFlight = errors.New("session: compaction in flight")
+	ErrSessionClosed      = errors.New("session: closed")
+	ErrSessionResumable   = errors.New("session: provider session is resumable")
+	ErrNoDurableCursor    = errors.New("session: no durable cursor")
+	ErrManagerClosed      = errors.New("session: manager closed")
+	ErrOpenBusy           = errors.New("session: detached open limit reached")
+	ErrSendBackpressure   = errors.New("session: detached mutation limit reached")
+	// ErrSendOutcomeUnknown marks a detached mutation whose frame was written
+	// to the transport but whose outcome was lost with the connection epoch:
+	// the provider may still apply the original request, so the request-ID
+	// ledger retains its identity and suppresses automatic resend.
+	ErrSendOutcomeUnknown   = errors.New("session: send outcome unknown")
 	ErrSubscriberOverflow   = errors.New("session: subscriber queue overflow")
 	ErrSubscriberDetached   = errors.New("session: subscriber detached")
 	ErrSubscriberDelivery   = errors.New("session: subscriber delivery failed")
