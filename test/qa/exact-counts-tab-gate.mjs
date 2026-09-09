@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 
 const repo = resolve(import.meta.dirname, '../..');
-const expectedHead = 'ac0fe518f787cc0042fd50320b45bd25f79396fe';
+const expectedHead = process.env.QA_EXPECTED_HEAD; // unset: bind evidence to the current commit, requiring a clean tree
 const driverPath = process.env.QA_PLAYWRIGHT ?? join(homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs');
 const chromePath = process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const runFile = 'qa-run.json';
@@ -64,7 +64,10 @@ async function run(evidenceDir) {
   const network = eventLog(), wire = eventLog();
   try {
     const head = (await command('git', ['rev-parse', 'HEAD'], { cwd: repo })).stdout.trim();
-    assert.equal(head, expectedHead); report.head = head;
+    const status = (await command('git', ['status', '--porcelain'], { cwd: repo })).stdout;
+    assert.equal(status, '', 'final QA requires a clean committed tree');
+    if (expectedHead !== undefined) assert.equal(head, expectedHead);
+    report.head = head;
     fixtureRoot = await mkdtemp(join(tmpdir(), 'exact-counts-fixture-'));
     profile = await mkdtemp(join(tmpdir(), 'exact-counts-chrome-'));
     const binary = join(fixtureRoot, 'fixture');
