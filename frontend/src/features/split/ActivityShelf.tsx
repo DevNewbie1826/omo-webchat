@@ -131,8 +131,9 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const panelId = useId();
   const [nowMs, setNowMs] = useState(Date.now);
   const taskRows = [...activities.tasks.values()];
+  const workflow = workflowNodeTasks([...activities.dags.values()], new Set(taskRows.map((task) => task.taskId)));
   const tasks = orderActivities(
-    [...taskRows, ...workflowNodeTasks([...activities.dags.values()], new Set(taskRows.map((task) => task.taskId)))],
+    [...taskRows, ...workflow.tasks],
     (task) => TERMINAL_TASK_STATUSES.has(task.status),
     agentTimeMs,
   );
@@ -148,7 +149,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
   // Agent rows also include DAG nodes: omitted nodes/runs cannot certify an
   // exact running count or an empty agents section, even with no retained rows.
-  const agentsPartial = historyPartial || dags.some(run => run.truncated === true);
+  const agentsPartial = historyPartial || workflow.identityPartial || dags.some(run => run.truncated === true);
   const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));

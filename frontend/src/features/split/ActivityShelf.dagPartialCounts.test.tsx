@@ -179,6 +179,91 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       return { truncated_runs: false, runs };
     }
 
+    describe.each(["running", "completed"] as const)("lossy identity with authoritative %s task", (status) => {
+      const taskId = "t".repeat(600) + "a";
+      const prefix = taskId.slice(0, 512);
+      it.each([
+        [false, false], [false, true], [true, false], [true, true],
+      ] as const)("does not double count with truncated_nodes=%s and prior exact=%s", (truncated_nodes, priorExact) => {
+        const exactNode = { ...nodeA, task_id: taskId };
+        const exactRun = wireRun({ nodes: [exactNode], counts: { total: 1, running: 1 } });
+        let state = apply(emptyActivityState(), "omo.task.updated", { truncated_tasks: false, tasks: [
+          { task_id: taskId, name: "authoritative task", status, updated_at: newer },
+        ] });
+        const task = state.tasks.get(taskId);
+        const exactCount = status === "running" ? "1/1" : "0/1";
+        if (priorExact) {
+          state = apply(state, "omo.dag.updated", snapshot([exactRun]));
+          renderShelf(harness, state);
+          expect(count()).toBe(exactCount);
+        }
+        state = apply(state, "omo.dag.updated", snapshot([{
+          ...exactRun, updated_at: newer, truncated_nodes,
+          nodes: [{ ...exactNode, task_id: prefix, task_id_truncated: true }],
+        }]));
+        expect(state.dags.get("raw-run")?.nodes[0]?.taskId).toBeUndefined();
+        expect(state.dags.get("raw-run")?.nodes[0]?.taskIdPrefix).toBe(prefix);
+        expect(state.tasks.get(taskId)).toBe(task);
+        renderShelf(harness, state);
+        expect(count()).toBe(status === "running" ? "1+" : "?");
+        expect(agentsTab().getAttribute("title")).toBe("activity.partial");
+        click(agentsTab());
+        expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
+        expect(agentsPanel().querySelector(".th-activity-partial")).not.toBeNull();
+
+        state = apply(state, "omo.dag.updated", snapshot([{
+          ...exactRun, updated_at: "2026-09-09T10:02:00Z",
+        }]));
+        renderShelf(harness, state);
+        expect(count()).toBe(exactCount);
+        expect(state.dags.get("raw-run")?.nodes[0]?.taskId).toBe(taskId);
+        expect(state.dags.get("raw-run")?.nodes[0]?.taskIdPrefix).toBeUndefined();
+        expect(state.tasks.get(taskId)).toBe(task);
+        expect(agentsTab().getAttribute("title")).toBeNull();
+        expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
+        expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+      });
+    });
+
+    it.each([
+      ["distinct exact ID", { task_id: "different" }],
+      ["distinct exact ID sharing a prefix", { task_id: "t".repeat(600) + "b" }],
+      ["nonoverlapping lossy prefix", { task_id: "other", task_id_truncated: true }],
+      ["plain omission", {}],
+    ])("keeps node rows for %s", (_case, identity) => {
+      let state = apply(emptyActivityState(), "omo.task.updated", { tasks: [
+        { task_id: "t".repeat(600) + "a", name: "task", status: "running", updated_at: newer },
+      ] });
+      state = apply(state, "omo.dag.updated", snapshot([wireRun({
+        nodes: [{ id: "a", prompt: "child", depends_on: [], state: "running", ...identity }],
+        counts: { total: 1, running: 1 },
+      })]));
+      renderShelf(harness, state);
+      expect(count()).toBe("2/2");
+      expect(agentsTab().getAttribute("title")).toBeNull();
+      click(agentsTab());
+      expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
+    });
+
+    it("preserves both exact task rows sharing a prefix and suppresses only ambiguous nodes", () => {
+      const prefix = "t".repeat(512);
+      const taskIds = [prefix + "a", prefix + "b"];
+      let state = apply(emptyActivityState(), "omo.task.updated", { tasks: taskIds.map(task_id => ({
+        task_id, name: task_id, status: "running", updated_at: newer,
+      })) });
+      const nodes = taskIds.map((task_id, index) => ({ ...nodeA, id: `n${index}`, task_id }));
+      state = apply(state, "omo.dag.updated", snapshot([wireRun({ nodes })]));
+      renderShelf(harness, state);
+      expect(count()).toBe("2/2");
+      state = apply(state, "omo.dag.updated", snapshot([wireRun({
+        updated_at: newer, nodes: nodes.map(node => ({ ...node, task_id: prefix, task_id_truncated: true })),
+      })]));
+      renderShelf(harness, state);
+      expect(count()).toBe("2+");
+      click(agentsTab());
+      expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
+    });
+
     it.each([
       ["duplicate runs", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), wireRun({ nodes: [nodeB], counts: { total: 1, running: 1 } })], "?", 0, true],
       ["duplicate nodes", [wireRun({ nodes: [nodeA, nodeA] })], "?", 0, false],
