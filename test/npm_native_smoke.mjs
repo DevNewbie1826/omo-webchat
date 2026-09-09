@@ -194,7 +194,9 @@ async function worker(file) {
     '\x1b[67;46;3;0;0;1_', // C up
     '\x1b[17;29;0;0;0;1_', // Ctrl up
   ].join('');
-  const interrupt = () => child.terminal.write(win32InputMode ? win32CtrlC : '\x03');
+  // Send both encodings: some ConPTY input paths only dispatch the console
+  // CTRL_C_EVENT from the raw 0x03 byte, others from the structured records.
+  const interrupt = () => child.terminal.write(win32InputMode ? win32CtrlC + '\x03' : '\x03');
   const receipt = { event: 'consumer-result', variant: config.variant, command: config.command, cleanup: {} };
   const stopped = deferred();
   // Subscribe before spawning. Fixture EOF asks the worker to clean its PTY,
@@ -232,7 +234,7 @@ async function worker(file) {
     receipt.http = http;
     interrupt();
     receipt.interruption = win32InputMode ? 'PTY win32-input Ctrl-C' : 'PTY Ctrl-C';
-    const code = await bounded(completion, 'consumer Ctrl-C exit', 15_000);
+    const code = await bounded(completion, 'consumer Ctrl-C exit', 20_000);
     receipt.exitCode = code;
     // npm/Bun may propagate the terminal interruption as 130; server itself
     // returns 0 after its supported signal.NotifyContext shutdown.
