@@ -72,9 +72,18 @@ Three workflows implement the path:
      Each job asserts the actual Node/Bun OS and architecture, then runs
      `bun test/npm_native_smoke.mjs --manifest release-artifacts/manifest.json
      --fixture <native-fixture>` against the exact packed tarballs. The smoke
-     driver exercises real `npx`, `bunx`, and `bunx --bun` installs, starts
-     the packaged server, checks HTTP `/` and every embedded asset, verifies
-     authentication (401 before login, 200 after), and proves cleanup.
+     driver exercises real `npx` and `bunx` installs plus the wrapper under
+     Bun's runtime, starts the packaged server, checks HTTP `/` and every
+     embedded asset, verifies authentication (401 before login, 200 after),
+     and proves cleanup. On darwin/linux the third consumer is the literal
+     `bunx --bun`; on Windows with Bun 1.4.2 that literal command completes
+     auto-install and exits 0 without executing the bin (preserved hosted
+     receipts), so Windows instead installs the exact version with Bun and
+     executes the installed wrapper under Bun directly — a scoped check that
+     does not validate the literal `bunx --bun` command there. Windows
+     interruption is verified through ConPTY terminal close with unforced
+     completion and an empty process domain, which proves owned-resource
+     teardown rather than application-level graceful shutdown.
   4. `gate`: succeeds only when the build and all six native jobs succeeded,
      and exposes the immutable `artifact-id` and `source-commit` as outputs.
 
@@ -99,8 +108,9 @@ Three workflows implement the path:
      and publishes to npm with provenance.
   3. `public-native` calls `native-check.yaml` with `public-registry: true`
      against the same artifact ID, running the six native consumers again
-     with real `npx`, `bunx`, and `bunx --bun` installs of the exact
-     published versions from `https://registry.npmjs.org`.
+     with real `npx`, `bunx`, and wrapper-under-Bun installs of the exact
+     published versions from `https://registry.npmjs.org` (the Windows
+     `bunx --bun` substitution described above applies there too).
   4. `github-release` downloads the same original artifact and uploads the
      GitHub release assets from the same manifest, only after all six public
      consumers succeeded.

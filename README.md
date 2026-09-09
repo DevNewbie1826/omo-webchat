@@ -83,7 +83,7 @@ Windows x64·arm64를 모두 지원하며, 호스트 아키텍처에 맞는 자�
 
 npm 패키지는 래퍼(`omo-webchat`) 하나와 여섯 개의 플랫폼 바이너리 패키지(`omo-webchat-<os>-<arch>`)로 구성됩니다. `optionalDependencies`가 현재 플랫폼에 맞는 하나만 같은 버전으로 설치합니다.
 
-- npx에는 Node 18 이상이 필요합니다(래퍼의 `engines` 조건). Bun 사용자는 `bunx` 또는 `bunx --bun`을 쓸 수 있습니다.
+- npx에는 Node 18 이상이 필요합니다(래퍼의 `engines` 조건). Bun 사용자는 `bunx` 또는 `bunx --bun`을 쓸 수 있습니다. 단, 테스트한 호스티드 Windows 환경(Bun 1.4.2)에서 `bunx --bun`은 설치 후 래퍼를 실행하지 않고 종료되는 것이 관찰됐습니다. 해당 환경에서는 `npx` 또는 일반 `bunx`를 권장합니다.
 - 채팅을 만들려면 런타임에 공식 `omo` CLI가 필요합니다. 기본적으로 `PATH`에서 `omo`를 찾습니다. `PATH`에 다른 `omo`가 있거나 충돌이 있으면 `CHAT_PI_BINARY`에 원하는 바이너리의 절대 경로를 명시하세요. 이 변수가 항상 최우선입니다.
 
 ```sh
@@ -200,7 +200,7 @@ Both Windows x64 and arm64 are supported; the matching asset is picked from your
 
 The npm distribution is one wrapper package (`omo-webchat`) plus six platform binary packages (`omo-webchat-<os>-<arch>`). `optionalDependencies` installs exactly the one matching your platform, at the same version as the wrapper.
 
-- npx needs Node 18 or newer (the wrapper's `engines` range). Bun users can run `bunx` or `bunx --bun`.
+- npx needs Node 18 or newer (the wrapper's `engines` range). Bun users can run `bunx` or `bunx --bun`. Note: `bunx --bun` was observed on the tested hosted Windows setup with Bun 1.4.2 to exit after installation without running the wrapper; prefer `npx` or plain `bunx` there.
 - The official `omo` CLI is still required at runtime to answer chats. By default the shim looks for `omo` on `PATH`. If a different `omo` is on your `PATH`, or you want a specific build, set `CHAT_PI_BINARY` to the absolute path of the agent binary. That variable always wins.
 
 ```sh

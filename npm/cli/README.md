@@ -9,7 +9,10 @@ forwards all flags verbatim, and passes the exit code / signals through.
 - **Node 18 or newer** for the `npx` path (this package's `engines` range).
   Bun users can run `bunx omo-webchat@latest ...` or `bunx --bun
   omo-webchat@latest ...` instead; no Node installation is required for the
-  pure Bun path.
+  pure Bun path. Note: `bunx --bun` was observed to fail to launch the
+  wrapper on the tested hosted Windows setup with Bun 1.4.2 (it exits after
+  installation without running the package). On that setup prefer `npx` or
+  plain `bunx`.
 - The **official `omo` CLI** at runtime to answer chats. It is an external
   program, not bundled by default. See "Agent resolution" below.
 

@@ -296,19 +296,21 @@ async function consume({ variant, root, registry, fixture, version, runtime }) {
   for (const file of [env.npm_config_userconfig, env.npm_config_globalconfig]) await writeFile(file, '');
   await writeFile(path.join(root, 'bunfig.toml'), `[install]\nregistry = ${JSON.stringify(registry)}\n`);
   // bun 1.4.2 on win32 exits 0 after auto-installing for `bun x --bun` without
-  // executing the bin (observed on both hosted Windows runners). Pre-installing
-  // the exact version locally keeps the same literal user command — bunx checks
-  // a locally installed package first — and exercises the bin under Bun's
-  // runtime exactly as on the other platforms.
+  // executing the bin (observed on both hosted Windows runners; RED receipts
+  // retained). This branch installs the exact version with Bun and the direct
+  // wrapper below runs it under Bun's runtime. It is a scoped installed-
+  // wrapper check, NOT proof of the literal `bun x --bun` command on win32.
   if (variant === 'bunx --bun' && process.platform === 'win32') {
     await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'omo-native-bunx-bun', private: true, dependencies: { 'omo-webchat': version } }) + '\n');
     await command([process.execPath, 'install'], { cwd: root, env });
   }
   const args = [`omo-webchat@${version}`, '--host', '127.0.0.1', '--port', '0', '--root', env.HOME, '--state-dir', path.join(root, 'state')];
-  // bun 1.4.2 on win32 completes `bun x --bun` auto-install but exits 0 without
-  // executing the bin (both hosted Windows runners; RED receipts retained).
-  // Running the installed wrapper under Bun's runtime is the substance of
-  // --bun; the receipt records this actual command for honest review.
+  // The win32 third consumer executes the installed wrapper with Bun directly
+  // (bun.exe <root>/node_modules/omo-webchat/cli.js), not the literal
+  // `bun x --bun omo-webchat@VERSION`; the command receipt shows the actual
+  // invocation. Interruption on win32 is ConPTY terminal close, and unforced
+  // completion with an empty process domain proves owned-resource teardown,
+  // not application-level graceful shutdown beyond that scope.
   const bunxBunDirect = variant === 'bunx --bun' && process.platform === 'win32';
   const argv = variant === 'npx' ? [runtime.node, runtime.npxCLI, '--yes', ...args]
     : bunxBunDirect ? [process.execPath, path.join(root, 'node_modules', 'omo-webchat', 'cli.js'), ...args.slice(1)]
