@@ -162,18 +162,13 @@ func TestNoticeJournalSurvivesIdleEviction(t *testing.T) {
 	if nid == "" || at == "" {
 		t.Fatalf("notice not stamped before eviction: nid=%q at=%q", nid, at)
 	}
+	// Subscribe before detaching so the idle timer's close completion is the
+	// synchronization point, rather than elapsed time or a polled route.
+	closeComplete := make(chan bool, 1)
+	go func() { closeComplete <- d.AwaitCloseCount(1, testTimeout) }()
 	detach()
-
-	// The idle timer drives the same evict path the deadline machinery uses.
-	deadline := time.Now().Add(testTimeout)
-	for time.Now().Before(deadline) {
-		if _, ok := mgr.Get(chat.id); !ok {
-			break
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	if _, ok := mgr.Get(chat.id); ok {
-		t.Fatal("idle eviction never removed the session")
+	if !<-closeComplete {
+		t.Fatal("idle eviction did not complete session close")
 	}
 
 	pane2 := newRecorder(64)
