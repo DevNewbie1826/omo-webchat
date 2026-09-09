@@ -222,6 +222,12 @@ func NewManager(cfg Config) *Manager {
 	if cfg.CloseTimeout == 0 {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
+	if cfg.OpenRecoveryAfter == 0 {
+		cfg.OpenRecoveryAfter = DefaultOpenRecoveryAfter
+	}
+	if cfg.OpenRecoveryAfter > 0 && cfg.OpenRecoveryAfter <= cfg.CloseTimeout {
+		cfg.OpenRecoveryAfter = cfg.CloseTimeout + time.Second
+	}
 	if cfg.DetachedOpenLimit == 0 {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
