@@ -442,33 +442,73 @@ func TestRetryAdmissionFailurePublishesStoredTerminalOutcome(t *testing.T) {
 	}
 }
 
-func TestRecoveryCompletionTerminalizesLifecycleSubstitutedResumableError(t *testing.T) {
-	s := &Session{durableID: "durable-substituted-resumable", queueSize: DefaultQueueSize}
-	if err, stop := s.beginSendOperation("substituted-resumable"); err != nil || stop {
+func TestAmbiguousTransportLossIsPreservedNotRetried(t *testing.T) {
+	const requestID = "ambiguous-loss"
+	s := &Session{durableID: "durable-ambiguous-loss", queueSize: DefaultQueueSize}
+	if err, stop := s.beginSendOperation(requestID); err != nil || stop {
 		t.Fatalf("begin operation = (%v, %v)", err, stop)
 	}
-	s.recordSendOperation("substituted-resumable", nil)
+	s.recordSendOperation(requestID, nil)
 	s.lifecycleMu.Lock()
 	s.resumable = true
 	s.lifecycleMu.Unlock()
 
-	original := errors.New("provider detail that must not be exposed")
+	// A detached completion only fires after the frame was written, so an
+	// unclassified transport failure on that path means the provider may still
+	// apply the original request: the outcome is ambiguous and must not be
+	// rewritten into a retryable lifecycle error.
+	original := omorpc.ErrDisconnected
 	var completionErr error
-	s.finishDetachedSend(original, "chat.send", "substituted-resumable", func(err error) {
+	s.finishDetachedSend(original, "chat.send", requestID, func(err error) {
 		completionErr = err
-		s.CompleteDetachedSend("substituted-resumable", err)
 	})
-	if !errors.Is(completionErr, ErrSessionResumable) {
-		t.Fatalf("completion = %v, want lifecycle-substituted ErrSessionResumable", completionErr)
+	if !errors.Is(completionErr, ErrSendOutcomeUnknown) {
+		t.Fatalf("ambiguous completion = %v, want ErrSendOutcomeUnknown", completionErr)
+	}
+	if !errors.Is(completionErr, original) {
+		t.Fatalf("ambiguous completion = %v, want the transport cause preserved", completionErr)
+	}
+	if errors.Is(completionErr, ErrSessionResumable) {
+		t.Fatalf("ambiguous completion = %v, must not license an automatic resend", completionErr)
 	}
 
-	operation := s.sendOwner.operations["substituted-resumable"]
-	info, _ := operation.outcome.Data.(ErrorInfo)
-	if operation.phase != sendOperationTerminal || !operation.published || info.Code != "session_unloaded" {
-		t.Fatalf("substituted completion outcome = %+v, info=%+v", operation, info)
+	// The operation stays admitted — withheld, not terminalized — so an
+	// explicit client replay with the same request ID deduplicates against
+	// it instead of reaching the provider again.
+	if prior, duplicate := s.beginSendOperation(requestID); !duplicate || prior != nil {
+		t.Fatalf("replay of withheld operation = (%v, %v), want deduplicated admission", prior, duplicate)
 	}
-	if info.Message != "provider unloaded the session" {
-		t.Fatalf("substituted completion exposed unstable provider text: %+v", info)
+	operation := s.sendOwner.operations[requestID]
+	if operation.phase != sendOperationAdmitted || operation.published {
+		t.Fatalf("withheld operation = %+v, want unpublished admission", operation)
+	}
+}
+
+func TestClassifiedRejectionCompletionStaysRetryable(t *testing.T) {
+	const requestID = "classified-rejection"
+	s := &Session{durableID: "durable-classified-rejection", queueSize: DefaultQueueSize}
+	if err, stop := s.beginSendOperation(requestID); err != nil || stop {
+		t.Fatalf("begin operation = (%v, %v)", err, stop)
+	}
+	s.recordSendOperation(requestID, nil)
+	s.lifecycleMu.Lock()
+	s.resumable = true
+	s.lifecycleMu.Unlock()
+
+	// A definitive provider negative acknowledgement (unknown session) was
+	// already classified as ErrSessionResumable before completion: it proves
+	// the provider rejected the request, so it stays retryable and is not
+	// downgraded to an ambiguous outcome.
+	rejected := fmt.Errorf("%w: %w", ErrSessionResumable, &omorpc.StableError{Code: omorpc.ErrCodeUnknownSession})
+	var completionErr error
+	s.finishDetachedSend(rejected, "chat.send", requestID, func(err error) {
+		completionErr = err
+	})
+	if !errors.Is(completionErr, ErrSessionResumable) || errors.Is(completionErr, ErrSendOutcomeUnknown) {
+		t.Fatalf("classified completion = %v, want ErrSessionResumable", completionErr)
+	}
+	if _, prepared := s.PrepareDetachedSendRetry(requestID, false); !prepared {
+		t.Fatal("classified rejection was not available for transparent retry")
 	}
 }
 

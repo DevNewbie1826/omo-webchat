@@ -623,8 +623,14 @@ func (s *Session) finishDetachedSend(err error, command, requestID string, compl
 			case s.quarantineErr != nil:
 				err = s.quarantineErr
 			case s.resumable:
-				if !errors.Is(err, ErrSessionResumable) {
-					err = ErrSessionResumable
+				// A detached completion only fires after the frame was written,
+				// so an error that was not already classified as a definitive
+				// provider rejection is an ambiguous post-write loss: the provider
+				// may still apply the original request. Preserve that
+				// ambiguity — rewriting it into ErrSessionResumable would license
+				// an automatic resend that can duplicate the prompt.
+				if !errors.Is(err, ErrSessionResumable) && !errors.Is(err, ErrSendOutcomeUnknown) {
+					err = fmt.Errorf("%w: %w", ErrSendOutcomeUnknown, err)
 				}
 			case s.closed || s.closing:
 				if !errors.Is(err, ErrSessionClosed) {

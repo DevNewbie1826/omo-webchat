@@ -1,12 +1,13 @@
 package wsbridge
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
@@ -23,16 +24,65 @@ func awaitTransportLoss(t *testing.T, frames *collector) {
 	})
 }
 
+// entryCountForPath snapshots the provider-side durable record for one session
+// file: the applied prompt texts and the durable entry count.
+func entryCountForPath(t *testing.T, daemon *omorpctest.Daemon, path string) (omorpctest.SessionSnapshot, bool) {
+	t.Helper()
+	for _, snapshot := range daemon.SessionSnapshots() {
+		if snapshot.Path == path {
+			return snapshot, true
+		}
+	}
+	return omorpctest.SessionSnapshot{}, false
+}
+
+// assertNoPhasedOutcome fails if a settled chat.send outcome — a phased ack
+// or an error — was already delivered for requestID. An operation whose
+// provider outcome is unknown must stay withheld.
+func assertNoPhasedOutcome(t *testing.T, frames *collector, requestID string) {
+	t.Helper()
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, raw := range frames.frames {
+		var frame map[string]any
+		if json.Unmarshal(raw, &frame) != nil {
+			continue
+		}
+		if frame["requestId"] != requestID {
+			continue
+		}
+		if frame["type"] == "ack" && frame["phase"] != nil {
+			t.Fatalf("ambiguous send %s surfaced a settled outcome: %s", requestID, raw)
+		}
+		if frame["type"] == "error" {
+			t.Fatalf("ambiguous send %s surfaced a terminal error: %s", requestID, raw)
+		}
+	}
+}
+
 // awaitRecoveredHistory blocks until the rebound binding replays its durable
 // history terminal on this socket.
 func awaitRecoveredHistory(t *testing.T, frames *collector) {
 	t.Helper()
+	awaitRecoveredHistoryEntries(t, frames)
+}
+
+// awaitRecoveredHistoryEntries is awaitRecoveredHistory plus the number of
+// entries the recovery replay delivered on this socket, so callers can
+// assert the provider-side durable record through the replay that read it.
+func awaitRecoveredHistoryEntries(t *testing.T, frames *collector) int {
+	t.Helper()
 	if ready := frames.next(t, "ready"); ready["resumed"] != true {
 		t.Fatalf("recovery ready = %v, want a resumed rebind", ready)
 	}
+	replayed := 0
 	for {
-		if page := frames.next(t, "entries"); page["final"] == true {
-			return
+		page := frames.next(t, "entries")
+		if entries, ok := page["entries"].([]any); ok {
+			replayed += len(entries)
+		}
+		if page["final"] == true {
+			return replayed
 		}
 	}
 }
@@ -126,52 +176,126 @@ func TestAutomaticReconciliationAfterReconnect(t *testing.T) {
 		attachAndAwaitHistory(t, conn, frames, chatID)
 		awaitCommandFence(t, conn, frames)
 
-		h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
-		frames.next(t, "run.started")
-
-		beforeFollowUp := h.daemon.RequestCount(omorpc.CmdFollowUp)
+		_, stale := h.soleServerConnection(t).binding()
+		if stale == nil {
+			t.Fatal("server connection was not bound")
+		}
+		staleID, staleFile := stale.ID(), stale.SessionFile()
+		beforeSnapshot, ok := entryCountForPath(t, h.daemon, h.path)
+		if !ok {
+			t.Fatalf("session %s was not registered before the loss", h.path)
+		}
+		beforeEntries := beforeSnapshot.EntryCount
+		beforePrompt := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path)
 		beforeOpen := h.daemon.OpenCount()
-		releaseRaw := h.daemon.BlockHandler(omorpc.CmdFollowUp)
-		var releaseOnce sync.Once
-		release := func() { releaseOnce.Do(releaseRaw) }
+		beforeHandshake := h.daemon.Handshakes()
+
+		// The prompt handler is gated after the request was recorded but before
+		// the provider applied it or answered: the write reached the transport,
+		// so its outcome is ambiguous once the transport dies. The session is
+		// retained — only the connection epoch is lost, never the provider-side
+		// session (no eviction). The gate stays closed through the recovery
+		// below: the provider has not applied anything yet, so the durable file
+		// is stable while the transparent reopen replays it.
+		const promptText = "single mid-flight prompt"
+		promptEntered, release := h.daemon.BlockPromptBeforeApply(h.path)
 		defer release()
 		request := map[string]any{
-			"type": "chat.send", "sessionId": chatID, "requestId": "recovery-window-once",
-			"run": map[string]any{"kind": "follow_up", "message": "only once"},
+			"type": "chat.send", "sessionId": chatID, "requestId": "ambiguous-written-once",
+			"run": map[string]any{"kind": "prompt", "message": promptText},
 		}
 		writeClient(t, conn, request)
-		if ack := frames.next(t, "ack"); ack["requestId"] != "recovery-window-once" {
+		if ack := frames.next(t, "ack"); ack["requestId"] != "ambiguous-written-once" {
 			t.Fatalf("initial admission ack = %v", ack)
 		}
-		if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, beforeFollowUp+1, heartbeatTestTimeout) {
-			t.Fatal("initial follow-up was not forwarded")
+		promptDeadline := time.NewTimer(heartbeatTestTimeout)
+		defer promptDeadline.Stop()
+		select {
+		case <-promptEntered:
+		case <-promptDeadline.C:
+			t.Fatal("prompt did not reach the provider's pre-apply barrier")
 		}
 
-		h.daemon.EvictSessionSilently(h.path)
 		h.daemon.DropConnections()
-		release()
 		awaitTransportLoss(t, frames)
 
-		// The in-flight request is retried exactly once on the recovered
-		// durable route; automatic reconciliation and the send's own recovery
-		// share one resume open.
-		if !h.daemon.AwaitRequestCount(omorpc.CmdFollowUp, beforeFollowUp+2, heartbeatTestTimeout) {
-			t.Fatal("in-flight request was not retried across the recovery window")
+		// Automatic reconciliation alone recovers: it re-establishes the
+		// transport, transparently reopens the SAME retained durable session,
+		// and replays its durable history on the live socket. That replay is
+		// the completion barrier for the recovery wave — a resending flight
+		// would share the per-chat FIFO, so it settles before anything the
+		// test issues next.
+		awaitRecoveredHistory(t, frames)
+
+		// Exactly one prompt forward: the ambiguous post-write loss never
+		// licenses an automatic resend. The gated arrival counter is sticky, so
+		// a second forward is caught here or at the re-checks below.
+		if got := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path) - beforePrompt; got != 1 {
+			t.Fatalf("prompt forwards across the ambiguous loss = %d, want exactly 1", got)
+		}
+		recovered, ok := h.manager.Get(chatID)
+		if !ok || recovered == nil {
+			t.Fatal("session with an ambiguous in-flight prompt was not retained")
+		}
+		if recovered.ID() != staleID || recovered.SessionFile() != staleFile {
+			t.Fatalf("recovered identity = id:%q file:%q, want the retained id:%q file:%q",
+				recovered.ID(), recovered.SessionFile(), staleID, staleFile)
 		}
 		if got := h.daemon.OpenCount() - beforeOpen; got != 1 {
-			t.Fatalf("recovery opens = %d, want one shared single-flight open", got)
+			t.Fatalf("recovery opens = %d, want exactly 1 reconciliation open", got)
 		}
-		frames.nextMatching(t, "ack", heartbeatTestTimeout, func(f map[string]any) bool {
-			return f["requestId"] == "recovery-window-once" && f["phase"] == "completed"
-		})
+		if got := h.daemon.Handshakes() - beforeHandshake; got != 1 {
+			t.Fatalf("reconnect handshakes = %d, want exactly 1", got)
+		}
 
-		// A browser replay of the same requestID must deduplicate against the
-		// retained ledger outcome, never reach the engine again.
+		// The ambiguous outcome stays withheld: no terminal ack and no error
+		// frame may surface for it, or the client could mistake an unknown
+		// provider outcome for a settled one.
+		assertNoPhasedOutcome(t, frames, "ambiguous-written-once")
+
+		// A browser replay of the same requestID deduplicates against the
+		// retained admitted operation and never reaches the provider again. The
+		// replay rides the same per-chat FIFO as any resending flight, so by
+		// the time its ack returns, a wrongly resent prompt has been counted.
 		writeClient(t, conn, request)
-		nextSuccessfulSendAcks(t, frames, "recovery-window-once")
-		if got := h.daemon.RequestCount(omorpc.CmdFollowUp) - beforeFollowUp; got != 2 {
-			t.Fatalf("prompt forwards across the recovery window = %d, want exactly initial plus one retry", got)
+		nextSuccessfulSendAcks(t, frames, "ambiguous-written-once")
+		if got := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path) - beforePrompt; got != 1 {
+			t.Fatalf("prompt forwards after the replay = %d, want exactly 1", got)
 		}
+		// The provider has still not applied anything (the handler gate is held),
+		// so the durable record is unchanged — deterministic at this point.
+		if snapshot, ok := entryCountForPath(t, h.daemon, h.path); !ok || snapshot.EntryCount != beforeEntries {
+			t.Fatalf("durable user turns before the provider applied the prompt = %d, want %d", snapshot.EntryCount, beforeEntries)
+		}
+
+		// Now let the provider apply the one already-written prompt. Its
+		// response can only fail against the dead connection, so the outcome
+		// stays unknown to the client. The fixture's append notification is the
+		// completion barrier for the durable assertions below.
+		release()
+		if !h.daemon.AwaitSessionEntryCount(h.path, beforeEntries+1, heartbeatTestTimeout) {
+			t.Fatal("the already-written prompt was not durably applied")
+		}
+		snapshot, ok := entryCountForPath(t, h.daemon, h.path)
+		if !ok {
+			t.Fatalf("session %s was not registered after the loss", h.path)
+		}
+		if got := snapshot.EntryCount - beforeEntries; got != 1 {
+			t.Fatalf("durable user turns across the ambiguous loss = %d, want exactly 1", got)
+		}
+		if len(snapshot.Prompts) != 1 || snapshot.Prompts[0] != promptText {
+			t.Fatalf("provider prompt record = %v, want exactly [%q]", snapshot.Prompts, promptText)
+		}
+		if got := h.daemon.RequestCountForPath(omorpc.CmdPrompt, h.path) - beforePrompt; got != 1 {
+			t.Fatalf("prompt forwards after durable application = %d, want exactly 1", got)
+		}
+		if got := h.daemon.OpenCount() - beforeOpen; got != 1 {
+			t.Fatalf("recovery opens = %d, want exactly 1 reconciliation open", got)
+		}
+		if got := h.daemon.Handshakes() - beforeHandshake; got != 1 {
+			t.Fatalf("reconnect handshakes = %d, want exactly 1", got)
+		}
+		assertNoPhasedOutcome(t, frames, "ambiguous-written-once")
 		assertNoBridgeErrors(t, frames)
 	})
 

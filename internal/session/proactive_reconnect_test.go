@@ -73,14 +73,22 @@ func TestManagerSkipsProactiveReconnectWithoutRecoveryWork(t *testing.T) {
 	t.Run("no sessions", func(t *testing.T) {
 		d := newDaemon(t)
 		client := dial(t, d)
-		_ = testManager(t, client, newMemStore(), 64)
+		mgr := testManager(t, client, newMemStore(), 64)
 
 		baseline := d.Handshakes()
 		_, oldEvents := client.CurrentEpoch()
 		d.DropConnections()
 		awaitStreamClosed(t, oldEvents)
-		if d.AwaitRequestCount(omorpc.CmdGetProtocolInfo, baseline+1, 250*time.Millisecond) {
-			t.Fatalf("manager with no sessions reconnected proactively (handshakes=%d)", d.Handshakes())
+		// Close joins the client reader that reports epoch loss; cleanupWG then
+		// joins every manager recovery flight that report could have registered.
+		// The final counter is therefore a completion-barrier assertion, not a
+		// timed absence check.
+		if err := client.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mgr.cleanupWG.Wait()
+		if got := d.Handshakes(); got != baseline {
+			t.Fatalf("manager with no sessions reconnected proactively (handshakes=%d, want %d)", got, baseline)
 		}
 	})
 	t.Run("idle session without bindings", func(t *testing.T) {
@@ -98,8 +106,12 @@ func TestManagerSkipsProactiveReconnectWithoutRecoveryWork(t *testing.T) {
 		_, oldEvents := client.CurrentEpoch()
 		d.DropConnections()
 		awaitStreamClosed(t, oldEvents)
-		if d.AwaitRequestCount(omorpc.CmdGetProtocolInfo, baseline+1, 250*time.Millisecond) {
-			t.Fatalf("idle session without live bindings triggered a proactive reconnect (handshakes=%d)", d.Handshakes())
+		if err := client.Close(); err != nil {
+			t.Fatal(err)
+		}
+		mgr.cleanupWG.Wait()
+		if got := d.Handshakes(); got != baseline {
+			t.Fatalf("idle session without live bindings triggered a proactive reconnect (handshakes=%d, want %d)", got, baseline)
 		}
 	})
 }

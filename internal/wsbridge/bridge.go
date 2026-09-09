@@ -708,6 +708,15 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 		return
 	}
 	err = op.send(ctx, sess, func(completionErr error) {
+		if errors.Is(completionErr, session.ErrSendOutcomeUnknown) {
+			// The frame was written and the outcome was lost with the transport
+			// epoch: the provider may still apply the original request, so an
+			// automatic resend could duplicate the prompt. Withhold the outcome —
+			// the operation stays admitted in the request-ID ledger, and an
+			// explicit client replay with the same request ID deduplicates
+			// against it instead of reaching the provider again.
+			return
+		}
 		if isResumableSendError(completionErr) {
 			op.enqueueRecovery(sess, true, completionErr)
 			return
@@ -1446,7 +1455,8 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 }
 
 func deliveryUncertain(err error) bool {
-	if errors.Is(err, omorpc.ErrDisconnected) || errors.Is(err, omorpc.ErrWrittenUnanswered) {
+	if errors.Is(err, session.ErrSendOutcomeUnknown) ||
+		errors.Is(err, omorpc.ErrDisconnected) || errors.Is(err, omorpc.ErrWrittenUnanswered) {
 		return true
 	}
 	var stable *omorpc.StableError
