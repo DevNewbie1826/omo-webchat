@@ -21,9 +21,9 @@ const dom = (text, aria) => ({ sidebar: { text, aria }, overview: { text, aria }
 test('summary scenario inputs preserve original running2, retained1, zero-retained and complete topology', () => {
   assert.deepEqual(stages, ['partial-retained1', 'incomplete-retained0', 'malformed-node', 'complete2',
     'compact-duplicate-ids', 'compact-no-ids', 'complete2-empty-optional-ids', 'compact-mixed-ids',
-    'required-empty-run-id', 'required-empty-node-id', 'complete2-recovery']);
+    'required-empty-run-id', 'required-empty-node-id', 'canceled-retained-running2', 'complete2-recovery']);
   assert.deepEqual(viewports, [{ width: 1280, height: 800 }, { width: 390, height: 844 }]);
-  assert.equal(stages.length * viewports.length * 2, 44);
+  assert.equal(stages.length * viewports.length * 2, 48);
   const partial = summaryInput(stages[0]);
   assert.equal(partial.dag.runs[0].counts.running, 2);
   assert.equal(partial.dag.runs[0].counts.total, 2);
@@ -169,6 +169,59 @@ test('rich identity fixtures preserve literal empty IDs through actual REST, WS 
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test('canceled retained-running input survives actual REST, WS and DAG parsers before active exact2 recovery', async () => {
+  assert.deepEqual(stages.slice(-2), ['canceled-retained-running2', 'complete2-recovery']);
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const stage of stages.slice(-2)) {
+      const { marker, ...session } = summaryInput(stage), run = session.dag.runs[0];
+      assert.equal(run.status, stage === 'canceled-retained-running2' ? 'canceled' : 'running');
+      assert.equal(session.dag.truncated_runs, false);
+      assert.equal(session.dag_oversized, undefined); assert.equal(session.dag_digest, undefined);
+      const full = summaryInput('complete2').dag.runs[0];
+      for (const key of ['run_id', 'counts', 'nodes', 'edges', 'waves']) assert.deepEqual(run[key], full[key]);
+      globalThis.fetch = async (path, init) => {
+        assert.equal(path, '/api/sessions/live'); assert.equal(init.method, 'GET');
+        return Response.json({ sessions: [session] });
+      };
+      const [rest] = await listLiveSessions();
+      const ws = parseChatServerFrame(JSON.parse(JSON.stringify(summaryFrame(stage))));
+      const wsDag = ws.snapshots.find(s => s.name === 'omo.dag.updated').data;
+      assert.deepEqual(rest.dag, session.dag); assert.deepEqual(wsDag, session.dag);
+      assert.equal(parseTaskUpdated(rest.task).tasks[0].liveProgress.lastAssistantLine, marker);
+      for (const raw of [rest.dag, wsDag]) {
+        const parsed = parseDagUpdated(raw);
+        assert.equal(parsed.truncatedRuns, false); assert.equal(parsed.runs.length, 1);
+        assert.equal(parsed.runs[0].status, run.status);
+        assert.equal(parsed.runs[0].counts.running, 2);
+        assert.equal(parsed.runs[0].counts.total, 2);
+        assert.deepEqual(parsed.runs[0].nodes.map(n => [n.id, n.state, n.dependsOn]),
+          [['a', 'running', []], ['b', 'running', ['a']]]);
+      }
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test('terminal oracle requires mounted sessions with absent badges, never running2 or hidden/zero/unknown badges', () => {
+  const stage = 'canceled-retained-running2';
+  const zero = { sidebar: null, overview: null, rows: { sidebar: {}, overview: {} } };
+  const result = assertSummaryDOM(zero, stage, copy);
+  for (const surface of ['sidebar', 'overview']) {
+    assert.equal(result[surface].zeroRunning, true); assert.equal(result[surface].exact2, false);
+    assert.equal(result[surface].falseExact, false);
+    for (const [text, aria] of [['2', 'exact:2'], ['1', 'exact:1'], ['0', 'exact:0'],
+      ['?', 'unknown'], ['1+', 'partial:1'], ['2+', 'partial:2'], ['', null]]) {
+      assert.throws(() => assertSummaryDOM({ ...zero, [surface]: { text, aria, visible: false } }, stage, copy));
+    }
+    assert.throws(() => assertSummaryDOM({ ...zero, [surface]: undefined }, stage, copy));
+    assert.throws(() => assertSummaryDOM({ ...zero, rows: { ...zero.rows, [surface]: null } }, stage, copy));
+  }
+  for (const active of stages.filter(value => value !== stage)) {
+    assert.throws(() => assertSummaryDOM(zero, active, copy), 'badge absence remains forbidden outside terminal stage');
+  }
+  assertSummaryDOM(dom('2', 'exact:2'), 'complete2-recovery', copy);
+});
+
 test('every stage has a valid strictly increasing revision, including double-digit minutes', () => {
   let previous = -Infinity;
   for (const stage of stages) {
@@ -208,7 +261,16 @@ test('isolated fixture serves HTTP and delivers each scenario on its native over
     socket.send(JSON.stringify({ type: 'sessions.subscribe', mode: 'all_live' })); await subscribed;
     for (const stage of stages) {
       const frame = summaryFrame(stage), received = nextFrame(socket, f => f.type === 'sessions.activity');
-      fixture.overview(frame); assert.deepEqual(await received, frame);
+      fixture.overview(frame);
+      const wire = await received; assert.deepEqual(wire, frame);
+      const parsed = parseChatServerFrame(wire);
+      assert.equal(parsed.type, 'sessions.activity');
+      if (stage === 'canceled-retained-running2' || stage === 'complete2-recovery') {
+        const run = parseDagUpdated(parsed.snapshots.find(s => s.name === 'omo.dag.updated').data).runs[0];
+        assert.equal(run.status, stage === 'canceled-retained-running2' ? 'canceled' : 'running');
+        assert.equal(run.counts.running, 2);
+        assert.deepEqual(run.nodes.map(n => n.state), ['running', 'running']);
+      }
     }
     assert.deepEqual(fixture.errors, []); assert.deepEqual(fixture.base.unexpected, []);
   } finally {

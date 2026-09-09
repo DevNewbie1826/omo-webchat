@@ -17,6 +17,7 @@ export function readSummaryDOM() {
   const transcript = document.querySelector('.th-chat-body');
   return { sidebar: badge(sidebar?.querySelector('.th-tree-running')),
     overview: badge(overview?.querySelector('.th-overview-card-running')),
+    rows: { sidebar: badge(sidebar), overview: badge(overview) },
     marker: overview?.querySelector('.th-overview-card-line')?.textContent ?? null,
     viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth,
     transcript: transcript && { height: transcript.scrollHeight, client: transcript.clientHeight, top: transcript.scrollTop },
@@ -32,7 +33,16 @@ export function assertSummaryDOM(dom, stage, copy, surfaces = ['sidebar', 'overv
   const expected = exact ? '2' : stage === 'compact-no-ids' ? '?' : stage === 'compact-mixed-ids' ? '1+' : null;
   const result = {};
   for (const surface of surfaces) {
-    const badge = dom[surface]; assert.ok(badge, `${surface}: running badge must not disappear`);
+    const badge = dom[surface];
+    if (stage === 'canceled-retained-running2') {
+      assert.ok(dom.rows?.[surface], `${surface}: zero-running session must remain mounted`);
+      // Shipped Sidebar/OverviewPanel omit the badge for an exact zero, not '0' or '?'.
+      assert.equal(badge, null, `${surface}: terminal retained nodes must yield the shipped absent running badge`);
+      result[surface] = { qualified: false, unknown: false, exact2: false, falseExact: false,
+        impliesZero: true, zeroRunning: true, text: null, aria: null };
+      continue;
+    }
+    assert.ok(badge, `${surface}: running badge must not disappear`);
     const prefix = surface === 'sidebar' ? 'sidebar.tm.runningAgents' : 'overview.runningAria';
     const unknown = badge.text === '?', lowerBound = /^[1-9]\d*\+$/.test(badge.text);
     const count = Number.parseInt(badge.text, 10), qualified = unknown || lowerBound;
@@ -49,11 +59,12 @@ export function assertSummaryDOM(dom, stage, copy, surfaces = ['sidebar', 'overv
   return result;
 }
 
-export function assertVisibleBadge(dom, surface) {
-  const badge = dom[surface], box = badge?.box;
-  assert.ok(badge?.visible && badge.hit && box.width > 0 && box.height > 0, `${surface}: visible unobscured count`);
+export function assertVisibleBadge(dom, surface, stage) {
+  const target = stage === 'canceled-retained-running2' ? dom.rows?.[surface] : dom[surface], box = target?.box;
+  assert.ok(target?.visible && target.hit && box.width > 0 && box.height > 0,
+    `${surface}: visible unobscured count or zero-running session`);
   assert.ok(box.x >= 0 && box.y >= 0 && box.right <= dom.viewport.width + 1 && box.bottom <= dom.viewport.height + 1,
-    `${surface}: count fits viewport`);
+    `${surface}: count or zero-running session fits viewport`);
   assert.ok(dom.documentWidth <= dom.viewport.width, 'no horizontal document overflow');
 }
 

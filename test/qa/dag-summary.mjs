@@ -65,7 +65,7 @@ export async function run({ evidenceDir, assetsDir = join(root, 'frontend/dist')
       }
       async function capture(stage, surface) {
         const settled = await settleCapture(page), dom = await page.evaluate(readSummaryDOM);
-        const binary = assertSummaryDOM(dom, stage, copy, [surface]); assertVisibleBadge(dom, surface);
+        const binary = assertSummaryDOM(dom, stage, copy, [surface]); assertVisibleBadge(dom, surface, stage);
         const stem = `C3-${name}-${stage}-${surface}`;
         const png = await page.screenshot({ path: join(evidenceDir, stem + '.png'), fullPage: false });
         assert.equal(png.readUInt32BE(16), viewport.width); assert.equal(png.readUInt32BE(20), viewport.height);
