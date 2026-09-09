@@ -25,15 +25,21 @@ describe("hasRenderableContent", () => {
 });
 
 describe("parseEntries", () => {
-	it("omits assistant messages with no renderable blocks", () => {
-		expect(parseEntries([
+	it("keeps empty assistant completions in state; the presentation predicate hides them", () => {
+		const messages = parseEntries([
 			{ type: "message", id: "e1", message: { role: "assistant", content: [] } },
 			{ type: "message", id: "e2", message: { role: "assistant", content: "reply" } },
 			{ type: "message", id: "e3", message: { role: "user", content: [] } },
-		])).toEqual([
+		]);
+		// Restored history keeps the empty completion in transcript state — it
+		// anchors current-turn tool results exactly like the live path; only the
+		// presentation seam hides its blank row.
+		expect(messages).toEqual([
+			{ id: "e1", role: "assistant", blocks: [], ts: 0 },
 			{ id: "e2", role: "assistant", blocks: [{ kind: "text", text: "reply" }], ts: 0 },
 			{ id: "e3", role: "user", blocks: [], ts: 0 },
 		]);
+		expect(messages.filter(hasRenderableContent).map((message) => message.id)).toEqual(["e2", "e3"]);
 	});
 
 	it("keeps tool-result folding renderable", () => {

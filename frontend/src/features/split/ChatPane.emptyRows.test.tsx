@@ -177,4 +177,96 @@ describe("ChatPane empty assistant completions", () => {
 		const rows = [...container.querySelectorAll<HTMLElement>(".th-chat-history .th-chat-msg")];
 		expect(rows.map((row) => row.textContent)).toEqual(["first turn", "real reply"]);
 	});
+
+	it("anchors a restored-path current tool result after the newest user turn when the restored completion is empty", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({ type: "state", sessionId: "chat-1", isStreaming: true, isCompacting: false });
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				final: true,
+				entries: [
+					{ type: "message", id: "u1", message: { role: "user", content: "old-question" } },
+					{ type: "message", id: "a1", message: { role: "assistant", content: "old-answer" } },
+					{ type: "message", id: "u2", message: { role: "user", content: "new-question" } },
+					{ type: "message", id: "empty-anchor", message: { role: "assistant", content: [] } },
+				],
+			});
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "current-tool",
+				toolName: "lookup",
+				phase: "end",
+				result: { content: [{ text: "current-output" }] },
+			});
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
+		});
+
+		const card = container.querySelector<HTMLElement>(
+			".th-tool[data-tool-call-id='current-tool']",
+		);
+		expect(card).not.toBeNull();
+		const rows = [...container.querySelectorAll<HTMLElement>(".th-chat-history .th-chat-row")];
+		const currentUserRow = rows.findIndex((row) => row.textContent?.includes("new-question"));
+		expect(currentUserRow).toBeGreaterThanOrEqual(0);
+		// The restored empty completion anchors the current-turn tool AFTER the
+		// newest user turn, exactly like the live path.
+		const toolRowIndex = rows.findIndex((row) => row.contains(card));
+		expect(toolRowIndex).toBeGreaterThan(currentUserRow);
+		// The prior answer must not own the current turn's tool output.
+		const priorAnswerRow = rows.find((row) => row.textContent?.includes("old-answer"));
+		expect(priorAnswerRow?.contains(card)).toBe(false);
+		// No blank row renders for the empty anchor: every message row carries
+		// visible text or the materialized tool card.
+		for (const row of container.querySelectorAll<HTMLElement>(".th-chat-history .th-chat-msg")) {
+			expect((row.textContent ?? "").length).toBeGreaterThan(0);
+		}
+	});
+
+	it("keeps the later id-less user's DOM node when the empty anchor materializes a tool row", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: { role: "user", blocks: [{ kind: "text", text: "first turn" }] },
+			});
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "anchor-tool",
+				toolName: "lookup",
+				phase: "end",
+				result: { content: [{ text: "tool output" }] },
+			});
+			deliver({ type: "message", sessionId: "chat-1", message: { role: "assistant", blocks: [] } });
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: { role: "user", blocks: [{ kind: "text", text: "subsequent turn" }] },
+			});
+		});
+		const laterRow = [...container.querySelectorAll<HTMLElement>(".th-chat-history .th-chat-msg")]
+			.find((row) => row.textContent === "subsequent turn");
+		expect(laterRow).toBeDefined();
+		// The empty anchor renders no blank row before materialization.
+		expect(container.querySelectorAll(".th-chat-history .th-chat-msg").length).toBe(2);
+
+		act(() => {
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
+		});
+		const card = container.querySelector<HTMLElement>(".th-tool[data-tool-call-id='anchor-tool']");
+		expect(card).not.toBeNull();
+		const laterRowAfter = [...container.querySelectorAll<HTMLElement>(".th-chat-history .th-chat-msg")]
+			.find((row) => row.textContent === "subsequent turn");
+		expect(laterRowAfter).toBeDefined();
+		// Strict node identity: the later id-less user's DOM node itself
+		// survives the empty anchor materializing a tool row between the two
+		// turns — its row key never shifts, so React neither remounts it nor
+		// reuses its old node for the tool row.
+		expect(laterRowAfter).toBe(laterRow);
+	});
 });

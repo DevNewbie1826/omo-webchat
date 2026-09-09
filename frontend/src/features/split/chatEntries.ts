@@ -122,11 +122,11 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
 }
 
 /** Zero-renderable-block assistant messages are omitted from rendering.
- * Used at two coexisting seams: parseEntries skips them when restoring
- * history (state never holds restored empties), and the ChatPane transcript
- * build filters them from live state (whose empties are kept — they anchor
- * current-turn tool results). Any message with blocks — including one made
- * non-empty by tool-result folding — counts as renderable. */
+ * Presentation-seam predicate only: transcript state keeps them — live and
+ * restored alike — because they anchor current-turn tool results when
+ * run.done materializes them; ChatTranscript hides their blank rows only
+ * after row identity is assigned. Any message with blocks — including one
+ * made non-empty by tool-result folding — counts as renderable. */
 export function hasRenderableContent(message: AssistantMessage): boolean {
   return !(message.role === "assistant" && (message.blocks ?? []).length === 0);
 }
@@ -186,7 +186,11 @@ export function parseEntries(entries: unknown): UiMessage[] {
       ts: typeof timestamp === "number" ? timestamp : 0,
       ...(typeof model === "string" ? { model } : {}),
     };
-    if (hasRenderableContent(parsed)) messages.push(parsed);
+    // Kept in state even with zero blocks: an empty restored completion
+    // anchors current-turn tool results exactly like the live path, so
+    // parseEntries must not drop it. Blank-row hiding is owned by the
+    // presentation seam (ChatTranscript), never by transcript state.
+    messages.push(parsed);
   }
   return messages;
 }

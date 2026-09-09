@@ -17,7 +17,6 @@ import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
 import { QueuePanel } from "./QueuePanel";
 import { ChatTranscript } from "./ChatTranscript";
-import { hasRenderableContent } from "./chatEntries";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
 import { sendErrorDetail } from "./useChatFrameHandler";
@@ -78,11 +77,13 @@ export function ChatPane({
   const transcriptItems = useMemo(
     () => mergeTranscriptItems(
       // Zero-block assistant completions stay in transcript state (they anchor
-      // current-turn tool results for run.done materialization) but render no
-      // blank row. Filtering here — before the merge and row keying, for the
-      // history and live paths alike — keys later virtualized rows exactly as
-      // if the empty message never existed, so no later row remounts.
-      chat.messages.filter(hasRenderableContent),
+      // current-turn tool results for run.done materialization, live and
+      // restored alike) and therefore flow into the merged list unfiltered,
+      // preserving notice placement around the authoritative message order.
+      // ChatTranscript derives row identity from this unfiltered list and only
+      // then hides blank rows, so an empty anchor appearing or disappearing
+      // never shifts any other row's key — visible rows never remount.
+      chat.messages,
       chat.historyStatus !== "loading" ? chat.notices : [],
     ),
     [chat.messages, chat.notices, chat.historyStatus],
