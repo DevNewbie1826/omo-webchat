@@ -37,14 +37,17 @@ const DAG_RUNNING_2 = {
       name: "Poll DAG",
       status: "running",
       counts: { total: 2, pending: 0, blocked: 0, scheduled: 0, running: 2, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
-      nodes: [],
+      nodes: [
+        { id: "a", prompt: "First", depends_on: [], state: "running", task_id: "dag-a" },
+        { id: "b", prompt: "Second", depends_on: [], state: "running", task_id: "dag-b" },
+      ],
       edges: [],
       waves: [],
     },
   ],
 };
 
-/** Payload shape reused from features/split/activityParse fixtures: one running run, counts.running=3, no node rows. */
+/** A complete running run: exact counts require identified node rows. */
 const DAG_RUNNING_3 = {
   parent_session_id: "s1",
   truncated_runs: false,
@@ -55,7 +58,11 @@ const DAG_RUNNING_3 = {
       name: "Ship",
       status: "running",
       counts: { total: 3, pending: 0, blocked: 0, scheduled: 0, running: 3, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
-      nodes: [],
+      nodes: [
+        { id: "a", prompt: "First", depends_on: [], state: "running", task_id: "dag-a" },
+        { id: "b", prompt: "Second", depends_on: [], state: "running", task_id: "dag-b" },
+        { id: "c", prompt: "Third", depends_on: [], state: "running", task_id: "dag-c" },
+      ],
       edges: [],
       waves: [],
     },
