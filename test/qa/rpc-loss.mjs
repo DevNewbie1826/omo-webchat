@@ -129,6 +129,8 @@ try {
  await scenario('S1',async()=>{
   await sendActive(a,'S1 active assistant');
   const cycle=await dropCycle('S1');
+  const running=await wait('state',a.id,cycle.from);
+  assert.equal(running.frame.isStreaming,true,'recovery must preserve authoritative running work');
   const continued=wait('message',a.id);
   await control('/events',{path:a.path,events:[{type:'message',message:{role:'assistant',content:'S1 assistant continuation after RPC recovery'}}]});
   await continued;
@@ -160,8 +162,12 @@ try {
   assert.ok(!aRecovery.some(r=>r.phase==='recovered'),'failed chat must not show recovery success');
   return {failure:failure.frame};
  });
- // Explicit setup between independent scenarios restores the failed session.
+ // Explicit setup restores the failed session and settles S1's engine work.
+ // Reload/recovery must not manufacture idle state for a still-running run.
  await reload();
+ const settled=wait('run.done',a.id);
+ await control('/events',{path:a.path,events:[{type:'agent_settled',reason:'end_turn'}]});
+ await settled;
  await scenario('S3',async(before)=>{
   const text='S3 single mid-flight prompt';
   await control('/prompt-before-apply',{path:a.path});
