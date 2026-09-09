@@ -1283,6 +1283,7 @@ type openResult struct {
 // tracks that ownership until the response or epoch death is observed and any
 // routing handle from a late success has been closed.
 func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+	var marker chan struct{}
 	for {
 		select {
 		case m.openSlots <- struct{}{}:
@@ -1292,7 +1293,8 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 		m.mu.Lock()
 		pending := m.pendingOpen[chatID]
 		if pending == nil {
-			m.pendingOpen[chatID] = make(chan struct{})
+			marker = make(chan struct{})
+			m.pendingOpen[chatID] = marker
 			m.mu.Unlock()
 			break
 		}
@@ -1311,7 +1313,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 	result := make(chan openResult, 1)
 	m.cleanupWG.Add(1)
 	go func() {
-		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path)
+		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path, marker)
 		result <- openResult{data: data, epoch: epoch, err: err, detached: detached}
 	}()
 
@@ -1319,7 +1321,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 	case got := <-result:
 		cancel()
 		if !got.detached {
-			m.clearPendingOpen(chatID)
+			m.clearPendingOpenMarker(chatID, marker)
 		}
 		m.cleanupWG.Done()
 		return got.data, got.epoch, got.err
@@ -1330,7 +1332,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			timer.Stop()
 			cancel()
 			if !got.detached {
-				m.clearPendingOpen(chatID)
+				m.clearPendingOpenMarker(chatID, marker)
 			}
 			if got.data.SessionID != "" {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
@@ -1344,7 +1346,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			}
 			got := <-result
 			if !got.detached {
-				m.clearPendingOpen(chatID)
+				m.clearPendingOpenMarker(chatID, marker)
 			}
 			if got.data.SessionID != "" {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
@@ -1365,7 +1367,20 @@ func (m *Manager) clearPendingOpen(chatID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
+// clearPendingOpenMarker releases the pending-open fence only while marker
+// still owns it. A detached open whose fence was already recovered must
+// never clear a successor's registration or steal its detached-open slot.
+func (m *Manager) clearPendingOpenMarker(chatID string, marker chan struct{}) {
+	m.mu.Lock()
+	if marker != nil && m.pendingOpen[chatID] == marker {
+		delete(m.pendingOpen, chatID)
+		<-m.openSlots
+		close(marker)
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker chan struct{}) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
 	cmd := omorpc.OpenSession{CWD: cwd, SessionPath: path}
 	var last error
 	var epoch omorpc.EpochToken
@@ -1382,19 +1397,12 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 			case <-ctx.Done():
 				// The caller stops waiting now, but detached correlation ownership
 				// remains until the response or epoch settles. A late success is
-				// closed so cancellation can never orphan a provider route.
+				// closed so cancellation can never orphan a provider route; the
+				// wait itself is recovered on the OpenRecoveryAfter budget.
 				m.cleanupWG.Add(1)
 				go func() {
 					defer m.cleanupWG.Done()
-					defer m.clearPendingOpen(chatID)
-					got := <-completion
-					if got.err != nil || got.response == nil {
-						return
-					}
-					var late omorpc.OpenSessionData
-					if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-						m.discardRouting(chatID, late.SessionID, got.epoch)
-					}
+					m.awaitDetachedCompletion(chatID, path, marker, completion)
 				}()
 				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
 			}
@@ -1420,6 +1428,104 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 		}
 	}
 	return omorpc.OpenSessionData{}, epoch, false, last
+}
+
+// awaitDetachedCompletion owns one cancelled open_session's detached
+// correlation after the caller's cleanup budget expired. Bounded recovery:
+// after cfg.OpenRecoveryAfter of continued silence the pending-open fence
+// is released so the next acquire can issue its own open_session, and
+// after one final OpenRecoveryAfter grace the manager stops waiting. The
+// omorpc client correlation itself persists until the response or the
+// connection-epoch death settles it, per CallDetached's existing contract.
+func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult) {
+	settle := func(got openResult) {
+		m.clearPendingOpenMarker(chatID, marker)
+		if got.err != nil || got.response == nil {
+			return
+		}
+		var late omorpc.OpenSessionData
+		if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
+			m.discardRouting(chatID, late.SessionID, got.epoch)
+		}
+	}
+	if m.cfg.OpenRecoveryAfter <= 0 {
+		settle(<-completion)
+		return
+	}
+	timer := time.NewTimer(m.cfg.OpenRecoveryAfter)
+	select {
+	case got := <-completion:
+		timer.Stop()
+		settle(got)
+		return
+	case <-timer.C:
+	}
+	if !m.isClosed() {
+		// Reconcile before releasing the fence: while the fence is held no
+		// successor open can register, so the reconciliation can only ever
+		// observe routes that predate recovery, never the successor's.
+		if path != "" {
+			m.reconcileStaleRoutes(chatID, path)
+		}
+		m.clearPendingOpenMarker(chatID, marker)
+	}
+	final := time.NewTimer(m.cfg.OpenRecoveryAfter)
+	defer final.Stop()
+	select {
+	case got := <-completion:
+		settle(got)
+	case <-final.C:
+		slog.Warn("open recovery stopped waiting for the detached open_session", "chat_id", chatID)
+	}
+}
+
+// staleRoute is one live route reported by list_sessions. The observed
+// engine names the durable session file sessionPath; the shared omorpctest
+// mock reports sessionFile, so both spellings are accepted.
+type staleRoute struct {
+	SessionID        string `json:"sessionId"`
+	DurableSessionID string `json:"durableSessionId"`
+	SessionPath      string `json:"sessionPath"`
+	CWD              string `json:"cwd"`
+	Status           string `json:"status"`
+	SessionFile      string `json:"sessionFile"`
+}
+
+func (r staleRoute) durablePath() string {
+	if r.SessionPath != "" {
+		return r.SessionPath
+	}
+	return r.SessionFile
+}
+
+// reconcileStaleRoutes closes live provider routes serving the targeted
+// session path. The engine may have accepted the unanswered open_session
+// and minted a route nobody owns anymore; list_sessions is a control
+// command that always answers, and every match is closed with an
+// epoch-bound close_session through the ordinary retiring machinery, so a
+// later Stop still retries any close that did not definitively settle.
+func (m *Manager) reconcileStaleRoutes(chatID, path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
+	resp, epoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.ListSessions{})
+	cancel()
+	if err != nil || resp == nil || !resp.Success || len(resp.Data) == 0 {
+		slog.Warn("open recovery could not list provider routes; stale routes on the targeted path may persist", "chat_id", chatID, "session_path", path, "error", err)
+		return
+	}
+	var listed struct {
+		Sessions []staleRoute `json:"sessions"`
+	}
+	if err := json.Unmarshal(resp.Data, &listed); err != nil {
+		slog.Warn("open recovery could not decode list_sessions", "chat_id", chatID, "session_path", path, "error", err)
+		return
+	}
+	for _, route := range listed.Sessions {
+		if route.SessionID == "" || route.durablePath() != path {
+			continue
+		}
+		slog.Warn("open recovery closing stale provider route on targeted path", "chat_id", chatID, "session_path", path, "routing_id", route.SessionID)
+		m.discardRouting(chatID, route.SessionID, epoch)
+	}
 }
 
 func danglingResume(err error) bool {
