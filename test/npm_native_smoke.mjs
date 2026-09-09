@@ -13,6 +13,11 @@ import { createRegistry } from './npm_registry_fixture.mjs';
 const exec = promisify(execFile);
 const SELF = fileURLToPath(import.meta.url);
 const TARGETS = ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64'];
+// Published npm names use "windows" where the Node.js platform token is "win32"
+// (registry spam filter blocks new omo-webchat-win32-* names). Directory/os
+// tokens stay win32; only npm package names are affected.
+const npmTarget = (target) => target.replace(/^win32-/, 'windows-');
+const npmOs = (osNode) => (osNode === 'win32' ? 'windows' : osNode);
 const DEADLINE = 90_000;
 const digest = (bytes, algorithm = 'sha256', encoding = 'hex') => createHash(algorithm).update(bytes).digest(encoding);
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -51,7 +56,7 @@ export async function readArtifacts(file) {
   assert.match(manifest.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
   assert.match(manifest.sourceCommit, /^[a-f0-9]{40}$/);
   assert.equal(manifest.packages.length, 7, 'exactly seven package tarballs required');
-  const expected = new Set(['omo-webchat', ...TARGETS.map((target) => `omo-webchat-${target}`)]);
+  const expected = new Set(['omo-webchat', ...TARGETS.map(npmTarget).map((target) => `omo-webchat-${target}`)]);
   const artifacts = [];
   for (const record of manifest.packages) {
     assert.ok(expected.delete(record.name), `unexpected/duplicate package ${record.name}`);
@@ -67,16 +72,17 @@ export async function readArtifacts(file) {
     assert.equal(pkg.name, record.name);
     assert.equal(pkg.version, manifest.version);
     if (record.name === 'omo-webchat') {
-      assert.deepEqual(pkg.optionalDependencies, Object.fromEntries(TARGETS.map((target) => [`omo-webchat-${target}`, manifest.version])));
+      assert.deepEqual(pkg.optionalDependencies, Object.fromEntries(TARGETS.map(npmTarget).map((target) => [`omo-webchat-${target}`, manifest.version])));
       assert.equal(record.platform, undefined);
       assert.equal(pkg.bin['omo-webchat'], 'cli.js');
     } else {
       const [platform, arch] = record.name.slice('omo-webchat-'.length).split('-');
-      assert.deepEqual(record.platform, { os: platform, cpu: arch }, 'manifest platform metadata');
-      assert.deepEqual(pkg.os, [platform]);
+      const osNode = platform === 'windows' ? 'win32' : platform; // npm name → os token
+      assert.deepEqual(record.platform, { os: osNode, cpu: arch }, 'manifest platform metadata');
+      assert.deepEqual(pkg.os, [osNode]);
       assert.deepEqual(pkg.cpu, [arch]);
-      const binary = await member(tarball, `exe/omo-webchat-bin${platform === 'win32' ? '.exe' : ''}`);
-      assertBinary(binary, platform, arch);
+      const binary = await member(tarball, `exe/omo-webchat-bin${osNode === 'win32' ? '.exe' : ''}`);
+      assertBinary(binary, osNode, arch);
     }
     artifacts.push({ ...record, tarball, pkg });
   }
@@ -402,7 +408,7 @@ export async function runSmoke({ manifest: file, fixture, registry: publicRegist
     }
     if (registry) {
       assert.ok(registry.requests.every((request) => request.method === 'GET' || request.method === 'HEAD'), 'smoke must never publish');
-      for (const name of ['omo-webchat', `omo-webchat-${process.platform}-${process.arch}`]) {
+      for (const name of ['omo-webchat', `omo-webchat-${npmOs(process.platform)}-${process.arch}`]) {
         assert.ok(registry.requests.some((request) => request.path.includes(`/${name}/-/`) && request.status === 200), `real client must fetch ${name} tarball`);
       }
     }

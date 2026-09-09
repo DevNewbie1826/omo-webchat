@@ -51,7 +51,7 @@ async function mutate(name, kind) {
   await mkdir(root);
   const manifest = structuredClone(original.manifest);
   for (const record of manifest.packages) await cp(path.join(path.dirname(path.resolve(manifestFile)), record.file), path.join(root, record.file));
-  const record = manifest.packages.find((pkg) => pkg.name === (kind === 'entrypoint' ? 'omo-webchat' : `omo-webchat-${process.platform}-${process.arch}`));
+  const record = manifest.packages.find((pkg) => pkg.name === (kind === 'entrypoint' ? 'omo-webchat' : `omo-webchat-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`));
   const unpack = path.join(root, 'unpack');
   await mkdir(unpack);
   await exec('tar', ['-xzf', path.join(root, record.file), '-C', unpack], { timeout: 15_000 });
@@ -122,7 +122,7 @@ for (const kind of ['entrypoint', 'executable']) {
       if (kind === 'entrypoint') assert.match(result.output, /native-negative-entrypoint/);
       else assert.match(result.output, /flag provided but not defined: -host/);
       assert.ok(failure.receipt.requests.some((request) => request.path.includes('/omo-webchat/-/') && request.status === 200));
-      if (kind === 'executable') assert.ok(failure.receipt.requests.some((request) => request.path.includes(`/omo-webchat-${process.platform}-${process.arch}/-/`) && request.status === 200));
+      if (kind === 'executable') assert.ok(failure.receipt.requests.some((request) => request.path.includes(`/omo-webchat-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}/-/`) && request.status === 200));
       await clean(failure.receipt, false);
     }, 240_000);
   }

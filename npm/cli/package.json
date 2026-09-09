@@ -23,8 +23,8 @@
     "omo-webchat-darwin-x64": "0.1.0",
     "omo-webchat-linux-arm64": "0.1.0",
     "omo-webchat-linux-x64": "0.1.0",
-    "omo-webchat-win32-arm64": "0.1.0",
-    "omo-webchat-win32-x64": "0.1.0"
+    "omo-webchat-windows-arm64": "0.1.0",
+    "omo-webchat-windows-x64": "0.1.0"
   },
   "license": "MIT",
   "repository": "https://github.com/DevNewbie1826/omo-webchat"

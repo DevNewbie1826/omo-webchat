@@ -19,8 +19,8 @@ const TARGETS = [
   { osNode: 'darwin', cpuNode: 'x64', goos: 'darwin', goarch: 'amd64' },
   { osNode: 'linux', cpuNode: 'x64', goos: 'linux', goarch: 'amd64' },
   { osNode: 'linux', cpuNode: 'arm64', goos: 'linux', goarch: 'arm64' },
-  { osNode: 'win32', cpuNode: 'x64', goos: 'windows', goarch: 'amd64', ext: '.exe' },
-  { osNode: 'win32', cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe' },
+  { osNode: 'win32', cpuNode: 'x64', goos: 'windows', goarch: 'amd64', ext: '.exe', npmOs: 'windows' },
+  { osNode: 'win32', cpuNode: 'arm64', goos: 'windows', goarch: 'arm64', ext: '.exe', npmOs: 'windows' },
 ];
 const NPX_ARGS = ['--password', 'secret with spaces', '--root', 'a & b; $(literal)', 'quote"and\\slash', ''];
 const AGENT_PATH = '/explicit/agent with spaces';
@@ -223,7 +223,7 @@ function binName(target) {
 
 function assertOptionalDependencies(manifest) {
   for (const target of TARGETS) {
-    const name = `omo-webchat-${target.osNode}-${target.cpuNode}`;
+    const name = `omo-webchat-${target.npmOs ?? target.osNode}-${target.cpuNode}`;
     assert.equal(manifest.optionalDependencies[name], VERSION, `${name} optional dependency is not in lockstep`);
   }
 }
@@ -239,7 +239,7 @@ function assertGeneratedContract(workRepo, binaries) {
     const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'));
     const exe = binName(target);
     const shipped = fs.readFileSync(path.join(pkgDir, 'exe', exe));
-    assert.equal(manifest.name, `omo-webchat-${label}`);
+    assert.equal(manifest.name, `omo-webchat-${target.npmOs ?? target.osNode}-${target.cpuNode}`);
     assert.equal(manifest.version, VERSION);
     assert.deepEqual(manifest.os, [target.osNode]);
     assert.deepEqual(manifest.cpu, [target.cpuNode]);
@@ -323,7 +323,8 @@ function packPackages(workRepo, tarballDir, env) {
 }
 
 function manifestName(label) {
-  return `omo-webchat-${label}`;
+  // Published npm names use "windows" where the platform token is "win32".
+  return `omo-webchat-${label.replace(/^win32-/, 'windows-')}`;
 }
 
 function hostTarget() {
@@ -460,14 +461,14 @@ test('archive to packed npx contract', { timeout: 180_000 }, async (t) => {
   await t.test('native npm install and npx preserve argv, CHAT_PI_BINARY, and nonzero exit', () => {
     console.log(`HOST_NPX_SURFACE=${process.platform}-${process.arch}`);
     installHostPackages(project, packed, env);
-    const hostPkg = `omo-webchat-${process.platform}-${process.arch}`;
+    const hostPkg = `omo-webchat-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
     assert.equal(fs.existsSync(path.join(project, 'node_modules', hostPkg, 'package.json')), true);
     assert.equal(
-      fs.existsSync(path.join(project, 'node_modules/omo-webchat-win32-x64/package.json')),
+      fs.existsSync(path.join(project, 'node_modules/omo-webchat-windows-x64/package.json')),
       process.platform === 'win32' && process.arch === 'x64',
     );
     assert.equal(
-      fs.existsSync(path.join(project, 'node_modules/omo-webchat-win32-arm64/package.json')),
+      fs.existsSync(path.join(project, 'node_modules/omo-webchat-windows-arm64/package.json')),
       process.platform === 'win32' && process.arch === 'arm64',
     );
     assertNativeNpx(project, env);
@@ -525,7 +526,7 @@ test('archive to packed npx contract', { timeout: 180_000 }, async (t) => {
     const manifestPath = path.join(omitCli, 'package.json');
     const original = fs.readFileSync(manifestPath, 'utf8');
     const omitted = JSON.parse(original);
-    delete omitted.optionalDependencies['omo-webchat-win32-x64'];
+    delete omitted.optionalDependencies['omo-webchat-windows-x64'];
     fs.writeFileSync(manifestPath, `${JSON.stringify(omitted, null, 2)}\n`);
     const omitPackDir = path.join(work, 'mutation-omit-tarballs');
     fs.mkdirSync(omitPackDir, { recursive: true });
