@@ -12,7 +12,7 @@ import { bounded, readArtifacts, runSmoke } from './npm_native_smoke.mjs';
 const exec = promisify(execFile);
 const manifestFile = process.env.NATIVE_SMOKE_MANIFEST;
 const fixture = process.env.NATIVE_SMOKE_FIXTURE;
-const evidence = path.resolve('.omo/public-release/native-evidence/tests');
+const evidence = path.resolve(process.env.NATIVE_SMOKE_EVIDENCE ?? '.omo/public-release/native-evidence/tests');
 const hash = (bytes, algorithm, encoding) => createHash(algorithm).update(bytes).digest(encoding);
 let base, original;
 

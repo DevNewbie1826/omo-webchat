@@ -23,7 +23,7 @@ async function manifestFrom(bytes) {
     const file = path.join(directory, 'package.tgz');
     await writeFile(file, bytes);
     // Only stream the manifest to stdout: never extract archive paths to disk.
-    const { stdout } = await exec('tar', ['-xzOf', file, 'package/package.json'], { timeout: 10_000, maxBuffer: 1024 * 1024 });
+    const { stdout } = await exec('tar', ['-xzOf', './package.tgz', 'package/package.json'], { cwd: directory, timeout: 10_000, maxBuffer: 1024 * 1024 });
     const manifest = JSON.parse(stdout);
     if (typeof manifest.name !== 'string' || !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(manifest.name) ||
         typeof manifest.version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(manifest.version)) {

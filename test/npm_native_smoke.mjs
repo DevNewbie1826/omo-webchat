@@ -43,7 +43,7 @@ export function assertBinary(bytes, platform, arch) {
 }
 
 async function member(tarball, name) {
-  return command(['tar', '-xzOf', tarball, `package/${name}`], { encoding: 'buffer' });
+  return command(['tar', '-xzOf', `./${path.basename(tarball)}`, `package/${name}`], { cwd: path.dirname(tarball), encoding: 'buffer' });
 }
 
 export async function readArtifacts(file) {
@@ -182,7 +182,8 @@ async function checkHTTP(address, assets, password) {
 async function worker(file) {
   const config = JSON.parse(await readFile(file, 'utf8'));
   const ready = deferred();
-  let tail = '', pending = '', address, child, failure, http;
+  let tail = '', pending = '', address, child, completion, failure, http;
+  let leaderJoined = false;
   const receipt = { event: 'consumer-result', variant: config.variant, command: config.command, cleanup: {} };
   const stopped = deferred();
   // Subscribe before spawning. Fixture EOF asks the worker to clean its PTY,
@@ -209,7 +210,9 @@ async function worker(file) {
       } },
     });
     receipt.pid = child.pid;
-    const exitedEarly = child.exited.then((code) => { throw new Error(`consumer exited before readiness (exit ${code})`); });
+    // A signal exit resolves exited (e.g. 130) while Bun's exitCode stays null.
+    completion = child.exited.then((code) => { leaderJoined = true; return code; });
+    const exitedEarly = completion.then((code) => { throw new Error(`consumer exited before readiness (exit ${code})`); });
     // Attach before awaiting readiness, so early exits cannot pass or hang.
     await bounded(Promise.race([ready.promise, exitedEarly, stopped.promise]), 'packaged server readiness');
     receipt.address = address;
@@ -217,7 +220,7 @@ async function worker(file) {
     receipt.http = http;
     child.terminal.write('\x03');
     receipt.interruption = 'PTY Ctrl-C';
-    const code = await bounded(child.exited, 'consumer Ctrl-C exit', 15_000);
+    const code = await bounded(completion, 'consumer Ctrl-C exit', 15_000);
     receipt.exitCode = code;
     // npm/Bun may propagate the terminal interruption as 130; server itself
     // returns 0 after its supported signal.NotifyContext shutdown.
@@ -225,19 +228,19 @@ async function worker(file) {
   } catch (error) { failure = error; }
   finally {
     if (child) {
-      if (child.exitCode === null) {
+      if (!leaderJoined) {
         child.terminal.write('\x03');
-        try { await bounded(child.exited, 'failure Ctrl-C cleanup', 15_000); }
+        try { await bounded(completion, 'failure Ctrl-C cleanup', 15_000); }
         catch (error) {
           failure = new AggregateError([failure, error].filter(Boolean), 'consumer cleanup failed');
           if (process.platform !== 'win32') process.kill(-child.pid, 'SIGKILL');
           else child.kill(); // fixture Job Object is the final Windows reaper
-          await bounded(child.exited, 'forced consumer join', 10_000);
+          await bounded(completion, 'forced consumer join', 10_000);
           receipt.cleanup.forced = true;
         }
       }
       child.terminal.close();
-      receipt.cleanup.leaderJoined = child.exitCode !== null;
+      receipt.cleanup.leaderJoined = leaderJoined;
       if (process.platform !== 'win32') {
         try {
           process.kill(-child.pid, 0);
@@ -302,7 +305,13 @@ async function consume({ variant, root, registry, fixture, version, runtime }) {
     assert.ok(consumer, `missing consumer receipt: ${stderr}`);
     assert.equal(code, 0, consumer.error ?? stderr);
     assert.equal(consumer.ok, true, consumer.error);
-    assert.ok(stopped?.treeGone && !stopped.forced, 'fixture process domain must drain without force');
+    assert.equal(consumer.cleanup.leaderJoined, true, 'consumer completion must be joined');
+    assert.equal(consumer.cleanup.listenerClosed, true, 'consumer listener must be closed');
+    assert.notEqual(consumer.cleanup.forced, true, 'consumer must drain without force');
+    if (process.platform !== 'win32') assert.equal(consumer.cleanup.processGroupGone, true, 'consumer process group must be gone');
+    assert.equal(stopped?.treeGone, true, 'fixture process domain must be empty');
+    assert.equal(stopped.forced, false, 'fixture must drain without force');
+    assert.equal(stopped.workerExit, 0, 'worker must complete successfully');
     assert.ok(stopped.handshakes > 0, 'packaged server must negotiate with native RPC fixture');
   } catch (error) { failure = error; }
   finally {
