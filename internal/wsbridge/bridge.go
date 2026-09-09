@@ -1474,16 +1474,11 @@ func deliveryUncertain(err error) bool {
 }
 
 func (h *Handler) publishDispatchUncertain(chatID string, item sendqueue.Item) {
-	frame := h.cfg.Manager.RecordNotice(chatID, map[string]any{
+	h.cfg.Manager.PublishNotice(chatID, map[string]any{
 		"kind":      "queue_delivery_uncertain",
 		"itemId":    item.ID,
 		"requestId": item.RequestID,
 	})
-	wire, err := mapFrame(frame, chatID, false)
-	if err != nil {
-		return
-	}
-	h.publishChatFrame(chatID, wire)
 }
 
 func (h *Handler) publishChatFrame(chatID string, frame any) {

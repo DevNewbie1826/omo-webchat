@@ -1550,18 +1550,25 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, outcome)
 		}
 	}
-	// Journaled durable notices replay on every attach, after the retained
-	// send outcomes, so each connection observes the same advisory history.
-	// lifecycleMu excludes concurrent publication, so replay cannot race or
-	// duplicate a live notice frame.
+	// Journaled durable notices replay after retained send outcomes. The
+	// journal fence spans snapshot and subscriber registration, placing each
+	// notice on exactly one side of the replay/live delivery boundary.
+	var id uint64
+	var target *subscription
+	var rawDetach func()
+	attach := func(notices []Frame) {
+		initial = append(initial, notices...)
+		queueSize := s.queueSize
+		if queueSize < len(initial) {
+			queueSize = len(initial)
+		}
+		id, target, rawDetach = s.broadcast.attach(sub, queueSize, initial)
+	}
 	if s.manager != nil {
-		initial = append(initial, s.manager.noticeReplay(s.chatID)...)
+		s.manager.withNoticeReplay(s.chatID, s, attach)
+	} else {
+		attach(nil)
 	}
-	queueSize := s.queueSize
-	if queueSize < len(initial) {
-		queueSize = len(initial)
-	}
-	id, target, rawDetach := s.broadcast.attach(sub, queueSize, initial)
 	for _, frame := range replayInitial {
 		s.publishLocked(frame)
 	}
@@ -1575,6 +1582,9 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			rawDetach()
 			if id != 0 {
 				s.lifecycleMu.Lock()
+				if s.manager != nil && s.broadcast.count() == 0 {
+					s.manager.unregisterNoticeSession(s.chatID, s)
+				}
 				s.scheduleIdleLocked()
 				s.lifecycleMu.Unlock()
 			}
@@ -1826,9 +1836,10 @@ func (s *Session) summaryLocked() Summary {
 }
 func (s *Session) publishLocked(f Frame) {
 	if f.Kind == FrameNotice && s.manager != nil {
-		// Journal exactly once per logical publish, before broadcaster fanout,
-		// stamping the replay identity every delivery and replay reuses.
-		f = s.manager.journalNotice(s.chatID, f)
+		// The journal fence covers both admission and broadcaster fanout so an
+		// attaching subscriber receives this frame through replay or live delivery.
+		s.manager.publishNotice(s.chatID, f, s.broadcast.publish)
+		return
 	}
 	if f.Kind == FrameReady {
 		s.readyPublished = true

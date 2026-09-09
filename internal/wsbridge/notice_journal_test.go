@@ -1,8 +1,11 @@
 package wsbridge
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +83,85 @@ func awaitStreamClosed(t *testing.T, frames *collector) {
 		if err := frames.waitAfter(generation, time.Until(deadline)); err != nil {
 			t.Fatal("socket stream did not close after client detach")
 		}
+	}
+}
+
+func TestQueueNoticeAttachInterleavingsDeliverExactlyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		beforeSnapshot bool
+	}{
+		{name: "after-snapshot-before-binding"},
+		{name: "before-snapshot", beforeSnapshot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := "notice-attach-" + tc.name
+			h := newInPlaceBridgeHarness(t, chat)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			waitAtGate := func() {
+				close(entered)
+				select {
+				case <-release:
+				case <-t.Context().Done():
+				}
+			}
+			if tc.beforeSnapshot {
+				h.bridge.cfg.PrepareChatVersion = func(context.Context, string, string) (uint64, error) {
+					waitAtGate()
+					return h.chatVersion.Load(), nil
+				}
+			} else {
+				var checks atomic.Int32
+				h.bridge.cfg.ChatVersion = func(string) uint64 {
+					if checks.Add(1) == 2 {
+						waitAtGate()
+					}
+					return h.chatVersion.Load()
+				}
+			}
+
+			conn, frames := h.connect(t)
+			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chat})
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("metadata validation gate was not reached")
+			}
+			if !tc.beforeSnapshot {
+				_, bound, _, current := h.soleServerConnection(t).bindingSnapshot()
+				if bound != "" || current != nil {
+					t.Fatalf("second validation gate was not before binding: chat=%q session=%p", bound, current)
+				}
+			}
+
+			h.bridge.publishDispatchUncertain(chat, sendqueue.Item{ID: "gap-item", RequestID: "gap-request"})
+			unblock()
+			frames.next(t, "ready")
+			collectUntilHistoryTerminal(t, frames)
+			var notices []map[string]any
+			h.bridge.publishDispatchUncertain(chat, sendqueue.Item{ID: "sentinel-item", RequestID: "sentinel-request"})
+			for {
+				notice := frames.next(t, "notice")
+				payload, _ := notice["payload"].(map[string]any)
+				if payload["requestId"] == "sentinel-request" {
+					break
+				}
+				if notice["kind"] == "queue_delivery_uncertain" && payload["requestId"] == "gap-request" {
+					notices = append(notices, notice)
+				}
+			}
+			if len(notices) != 1 {
+				t.Fatalf("attach delivered %d queue notices before the post-binding sentinel, want exactly 1: %+v", len(notices), notices)
+			}
+			_, nid, at := noticeFields(t, notices[0])
+			if nid != chat+":1" || at == "" {
+				t.Fatalf("notice identity = (%q,%q), want stable nid %q and non-empty at", nid, at, chat+":1")
+			}
+		})
 	}
 }
 
