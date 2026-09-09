@@ -96,6 +96,31 @@
   font-weight: var(--th-weight-emphasize);
 }
 
+.th-notice-raw {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.th-notice-payload {
+  min-width: 0;
+}
+
+.th-notice-payload summary {
+  cursor: pointer;
+}
+
+.th-notice-payload pre {
+  max-height: 200px;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .th-chat-live {
   display: flex;
   flex-direction: column;

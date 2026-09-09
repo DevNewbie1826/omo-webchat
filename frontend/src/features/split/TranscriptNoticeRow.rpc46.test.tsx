@@ -7,7 +7,7 @@ import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 // Compare to shipped translations, not pinned prose.
 afterEach(() => vi.unstubAllGlobals());
 
-it.each<Lang>(["en", "ko"])("renders a localized, inert compaction diagnostic (%s)", (lang) => {
+it.each<Lang>(["en", "ko"])("renders a raw, inert compaction diagnostic (%s)", (lang) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -22,10 +22,11 @@ it.each<Lang>(["en", "ko"])("renders a localized, inert compaction diagnostic (%
         <TranscriptNoticeRow notice={{ id: 1, at: 1, kind: "compaction_error", payload: { message: detail } }} />
       </I18nContext.Provider>,
     ));
-    const title = container.querySelector(".th-notice-title")?.textContent;
-    expect(title).toBe(translate(lang, "notice.compactionError"));
-    expect(title).not.toBe("notice.compactionError");
-    expect(container.querySelector(".th-notice-detail")?.textContent).toBe(detail);
+    expect(container.querySelector(".th-chat-notice-tag")?.textContent).toBe(translate(lang, "notice.system"));
+    expect(container.textContent).toContain("compaction_error");
+    expect(container.textContent).toContain(detail);
+    expect(container.textContent).not.toContain(translate(lang, "notice.compactionError"));
+    expect(container.querySelector("details")).toBeNull();
     expect(container.querySelectorAll("img, script")).toHaveLength(0);
     expect(container.querySelectorAll(".th-alert--warning")).toHaveLength(1);
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);

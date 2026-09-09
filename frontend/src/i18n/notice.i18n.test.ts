@@ -3,14 +3,7 @@ import en from "./locales/en.json";
 import ko from "./locales/ko.json";
 
 const KEYS = [
-  "notice.fallbackApplied",
-  "notice.fallbackReverted",
-  "notice.fallbackSucceeded",
-  "notice.fallbackExhausted",
-  "notice.fallbackAborted",
-  "notice.fallbackReason",
-  "notice.highReasoningWarning",
-  "notice.highReasoningGuidance",
+  "notice.system",
 ] as const;
 
 function localeTable(table: typeof en): Record<string, string> {
