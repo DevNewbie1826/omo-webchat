@@ -94,10 +94,10 @@ describe("TranscriptNoticeRow", () => {
     expect(container.querySelector(".th-alert--info")).toBeNull();
     expect(container.querySelector("details")?.open).toBe(false);
     const json = payloadDetails(container);
-    expect(json.from).toBe("zai/glm");
-    expect(json.to).toBe("moonshot/kimi");
-    expect(json.chainKey).toBe("main");
-    expect(json.reason).toBe("rate_limited");
+    expect(json["from"]).toBe("zai/glm");
+    expect(json["to"]).toBe("moonshot/kimi");
+    expect(json["chainKey"]).toBe("main");
+    expect(json["reason"]).toBe("rate_limited");
   });
 
   it("renders the fallback-reverted kind raw with from and to in payload JSON", () => {
@@ -106,8 +106,8 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain("notice.fallbackReverted");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
     const json = payloadDetails(container);
-    expect(json.from).toBe("moonshot/kimi");
-    expect(json.to).toBe("zai/glm");
+    expect(json["from"]).toBe("moonshot/kimi");
+    expect(json["to"]).toBe("zai/glm");
   });
 
   it("renders the high-reasoning kind raw with payload JSON and no guidance copy", () => {
@@ -122,9 +122,9 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain("zai/glm-5.2");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
     const json = payloadDetails(container);
-    expect(json.provider).toBe("zai");
-    expect(json.modelId).toBe("glm-5.2");
-    expect(json.thinkingLevel).toBe("high");
+    expect(json["provider"]).toBe("zai");
+    expect(json["modelId"]).toBe("glm-5.2");
+    expect(json["thinkingLevel"]).toBe("high");
   });
 
   it("renders the server fallback-aborted kind raw with from and to in payload JSON", () => {
@@ -133,9 +133,9 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain("notice.fallbackAborted");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
     const json = payloadDetails(container);
-    expect(json.from).toBe("a/one");
-    expect(json.to).toBe("b/two");
-    expect(json.chainConfigured).toBe(true);
+    expect(json["from"]).toBe("a/one");
+    expect(json["to"]).toBe("b/two");
+    expect(json["chainConfigured"]).toBe(true);
   });
 
   it("renders extension_notify as info with the raw kind, message, and payload JSON", () => {
@@ -145,9 +145,9 @@ describe("TranscriptNoticeRow", () => {
     expect(container.querySelector(".th-alert--info")).not.toBeNull();
     expect(container.querySelector(".th-alert--warning")).toBeNull();
     const json = payloadDetails(container);
-    expect(json.id).toBe("n1");
-    expect(json.message).toBe("Disk almost full");
-    expect(json.title).toBe("Storage");
+    expect(json["id"]).toBe("n1");
+    expect(json["message"]).toBe("Disk almost full");
+    expect(json["title"]).toBe("Storage");
   });
 
   it("renders an unknown kind generically without crashing", () => {
@@ -155,7 +155,8 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("brand_new_unknown_kind");
     expect(container.textContent).toContain("hello there");
     expect(container.querySelector(".th-alert--info")).not.toBeNull();
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(payloadDetails(container)).toEqual({ message: "hello there" });
   });
 
   it("renders fallback success as the wire kind with payload JSON", () => {
@@ -163,7 +164,7 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("retry_fallback_succeeded");
     expect(container.textContent).not.toContain("notice.fallbackSucceeded");
     const json = payloadDetails(container);
-    expect(json.to).toBe("zai/glm");
+    expect(json["to"]).toBe("zai/glm");
   });
 
   it("renders fallback exhaustion as the wire kind with a warning tone", () => {
@@ -172,7 +173,7 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain("notice.fallbackExhausted");
     expect(container.querySelector(".th-alert--warning")).not.toBeNull();
     const json = payloadDetails(container);
-    expect(json.chainKey).toBe("main");
+    expect(json["chainKey"]).toBe("main");
   });
 
   it.each<[Lang, string]>([
@@ -185,7 +186,8 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain(started);
     expect(container.querySelector(".th-alert--info")).not.toBeNull();
     expect(container.querySelector(".th-alert--warning")).toBeNull();
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(payloadDetails(container)).toEqual({ message: "attempt 2" });
   });
 
   it.each<[Lang, string]>([

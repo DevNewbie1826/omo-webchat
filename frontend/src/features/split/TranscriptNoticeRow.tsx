@@ -22,17 +22,15 @@ function payloadMessage(payload: ChatNotice["payload"]): string | null {
 }
 
 function showPayloadDetails(payload: ChatNotice["payload"]): payload is NonNullable<ChatNotice["payload"]> {
-  if (payload === null) return false;
-  if (payloadMessage(payload) === null) return true;
-  return Object.keys(payload).some((key) => key !== "message");
+  return payload !== null;
 }
 
 /**
  * One server advisory rendered as a distinct bordered system block in the
  * virtualized transcript flow — never inside the live region. The body is the
- * wire kind plus payload.message when present; extra payload fields (or a
- * payload with no message) sit in a collapsed JSON disclosure. Rows are
- * permanent, non-interactive display blocks: no dismissal control is rendered.
+ * wire kind plus payload.message when present; every non-null payload sits in
+ * a collapsed JSON disclosure. Rows are permanent, non-interactive display
+ * blocks: no dismissal control is rendered.
  */
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const { t } = useT();

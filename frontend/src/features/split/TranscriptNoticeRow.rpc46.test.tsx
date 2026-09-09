@@ -26,7 +26,8 @@ it.each<Lang>(["en", "ko"])("renders a raw, inert compaction diagnostic (%s)", (
     expect(container.textContent).toContain("compaction_error");
     expect(container.textContent).toContain(detail);
     expect(container.textContent).not.toContain(translate(lang, "notice.compactionError"));
-    expect(container.querySelector("details")).toBeNull();
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(JSON.parse(container.querySelector("details pre")?.textContent ?? "")).toEqual({ message: detail });
     expect(container.querySelectorAll("img, script")).toHaveLength(0);
     expect(container.querySelectorAll(".th-alert--warning")).toHaveLength(1);
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
