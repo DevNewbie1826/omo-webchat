@@ -43,6 +43,11 @@ const (
 	// DefaultDetachedOpenLimit bounds RPC correlations and cleanup goroutines
 	// retained by cancelled open_session calls across all chat IDs.
 	DefaultDetachedOpenLimit = 32
+	// DefaultRetiredRouteLimit bounds route handles retained by open recovery
+	// to refuse publication of routes it retired. Dead-epoch entries are
+	// dropped on epoch invalidation, so the bound only ever spans one live
+	// connection epoch.
+	DefaultRetiredRouteLimit = 1024
 	// DetachedMutationLimit bounds response correlations retained by one session.
 	DetachedMutationLimit = 16
 )
@@ -120,6 +125,12 @@ type Config struct {
 	// cleanup path has settled.
 	OpenRecoveryAfter time.Duration
 	DetachedOpenLimit int
+	// RetiredRouteLimit bounds how many provider route handles open recovery
+	// may retain to refuse their later publication. Once the bound is
+	// reached, recovery refuses to retire NEW routes (deferring their
+	// cleanup) instead of evicting an existing retirement an outstanding
+	// publisher may still need. Zero selects DefaultRetiredRouteLimit.
+	RetiredRouteLimit int
 	// OnDetach is called exactly once after a subscription pump exits.
 	OnDetach func(Subscriber, error)
 	// OnRunSettled is called after a run.done or an idle compaction completion.
