@@ -4,11 +4,23 @@
 your platform. You run one command; this package picks the right binary,
 forwards all flags verbatim, and passes the exit code / signals through.
 
+## Prerequisites
+
+- **Node 18 or newer** for the `npx` path (this package's `engines` range).
+  Bun users can run `bunx omo-webchat@latest ...` or `bunx --bun
+  omo-webchat@latest ...` instead; no Node installation is required for the
+  pure Bun path.
+- The **official `omo` CLI** at runtime to answer chats. It is an external
+  program, not bundled by default. See "Agent resolution" below.
+
 ## Usage
 
 ```sh
 npx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```
+
+Stable versions publish under the `latest` dist-tag and prereleases under
+`next`, so `npx omo-webchat@next` selects the newest release candidate.
 
 Supported server flags: `--host`, `--port`, `--password`, `--root`,
 `--state-dir`, `--provider`, `--daemon`, `--stop`, `--status`
@@ -50,6 +62,11 @@ resolves the agent and injects it into the child environment as
    present** — it is never a hard dependency;
 4. otherwise a warning is printed with fix instructions; the server still
    launches so `--status`/`--stop`/`--provider` flows remain usable.
+
+If your `PATH` already contains a different program named `omo` (a name
+collision), the shim would pick it up at step 2. Set `CHAT_PI_BINARY` to the
+absolute path of the official omo CLI to override every other resolution
+step explicitly.
 
 To override everything, point the variable at any agent binary:
 

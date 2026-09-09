@@ -81,7 +81,10 @@ Windows x64·arm64를 모두 지원하며, 호스트 아키텍처에 맞는 자�
 
 ### npx / bunx
 
-npx 경로의 전제 조건은 Node뿐입니다. 채팅을 만들려면 런타임에 `PATH`의 `omo`가 여전히 필요합니다 (`CHAT_PI_BINARY`로 재정의).
+npm 패키지는 래퍼(`omo-webchat`) 하나와 여섯 개의 플랫폼 바이너리 패키지(`omo-webchat-<os>-<arch>`)로 구성됩니다. `optionalDependencies`가 현재 플랫폼에 맞는 하나만 같은 버전으로 설치합니다.
+
+- npx에는 Node 18 이상이 필요합니다(래퍼의 `engines` 조건). Bun 사용자는 `bunx` 또는 `bunx --bun`을 쓸 수 있습니다.
+- 채팅을 만들려면 런타임에 공식 `omo` CLI가 필요합니다. 기본적으로 `PATH`에서 `omo`를 찾습니다. `PATH`에 다른 `omo`가 있거나 충돌이 있으면 `CHAT_PI_BINARY`에 원하는 바이너리의 절대 경로를 명시하세요. 이 변수가 항상 최우선입니다.
 
 ```sh
 npx omo-webchat@latest --password <secret> --port <port> --root <root>
@@ -90,6 +93,10 @@ npx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```sh
 bunx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```
+
+안정 버전은 `latest` 태그, 프리릴리스(예: `0.1.0-rc.1`)는 `next` 태그로 배포됩니다. 릴리스 파이프라인과 게시 절차는 [docs/releasing.md](docs/releasing.md)를 참고하세요.
+
+> 릴리스 상태: 아직 공개 npm/GitHub 릴리스는 게시되지 않았습니다. 첫 공개 부트스트랩 절차는 docs/releasing.md에 정의되어 있습니다.
 
 ### 빠른 시작
 
@@ -191,7 +198,10 @@ Both Windows x64 and arm64 are supported; the matching asset is picked from your
 
 ### npx / bunx
 
-Node is the only prerequisite for the npx path. `omo` on `PATH` is still needed at runtime to create chats (set `CHAT_PI_BINARY` to override).
+The npm distribution is one wrapper package (`omo-webchat`) plus six platform binary packages (`omo-webchat-<os>-<arch>`). `optionalDependencies` installs exactly the one matching your platform, at the same version as the wrapper.
+
+- npx needs Node 18 or newer (the wrapper's `engines` range). Bun users can run `bunx` or `bunx --bun`.
+- The official `omo` CLI is still required at runtime to answer chats. By default the shim looks for `omo` on `PATH`. If a different `omo` is on your `PATH`, or you want a specific build, set `CHAT_PI_BINARY` to the absolute path of the agent binary. That variable always wins.
 
 ```sh
 npx omo-webchat@latest --password <secret> --port <port> --root <root>
@@ -200,6 +210,10 @@ npx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```sh
 bunx omo-webchat@latest --password <secret> --port <port> --root <root>
 ```
+
+Stable versions publish under the `latest` tag; prereleases (for example `0.1.0-rc.1`) publish under `next`. See [docs/releasing.md](docs/releasing.md) for the release pipeline and publication procedure.
+
+> Release status: no public npm/GitHub release has been published yet. The first public bootstrap procedure is defined in docs/releasing.md.
 
 ### Quick start
 
