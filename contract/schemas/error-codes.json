@@ -14,6 +14,7 @@
         "compaction_in_flight",
         "provider_error",
         "provider_disconnected",
+        "reconnect_exhausted",
         "unsupported_provider",
         "persist_failed",
         "decode_failed",
