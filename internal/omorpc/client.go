@@ -48,6 +48,15 @@ type Config struct {
 	// panics never influence the retry loop; a nil hook keeps the plain
 	// retry behavior.
 	OnDialNotExist func(ctx context.Context) error
+
+	// OnEpochChange, when non-nil, is invoked after each connection-epoch
+	// transition: (prev, zero) when the current epoch died, and (prev, next)
+	// when a newly dialed epoch became current. prev is the epoch that was
+	// current before the transition, zero when there was none. The callback
+	// runs on the goroutine that observed the transition, must not block,
+	// and must not call back into the client. It gives embedders a
+	// transport-loss signal that does not depend on issuing a request.
+	OnEpochChange func(prev, next EpochToken)
 }
 
 // DefaultConfig is the zero-argument configuration.
@@ -156,6 +165,11 @@ type Client struct {
 	nextID  atomic.Uint64
 	dropped atomic.Uint64
 	wg      sync.WaitGroup
+
+	// epochChangeMu guards epochChange only; notifications fire without the
+	// client lock held so observers can never deadlock against the client.
+	epochChangeMu sync.Mutex
+	epochChange   func(prev, next EpochToken)
 }
 
 // Dial connects and completes get_protocol_info before returning.
@@ -168,12 +182,13 @@ func DialWithConfig(ctx context.Context, socketPath string, cfg Config) (*Client
 	cfg = normalizeConfig(cfg)
 	lifecycle, cancel := context.WithCancel(context.Background())
 	c := &Client{
-		socketPath: socketPath,
-		cfg:        cfg,
-		pending:    make(map[string]pendingRequest),
-		lifecycle:  lifecycle,
-		cancel:     cancel,
-		writeGate:  make(chan struct{}, 1),
+		socketPath:  socketPath,
+		cfg:         cfg,
+		pending:     make(map[string]pendingRequest),
+		lifecycle:   lifecycle,
+		cancel:      cancel,
+		writeGate:   make(chan struct{}, 1),
+		epochChange: cfg.OnEpochChange,
 	}
 	c.writeGate <- struct{}{}
 	ep, err := c.establish(ctx)
@@ -243,6 +258,7 @@ func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
 		return nil, ErrDisconnected
 	}
 	c.epoch++
+	prev := c.current
 	ep := &connectionEpoch{number: c.epoch, conn: conn, events: newEventStream(c.cfg.EventBuffer, &c.dropped)}
 	c.current = ep
 	c.wg.Add(1)
@@ -252,6 +268,7 @@ func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
 		defer c.wg.Done()
 		c.readLoop(ep)
 	}()
+	c.notifyEpochChange(EpochToken{epoch: prev}, EpochToken{epoch: ep})
 	return ep, nil
 }
 
@@ -345,6 +362,38 @@ func (c *Client) invalidate(ep *connectionEpoch, cause error) {
 	for _, request := range pending {
 		request.result <- callResult{err: err}
 	}
+	c.notifyEpochChange(EpochToken{epoch: ep}, EpochToken{})
+}
+
+// SetEpochChangeObserver installs fn as the epoch-transition callback,
+// replacing any Config.OnEpochChange or previously installed observer. It
+// exists because the orchestration layer that owns reconnect policy is
+// typically constructed after the client has dialed. fn semantics match
+// Config.OnEpochChange; a nil fn disables notification.
+func (c *Client) SetEpochChangeObserver(fn func(prev, next EpochToken)) {
+	c.epochChangeMu.Lock()
+	c.epochChange = fn
+	c.epochChangeMu.Unlock()
+}
+
+func (c *Client) notifyEpochChange(prev, next EpochToken) {
+	c.epochChangeMu.Lock()
+	fn := c.epochChange
+	c.epochChangeMu.Unlock()
+	if fn != nil {
+		fn(prev, next)
+	}
+}
+
+// EnsureConnected proactively re-establishes the transport when no epoch is
+// current, reusing the configured reconnect budget and single-flight
+// semantics; concurrent triggers share one dial flight. It lets an embedder
+// that learned of a loss through OnEpochChange restore the connection
+// without fabricating a request. It returns nil as soon as any epoch is
+// current, and errors only when the bounded reconnect budget was exhausted.
+func (c *Client) EnsureConnected(ctx context.Context) error {
+	_, err := c.connection(ctx)
+	return err
 }
 
 func (c *Client) connection(ctx context.Context) (*connectionEpoch, error) {

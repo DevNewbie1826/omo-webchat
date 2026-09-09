@@ -255,6 +255,7 @@ func NewManager(cfg Config) *Manager {
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
+		m.observeEpochChanges()
 	}
 	return m
 }
@@ -272,8 +273,10 @@ func (m *Manager) eventLoop() {
 		case ev, ok := <-ch:
 			if !ok {
 				m.invalidateEpoch(token)
-				// omorpc currently has no epoch-change notification. Exponential
-				// closed-channel backoff avoids polling hot while still discovering
+				// Epoch loss itself is reported through the client's epoch-change
+				// notification, which owns proactive recovery. This loop still
+				// discovers successors for reconciliation; exponential
+				// closed-channel backoff avoids polling hot while still noticing
 				// an epoch established by the next RPC within 250ms.
 				timer := time.NewTimer(backoff)
 				select {
@@ -301,6 +304,74 @@ func (m *Manager) eventLoop() {
 			m.endEpochIngestion(token)
 		}
 	}
+}
+
+// observeEpochChanges subscribes the manager to the client's epoch
+// transitions so a silent transport loss (one that fails no in-flight
+// request) still reaches the recovery path. Re-establishment transitions
+// are left to the event observer, which discovers a new epoch within its
+// bounded backoff.
+func (m *Manager) observeEpochChanges() {
+	m.cfg.Client.SetEpochChangeObserver(func(prev, next omorpc.EpochToken) {
+		if next != (omorpc.EpochToken{}) {
+			return
+		}
+		m.triggerProactiveReconnect(prev)
+	})
+}
+
+// triggerProactiveReconnect re-establishes the transport after an epoch
+// loss without waiting for the next user request, but only when the manager
+// owns sessions worth recovering: retained sessions on the dead epoch that
+// still hold live subscribers or in-flight work. Those sessions become
+// resumable once the event observer reconciles the loss; a manager with
+// nothing to recover stays passive and lets the next request drive
+// reconnection.
+func (m *Manager) triggerProactiveReconnect(lost omorpc.EpochToken) {
+	if lost == (omorpc.EpochToken{}) {
+		return
+	}
+	m.mu.Lock()
+	retained := make([]*Session, 0, len(m.byChat))
+	for _, s := range m.byChat {
+		retained = append(retained, s)
+	}
+	m.mu.Unlock()
+	worthy := false
+	for _, s := range retained {
+		if s.epoch != lost {
+			continue
+		}
+		// Never nest lifecycleMu under Manager.mu.
+		s.lifecycleMu.Lock()
+		worthy = !s.closed && (s.broadcast.count() != 0 || s.activeLocked() ||
+			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
+		s.lifecycleMu.Unlock()
+		if worthy {
+			break
+		}
+	}
+	if !worthy {
+		return
+	}
+	// Register under Manager.mu so CloseAll either observes this goroutine
+	// in its cleanup drain or has already flipped m.closed for the check
+	// above to reject a later loss.
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.cleanupWG.Add(1)
+	m.mu.Unlock()
+	go func() {
+		defer m.cleanupWG.Done()
+		// One flight per loss; the client's single-flight reconnect bounds
+		// the dial budget, and manager shutdown cancels the wait.
+		if err := m.cfg.Client.EnsureConnected(m.shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("proactive transport recovery failed", "error", err)
+		}
+	}()
 }
 
 // invalidateDisconnectedEpochs reconciles retained ownership, not just the
