@@ -105,7 +105,7 @@ describe("DAG summary completeness", () => {
     expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 2, truncatedTasks: false });
   });
 
-  it.each(["completed", "failed", "cancelled"])("excludes %s runs with empty optional task IDs", (status) => {
+  it.each(["completed", "failed", "cancelled", "canceled"])("excludes %s runs with empty optional task IDs", (status) => {
     expect(summarizeLiveSession(info({ runs: [{ ...emptyTaskIdRun, status }] }), NOW)).toMatchObject({
       runningCount: 0, dagRunning: 0, truncatedTasks: false,
     });
@@ -197,9 +197,22 @@ describe.each(["rich", "compact"] as const)("%s DAG running task identity", (rep
     );
   });
 
-  it.each(["completed", "failed", "cancelled"])("excludes %s DAG runs with retained running IDs", (status) => {
+  it.each(["completed", "failed", "cancelled", "canceled"])("excludes %s DAG runs with retained running IDs", (status) => {
     expect(summarizeLiveSession(session([["task-a", "task-b"], ["task-a", "task-b"]], status), NOW)).toMatchObject({
       runningCount: 0, dagRunning: 0, truncatedTasks: false,
+    });
+  });
+
+  it.each(["cancelled", "canceled"])("does not use %s nodes as task liveness authority or override live task rows", (status) => {
+    const source = {
+      ...session([["task-a", "task-b"]], status),
+      task: { tasks: [{ task_id: "task-a", name: "Quiet", status: "running", updated_at: "2026-09-08T09:00:00Z" }] },
+    };
+    expect(summarizeLiveSession(source, NOW)).toMatchObject({
+      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+    });
+    expect(summarizeLiveSession(source, NOW, { sessionLive: true })).toMatchObject({
+      runningCount: 1, dagRunning: 0, truncatedTasks: false,
     });
   });
 });
@@ -239,6 +252,23 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
       />,
     ));
   }
+
+  it.each(["cancelled", "canceled"])("clears %s retained-running badges and recovers a newer active snapshot", (status) => {
+    render({ runs: [{ ...fullRun, status, updated_at: "2026-09-08T09:59:00Z" }], truncated_runs: false });
+    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
+    const badges = () => [
+      container.querySelector(".th-tree-children .th-tree-running"),
+      container.querySelector(".th-tree-running--workspace"),
+      document.body.querySelector(".th-overview-card-running"),
+    ];
+    expect(badges()).toEqual([null, null, null]);
+
+    render({ runs: [{ ...fullRun, updated_at: "2026-09-08T10:00:00Z" }], truncated_runs: false });
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2", "2"]);
+    expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+    ]);
+  });
 
   it("recovers compact unknown to rich full empty-ID exact2 on session, workspace and overview", () => {
     const dagDigest = parseDagDigest({ runs: [{ run_id: "r1", status: "running", running_task_ids: [] }], truncated: true });

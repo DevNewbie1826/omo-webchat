@@ -75,14 +75,27 @@ jobs:
 
       - name: Build real server with embedded frontend
         shell: pwsh
+        env:
+          npm_config_foreground_scripts: "true"
+          npm_config_loglevel: verbose
         run: |
+          Write-Output "build environment: PowerShell=$($PSVersionTable.PSVersion) cwd=$PWD"
+          Get-Command node, npm, go -All | Select-Object Name, CommandType, Source | Format-Table -AutoSize
+          Write-Output "PATH=$env:PATH"
+          Write-Output "npm_config_ignore_scripts=$env:npm_config_ignore_scripts"
           Push-Location frontend
+          Write-Output "BEGIN npm ci"
           npm ci
+          Write-Output "END npm ci exit=$LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "BEGIN npm run build"
           npm run build
+          Write-Output "END npm run build exit=$LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Pop-Location
+          Write-Output "BEGIN go build -o omo-webchat.exe ./cmd/server"
           go build -o omo-webchat.exe ./cmd/server
+          Write-Output "END go build -o omo-webchat.exe ./cmd/server exit=$LASTEXITCODE"
           exit $LASTEXITCODE
 
       - name: Record pinned runtimes
