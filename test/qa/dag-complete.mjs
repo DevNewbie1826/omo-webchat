@@ -11,6 +11,7 @@ import { observeSockets } from './heartbeat-liveness.mjs';
 import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
+import { r5Proof } from './dag-complete-r5.mjs';
 import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view, waitForTranscript } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
@@ -249,6 +250,7 @@ export async function run({ evidenceDir }) {
     await resetScenarioViewport(page, fixture.url, { width: 390, height: 844 });
     await visit(true, true); await visit(true); await snap('C2-mobile');
     await expandedDescriptions('C2-mobile'); await view(page, 'list'); await snap('C2-mobile-list', 'list'); await view(page, 'graph');
+    await r5Proof({ page, observed, fixture, gate, deliver, record, evidenceDir });
     assert.equal(fixture.transport.base.frames.filter(frame => frame.type === 'chat.send').length, 0);
     assert.deepEqual(report.errors, []); report.passed = true;
   } catch (error) { failure = error; report.error = { message: error.message, stack: error.stack }; }
