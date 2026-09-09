@@ -8,8 +8,9 @@ import (
 
 // NoticeJournalCapacity bounds the durable notices retained per chat for
 // attach-time replay; past the cap the oldest notices are evicted first. It
-// matches the client's advisory retention (the frontend keeps the newest 50
-// notices), so journaling beyond the cap could never reach a client anyway.
+// matches the client's current retained-notice display cap (the frontend
+// keeps the newest 50 notices), keeping server retention bounded at the same
+// order as client visibility.
 const NoticeJournalCapacity = 50
 
 // noticeJournal is the per-chat durable-notice ring. Each entry was stamped
