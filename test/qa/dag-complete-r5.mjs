@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { expectedRun, assertComplete } from './dag-complete-controls.mjs';
 import { save, transcript } from './dag-complete-fixture.mjs';
+import { r7Proof, taskHistoryFields } from './dag-complete-r7.mjs';
 import { actionDOM, armDOM, doneDOM, statusIs, assertSurface, assertSubagents, capture, releaseComplete, resetScenarioViewport, waitForTranscript } from './dag-complete-browser.mjs';
 
 const activityPath = '/api/workspaces/qa-dag/chats/qa-chat/activity';
@@ -66,13 +67,13 @@ export function taskTransition(full) {
 /** A real native reconnect re-runs REST hydration on the SAME mounted state.
  * Do not reload/navigate here: that would erase the older exact identity and
  * turn the regression into the already-covered initial lossy hydration case. */
-export async function rehydrateREST({ page, observed, fixture, raw, wire, beforeFulfill }) {
+export async function rehydrateREST({ page, observed, fixture, raw, wire, beforeFulfill, task }) {
   const handler = async route => {
     const response = await route.fetch(); assert.equal(response.status(), 200);
     const original = await response.json();
     assert.deepEqual(original.task?.tasks ?? [], []); assert.notEqual(original.task_oversized, true);
     await beforeFulfill();
-    const body = { ...original, dag: raw };
+    const body = { ...original, dag: raw, ...taskHistoryFields(task) };
     wire.push({ surface: 'REST', transition: true, original, delivered: body });
     await route.fulfill({ response, json: body });
   };
@@ -93,6 +94,7 @@ export async function rehydrateREST({ page, observed, fixture, raw, wire, before
     assert.ok(history.frame.entries.length > 100);
     const tail = await waitForTranscript(page, history.frame.entries);
     assert.equal(response.status(), 200); assert.deepEqual((await response.json()).dag, raw);
+    if (task !== undefined) assert.deepEqual((await response.json()).task, task);
     assert.equal(observed.timeline.some(row => row.socketId === attached.socketId && row.direction === 'received' && row.frame?.name === 'omo.dag.updated'), false);
     return { oldSocket: old.socketId, socketId: attached.socketId, entries: history.frame.entries.length, tail };
   } finally { await page.unroute(`**${activityPath}`, handler); }
@@ -114,15 +116,16 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     await doneDOM(page, await armDOM(page, count => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === count, count));
     return assertSubagents(page, options);
   }
-  async function fresh(viewport, raw) {
+  async function fresh(viewport, raw, task, beforeFulfill = async () => {}) {
     await resetScenarioViewport(page, fixture.url, viewport);
     const handler = async route => {
       const response = await route.fetch(); assert.equal(response.status(), 200);
       const original = await response.json();
       assert.deepEqual(original.task?.tasks ?? [], []);
       assert.notEqual(original.task_oversized, true);
-      const body = raw === undefined ? original : { ...original, dag: raw };
+      const body = { ...original, ...(raw === undefined ? {} : { dag: raw }), ...taskHistoryFields(task) };
       wire.push({ surface: 'REST', injected: raw !== undefined, original, delivered: body });
+      await beforeFulfill();
       await route.fulfill({ response, json: body });
     };
     await page.route(`**${activityPath}`, handler);
@@ -141,7 +144,9 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
       const tail = await waitForTranscript(page, history.frame.entries);
       assert.equal(response.status(), 200); await agents();
       record('r5-fresh-binding-growing-transcript', { viewport, socketId: ack.socketId, entries: history.frame.entries.length, tail });
-      return await response.json();
+      const delivered = await response.json();
+      if (task !== undefined) assert.deepEqual(delivered.task, task);
+      return delivered;
     } finally { await page.unroute(`**${activityPath}`, handler); }
   }
   async function openFull(id, expected, automatic = false) {
@@ -299,5 +304,6 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
       await capture(page, evidenceDir, `${label}-recovered`, graph);
       record(`${label}-complete-original-64`, { viewport, revision: complete.updated_at, taskBytes: Buffer.byteLength(complete.nodes[0].task_id), graph });
     }
+    await r7Proof({ page, observed, fixture, deliver, record, evidenceDir, fresh, rehydrateREST, wire });
   } finally { await save(evidenceDir, 'qa-r5-raw-wire.json', wire); }
 }

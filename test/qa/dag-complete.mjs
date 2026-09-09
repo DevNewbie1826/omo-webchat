@@ -12,10 +12,12 @@ import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunI
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
 import { r5Proof } from './dag-complete-r5.mjs';
+import { requireR7Ready } from './dag-complete-r7.mjs';
 import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view, waitForTranscript } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
   assert.ok(globalThis.Bun, 'Run with bun test/qa/dag-complete.mjs');
+  await requireR7Ready();
   evidenceDir = resolve(evidenceDir); await mkdir(evidenceDir, { recursive: true });
   const report = { passed: false, actions: [], errors: [], startedAt: new Date().toISOString() };
   const cleanup = { errors: [] }, http = [];
