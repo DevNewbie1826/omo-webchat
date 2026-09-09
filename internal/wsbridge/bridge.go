@@ -140,6 +140,7 @@ func New(cfg Config) *Handler {
 	h := &Handler{cfg: cfg}
 	if cfg.Manager != nil {
 		cfg.Manager.SetQueueCallbacks(h.SessionRunSettled, h.SessionQueueUpdated)
+		cfg.Manager.SetSessionReconciler(h.reconcileRecoveredSession)
 	}
 	h.upgrader = gws.NewUpgrader(h, &gws.ServerOption{
 		Recovery:          gws.Recovery,

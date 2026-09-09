@@ -131,3 +131,45 @@ func (c *connection) bindRecovered(ctx context.Context, binding *recoveryBinding
 	c.bridge.publishQueueToConnection(c, staged.session)
 	return true
 }
+
+// reconcileRecoveredSession rebinds every browser connection still bound to
+// stale after the transport recovered. The manager invokes it while holding
+// the chat's per-chat flight, so the transparent recovery below preserves its
+// FIFO position and shares the single recovery open with any concurrent
+// in-flight send recovery or user request. The recovery acquisition reopens
+// the SAME durable session: the rebinding replay (ready + durable history) is
+// the recovery-state surface the client observes, and a genuine resume
+// failure surfaces through the existing error mapping without unbinding, so
+// the next user operation still drives its own recovery.
+func (h *Handler) reconcileRecoveredSession(chatID string, stale *session.Session) {
+	if stale == nil {
+		return
+	}
+	h.conns.Range(func(_, value any) bool {
+		c, ok := value.(*connection)
+		if !ok {
+			return true
+		}
+		c.stateMu.Lock()
+		// Only a fully installed binding (live session-detach hook still in
+		// place) is rebound automatically; a half-transitioned binding lets its
+		// next user operation drive recovery through the query path.
+		bound := !c.closed.Load() && c.chatID == chatID && c.sess == stale && c.detach != nil
+		wsID, generation := c.wsID, c.bindingGeneration
+		c.stateMu.Unlock()
+		if !bound {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(h.cfg.Context, h.cfg.HistoryTimeout)
+		defer cancel()
+		binding := &recoveryBinding{workspaceID: wsID, stale: queryBinding{chatID: chatID, generation: generation, session: stale}}
+		if _, err := c.recoverBindingInFlight(ctx, binding); err != nil && !errors.Is(ctx.Err(), context.Canceled) {
+			h.cfg.Logger.Warn("reconciling recovered v2 chat session", "chat_id", chatID, "error", err)
+			frame, mapErr := mapError("error", chatID, session.Frame{Kind: session.FrameError, Data: resumeFailureInfo(err)})
+			if mapErr == nil {
+				_ = c.writeIfCurrent(binding.stale, frame)
+			}
+		}
+		return true
+	})
+}

@@ -155,6 +155,20 @@ func (m *Manager) SetQueueCallbacks(onSettled, onQueueUpdate func(string, *Sessi
 	m.cfg.OnQueueUpdate = onQueueUpdate
 }
 
+// SetSessionReconciler installs the transport hook invoked once per chat
+// after a recovered connection epoch is established, for every session the
+// manager still owns whose route died with the lost epoch and that still
+// holds a live subscriber or in-flight work. The callback runs while the
+// manager holds that chat's per-chat flight, so a transparent recovery
+// acquisition may preserve its FIFO position
+// (ResumeInitializedCheckedAndRunInFlight). Durable identities retired
+// through RetireIdentity are never offered.
+func (m *Manager) SetSessionReconciler(reconcile func(chatID string, stale *Session)) {
+	m.mu.Lock()
+	m.sessionReconciler = reconcile
+	m.mu.Unlock()
+}
+
 type durableTombstoneRecord struct {
 	epoch   omorpc.EpochToken
 	durable string
@@ -196,6 +210,7 @@ type Manager struct {
 	acquireWG          sync.WaitGroup
 	cleanupWG          sync.WaitGroup
 	eventWG            sync.WaitGroup
+	sessionReconciler  func(chatID string, stale *Session)
 	openCleanupExpired chan struct{}
 	// retiredRoutes records provider route handles retired by open
 	// recovery, scoped to the connection epoch that minted them.
@@ -308,15 +323,109 @@ func (m *Manager) eventLoop() {
 
 // observeEpochChanges subscribes the manager to the client's epoch
 // transitions so a silent transport loss (one that fails no in-flight
-// request) still reaches the recovery path. Re-establishment transitions
-// are left to the event observer, which discovers a new epoch within its
-// bounded backoff.
+// request) still reaches the recovery path. Loss triggers one proactive
+// reconnect flight; establishment reconciles the tracked sessions the loss
+// orphaned.
 func (m *Manager) observeEpochChanges() {
 	m.cfg.Client.SetEpochChangeObserver(func(prev, next omorpc.EpochToken) {
 		if next != (omorpc.EpochToken{}) {
+			m.scheduleSessionReconciliation()
 			return
 		}
 		m.triggerProactiveReconnect(prev)
+	})
+}
+
+// scheduleSessionReconciliation offers every tracked session whose provider
+// route died with a lost transport epoch — and that still holds a live
+// subscriber or in-flight work — to the registered transport reconciler once
+// a successor epoch is established. The reconciler transparently reopens the
+// SAME durable session through the existing recovery acquisitions and rebinds
+// its browser connection; a fresh session is never substituted, and identities
+// retired through RetireIdentity are never resurrected. Each chat reconciles
+// through its existing per-chat FIFO position, so automatic reconciliation,
+// in-flight send recovery, and user requests share one recovery open per chat.
+func (m *Manager) scheduleSessionReconciliation() {
+	m.mu.Lock()
+	retained := make([]*Session, 0, len(m.byChat))
+	for _, s := range m.byChat {
+		retained = append(retained, s)
+	}
+	m.mu.Unlock()
+	candidates := make([]*Session, 0, 4)
+	for _, s := range retained {
+		// Tokens never become live again, so only dead-epoch routes need
+		// reconciliation; a session invalidated on the live epoch (engine-side
+		// eviction) keeps its existing user-query-driven recovery path.
+		if s.epoch == (omorpc.EpochToken{}) || m.cfg.Client.EpochCurrent(s.epoch) {
+			continue
+		}
+		// Never nest lifecycleMu under Manager.mu.
+		s.lifecycleMu.Lock()
+		worthy := !s.closed && (s.broadcast.count() != 0 || s.activeLocked() ||
+			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
+		resumable := !s.closed && s.resumable
+		s.lifecycleMu.Unlock()
+		if !worthy {
+			continue
+		}
+		if !resumable {
+			// The event observer may not have reconciled this epoch's loss
+			// before the successor epoch was established. Drive the same
+			// invalidation barrier it uses so this recovery window is not
+			// missed; sessions already invalidated are untouched.
+			m.invalidateEpoch(s.epoch)
+			s.lifecycleMu.Lock()
+			resumable = !s.closed && s.resumable
+			s.lifecycleMu.Unlock()
+			if !resumable {
+				continue
+			}
+		}
+		m.mu.Lock()
+		_, retired := m.retiredDurable[s.durableID]
+		m.mu.Unlock()
+		if retired {
+			continue
+		}
+		candidates = append(candidates, s)
+	}
+	for _, s := range candidates {
+		m.enqueueReconciliation(s.chatID, s)
+	}
+}
+
+// enqueueReconciliation reserves the chat's FIFO position and revalidates the
+// candidate while holding it: a user action, an in-flight send recovery, or a
+// delete that acquired the flight first may have already settled the outcome.
+func (m *Manager) enqueueReconciliation(chatID string, stale *Session) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.cleanupWG.Add(1)
+	m.mu.Unlock()
+	m.chats.enqueue(chatID, func() {
+		defer m.cleanupWG.Done()
+		m.mu.Lock()
+		reconcile := m.sessionReconciler
+		current := m.byChat[chatID] == stale
+		_, retired := m.retiredDurable[stale.durableID]
+		closed := m.closed
+		m.mu.Unlock()
+		if reconcile == nil || retired || closed || !current {
+			return
+		}
+		stale.lifecycleMu.Lock()
+		resumable := !stale.closed && stale.resumable
+		stale.lifecycleMu.Unlock()
+		// A recovery ahead of this flight may have already reopened the
+		// durable session; only a still-resumable route needs the reconciler.
+		if !resumable {
+			return
+		}
+		reconcile(chatID, stale)
 	})
 }
 
