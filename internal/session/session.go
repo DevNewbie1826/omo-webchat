@@ -752,6 +752,19 @@ func (o *sendOperationOwner) publishLocked(frame Frame) {
 	}
 }
 
+// SendOperationResult checks the shared request ledger without admitting a
+// mutation. Queue admission uses this before re-enqueueing an explicit replay.
+func (s *Session) SendOperationResult(requestID string) (error, bool) {
+	if requestID == "" {
+		return nil, false
+	}
+	owner := s.operationOwner()
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	operation, ok := owner.operations[requestID]
+	return operation.err, ok
+}
+
 func (s *Session) beginSendOperation(requestID string) (error, bool) {
 	if requestID == "" {
 		return nil, false

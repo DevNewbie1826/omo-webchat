@@ -693,6 +693,15 @@ func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID str
 	run := sess.RunSnapshot()
 	backlog := c.bridge.cfg.SendQueue != nil && c.bridge.cfg.SendQueue.HasBacklog(op.chatID)
 	if op.kind != "steer" && (run.Streaming || run.Compacting || backlog) && c.bridge.cfg.SendQueue != nil {
+		if prior, duplicate := sess.SendOperationResult(op.requestID); duplicate {
+			release()
+			if prior != nil {
+				c.sendSessionError(prior, "chat.send", op.requestID)
+			} else {
+				c.sendAck("chat.send", op.requestID)
+			}
+			return
+		}
 		_, _, err := c.bridge.cfg.SendQueue.Append(op.chatID, sendqueue.Item{Text: op.message, Images: op.images, RequestID: op.requestID})
 		if err != nil {
 			release()
@@ -1327,10 +1336,15 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 	if current, ok := h.cfg.Manager.Get(chatID); ok {
 		sess = current
 	}
+	dispatch := h.cfg.SendQueue.Snapshot(chatID).Dispatching
 	if run := sess.RunSnapshot(); run.Streaming || run.Compacting {
-		return
+		// Positive history may retire an attempted delivery even during its
+		// run, but no new/reserved delivery may start until settlement.
+		if dispatch == nil || dispatch.DispatchState != sendqueue.DispatchAttempted {
+			return
+		}
 	}
-	wasDispatching := h.cfg.SendQueue.Snapshot(chatID).Dispatching != nil
+	wasDispatching := dispatch != nil
 	item, ok, err := h.cfg.SendQueue.BeginDispatch(chatID)
 	if err != nil {
 		h.cfg.Logger.Error("beginning send queue dispatch", "chat_id", chatID, "error", err)
@@ -1364,9 +1378,15 @@ func (h *Handler) flushHead(chatID string, sess *session.Session) {
 				}
 				h.dispatching.CompareAndDelete(chatID, item.DeliveryID)
 				h.publishQueue(chatID, sess)
+				sess.CompleteDetachedSend(item.RequestID, nil)
 				h.scheduleIdleDrain(chatID, sess)
 				return
 			}
+			// A written request can still apply on the dead epoch. Absence
+			// from history is not rejection; keep its ledger admission and
+			// durable dispatch parked until positive settlement evidence.
+			park(nil)
+			return
 		case sendqueue.DispatchReserved:
 			// The durable reservation proves no provider call began.
 		default:
