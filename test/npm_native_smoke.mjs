@@ -295,6 +295,15 @@ async function consume({ variant, root, registry, fixture, version, runtime }) {
   for (const directory of [env.HOME, env.APPDATA, env.LOCALAPPDATA, env.TMPDIR]) await mkdir(directory, { recursive: true });
   for (const file of [env.npm_config_userconfig, env.npm_config_globalconfig]) await writeFile(file, '');
   await writeFile(path.join(root, 'bunfig.toml'), `[install]\nregistry = ${JSON.stringify(registry)}\n`);
+  // bun 1.4.2 on win32 exits 0 after auto-installing for `bun x --bun` without
+  // executing the bin (observed on both hosted Windows runners). Pre-installing
+  // the exact version locally keeps the same literal user command — bunx checks
+  // a locally installed package first — and exercises the bin under Bun's
+  // runtime exactly as on the other platforms.
+  if (variant === 'bunx --bun' && process.platform === 'win32') {
+    await writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'omo-native-bunx-bun', private: true, dependencies: { 'omo-webchat': version } }) + '\n');
+    await command([process.execPath, 'install'], { cwd: root, env });
+  }
   const args = [`omo-webchat@${version}`, '--host', '127.0.0.1', '--port', '0', '--root', env.HOME, '--state-dir', path.join(root, 'state')];
   const argv = variant === 'npx' ? [runtime.node, runtime.npxCLI, '--yes', ...args]
     : [process.execPath, 'x', ...(variant === 'bunx --bun' ? ['--bun'] : []), ...args];
