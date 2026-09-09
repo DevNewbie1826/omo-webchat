@@ -344,6 +344,11 @@ func nativeStalledPipe(t *testing.T, negotiate bool) (string, func()) {
 	var active net.Conn
 	stopping := false
 	done := make(chan struct{})
+	listener = &shutdownOrderListener{
+		Listener:      listener,
+		workerDone:    done,
+		acceptEntered: make(chan struct{}),
+	}
 	t.Cleanup(func() {
 		release()
 		mu.Lock()
@@ -354,13 +359,17 @@ func nativeStalledPipe(t *testing.T, negotiate bool) (string, func()) {
 			}
 		}
 		mu.Unlock()
-		if err := listener.Close(); err != nil {
-			t.Error(err)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
+		defer cancel()
+		shutdown := fixtureListenerShutdown{
+			listener: listener,
+			done:     done,
+			wake: func(ctx context.Context) (net.Conn, error) {
+				return winio.DialPipeContext(ctx, address)
+			},
 		}
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("native pipe fixture worker not joined")
+		if err := shutdown.stop(ctx); err != nil {
+			t.Fatal(err)
 		}
 		t.Log("cleanup: native listener/peer handles closed and fixture worker joined")
 	})

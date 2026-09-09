@@ -136,7 +136,7 @@ jobs:
         env:
           OMORPC_REAL_RUNTIME: node
         run: |
-          & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnect$' -count=1 -v -timeout=2m 2>&1 | Tee-Object -FilePath probe-reconnect-node.txt
+          & go test -tags=realomo ./internal/omorpc -run '^TestWindowsRealOmoReconnectTrace$' -count=1 -v -timeout=3m 2>&1 | Tee-Object -FilePath probe-reconnect-node.txt
           $probeExit = $LASTEXITCODE
           if (Test-Path -LiteralPath probe-reconnect-node.txt) {
             Get-Content -LiteralPath probe-reconnect-node.txt | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
