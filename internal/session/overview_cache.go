@@ -286,6 +286,7 @@ func (m *Manager) ingestUnboundOverviewLocked(epoch omorpc.EpochToken, ev *omorp
 		entry.taskSnapshots.observe(accepted.accepted)
 		reconcileOverviewEntry(entry)
 	}
+	refreshOverviewExactCounts(entry)
 	m.evictOverviewLRULocked()
 	snapshot := entry.summary(entry.chatID, durableID)
 	return snapshot, m.updateOverviewLocked(snapshot)
@@ -353,17 +354,17 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 	delete(m.overviewCache, s.durableID)
 	delete(m.overviewCurrent, entry.chatID)
 	if entry.epoch == s.epoch {
-		for _, name := range activitySnapshotOrder {
-			if data := entry.snapshots[name]; len(data) > 0 {
-				s.activitySnapshots[name] = append(json.RawMessage(nil), data...)
-				s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, entry.oversized[name])})
-			}
-			s.activityOversized[name] = entry.oversized[name]
-		}
 		s.taskDigest = cloneTaskDigest(entry.task)
 		s.dagDigest = cloneDagDigest(entry.dag)
 		s.dagSnapshots = entry.dagSnapshots
 		s.taskSnapshots = entry.taskSnapshots
+		for _, name := range activitySnapshotOrder {
+			if data := entry.snapshots[name]; len(data) > 0 {
+				s.activitySnapshots[name] = append(json.RawMessage(nil), data...)
+				s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, entry.oversized[name])})
+			}
+			s.activityOversized[name] = entry.oversized[name]
+		}
 		if entry.oversized[activitySnapshotOrder[1]] {
 			delete(s.activitySnapshots, activitySnapshotOrder[1])
 		}

@@ -326,6 +326,10 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 		s.taskSnapshots.observe(accepted.accepted)
 		s.reconcileActivityCacheLocked()
 	}
+	if name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1] {
+		running, total := s.refreshExactCountsLocked()
+		dataBytes = addActivityCounts(dataBytes, name, &s.taskSnapshots, &s.dagSnapshots, running, total)
+	}
 	s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, dataBytes, s.activityOversized[name])})
 	if (name == activitySnapshotOrder[0] || name == activitySnapshotOrder[1]) && s.manager != nil {
 		s.manager.notifySessionOverviewLocked(s)

@@ -27,12 +27,16 @@
     "truncated": false,
     "running_count": 1,
     "total_count": 1,
+    "agent_running_count": 1,
+    "agent_total_count": 1,
     "received_at": "2026-09-03T00:00:00Z"
   },
   "dagDigest": {
     "runs": [{"run_id": "run-1", "status": "running", "running_task_ids": ["task-1"]}],
     "truncated": false,
     "running_count": 1,
+    "agent_running_count": 1,
+    "agent_total_count": 1,
     "received_at": "2026-09-03T00:00:00Z"
   },
   "overflow": false

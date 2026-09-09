@@ -31,7 +31,14 @@ func TestTaskStateOrderingCompactBoundary(t *testing.T) {
 					if data["name"] != activitySnapshotOrder[0] {
 						continue
 					}
-					frames = append(frames, map[string]any{"type": "extensionEvent", "sessionId": "review-chat", "name": data["name"], "data": data["data"]})
+					payload, _ := json.Marshal(data["data"])
+					var fixtureData map[string]any
+					_ = json.Unmarshal(payload, &fixtureData)
+					delete(fixtureData, "agent_running_count")
+					delete(fixtureData, "agent_total_count")
+					delete(fixtureData, "running_count")
+					delete(fixtureData, "total_count")
+					frames = append(frames, map[string]any{"type": "extensionEvent", "sessionId": "review-chat", "name": data["name"], "data": fixtureData})
 				}
 				return frames
 			}
@@ -81,7 +88,15 @@ func TestTaskStateOrderingCompactBoundary(t *testing.T) {
 				t.Fatal("equal rich enrichment blocked by compact projection")
 			}
 			summary.TaskDigest.ReceivedAt = "" // Receipt time is not source authority.
-			receipt := map[string]any{"frames": frames, "taskDigest": summary.TaskDigest, "expectedTask": expected, "enrichmentFrames": enrichment}
+			// This cross-client ordering fixture predates scalar authority and covers
+			// retained correction rows only; exact scalar wire coverage is separate.
+			fixtureDigest := struct {
+				Tasks        []TaskDigestEntry `json:"tasks"`
+				Truncated    bool              `json:"truncated"`
+				RunningCount int               `json:"running_count"`
+				TotalCount   int               `json:"total_count"`
+			}{summary.TaskDigest.Tasks, summary.TaskDigest.Truncated, 0, 1}
+			receipt := map[string]any{"frames": frames, "taskDigest": fixtureDigest, "expectedTask": expected, "enrichmentFrames": enrichment}
 			payload, err := json.MarshalIndent(receipt, "", "  ")
 			if err != nil {
 				t.Fatal(err)

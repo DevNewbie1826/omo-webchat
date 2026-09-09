@@ -367,7 +367,9 @@
         "tasks",
         "truncated",
         "running_count",
-        "total_count"
+        "total_count",
+        "agent_running_count",
+        "agent_total_count"
       ],
       "properties": {
         "tasks": {
@@ -386,6 +388,14 @@
         "total_count": {
           "type": "integer",
           "description": "Exact task total over the full pre-truncation roster; independent of the truncated tasks list."
+        },
+        "agent_running_count": {
+          "type": "integer",
+          "description": "Exact running agent work after full-membership task/DAG overlap removal; task status is authoritative for overlap."
+        },
+        "agent_total_count": {
+          "type": "integer",
+          "description": "Exact total agent work after full-membership task/DAG overlap removal, including DAG-only nodes."
         },
         "received_at": {
           "type": "string"
@@ -421,7 +431,9 @@
       "required": [
         "runs",
         "truncated",
-        "running_count"
+        "running_count",
+        "agent_running_count",
+        "agent_total_count"
       ],
       "properties": {
         "runs": {
@@ -436,6 +448,14 @@
         "running_count": {
           "type": "integer",
           "description": "Exact running nodes summed over all non-terminal runs of the full pre-truncation graph; independent of the truncated runs list."
+        },
+        "agent_running_count": {
+          "type": "integer",
+          "description": "Exact running agent work after full-membership task/DAG overlap removal; task status is authoritative for overlap."
+        },
+        "agent_total_count": {
+          "type": "integer",
+          "description": "Exact total agent work after full-membership task/DAG overlap removal, including DAG-only nodes."
         },
         "received_at": {
           "type": "string"
