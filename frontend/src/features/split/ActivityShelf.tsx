@@ -8,6 +8,7 @@ import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection, type DagNodeMotion } from "./activityShelfDag";
 import { CompleteDagSection } from "./activityCompleteDag";
 import { useCompleteDag, type DagSource } from "./useCompleteDag";
+import { useTaskRoster } from "./useTaskRoster";
 import {
   agentTimeMs,
   dagTimeMs,
@@ -21,7 +22,7 @@ import {
 } from "./activityShelfModel";
 import { AgentSection, TodoSection } from "./activityShelfSections";
 import { workflowNodeTasks } from "./activityWorkflowNodes";
-import type { ActivityState } from "./activityTypes";
+import type { ActivityState, ActivityDagRun, ActivityTask } from "./activityTypes";
 import { useShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ActivityShelfProps {
@@ -66,6 +67,27 @@ function panelElementId(tab: ShelfTab, panelId: string): string {
 
 function clampPanelHeight(px: number): number {
   return Math.min(maxPanelHeight(), Math.max(PANEL_MIN, Math.round(px)));
+}
+
+function mergeRosterTasks(
+  roster: readonly ActivityTask[],
+  live: ReadonlyMap<string, ActivityTask>,
+  dags: readonly ActivityDagRun[],
+): readonly ActivityTask[] {
+  const byId = new Map<string, ActivityTask>();
+  for (const task of roster) {
+    const current = live.get(task.taskId);
+    byId.set(task.taskId, current === undefined ? task : { ...task, ...current });
+  }
+  for (const [id, task] of live) {
+    if (!byId.has(id)) byId.set(id, task);
+  }
+  const workflow = workflowNodeTasks(dags, new Set(byId.keys()));
+  return orderActivities(
+    [...byId.values(), ...workflow.tasks],
+    (task) => TERMINAL_TASK_STATUSES.has(task.status),
+    agentTimeMs,
+  );
 }
 
 function detectPanelHeight(): number | null {
@@ -163,6 +185,10 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
   // Complete data/selection belong to the shelf, not its transient panel DOM.
   const completeDag = useCompleteDag(dagSource, open && selectedTab === "dag", activities);
+  const taskRoster = useTaskRoster(dagSource, open && selectedTab === "agents");
+  const agentTasks = taskRoster.status === "ready"
+    ? mergeRosterTasks(taskRoster.tasks, activities.tasks, [...activities.dags.values()])
+    : tasks;
   const selectTab = (tab: ShelfTab): void => {
     if (selectedTab === "dag" && tab !== "dag") consumeGraphMotion();
     setOpen(true);
@@ -393,23 +419,30 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                 aria-labelledby={tabIdPrefix(tab, panelId)}
                 hidden={selectedTab !== tab}
                 className={`th-activity-tabpanel th-activity-tabpanel--${tab}`}
+                data-activity-roster-status={tab === "agents" ? taskRoster.status : undefined}
               >
                 {tab === "todo" && (activities.todo !== null
                   ? <TodoSection phases={activities.todo} t={t} />
                   : <p className="th-activity-empty">{t("activity.emptyTodo")}</p>)}
-                {tab === "agents" && (tasks.length > 0
-                  ? <AgentSection
-                      tasks={tasks}
-                      nowMs={nowMs}
-                      freshnessCtx={{
-                        runInFlight: activities.runInFlight === true,
-                        lifeSeenThisRun: lifeSeenThisRunOf(activities),
-                        runActivityMsByTask: runActivityMsByTaskOf(activities),
-                      }}
-                      t={t}
-                    />
-                  : !agentsPartial && <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
-                {tab === "agents" && agentsPartial
+                {tab === "agents" && (taskRoster.status === "loading"
+                  ? <p className="th-activity-empty" role="status">{t("chat.loading")}</p>
+                  : taskRoster.status === "error"
+                    ? <p className="th-activity-empty" role="alert">
+                        <button type="button" className="th-activity-view-btn" data-activity-roster-retry onClick={taskRoster.retry}>{t("common.retry")}</button>
+                      </p>
+                  : agentTasks.length > 0
+                    ? <AgentSection
+                        tasks={agentTasks}
+                        nowMs={nowMs}
+                        freshnessCtx={{
+                          runInFlight: activities.runInFlight === true,
+                          lifeSeenThisRun: lifeSeenThisRunOf(activities),
+                          runActivityMsByTask: runActivityMsByTaskOf(activities),
+                        }}
+                        t={t}
+                      />
+                    : !agentsPartial && <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
+                {tab === "agents" && agentsPartial && taskRoster.status === "idle"
                   && <p className="th-activity-partial">{t("activity.partial")}</p>}
                 {tab === "dag" && (dagSource !== undefined
                   ? <CompleteDagSection data={completeDag} activities={activities} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
