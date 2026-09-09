@@ -4,7 +4,7 @@ import { I18nContext } from "../../i18n";
 import { ActivityShelf } from "./ActivityShelf";
 import { activityState, click, makeDag, mountActivityShelf, unmountActivityShelf, type ActivityShelfHarness } from "./ActivityShelf.support";
 import { i18n, renderChatPane, requireElement } from "./chatPaneTestHarness";
-import { applyActivityEvent } from "./activityState";
+import { applyActivityEvent, applyActivityHistorySnapshot } from "./activityState";
 import type { ActivityState } from "./activityTypes";
 
 const revision = "2026-09-08T10:00:00Z";
@@ -177,6 +177,74 @@ describe("complete DAG dashboard", () => {
       runId: "r1", nodeId: "node-00", at: newer, taskId: "t".repeat(600) + "b",
     });
     render(exact); open(); await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+  });
+
+  it.each(["REST", "live"] as const)("recovers F1-R5 %s exact R -> lossy R+1 -> full601/64", async transport => {
+    const apply = transport === "REST" ? applyActivityHistorySnapshot : applyActivityEvent;
+    const taskId = "t".repeat(600) + "a";
+    const doc = taskIdentityDocument(taskId);
+    doc.run.updated_at = newer;
+    const initial = apply(activityState(), "omo.dag.updated", { runs: [{ ...doc.run, updated_at: revision,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: "previous-attempt-task" }],
+    }] });
+    expect(initial.dags.get("r1")?.nodes[0]?.taskId).toBe("previous-attempt-task");
+    const next = apply(initial, "omo.dag.updated", { runs: [{ ...doc.run,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: taskId.slice(0, 512), task_id_truncated: true }],
+    }] });
+    render(next); open(); await reply(request(base), catalog());
+    await replyF2(request(`${base}/r1`), doc);
+    expect(status()).toBe("complete");
+    expect(nodes()).toEqual(doc.run.nodes.map(node => node.id));
+    expect(harness.container.querySelectorAll(".th-activity-gedge")).toHaveLength(63);
+    expect(harness.container.querySelector("[data-activity-dag-total]")?.getAttribute("data-activity-dag-total")).toBe("64");
+    expect([...harness.container.querySelectorAll("dd")].some(node => node.textContent === taskId)).toBe(true);
+    expect(next.dags.get("r1")?.nodes[0]?.taskId).toBeUndefined();
+    expect(next.dags.get("r1")?.nodes[0]?.taskIdPrefix).toBe(taskId.slice(0, 512));
+    expect(next.dags.get("r1")?.updatedAt).toBe(newer);
+  });
+
+  it.each(["REST", "live"] as const)("preserves F1-R5 %s plain omitted task identity at R+1", transport => {
+    const apply = transport === "REST" ? applyActivityHistorySnapshot : applyActivityEvent;
+    const doc = taskIdentityDocument("previous-attempt-task");
+    const initial = apply(activityState(), "omo.dag.updated", { runs: [doc.run] });
+    const next = apply(initial, "omo.dag.updated", { runs: [{ ...doc.run, updated_at: newer,
+      nodes: doc.run.nodes.map(node => ({ ...node, task_id: undefined })),
+    }] });
+    expect(next.dags.get("r1")?.updatedAt).toBe(newer);
+    expect(next.dags.get("r1")?.nodes[0]?.taskId).toBe("previous-attempt-task");
+    expect(next.dags.get("r1")?.nodes[0]?.taskIdPrefix).toBeUndefined();
+  });
+
+  it.each(["REST", "live"] as const)("preserves F1-R5 %s same-revision exact authority against lossy replacement", async transport => {
+    const apply = transport === "REST" ? applyActivityHistorySnapshot : applyActivityEvent;
+    const doc = taskIdentityDocument("t".repeat(600) + "a");
+    const initial = apply(activityState(), "omo.dag.updated", { runs: [{ ...doc.run,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: "other-exact-task" }],
+    }] });
+    const next = apply(initial, "omo.dag.updated", { runs: [{ ...doc.run,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: "t".repeat(512), task_id_truncated: true }],
+    }] });
+    expect(next.dags.get("r1")).toBe(initial.dags.get("r1"));
+    render(next); open(); await reply(request(base), catalog()); await replyF2(request(`${base}/r1`), doc);
+    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+  });
+
+  it.each(["REST", "live"] as const)("preserves F1-R5 %s exact live activity authority after newer lossy input", async transport => {
+    const apply = transport === "REST" ? applyActivityHistorySnapshot : applyActivityEvent;
+    const doc = taskIdentityDocument("t".repeat(600) + "a");
+    const initial = apply(activityState(), "omo.dag.updated", { runs: [{ ...doc.run,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: "previous-attempt-task" }],
+    }] });
+    doc.run.updated_at = newer;
+    const lossy = apply(initial, "omo.dag.updated", { runs: [{ ...doc.run,
+      nodes: [{ ...doc.run.nodes[0]!, task_id: "t".repeat(512), task_id_truncated: true }],
+    }] });
+    const next = applyActivityEvent(lossy, "omo.dag.activity", {
+      runId: "r1", nodeId: "node-00", at: newer, taskId: "t".repeat(600) + "b",
+    });
+    expect(next.dags.get("r1")?.nodes[0]?.taskId).toBe("t".repeat(600) + "b");
+    render(next); open(); await reply(request(base), catalog()); await replyF2(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
 

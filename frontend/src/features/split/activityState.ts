@@ -307,7 +307,8 @@ function mergePreservedNode(previous: ActivityDagNode | undefined, incoming: Act
   if (previous === undefined) return incoming;
   return {
     ...incoming,
-    ...(incoming.taskId === undefined && previous.taskId !== undefined ? { taskId: previous.taskId } : {}),
+    ...(incoming.taskId === undefined && incoming.taskIdPrefix === undefined && previous.taskId !== undefined
+      ? { taskId: previous.taskId } : {}),
     ...(incoming.activity === undefined && previous.activity !== undefined ? { activity: previous.activity } : {}),
     ...(incoming.currentTool === undefined && previous.currentTool !== undefined
       ? { currentTool: previous.currentTool }
