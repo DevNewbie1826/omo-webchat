@@ -164,13 +164,25 @@ async function remote(registry, name) {
   requireValue(response.ok, `Registry preflight HTTP ${response.status}: ${name}`);
   return response.json();
 }
-function matching(document, entry, tag) {
+async function matching(document, entry, tag) {
   requireValue(document && document.name === entry.name && document.versions && typeof document.versions === 'object', `Invalid registry metadata: ${entry.name}`);
   const stored = document.versions[entry.version];
   if (!stored) return false;
   requireValue(stored.name === entry.name && stored.version === entry.version && stored.dist?.integrity === entry.integrity, `Remote immutable integrity/identity mismatch: ${entry.name}`);
   for (const field of ['os', 'cpu', 'optionalDependencies', 'bin']) requireValue(isDeepStrictEqual(stored[field], entry.payload[field]), `Remote payload metadata mismatch: ${entry.name}`);
   requireValue(document['dist-tags']?.[tag] === entry.version, `Existing ${entry.name}@${entry.version} does not have tag ${tag}; no dist-tag mutation was performed`);
+  requireValue(typeof stored.dist.tarball === 'string' && URL.canParse(stored.dist.tarball), `Invalid remote tarball URL: ${entry.name}`);
+  const url = new URL(stored.dist.tarball);
+  requireValue(['https:', 'http:'].includes(url.protocol) && !url.username && !url.password && !url.hash, `Invalid remote tarball URL: ${entry.name}`);
+  // Metadata is not proof of stored bytes. Read anonymously, never via npm's
+  // credential-bearing client, and do not follow registry-supplied redirects.
+  const response = await fetch(url, { signal: AbortSignal.timeout(30_000), redirect: 'error', headers: { 'cache-control': 'no-cache' } });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`Remote tarball HTTP ${response.status}: ${entry.name}`);
+  }
+  const actual = hashes(Buffer.from(await response.arrayBuffer()));
+  requireValue(actual.sha256 === entry.sha256 && actual.integrity === entry.integrity, `Remote tarball integrity mismatch: ${entry.name}`);
   return true;
 }
 async function publish(manifestFile, tag, registry, provenance) {
@@ -183,7 +195,7 @@ async function publish(manifestFile, tag, registry, provenance) {
   const pending = [];
   for (const entry of packages) {
     const document = await remote(endpoint, entry.name);
-    if (document === undefined || !matching(document, entry, tag)) pending.push(entry);
+    if (document === undefined || !await matching(document, entry, tag)) pending.push(entry);
     else console.log(`resume: ${entry.name}@${entry.version} already matches (${tag})`);
   }
   // Snapshot validated inputs privately: subsequent input-file changes cannot
@@ -200,7 +212,7 @@ async function publish(manifestFile, tag, registry, provenance) {
         '--ignore-scripts', '--fetch-retries=0', '--fetch-timeout=30000', provenance ? '--provenance' : '--provenance=false'];
       await npm(args, { cwd: staging });
       const document = await remote(endpoint, entry.name);
-      requireValue(document !== undefined && matching(document, entry, tag), `Publication was not confirmed: ${entry.name}`);
+      requireValue(document !== undefined && await matching(document, entry, tag), `Publication was not confirmed: ${entry.name}`);
       console.log(`published: ${entry.name}@${entry.version} (${tag})`);
     }
   } finally { await fs.rm(staging, { recursive: true, force: true }); }

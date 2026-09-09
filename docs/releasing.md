@@ -4,9 +4,10 @@ This document describes the implemented release pipeline: how the seven npm
 packages and the GitHub release are built, verified, and published from one
 immutable artifact set. It is written for the maintainer who runs a release.
 
-Status: the pipeline is implemented and locally verified. No public npm or
-GitHub release has been published yet; the first publication follows the
-bootstrap procedure below.
+Status: the pipeline is implemented and locally verified. Publication is a
+separate, lead-only step gated by the bootstrap procedure below, so whether a
+given version is publicly available changes over time. Check the npm package
+pages and GitHub Releases for the current state of any version.
 
 ## What gets published
 
@@ -31,8 +32,13 @@ prerequisite for chats; it stays external and is resolved through
 
 The GitHub release carries the six GoReleaser archives
 (`omo-webchat_<os>_<arch>.tar.gz`, `.zip` for Windows), `LICENSE`,
-`THIRD_PARTY_NOTICES.md`, and `checksums.txt`. All packages and archives are
-MIT licensed; see `LICENSE` and `THIRD_PARTY_NOTICES.md`.
+`THIRD_PARTY_NOTICES.md`, and `checksums.txt`. The original omo-webchat code
+and documentation are MIT licensed; see `LICENSE`. Bundled third-party
+software, fonts, and artwork retain their own copyrights, license conditions,
+patent terms, and disclaimers; see `THIRD_PARTY_NOTICES.md`. The app icon
+artwork is not covered by the MIT license, and nothing in these notices grants
+permission to redistribute or relicense it; rights must be obtained separately
+from its copyright holder.
 
 ## Pinned toolchain
 
@@ -42,7 +48,7 @@ consumers need (Node 18+ or Bun).
 
 ## Pipeline shape
 
-Two workflows implement the path:
+Three workflows implement the path:
 
 - `.github/workflows/package-ci.yaml` runs on every pull request and as the
   reusable validation workflow for releases. It never publishes.
@@ -72,20 +78,43 @@ Two workflows implement the path:
   4. `gate`: succeeds only when the build and all six native jobs succeeded,
      and exposes the immutable `artifact-id` and `source-commit` as outputs.
 
-- `.github/workflows/release.yaml` runs on `v*` tags. Its `validate` job is
-  `package-ci.yaml`. The `publish` job runs only when validation succeeded,
-  the ref is a `v*` tag, and the repository variable
-  `RELEASE_PUBLISH_ENABLED` is exactly `'true'`. It downloads the validated
-  artifact by ID (never rebuilds), re-verifies every byte with
-  `node npm/release.mjs verify --manifest release-artifacts/manifest.json`,
-  publishes to npm with provenance, then uploads the GitHub release assets
-  from the same manifest. Publication logs and the manifest are uploaded as
-  receipts on every outcome.
+- `.github/workflows/native-check.yaml` is the shared six-target native
+  matrix. `package-ci.yaml` calls it in default local mode, where the smoke
+  driver serves the exact packed tarballs through its localhost registry
+  fixture. It is also callable with `public-registry: true` and dispatchable
+  manually for read-only public verification (see below). It never publishes.
 
-Only the `publish` job holds `contents: write` and `id-token: write`, inside
-the `npm-release` GitHub environment. Everything else runs with
-`contents: read`. There is no long-lived npm token; npm authentication uses
-OIDC trusted publishing.
+- `.github/workflows/release.yaml` runs on `v*` tags and orders publication
+  after validation:
+
+  `validate -> publish (npm) -> public-native -> github-release`
+
+  1. `validate` is `package-ci.yaml`: contracts, one build/pack, six local
+     native consumers, and the gate.
+  2. `publish` runs only when validation succeeded, the ref is a `v*` tag,
+     and the repository variable `RELEASE_PUBLISH_ENABLED` is exactly
+     `'true'`. It downloads the validated artifact by ID (never rebuilds),
+     re-verifies every byte with
+     `node npm/release.mjs verify --manifest release-artifacts/manifest.json`,
+     and publishes to npm with provenance.
+  3. `public-native` calls `native-check.yaml` with `public-registry: true`
+     against the same artifact ID, running the six native consumers again
+     with real `npx`, `bunx`, and `bunx --bun` installs of the exact
+     published versions from `https://registry.npmjs.org`.
+  4. `github-release` downloads the same original artifact and uploads the
+     GitHub release assets from the same manifest, only after all six public
+     consumers succeeded.
+
+  Publication logs and the manifest are uploaded as receipts on every
+  outcome.
+
+Only the `publish` job holds `id-token: write`, inside the `npm-release`
+GitHub environment, and its contents permission is read. Only the
+`github-release` job holds `contents: write`, and it has no OIDC permission.
+The native jobs and their callers hold `contents: read` and `actions: read`
+for exact-artifact retrieval. Everything else runs with `contents: read`.
+There is no long-lived npm token; npm authentication uses OIDC trusted
+publishing.
 
 ## Release tool interfaces
 
@@ -111,11 +140,15 @@ node npm/release.mjs publish --manifest <file> --tag next|latest [--registry <ur
   and byte.
 - `publish` validates all local bytes and inspects every remote version
   before the first write. Platform packages publish first, the wrapper last.
-  A version that already exists with matching integrity and the requested
-  tag is resumed without a write; any integrity, identity, payload, or tag
-  mismatch fails. It never mutates dist-tags and never claims a tag moved.
-  Prerelease versions require `--tag next`, stable versions `--tag latest`;
-  the tool rejects a mismatch.
+  A version that already exists is not accepted on advertised integrity
+  alone: the tool anonymously fetches its actual `dist.tarball` bytes and
+  requires both the local-manifest SHA-256 and SHA-512 to match before
+  resuming it without a write. The same awaited byte check confirms each
+  newly accepted publication before the next package proceeds. Any
+  integrity, identity, payload, or tag mismatch fails. It never mutates
+  dist-tags and never claims a tag moved. Prerelease versions require
+  `--tag next`, stable versions `--tag latest`; the tool rejects a
+  mismatch.
 
 `npm/github-release.mjs --manifest <file>` re-verifies the same manifest and
 uploads the exact archives, notices, and checksums. It creates a draft,
@@ -135,6 +168,31 @@ makes the release public only after every byte is confirmed.
   skipped. This lets tags prepare and verify artifacts before the first
   package exists on npm.
 
+## Public verification of release candidates
+
+`native-check.yaml` also has a manual `workflow_dispatch` route for
+read-only verification of an already built artifact set against the public
+registry. All four inputs are required strings with no defaults:
+
+| Input | Value |
+|---|---|
+| `artifact-id` | The original `release-packages-<run>-<attempt>` Actions artifact ID (a positive decimal number, not a name) |
+| `run-id` | The original `release.yaml` tag-push workflow run ID |
+| `source-commit` | The original full 40-character lowercase commit SHA |
+| `source-ref` | The original complete version-tag ref, for example `refs/tags/v0.1.0-rc.1` |
+
+Dispatch at the original tag, not at a moving branch. The tag must contain
+this workflow, and the workflow must also exist on the default branch for
+GitHub to accept the dispatch. The route verifies the caller's SHA and ref
+against the inputs, confirms the artifact belongs to the original run, is
+unexpired, and comes from a build attempt whose `validate / gate` job
+succeeded, then runs the six native consumers against
+`https://registry.npmjs.org`. It has no publication switch, registry
+override, build step, npm OIDC permission, or contents-write permission, and
+`RELEASE_PUBLISH_ENABLED` does not affect it. It never publishes and never
+rebuilds; it checks that exact public versions install and run on all six
+platforms.
+
 ## First-time bootstrap (lead only)
 
 Performed once, by the maintainer, before the first public release:
@@ -150,23 +208,32 @@ Performed once, by the maintainer, before the first public release:
 3. Confirm the `npm-release` GitHub environment exists; the publish job
    references it for OIDC.
 4. Set the repository variable `RELEASE_PUBLISH_ENABLED` to `'true'`. Until
-   then, tag runs validate but never publish.
+   then, tag runs validate but never publish: the npm, public-native, and
+   GitHub publication jobs stay skipped while contracts, build/pack, and the
+   six local native consumers still run and produce a validated artifact.
+
+While publication is disabled, or after RC packages exist, the manual
+`native-check.yaml` dispatch above can verify those original artifacts
+against the public registry on all six hosts without publishing anything.
 
 After bootstrap, a normal release is: tag `vX.Y.Z` on the release commit,
-push, and watch release.yaml. A prerelease tag (`vX.Y.Z-rc.N`) publishes
-under `next`; a stable tag publishes under `latest`.
+push, and watch release.yaml. Validation runs first, then npm publication,
+then the six public native consumers, then the GitHub release. A prerelease
+tag (`vX.Y.Z-rc.N`) publishes under `next`; a stable tag publishes under
+`latest`.
 
 ## Resume without rebuild
 
 npm versions are immutable, so the pipeline never rebuilds to retry
 publication. On a failed publish job, use GitHub's "re-run failed jobs" on
-the same workflow run. The publish job downloads
+the same workflow run, not "re-run all jobs". The publish job downloads
 `needs.validate.outputs.artifact-id`, which is the original successful
-build's artifact, and `publish` skips versions already accepted by the
-registry with matching bytes. Artifacts are retained for 30 days; an expired
-artifact is not permission to rebuild an immutable version. The same
-manifest drives the GitHub asset upload, which resumes accepted assets
-without replacing them.
+build's artifact, and `publish` resumes a version already accepted by the
+registry only after fetching its remote tarball and confirming both SHA-256
+and SHA-512 match the manifest. Artifacts are retained for 30 days; an
+expired artifact is a hard failure, not permission to rebuild an immutable
+version. The same manifest drives the GitHub asset upload, which resumes
+accepted assets without replacing them.
 
 ## Local verification
 

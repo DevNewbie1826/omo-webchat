@@ -52,9 +52,11 @@ absolute path. Windows follows the same contract with the goreleaser zip
 
 ## Agent resolution (`CHAT_PI_BINARY`)
 
-The webchat server spawns an omo agent per chat. Before launching, the shim
-resolves the agent and injects it into the child environment as
-`CHAT_PI_BINARY`, in this precedence:
+The webchat server runs every chat as a logical session on one shared
+external omo process (`omo --mode rpc --multi-session`); it does not spawn a
+separate engine per chat. Before launching, the shim resolves the agent
+binary and injects it into the child environment as `CHAT_PI_BINARY`, in
+this precedence:
 
 1. `CHAT_PI_BINARY` if already set in your environment (used as-is);
 2. `omo` found on your `PATH`;

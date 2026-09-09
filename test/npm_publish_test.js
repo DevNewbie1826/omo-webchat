@@ -59,9 +59,18 @@ test('real npm publishes all six platforms before wrapper with next; matching re
   }
   const firstPut = ctx.registry.requests.findIndex((r) => r.method === 'PUT');
   assert.equal(new Set(ctx.registry.requests.slice(0, firstPut).filter((r) => r.method === 'GET').map((r) => r.path.split('/')[1])).size, 7, 'all remote versions preflight before first write');
+  for (const p of ctx.m.packages) {
+    const put = ctx.registry.requests.findIndex((r) => r.method === 'PUT' && r.path === `/${p.name}`);
+    const read = ctx.registry.requests.findIndex((r) => r.method === 'GET' && r.path === `/${p.name}/-/${p.file}`);
+    const nextPut = ctx.registry.requests.findIndex((r, i) => i > put && r.method === 'PUT');
+    assert.ok(read > put && (nextPut === -1 || read < nextPut), 'confirm actual accepted bytes before continuing');
+  }
   const count = ctx.events.length;
+  const resumeStart = ctx.registry.requests.length;
   ok(await publish(ctx));
   assert.equal(ctx.events.length, count);
+  assert.deepEqual(ctx.registry.requests.slice(resumeStart).filter((r) => r.path.includes('/-/')).map((r) => r.path),
+    ctx.m.packages.map((p) => `/${p.name}/-/${p.file}`), 'resume must fetch every existing tarball');
 });
 for (const mode of ['reject', 'disconnect-after-store']) {
   test(`real npm partial ${mode} preserves failure then resumes exact accepted versions`, options, async (t) => {
@@ -144,20 +153,125 @@ for (const status of [401, 403, 429, 500]) {
     assert.equal(ctx.events.length, 0);
   });
 }
-test('different real remote tarball bytes for the last immutable version prevent every write', options, async (t) => {
-  const ctx = await setup(t);
-  const { sync } = await helpers;
-  const last = ctx.m.packages.at(-1);
-  const dir = path.join(ctx.root, 'remote-mutation'); fs.mkdirSync(dir);
-  sync('tar', ['-xf', path.join(ctx.out, last.file), '-C', dir]);
-  fs.appendFileSync(path.join(dir, 'package/cli.js'), '\n// different real package bytes\n');
-  const npmCli = ctx.env.RELEASE_NPM_CLI || path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js');
-  const [packed] = JSON.parse(sync(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', dir], { cwd: path.join(dir, 'package'), env: ctx.env }));
-  const registry = await (await registryModule).createRegistry({ tarballs: [path.join(dir, packed.filename)] });
-  t.after(() => registry.close());
-  registry.packages.get(last.name)['dist-tags'] = { next: last.version };
-  failed(t, await publish(ctx, 'next', registry.url), /Remote immutable integrity/);
-  assert.equal(registry.requests.filter((r) => r.method === 'PUT').length, 0);
+for (const advertisedIntegrityLies of [false, true]) {
+  test(`different real remote tarball bytes for the last immutable version prevent every write; advertisedIntegrityLies=${advertisedIntegrityLies}`, options, async (t) => {
+    const ctx = await setup(t);
+    const { sync } = await helpers;
+    const last = ctx.m.packages.at(-1);
+    const dir = path.join(ctx.root, 'remote-mutation'); fs.mkdirSync(dir);
+    sync('tar', ['-xf', path.join(ctx.out, last.file), '-C', dir]);
+    fs.appendFileSync(path.join(dir, 'package/cli.js'), '\n// different real package bytes\n');
+    const npmCli = ctx.env.RELEASE_NPM_CLI || path.resolve(path.dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js');
+    const [packed] = JSON.parse(sync(process.execPath, [npmCli, 'pack', '--json', '--ignore-scripts', '--pack-destination', dir], { cwd: path.join(dir, 'package'), env: ctx.env }));
+    const registry = await (await registryModule).createRegistry({ tarballs: [path.join(dir, packed.filename)] });
+    t.after(async () => {
+      await registry.close();
+      await listenerRefused(registry.url);
+      t.diagnostic(JSON.stringify({ requests: registry.requests, cleanup: 'mutated registry joined; listener refused connection' }));
+    });
+    const doc = registry.packages.get(last.name);
+    doc['dist-tags'] = { next: last.version };
+    const stored = doc.versions[last.version];
+    const response = await fetch(stored.dist.tarball, { signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 200);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const actualSHA256 = createHash('sha256').update(bytes).digest('hex');
+    const actualIntegrity = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+    assert.notEqual(actualSHA256, last.sha256);
+    assert.notEqual(actualIntegrity, last.integrity);
+    if (advertisedIntegrityLies) stored.dist.integrity = last.integrity;
+    registry.requests.length = 0; // Exclude the independent control read.
+    fs.writeFileSync(ctx.env.npm_config_userconfig, `//${new URL(registry.url).host}/:_authToken=fixture-local-only\n`);
+    const result = await publish(ctx, 'next', registry.url);
+    t.diagnostic(JSON.stringify({ advertisedIntegrityLies, expectedSHA256: last.sha256, actualSHA256,
+      expectedIntegrity: last.integrity, actualIntegrity, advertisedIntegrity: stored.dist.integrity, result,
+      publisherTarballReads: registry.requests.filter((r) => r.path.includes('/-/')).length,
+      writes: registry.requests.filter((r) => r.method === 'PUT').length }));
+    failed(t, result, advertisedIntegrityLies ? /Remote tarball integrity mismatch/ : /Remote immutable integrity/);
+    assert.equal(registry.requests.filter((r) => r.method === 'PUT').length, 0);
+    if (advertisedIntegrityLies) assert.equal(registry.requests.filter((r) => r.path.includes('/-/')).length, 1);
+  });
+}
+async function listenerRefused(url) {
+  const socket = new net.Socket();
+  const refused = once(socket, 'error', { signal: AbortSignal.timeout(5000) });
+  socket.connect(new URL(url).port, '127.0.0.1');
+  try { assert.equal((await refused)[0].code, 'ECONNREFUSED'); } finally { socket.destroy(); }
+}
+async function tarballServer(t, handler) {
+  const requests = [];
+  const server = http.createServer({ requestTimeout: 10_000, headersTimeout: 5000 }, (req, res) => {
+    requests.push({ method: req.method, path: req.url, credentials: Boolean(req.headers.authorization || req.headers.cookie) });
+    handler(req, res);
+  });
+  server.setTimeout(10_000, (socket) => socket.destroy());
+  const listening = once(server, 'listening'); server.listen(0, '127.0.0.1'); await listening;
+  const url = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => {
+    const closed = new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    server.closeAllConnections(); await closed;
+    await listenerRefused(url);
+    t.diagnostic(JSON.stringify({ tarballRequests: requests, cleanup: 'tarball server joined; listener refused connection' }));
+  });
+  return { url, requests };
+}
+for (const phase of ['existing wrapper', 'newly stored platform']) {
+  for (const issue of ['missing URL', 'non-string URL', 'malformed URL', 'relative URL', 'non-HTTP URL', 'URL credentials', 'HTTP 404', 'HTTP 500', 'disconnect', 'truncated body', 'redirect', 'wrong bytes']) {
+    test(`remote tarball ${phase}: ${issue} stops publication`, options, async (t) => {
+      const existing = phase === 'existing wrapper';
+      const m = (await helpers).manifest(base);
+      const entry = existing ? m.packages.at(-1) : m.packages[0];
+      const ctx = await setup(t, existing ? { tarballs: [path.join(base.out, entry.file)] } : {});
+      const bytes = fs.readFileSync(path.join(ctx.out, entry.file));
+      const tarballs = await tarballServer(t, (req, res) => {
+        if (issue === 'disconnect') { req.socket.destroy(); return; }
+        if (issue === 'truncated body') {
+          res.writeHead(200, { 'content-length': bytes.length + 1, connection: 'close' }); res.end(bytes); return;
+        }
+        if (issue === 'redirect') { res.writeHead(302, { location: `${tarballs.url}/destination` }); res.end(); return; }
+        res.writeHead(issue === 'HTTP 404' ? 404 : issue === 'HTTP 500' ? 500 : 200);
+        res.end(issue === 'wrong bytes' ? Buffer.concat([bytes, Buffer.from('different')]) : bytes);
+      });
+      function corrupt() {
+        const doc = ctx.registry.packages.get(entry.name);
+        doc['dist-tags'] = { next: entry.version };
+        const dist = doc.versions[entry.version].dist;
+        dist.tarball = `${tarballs.url}/package.tgz`;
+        if (issue === 'missing URL') delete dist.tarball;
+        if (issue === 'non-string URL') dist.tarball = [dist.tarball];
+        if (issue === 'malformed URL') dist.tarball = 'http://[';
+        if (issue === 'relative URL') dist.tarball = '/package.tgz';
+        if (issue === 'non-HTTP URL') dist.tarball = `file://${path.join(ctx.out, entry.file)}`;
+        if (issue === 'URL credentials') dist.tarball = `${tarballs.url.replace('://', '://fixture:secret@')}/package.tgz`;
+      }
+      if (existing) corrupt();
+      else ctx.registry.events.once('publish', corrupt); // Storage precedes this exact event and confirmation follows it.
+      const result = await publish(ctx);
+      failed(t, result, issue.includes('URL') ? /Invalid remote tarball URL/ : issue.startsWith('HTTP') ? /Remote tarball HTTP/ : issue === 'wrong bytes' ? /Remote tarball integrity mismatch/ : /fetch failed|terminated/);
+      assert.equal(ctx.registry.requests.filter((r) => r.method === 'PUT').length, existing ? 0 : 1);
+      assert.equal(ctx.registry.packages.has('omo-webchat'), existing);
+      assert.equal(tarballs.requests.length, issue.includes('URL') ? 0 : 1);
+      assert.ok(tarballs.requests.every((r) => !r.credentials));
+    });
+  }
+}
+test('matching cross-origin tarball reads carry no registry credentials and precede all writes', options, async (t) => {
+  const m = (await helpers).manifest(base);
+  const last = m.packages.at(-1);
+  const ctx = await setup(t, { tarballs: [path.join(base.out, last.file)] });
+  const bytes = fs.readFileSync(path.join(ctx.out, last.file));
+  const tarballs = await tarballServer(t, (req, res) => {
+    assert.equal(ctx.events.length, 0, 'existing wrapper bytes must be read before any platform write');
+    res.end(bytes);
+  });
+  const doc = ctx.registry.packages.get(last.name);
+  doc['dist-tags'] = { next: last.version };
+  doc.versions[last.version].dist.tarball = `${tarballs.url}/package.tgz?download=fixture`;
+  // Even configured credentials for the tarball host must not reach byte reads.
+  fs.appendFileSync(ctx.env.npm_config_userconfig, `//${new URL(tarballs.url).host}/:_authToken=tarball-host-sentinel\n`);
+  (await helpers).ok(await publish(ctx));
+  assert.deepEqual(tarballs.requests, [{ method: 'GET', path: '/package.tgz?download=fixture', credentials: false }]);
+  assert.deepEqual(ctx.events.map((e) => e.name), ctx.m.packages.slice(0, 6).map((p) => p.name));
 });
 test('input changed during the final remote preflight is rejected before any npm write', options, async (t) => {
   const ctx = await setup(t);

@@ -96,7 +96,7 @@ bunx omo-webchat@latest --password <secret> --port <port> --root <root>
 
 안정 버전은 `latest` 태그, 프리릴리스(예: `0.1.0-rc.1`)는 `next` 태그로 배포됩니다. 릴리스 파이프라인과 게시 절차는 [docs/releasing.md](docs/releasing.md)를 참고하세요.
 
-> 릴리스 상태: 아직 공개 npm/GitHub 릴리스는 게시되지 않았습니다. 첫 공개 부트스트랩 절차는 docs/releasing.md에 정의되어 있습니다.
+> 릴리스 상태: 게시 여부는 시점에 따라 달라집니다. 설치하려는 버전이 공개되어 있는지 npm 패키지 페이지와 GitHub Releases에서 확인하세요. 게시 절차와 첫 공개 부트스트랩은 [docs/releasing.md](docs/releasing.md)에 정의되어 있습니다.
 
 ### 빠른 시작
 
@@ -213,7 +213,7 @@ bunx omo-webchat@latest --password <secret> --port <port> --root <root>
 
 Stable versions publish under the `latest` tag; prereleases (for example `0.1.0-rc.1`) publish under `next`. See [docs/releasing.md](docs/releasing.md) for the release pipeline and publication procedure.
 
-> Release status: no public npm/GitHub release has been published yet. The first public bootstrap procedure is defined in docs/releasing.md.
+> Release status: publication state changes over time. Check the npm package page and GitHub Releases to confirm the version you want is public before installing. The publication procedure and first-time bootstrap are defined in [docs/releasing.md](docs/releasing.md).
 
 ### Quick start
 
