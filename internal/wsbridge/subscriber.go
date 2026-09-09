@@ -11,7 +11,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
-const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity
+const preActivationBufferCapacity = session.DefaultQueueSize + 1 + session.SendOperationLedgerCapacity + session.NoticeJournalCapacity
 
 // subscriber buffers the complete attach-time replay plus the normal live-frame
 // headroom until the bridge publishes its binding. Durable history starts after
@@ -293,11 +293,17 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		delete(m, "kind")
 		at, _ := m["at"].(string)
 		delete(m, "at")
+		nid, _ := m["nid"].(string)
+		delete(m, "nid")
 		if at == "" {
 			at = time.Now().Format(time.RFC3339Nano)
 		}
 		payload, _ := json.Marshal(m)
-		return wscontract.NoticeFrame{Type: typ, SessionID: chatID, Kind: kind, At: at, Payload: payload}, nil
+		out := wscontract.NoticeFrame{Type: typ, SessionID: chatID, Kind: kind, At: at, Payload: payload}
+		if nid != "" {
+			out.Nid = &nid
+		}
+		return out, nil
 	case session.FrameApproval:
 		m := dataMap(f.Data)
 		m["id"] = firstNonempty(f.ApprovalID, stringField(m, "id"))

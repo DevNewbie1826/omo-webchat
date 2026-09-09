@@ -224,8 +224,13 @@ type Manager struct {
 	// (Config.RetiredRouteLimit): at the bound recovery refuses new
 	// retirements rather than evicting protection a publisher may need.
 	retiredRoutes map[retiringRoute]struct{}
-	pendingOpen   map[string]chan struct{}
-	openSlots     chan struct{}
+	// noticeJournals retains each chat's durable notices for attach-time
+	// replay. Journals are keyed by chat ID and deliberately outlive the
+	// Session (including idle provider eviction); only identity retirement
+	// (chat deletion) drops them.
+	noticeJournals map[string]*noticeJournal
+	pendingOpen    map[string]chan struct{}
+	openSlots      chan struct{}
 	// openSettled broadcasts detached-open settlement: the channel is
 	// closed and replaced under m.mu each time a retained detached open
 	// releases its slot, so waiters observe settlement without polling.
@@ -266,7 +271,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.RetiredRouteLimit = DefaultRetiredRouteLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -752,6 +757,7 @@ func (m *Manager) RetireIdentity(chatID string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
 	delete(m.operationOwners, chatID)
+	delete(m.noticeJournals, chatID)
 	m.mu.Unlock()
 }
 

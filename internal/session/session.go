@@ -1550,6 +1550,13 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, outcome)
 		}
 	}
+	// Journaled durable notices replay on every attach, after the retained
+	// send outcomes, so each connection observes the same advisory history.
+	// lifecycleMu excludes concurrent publication, so replay cannot race or
+	// duplicate a live notice frame.
+	if s.manager != nil {
+		initial = append(initial, s.manager.noticeReplay(s.chatID)...)
+	}
 	queueSize := s.queueSize
 	if queueSize < len(initial) {
 		queueSize = len(initial)
@@ -1818,6 +1825,11 @@ func (s *Session) summaryLocked() Summary {
 	}
 }
 func (s *Session) publishLocked(f Frame) {
+	if f.Kind == FrameNotice && s.manager != nil {
+		// Journal exactly once per logical publish, before broadcaster fanout,
+		// stamping the replay identity every delivery and replay reuses.
+		f = s.manager.journalNotice(s.chatID, f)
+	}
 	if f.Kind == FrameReady {
 		s.readyPublished = true
 	}
