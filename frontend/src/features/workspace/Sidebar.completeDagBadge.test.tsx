@@ -196,6 +196,19 @@ describe("Sidebar complete-DAG badge recovery", () => {
     expect(dagRunsCalls().length).toBe(afterFirstCycle);
   });
 
+  it("keeps task-oversized badges unknown after successful DAG recovery", async () => {
+    controlDagRuns();
+    render(partial, { taskOversized: true });
+    expect(sessionBadge()?.textContent).toBe("?");
+    expect(workspaceBadge()?.textContent).toBe("?");
+    await resolveRequest(DAG_RUNS, catalog);
+    await resolveRequest(`${DAG_RUNS}/r1`, completeDoc);
+    expect(sessionBadge()?.textContent).toBe("?");
+    expect(sessionBadge()?.getAttribute("title")).toBe("sidebar.tm.runningAgentsUnknown");
+    expect(workspaceBadge()?.textContent).toBe("?");
+    expect(workspaceBadge()?.getAttribute("title")).toBe("sidebar.ws.runningAgentsUnknown");
+  });
+
   it("keeps an unknown question-mark badge after DAG retrieval fails", async () => {
     controlDagRuns();
     render(null, { dagOversized: true });

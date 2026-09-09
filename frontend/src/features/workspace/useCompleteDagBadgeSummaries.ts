@@ -221,6 +221,22 @@ function dagContentDigest(runs: readonly ActivityDagRun[]): string {
   return `${fields}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+function dagDigestFingerprint(summary: LiveSessionSummary): string | null {
+  const digest = summary.dagDigest;
+  if (digest === undefined) return null;
+  return JSON.stringify([
+    digest.receivedAt ?? null,
+    digest.truncated,
+    digest.runs.length,
+    digest.runs.map((run) => [
+      run.runId,
+      run.status,
+      run.runningTaskIds.length,
+      ...run.runningTaskIds,
+    ]),
+  ]);
+}
+
 type ParsedDag = NonNullable<ReturnType<typeof parseDagUpdated>>;
 
 /** DAG-only sources of the combined summary qualification. Keep this aligned
@@ -276,6 +292,7 @@ function recoveryTargets(summaries: readonly LiveSessionSummary[], workspaces: r
         envelopePartial,
         parsed === null ? "malformed" : dagContentDigest(parsed.runs),
         parsed?.truncatedRuns === true,
+        dagDigestFingerprint(summary),
       ]),
       dag: summary.dag,
       catalogMembership: truncatedMembership || summary.dagSideOversized,

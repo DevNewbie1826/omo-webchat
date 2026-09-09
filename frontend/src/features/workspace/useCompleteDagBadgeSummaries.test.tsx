@@ -198,8 +198,22 @@ describe("useCompleteDagBadgeSummaries", () => {
     const newer = { runs: [{ ...fullRun, nodes: [nodeA], edges: [], updated_at: "2026-09-08T10:00:30Z" }], partial: true };
     renderWith([summaryOf(newer)]);
     await resolveRequest(DAG_RUNS, catalog);
-    await rejectRequest(`${DAG_RUNS}/r1`, 409);
+    await resolveRequest(`${DAG_RUNS}/r1`, completeDoc);
     expect(dagRunsCalls().length).toBe(afterFirstCycle + 2);
+    expect(latest[0]).toMatchObject({ runningCount: 1, truncatedTasks: true });
+  });
+
+  it("keeps the qualified count when a replacement document request responds 409", async () => {
+    controlDagRuns();
+    renderWith([summaryOf(partial)]);
+    await recoverOne();
+    const newer = {
+      runs: [{ ...fullRun, nodes: [nodeA], edges: [], updated_at: "2026-09-08T10:00:30Z" }],
+      partial: true,
+    };
+    renderWith([summaryOf(newer)]);
+    await resolveRequest(DAG_RUNS, catalog);
+    await rejectRequest(`${DAG_RUNS}/r1`, 409);
     expect(latest[0]).toMatchObject({ runningCount: 1, truncatedTasks: true });
   });
 
@@ -230,6 +244,33 @@ describe("useCompleteDagBadgeSummaries", () => {
     expect(latest[0]).toMatchObject({ runningCount: 2, truncatedTasks: true });
     expect(dagRunsCalls()).toHaveLength(3);
     for (let poll = 0; poll < 3; poll++) renderWith([summaryOf(changed)]);
+    expect(dagRunsCalls()).toHaveLength(3);
+  });
+
+  it("replaces digest-backed recovery when an oversized DAG digest revision changes", async () => {
+    controlDagRuns();
+    const firstDigest = {
+      runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1"] }],
+      truncated: true,
+      receivedAt: "2026-09-08T10:00:00Z",
+    };
+    renderWith([summaryOf(null, { dagOversized: true, dagDigest: firstDigest })]);
+    expect(latest[0]).toMatchObject({ runningCount: 1, truncatedTasks: true });
+    await recoverOne();
+    expect(latest[0]).toMatchObject({ runningCount: 2, truncatedTasks: false });
+
+    const revisedDigest = {
+      runs: [{ runId: "r2", status: "running", runningTaskIds: ["t3"] }],
+      truncated: true,
+      receivedAt: "2026-09-08T10:01:00Z",
+    };
+    const revisedSummary = summaryOf(null, { dagOversized: true, dagDigest: revisedDigest });
+    renderWith([revisedSummary]);
+    expect(latest[0]).toMatchObject({ runningCount: 1, truncatedTasks: true });
+    expect(dagRunsCalls()).toHaveLength(3);
+    await rejectRequest(DAG_RUNS, 404);
+    expect(latest[0]).toMatchObject({ runningCount: 1, truncatedTasks: true });
+    for (let poll = 0; poll < 3; poll++) renderWith([revisedSummary]);
     expect(dagRunsCalls()).toHaveLength(3);
   });
 
@@ -280,6 +321,21 @@ describe("useCompleteDagBadgeSummaries", () => {
     await resolveRequest(`${DAG_RUNS}/r1`, completeDoc);
     await recovered;
     expect(latest[0]).toMatchObject({ runningCount: 2, truncatedTasks: true });
+  });
+
+  it("recovers the DAG count while task oversizing remains unknown", async () => {
+    controlDagRuns();
+    renderWith([summaryOf(partial, { taskOversized: true })]);
+    await resolveRequest(DAG_RUNS, catalog);
+    const recovered = waitForSummary((summaries) => summaries[0]?.runningCount === 2);
+    await resolveRequest(`${DAG_RUNS}/r1`, completeDoc);
+    await recovered;
+    expect(latest[0]).toMatchObject({
+      runningCount: 2,
+      truncatedTasks: false,
+      taskOversized: true,
+      dagOversized: false,
+    });
   });
 
   it("keeps an unknown DAG summary after retrieval failure", async () => {
