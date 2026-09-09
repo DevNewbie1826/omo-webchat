@@ -106,4 +106,83 @@ describe("useChatSession recovery states", () => {
 		);
 		expect(harness.current?.recovery).toBeNull();
 	});
+
+	// Server-driven recovery: an RPC loss keeps the browser socket open, so
+	// provider_disconnected — not a close/open pair — starts the cycle, and the
+	// automatic rebinding replay's ready completes it without any user action.
+	it("starts reconnecting on provider_disconnected while the socket stays open", () => {
+		act(() => ready(false));
+		expect(harness.current?.recovery).toBeNull();
+
+		act(() =>
+			harness.deliver({
+				type: "error",
+				sessionId: session.id,
+				code: "provider_disconnected",
+				message: "provider connection lost",
+			}),
+		);
+		expect(harness.current?.recovery?.phase).toBe("reconnecting");
+	});
+
+	it("recovers from a server-driven cycle on the rebinding replay's ready", () => {
+		act(() => ready(false));
+		act(() =>
+			harness.deliver({
+				type: "error",
+				sessionId: session.id,
+				code: "provider_disconnected",
+				message: "provider connection lost",
+			}),
+		);
+		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("recovered");
+	});
+
+	it("marks a server-driven cycle incomplete when the automatic resume fails", () => {
+		act(() => ready(false));
+		act(() =>
+			harness.deliver({
+				type: "error",
+				sessionId: session.id,
+				code: "provider_disconnected",
+				message: "provider connection lost",
+			}),
+		);
+		act(() =>
+			harness.deliver({
+				type: "error",
+				sessionId: session.id,
+				code: "resume_failed",
+				message: "session is active in another process",
+			}),
+		);
+		expect(harness.current?.recovery?.phase).toBe("incomplete");
+		expect(harness.current?.recovery?.reason).toBe(
+			"session is active in another process",
+		);
+
+		// A late replay ready must not re-report the failure as a success.
+		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("incomplete");
+	});
+
+	it("starts a fresh server-driven cycle on the next provider_disconnected", () => {
+		act(() => ready(false));
+		const loss = () =>
+			harness.deliver({
+				type: "error",
+				sessionId: session.id,
+				code: "provider_disconnected",
+				message: "provider connection lost",
+			});
+		act(() => loss());
+		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("recovered");
+
+		act(() => loss());
+		expect(harness.current?.recovery?.phase).toBe("reconnecting");
+		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("recovered");
+	});
 });

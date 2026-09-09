@@ -151,4 +151,54 @@ describe("ChatPane recovery states", () => {
 		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("incomplete");
 		expect(recoveryItem()?.className).toContain("th-chat-status-item--warn");
 	});
+
+	// Server-driven recovery: an RPC loss keeps the browser socket open and
+	// arrives as provider_disconnected; the automatic rebinding replay (or the
+	// mapped resume failure) is the only further signal the pane receives.
+	const providerLoss = () =>
+		deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "provider_disconnected",
+			message: "provider connection lost",
+		});
+	const transientError = () =>
+		container.querySelector<HTMLElement>(".th-chat-error");
+
+	it("renders reconnecting on provider_disconnected without a socket close", () => {
+		act(() => ready(false));
+		act(() => providerLoss());
+		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("reconnecting");
+		// The recovery item is the loss surface; no stale transient error text.
+		expect(transientError()).toBeNull();
+	});
+
+	it("renders recovered after the automatic rebinding replay, with no stale loss text", () => {
+		act(() => ready(false));
+		act(() => providerLoss());
+		act(() => ready(true));
+		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("recovered");
+		expect(recoveryItem()?.className).toContain("th-chat-status-item--live");
+		expect(transientError()).toBeNull();
+	});
+
+	it("renders a warning when the automatic server-side resume fails", () => {
+		act(() => ready(false));
+		act(() => providerLoss());
+		act(() =>
+			deliver({
+				type: "error",
+				sessionId: "chat-1",
+				code: "resume_failed",
+				message: "session is active in another process",
+			}),
+		);
+		const item = recoveryItem();
+		expect(item?.dataset["recoveryPhase"]).toBe("incomplete");
+		expect(item?.className).toContain("th-chat-status-item--warn");
+		expect(item?.textContent).toContain("chat.recoveryIncomplete");
+		expect(item?.textContent).toContain(
+			"session is active in another process",
+		);
+	});
 });

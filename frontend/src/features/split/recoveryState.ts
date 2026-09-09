@@ -35,6 +35,19 @@ export function recoveryAfterClose(
 	return wasOpen ? { phase: "reconnecting" } : current;
 }
 
+/**
+ * Server-observed transport loss (provider_disconnected). The browser socket
+ * stays open while the server re-establishes the provider connection and
+ * reconciles this chat, so no close/open pair ever marks the cycle. The frame
+ * is only published for a live session whose transport epoch died, and a
+ * repeat frame means a new loss: both restart the cycle at reconnecting.
+ */
+export function recoveryAfterProviderLoss(
+	current: RecoveryState | null,
+): RecoveryState | null {
+	return { phase: "reconnecting" };
+}
+
 /** Transport re-established; the rebinding replay is now pending. */
 export function recoveryAfterOpen(
 	current: RecoveryState | null,
@@ -45,20 +58,29 @@ export function recoveryAfterOpen(
 /**
  * The rebinding replay's ready frame completed the recovery. An incomplete
  * recovery is never flipped to recovered: the warning outlives late frames.
+ * A server-driven cycle has no socket-open beat, so its replay ready arrives
+ * while still reconnecting; both pre-replay phases complete here.
  */
 export function recoveryAfterReady(
 	current: RecoveryState | null,
 ): RecoveryState | null {
-	return current?.phase === "resuming" ? { phase: "recovered" } : current;
+	return current?.phase === "resuming" || current?.phase === "reconnecting"
+		? { phase: "recovered" }
+		: current;
 }
 
-/** A mapped resume failure during the recovery window marks it incomplete. */
+/**
+ * A mapped resume failure during the recovery window marks it incomplete.
+ * In a server-driven cycle the resume-failure frame is itself the first
+ * post-loss signal, so it lands while still reconnecting; only a cycle that
+ * never started (initial attach) keeps the failure an ordinary error.
+ */
 export function recoveryAfterError(
 	current: RecoveryState | null,
 	code: string | undefined,
 	message: string,
 ): RecoveryState | null {
-	if (current === null || current.phase === "reconnecting") return current;
+	if (current === null) return current;
 	if (code === undefined || !RECOVERY_INCOMPLETE_CODES.has(code)) return current;
 	return { phase: "incomplete", reason: message };
 }

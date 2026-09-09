@@ -30,6 +30,7 @@ import {
   recoveryAfterClose,
   recoveryAfterError,
   recoveryAfterOpen,
+  recoveryAfterProviderLoss,
   recoveryAfterReady,
   type RecoveryState,
 } from "./recoveryState";
@@ -423,10 +424,16 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
 
   // Recovery observation wraps the frame handler: the ready replay and the
   // mapped resume-failure errors are the recovery-state surface, and both
-  // must be seen even when the handler itself early-returns on them.
+  // must be seen even when the handler itself early-returns on them. A
+  // provider_disconnected error is the server-observed transport loss: the
+  // browser socket stays open, so it is the only cycle start that flow gets.
   const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
     if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current));
-    else if (frame.type === "error") applyRecovery(recoveryAfterError(recoveryRef.current, frame.code, frame.message));
+    else if (frame.type === "error") {
+      applyRecovery(frame.code === "provider_disconnected"
+        ? recoveryAfterProviderLoss(recoveryRef.current)
+        : recoveryAfterError(recoveryRef.current, frame.code, frame.message));
+    }
     return baseHandleFrame(frame, connectionGeneration);
   };
 
