@@ -17,6 +17,7 @@ import { SendErrorBanner } from "./SendErrorBanner";
 import { ModelPicker } from "./ModelPicker";
 import { QueuePanel } from "./QueuePanel";
 import { ChatTranscript } from "./ChatTranscript";
+import { hasRenderableContent } from "./chatEntries";
 import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
 import { sendErrorDetail } from "./useChatFrameHandler";
@@ -75,7 +76,15 @@ export function ChatPane({
   // Send-path command failures surface in the persistent banner below, so
   // they never also render as transcript notice blocks.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
+    () => mergeTranscriptItems(
+      // Zero-block assistant completions stay in transcript state (they anchor
+      // current-turn tool results for run.done materialization) but render no
+      // blank row. Filtering here — before the merge and row keying, for the
+      // history and live paths alike — keys later virtualized rows exactly as
+      // if the empty message never existed, so no later row remounts.
+      chat.messages.filter(hasRenderableContent),
+      chat.historyStatus !== "loading" ? chat.notices : [],
+    ),
     [chat.messages, chat.notices, chat.historyStatus],
   );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);

@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { concatEntries, parseEntries } from "./chatEntries";
+import { concatEntries, hasRenderableContent, parseEntries } from "./chatEntries";
 
 describe("concatEntries", () => {
 	it("flattens page arrays in order and ignores non-arrays", () => {
 		expect(concatEntries([[{ a: 1 }], [{ b: 2 }, { c: 3 }], "nope"])).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }]);
+	});
+});
+
+describe("hasRenderableContent", () => {
+	it("treats only zero-block assistant messages as non-renderable", () => {
+		expect(hasRenderableContent({ role: "assistant", blocks: [] })).toBe(false);
+		expect(hasRenderableContent({ role: "user", blocks: [] })).toBe(true);
+		// A message whose blocks became non-empty via tool folding anchors
+		// tool output and must still render.
+		expect(hasRenderableContent({
+			role: "assistant",
+			blocks: [{ kind: "tool", id: "t1", name: "lookup", text: "out" }],
+		})).toBe(true);
+		expect(hasRenderableContent({
+			role: "custom",
+			blocks: [{ kind: "text", text: "hook" }],
+		})).toBe(true);
 	});
 });
 

@@ -121,6 +121,12 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
   messages.push({ ...(typeof entryId === "string" ? { id: entryId } : {}), role: "assistant", blocks: [result], ts: 0 });
 }
 
+/** Zero-renderable-block assistant messages are omitted from rendering.
+ * Used at two coexisting seams: parseEntries skips them when restoring
+ * history (state never holds restored empties), and the ChatPane transcript
+ * build filters them from live state (whose empties are kept — they anchor
+ * current-turn tool results). Any message with blocks — including one made
+ * non-empty by tool-result folding — counts as renderable. */
 export function hasRenderableContent(message: AssistantMessage): boolean {
   return !(message.role === "assistant" && (message.blocks ?? []).length === 0);
 }
