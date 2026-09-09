@@ -10,6 +10,7 @@ import { useT } from "../../i18n";
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
+import { hasRenderableContent } from "./chatEntries";
 import type { ToolEntry } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
@@ -178,10 +179,27 @@ export function ChatTranscript({
     }
   }, [historyToolIds, toolCalls]);
 
-  const itemKeys = useMemo(() => transcriptItemKeys(items), [items]);
+  // Row identity is assigned over the FULL merged list before any hiding:
+  // an empty assistant completion (invisible but state-retained as a
+  // current-turn tool anchor) permanently occupies its message ordinal, so
+  // it materializing a tool row — or appearing or disappearing — never
+  // shifts any other row's key and no visible row remounts. Only after
+  // identity assignment are zero-renderable-block rows hidden from the
+  // virtualized window.
+  const { rows, keys } = useMemo(() => {
+    const allKeys = transcriptItemKeys(items);
+    const rows: TranscriptItem[] = [];
+    const keys: string[] = [];
+    items.forEach((item, index) => {
+      if (item.kind === "message" && !hasRenderableContent(item.message)) return;
+      rows.push(item);
+      keys.push(allKeys[index] ?? `missing:${index}`);
+    });
+    return { rows, keys };
+  }, [items]);
   const virtualizer = useVirtualizer({
-    count: items.length,
-    getItemKey: (index) => itemKeys[index] ?? `missing:${index}`,
+    count: rows.length,
+    getItemKey: (index) => keys[index] ?? `missing:${index}`,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 80,
     overscan: 4,
@@ -191,21 +209,21 @@ export function ChatTranscript({
   });
 
   useEffect(() => {
-    if (focused && items.length > 0) {
-      virtualizer.scrollToIndex(items.length - 1, { align: "end" });
+    if (focused && rows.length > 0) {
+      virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
     }
-  }, [focused, restoreVersion, items.length, virtualizer]);
+  }, [focused, restoreVersion, rows.length, virtualizer]);
 
   return (
     <div className="th-chat-scrollport">
       <div className="th-chat-body" ref={scrollRef} onScroll={onScroll}>
         <div className="th-chat-content" ref={contentRef}>
-          {!historyLoaded && items.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
+          {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
           )}
           <div className="th-chat-history" style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((virtualItem) => {
-              const item = items[virtualItem.index];
+              const item = rows[virtualItem.index];
               if (!item) return null;
               if (item.kind === "notice") {
                 return (
@@ -226,7 +244,7 @@ export function ChatTranscript({
                   key={virtualItem.key}
                   data-index={virtualItem.index}
                   ref={virtualizer.measureElement}
-                  className={`th-chat-row th-chat-row--${message.role}${userTurnStart(items, virtualItem.index) ? " th-chat-row--turn-start" : ""}`}
+                  className={`th-chat-row th-chat-row--${message.role}${userTurnStart(rows, virtualItem.index) ? " th-chat-row--turn-start" : ""}`}
                   style={{ position: "absolute", top: 0, transform: `translateY(${virtualItem.start}px)` }}
                 >
                   <div

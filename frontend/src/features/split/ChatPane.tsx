@@ -75,7 +75,17 @@ export function ChatPane({
   // Send-path command failures surface in the persistent banner below, so
   // they never also render as transcript notice blocks.
   const transcriptItems = useMemo(
-    () => mergeTranscriptItems(chat.messages, chat.historyStatus !== "loading" ? chat.notices : []),
+    () => mergeTranscriptItems(
+      // Zero-block assistant completions stay in transcript state (they anchor
+      // current-turn tool results for run.done materialization, live and
+      // restored alike) and therefore flow into the merged list unfiltered,
+      // preserving notice placement around the authoritative message order.
+      // ChatTranscript derives row identity from this unfiltered list and only
+      // then hides blank rows, so an empty anchor appearing or disappearing
+      // never shifts any other row's key — visible rows never remount.
+      chat.messages,
+      chat.historyStatus !== "loading" ? chat.notices : [],
+    ),
     [chat.messages, chat.notices, chat.historyStatus],
   );
   const currentModel = chat.models.find((model) => `${model.provider}/${model.modelId}` === chat.currentModelKey);

@@ -6,7 +6,7 @@ import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./ac
 import type { ActivityState } from "./activityTypes";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
-import { type UiMessage } from "./chatEntries";
+import type { UiMessage } from "./chatEntries";
 import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
@@ -243,6 +243,12 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "message": {
+        // Every non-toolResult completion is appended unconditionally
+        // (observed engine contract): an empty assistant completion still
+        // anchors current-turn tool results when run.done materializes them,
+        // and it must complete the streaming/thinking cleanup. Zero-block
+        // assistant messages render no transcript row — that filtering is
+        // owned by the presentation seam (ChatPane), not transcript state.
         if (frame.message.role === "toolResult") return;
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(

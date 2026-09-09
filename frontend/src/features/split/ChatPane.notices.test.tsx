@@ -79,7 +79,7 @@ describe("ChatPane notice frames", () => {
     expect(container.textContent).toContain("n2");
   });
 
-  it("keeps notices mounted while later lifecycle frames arrive, showing the translated label", () => {
+  it("keeps notices mounted while later lifecycle frames arrive, showing the raw kind", () => {
     const { deliver } = renderChatPane(root, chatSession, realI18n("en"));
 
     act(() => {
@@ -90,12 +90,12 @@ describe("ChatPane notice frames", () => {
     });
 
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("Auto retry started");
-    expect(container.textContent).not.toContain("auto_retry_start");
-    expect(container.textContent).not.toContain("notice.autoRetryStarted");
+    expect(container.textContent).toContain("auto_retry_start");
+    expect(container.textContent).not.toContain("Auto retry started");
+    expect(container.textContent).not.toContain(translate("en", "notice.autoRetryStarted"));
   });
 
-  it("renders the auto-retry notice with the ko locale's translated label", () => {
+  it("renders the auto-retry notice with the raw kind under the ko locale", () => {
     const { deliver } = renderChatPane(root, chatSession, realI18n("ko"));
 
     act(() => {
@@ -104,8 +104,8 @@ describe("ChatPane notice frames", () => {
     });
 
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("자동 재시도 시작");
-    expect(container.textContent).not.toContain("auto_retry_start");
-    expect(container.textContent).not.toContain("notice.autoRetryStarted");
+    expect(container.textContent).toContain("auto_retry_start");
+    expect(container.textContent).not.toContain("자동 재시도 시작");
+    expect(container.textContent).not.toContain(translate("ko", "notice.autoRetryStarted"));
   });
 });

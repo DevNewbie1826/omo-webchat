@@ -70,7 +70,9 @@ describe("ChatPane in-transcript notices", () => {
     const block = container.querySelector(".th-chat-history .th-chat-notice");
     expect(block).not.toBeNull();
     expect(block?.textContent).toContain("notice.system");
+    expect(block?.textContent).toContain("auto_retry_start");
     expect(block?.textContent).toContain("n1");
+    expect(block?.textContent).not.toContain("notice.autoRetryStarted");
     const texts = rowTexts(container);
     const early = texts.findIndex((text) => text.includes("early"));
     const notice = texts.findIndex((text) => text.includes("n1"));
