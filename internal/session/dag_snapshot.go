@@ -18,9 +18,10 @@ type dagFreshness struct {
 }
 
 type dagSnapshotCache struct {
-	runs      map[[sha256.Size]byte]dagFreshness
-	clock     uint64
-	oversized bool
+	runs         map[[sha256.Size]byte]dagFreshness
+	runningCount int
+	clock        uint64
+	oversized    bool
 }
 
 type dagSnapshotResult struct {
@@ -90,6 +91,9 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	}
 	incomingTruncated, _ := parseOptionalBool(doc, "truncated_runs")
 	truncated := incomingTruncated
+	// Provider-declared complete membership is the only basis for exact scalars;
+	// webchat-side bounds never change it.
+	fullMembership := !incomingTruncated
 	if c.runs == nil {
 		c.runs = make(map[[sha256.Size]byte]dagFreshness)
 	}
@@ -186,6 +190,10 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 		return dagSnapshotResult{}, err
 	}
 	digest, _ := parseDagDigest(live)
+	if fullMembership {
+		c.runningCount = incomingDagRunningCount(incoming)
+	}
+	digest.RunningCount = c.runningCount
 	if previousDigest != nil {
 		for _, row := range previousDigest.Runs {
 			if missing[sha256.Sum256([]byte(row.RunID))] {
@@ -218,6 +226,30 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 		}
 	}
 	return result, nil
+}
+
+// incomingDagRunningCount sums running nodes over every non-terminal run of a
+// complete provider snapshot. Node states decide, so nodes without task IDs
+// still count, and all runs are summed.
+func incomingDagRunningCount(runs []json.RawMessage) int {
+	running := 0
+	for _, raw := range runs {
+		var row struct {
+			Status string `json:"status"`
+			Nodes  []struct {
+				State string `json:"state"`
+			} `json:"nodes"`
+		}
+		if json.Unmarshal(raw, &row) != nil || terminalDagStatuses[row.Status] {
+			continue
+		}
+		for _, node := range row.Nodes {
+			if node.State == "running" {
+				running++
+			}
+		}
+	}
+	return running
 }
 
 func (c *dagSnapshotCache) incumbent(raw json.RawMessage, digest *DagDigest) dagSnapshotResult {

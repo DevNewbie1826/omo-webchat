@@ -365,7 +365,9 @@
       "additionalProperties": false,
       "required": [
         "tasks",
-        "truncated"
+        "truncated",
+        "running_count",
+        "total_count"
       ],
       "properties": {
         "tasks": {
@@ -376,6 +378,14 @@
         },
         "truncated": {
           "type": "boolean"
+        },
+        "running_count": {
+          "type": "integer",
+          "description": "Exact running tasks over the full pre-truncation roster; independent of the truncated tasks list."
+        },
+        "total_count": {
+          "type": "integer",
+          "description": "Exact task total over the full pre-truncation roster; independent of the truncated tasks list."
         },
         "received_at": {
           "type": "string"
@@ -410,7 +420,8 @@
       "additionalProperties": false,
       "required": [
         "runs",
-        "truncated"
+        "truncated",
+        "running_count"
       ],
       "properties": {
         "runs": {
@@ -421,6 +432,10 @@
         },
         "truncated": {
           "type": "boolean"
+        },
+        "running_count": {
+          "type": "integer",
+          "description": "Exact running nodes summed over all non-terminal runs of the full pre-truncation graph; independent of the truncated runs list."
         },
         "received_at": {
           "type": "string"

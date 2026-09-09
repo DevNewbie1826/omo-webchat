@@ -25,10 +25,11 @@ type taskOutcomeEvidence struct {
 }
 
 type taskSnapshotCache struct {
-	tasks                map[[sha256.Size]byte]taskFreshness
-	outcomes             map[taskOutcomeKey]taskOutcomeEvidence
-	clock, evidenceClock uint64
-	oversized            bool
+	tasks                    map[[sha256.Size]byte]taskFreshness
+	runningCount, totalCount int
+	outcomes                 map[taskOutcomeKey]taskOutcomeEvidence
+	clock, evidenceClock     uint64
+	oversized                bool
 }
 
 type taskSnapshotResult struct {
@@ -79,6 +80,10 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		}
 		return c.incumbent(previous, previousDigest)
 	}
+	// A provider flag of false declares complete membership, so scalars derived
+	// from these rows are exact no matter which rows the digest later drops.
+	// Webchat-side size bounds never change that declaration.
+	fullMembership := !partial
 	partial = partial || len(data) > maxActivitySnapshotBytes || len(incoming) > maxActivityDigestEntries
 	// Structural row loss is incomplete membership. Invalid clocks are not row loss.
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
@@ -205,6 +210,10 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		}
 	}
 	doc["tasks"], _ = json.Marshal(rows)
+	if fullMembership {
+		c.runningCount, c.totalCount = incomingTaskCounts(incoming)
+	}
+	digest.RunningCount, digest.TotalCount = c.runningCount, c.totalCount
 	if partial {
 		doc["truncated_tasks"] = json.RawMessage("true")
 	}
@@ -221,6 +230,36 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		result.replay = nil
 	}
 	return result
+}
+
+// incomingTaskCounts mirrors merge admission for duplicate IDs within one
+// snapshot: a known clock keeps its row against equal-or-older revisions, and
+// an unknown clock always yields to the next row. The result is the exact
+// pre-truncation membership declared by a complete provider snapshot.
+func incomingTaskCounts(incoming []map[string]json.RawMessage) (running, total int) {
+	type revision struct {
+		known   bool
+		millis  int64
+		running bool
+	}
+	winners := make(map[string]revision, len(incoming))
+	for _, row := range incoming {
+		id, next, ok := taskRowIdentity(row)
+		if !ok {
+			continue
+		}
+		current, exists := winners[id]
+		if exists && current.known && (!next.known || next.millis <= current.millis) {
+			continue
+		}
+		winners[id] = revision{known: next.known, millis: next.millis, running: rawString(row["status"]) == "running"}
+	}
+	for _, winner := range winners {
+		if winner.running {
+			running++
+		}
+	}
+	return running, len(winners)
 }
 
 func (c *taskSnapshotCache) incumbent(raw json.RawMessage, digest *TaskDigest) taskSnapshotResult {
@@ -307,6 +346,12 @@ func (c *taskSnapshotCache) reconcile(raw json.RawMessage, digest *TaskDigest) (
 			row := &digest.Tasks[i]
 			correction := c.tasks[sha256.Sum256([]byte(row.TaskID))].correction
 			if correction != "" && !terminalTaskStatuses[row.Status] {
+				if row.Status == "running" && c.runningCount > 0 {
+					c.runningCount--
+				}
+				if row.Status == "running" && digest.RunningCount > 0 {
+					digest.RunningCount--
+				}
 				row.RawStatus, row.Status = row.Status, correction
 			}
 		}

@@ -69,6 +69,8 @@
         "updated_at": "2026-09-07T10:02:00.000Z"
       }
     ],
-    "truncated": true
+    "truncated": true,
+    "running_count": 0,
+    "total_count": 1
   }
 }

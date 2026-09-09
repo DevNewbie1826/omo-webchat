@@ -301,7 +301,7 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 				tasks[i].UpdatedAt = &task.UpdatedAt
 			}
 		}
-		frame.TaskDigest = &wscontract.TaskDigest{Tasks: tasks, Truncated: digest.Truncated}
+		frame.TaskDigest = &wscontract.TaskDigest{Tasks: tasks, Truncated: digest.Truncated, RunningCount: int64(digest.RunningCount), TotalCount: int64(digest.TotalCount)}
 		if digest.ReceivedAt != "" {
 			frame.TaskDigest.ReceivedAt = &digest.ReceivedAt
 		}
@@ -311,7 +311,7 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 		for i, run := range digest.Runs {
 			runs[i] = wscontract.RunDigestEntry{RunID: run.RunID, Status: run.Status, RunningTaskIds: append([]string(nil), run.RunningTaskIDs...)}
 		}
-		frame.DagDigest = &wscontract.DagDigest{Runs: runs, Truncated: digest.Truncated}
+		frame.DagDigest = &wscontract.DagDigest{Runs: runs, Truncated: digest.Truncated, RunningCount: int64(digest.RunningCount)}
 		if digest.ReceivedAt != "" {
 			frame.DagDigest.ReceivedAt = &digest.ReceivedAt
 		}

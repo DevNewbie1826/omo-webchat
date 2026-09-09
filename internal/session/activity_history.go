@@ -520,6 +520,51 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 	return truncated, nil
 }
 
+// fullTaskCounts derives exact pre-truncation running/total scalars from the
+// complete store membership before any digest entry cap, byte bound, or
+// newest-first retention applies. Duplicate store revisions resolve by the
+// same clock rule as digest admission (known clocks win over unknown ones,
+// newer known clocks win over older).
+func fullTaskCounts(rows []historicalTaskRow) (running, total int) {
+	type revision struct {
+		known   bool
+		millis  int64
+		running bool
+	}
+	winners := make(map[string]revision, len(rows))
+	for _, row := range rows {
+		if row.taskID == "" {
+			continue
+		}
+		millis, known := dagTimestamp(row.payload["updated_at"])
+		current, exists := winners[row.taskID]
+		if exists && current.known && (!known || millis <= current.millis) {
+			continue
+		}
+		winners[row.taskID] = revision{known: known, millis: millis, running: rawString(row.payload["status"]) == "running"}
+	}
+	for _, winner := range winners {
+		if winner.running {
+			running++
+		}
+	}
+	return running, len(winners)
+}
+
+// dagRunningCount sums running nodes over every non-terminal run of the full
+// pre-truncation row set. Node states decide, so nodes without task IDs still
+// count, and all runs are summed.
+func dagRunningCount(runs []historicalDagRow) int {
+	total := 0
+	for _, row := range runs {
+		if terminalDagStatuses[row.run.Status] {
+			continue
+		}
+		total += row.run.Counts.Running
+	}
+	return total
+}
+
 func newestTaskRows(rows []historicalTaskRow) ([]historicalTaskRow, bool) {
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].createdAt == rows[j].createdAt {
@@ -732,6 +777,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		}
 		return tasks[i].createdAt < tasks[j].createdAt
 	})
+	runningTasks, totalTasks := fullTaskCounts(tasks)
 	truncatedTasks := taskBudgetExhausted || len(tasks) > maxActivityDigestEntries || taskFieldsTruncated || parentFieldTruncated
 	// Compact authority is independent of the rich prefix's byte budget.
 	taskRows := make([]map[string]json.RawMessage, 0, len(tasks))
@@ -792,6 +838,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
+	runningDagNodes := dagRunningCount(runs)
 	runs, runRetentionTruncated := newestDagRows(runs)
 	truncatedRuns := runBudgetExhausted || runRetentionTruncated || runFieldsTruncated || uncertainParentlessRuns || parentFieldTruncated
 	dagPayload, dagOversized, err := packDagSnapshot(durableSessionID, runs, truncatedRuns)
@@ -809,6 +856,10 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	dagDigest.ReceivedAt = receivedAt
 	boundTaskDigest(taskDigest)
 	boundDagDigest(dagDigest)
+	// Scalars are computed before every bound above, so they stay exact while
+	// the digest row lists truncate.
+	taskDigest.RunningCount, taskDigest.TotalCount = runningTasks, totalTasks
+	dagDigest.RunningCount = runningDagNodes
 	return HistoricalActivity{
 		ActivityPair: ActivityPair{Task: taskPayload, Dag: dagPayload},
 		TaskDigest:   taskDigest, DagDigest: dagDigest,
