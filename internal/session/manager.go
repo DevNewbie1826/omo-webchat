@@ -169,36 +169,52 @@ type retiredDurableRecord struct {
 type Manager struct {
 	cfg Config
 
-	chats                keyedFlight
-	mu                   sync.Mutex
-	byChat               map[string]*Session
-	byRoute              map[string]*Session
-	routeCleanup         map[string]chan struct{}
-	operationOwners      map[string]*sendOperationOwner
-	byDurableEpoch       map[omorpc.EpochToken]map[string]*durableEpochBinding
-	durableTombstones    []durableTombstoneRecord
-	durableToChat        map[string]string
-	retiredDurable       map[string]uint64
-	retiredDurableFIFO   []retiredDurableRecord
-	identityGeneration   uint64
-	invalidatedEpochs    map[omorpc.EpochToken]struct{}
-	epochIngestions      map[omorpc.EpochToken]int
-	retiringByChat       map[string]map[retiringRoute]struct{}
-	retiringFIFO         []retiringRecord
-	slotGeneration       map[string]uint64
-	slotGenerationFIFO   []generationRecord
-	generation           uint64
-	closed               bool
-	done                 chan struct{}
-	shutdownCtx          context.Context
-	shutdownCancel       context.CancelFunc
-	closeOnce            sync.Once
-	acquireWG            sync.WaitGroup
-	cleanupWG            sync.WaitGroup
-	eventWG              sync.WaitGroup
-	openCleanupExpired   chan struct{}
-	pendingOpen          map[string]chan struct{}
-	openSlots            chan struct{}
+	chats              keyedFlight
+	mu                 sync.Mutex
+	byChat             map[string]*Session
+	byRoute            map[string]*Session
+	routeCleanup       map[string]chan struct{}
+	operationOwners    map[string]*sendOperationOwner
+	byDurableEpoch     map[omorpc.EpochToken]map[string]*durableEpochBinding
+	durableTombstones  []durableTombstoneRecord
+	durableToChat      map[string]string
+	retiredDurable     map[string]uint64
+	retiredDurableFIFO []retiredDurableRecord
+	identityGeneration uint64
+	invalidatedEpochs  map[omorpc.EpochToken]struct{}
+	epochIngestions    map[omorpc.EpochToken]int
+	retiringByChat     map[string]map[retiringRoute]struct{}
+	retiringFIFO       []retiringRecord
+	slotGeneration     map[string]uint64
+	slotGenerationFIFO []generationRecord
+	generation         uint64
+	closed             bool
+	done               chan struct{}
+	shutdownCtx        context.Context
+	shutdownCancel     context.CancelFunc
+	closeOnce          sync.Once
+	acquireWG          sync.WaitGroup
+	cleanupWG          sync.WaitGroup
+	eventWG            sync.WaitGroup
+	openCleanupExpired chan struct{}
+	// retiredRoutes records provider route handles retired by open
+	// recovery, scoped to the connection epoch that minted them.
+	// Publication of a retired handle is refused even after its
+	// epoch-bound close settles: an acquire that already issued its open
+	// before recovery won admission must never publish the retired route.
+	// Handles are only unique within one provider process lifetime, so the
+	// epoch scope keeps a restarted provider's reused handle from
+	// inheriting the dead epoch's retirement, and epoch death drops the
+	// dead epoch's entries. The registry is admission-bounded
+	// (Config.RetiredRouteLimit): at the bound recovery refuses new
+	// retirements rather than evicting protection a publisher may need.
+	retiredRoutes map[retiringRoute]struct{}
+	pendingOpen   map[string]chan struct{}
+	openSlots     chan struct{}
+	// openSettled broadcasts detached-open settlement: the channel is
+	// closed and replaced under m.mu each time a retained detached open
+	// releases its slot, so waiters observe settlement without polling.
+	openSettled          chan struct{}
 	overviewCache        map[string]*overviewCacheEntry
 	overviewCurrent      map[string]Summary
 	overviewClock        uint64
@@ -222,11 +238,20 @@ func NewManager(cfg Config) *Manager {
 	if cfg.CloseTimeout == 0 {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
+	if cfg.OpenRecoveryAfter == 0 {
+		cfg.OpenRecoveryAfter = DefaultOpenRecoveryAfter
+	}
+	if cfg.OpenRecoveryAfter > 0 && cfg.OpenRecoveryAfter <= cfg.CloseTimeout {
+		cfg.OpenRecoveryAfter = cfg.CloseTimeout + time.Second
+	}
 	if cfg.DetachedOpenLimit == 0 {
 		cfg.DetachedOpenLimit = DefaultDetachedOpenLimit
 	}
+	if cfg.RetiredRouteLimit <= 0 {
+		cfg.RetiredRouteLimit = DefaultRetiredRouteLimit
+	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -344,6 +369,13 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 		}
 	}
 	delete(m.byDurableEpoch, token)
+	// A dead epoch's retired routes can never match a handle minted by a
+	// successor epoch; drop them so they cannot consume the admission bound.
+	for route := range m.retiredRoutes {
+		if route.epoch == token {
+			delete(m.retiredRoutes, route)
+		}
+	}
 	m.pruneDurableTombstonesLocked(token)
 	for id, entry := range m.overviewCache {
 		if entry.epoch == token {
@@ -963,7 +995,8 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			epochLive = false
 		}
 		_, cleanupInFlight := m.routeCleanup[data.SessionID]
-		if valid && epochLive && !cleanupInFlight {
+		_, retiredRoute := m.retiredRoutes[retiringRoute{route: data.SessionID, epoch: epoch}]
+		if valid && epochLive && !cleanupInFlight && !retiredRoute {
 			sendOwnerAdopted = true
 			if existing != nil && m.byRoute[existing.routingID] == existing {
 				delete(m.byRoute, existing.routingID)
@@ -976,10 +1009,10 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.mu.Unlock()
 		s.lifecycleMu.Unlock()
 		deliverOverview(overviewSubscribers, overviewSnapshot)
-		if !valid || !epochLive || cleanupInFlight {
+		if !valid || !epochLive || cleanupInFlight || retiredRoute {
 			detach()
-			if cleanupInFlight && valid {
-				s.invalidate("provider_disconnected", "provider route cleanup was already in progress")
+			if (cleanupInFlight || retiredRoute) && valid {
+				s.invalidate("provider_disconnected", "provider route cleanup or retirement was already in progress")
 			} else {
 				s.retireReplaced()
 				m.discardRouting(chatID, data.SessionID, epoch)
@@ -1035,6 +1068,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		epochLive = false
 	}
 	_, cleanupInFlight := m.routeCleanup[data.SessionID]
+	_, retiredRoute := m.retiredRoutes[retiringRoute{route: data.SessionID, epoch: epoch}]
 	if valid {
 		sendOwnerAdopted = true
 		if existing != nil && m.byRoute[existing.routingID] == existing {
@@ -1042,7 +1076,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		}
 		m.byChat[chatID] = s
 		delete(m.overviewCurrent, chatID)
-		if epochLive && !cleanupInFlight {
+		if epochLive && !cleanupInFlight && !retiredRoute {
 			m.byRoute[data.SessionID] = s
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
@@ -1054,10 +1088,10 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 		m.discardRouting(chatID, data.SessionID, epoch)
 		return nil, false, nil, ErrManagerClosed
 	}
-	if !epochLive || cleanupInFlight {
+	if !epochLive || cleanupInFlight || retiredRoute {
 		message := "provider connection changed while opening session"
-		if cleanupInFlight {
-			message = "provider route cleanup was already in progress"
+		if cleanupInFlight || retiredRoute {
+			message = "provider route cleanup or retirement was already in progress"
 		}
 		s.invalidate("provider_disconnected", message)
 		if existing != nil {
@@ -1197,6 +1231,73 @@ func (m *Manager) RouteCleanupDone(route string) <-chan struct{} {
 	return settled
 }
 
+// beginRecoveryClose admits one stale-route recovery close atomically.
+// Shutdown admission, ownership inspection, and both bookkeeping
+// registrations share one critical section: the retiring record registers
+// in the same interval the close is admitted, so CloseAll's barrier can
+// never cross between an unregistered close and its send, and the
+// routeCleanup reservation - the same fence publication checks before
+// adopting a route - keeps a colliding open from publishing the route
+// underneath the close. A route that gained an owner, a crossed shutdown
+// barrier, an already-active cleanup, or a retired-route registry at its
+// admission bound each refuse admission; a bound refusal defers the
+// route's cleanup entirely rather than evicting a retained retirement.
+// A connection epoch that already died - or was already invalidated -
+// also refuses admission before any bookkeeping: a recovery holding a
+// stale list_sessions result from that epoch must never reinsert the
+// retirement detachEpoch already cleared, or consume the admission bound
+// a live successor epoch's reconciliation still needs. The close RPC
+// itself runs outside m.mu.
+func (m *Manager) beginRecoveryClose(chatID, route string, epoch omorpc.EpochToken) (chan struct{}, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.byRoute[route] != nil {
+		return nil, false
+	}
+	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
+		// The epoch that minted this stale list result already died and was
+		// detached; admitting would reinsert bookkeeping that detachEpoch
+		// cleared and let a dead epoch consume the admission bound.
+		return nil, false
+	}
+	if !m.cfg.Client.EpochCurrent(epoch) {
+		// The token died without the invalidation barrier being observable
+		// yet; either way this epoch's routes are gone and can never be
+		// published, so there is nothing left to protect against.
+		return nil, false
+	}
+	if _, cleaning := m.routeCleanup[route]; cleaning {
+		return nil, false
+	}
+	if !m.rememberRetiredRouteLocked(retiringRoute{route: route, epoch: epoch}) {
+		// The retirement registry is at its admission bound: refuse and
+		// defer this route's cleanup rather than evicting an existing
+		// retirement an outstanding publisher may still need.
+		return nil, false
+	}
+	done := make(chan struct{})
+	m.routeCleanup[route] = done
+	m.rememberRetiringLocked(chatID, retiringRoute{route: route, epoch: epoch})
+	return done, true
+}
+
+// closeRetiringRoute sends one already-registered retiring route's
+// epoch-bound close and settles its bookkeeping: a definitively settled
+// close (or epoch mismatch) is forgotten, anything else stays retained
+// for the later Stop/delete retry.
+func (m *Manager) closeRetiringRoute(chatID string, retiring retiringRoute) {
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
+	defer cancel()
+	_, _, err := m.cfg.Client.CallInEpochToken(ctx, retiring.epoch, omorpc.CloseSession{SessionID: retiring.route})
+	if definitiveCloseFailure(err) || errors.Is(err, omorpc.ErrEpochMismatch) {
+		m.mu.Lock()
+		m.removeRetiringLocked(chatID, retiring)
+		m.mu.Unlock()
+		return
+	}
+	slog.Warn("failed to discard provider routing handle; retaining for delete retry", "chat_id", chatID, "routing_id", retiring.route, "error", err)
+}
+
 func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) {
 	if route == "" {
 		return
@@ -1205,17 +1306,7 @@ func (m *Manager) discardRouting(chatID, route string, epoch omorpc.EpochToken) 
 	m.mu.Lock()
 	m.rememberRetiringLocked(chatID, retiring)
 	m.mu.Unlock()
-
-	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
-	defer cancel()
-	_, _, err := m.cfg.Client.CallInEpochToken(ctx, epoch, omorpc.CloseSession{SessionID: route})
-	if definitiveCloseFailure(err) || errors.Is(err, omorpc.ErrEpochMismatch) {
-		m.mu.Lock()
-		m.removeRetiringLocked(chatID, retiring)
-		m.mu.Unlock()
-		return
-	}
-	slog.Warn("failed to discard provider routing handle; retaining for delete retry", "chat_id", chatID, "routing_id", route, "error", err)
+	m.closeRetiringRoute(chatID, retiring)
 }
 
 func (m *Manager) rememberRetiringLocked(chatID string, route retiringRoute) {
@@ -1234,6 +1325,23 @@ func (m *Manager) rememberRetiringLocked(chatID string, route retiringRoute) {
 		m.retiringFIFO = m.retiringFIFO[1:]
 		m.removeRetiringLocked(old.chatID, old.route)
 	}
+}
+
+// rememberRetiredRouteLocked records a route handle retired by open
+// recovery so publication of that handle on the same connection epoch is
+// refused even after its close settles and its cleanup reservation is
+// gone. The registry is admission-bounded: once Config.RetiredRouteLimit
+// entries are retained it reports false instead of evicting an existing
+// retirement. Manager.mu is held.
+func (m *Manager) rememberRetiredRouteLocked(route retiringRoute) bool {
+	if _, exists := m.retiredRoutes[route]; exists {
+		return true
+	}
+	if len(m.retiredRoutes) >= m.cfg.RetiredRouteLimit {
+		return false
+	}
+	m.retiredRoutes[route] = struct{}{}
+	return true
 }
 
 func (m *Manager) removeRetiringLocked(chatID string, route retiringRoute) {
@@ -1277,6 +1385,7 @@ type openResult struct {
 // tracks that ownership until the response or epoch death is observed and any
 // routing handle from a late success has been closed.
 func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, error) {
+	var marker chan struct{}
 	for {
 		select {
 		case m.openSlots <- struct{}{}:
@@ -1286,7 +1395,8 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 		m.mu.Lock()
 		pending := m.pendingOpen[chatID]
 		if pending == nil {
-			m.pendingOpen[chatID] = make(chan struct{})
+			marker = make(chan struct{})
+			m.pendingOpen[chatID] = marker
 			m.mu.Unlock()
 			break
 		}
@@ -1305,7 +1415,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 	result := make(chan openResult, 1)
 	m.cleanupWG.Add(1)
 	go func() {
-		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path)
+		data, epoch, detached, err := m.openCall(opCtx, chatID, cwd, path, marker)
 		result <- openResult{data: data, epoch: epoch, err: err, detached: detached}
 	}()
 
@@ -1313,7 +1423,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 	case got := <-result:
 		cancel()
 		if !got.detached {
-			m.clearPendingOpen(chatID)
+			m.clearPendingOpenMarker(chatID, marker)
 		}
 		m.cleanupWG.Done()
 		return got.data, got.epoch, got.err
@@ -1324,7 +1434,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			timer.Stop()
 			cancel()
 			if !got.detached {
-				m.clearPendingOpen(chatID)
+				m.clearPendingOpenMarker(chatID, marker)
 			}
 			if got.data.SessionID != "" {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
@@ -1338,7 +1448,7 @@ func (m *Manager) open(ctx context.Context, chatID, cwd, path string) (omorpc.Op
 			}
 			got := <-result
 			if !got.detached {
-				m.clearPendingOpen(chatID)
+				m.clearPendingOpenMarker(chatID, marker)
 			}
 			if got.data.SessionID != "" {
 				m.discardRouting(chatID, got.data.SessionID, got.epoch)
@@ -1359,7 +1469,54 @@ func (m *Manager) clearPendingOpen(chatID string) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
+// clearPendingOpenMarker releases the pending-open fence only while marker
+// still owns it, together with the detached-open slot it admitted. It
+// reports whether the fence was cleared: false means either a successor
+// took over or this open's fence was already recovered - in the recovered
+// case the slot stayed held and settlement releases it separately. A
+// detached open whose fence was already recovered must never clear a
+// successor's registration or steal its detached-open slot.
+func (m *Manager) clearPendingOpenMarker(chatID string, marker chan struct{}) bool {
+	m.mu.Lock()
+	if marker != nil && m.pendingOpen[chatID] == marker {
+		delete(m.pendingOpen, chatID)
+		m.releaseOpenSlotLocked()
+		close(marker)
+		m.mu.Unlock()
+		return true
+	}
+	m.mu.Unlock()
+	return false
+}
+
+// releaseOpenSlotLocked releases one detached-open slot and broadcasts the
+// settlement to openSettled waiters. It requires m.mu held and a slot
+// actually held by the caller's detached open.
+func (m *Manager) releaseOpenSlotLocked() {
+	<-m.openSlots
+	close(m.openSettled)
+	m.openSettled = make(chan struct{})
+}
+
+// recoverOpenFence performs the open-fence recovery transition atomically:
+// the fence is released only while marker still owns it AND CloseAll's
+// shutdown barrier has not been crossed. Unlike clearPendingOpenMarker it
+// keeps the detached-open slot held: the retaining owner keeps RPC-ownership
+// accounting until the correlation settles, so repeated recovered attempts
+// under silence exhaust DetachedOpenLimit instead of accumulating retained
+// correlations without bound.
+func (m *Manager) recoverOpenFence(chatID string, marker chan struct{}) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || marker == nil || m.pendingOpen[chatID] != marker {
+		return false
+	}
+	delete(m.pendingOpen, chatID)
+	close(marker)
+	return true
+}
+
+func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker chan struct{}) (omorpc.OpenSessionData, omorpc.EpochToken, bool, error) {
 	cmd := omorpc.OpenSession{CWD: cwd, SessionPath: path}
 	var last error
 	var epoch omorpc.EpochToken
@@ -1376,19 +1533,12 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 			case <-ctx.Done():
 				// The caller stops waiting now, but detached correlation ownership
 				// remains until the response or epoch settles. A late success is
-				// closed so cancellation can never orphan a provider route.
+				// closed so cancellation can never orphan a provider route; the
+				// wait itself is recovered on the OpenRecoveryAfter budget.
 				m.cleanupWG.Add(1)
 				go func() {
 					defer m.cleanupWG.Done()
-					defer m.clearPendingOpen(chatID)
-					got := <-completion
-					if got.err != nil || got.response == nil {
-						return
-					}
-					var late omorpc.OpenSessionData
-					if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-						m.discardRouting(chatID, late.SessionID, got.epoch)
-					}
+					m.awaitDetachedCompletion(chatID, path, marker, completion)
 				}()
 				return omorpc.OpenSessionData{}, epoch, true, ctx.Err()
 			}
@@ -1414,6 +1564,157 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string) (omorp
 		}
 	}
 	return omorpc.OpenSessionData{}, epoch, false, last
+}
+
+// awaitDetachedCompletion owns one cancelled open_session's detached
+// correlation after the caller's cleanup budget expired. Bounded recovery:
+// after cfg.OpenRecoveryAfter of continued silence the per-chat fence is
+// released (atomically, never past the shutdown barrier) so the next
+// acquire for that chat can issue its own open_session, while the
+// detached-open slot stays held until settlement, bounding retained RPC
+// ownership to DetachedOpenLimit. After one final OpenRecoveryAfter grace
+// the manager stops WAITING, but a residual owner keeps the epoch-bound
+// cleanup until the response or connection-epoch death settles it, so a
+// late success is still closed and never published - even after shutdown.
+// The omorpc client correlation itself persists until the response or the
+// connection-epoch death settles it, per CallDetached's existing contract.
+func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult) {
+	settle := func(got openResult) {
+		// The late route is closed BEFORE the fence or slot is released: a
+		// successor open admitted the moment the fence clears can reach the
+		// provider while the route this open minted is only addressable by
+		// its original handle, so the successor's open could supersede that
+		// handle and strand the late route. Reacquisition waits for the
+		// retained completion - including its epoch-bound close - exactly as
+		// the pre-recovery cleanup path always ordered it.
+		if got.err == nil && got.response != nil {
+			var late omorpc.OpenSessionData
+			if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
+				m.discardRouting(chatID, late.SessionID, got.epoch)
+			}
+		}
+		if !m.clearPendingOpenMarker(chatID, marker) {
+			// The fence was recovered earlier: its detached-open slot stayed
+			// held, and settlement of the correlation is what releases it.
+			m.mu.Lock()
+			m.releaseOpenSlotLocked()
+			m.mu.Unlock()
+		}
+	}
+	if m.cfg.OpenRecoveryAfter <= 0 {
+		settle(<-completion)
+		return
+	}
+	timer := time.NewTimer(m.cfg.OpenRecoveryAfter)
+	select {
+	case got := <-completion:
+		timer.Stop()
+		settle(got)
+		return
+	case <-timer.C:
+	}
+	// Reconcile while the fence is still held: no successor open for this
+	// chat can register yet, so the reconciliation can only ever observe
+	// routes that predate recovery, never the successor's. Every route close
+	// and the fence release revalidate shutdown state and ownership under
+	// the manager lock immediately before acting.
+	if path != "" {
+		m.reconcileStaleRoutes(chatID, path)
+	}
+	m.recoverOpenFence(chatID, marker)
+	final := time.NewTimer(m.cfg.OpenRecoveryAfter)
+	defer final.Stop()
+	select {
+	case got := <-completion:
+		settle(got)
+	case <-final.C:
+		slog.Warn("open recovery stopped waiting for the detached open_session", "chat_id", chatID)
+		// The final grace stops the manager's bounded WAIT, not its cleanup
+		// ownership: a residual owner settles the correlation whenever it
+		// completes - even during or after shutdown - so a late success is
+		// still closed epoch-bound and never published.
+		go func() { settle(<-completion) }()
+	}
+}
+
+// staleRoute is one live route reported by list_sessions. The observed
+// engine names the durable session file sessionPath; the shared omorpctest
+// mock reports sessionFile, so both spellings are accepted.
+type staleRoute struct {
+	SessionID        string `json:"sessionId"`
+	DurableSessionID string `json:"durableSessionId"`
+	SessionPath      string `json:"sessionPath"`
+	CWD              string `json:"cwd"`
+	Status           string `json:"status"`
+	SessionFile      string `json:"sessionFile"`
+}
+
+func (r staleRoute) durablePath() string {
+	if r.SessionPath != "" {
+		return r.SessionPath
+	}
+	return r.SessionFile
+}
+
+// reconcileStaleRoutes closes live provider routes serving the targeted
+// session path. The engine may have accepted the unanswered open_session
+// and minted a route nobody owns anymore; list_sessions is a control
+// command that always answers, and every unowned match is closed with an
+// epoch-bound close_session through the ordinary retiring machinery, so a
+// later Stop still retries any close that did not definitively settle. A
+// route this manager currently owns and publishes - typically another
+// chat's live session on a shared path - is never this recovery's to close.
+// Each per-route decision is admitted atomically (beginRecoveryClose):
+// ownership and shutdown are revalidated under the manager lock in the
+// same critical section that registers the close and reserves the cleanup
+// fence publication honors, so a route published after the check is
+// skipped instead of destroyed, and a barrier crossed after the check
+// refuses the close entirely.
+func (m *Manager) reconcileStaleRoutes(chatID, path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), m.cfg.CloseTimeout)
+	resp, epoch, err := m.cfg.Client.CallInEpoch(ctx, omorpc.ListSessions{})
+	cancel()
+	if err != nil || resp == nil || !resp.Success || len(resp.Data) == 0 {
+		slog.Warn("open recovery could not list provider routes; stale routes on the targeted path may persist", "chat_id", chatID, "session_path", path, "error", err)
+		return
+	}
+	var listed struct {
+		Sessions []staleRoute `json:"sessions"`
+	}
+	if err := json.Unmarshal(resp.Data, &listed); err != nil {
+		slog.Warn("open recovery could not decode list_sessions", "chat_id", chatID, "session_path", path, "error", err)
+		return
+	}
+	for _, route := range listed.Sessions {
+		if route.SessionID == "" || route.durablePath() != path {
+			continue
+		}
+		m.mu.Lock()
+		owned := m.byRoute[route.SessionID] != nil
+		closed := m.closed
+		m.mu.Unlock()
+		if owned {
+			slog.Warn("open recovery skipped live provider route owned by this manager", "chat_id", chatID, "session_path", path, "routing_id", route.SessionID)
+			continue
+		}
+		if closed {
+			// The shutdown barrier was crossed mid-reconciliation; recovery
+			// must not act after CloseAll.
+			return
+		}
+		slog.Warn("open recovery closing stale provider route on targeted path", "chat_id", chatID, "session_path", path, "routing_id", route.SessionID)
+		cleanup, ok := m.beginRecoveryClose(chatID, route.SessionID, epoch)
+		if !ok {
+			// Ownership or shutdown changed between the decision above and
+			// this admission: the route is no longer this recovery's to
+			// close. A publisher either won the race - the route now has an
+			// owner - or observes the cleanup reservation and refuses to
+			// adopt the route; a crossed shutdown barrier admits no close.
+			continue
+		}
+		m.closeRetiringRoute(chatID, retiringRoute{route: route.SessionID, epoch: epoch})
+		m.endRouteCleanup(route.SessionID, cleanup)
+	}
 }
 
 func danglingResume(err error) bool {

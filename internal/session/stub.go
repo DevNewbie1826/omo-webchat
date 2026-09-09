@@ -27,15 +27,27 @@ var (
 )
 
 const (
-	DefaultQueueSize      = 64
-	DefaultIdleAfter      = 30 * time.Minute
-	DefaultRetryAttempt   = 3
-	DefaultRetryBackoff   = 500 * time.Millisecond
-	DefaultCloseTimeout   = 5 * time.Second
-	DefaultHistoryTimeout = 2 * time.Minute
+	DefaultQueueSize    = 64
+	DefaultIdleAfter    = 30 * time.Minute
+	DefaultRetryAttempt = 3
+	DefaultRetryBackoff = 500 * time.Millisecond
+	DefaultCloseTimeout = 5 * time.Second
+	// DefaultOpenRecoveryAfter bounds how long a cancelled-but-unanswered
+	// open_session keeps its per-chat fence after the cleanup timeout
+	// (CloseTimeout) already expired. Tens of seconds: far beyond any
+	// legitimate slow open, short enough that one chat cannot stay wedged
+	// for the lifetime of the connection. It always exceeds CloseTimeout;
+	// NewManager enforces that for configured values too.
+	DefaultOpenRecoveryAfter = 30 * time.Second
+	DefaultHistoryTimeout    = 2 * time.Minute
 	// DefaultDetachedOpenLimit bounds RPC correlations and cleanup goroutines
 	// retained by cancelled open_session calls across all chat IDs.
 	DefaultDetachedOpenLimit = 32
+	// DefaultRetiredRouteLimit bounds route handles retained by open recovery
+	// to refuse publication of routes it retired. Dead-epoch entries are
+	// dropped on epoch invalidation, so the bound only ever spans one live
+	// connection epoch.
+	DefaultRetiredRouteLimit = 1024
 	// DetachedMutationLimit bounds response correlations retained by one session.
 	DetachedMutationLimit = 16
 )
@@ -83,14 +95,42 @@ type ChatRef interface {
 }
 
 type Config struct {
-	Client            *omorpc.Client
-	Store             CursorStore
-	IdleAfter         time.Duration
-	QueueSize         int
-	RetryAttempts     int
-	RetryBackoff      time.Duration
-	CloseTimeout      time.Duration
+	Client        *omorpc.Client
+	Store         CursorStore
+	IdleAfter     time.Duration
+	QueueSize     int
+	RetryAttempts int
+	RetryBackoff  time.Duration
+	CloseTimeout  time.Duration
+	// OpenRecoveryAfter bounds recovery of a detached open_session that
+	// stayed unanswered past its cleanup timeout (CloseTimeout) while the
+	// RPC connection kept living. After this budget the manager releases
+	// the chat's pending-open fence - atomically, and never past CloseAll's
+	// shutdown barrier - so the next acquire can issue its own open_session,
+	// while the detached-open slot stays held until the correlation settles,
+	// bounding retained RPC ownership to DetachedOpenLimit. When the
+	// original open targeted a stored session path, live unowned provider
+	// routes on that path are first reconciled (list_sessions plus
+	// epoch-bound close_session through the ordinary retiring machinery);
+	// routes this manager currently owns and publishes are never closed.
+	// The detached completion wait then gets one final OpenRecoveryAfter
+	// grace, after which the manager stops waiting but a residual owner
+	// keeps the epoch-bound cleanup until the response or connection-epoch
+	// death settles it, per CallDetached's existing contract, so a late
+	// success is still closed and never published. Zero selects
+	// DefaultOpenRecoveryAfter; a negative value disables recovery entirely
+	// (legacy unbounded detached wait). Configured values must exceed
+	// CloseTimeout; NewManager raises smaller positive values to
+	// CloseTimeout + 1s so recovery can never fire before the ordinary
+	// cleanup path has settled.
+	OpenRecoveryAfter time.Duration
 	DetachedOpenLimit int
+	// RetiredRouteLimit bounds how many provider route handles open recovery
+	// may retain to refuse their later publication. Once the bound is
+	// reached, recovery refuses to retire NEW routes (deferring their
+	// cleanup) instead of evicting an existing retirement an outstanding
+	// publisher may still need. Zero selects DefaultRetiredRouteLimit.
+	RetiredRouteLimit int
 	// OnDetach is called exactly once after a subscription pump exits.
 	OnDetach func(Subscriber, error)
 	// OnRunSettled is called after a run.done or an idle compaction completion.
