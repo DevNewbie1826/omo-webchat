@@ -33,15 +33,9 @@ const sessions = [
   { id: "tm-idle", name: "Idle chat", source: "stored" as const, recencyMs: 1 },
 ];
 
-interface RunningCount {
-  readonly count: number;
-  readonly partial: boolean;
-  readonly unknown?: boolean;
-}
-
 function tree(
   container: HTMLDivElement,
-  runningCounts?: ReadonlyMap<string, RunningCount>,
+  runningCounts?: ReadonlyMap<string, number>,
   touchActions = false,
   expanded = new Set(["ws-1"]),
   renderedWorkspace = workspace,
@@ -105,10 +99,10 @@ describe("SessionTree running-agent badge", () => {
     return match!;
   }
 
-  it("renders a chip with the count and an aria-label only while agents run", () => {
+  it("renders a chip with the exact count and an aria-label only while agents run", () => {
     tree(container, new Map([
-      ["tm-live", { count: 2, partial: false }],
-      ["tm-idle", { count: 0, partial: false }],
+      ["tm-live", 2],
+      ["tm-idle", 0],
     ]));
 
     const live = row("Live chat");
@@ -125,8 +119,19 @@ describe("SessionTree running-agent badge", () => {
     expect(idle.querySelector(".th-tree-live")).not.toBeNull();
   });
 
+  it("renders an exact two-digit count without any unknown or partial marker", () => {
+    tree(container, new Map([["tm-live", 50]]));
+
+    const chip = row("Live chat").querySelector(".th-tree-running");
+    expect(chip?.textContent).toBe("50");
+    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgents 50");
+    expect(chip?.getAttribute("title")).toBeNull();
+    expect(chip?.textContent).not.toContain("+");
+    expect(chip?.textContent).not.toContain("?");
+  });
+
   it("keeps the badge exposed in touch mode and while row actions are focused", () => {
-    tree(container, new Map([["tm-live", { count: 2, partial: false }]]), true);
+    tree(container, new Map([["tm-live", 2]]), true);
 
     expect(container.querySelector(".th-tree")?.classList.contains("th-tree--touch")).toBe(true);
     const live = row("Live chat");
@@ -140,25 +145,8 @@ describe("SessionTree running-agent badge", () => {
     expect(css).not.toMatch(/(?:focus-within|th-tree--touch)[^{]*\.th-tree-running\s*\{[^}]*display:\s*none/);
   });
 
-  it("renders a plus suffix and partial aria-label for lower-bound counts", () => {
-    tree(container, new Map([["tm-live", { count: 2, partial: true }]]));
-
-    const chip = row("Live chat").querySelector(".th-tree-running");
-    expect(chip?.textContent).toBe("2+");
-    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsPartial 2");
-  });
-
-  it("renders an unknown-count chip for oversized activity even when count is zero", () => {
-    tree(container, new Map([["tm-live", { count: 0, partial: true, unknown: true }]]));
-
-    const chip = row("Live chat").querySelector(".th-tree-running");
-    expect(chip?.textContent).toBe("?");
-    expect(chip?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgentsUnknown");
-    expect(chip?.getAttribute("title")).toBe("sidebar.tm.runningAgentsUnknown");
-  });
-
   it("renders a workspace aggregate while collapsed", () => {
-    tree(container, new Map([["tm-live", { count: 2, partial: false }]]), false, new Set());
+    tree(container, new Map([["tm-live", 2]]), false, new Set());
 
     const workspaceRow = row("Workspace");
     const chip = workspaceRow.querySelector(".th-tree-running");
@@ -169,7 +157,7 @@ describe("SessionTree running-agent badge", () => {
   it("counts a running cursor-only session in a cold collapsed workspace", () => {
     tree(
       container,
-      new Map([["cursor-only", { count: 1, partial: false }]]),
+      new Map([["cursor-only", 1]]),
       false,
       new Set(),
       { ...workspace, chats: [] },
@@ -185,7 +173,7 @@ describe("SessionTree running-agent badge", () => {
   it("counts a running cursor-only session beyond the visible first page", () => {
     tree(
       container,
-      new Map([["cursor-page-2", { count: 2, partial: false }]]),
+      new Map([["cursor-page-2", 2]]),
       false,
       new Set(),
       { ...workspace, chats: [] },
@@ -200,8 +188,8 @@ describe("SessionTree running-agent badge", () => {
 
   it("renders the workspace aggregate and per-session badges when expanded", () => {
     tree(container, new Map([
-      ["tm-live", { count: 2, partial: false }],
-      ["tm-idle", { count: 1, partial: false }],
+      ["tm-live", 2],
+      ["tm-idle", 1],
     ]));
 
     const workspaceRow = row("Workspace");
@@ -209,33 +197,14 @@ describe("SessionTree running-agent badge", () => {
     expect(container.querySelectorAll(".th-tree-running")).toHaveLength(3);
   });
 
-  it("renders an unknown workspace aggregate when any chat count is unknown", () => {
-    tree(container, new Map([
-      ["tm-live", { count: 2, partial: false }],
-      ["tm-idle", { count: 0, partial: true, unknown: true }],
-    ]));
-
-    const chip = row("Workspace").querySelector(".th-tree-running");
-    expect(chip?.textContent).toBe("?");
-    expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgentsUnknown");
-  });
-
-  it("renders a partial workspace aggregate without unknown counts", () => {
-    tree(container, new Map([["tm-live", { count: 2, partial: true }]]));
-
-    const chip = row("Workspace").querySelector(".th-tree-running");
-    expect(chip?.textContent).toBe("2+");
-    expect(chip?.getAttribute("aria-label")).toBe("sidebar.ws.runningAgentsPartial 2");
-  });
-
-  it("renders no workspace chip without running or unknown counts", () => {
-    tree(container, new Map([["tm-live", { count: 0, partial: false }]]));
+  it("renders no workspace chip without running counts", () => {
+    tree(container, new Map([["tm-live", 0]]));
 
     expect(row("Workspace").querySelector(".th-tree-running")).toBeNull();
   });
 
   it("keeps the workspace chat-count pill beside the running aggregate", () => {
-    tree(container, new Map([["tm-live", { count: 1, partial: false }]]));
+    tree(container, new Map([["tm-live", 1]]));
 
     const workspaceRow = row("Workspace");
     expect(workspaceRow.querySelector(".th-tree-count")?.textContent).toBe("2");

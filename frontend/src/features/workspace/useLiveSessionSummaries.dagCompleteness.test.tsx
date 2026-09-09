@@ -58,15 +58,14 @@ const incompleteCases = [
 ];
 
 describe("DAG summary completeness", () => {
-  it.each(incompleteCases)("qualifies $name without inventing missing task counts", ({ dag, count }) => {
+  it.each(incompleteCases)("counts $name without inventing missing task counts", ({ dag, count }) => {
     const summary = summarizeLiveSession(info(dag), NOW);
     expect(summary.runningCount).toBe(count);
-    expect(summary.truncatedTasks).toBe(true);
     expect(summary.dagSideOversized).toBe(false);
   });
 
   it("returns exact2 for full authoritative topology", () => {
-    expect(summarizeLiveSession(info(full), NOW)).toMatchObject({ runningCount: 2, truncatedTasks: false, dagOversized: false });
+    expect(summarizeLiveSession(info(full), NOW)).toMatchObject({ runningCount: 2 });
   });
 
   it.each([
@@ -77,7 +76,7 @@ describe("DAG summary completeness", () => {
     })) } },
   ])("counts distinct valid nodes with empty optional task IDs $name", ({ dag }) => {
     expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({
-      runningCount: 2, dagRunning: 2, truncatedTasks: false, dagOversized: false,
+      runningCount: 2, dagRunning: 2,
     });
   });
 
@@ -87,40 +86,39 @@ describe("DAG summary completeness", () => {
       nodes: [{ ...nodeA, id: "" }, { ...nodeB, depends_on: [""] }],
       edges: [{ from: "", to: "b" }],
     }, count: 1 },
-  ])("qualifies an empty required $name ID and excludes unidentified work", ({ run, count }) => {
+  ])("excludes unidentified work for an empty required $name ID", ({ run, count }) => {
     const summary = summarizeLiveSession(info({ runs: [run] }), NOW);
     expect.soft(summary.runningCount).toBe(count);
-    expect.soft(summary.truncatedTasks).toBe(true);
     const withValidRun = summarizeLiveSession(info({ runs: [run, {
       ...fullRun, run_id: "valid", nodes: [{ ...nodeA, task_id: "valid-task" }],
       counts: { ...counts, total: 1, running: 1 }, edges: [],
     }] }), NOW);
-    expect(withValidRun).toMatchObject({ runningCount: count + 1, truncatedTasks: true });
+    expect(withValidRun).toMatchObject({ runningCount: count + 1 });
   });
 
   it("preserves nonempty opaque run, node and task IDs without trimming", () => {
     const nodes = [" ", "  "].map((id) => ({ ...nodeA, id, task_id: "" }));
     const runs = [" ", "  "].map((run_id) => ({ ...fullRun, run_id, nodes, edges: [] }));
-    expect(summarizeLiveSession(info({ runs }), NOW)).toMatchObject({ runningCount: 4, truncatedTasks: false });
+    expect(summarizeLiveSession(info({ runs }), NOW)).toMatchObject({ runningCount: 4 });
     const dag = { runs: [{ ...fullRun, nodes: nodes.map((node) => ({ ...node, task_id: node.id })), edges: [] }] };
-    expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 2, truncatedTasks: false });
+    expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 2 });
   });
 
   it.each(["completed", "failed", "cancelled", "canceled"])("excludes %s runs with empty optional task IDs", (status) => {
     expect(summarizeLiveSession(info({ runs: [{ ...emptyTaskIdRun, status }] }), NOW)).toMatchObject({
-      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+      runningCount: 0, dagRunning: 0,
     });
   });
 
   it("keeps a genuinely absent DAG and an authoritative empty run collection idle", () => {
     for (const dag of [null, { runs: [], truncated_runs: false }]) {
-      expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 0, truncatedTasks: false });
+      expect(summarizeLiveSession(info(dag), NOW)).toMatchObject({ runningCount: 0 });
     }
   });
 
   it("lets terminal task authority override a retained running node without counting the missing node", () => {
     const task = { tasks: [{ task_id: "t1", name: "Finished", status: "completed" }] };
-    expect(summarizeLiveSession(info(partial, task), NOW)).toMatchObject({ runningCount: 0, dagRunning: 0, truncatedTasks: true });
+    expect(summarizeLiveSession(info(partial, task), NOW)).toMatchObject({ runningCount: 0, dagRunning: 0 });
   });
 
   it("does not revive terminal runs with retained running nodes", () => {
@@ -133,15 +131,15 @@ describe("DAG summary completeness", () => {
     expect(summarizeLiveSession(info(dag), NOW).runningCount).toBe(2);
   });
 
-  it("a heartbeat refreshes task liveness but never certifies partial topology", () => {
+  it("a heartbeat refreshes task liveness but never invents partial-topology work", () => {
     const task = { tasks: [{ task_id: "t1", name: "Quiet", status: "running", updated_at: "2026-09-08T09:00:00Z" }] };
     const summary = summarizeLiveSession(info(incompleteZero, task), NOW, { heartbeatStamps: new Map([["t1", "2026-09-08T10:00:00Z"]]) });
-    expect(summary).toMatchObject({ runningCount: 1, truncatedTasks: true });
+    expect(summary).toMatchObject({ runningCount: 1 });
   });
 
   it("uses authoritative compact DAG data instead of stale partial cached topology", () => {
     const summary = summarizeLiveSession({ ...info(partial), dagOversized: true, dagDigest: { runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1", "t2"] }], truncated: false } }, NOW);
-    expect(summary).toMatchObject({ runningCount: 2, truncatedTasks: false, dagOversized: false });
+    expect(summary).toMatchObject({ runningCount: 2 });
   });
 });
 
@@ -172,7 +170,7 @@ describe.each(["rich", "compact"] as const)("%s DAG running task identity", (rep
     { name: "duplicate IDs across two active runs (exact4 regression)", runs: [["task-a", "task-b"], ["task-a", "task-b"]] },
   ])("returns exact2 for $name", ({ runs }) => {
     expect(summarizeLiveSession(session(runs), NOW)).toMatchObject({
-      runningCount: 2, dagRunning: 2, truncatedTasks: false, taskOversized: false, dagOversized: false,
+      runningCount: 2, dagRunning: 2,
     });
   });
 
@@ -192,7 +190,6 @@ describe.each(["rich", "compact"] as const)("%s DAG running task identity", (rep
           : { ...source, taskOversized: true, taskDigest };
         expect(summarizeLiveSession(input, NOW)).toMatchObject({
           runningCount: status === "running" ? 2 : 1, dagRunning: 0,
-          truncatedTasks: false, taskOversized: false, dagOversized: false,
         });
       },
     );
@@ -200,7 +197,7 @@ describe.each(["rich", "compact"] as const)("%s DAG running task identity", (rep
 
   it.each(["completed", "failed", "cancelled", "canceled"])("excludes %s DAG runs with retained running IDs", (status) => {
     expect(summarizeLiveSession(session([["task-a", "task-b"], ["task-a", "task-b"]], status), NOW)).toMatchObject({
-      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+      runningCount: 0, dagRunning: 0,
     });
   });
 
@@ -210,10 +207,10 @@ describe.each(["rich", "compact"] as const)("%s DAG running task identity", (rep
       task: { tasks: [{ task_id: "task-a", name: "Quiet", status: "running", updated_at: "2026-09-08T09:00:00Z" }] },
     };
     expect(summarizeLiveSession(source, NOW)).toMatchObject({
-      runningCount: 0, dagRunning: 0, truncatedTasks: false,
+      runningCount: 0, dagRunning: 0,
     });
     expect(summarizeLiveSession(source, NOW, { sessionLive: true })).toMatchObject({
-      runningCount: 1, dagRunning: 0, truncatedTasks: false,
+      runningCount: 1, dagRunning: 0,
     });
   });
 });
@@ -271,7 +268,7 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     ]);
   });
 
-  it("recovers compact unknown to rich full empty-ID exact2 on session, workspace and overview", () => {
+  it("recovers compact zero to rich full empty-ID exact2 on session, workspace and overview", () => {
     const dagDigest = parseDagDigest({ runs: [{ run_id: "r1", status: "running", running_task_ids: [] }], truncated: true });
     if (dagDigest === null) throw new Error("Invalid compact DAG fixture");
     render(emptyTaskIds, { dagOversized: true, dagDigest });
@@ -281,7 +278,7 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
       container.querySelector(".th-tree-running--workspace"),
       document.body.querySelector(".th-overview-card-running"),
     ];
-    expect(badges().map((badge) => badge?.textContent)).toEqual(["?", "?", "?"]);
+    expect(badges()).toEqual([null, null, null]);
     render(emptyTaskIds, { dagOversized: false, dagDigest });
     expect(badges().map((badge) => badge?.textContent)).toEqual(["2", "2", "2"]);
     expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
@@ -289,23 +286,58 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     ]);
   });
 
+  it("shows no badge when a truncated digest carries server running_count zero", () => {
+    const digest = parseTaskDigest({
+      tasks: [{ task_id: "t9", status: "completed", updated_at: "2026-09-08T09:00:00Z" }],
+      truncated: true,
+      running_count: 0,
+    });
+    if (digest === null) throw new Error("Invalid compact task fixture");
+    render(null, { taskOversized: true, taskDigest: digest });
+    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
+    const badges = () => [
+      container.querySelector(".th-tree-children .th-tree-running"),
+      container.querySelector(".th-tree-running--workspace"),
+      document.body.querySelector(".th-overview-card-running"),
+    ];
+    expect(badges()).toEqual([null, null, null]);
+  });
+
+  it("renders server running_count 50 exactly, without a plus suffix", () => {
+    const digest = parseTaskDigest({
+      tasks: [{ task_id: "t9", status: "running", updated_at: "2026-09-08T10:00:00Z" }],
+      truncated: true,
+      running_count: 50,
+    });
+    if (digest === null) throw new Error("Invalid compact task fixture");
+    render(null, { taskOversized: true, taskDigest: digest });
+    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
+    const badges = () => [
+      container.querySelector(".th-tree-children .th-tree-running"),
+      container.querySelector(".th-tree-running--workspace"),
+      document.body.querySelector(".th-overview-card-running"),
+    ];
+    expect(badges().map((badge) => badge?.textContent)).toEqual(["50", "50", "50"]);
+    expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
+      "sidebar.tm.runningAgents", "sidebar.ws.runningAgents", "overview.runningAria",
+    ]);
+  });
+
   it.each([
-    { name: "retained1", dag: partial, expected: "1+", key: "Partial" },
-    { name: "malformed retained1", dag: malformedNode, expected: "1+", key: "Partial" },
-    { name: "incomplete0", dag: incompleteZero, expected: "?", key: "Unknown" },
-    { name: "malformed0", dag: { runs: [{}] }, expected: "?", key: "Unknown" },
-  ])("shows qualified $name on session, workspace and overview then exact2 after full data", ({ dag, expected, key }) => {
+    { name: "retained1", dag: partial, expected: "1" },
+    { name: "malformed retained1", dag: malformedNode, expected: "1" },
+    { name: "incomplete0", dag: incompleteZero, expected: null },
+    { name: "malformed0", dag: { runs: [{}] }, expected: null },
+  ])("shows exact retained $name on session, workspace and overview then exact2 after full data", ({ dag, expected }) => {
     render(dag);
     act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const row = () => container.querySelector(".th-tree-children .th-tree-running");
     const aggregate = () => container.querySelector(".th-tree-running--workspace");
     const overview = () => document.body.querySelector(".th-overview-card-running");
-    expect.soft(row()?.textContent).toBe(expected);
-    expect.soft(aggregate()?.textContent).toBe(expected);
-    expect.soft(overview()?.textContent).toBe(expected);
-    expect.soft(row()?.getAttribute("aria-label")).toBe(`sidebar.tm.runningAgents${key}`);
-    expect.soft(aggregate()?.getAttribute("aria-label")).toBe(`sidebar.ws.runningAgents${key}`);
-    expect.soft(overview()?.getAttribute("aria-label")).toBe(`overview.runningAria${key}`);
+    expect.soft(row()?.textContent ?? null).toBe(expected);
+    expect.soft(aggregate()?.textContent ?? null).toBe(expected);
+    expect.soft(overview()?.textContent ?? null).toBe(expected);
+    expect.soft(row()?.getAttribute("aria-label") ?? null).toBe(expected === null ? null : "sidebar.tm.runningAgents");
 
     render(full);
     expect(row()?.textContent).toBe("2");

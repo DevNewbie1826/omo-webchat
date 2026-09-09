@@ -109,9 +109,6 @@ describe("summarizeLiveSession", () => {
       dagTotal: 3,
       lastLine: "ls",
       dagRunning: 1,
-      truncatedTasks: false,
-      taskOversized: false,
-      dagOversized: false,
     });
   });
 
@@ -131,9 +128,6 @@ describe("summarizeLiveSession", () => {
       dagTotal: 0,
       lastLine: null,
       dagRunning: 0,
-      truncatedTasks: false,
-      taskOversized: false,
-      dagOversized: false,
     });
 
     const garbage = summarizeLiveSession({ id: "s3", title: "", task: { tasks: "nope" }, dag: { runs: 1 }, ...NOT_OVERSIZED });
@@ -142,9 +136,6 @@ describe("summarizeLiveSession", () => {
     expect(garbage.dagTotal).toBe(0);
     expect(garbage.lastLine).toBeNull();
     expect(garbage.dagRunning).toBe(0);
-    expect(garbage.truncatedTasks).toBe(true);
-    expect(garbage.taskOversized).toBe(false);
-    expect(garbage.dagOversized).toBe(false);
   });
 
   it("drops a stale quiet running row when no freshness context establishes liveness", () => {
@@ -282,7 +273,6 @@ describe("summarizeLiveSession", () => {
 
     expect(summary.runningCount).toBe(0);
     expect(summary.dagRunning).toBe(0);
-    expect(summary.truncatedTasks).toBe(true);
   });
 
   it("counts a taskId present in both a running task row and a running dag node once", () => {
@@ -323,18 +313,6 @@ describe("summarizeLiveSession", () => {
     expect(summary.dagRunning).toBe(0);
   });
 
-  it("surfaces truncated_tasks from the task payload", () => {
-    const summary = summarizeLiveSession({
-      id: "trunc",
-      title: "",
-      task: { truncated_tasks: true, tasks: [] },
-      dag: null,
-      ...NOT_OVERSIZED,
-    });
-
-    expect(summary.truncatedTasks).toBe(true);
-  });
-
   it("does not count cached rows from oversized sides but still parses task lastLine", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T10:00:00.000Z"));
@@ -356,8 +334,8 @@ describe("summarizeLiveSession", () => {
       runningCount: 0,
       dagRunning: 0,
       lastLine: "cached detail",
-      taskOversized: true,
-      dagOversized: true,
+      taskSideOversized: true,
+      dagSideOversized: true,
     });
   });
 
@@ -527,7 +505,6 @@ describe("summarizeLiveSession", () => {
       });
 
       expect(summary.runningCount).toBe(1);
-      expect(summary.taskOversized).toBe(false);
     });
 
     it("drops a digest running entry whose updated_at is 866s old when there is no dag digest", () => {
@@ -590,7 +567,7 @@ describe("summarizeLiveSession", () => {
       expect(summary.dagRunning).toBe(0);
     });
 
-    it("marks a truncated digest partial for the N+ path instead of unknown", () => {
+    it("counts truncated digest rows legacy-style without inventing markers", () => {
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
       const summary = summarizeLiveSession({
@@ -606,12 +583,9 @@ describe("summarizeLiveSession", () => {
       });
 
       expect(summary.runningCount).toBe(1);
-      expect(summary.truncatedTasks).toBe(true);
-      expect(summary.taskOversized).toBe(false);
-      expect(summary.dagOversized).toBe(false);
     });
 
-    it("keeps the unknown oversized path when no digest is present", () => {
+    it("stays at zero without inventing work when no digest is present", () => {
       const summary = summarizeLiveSession({
         id: "over-no-digest",
         title: "",
@@ -621,7 +595,108 @@ describe("summarizeLiveSession", () => {
       });
 
       expect(summary.runningCount).toBe(0);
-      expect(summary.taskOversized).toBe(true);
+      expect(summary.taskSideOversized).toBe(true);
+    });
+  });
+
+  describe("server running-count scalars are the sole authority", () => {
+    const NOW = new Date("2026-08-19T10:14:26.000Z");
+    const FRESH_AT = "2026-08-19T10:14:00.000Z";
+
+    function digestWith(value: Record<string, unknown>) {
+      const digest = parseTaskDigest(value);
+      if (digest === null) throw new Error("Invalid digest fixture");
+      return digest;
+    }
+
+    it("ignores truncated digest rows when the server running scalar says zero", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "scalar-zero",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest: digestWith({
+          tasks: [{ task_id: "t1", status: "running", updated_at: FRESH_AT }],
+          truncated: true,
+          running_count: 0,
+        }),
+      });
+
+      expect(summary.runningCount).toBe(0);
+    });
+
+    it("takes running_count 50 as the exact badge number and parses the total", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const taskDigest = digestWith({
+        tasks: [{ task_id: "t1", status: "running", updated_at: FRESH_AT }],
+        truncated: true,
+        running_count: 50,
+        total_count: 80,
+      });
+      const summary = summarizeLiveSession({
+        id: "scalar-50",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        taskDigest,
+      });
+
+      expect(summary.runningCount).toBe(50);
+      expect(taskDigest.taskTotalCount).toBe(80);
+      expect(taskDigest.taskRunningCount).toBe(50);
+    });
+
+    it("sums the task and dag scalars and removes only provable roster overlap", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const taskDigest = digestWith({
+        tasks: [
+          { task_id: "t1", status: "running", updated_at: FRESH_AT },
+          { task_id: "t2", status: "running", updated_at: FRESH_AT },
+        ],
+        truncated: true,
+        running_count: 2,
+      });
+      const dagDigest = parseDagDigest({
+        runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1", "t2"] }],
+        truncated: true,
+        running_count: 5,
+      });
+      if (dagDigest === null) throw new Error("Invalid dag digest fixture");
+      expect(dagDigest.dagRunningCount).toBe(5);
+      // Truncated identity on both sides: the summed scalars are authoritative.
+      const summary = summarizeLiveSession({
+        id: "scalar-sum",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        dagOversized: true,
+        taskDigest,
+        dagDigest,
+      });
+
+      expect(summary.runningCount).toBe(7);
+      expect(summary.dagRunning).toBe(5);
+    });
+
+    it("parses payload-level running_count and total_count", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      const summary = summarizeLiveSession({
+        id: "scalar-rich",
+        title: "",
+        task: { tasks: [], running_count: 3, total_count: 9 },
+        dag: null,
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(3);
     });
   });
 
@@ -1147,9 +1222,6 @@ describe("live polling hooks", () => {
       dagTotal: 3,
       lastLine: "ls",
       dagRunning: 1,
-      truncatedTasks: false,
-      taskOversized: false,
-      dagOversized: false,
     });
     expect(captured.summaries[1]).toMatchObject({ id: "s2", runningCount: 0, lastLine: null });
     expect(captured.summaries[2]).toMatchObject({ id: "legacy", title: "" });
@@ -1157,7 +1229,7 @@ describe("live polling hooks", () => {
     expect(Array.from(captured.ids)).toEqual(["s1", "s2", "legacy"]);
   });
 
-  it("surfaces task_oversized and dag_oversized from the live payload", async () => {
+  it("surfaces task_side_oversized and dag_side_oversized from the live payload", async () => {
     const fetchMock = vi.fn(async () =>
       okResponse({
         sessions: [{ id: "s1", title: "Huge", task: null, dag: null, task_oversized: true, dag_oversized: true }],
@@ -1171,8 +1243,9 @@ describe("live polling hooks", () => {
 
     expect(captured.summaries[0]).toMatchObject({
       id: "s1",
-      taskOversized: true,
-      dagOversized: true,
+      runningCount: 0,
+      taskSideOversized: true,
+      dagSideOversized: true,
     });
   });
 

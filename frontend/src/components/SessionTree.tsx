@@ -20,8 +20,9 @@ export interface SessionTreeProps {
   readonly activeTerminalId: string | null;
   readonly placedSessions: ReadonlySet<string>;
   readonly liveSessions: ReadonlySet<string>;
-  /** Live session id -> running agent count; rows show a badge while > 0. */
-  readonly runningCounts?: ReadonlyMap<string, { readonly count: number; readonly partial: boolean; readonly unknown?: boolean }> | undefined;
+  /** Live session id -> exact running agent count from server scalars; rows
+   * show a badge while > 0. Zero running renders no badge. */
+  readonly runningCounts?: ReadonlyMap<string, number> | undefined;
   readonly aggregateSessionIds?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly expanded: ReadonlySet<string>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
@@ -146,22 +147,15 @@ export function SessionTree({
               )}
               <span className="th-tree-count">{mergedSessionIds.size}</span>
               {(() => {
-                const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id)?.count ?? 0), 0);
-                const workspacePartial = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.partial === true);
-                const workspaceUnknown = Array.from(mergedSessionIds).some((id) => runningCounts?.get(id)?.unknown === true);
-                return workspaceRunning > 0 || workspaceUnknown ? (
+                const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id) ?? 0), 0);
+                return workspaceRunning > 0 ? (
                   <span
                     className="th-tree-running th-tree-running--workspace"
                     role="img"
-                    aria-label={workspaceUnknown
-                      ? t("sidebar.ws.runningAgentsUnknown")
-                      : t(workspacePartial ? "sidebar.ws.runningAgentsPartial" : "sidebar.ws.runningAgents", { n: workspaceRunning })}
-                    title={workspaceUnknown
-                      ? t("sidebar.ws.runningAgentsUnknown")
-                      : workspacePartial ? t("sidebar.ws.runningAgentsPartial", { n: workspaceRunning }) : undefined}
+                    aria-label={t("sidebar.ws.runningAgents", { n: workspaceRunning })}
                   >
                     <span className="th-tree-running-dot" aria-hidden="true" />
-                    {workspaceUnknown ? "?" : `${workspaceRunning}${workspacePartial ? "+" : ""}`}
+                    {workspaceRunning}
                   </span>
                 ) : null;
               })()}
@@ -218,8 +212,7 @@ export function SessionTree({
                   ? rename
                   : null;
                 const runningInfo = runningCounts?.get(item.id);
-                const running = runningInfo?.count ?? 0;
-                const runningUnknown = runningInfo?.unknown === true;
+                const running = runningInfo ?? 0;
                 const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: displayName })
@@ -290,19 +283,14 @@ export function SessionTree({
                         </button>
                       </span>
                     )}
-                    {(running > 0 || runningUnknown) && (
+                    {running > 0 && (
                       <span
                         className="th-tree-running"
                         role="img"
-                        aria-label={runningUnknown
-                          ? t("sidebar.tm.runningAgentsUnknown")
-                          : t(runningInfo?.partial ? "sidebar.tm.runningAgentsPartial" : "sidebar.tm.runningAgents", { n: running })}
-                        title={runningUnknown
-                          ? t("sidebar.tm.runningAgentsUnknown")
-                          : runningInfo?.partial ? t("sidebar.tm.runningAgentsPartial", { n: running }) : undefined}
+                        aria-label={t("sidebar.tm.runningAgents", { n: running })}
                       >
                         <span className="th-tree-running-dot" aria-hidden="true" />
-                        {runningUnknown ? "?" : `${running}${runningInfo?.partial ? "+" : ""}`}
+                        {running}
                       </span>
                     )}
                     {tm ? (

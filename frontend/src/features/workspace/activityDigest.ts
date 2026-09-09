@@ -2,7 +2,14 @@ import { isRecord, optString, reqBoolean, reqString } from "../../lib/chatWsPars
 
 import { taskRawStatus } from "../split/taskAuthority";
 
-/** Compact in-memory task summary from GET /api/sessions/live `task_digest`. */
+/** A nonnegative safe integer, or undefined when absent or malformed. */
+function optCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Compact in-memory task summary from GET /api/sessions/live `task_digest`.
+ * `running_count`/`total_count` are the server's pre-truncation scalars and
+ * are authoritative over the retained `tasks` rows. */
 export type TaskDigestEntry = {
   readonly taskId: string;
   readonly status: string;
@@ -14,9 +21,13 @@ export type TaskDigest = {
   readonly tasks: readonly TaskDigestEntry[];
   readonly truncated: boolean;
   readonly receivedAt?: string;
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
 };
 
-/** Compact in-memory DAG summary from GET /api/sessions/live `dag_digest`. */
+/** Compact in-memory DAG summary from GET /api/sessions/live `dag_digest`.
+ * `running_count` is the server's node-based pre-truncation running sum over
+ * all runs, before any task-roster overlap removal. */
 export type DagDigestRun = {
   readonly runId: string;
   readonly status: string;
@@ -27,6 +38,7 @@ export type DagDigest = {
   readonly runs: readonly DagDigestRun[];
   readonly truncated: boolean;
   readonly receivedAt?: string;
+  readonly dagRunningCount?: number;
 };
 
 function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry | null {
@@ -82,10 +94,14 @@ export function parseTaskDigest(value: unknown): TaskDigest | null {
   const tasks = mapStrict(value["tasks"], parseTaskDigestEntry);
   if (tasks === null) return null;
   const receivedAt = optString(value, "received_at");
+  const taskRunningCount = optCount(value["running_count"]);
+  const taskTotalCount = optCount(value["total_count"]);
   return {
     tasks,
     truncated,
     ...(typeof receivedAt === "string" ? { receivedAt } : {}),
+    ...(taskRunningCount === undefined ? {} : { taskRunningCount }),
+    ...(taskTotalCount === undefined ? {} : { taskTotalCount }),
   };
 }
 
@@ -97,9 +113,11 @@ export function parseDagDigest(value: unknown): DagDigest | null {
   const runs = mapStrict(value["runs"], parseDagDigestRun);
   if (runs === null) return null;
   const receivedAt = optString(value, "received_at");
+  const dagRunningCount = optCount(value["running_count"]);
   return {
     runs,
     truncated,
     ...(typeof receivedAt === "string" ? { receivedAt } : {}),
+    ...(dagRunningCount === undefined ? {} : { dagRunningCount }),
   };
 }

@@ -19,8 +19,7 @@ function summary(id: string, runningCount: number): LiveSessionSummary {
     id, title: id, task: null, dag: null,
     taskSideOversized: false, dagSideOversized: false,
     runningCount, doneCount: 0, dagDone: 0, dagTotal: 0,
-    lastLine: null, dagRunning: 0, truncatedTasks: false,
-    taskOversized: false, dagOversized: false,
+    lastLine: null, dagRunning: 0,
   };
 }
 

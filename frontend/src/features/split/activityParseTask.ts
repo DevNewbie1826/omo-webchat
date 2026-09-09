@@ -6,7 +6,14 @@ import type { ActivityLiveProgress, ActivityTask } from "./activityTypes";
 export interface ParsedTaskUpdated {
   readonly parentSessionId?: string;
   readonly truncatedTasks?: boolean;
+  /** Server pre-truncation scalars, authoritative over the retained rows. */
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
   readonly tasks: readonly ActivityTask[];
+}
+
+function optCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function optStringOrNumber(record: Record<string, unknown>, key: string): string | number | null | undefined {
@@ -109,9 +116,13 @@ export function parseTaskUpdated(data: unknown): ParsedTaskUpdated | null {
   if (parentSessionId === null || truncatedTasks === null) return null;
   const tasks = mapDrop(data["tasks"], (item) => parseTask(item, parentSessionId, truncatedTasks === true));
   if (tasks === null) return null;
+  const taskRunningCount = optCount(data["running_count"]);
+  const taskTotalCount = optCount(data["total_count"]);
   return {
     tasks,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+    ...(taskRunningCount !== undefined ? { taskRunningCount } : {}),
+    ...(taskTotalCount !== undefined ? { taskTotalCount } : {}),
     ...(truncatedTasks !== undefined || tasks.length !== (data["tasks"] as unknown[]).length
       ? { truncatedTasks: truncatedTasks === true || tasks.length !== (data["tasks"] as unknown[]).length } : {}),
   };

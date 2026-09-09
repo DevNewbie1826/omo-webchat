@@ -76,9 +76,6 @@ export function OverviewPanel({
           <div className="th-overview-list">
             {orderedSummaries.map((summary) => {
               const title = summary.title.length > 0 ? summary.title : summary.id;
-              const runningUnknown = summary.taskOversized || summary.dagOversized
-                || (summary.truncatedTasks && summary.runningCount === 0);
-              const runningPartial = summary.truncatedTasks && !runningUnknown;
               const target = discoveredTarget(summary.id);
               const attempt = target === null
                 ? undefined
@@ -100,17 +97,14 @@ export function OverviewPanel({
                   >
                     <span className="th-overview-card-head">
                       <span className="th-overview-card-name">{title}</span>
-                      {(summary.runningCount > 0 || runningUnknown) && (
+                      {summary.runningCount > 0 && (
                         <span
                           className="th-overview-card-running"
                           role="img"
-                          aria-label={runningUnknown
-                            ? t("overview.runningAriaUnknown")
-                            : t(runningPartial ? "overview.runningAriaPartial" : "overview.runningAria", { n: summary.runningCount })}
-                          title={runningUnknown ? t("overview.runningAriaUnknown") : undefined}
+                          aria-label={t("overview.runningAria", { n: summary.runningCount })}
                         >
                           <span className="th-overview-card-running-dot" aria-hidden="true" />
-                          {runningUnknown ? "?" : `${summary.runningCount}${runningPartial ? "+" : ""}`}
+                          {summary.runningCount}
                         </span>
                       )}
                     </span>

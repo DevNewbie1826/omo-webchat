@@ -52,13 +52,19 @@ describe("canonical task authority through all sidebar sources", () => {
     act(() => ingestExtensionEvent("s", "omo.task.updated", { tasks: [row("completed", t1, "child-1", { raw_status: "running" })] }));
     counts(0, 1);
   });
-  it("keeps compact correction authority and partial disclosure over stale/equal rich enrichment", async () => {
+  it("takes the server running scalar as the badge authority through the REST authority chain", async () => {
+    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
+      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true, running_count: 3, total_count: 9 } });
+    counts(0, 3);
+    expect(merged[0]).toMatchObject({ runningCount: 3 });
+  });
+
+  it("keeps compact correction authority over stale/equal rich enrichment", async () => {
     await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
       { task_id: "child-1", status: "completed", raw_status: "running", updated_at: t2 }], truncated: true } });
     counts(1, 0); push(payload("running", t1)); counts(1, 0);
-    expect(merged[0]?.truncatedTasks).toBe(true);
     push({ tasks: [row("running", t2, "child-1", { name: "Enriched", task_summary: "details" })] });
-    counts(1, 0); expect(merged[0]?.truncatedTasks).toBe(true);
+    counts(1, 0);
     expect(merged[0]?.task).toMatchObject({ tasks: [expect.objectContaining({ name: "Enriched", status: "completed" })] });
     push(payload("running", t3)); counts(0, 1);
   });
@@ -116,12 +122,14 @@ describe("canonical task authority through all sidebar sources", () => {
     push(payload("running", t3)); counts(0, 1);
   });
 
-  it("keeps oversized-without-digest disclosure over a stale rich replay", async () => {
+  it("keeps oversized-without-digest pushes inert over a stale rich replay", async () => {
     await poll(payload("running", t2));
     push(null, "s", { snapshots: [{ name: "omo.task.updated", data: null, oversized: true }] });
-    expect(merged[0]?.truncatedTasks || merged[0]?.taskOversized).toBe(true);
+    counts(0, 0);
     push(payload("running", t1));
-    expect(merged[0]?.truncatedTasks || merged[0]?.taskOversized).toBe(true);
+    counts(0, 0);
+    push(payload("running", t3));
+    counts(0, 1);
   });
 
   it("does not retire canonical task authority when a replaced alias receives its tombstone", async () => {

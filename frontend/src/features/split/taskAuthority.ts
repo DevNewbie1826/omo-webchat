@@ -18,6 +18,9 @@ export interface TaskAuthority {
   /** Known revisions survive row omission until this pane/session owner retires. */
   readonly taskFreshness?: ReadonlyMap<string, number>;
   readonly truncatedTasks?: boolean;
+  /** Server pre-truncation scalars; authoritative over the retained rows. */
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
   /** Oversized input without even a compact authority side is unknown. */
   readonly taskUnavailable?: boolean;
 }
@@ -74,7 +77,7 @@ function equalTask(previous: ActivityTask, incoming: ActivityTask): ActivityTask
 export function reconcileTaskAuthority<T extends TaskAuthority>(
   state: T,
   incoming: readonly ActivityTask[],
-  options: { readonly truncated?: boolean | undefined; readonly partial?: boolean; readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly mergeOnly?: boolean } = {},
+  options: { readonly truncated?: boolean | undefined; readonly partial?: boolean; readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly mergeOnly?: boolean; readonly taskRunningCount?: number; readonly taskTotalCount?: number } = {},
 ): T {
   const tasks = new Map(state.tasks);
   const taskFreshness = new Map(state.taskFreshness);
@@ -108,10 +111,15 @@ export function reconcileTaskAuthority<T extends TaskAuthority>(
   const truncatedTasks = options.truncated === true || options.partial === true || [...tasks.values()].some(task => task.truncated === true || task.compact === true)
     || (state.truncatedTasks === true && !admitted && incoming.length > 0);
   const taskUnavailable = state.taskUnavailable === true && !admitted && (incoming.length > 0 || options.mergeOnly === true);
+  const taskRunningCount = options.taskRunningCount ?? state.taskRunningCount;
+  const taskTotalCount = options.taskTotalCount ?? state.taskTotalCount;
   if (sameTasks && sameFreshness && truncatedTasks === (state.truncatedTasks ?? false)
-    && taskUnavailable === (state.taskUnavailable ?? false)) return state;
+    && taskUnavailable === (state.taskUnavailable ?? false)
+    && taskRunningCount === state.taskRunningCount && taskTotalCount === state.taskTotalCount) return state;
   return { ...state, tasks: sameTasks ? state.tasks : tasks,
-    taskFreshness: sameFreshness ? state.taskFreshness : taskFreshness, truncatedTasks, taskUnavailable };
+    taskFreshness: sameFreshness ? state.taskFreshness : taskFreshness, truncatedTasks, taskUnavailable,
+    ...(taskRunningCount === state.taskRunningCount ? {} : { taskRunningCount }),
+    ...(taskTotalCount === state.taskTotalCount ? {} : { taskTotalCount }) };
 }
 
 /** A compact side and its rich prefix form one membership envelope. Reconcile
@@ -124,7 +132,13 @@ export function reconcileTaskSources<T extends TaskAuthority>(
     ? { ...reconcileTaskAuthority(state, [], { mergeOnly: true, truncated: true }), taskUnavailable: true } : state;
   const truncated = digest === undefined ? rich?.truncatedTasks === true || options.oversized === true : digest.truncated;
   const partial = rich?.truncatedTasks === true || options.oversized === true;
-  if (digest === undefined) return reconcileTaskAuthority(state, rich!.tasks, { ...options, truncated });
+  const scalars = {
+    ...(digest?.taskRunningCount === undefined ? {} : { taskRunningCount: digest.taskRunningCount }),
+    ...(digest?.taskTotalCount === undefined ? {} : { taskTotalCount: digest.taskTotalCount }),
+    ...(rich?.taskRunningCount === undefined ? {} : { taskRunningCount: rich.taskRunningCount }),
+    ...(rich?.taskTotalCount === undefined ? {} : { taskTotalCount: rich.taskTotalCount }),
+  };
+  if (digest === undefined) return reconcileTaskAuthority(state, rich!.tasks, { ...options, truncated, ...scalars });
   // Unknown revisions are still arrival-ordered, once per source envelope.
   // Carry matching unknown rich descriptions in the compact row rather than
   // applying the same envelope twice as two unknown raw mutations.
@@ -138,7 +152,7 @@ export function reconcileTaskSources<T extends TaskAuthority>(
     }
     return { ...task, name: task.taskId, compact: true };
   });
-  let next = reconcileTaskAuthority(state, rows, { ...options, truncated, partial: partial && rows.length > 0 });
+  let next = reconcileTaskAuthority(state, rows, { ...options, truncated, partial: partial && rows.length > 0, ...scalars });
   const knownDescriptions = (rich?.tasks ?? []).filter(task => next.tasks.has(task.taskId) && rawTaskRevision(task) !== undefined);
   next = reconcileTaskAuthority(next, knownDescriptions, { mergeOnly: true, truncated, partial: partial && rows.length > 0 });
   return next;
@@ -159,13 +173,18 @@ export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority
     taskFreshness.set(id, revision);
   }
   merged = { ...merged, tasks, taskFreshness, truncatedTasks: first.truncatedTasks === true || second.truncatedTasks === true,
-    taskUnavailable: first.taskUnavailable === true || second.taskUnavailable === true };
+    taskUnavailable: first.taskUnavailable === true || second.taskUnavailable === true,
+    ...(second.taskRunningCount === undefined ? {} : { taskRunningCount: second.taskRunningCount }),
+    ...(second.taskTotalCount === undefined ? {} : { taskTotalCount: second.taskTotalCount }) };
   return reconcileTaskAuthority(merged, [], { mergeOnly: true, truncated: merged.truncatedTasks });
 }
 
 /** Wire projection for existing shelf/sidebar parsers. Activity never changes updated_at. */
 export function taskAuthorityPayload(authority: TaskAuthority): unknown {
-  return { truncated_tasks: authority.truncatedTasks === true, tasks: [...authority.tasks.values()].map(task => ({
+  return { truncated_tasks: authority.truncatedTasks === true,
+    ...(authority.taskRunningCount === undefined ? {} : { running_count: authority.taskRunningCount }),
+    ...(authority.taskTotalCount === undefined ? {} : { total_count: authority.taskTotalCount }),
+    tasks: [...authority.tasks.values()].map(task => ({
     task_id: task.taskId, name: task.name, status: task.status,
     raw_status: task.rawStatus, updated_at: task.activityAt === undefined ? task.updatedAt : task.rawUpdatedAt,
     task_summary: task.taskSummary, agent_type: task.agentType, category: task.category, model: task.model,
