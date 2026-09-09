@@ -86,6 +86,15 @@ export function ChatPane({
 
   const runState = !chat.connected ? "reconnecting" : chat.serverRunning ? "responding" : "idle";
   const runLabel = runState === "idle" ? undefined : t(`chat.${runState}`);
+  // Distinct recovery phases (C3): the reconnecting run indicator alone
+  // cannot tell a pending rebinding replay or a failed resume apart from a
+  // plain drop. Incomplete recovery is always a warning with the server's
+  // reason, never a normal or success treatment.
+  const recoveryLabel = chat.recovery === null ? undefined
+    : chat.recovery.phase === "reconnecting" ? t("chat.reconnecting")
+    : chat.recovery.phase === "resuming" ? t("chat.recoveryResuming")
+    : chat.recovery.phase === "recovered" ? t("chat.recoveryRecovered")
+    : t("chat.recoveryIncomplete");
 
   const modelPicker = (
     <ModelPicker
@@ -246,6 +255,19 @@ export function ChatPane({
               {runState !== "idle" && <span className="th-chat-status-spinner" aria-hidden="true" />}
             </span>
             <div className="th-chat-status-primary">
+            {chat.recovery && recoveryLabel && (
+              <span
+                className={`th-chat-status-item th-chat-recovery${
+                  chat.recovery.phase === "incomplete" || chat.recovery.phase === "reconnecting"
+                    ? " th-chat-status-item--warn"
+                    : chat.recovery.phase === "recovered" ? " th-chat-status-item--live" : ""}`}
+                data-recovery-phase={chat.recovery.phase}
+                title={chat.recovery.reason}
+              >
+                {recoveryLabel}
+                {chat.recovery.phase === "incomplete" && chat.recovery.reason ? `: ${chat.recovery.reason}` : ""}
+              </span>
+            )}
             {chat.isCompacting && (
               <span className="th-chat-status-item th-chat-status-item--warn">{t("chat.compacting")}</span>
             )}

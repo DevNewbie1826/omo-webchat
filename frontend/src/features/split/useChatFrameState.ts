@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
-import type { ChatClient, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
+import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalModal";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
@@ -26,6 +26,15 @@ import type { ChatSendRequest } from "./chatSendState";
 import type { ChatSessionRef } from "../workspace/workspace";
 import type { ChatDraft, FailedDraft, RecoveredChatDraft, QueueEngineSummary, QueueSlotItem, ToolEntry } from "./chatSessionTypes";
 import { createChatFrameHandler } from "./useChatFrameHandler";
+import {
+  recoveryAfterClose,
+  recoveryAfterError,
+  recoveryAfterOpen,
+  recoveryAfterReady,
+  type RecoveryState,
+} from "./recoveryState";
+
+export type { RecoveryPhase, RecoveryState } from "./recoveryState";
 
 /**
  * Set when a resume_failed error frame proved the stored identity dangling:
@@ -127,6 +136,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [activities, setActivities] = useState<ActivityState>(emptyActivityState);
   const [activitiesVersion, setActivitiesVersion] = useState(0);
   const [notices, setNotices] = useState<readonly ChatNotice[]>([]);
+  const [recovery, setRecovery] = useState<RecoveryState | null>(null);
   const [queueItems, setQueueItems] = useState<readonly QueueSlotItem[]>([]);
   const [queueEngine, setQueueEngine] = useState<QueueEngineSummary>({ pendingMessageCount: 0, ordered: [] });
   const failedDrafts: readonly FailedDraft[] = sendRequests.filter(request => request.phase === "failed" && !request.queueOwned)
@@ -168,6 +178,15 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
   const noticeIdRef = useRef(0);
+  const recoveryRef = useRef<RecoveryState | null>(null);
+  // True while a socket generation is open; a close only starts a recovery
+  // cycle when a live connection was actually lost.
+  const socketOpenRef = useRef(false);
+  const applyRecovery = (next: RecoveryState | null): void => {
+    if (next === recoveryRef.current) return;
+    recoveryRef.current = next;
+    setRecovery(next);
+  };
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
     messagesRef.current = next;
@@ -348,7 +367,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }, HISTORY_STALL_MS);
   };
 
-  const handleFrame = createChatFrameHandler({
+  const baseHandleFrame = createChatFrameHandler({
     t,
     controls,
     streaming,
@@ -401,6 +420,15 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setQueueItems,
     setQueueEngine,
   });
+
+  // Recovery observation wraps the frame handler: the ready replay and the
+  // mapped resume-failure errors are the recovery-state surface, and both
+  // must be seen even when the handler itself early-returns on them.
+  const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
+    if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current));
+    else if (frame.type === "error") applyRecovery(recoveryAfterError(recoveryRef.current, frame.code, frame.message));
+    return baseHandleFrame(frame, connectionGeneration);
+  };
 
   // Both domains reconcile per ID; touches outlive the bounded progress buffer.
   const beginActivityHydration = (): number => {
@@ -471,6 +499,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
 
   const markOpen = (): number => {
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
+    applyRecovery(recoveryAfterOpen(recoveryRef.current));
+    socketOpenRef.current = true;
     socketRef.current = sends.nextSocket();
     const connectionGeneration = ++replayGenerationRef.current;
     connectionGenerationRef.current = connectionGeneration;
@@ -490,6 +520,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   };
   const markClose = (): void => {
     todoAuthorityRef.current = unbindTodoAuthority(todoAuthorityRef.current);
+    applyRecovery(recoveryAfterClose(recoveryRef.current, socketOpenRef.current));
+    socketOpenRef.current = false;
     ledger.failAll();
     if (historyStallTimerRef.current !== null) {
       window.clearTimeout(historyStallTimerRef.current);
@@ -576,6 +608,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     activities,
     activitiesVersion,
     notices,
+    recovery,
     handleFrame,
     beginActivityHydration,
     cancelActivityHydration,
