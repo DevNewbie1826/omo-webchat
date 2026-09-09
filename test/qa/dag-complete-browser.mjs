@@ -12,10 +12,27 @@ export async function setupDOM(page) {
   await page.addInitScript(() => {
     window.__dagQA.stop();
     localStorage.setItem('th-ws-expanded', '["qa-dag"]');
-    window.__completeInitial = window.__dagQA.arm(String(() => !!document.querySelector('.th-chat-input textarea')
-      && document.querySelector('.th-chat-body')?.textContent.includes('dag-transcript-99')));
   });
 }
+/** The transcript is virtualized: original message99 can leave the DOM as
+ * fixture history grows. Wire-prefix equality remains at each caller; UI
+ * hydration follows the current source tail, never an arbitrary mounted row. */
+export async function waitForTranscript(page, entries) {
+  const last = entries.at(-1);
+  assert.equal(last.type, 'message');
+  assert.equal(typeof last.message.content, 'string');
+  const expected = { index: entries.length - 1, role: last.message.role, marker: last.message.content.split('\n')[0] };
+  assert.ok(expected.marker);
+  const signal = await armDOM(page, expected => {
+    const body = document.querySelector('.th-chat-body');
+    const row = body?.querySelector(`.th-chat-row[data-index="${expected.index}"] .th-chat-msg--${expected.role}`);
+    return !!document.querySelector('.th-chat-input textarea') && !body?.querySelector('.th-chat-loading')
+      && row?.textContent.includes(expected.marker);
+  }, expected);
+  await doneDOM(page, signal);
+  return expected;
+}
+
 export async function actionDOM(page, predicate, action, args) {
   const signal = await armDOM(page, predicate, args); await action(); await doneDOM(page, signal);
 }
@@ -49,7 +66,7 @@ export async function prepareSubagentsScenario({ page, observed, fixture, url = 
   assert.equal(binding.socketId, historyFrame.socketId);
   assert.ok(binding.sequence < acknowledgement.sequence && acknowledgement.sequence < historyFrame.sequence);
   assert.deepEqual(historyFrame.frame.entries.slice(0, 100), transcript());
-  await page.evaluate(() => window.__dagQA.done(window.__completeInitial));
+  const transcriptTail = await waitForTranscript(page, historyFrame.frame.entries);
   assert.equal(response.status(), 200);
   const history = await response.json();
   assert.deepEqual(history.task?.tasks ?? [], [], 'DAG-only fixture must not have task authority rows');
@@ -77,7 +94,7 @@ export async function prepareSubagentsScenario({ page, observed, fixture, url = 
   await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: options.partial,
     runs: [{ ...expected, nodes: expected.nodes.slice(0, options.retained), edges: options.partial ? [] : expected.edges, waves: [], truncated_nodes: options.partial }] } }, 'scenario-fresh-source-after-clear');
   return { ...await assertSubagents(page, options), sourceCounts: expected.counts, sourceRevision: revision,
-    hydration: { socketId: binding.socketId, transcriptEntries: historyFrame.frame.entries.length, activityStatus: response.status(), marker } };
+    hydration: { socketId: binding.socketId, transcriptEntries: historyFrame.frame.entries.length, activityStatus: response.status(), marker, transcriptTail } };
 }
 
 export async function browserGate(page, receipts) {

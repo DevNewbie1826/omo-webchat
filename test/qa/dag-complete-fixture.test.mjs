@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { chromePath, loadDriver, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
-import { browserGate, actionDOM, setupDOM, prepareSubagentsScenario, armDOM, doneDOM } from './dag-complete-browser.mjs';
+import { browserGate, actionDOM, setupDOM, prepareSubagentsScenario, armDOM, doneDOM, waitForTranscript } from './dag-complete-browser.mjs';
 import { assertComplete, bounded, detailPath, longRunIDs } from './dag-complete-controls.mjs';
 import { observeSockets } from './heartbeat-liveness.mjs';
 import { confirmPortReleased } from './dag-state-ordering.mjs';
@@ -197,7 +197,14 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
             machine.state = applyActivityHistorySnapshot(machine.state, 'omo.dag.updated', history.dag);
             machine.historyApplied = true; render();
           }
-          if (frame.type === 'entries') document.querySelector('.th-chat-body').textContent = frame.entries.map(entry => entry.message.content).join('\\n');
+          if (frame.type === 'entries') {
+            const body = document.querySelector('.th-chat-body'); body.replaceChildren();
+            frame.entries.slice(-8).forEach((entry, offset) => {
+              const row = document.createElement('div'); row.className = 'th-chat-row'; row.dataset.index = String(frame.entries.length - 8 + offset);
+              const message = document.createElement('div'); message.className = 'th-chat-msg th-chat-msg--' + entry.message.role;
+              message.textContent = entry.message.content; row.append(message); body.append(row);
+            });
+          }
           if (frame.type === 'extensionEvent') {
             machine.delivered.push(frame); machine.state = applyActivityEvent(machine.state, frame.name, frame.data); render();
           }
@@ -274,5 +281,62 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
     if (process.env.QA_MACHINERY_EVIDENCE_DIR) await writeFile(join(process.env.QA_MACHINERY_EVIDENCE_DIR, 'qa-remount-cleanup.json'), JSON.stringify(cleanup, null, 2) + '\n');
     assert.deepEqual(cleanup.errors, []);
     if (cleanup.fixture) assert.deepEqual(cleanup.fixture.errors, []);
+  }
+});
+
+
+test('real SPA readiness follows the rendered transcript tail after 121 entries', { timeout: 120000 }, async () => {
+  // This checks the readiness seam against the built SPA's real virtualizer,
+  // not the final DAG surface gate. Never rebuild or modify frontend/dist here.
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'dag-transcript-tail-'));
+  let fixture, browser, page, observed;
+  const receipt = { cleanup: {} };
+  try {
+    fixture = await startCompleteFixture({ evidenceDir, port: 0 });
+    for (let index = 0; index < 21; index++) fixture.transport.deliver('qa-chat', {
+      type: 'message', message: { role: 'assistant', content: `dag-qa-event-${index + 1}` },
+    });
+    const expected = fixture.transport.base.runState('qa-chat').entries;
+    assert.equal(expected.length, 121); assert.deepEqual(expected.slice(0, 100), transcript());
+    browser = await (await loadDriver()).launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' });
+    await context.grantPermissions(['local-network-access'], { origin: fixture.url });
+    assert.equal((await context.request.post(fixture.url + '/api/login', { data: { password: 'dag-complete-isolated' } })).status(), 200);
+    page = await context.newPage(); await setupDOM(page); observed = observeSockets(page);
+    const errors = []; page.on('pageerror', error => errors.push(String(error)));
+    const ready = observed.wait(row => row.direction === 'received' && row.frame?.type === 'ready' && row.frame.sessionId === 'qa-chat');
+    const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat');
+    await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
+    const [ack, history] = await Promise.all([ready, entries]);
+    assert.equal(ack.socketId, history.socketId); assert.deepEqual(history.frame.entries, expected);
+    // Observe the actual virtual window before invoking the readiness seam.
+    // Both the old predicate's false state and the new tail are deterministic.
+    const tail = expected.at(-1).message.content;
+    await doneDOM(page, await armDOM(page, tail => document.querySelector('.th-chat-row[data-index="120"] .th-chat-msg')?.textContent.includes(tail)
+      && !document.querySelector('.th-chat-body').textContent.includes('dag-transcript-99'), tail));
+    receipt.before = await page.evaluate(() => ({
+      original99Mounted: document.querySelector('.th-chat-body').textContent.includes('dag-transcript-99'),
+      rows: [...document.querySelectorAll('.th-chat-row')].map(row => Number(row.dataset.index)),
+    }));
+    assert.equal(receipt.before.original99Mounted, false);
+    assert.ok(receipt.before.rows.length < expected.length);
+    assert.equal(receipt.before.rows.at(-1), 120);
+    receipt.readiness = await waitForTranscript(page, history.frame.entries);
+    assert.deepEqual(receipt.readiness, { index: 120, role: 'assistant', marker: tail });
+    assert.equal(await page.locator('.th-chat-loading').count(), 0);
+    assert.deepEqual(fixture.transport.base.runState('qa-chat').entries, expected, 'readiness does not reset or shorten long history');
+    assert.deepEqual(errors, []);
+    receipt.passed = true;
+  } finally {
+    if (page && !page.isClosed()) receipt.cleanup.DOMObservers = await page.evaluate(() => window.__dagQA?.stop());
+    if (observed) observed.stop();
+    if (browser) { await browser.close(); assert.equal(browser.isConnected(), false); receipt.cleanup.browserClosed = true; }
+    if (fixture) { receipt.cleanup.fixture = await fixture.stop(); assert.deepEqual(receipt.cleanup.fixture.errors, []); }
+    receipt.assets = JSON.parse(await readFile(join(evidenceDir, 'qa-asset-hashes.json'), 'utf8'));
+    await rm(evidenceDir, { recursive: true, force: true }); receipt.cleanup.evidenceTempRemoved = true;
+    if (process.env.QA_MACHINERY_EVIDENCE_DIR) {
+      await mkdir(process.env.QA_MACHINERY_EVIDENCE_DIR, { recursive: true });
+      await writeFile(join(process.env.QA_MACHINERY_EVIDENCE_DIR, 'qa-transcript-tail.json'), JSON.stringify(receipt, null, 2) + '\n');
+    }
   }
 });

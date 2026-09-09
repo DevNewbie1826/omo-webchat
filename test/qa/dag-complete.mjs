@@ -11,7 +11,7 @@ import { observeSockets } from './heartbeat-liveness.mjs';
 import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
-import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view, waitForTranscript } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
   assert.ok(globalThis.Bun, 'Run with bun test/qa/dag-complete.mjs');
@@ -73,7 +73,7 @@ export async function run({ evidenceDir }) {
     const history = (await entries).frame.entries;
     assert.ok(history.length >= 100);
     assert.deepEqual(history.slice(0, 100), transcript(), 'all original 100 message IDs, links, roles and text survive');
-    await page.evaluate(() => window.__dagQA.done(window.__completeInitial));
+    await waitForTranscript(page, history);
     if (!reload) {
       const original = await fixture.expected(longRunIDs[0]);
       await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
