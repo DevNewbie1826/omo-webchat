@@ -11,7 +11,7 @@ import { observeSockets } from './heartbeat-liveness.mjs';
 import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
-import { actionDOM, armDOM, assertSubagents, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, reconnectWithoutReplay, releaseComplete, screenshotPath, setupDOM, statusIs, view } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
   assert.ok(globalThis.Bun, 'Run with bun test/qa/dag-complete.mjs');
@@ -67,9 +67,9 @@ export async function run({ evidenceDir }) {
     }
     if (id !== 'dense-64' || implicitDefault) await releaseComplete({ page, held: await select('dense-64'), expected });
   }
-  async function visit(reload = false) {
+  async function visit(reload = false, navigate = false) {
     const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat', { label: '100-message native transcript' });
-    if (reload) await page.reload({ waitUntil: 'domcontentloaded' }); else await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
+    if (reload && !navigate) await page.reload({ waitUntil: 'domcontentloaded' }); else await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
     const history = (await entries).frame.entries;
     assert.ok(history.length >= 100);
     assert.deepEqual(history.slice(0, 100), transcript(), 'all original 100 message IDs, links, roles and text survive');
@@ -101,17 +101,15 @@ export async function run({ evidenceDir }) {
     }
     await closeDescriptions(page);
   }
-  async function subagentsProof(name, options, sourceCounts) {
+  let scenarioRevision = 0;
+  async function subagentsProof(name, options, source) {
     for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-      await actionDOM(page, size => innerWidth === size.width && innerHeight === size.height,
-        () => page.setViewportSize(viewport), viewport);
-      const counts = await assertSubagents(page, options);
+      const revision = new Date(Date.parse('2026-09-08T11:00:00Z') + scenarioRevision++ * 1000).toISOString();
+      const counts = await prepareSubagentsScenario({ page, observed, fixture, viewport, source, revision, options, deliver });
       const label = viewport.width === 1280 ? name : `${name}-mobile`;
-      await capture(page, evidenceDir, label, { ...counts, sourceCounts, viewport });
+      await capture(page, evidenceDir, label, { ...counts, viewport });
       record(label, { ...counts, viewport, screenshot: `${label}.png` });
     }
-    await actionDOM(page, () => innerWidth === 1280 && innerHeight === 800,
-      () => page.setViewportSize({ width: 1280, height: 800 }));
   }
   process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   try {
@@ -228,36 +226,28 @@ export async function run({ evidenceDir }) {
     await capture(page, evidenceDir, 'C2-same-version-enrichment', await assertSurface(page, pair, 'graph'));
     record('same-version-full-enriches-nonconflicting-original-topology', { total: 2, exactNodeIDs: pair.nodes.map(node => node.id) });
 
-    // Isolate DAG-derived Subagents from other summaries. Complete task authority
-    // is not mocked; no task records are injected into this scenario.
-    await actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true',
-      () => page.locator('[data-activity-tab="agents"]').click());
-    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'clear-other-DAG-derived-subagent-summaries');
-    // Reuse the owned real dense checkpoint for a two-digit lower bound; no new API or fake full response.
-    const largeSource = structuredClone(stableSource); largeSource.updatedAt = '2026-09-08T10:06:30Z'; largeSource.status = 'running';
+    // Each viewport gets a fresh native binding and completed REST hydration,
+    // then real tab selection and strictly newer controlled source revisions.
+    // Complete task authority is not mocked; no task records are injected.
+    const largeSource = structuredClone(stableSource); largeSource.status = 'running';
     for (const node of largeSource.nodes) { node.state = 'running'; delete node.completedAt; }
-    await fixture.replace('dense-64', largeSource);
-    const large = expectedRun(largeSource);
-    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
-      runs: [{ ...large, nodes: large.nodes.slice(0, 12), edges: [], waves: [], truncated_nodes: true }] } }, 'larger-retained-count-from-owned-64-node-checkpoint');
-    await subagentsProof('C2-subagents-partial-twelve', { partial: true, retained: 12 }, large.counts);
+    await subagentsProof('C2-subagents-partial-twelve', { partial: true, retained: 12 }, largeSource);
     await fixture.replace('dense-64', stableSource);
-    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'clear-larger-count-before-original-one-zero-full-recovery');
-    for (const [minute, retainedNodes, partialCounts, name] of [[7, 1, true, 'C2-subagents-partial-one'], [8, 0, true, 'C2-subagents-partial-zero'], [9, 2, false, 'C2-subagents-full-two']]) {
-      pairSource.updatedAt = `2026-09-08T10:0${minute}:00Z`; await fixture.replace('long-identities', pairSource); pair = expectedRun(pairSource);
-      await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: partialCounts,
-        runs: [{ ...pair, nodes: pair.nodes.slice(0, retainedNodes), edges: partialCounts ? [] : pair.edges, waves: [] }] } }, name);
-      await subagentsProof(name, { partial: partialCounts, retained: retainedNodes }, pair.counts);
+    for (const [retained, partial, name] of [[1, true, 'C2-subagents-partial-one'], [0, true, 'C2-subagents-partial-zero'], [2, false, 'C2-subagents-full-two']]) {
+      await subagentsProof(name, { partial, retained }, pairSource);
     }
-    const fullTwo = gate.arm('long-identities');
-    await page.locator('[data-activity-tab="dag"]').click(); await releaseComplete({ page, held: fullTwo, expected: pair });
+    pair = await fixture.expected('long-identities');
+    // Fresh panes have no remembered run selection. Discover the real catalog
+    // and explicitly select the authoritative pair through the actual control.
+    await open();
+    await releaseComplete({ page, held: await select('long-identities'), expected: pair });
     await capture(page, evidenceDir, 'C2-subagents-authoritative-full-two', await assertSurface(page, pair, 'graph'));
     record('partial-Subagents-qualified-and-authoritative-full-two-restored', { running: 2, total: 2 });
     await releaseComplete({ page, held: await select('dense-64'), expected });
-    await visit(true); await snap('C2-reload');
-    await actionDOM(page, () => innerWidth === 390 && innerHeight === 844,
-      () => page.setViewportSize({ width: 390, height: 844 }));
-    await visit(true); await snap('C2-mobile');
+    await resetScenarioViewport(page, fixture.url, { width: 1280, height: 800 });
+    await visit(true, true); await visit(true); await snap('C2-reload');
+    await resetScenarioViewport(page, fixture.url, { width: 390, height: 844 });
+    await visit(true, true); await visit(true); await snap('C2-mobile');
     await expandedDescriptions('C2-mobile'); await view(page, 'list'); await snap('C2-mobile-list', 'list'); await view(page, 'graph');
     assert.equal(fixture.transport.base.frames.filter(frame => frame.type === 'chat.send').length, 0);
     assert.deepEqual(report.errors, []); report.passed = true;

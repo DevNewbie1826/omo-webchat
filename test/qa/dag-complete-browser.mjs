@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { installDOMSignals } from './dag-state-ordering.mjs';
-import { assertComplete, bounded, createResponseGate } from './dag-complete-controls.mjs';
+import { assertComplete, bounded, createResponseGate, expectedRun } from './dag-complete-controls.mjs';
 import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
-import { save } from './dag-complete-fixture.mjs';
+import { save, transcript } from './dag-complete-fixture.mjs';
 
 export const armDOM = (page, predicate, args) => page.evaluate(({ source, args }) => window.__dagQA.arm(source, args), { source: String(predicate), args });
 export const doneDOM = (page, id) => page.evaluate(id => window.__dagQA.done(id), id);
@@ -20,6 +20,65 @@ export async function actionDOM(page, predicate, action, args) {
   const signal = await armDOM(page, predicate, args); await action(); await doneDOM(page, signal);
 }
 export const statusIs = status => document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status') === status;
+
+/** Tear down the old pane before changing layout. The next navigation starts
+ * one binding at the final viewport, rather than racing a responsive remount. */
+export async function resetScenarioViewport(page, url, viewport) {
+  await page.evaluate(() => window.__dagQA?.stop());
+  const resetURL = new URL('/__dag-qa-reset', url).href;
+  const handler = route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body></body></html>' });
+  await page.route(resetURL, handler);
+  try { await page.goto(resetURL, { waitUntil: 'domcontentloaded' }); }
+  finally { await page.unroute(resetURL, handler); }
+  await actionDOM(page, size => innerWidth === size.width && innerHeight === size.height,
+    () => page.setViewportSize(viewport), viewport);
+  await page.evaluate(() => window.__dagQA.stop());
+}
+
+export async function prepareSubagentsScenario({ page, observed, fixture, url = fixture.url, viewport, source, revision, options, deliver }) {
+  await resetScenarioViewport(page, url, viewport);
+  const attached = observed.wait(row => row.direction === 'sent' && row.frame?.type === 'chat.create' && row.frame.chatId === 'qa-chat', { label: 'scenario native binding' });
+  const ready = observed.wait(row => row.direction === 'received' && row.frame?.type === 'ready' && row.frame.sessionId === 'qa-chat', { label: 'scenario ready' });
+  const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat', { label: 'scenario transcript' });
+  const activity = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workspaces/qa-dag/chats/qa-chat/activity', { timeout: 15000 });
+  // Observe before navigation, including when a sibling readiness check fails.
+  const signals = Promise.all([attached, ready, entries, activity]); signals.catch(() => {});
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  const [binding, acknowledgement, historyFrame, response] = await signals;
+  assert.equal(binding.socketId, acknowledgement.socketId);
+  assert.equal(binding.socketId, historyFrame.socketId);
+  assert.ok(binding.sequence < acknowledgement.sequence && acknowledgement.sequence < historyFrame.sequence);
+  assert.deepEqual(historyFrame.frame.entries.slice(0, 100), transcript());
+  await page.evaluate(() => window.__dagQA.done(window.__completeInitial));
+  assert.equal(response.status(), 200);
+  const history = await response.json();
+  assert.deepEqual(history.task?.tasks ?? [], [], 'DAG-only fixture must not have task authority rows');
+  assert.notEqual(history.task_oversized, true);
+  const runs = history.dag.runs;
+  assert.ok(runs.length > 0);
+  assert.ok(runs.every(run => run.status === 'running'), 'clear may omit only nonterminal fixture runs');
+  // Receiving HTTP is not hydration. A fresh document cannot have these rows
+  // until the real REST reducer has applied them. Use row identity, not the
+  // count under test; that count still comes only from the fixed scenario.
+  const markerRun = runs.find(run => run.nodes.length > 0);
+  assert.ok(markerRun, 'real REST projection must supply a retained hydration marker');
+  const markerNode = markerRun.nodes[0], marker = `(${markerRun.name}) - ${markerNode.label ?? markerNode.prompt}`;
+  const hydrated = await armDOM(page, marker => [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].some(node => node.textContent === marker), marker);
+  await actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true'
+    && !!document.querySelector('[data-activity-tabpanel="agents"]'), () => page.locator('[data-activity-tab="agents"]').click());
+  await doneDOM(page, hydrated);
+  const prior = await fixture.source(source.runId);
+  assert.ok(Date.parse(revision) > Date.parse(prior.updatedAt), 'scenario revision must advance the owned checkpoint');
+  const next = { ...structuredClone(source), updatedAt: revision }, expected = expectedRun(next);
+  assert.equal(expected.counts.running, expected.counts.total, 'controlled source has only running nodes');
+  assert.equal(expected.counts.total, options.retained === 12 ? 64 : 2);
+  await fixture.replace(source.runId, next);
+  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'scenario-clear-after-REST-hydration');
+  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: options.partial,
+    runs: [{ ...expected, nodes: expected.nodes.slice(0, options.retained), edges: options.partial ? [] : expected.edges, waves: [], truncated_nodes: options.partial }] } }, 'scenario-fresh-source-after-clear');
+  return { ...await assertSubagents(page, options), sourceCounts: expected.counts, sourceRevision: revision,
+    hydration: { socketId: binding.socketId, transcriptEntries: historyFrame.frame.entries.length, activityStatus: response.status(), marker } };
+}
 
 export async function browserGate(page, receipts) {
   const gate = createResponseGate(request => fetch(request, { signal: AbortSignal.timeout(30000) }), receipts);
