@@ -7,6 +7,7 @@ import { SettingsMenu } from "./SettingsMenu";
 import { OverviewPanel } from "../features/workspace/OverviewPanel";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 import { useSessionOpenAttempts } from "../features/workspace/useSessionOpenAttempts";
+import { useCompleteDagBadgeSummaries } from "../features/workspace/useCompleteDagBadgeSummaries";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
@@ -81,9 +82,12 @@ export function Sidebar({
   // are fresher (see liveBadgeStore); background sessions stay poll-fed.
   const pollSummaries = useLiveSessionSummaries(true);
   const summaries = useMergedLiveSummaries(pollSummaries);
+  // Complete run documents upgrade DAG-side lower bounds to exact running
+  // counts for the tree badges; the overview keeps the merged summaries.
+  const badgeSummaries = useCompleteDagBadgeSummaries(summaries, workspaces);
   const runningCounts = useMemo(
     () => new Map(
-      summaries
+      badgeSummaries
         .filter((s) => s.runningCount > 0 || s.truncatedTasks || s.taskOversized || s.dagOversized)
         .map((s) => [s.id, {
           count: s.runningCount,
@@ -91,7 +95,7 @@ export function Sidebar({
           unknown: s.taskOversized || s.dagOversized || (s.truncatedTasks && s.runningCount === 0),
         }]),
     ),
-    [summaries],
+    [badgeSummaries],
   );
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());

@@ -156,7 +156,9 @@ export function SessionTree({
                     aria-label={workspaceUnknown
                       ? t("sidebar.ws.runningAgentsUnknown")
                       : t(workspacePartial ? "sidebar.ws.runningAgentsPartial" : "sidebar.ws.runningAgents", { n: workspaceRunning })}
-                    title={workspaceUnknown ? t("sidebar.ws.runningAgentsUnknown") : undefined}
+                    title={workspaceUnknown
+                      ? t("sidebar.ws.runningAgentsUnknown")
+                      : workspacePartial ? t("sidebar.ws.runningAgentsPartial", { n: workspaceRunning }) : undefined}
                   >
                     <span className="th-tree-running-dot" aria-hidden="true" />
                     {workspaceUnknown ? "?" : `${workspaceRunning}${workspacePartial ? "+" : ""}`}
@@ -295,7 +297,9 @@ export function SessionTree({
                         aria-label={runningUnknown
                           ? t("sidebar.tm.runningAgentsUnknown")
                           : t(runningInfo?.partial ? "sidebar.tm.runningAgentsPartial" : "sidebar.tm.runningAgents", { n: running })}
-                        title={runningUnknown ? t("sidebar.tm.runningAgentsUnknown") : undefined}
+                        title={runningUnknown
+                          ? t("sidebar.tm.runningAgentsUnknown")
+                          : runningInfo?.partial ? t("sidebar.tm.runningAgentsPartial", { n: running }) : undefined}
                       >
                         <span className="th-tree-running-dot" aria-hidden="true" />
                         {runningUnknown ? "?" : `${running}${runningInfo?.partial ? "+" : ""}`}
