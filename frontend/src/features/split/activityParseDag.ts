@@ -99,6 +99,22 @@ function parseDagWave(record: Record<string, unknown>): ActivityDagWave | null {
   return { index, nodeIds };
 }
 
+// Ambiguous raw identities cannot contribute confirmed node state, even when
+// one of the duplicate records would otherwise be dropped as malformed.
+function duplicateIds(value: unknown, key: string): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  if (!Array.isArray(value)) return duplicates;
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const id = reqString(item, key);
+    if (id === null) continue;
+    if (seen.has(id)) duplicates.add(id);
+    seen.add(id);
+  }
+  return duplicates;
+}
+
 function parseDagRun(record: Record<string, unknown>, parentSessionId: string | undefined): ActivityDagRun | null {
   const runId = reqString(record, "run_id");
   const runKey = reqString(record, "run_key");
@@ -110,7 +126,9 @@ function parseDagRun(record: Record<string, unknown>, parentSessionId: string | 
   const updatedAt = optString(record, "updated_at") ?? undefined;
   const counts = parseCounts(record["counts"]);
   const truncatedNodes = optBoolean(record, "truncated_nodes");
-  const nodes = record["nodes"] === undefined ? [] : mapDrop(record["nodes"], parseDagNode);
+  const duplicateNodes = duplicateIds(record["nodes"], "id");
+  const nodes = record["nodes"] === undefined ? [] : mapDrop(record["nodes"], parseDagNode)
+    ?.filter(node => !duplicateNodes.has(node.id)) ?? null;
   const edges = record["edges"] === undefined ? [] : mapDrop(record["edges"], parseDagEdge);
   const waves = record["waves"] === undefined ? [] : mapDrop(record["waves"], parseDagWave);
   if (createdAt === null || counts === null || truncatedNodes === null || nodes === null || edges === null || waves === null) {
@@ -145,11 +163,14 @@ export function parseDagUpdated(data: unknown): ParsedDagUpdated | null {
   const parentSessionId = optString(data, "parent_session_id");
   const truncatedRuns = optBoolean(data, "truncated_runs");
   if (parentSessionId === null || truncatedRuns === null) return null;
-  const runs = mapDrop(data["runs"], (item) => parseDagRun(item, parentSessionId));
+  const duplicateRuns = duplicateIds(data["runs"], "run_id");
+  const runs = mapDrop(data["runs"], (item) => parseDagRun(item, parentSessionId))
+    ?.map(run => duplicateRuns.has(run.runId)
+      ? { ...run, nodes: [], edges: [], waves: [], truncated: true } : run) ?? null;
   if (runs === null) return null;
   // A discarded run is missing membership, not an authoritative empty list.
   const rawRuns = data["runs"];
-  const lostRuns = Array.isArray(rawRuns) && runs.length < rawRuns.length;
+  const lostRuns = duplicateRuns.size > 0 || (Array.isArray(rawRuns) && runs.length < rawRuns.length);
   return {
     runs,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),

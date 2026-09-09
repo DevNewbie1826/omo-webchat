@@ -180,6 +180,49 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     }
 
     it.each([
+      ["duplicate runs", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), wireRun({ nodes: [nodeB], counts: { total: 1, running: 1 } })], "?", 0, true],
+      ["duplicate nodes", [wireRun({ nodes: [nodeA, nodeA] })], "?", 0, false],
+      ["conflicting duplicate nodes", [wireRun({ nodes: [nodeA, { ...nodeA, state: "completed" }, nodeB] })], "1+", 1, false],
+      ["malformed duplicate node", [wireRun({ nodes: [nodeA, { id: "a" }, nodeB] })], "1+", 1, false],
+      ["malformed duplicate run", [wireRun(), { run_id: "raw-run" }], "?", 0, true],
+      ["duplicate runs with different revisions", [wireRun(), wireRun({ updated_at: newer })], "?", 0, true],
+    ] as const)("quarantines %s through raw parser/reducer/Shelf and recovers exact2", (_case, runs, expected, retained, lostRuns) => {
+      const parsed = parseDagUpdated(snapshot(runs));
+      let state = apply(emptyActivityState(), "omo.dag.updated", snapshot(runs));
+      renderShelf(harness, state);
+      expect(count()).toBe(expected);
+      expect(parsed?.truncatedRuns).toBe(lostRuns);
+      expect(parsed?.runs.every(run => run.truncated === true)).toBe(true);
+      expect(state.truncatedDags).toBe(true);
+      expect(state.dags.size).toBe(1);
+      expect(state.dags.get("raw-run")?.nodes).toHaveLength(retained);
+      click(agentsTab());
+      expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(retained);
+      expect(agentsPanel().querySelector(".th-activity-partial")).not.toBeNull();
+      const incumbent = state.dags.get("raw-run");
+      state = apply(state, "omo.dag.updated", snapshot([wireRun()]));
+      expect(state.dags.get("raw-run")).toBe(incumbent);
+      expect(state.truncatedDags).toBe(true);
+      state = apply(state, "omo.dag.updated", snapshot([wireRun({ updated_at: "2026-09-09T10:02:00Z" })]));
+      renderShelf(harness, state);
+      expect(count()).toBe("2/2");
+      expect(state.truncatedDags).toBe(false);
+      expect(state.dags.get("raw-run")?.nodes.map(node => node.id)).toEqual(["a", "b"]);
+      expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
+    });
+
+    it("keeps distinct exact run and node IDs authoritative", () => {
+      const prefix = "x".repeat(512);
+      const runs = [wireRun({ run_id: prefix + "a", nodes: [{ ...nodeA, id: prefix + "a", task_id: undefined }], counts: { total: 1, running: 1 } }),
+        wireRun({ run_id: prefix + "b", nodes: [{ ...nodeB, id: prefix + "b" }], counts: { total: 1, running: 1 } })];
+      const state = apply(emptyActivityState(), "omo.dag.updated", snapshot(runs));
+      renderShelf(harness, state);
+      expect(state.dags.size).toBe(2);
+      expect(state.truncatedDags).toBe(false);
+      expect(count()).toBe("2/2");
+    });
+
+    it.each([
       ["missing depends_on", [wireRun({ nodes: [nodeA, malformedNode] })], "1+", 1],
       ["all nodes dropped", [wireRun({ nodes: [malformedNode, null] })], "?", 0],
       ["missing nodes", [wireRun({ nodes: undefined })], "?", 0],
