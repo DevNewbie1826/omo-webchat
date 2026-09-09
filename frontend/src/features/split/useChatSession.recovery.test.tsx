@@ -33,6 +33,8 @@ describe("useChatSession recovery states", () => {
 			resumed,
 		});
 
+	const history = () => harness.deliver({ type: "entries", sessionId: session.id, entries: [], final: true });
+
 	it("is idle before any disconnect", () => {
 		expect(harness.current?.recovery).toBeNull();
 	});
@@ -48,6 +50,8 @@ describe("useChatSession recovery states", () => {
 		expect(harness.current?.recovery?.phase).toBe("resuming");
 
 		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("resuming");
+		act(history);
 		expect(harness.current?.recovery?.phase).toBe("recovered");
 	});
 
@@ -89,6 +93,7 @@ describe("useChatSession recovery states", () => {
 		act(() => harness.disconnect());
 		act(() => harness.reconnect());
 		act(() => ready(true));
+		act(history);
 		expect(harness.current?.recovery?.phase).toBe("recovered");
 
 		act(() => harness.disconnect());
@@ -107,9 +112,23 @@ describe("useChatSession recovery states", () => {
 		expect(harness.current?.recovery).toBeNull();
 	});
 
-	// Server-driven recovery: an RPC loss keeps the browser socket open, so
-	// provider_disconnected — not a close/open pair — starts the cycle, and the
-	// automatic rebinding replay's ready completes it without any user action.
+	it.each(["start_failed", "no_chat", "reconnect_exhausted", "incomplete_history", "decode_failed", "provider_timeout", "provider_error", "external-write-detected"])("keeps %s recovery failure sticky across later reconnects", (code) => {
+		const failure = () => harness.deliver({ type: "error", sessionId: session.id, code, command: "get_entries", message: code });
+		act(failure);
+		expect(harness.current?.recovery).toBeNull(); // ordinary initial attach
+		act(() => harness.disconnect());
+		act(() => harness.reconnect());
+		act(() => ready(true)); // replay failures arrive AFTER route readiness
+		act(failure);
+		expect(harness.current?.recovery?.phase).toBe("incomplete");
+		act(() => harness.disconnect());
+		act(() => harness.reconnect());
+		act(() => ready(true));
+		act(history);
+		expect(harness.current?.recovery).toEqual({ phase: "incomplete", reason: code });
+	});
+
+	// RPC-only recovery has no socket close/open; ready starts its replay beat.
 	it("starts reconnecting on provider_disconnected while the socket stays open", () => {
 		act(() => ready(false));
 		expect(harness.current?.recovery).toBeNull();
@@ -125,7 +144,7 @@ describe("useChatSession recovery states", () => {
 		expect(harness.current?.recovery?.phase).toBe("reconnecting");
 	});
 
-	it("recovers from a server-driven cycle on the rebinding replay's ready", () => {
+	it("observes server-driven resuming on ready and recovers only after terminal history", () => {
 		act(() => ready(false));
 		act(() =>
 			harness.deliver({
@@ -136,6 +155,8 @@ describe("useChatSession recovery states", () => {
 			}),
 		);
 		act(() => ready(true));
+		expect(harness.current?.recovery?.phase).toBe("resuming");
+		act(history);
 		expect(harness.current?.recovery?.phase).toBe("recovered");
 	});
 
@@ -178,11 +199,13 @@ describe("useChatSession recovery states", () => {
 			});
 		act(() => loss());
 		act(() => ready(true));
+		act(history);
 		expect(harness.current?.recovery?.phase).toBe("recovered");
 
 		act(() => loss());
 		expect(harness.current?.recovery?.phase).toBe("reconnecting");
 		act(() => ready(true));
+		act(history);
 		expect(harness.current?.recovery?.phase).toBe("recovered");
 	});
 });

@@ -93,6 +93,7 @@ describe("ChatPane recovery states", () => {
 			piSessionId: "pi-1",
 			resumed,
 		});
+	const history = () => deliver({ type: "entries", sessionId: "chat-1", entries: [], final: true });
 	const recoveryItem = () =>
 		container.querySelector<HTMLElement>("[data-recovery-phase]");
 
@@ -117,10 +118,11 @@ describe("ChatPane recovery states", () => {
 		expect(item?.textContent).toContain("chat.recoveryResuming");
 	});
 
-	it("renders recovered after the rebinding replay's ready frame", () => {
+	it("renders recovered after terminal rebinding history", () => {
 		act(() => disconnect());
 		act(() => reconnect());
 		act(() => ready(true));
+		act(history);
 		const item = recoveryItem();
 		expect(item?.dataset["recoveryPhase"]).toBe("recovered");
 		expect(item?.textContent).toContain("chat.recoveryRecovered");
@@ -177,9 +179,27 @@ describe("ChatPane recovery states", () => {
 		act(() => ready(false));
 		act(() => providerLoss());
 		act(() => ready(true));
+		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("resuming");
+		act(history);
 		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("recovered");
 		expect(recoveryItem()?.className).toContain("th-chat-status-item--live");
 		expect(transientError()).toBeNull();
+	});
+
+	it.each(["reconnect_exhausted", "start_failed", "no_chat", "incomplete_history", "decode_failed", "provider_timeout", "provider_error", "external-write-detected"])("renders sticky incomplete for %s after ready", (code) => {
+		act(() => ready(false));
+		act(providerLoss);
+		act(() => ready(true));
+		act(() => deliver({ type: "error", sessionId: "chat-1", code, command: "get_entries", message: code }));
+		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("incomplete");
+		expect(recoveryItem()?.className).toContain("th-chat-status-item--warn");
+		act(() => disconnect());
+		act(() => reconnect());
+		act(providerLoss);
+		act(() => ready(true));
+		act(history);
+		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("incomplete");
+		expect(recoveryItem()?.className).toContain("th-chat-status-item--warn");
 	});
 
 	it("renders a warning when the automatic server-side resume fails", () => {

@@ -29,6 +29,7 @@ import { createChatFrameHandler } from "./useChatFrameHandler";
 import {
   recoveryAfterClose,
   recoveryAfterError,
+  recoveryAfterHistory,
   recoveryAfterOpen,
   recoveryAfterProviderLoss,
   recoveryAfterReady,
@@ -428,11 +429,12 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // provider_disconnected error is the server-observed transport loss: the
   // browser socket stays open, so it is the only cycle start that flow gets.
   const handleFrame = (frame: ChatServerFrame, connectionGeneration = 0): "refresh_stats" | void => {
-    if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current));
+    if (frame.type === "ready") applyRecovery(recoveryAfterReady(recoveryRef.current, frame.resumed));
+    else if (frame.type === "entries") applyRecovery(recoveryAfterHistory(recoveryRef.current, frame.final !== false));
     else if (frame.type === "error") {
       applyRecovery(frame.code === "provider_disconnected"
         ? recoveryAfterProviderLoss(recoveryRef.current)
-        : recoveryAfterError(recoveryRef.current, frame.code, frame.message));
+        : recoveryAfterError(recoveryRef.current, frame.code, frame.message, frame.command));
     }
     return baseHandleFrame(frame, connectionGeneration);
   };
