@@ -121,6 +121,10 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
   messages.push({ ...(typeof entryId === "string" ? { id: entryId } : {}), role: "assistant", blocks: [result], ts: 0 });
 }
 
+export function hasRenderableContent(message: AssistantMessage): boolean {
+  return !(message.role === "assistant" && (message.blocks ?? []).length === 0);
+}
+
 export function messageText(message: AssistantMessage): string {
   return (message.blocks ?? [])
     .filter((block) => block.kind === "text")
@@ -169,13 +173,14 @@ export function parseEntries(entries: unknown): UiMessage[] {
     const timestamp = message["timestamp"];
     const model = message["model"];
     const id = entry["id"];
-    messages.push({
+    const parsed: UiMessage = {
       ...(typeof id === "string" ? { id } : {}),
       role,
       blocks: parseBlocks(message["content"]),
       ts: typeof timestamp === "number" ? timestamp : 0,
       ...(typeof model === "string" ? { model } : {}),
-    });
+    };
+    if (hasRenderableContent(parsed)) messages.push(parsed);
   }
   return messages;
 }

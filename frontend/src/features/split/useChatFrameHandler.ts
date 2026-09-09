@@ -6,7 +6,7 @@ import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./ac
 import type { ActivityState } from "./activityTypes";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
-import { type UiMessage } from "./chatEntries";
+import { hasRenderableContent, type UiMessage } from "./chatEntries";
 import { forgetSteerMark, steerMarks } from "./chatSteerMarks";
 import type { useConfirmedControls } from "./chatConfirmedControls";
 import { reconcileFrameHistory } from "./chatFrameReconciliation";
@@ -243,7 +243,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "message": {
-        if (frame.message.role === "toolResult") return;
+        if (frame.message.role === "toolResult" || !hasRenderableContent(frame.message)) return;
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(
           [...bindings.messagesRef.current, frame.message], steerMarks(frame.sessionId),
