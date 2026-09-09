@@ -33,13 +33,74 @@ export function rawLoss(full, kind) {
   else if (kind === 'run-local') {
     run.nodes = run.nodes.slice(0, 1); run.edges = [];
     run.counts = { ...run.counts, total: 1, running: 1 }; run.truncated_nodes = true;
+  } else if (kind === 'duplicate-node') {
+    run.nodes = [structuredClone(run.nodes[0]), structuredClone(run.nodes[0])]; run.edges = [];
+  } else if (kind === 'duplicate-run') {
+    return { parent_session_id: 'qa-chat', truncated_runs: false, runs: run.nodes.map(node => ({
+      ...structuredClone(run), nodes: [{ ...structuredClone(node), depends_on: [] }], edges: [],
+      counts: { ...run.counts, total: 1, running: 1 },
+    })) };
   } else if (kind !== 'lost-run') throw new Error(`Unknown loss ${kind}`);
   return { parent_session_id: 'qa-chat', truncated_runs: false, runs: kind === 'lost-run' ? [null] : [run] };
 }
 
+export function taskTransition(full) {
+  assert.equal(full.nodes.length, 64);
+  assert.equal(full.nodes[0].id, 'node-00');
+  assert.equal(Buffer.byteLength(full.nodes[0].task_id), 601);
+  const lossyRun = { ...structuredClone(full), nodes: [{ ...structuredClone(full.nodes[0]),
+    task_id: full.nodes[0].task_id.slice(0, 512), task_id_truncated: true }],
+    edges: [], waves: [], truncated_nodes: true };
+  assert.equal(Buffer.byteLength(lossyRun.nodes[0].task_id), 512);
+  const exactRun = structuredClone(lossyRun);
+  exactRun.updated_at = new Date(Date.parse(full.updated_at) - 1000).toISOString();
+  exactRun.nodes[0].task_id = 'previous-attempt-task';
+  delete exactRun.nodes[0].task_id_truncated;
+  // The changed row label is a wire-supplied hydration sentinel, not a timer
+  // or a private React-state probe. The node identity never changes.
+  exactRun.nodes[0].label = `qa-exact-${full.updated_at}`;
+  const envelope = run => ({ parent_session_id: 'qa-chat', truncated_runs: false, runs: [run] });
+  return { exact: envelope(exactRun), lossy: envelope(lossyRun) };
+}
+
+/** A real native reconnect re-runs REST hydration on the SAME mounted state.
+ * Do not reload/navigate here: that would erase the older exact identity and
+ * turn the regression into the already-covered initial lossy hydration case. */
+export async function rehydrateREST({ page, observed, fixture, raw, wire, beforeFulfill }) {
+  const handler = async route => {
+    const response = await route.fetch(); assert.equal(response.status(), 200);
+    const original = await response.json();
+    assert.deepEqual(original.task?.tasks ?? [], []); assert.notEqual(original.task_oversized, true);
+    await beforeFulfill();
+    const body = { ...original, dag: raw };
+    wire.push({ surface: 'REST', transition: true, original, delivered: body });
+    await route.fulfill({ response, json: body });
+  };
+  await page.route(`**${activityPath}`, handler);
+  const closed = observed.wait(row => row.kind === 'close', { label: 'r6 REST native close' });
+  const bound = observed.wait(row => row.direction === 'sent' && row.frame?.type === 'chat.create' && row.frame.chatId === 'qa-chat', { label: 'r6 REST rebind' });
+  const ready = observed.wait(row => row.direction === 'received' && row.frame?.type === 'ready' && row.frame.sessionId === 'qa-chat', { label: 'r6 REST ready' });
+  const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat', { label: 'r6 REST transcript' });
+  const activity = page.waitForResponse(response => new URL(response.url()).pathname === activityPath, { timeout: 15000 });
+  const signals = Promise.all([closed, bound, ready, entries, activity]); signals.catch(() => {});
+  try {
+    fixture.transport.disconnect('qa-chat');
+    const [old, attached, ack, history, response] = await signals;
+    assert.notEqual(old.socketId, attached.socketId);
+    assert.equal(attached.socketId, ack.socketId); assert.equal(ack.socketId, history.socketId);
+    assert.ok(attached.sequence < ack.sequence && ack.sequence < history.sequence);
+    assert.deepEqual(history.frame.entries.slice(0, 100), transcript());
+    assert.ok(history.frame.entries.length > 100);
+    const tail = await waitForTranscript(page, history.frame.entries);
+    assert.equal(response.status(), 200); assert.deepEqual((await response.json()).dag, raw);
+    assert.equal(observed.timeline.some(row => row.socketId === attached.socketId && row.direction === 'received' && row.frame?.name === 'omo.dag.updated'), false);
+    return { oldSocket: old.socketId, socketId: attached.socketId, entries: history.frame.entries.length, tail };
+  } finally { await page.unroute(`**${activityPath}`, handler); }
+}
+
 /** Appended to the original lead flow: no original action or screenshot is
  * replaced. Successful detail bodies always come from the owned Go server.
- * Only F3 activity inputs are fault-injected, before the real REST/WS parsers. */
+ * F3 and r6 transition activity inputs are injected before real REST/WS parsers. */
 export async function r5Proof({ page, observed, fixture, gate, deliver, record, evidenceDir }) {
   const wire = [];
   const select = async id => {
@@ -159,7 +220,7 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     // F3 raw wire, not pre-parsed ActivityState. Both REST and native WS paths
     // include node loss, no retained nodes, lost run, and local-only partial.
     let sequence = 0;
-    for (const surface of ['REST', 'live']) for (const kind of ['malformed', 'zero', 'run-local', 'lost-run']) {
+    for (const surface of ['REST', 'live']) for (const kind of ['malformed', 'zero', 'run-local', 'lost-run', 'duplicate-run', 'duplicate-node']) {
       for (const viewport of [desktop, { width: 390, height: 844 }]) {
         const pair = await fixture.source('long-identities'); pair.status = 'running';
         pair.updatedAt = new Date(Date.parse('2026-09-09T14:00:00Z') + sequence++ * 3000).toISOString();
@@ -178,6 +239,8 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
           wire.push({ surface, kind, delivered: input });
         }
         const retained = kind === 'malformed' || kind === 'run-local' ? 1 : 0;
+        // duplicate-run/duplicate-node must show `?` after quarantine under the
+        // committed F3-R6 contract; exact counts or inflated bounds fail.
         const label = `F3-${surface}-${kind}-${viewport.width}`;
         const partial = await counts({ partial: true, retained });
         await capture(page, evidenceDir, label, { ...partial, viewport });
@@ -191,6 +254,50 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
         await capture(page, evidenceDir, `${label}-full-graph`, await openFull(pair.runId, recovered));
         record(`${label}-complete-2-of-2-and-original-graph`, { ...exact, viewport, revision: pair.updatedAt });
       }
+    }
+    // Append after every r5 class, retaining the same full-response gates,
+    // pixel/bounds captures and outer cleanup. No accepted full exists in a
+    // fresh pane before these exact -> newer lossy -> full transitions.
+    let transitionSequence = 0;
+    for (const surface of ['REST', 'live']) for (const viewport of [desktop, { width: 390, height: 844 }]) {
+      const next = await fixture.source(source.runId);
+      next.updatedAt = new Date(Date.parse('2026-09-09T16:00:00Z') + transitionSequence++ * 3000).toISOString();
+      await fixture.replace(next.runId, next);
+      const complete = expectedRun(next), input = taskTransition(complete);
+      const label = `F1-R6-${surface}-exact-lossy-full601-${viewport.width}`;
+      const markerFor = run => `(${run.name}) - ${run.nodes[0].label ?? run.nodes[0].prompt}`;
+      const exactMarker = markerFor(input.exact.runs[0]), lossyMarker = markerFor(input.lossy.runs[0]);
+      assert.notEqual(exactMarker, lossyMarker);
+      const rowIs = marker => [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].some(node => node.textContent === marker);
+      if (surface === 'REST') await fresh(viewport, input.exact);
+      else {
+        await fresh(viewport, { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] });
+        await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: input.exact }, `${label}-exact-wire`);
+        wire.push({ surface, stage: 'exact', delivered: input.exact });
+      }
+      await doneDOM(page, await armDOM(page, rowIs, exactMarker));
+      assert.equal(await page.locator('.th-activity-gnode').count(), 0);
+      await capture(page, evidenceDir, `${label}-exact`, { viewport, stage: 'exact', raw: input.exact });
+      record(`${label}-exact-accepted`, { viewport, raw: input.exact });
+      const acceptedLossy = await armDOM(page, ({ exactMarker, lossyMarker }) => {
+        const names = [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].map(node => node.textContent);
+        return names.includes(lossyMarker) && !names.includes(exactMarker);
+      }, { exactMarker, lossyMarker });
+      let reconnect;
+      if (surface === 'REST') reconnect = await rehydrateREST({ page, observed, fixture, raw: input.lossy, wire,
+        beforeFulfill: async () => assert.equal(await page.evaluate(rowIs, exactMarker), true, 'older exact row survives reconnect until newer REST is released') });
+      else {
+        await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: input.lossy }, `${label}-lossy-wire`);
+        wire.push({ surface, stage: 'lossy', delivered: input.lossy });
+      }
+      await doneDOM(page, acceptedLossy);
+      assert.equal(await page.locator('.th-activity-gnode').count(), 0);
+      await capture(page, evidenceDir, `${label}-lossy`, { viewport, stage: 'lossy', raw: input.lossy, reconnect });
+      record(`${label}-newer-lossy-accepted`, { viewport, raw: input.lossy, reconnect });
+      const graph = await openFull(next.runId, complete, true);
+      assert.equal(graph.total, 64);
+      await capture(page, evidenceDir, `${label}-recovered`, graph);
+      record(`${label}-complete-original-64`, { viewport, revision: complete.updated_at, taskBytes: Buffer.byteLength(complete.nodes[0].task_id), graph });
     }
   } finally { await save(evidenceDir, 'qa-r5-raw-wire.json', wire); }
 }

@@ -77,9 +77,22 @@ export async function prepareSubagentsScenario({ page, observed, fixture, url = 
   // Receiving HTTP is not hydration. A fresh document cannot have these rows
   // until the real REST reducer has applied them. Use row identity, not the
   // count under test; that count still comes only from the fixed scenario.
-  const markerRun = runs.find(run => run.nodes.length > 0);
+  // The 512-byte projection can make two distinct long node IDs collide; the
+  // parser then quarantines that raw node as a duplicate identity. Pick a
+  // marker that survives parsing: a run whose first raw node remains unique
+  // after projection truncation.
+  const markerRun = runs.find(run => run.nodes.length > 0 && run.nodes.some((node, index) => {
+    const id = node.id ?? '';
+    return !run.nodes.some((other, otherIndex) => otherIndex !== index && (other.id ?? '').startsWith(id)
+      || otherIndex < index && id.startsWith(other.id ?? ''));
+  }));
   assert.ok(markerRun, 'real REST projection must supply a retained hydration marker');
-  const markerNode = markerRun.nodes[0], marker = `(${markerRun.name}) - ${markerNode.label ?? markerNode.prompt}`;
+  const markerNode = markerRun.nodes.find((node, index) => {
+    const id = node.id ?? '';
+    return !markerRun.nodes.some((other, otherIndex) => otherIndex !== index && (other.id ?? '').startsWith(id)
+      || otherIndex < index && id.startsWith(other.id ?? ''));
+  });
+  const marker = `(${markerRun.name}) - ${markerNode.label ?? markerNode.prompt}`;
   const hydrated = await armDOM(page, marker => [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].some(node => node.textContent === marker), marker);
   await actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true'
     && !!document.querySelector('[data-activity-tabpanel="agents"]'), () => page.locator('[data-activity-tab="agents"]').click());
