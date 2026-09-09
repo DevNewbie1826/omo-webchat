@@ -190,8 +190,8 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 			if !stateOK || !taskOK {
 				return nil, false
 			}
-			if state == "running" && taskID != "" && !terminalDagStatuses[status] {
-				if retainedIDs == maxActivityDigestEntries {
+			if state == "running" && !terminalDagStatuses[status] {
+				if taskID == "" || retainedIDs == maxActivityDigestEntries {
 					truncated = true
 				} else {
 					ids = append(ids, taskID)

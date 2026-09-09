@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
+import type { ParsedDagUpdated } from "../split/activityParse";
+import { isRecord } from "../../lib/chatWsParseFields";
 import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
 import type { DagDigest, TaskDigest, DagDigestRun, TaskDigestEntry } from "./activityDigest";
@@ -8,8 +10,8 @@ import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
 /** Per-session rollup shown by the sessions overview and the tree badge.
- * Counts tolerate null or malformed payloads: unparseable input counts as
- * "no activity", never as an error. */
+ * Malformed DAG input contributes no invented running work and qualifies
+ * the retained count as partial, never as authoritative inactivity. */
 /** Quiet-running cutoff for summaries whose session liveness is not already
  * established by the shared poller (WS-only override summaries); mirrors
  * OVERRIDE_TTL_MS in liveBadgeStore. A session the poller lists keeps its
@@ -39,6 +41,7 @@ export interface LiveSessionSummary {
   readonly lastLine: string | null;
   /** DAG-side running children not already present in the task list. */
   readonly dagRunning: number;
+  /** Running-count lower bound: task/digest truncation or incomplete rich DAG data. */
   readonly truncatedTasks: boolean;
   readonly taskOversized: boolean;
   readonly dagOversized: boolean;
@@ -60,18 +63,58 @@ function lastLineOf(tasks: readonly ActivityTask[]): string | null {
   return bestLine;
 }
 
-/** Running DAG children not already represented by a task row (any status).
- * Prefer node-level rows when a run has them; otherwise use counts.running. */
+/** The shared tolerant parser drops malformed members and defaults missing
+ * topology/counts. At this raw summary boundary, those losses must not certify
+ * a complete count. Keep this independent of heartbeat/liveness information. */
+function dagCountPartial(data: unknown, parsed: ParsedDagUpdated | null): boolean {
+  if (data == null) return false;
+  if (!isRecord(data) || parsed === null || !Array.isArray(data["runs"])) return true;
+  if (data["partial"] === true || parsed.truncatedRuns === true || data["runs"].length !== parsed.runs.length) return true;
+  const rawRuns = data["runs"];
+  const runIds = new Set<string>();
+  return parsed.runs.some((run, index) => {
+    const raw = rawRuns[index];
+    if (!isRecord(raw) || raw["partial"] === true || run.runId === "" || runIds.has(run.runId)) return true;
+    runIds.add(run.runId);
+    if (!Array.isArray(raw["nodes"]) || run.nodes.length === 0 || raw["nodes"].length !== run.nodes.length) return true;
+    for (const key of ["edges", "waves"] as const) {
+      const members = raw[key];
+      if (members !== undefined && (!Array.isArray(members) || members.length !== run[key].length)) return true;
+    }
+    const nodeIds = new Set(run.nodes.map((node) => node.id));
+    if (nodeIds.has("") || nodeIds.size !== run.nodes.length || run.counts.total !== run.nodes.length) return true;
+    const states = new Map<string, number>();
+    for (const node of run.nodes) {
+      if (!Object.hasOwn(run.counts, node.state) || node.state === "total" || node.dependsOn.some((id) => !nodeIds.has(id))) return true;
+      states.set(node.state, (states.get(node.state) ?? 0) + 1);
+    }
+    for (const [state, count] of Object.entries(run.counts)) {
+      if (!Number.isSafeInteger(count) || count < 0 || (state !== "total" && count !== (states.get(state) ?? 0))) return true;
+    }
+    return run.edges.some((edge) => !nodeIds.has(edge.from) || !nodeIds.has(edge.to))
+      || run.waves.some((wave) => wave.nodeIds.some((id) => !nodeIds.has(id)));
+  });
+}
+
+/** Count only identified running nodes. Aggregate counts cannot be deduplicated
+ * against authoritative task rows, and missing topology is qualified separately. */
 function dagRunningOf(runs: readonly ActivityDagRun[], taskIds: ReadonlySet<string>): number {
   let running = 0;
+  const seenTasks = new Set(taskIds);
+  const seenRuns = new Set<string>();
   for (const run of runs) {
-    if (run.nodes.length === 0) {
-      running += run.counts.running;
-      continue;
-    }
+    if (run.runId === "" || TERMINAL_DAG_STATUSES.has(run.status) || seenRuns.has(run.runId)) continue;
+    seenRuns.add(run.runId);
+    const seenNodes = new Set<string>();
     for (const node of run.nodes) {
+      if (node.id === "" || seenNodes.has(node.id)) continue;
+      seenNodes.add(node.id);
       if (node.state !== "running") continue;
-      if (node.taskId !== undefined && taskIds.has(node.taskId)) continue;
+      // An empty optional task ID has only the run/node identity above.
+      if (node.taskId !== undefined && node.taskId !== "") {
+        if (seenTasks.has(node.taskId)) continue;
+        seenTasks.add(node.taskId);
+      }
       running += 1;
     }
   }
@@ -144,10 +187,12 @@ function countDigestTaskRunning(
 
 function countDigestDagRunning(runs: readonly DagDigestRun[], taskIds: ReadonlySet<string>): number {
   let running = 0;
+  const seenTasks = new Set(taskIds);
   for (const run of runs) {
     if (TERMINAL_DAG_STATUSES.has(run.status)) continue;
     for (const taskId of run.runningTaskIds) {
-      if (taskIds.has(taskId)) continue;
+      if (seenTasks.has(taskId)) continue;
+      seenTasks.add(taskId);
       running += 1;
     }
   }
@@ -162,7 +207,8 @@ export function summarizeLiveSession(
   const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
   const taskProjection = reconcileTaskSources({ tasks: new Map<string, ActivityTask>() }, parsedTask, info.taskDigest);
   const tasks = [...taskProjection.tasks.values()];
-  const runs = (info.dag == null ? null : parseDagUpdated(info.dag))?.runs ?? [];
+  const parsedDag = info.dag == null ? null : parseDagUpdated(info.dag);
+  const runs = parsedDag?.runs ?? [];
   const counts = taskStatusCounts(tasks);
   // An oversized side retains the server's previous cached payload. Parse it
   // for descriptive fields such as lastLine, but never treat stale rows as a
@@ -241,7 +287,8 @@ export function summarizeLiveSession(
     dagRunning,
     truncatedTasks: parsedTask?.truncatedTasks === true
       || taskDigest?.truncated === true
-      || dagDigest?.truncated === true,
+      || dagDigest?.truncated === true
+      || (info.dagOversized !== true && dagCountPartial(info.dag, parsedDag)),
     taskOversized: info.taskOversized === true && taskDigest === undefined,
     dagOversized: info.dagOversized === true && dagDigest === undefined,
   };

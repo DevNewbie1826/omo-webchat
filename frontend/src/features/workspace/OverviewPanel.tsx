@@ -76,7 +76,8 @@ export function OverviewPanel({
           <div className="th-overview-list">
             {orderedSummaries.map((summary) => {
               const title = summary.title.length > 0 ? summary.title : summary.id;
-              const runningUnknown = summary.taskOversized || summary.dagOversized;
+              const runningUnknown = summary.taskOversized || summary.dagOversized
+                || (summary.truncatedTasks && summary.runningCount === 0);
               const runningPartial = summary.truncatedTasks && !runningUnknown;
               const target = discoveredTarget(summary.id);
               const attempt = target === null
