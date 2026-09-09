@@ -200,7 +200,7 @@ export function ChatPane({
           focused={focused}
         />
         <GoalBar goal={chat.goal} />
-        <ActivityShelf activities={chat.activities} />
+        <ActivityShelf activities={chat.activities} dagSource={{ wsId: chatSession.wsId, chatId: chatSession.id, connected: chat.connected }} />
         {/* Fixed queue slot: run-time pending feedback renders here, outside
         the transcript scrollport, anchored above the status strip/composer. */}
         <QueuePanel

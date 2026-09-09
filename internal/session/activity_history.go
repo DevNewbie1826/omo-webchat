@@ -102,13 +102,14 @@ type activityDagCounts struct {
 }
 
 type activityDagNode struct {
-	ID        string   `json:"id"`
-	Label     string   `json:"label,omitempty"`
-	Prompt    string   `json:"prompt"`
-	DependsOn []string `json:"depends_on"`
-	State     string   `json:"state"`
-	TaskID    string   `json:"task_id,omitempty"`
-	StartedAt string   `json:"started_at,omitempty"`
+	ID              string   `json:"id"`
+	Label           string   `json:"label,omitempty"`
+	Prompt          string   `json:"prompt"`
+	DependsOn       []string `json:"depends_on"`
+	State           string   `json:"state"`
+	TaskID          string   `json:"task_id,omitempty"`
+	TaskIDTruncated bool     `json:"task_id_truncated,omitempty"`
+	StartedAt       string   `json:"started_at,omitempty"`
 }
 
 type activityDagEdge struct {
@@ -383,7 +384,7 @@ func projectStoredDag(run storedDagRun) (activityDagRun, bool) {
 		truncated = truncated || dependsTruncated || idTruncated || labelTruncated || promptTruncated || stateTruncated || taskIDTruncated || startedAtTruncated
 		node := activityDagNode{
 			ID: id, Label: label, Prompt: prompt, DependsOn: depends, State: state,
-			TaskID: taskID, StartedAt: startedAt,
+			TaskID: taskID, TaskIDTruncated: taskIDTruncated, StartedAt: startedAt,
 		}
 		nodes = append(nodes, node)
 		for _, dependency := range depends {

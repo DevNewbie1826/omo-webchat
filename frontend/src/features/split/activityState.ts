@@ -307,7 +307,8 @@ function mergePreservedNode(previous: ActivityDagNode | undefined, incoming: Act
   if (previous === undefined) return incoming;
   return {
     ...incoming,
-    ...(incoming.taskId === undefined && previous.taskId !== undefined ? { taskId: previous.taskId } : {}),
+    ...(incoming.taskId === undefined && incoming.taskIdPrefix === undefined && previous.taskId !== undefined
+      ? { taskId: previous.taskId } : {}),
     ...(incoming.activity === undefined && previous.activity !== undefined ? { activity: previous.activity } : {}),
     ...(incoming.currentTool === undefined && previous.currentTool !== undefined
       ? { currentTool: previous.currentTool }
@@ -366,7 +367,7 @@ function reconcileDagSnapshot(
     // pairs remain arrival-ordered for legacy payloads, never terminal-latched.
     if (currentRevision !== undefined && (revision === undefined || revision <= currentRevision)) continue;
     dags.set(incoming.runId, mergeDagRun(dags.get(incoming.runId), {
-      ...incoming, truncated: parsed.truncatedRuns === true,
+      ...incoming, truncated: incoming.truncated === true || parsed.truncatedRuns === true,
     }));
     if (revision !== undefined) dagFreshness.set(incoming.runId, revision);
   }

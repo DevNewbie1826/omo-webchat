@@ -471,6 +471,77 @@ button.th-activity-bar:hover {
   to { opacity: 0.25; }
 }
 
+.th-activity-dag-complete {
+  min-width: 0;
+}
+
+.th-activity-dag-picker,
+.th-activity-dag-picker label {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-activity-dag-picker label {
+  flex: 1;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-activity-dag-picker select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--th-space-1);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface-raised);
+  color: var(--th-text);
+  font: inherit;
+}
+
+.th-activity-dag-freshness,
+.th-activity-dag-details {
+  margin: var(--th-space-1) 0;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+  overflow-wrap: anywhere;
+}
+
+.th-activity-dag-freshness[role="alert"] {
+  color: var(--th-warning);
+}
+
+.th-activity-dag-details summary {
+  cursor: pointer;
+  padding: var(--th-space-1) 0;
+}
+
+.th-activity-dag-details dd {
+  margin-inline-start: var(--th-space-2);
+  font-family: var(--th-font-mono);
+}
+
+.th-activity-dag-state-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-2);
+}
+
+.th-activity-dag-node-detail {
+  border-top: 1px solid var(--th-border);
+}
+
+.th-activity-dag-prompt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .th-activity-dag-toolbar {
   display: flex;
   flex: none;
