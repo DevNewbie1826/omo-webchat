@@ -45,17 +45,47 @@ const catalog = {
 const workspace: Workspace = { id: "ws", name: "Workspace", path: "/fixture", chats: [{ id: "s1", name: "Session", provider: "omo" }] };
 const DAG_RUNS = "/api/workspaces/ws/chats/s1/dag-runs";
 
-function mockCompleteDagRuns(): void {
-  vi.mocked(apiJson).mockImplementation(async (path: string) => {
-    if (path === DAG_RUNS) return catalog;
-    if (path === `${DAG_RUNS}/r1`) return completeDoc;
-    throw new Error(`Unexpected API path: ${path}`);
+interface PendingRequest {
+  readonly path: string;
+  readonly promise: Promise<unknown>;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (reason: unknown) => void;
+}
+
+let pendingRequests: PendingRequest[] = [];
+
+function controlDagRuns(): void {
+  vi.mocked(apiJson).mockImplementation((path: string) => {
+    let resolve!: (value: unknown) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<unknown>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
+    });
+    pendingRequests.push({ path, promise, resolve, reject });
+    return promise;
   });
 }
 
-function mockDagRunsError(status: number): void {
-  vi.mocked(apiJson).mockImplementation(async () => {
-    throw new ApiError(status, `status ${status}`);
+function takeRequest(path: string): PendingRequest {
+  const index = pendingRequests.findIndex((request) => request.path === path);
+  expect(index, `pending request ${path}`).toBeGreaterThanOrEqual(0);
+  return pendingRequests.splice(index, 1)[0]!;
+}
+
+async function resolveRequest(path: string, value: unknown): Promise<void> {
+  const request = takeRequest(path);
+  await act(async () => {
+    request.resolve(value);
+    await request.promise;
+  });
+}
+
+async function rejectRequest(path: string, status: number): Promise<void> {
+  const request = takeRequest(path);
+  await act(async () => {
+    request.reject(new ApiError(status, `status ${status}`));
+    await request.promise.catch(() => undefined);
   });
 }
 
@@ -74,6 +104,7 @@ describe("Sidebar complete-DAG badge recovery", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    pendingRequests = [];
     vi.mocked(apiJson).mockReset();
   });
 
@@ -85,8 +116,8 @@ describe("Sidebar complete-DAG badge recovery", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(dag: unknown): void {
-    const info: LiveSessionInfo = { id: "s1", title: "Session", task: null, dag };
+  function render(dag: unknown, overrides: Partial<LiveSessionInfo> = {}): void {
+    const info: LiveSessionInfo = { id: "s1", title: "Session", task: null, dag, ...overrides };
     vi.mocked(useLiveSessionInfos).mockReturnValue([info]);
     act(() => root.render(
       <Sidebar collapsed={false} onToggleCollapse={() => undefined} workspaces={[workspace]}
@@ -100,21 +131,39 @@ describe("Sidebar complete-DAG badge recovery", () => {
     ));
   }
 
-  async function flush(): Promise<void> {
-    await act(async () => {
-      for (let turn = 0; turn < 20; turn++) await Promise.resolve();
-    });
-  }
-
   const sessionBadge = (): HTMLElement | null => container.querySelector<HTMLElement>(".th-tree-children .th-tree-running");
   const workspaceBadge = (): HTMLElement | null => container.querySelector<HTMLElement>(".th-tree-running--workspace");
 
+  function waitForSessionBadge(text: string): Promise<void> {
+    if (sessionBadge()?.textContent === text) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const observer = new MutationObserver(() => {
+        if (sessionBadge()?.textContent !== text) return;
+        observer.disconnect();
+        window.clearTimeout(timeout);
+        resolve();
+      });
+      const timeout = window.setTimeout(() => {
+        observer.disconnect();
+        reject(new Error(`Timed out waiting for session badge ${text}`));
+      }, 1_000);
+      observer.observe(container, { childList: true, characterData: true, subtree: true });
+    });
+  }
+
+  async function recoverOne(): Promise<void> {
+    await resolveRequest(DAG_RUNS, catalog);
+    const badgeChanged = waitForSessionBadge("2");
+    await resolveRequest(`${DAG_RUNS}/r1`, completeDoc);
+    await badgeChanged;
+  }
+
   it("C001: shows the exact recovered running count on session and workspace badges", async () => {
-    mockCompleteDagRuns();
+    controlDagRuns();
     render(partial);
     expect(sessionBadge()?.textContent).toBe("1+");
     expect(workspaceBadge()?.textContent).toBe("1+");
-    await flush();
+    await recoverOne();
     expect(sessionBadge()?.textContent).toBe("2");
     expect(sessionBadge()?.getAttribute("title")).toBe(null);
     expect(sessionBadge()?.getAttribute("aria-label")).toBe("sidebar.tm.runningAgents");
@@ -124,9 +173,9 @@ describe("Sidebar complete-DAG badge recovery", () => {
   });
 
   it.each([404, 422, 409])("C002: keeps the partial badge plus an explanatory title when dag-runs responds %i", async (status) => {
-    mockDagRunsError(status);
+    controlDagRuns();
     render(partial);
-    await flush();
+    await rejectRequest(DAG_RUNS, status);
     expect.soft(sessionBadge()?.textContent).toBe("1+");
     expect.soft(sessionBadge()?.getAttribute("title")).toBe("sidebar.tm.runningAgentsPartial");
     expect.soft(workspaceBadge()?.textContent).toBe("1+");
@@ -134,23 +183,26 @@ describe("Sidebar complete-DAG badge recovery", () => {
   });
 
   it("C003: skips dag-runs entirely for unqualified sessions and bounds fetches per revision", async () => {
-    mockCompleteDagRuns();
+    controlDagRuns();
     render(full);
-    await flush();
-    for (let poll = 0; poll < 2; poll++) {
-      render(full);
-      await flush();
-    }
+    for (let poll = 0; poll < 2; poll++) render(full);
     expect(dagRunsCalls()).toEqual([]);
 
     render(partial);
-    await flush();
+    await recoverOne();
     const afterFirstCycle = dagRunsCalls().length;
     expect(afterFirstCycle).toBeGreaterThanOrEqual(1);
-    for (let poll = 0; poll < 2; poll++) {
-      render(partial);
-      await flush();
-    }
+    for (let poll = 0; poll < 2; poll++) render(partial);
     expect(dagRunsCalls().length).toBe(afterFirstCycle);
+  });
+
+  it("keeps an unknown question-mark badge after DAG retrieval fails", async () => {
+    controlDagRuns();
+    render(null, { dagOversized: true });
+    expect(sessionBadge()?.textContent).toBe("?");
+    expect(workspaceBadge()?.textContent).toBe("?");
+    await rejectRequest(DAG_RUNS, 404);
+    expect(sessionBadge()?.textContent).toBe("?");
+    expect(workspaceBadge()?.textContent).toBe("?");
   });
 });

@@ -21,6 +21,8 @@ interface RecoveredRun {
 interface RecoveredEntry {
   readonly dag: Record<string, unknown>;
   readonly newerThanPayload: boolean;
+  /** Identity of the exact payload revision and retained content certified. */
+  readonly fingerprint: string;
 }
 
 interface RecoveryTarget {
@@ -97,7 +99,7 @@ function acceptDocument(runId: string, payloadRun: ActivityDagRun | undefined, v
   const docRev = parseDagUpdatedAt(doc.run.updatedAt);
   const payloadRev = payloadRun === undefined ? undefined : parseDagUpdatedAt(payloadRun.updatedAt);
   if (payloadRev !== undefined && (docRev === undefined || docRev < payloadRev)) throw new CompleteDagError("stale");
-  const strictlyNewer = docRev !== undefined && (payloadRev === undefined || docRev > payloadRev);
+  const strictlyNewer = docRev !== undefined && payloadRev !== undefined && docRev > payloadRev;
   if (!strictlyNewer && payloadRun !== undefined && contradictsPayloadRun(payloadRun, doc.run)) {
     throw new CompleteDagError("stale");
   }
@@ -186,6 +188,7 @@ async function recoverSessionDag(target: RecoveryTarget, signal: AbortSignal): P
   return {
     dag,
     newerThanPayload: [...docs.values()].every((doc) => doc.strictlyNewer),
+    fingerprint: target.fingerprint,
   };
 }
 
@@ -193,14 +196,75 @@ async function recoverSessionDag(target: RecoveryTarget, signal: AbortSignal): P
  * workspace/chat HTTP path (a live session id is its chat id). Task-side
  * truncation alone never fetches: no endpoint can recover a truncated task
  * list, so that qualification stays untouched. */
+function dagContentDigest(runs: readonly ActivityDagRun[]): string {
+  let hash = 0x811c9dc5;
+  let fields = 0;
+  const add = (value: string | number): void => {
+    const text = `${value}\u0000`;
+    fields++;
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+  };
+  for (const run of runs) {
+    add(run.runId);
+    add(run.status);
+    add(run.updatedAt ?? "");
+    for (const count of Object.values(wireCounts(run.counts))) add(count);
+    add(run.nodes.length);
+    for (const node of run.nodes) {
+      add(node.id);
+      add(node.state);
+    }
+  }
+  return `${fields}:${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+type ParsedDag = NonNullable<ReturnType<typeof parseDagUpdated>>;
+
+/** DAG-only sources of the combined summary qualification. Keep this aligned
+ * with the summary boundary so task truncation cannot trigger DAG retrieval. */
+function dagPayloadPartial(data: unknown, parsed: ParsedDag | null): boolean {
+  if (data == null) return false;
+  if (!isRecord(data) || parsed === null || !Array.isArray(data["runs"])) return true;
+  if (data["partial"] === true || parsed.truncatedRuns === true || data["runs"].length !== parsed.runs.length) return true;
+  const rawRuns = data["runs"];
+  const runIds = new Set<string>();
+  return parsed.runs.some((run, index) => {
+    const raw = rawRuns[index];
+    if (!isRecord(raw) || raw["partial"] === true || run.runId === "" || runIds.has(run.runId)) return true;
+    runIds.add(run.runId);
+    if (!Array.isArray(raw["nodes"]) || run.nodes.length === 0 || raw["nodes"].length !== run.nodes.length) return true;
+    for (const key of ["edges", "waves"] as const) {
+      const members = raw[key];
+      if (members !== undefined && (!Array.isArray(members) || members.length !== run[key].length)) return true;
+    }
+    const nodeIds = new Set(run.nodes.map((node) => node.id));
+    if (nodeIds.has("") || nodeIds.size !== run.nodes.length || run.counts.total !== run.nodes.length) return true;
+    const states = new Map<string, number>();
+    for (const node of run.nodes) {
+      if (!Object.hasOwn(run.counts, node.state) || node.state === "total" || node.dependsOn.some((id) => !nodeIds.has(id))) return true;
+      states.set(node.state, (states.get(node.state) ?? 0) + 1);
+    }
+    for (const [state, count] of Object.entries(run.counts)) {
+      if (!Number.isSafeInteger(count) || count < 0 || (state !== "total" && count !== (states.get(state) ?? 0))) return true;
+    }
+    return run.edges.some((edge) => !nodeIds.has(edge.from) || !nodeIds.has(edge.to))
+      || run.waves.some((wave) => wave.nodeIds.some((id) => !nodeIds.has(id)));
+  });
+}
+
 function recoveryTargets(summaries: readonly LiveSessionSummary[], workspaces: readonly Workspace[]): readonly RecoveryTarget[] {
   const targets: RecoveryTarget[] = [];
   for (const summary of summaries) {
-    const qualified = (summary.truncatedTasks && summary.dag != null) || summary.dagOversized;
+    const parsed = parseDagUpdated(summary.dag);
+    const qualified = summary.dagSideOversized
+      || summary.dagDigest?.truncated === true
+      || dagPayloadPartial(summary.dag, parsed);
     if (!qualified) continue;
     const ws = workspaces.find((candidate) => candidate.chats.some((chat) => chat.id === summary.id));
     if (ws === undefined) continue;
-    const parsed = parseDagUpdated(summary.dag);
     const envelopePartial = isRecord(summary.dag) && summary.dag["partial"] === true;
     const truncatedMembership = parsed === null || envelopePartial || parsed.truncatedRuns === true;
     targets.push({
@@ -210,7 +274,7 @@ function recoveryTargets(summaries: readonly LiveSessionSummary[], workspaces: r
         ws.id,
         summary.dagSideOversized,
         envelopePartial,
-        parsed === null ? "malformed" : parsed.runs.map((run) => [run.runId, run.updatedAt, run.status]),
+        parsed === null ? "malformed" : dagContentDigest(parsed.runs),
         parsed?.truncatedRuns === true,
       ]),
       dag: summary.dag,
@@ -237,22 +301,22 @@ export function useCompleteDagBadgeSummaries(
   const controllers = useRef(new Map<string, AbortController>());
 
   useEffect(() => {
+    const previousFingerprints = fingerprints.current;
+    const nextFingerprints = new Map<string, string>();
+    const targetsById = new Map(targets.map((target) => [target.id, target]));
     for (const target of targets) {
-      if (fingerprints.current.get(target.id) === target.fingerprint && controllers.current.has(target.id)) continue;
+      nextFingerprints.set(target.id, target.fingerprint);
+      if (previousFingerprints.get(target.id) === target.fingerprint && controllers.current.has(target.id)) continue;
       controllers.current.get(target.id)?.abort();
       const controller = new AbortController();
       controllers.current.set(target.id, controller);
-      fingerprints.current.set(target.id, target.fingerprint);
       void recoverSessionDag(target, controller.signal)
         .then((entry) => {
-          if (controller.signal.aborted) return;
-          setRecovered((current) => {
-            if (current.get(target.id) === entry) return current;
-            return new Map(current).set(target.id, entry);
-          });
+          if (controller.signal.aborted || fingerprints.current.get(target.id) !== target.fingerprint) return;
+          setRecovered((current) => new Map(current).set(target.id, entry));
         })
         .catch(() => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || fingerprints.current.get(target.id) !== target.fingerprint) return;
           setRecovered((current) => {
             if (!current.has(target.id)) return current;
             const next = new Map(current);
@@ -261,18 +325,17 @@ export function useCompleteDagBadgeSummaries(
           });
         });
     }
-    const live = new Set(targets.map((target) => target.id));
-    for (const [id, controller] of [...controllers.current]) {
-      if (live.has(id)) continue;
-      controller.abort();
+    for (const id of previousFingerprints.keys()) {
+      if (nextFingerprints.has(id)) continue;
+      controllers.current.get(id)?.abort();
       controllers.current.delete(id);
-      fingerprints.current.delete(id);
     }
+    fingerprints.current = nextFingerprints;
     setRecovered((current) => {
       let changed = false;
       const next = new Map(current);
-      for (const id of current.keys()) {
-        if (live.has(id) && fingerprints.current.get(id) === targets.find((target) => target.id === id)?.fingerprint) continue;
+      for (const [id, entry] of current) {
+        if (entry.fingerprint === targetsById.get(id)?.fingerprint) continue;
         next.delete(id);
         changed = true;
       }
@@ -289,7 +352,8 @@ export function useCompleteDagBadgeSummaries(
   return useMemo(
     () => summaries.map((summary) => {
       const entry = recovered.get(summary.id);
-      if (entry === undefined) return summary;
+      const target = targets.find((candidate) => candidate.id === summary.id);
+      if (entry === undefined || entry.fingerprint !== target?.fingerprint) return summary;
       const candidate = summarizeLiveSession(
         {
           id: summary.id,
@@ -311,6 +375,6 @@ export function useCompleteDagBadgeSummaries(
       if (candidate.runningCount < summary.runningCount && !entry.newerThanPayload) return summary;
       return candidate;
     }),
-    [summaries, recovered],
+    [summaries, recovered, targets],
   );
 }
