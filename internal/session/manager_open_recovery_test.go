@@ -224,9 +224,8 @@ func TestOpenRecoveryReconcilesStaleRouteOnTargetedPath(t *testing.T) {
 
 	// Both reconciliations complete before their fences clear, so once both
 	// fences are gone every recovery close already happened.
-	awaitManagerState(t, mgr, "recovery of both gated opens", func() bool {
-		return openFenceCleared(mgr, ownerVictim.id) && openFenceCleared(mgr, orphanVictim.id)
-	})
+	awaitOpenFenceReleased(t, mgr, ownerVictim.id, "recovery of the owner-path gated open")
+	awaitOpenFenceReleased(t, mgr, orphanVictim.id, "recovery of the orphan-path gated open")
 
 	// Only the unowned orphan route was recoverable: the owner's live route
 	// is owned and published by this manager and must survive with a usable

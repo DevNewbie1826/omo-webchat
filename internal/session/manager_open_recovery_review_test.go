@@ -18,9 +18,14 @@ package session
 //   - B4: recovery transitions must revalidate shutdown state and fence
 //     ownership together under the manager lock; after CloseAll's shutdown
 //     barrier, recovery must neither clear the fence nor act.
+//   - B5: a late success's epoch-bound route close strictly precedes both
+//     the pending-open fence release and the detached-open slot release.
+//     The close is parked mid-RPC at the daemon (channel-gated) and the
+//     fence must still be held while it is in flight.
 //
-// No fixed sleeps: every wait observes a daemon request, a manager state
-// transition (bounded state poll), or a channel close.
+// No fixed sleeps: every wait observes a daemon request, a manager
+// notification (the fence marker's close, the settlement broadcast, the
+// shutdown barrier's done channel), or a channel close.
 
 import (
 	"context"
@@ -54,28 +59,53 @@ func newReviewManager(t *testing.T, client *omorpc.Client, store CursorStore, mu
 	return m
 }
 
-// awaitManagerState polls manager-internal state until cond holds. Recovery
-// transitions are manager-side events with no daemon-visible footprint, so
-// the observation is a bounded poll of mutex-protected state, never a fixed
-// sleep: the assertion that follows can never pass by timing luck.
-func awaitManagerState(t *testing.T, m *Manager, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(testTimeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
-
-// openFenceCleared reports whether the chat's pending-open fence was already
-// released by recovery or settlement.
-func openFenceCleared(m *Manager, chatID string) bool {
+// openFenceMarker snapshots the chat's pending-open fence marker under
+// the manager lock. The marker channel closes exactly when that fence
+// registration ends (recovery or settlement), so waiting on it observes
+// the release transition itself rather than polling for its effect.
+func openFenceMarker(m *Manager, chatID string) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.pendingOpen[chatID] == nil
+	return m.pendingOpen[chatID]
+}
+
+// awaitOpenFenceReleased waits until the chat's pending-open fence is
+// released. A nil marker means the fence is already released.
+func awaitOpenFenceReleased(t *testing.T, m *Manager, chatID, what string) {
+	t.Helper()
+	marker := openFenceMarker(m, chatID)
+	if marker == nil {
+		return
+	}
+	select {
+	case <-marker:
+	case <-time.After(testTimeout):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// awaitHeldOpenSlots waits until exactly want detached-open slots are
+// held. Every iteration blocks on the manager's settlement broadcast,
+// which fires under m.mu on each slot release, so the wait is driven by
+// settlement events, never by a timer.
+func awaitHeldOpenSlots(t *testing.T, m *Manager, want int, what string) {
+	t.Helper()
+	deadline := time.NewTimer(testTimeout)
+	defer deadline.Stop()
+	for {
+		m.mu.Lock()
+		held := len(m.openSlots)
+		signal := m.openSettled
+		m.mu.Unlock()
+		if held == want {
+			return
+		}
+		select {
+		case <-signal:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
 }
 
 // openFenceHeld reports whether the chat's pending-open fence is still
@@ -180,9 +210,7 @@ func TestReviewRepeatedSilenceBoundedRetainedOpens(t *testing.T) {
 
 	// First attempt: unanswered. Recovery clears the per-chat fence only.
 	budgetedAcquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, 60*time.Millisecond)
-	awaitManagerState(t, mgr, "recovery of the first detached open", func() bool {
-		return openFenceCleared(mgr, "a")
-	})
+	awaitOpenFenceReleased(t, mgr, "a", "recovery of the first detached open")
 
 	// The single detached-open slot must still be held by the retained
 	// recovered attempt; admission may not return to zero while the RPC
@@ -215,9 +243,7 @@ func TestReviewRepeatedSilenceBoundedRetainedOpens(t *testing.T) {
 	// Settlement releases the bound: once the retained correlation settles,
 	// the slot frees and a later attempt is admitted again.
 	release()
-	awaitManagerState(t, mgr, "settlement of the recovered detached open", func() bool {
-		return heldOpenSlots(mgr) == 0
-	})
+	awaitHeldOpenSlots(t, mgr, 0, "settlement of the recovered detached open")
 	result := make(chan error, 1)
 	go func() {
 		_, _, _, err := mgr.Acquire(context.Background(), testChat{id: "e", cwd: t.TempDir()}, nil)
@@ -260,9 +286,7 @@ func TestReviewRecoveryMustNotCloseAnotherLiveOwner(t *testing.T) {
 
 	// Recovery reconciles; the transition completes before the fence clears,
 	// so once the fence is gone any wrongful close already happened.
-	awaitManagerState(t, mgr, "recovery of the gated victim open", func() bool {
-		return openFenceCleared(mgr, victim.id)
-	})
+	awaitOpenFenceReleased(t, mgr, victim.id, "recovery of the gated victim open")
 
 	// The owner's route must never have been closed.
 	if got := d.RequestCount(omorpc.CmdCloseSession); got != 0 {
@@ -318,7 +342,11 @@ func TestReviewRecoveryMustNotActAfterShutdownBarrier(t *testing.T) {
 	// Cross the shutdown barrier while recovery is parked mid-transition.
 	closed := make(chan error, 1)
 	go func() { closed <- mgr.CloseAll(context.Background()) }()
-	awaitManagerState(t, mgr, "CloseAll's shutdown barrier", func() bool { return mgr.isClosed() })
+	select {
+	case <-mgr.done:
+	case <-time.After(testTimeout):
+		t.Fatal("CloseAll's shutdown barrier was not crossed")
+	}
 
 	// Let reconciliation finish; CloseAll's cleanup barrier then unblocks
 	// after the final grace expires.
@@ -339,5 +367,60 @@ func TestReviewRecoveryMustNotActAfterShutdownBarrier(t *testing.T) {
 	}
 	if got := d.RequestCount(omorpc.CmdCloseSession); got != 0 {
 		t.Fatalf("recovery acted after the shutdown barrier: %d close_session request(s)", got)
+	}
+}
+
+// B5: settlement ordering - the late success's epoch-bound close strictly
+// precedes both the pending-open fence release and the detached-open slot
+// release. The close is parked mid-RPC at the daemon via a channel gate,
+// and while it is provably in flight the fence and slot must still be
+// held: only the close's completion may release them. The schedule is
+// deterministic - with the recovery budget far above the whole scenario,
+// settlement always happens inside the first grace, so recovery never
+// interferes with the ordering window, and the parked close cannot expire
+// its RPC budget because CloseTimeout equally exceeds the scenario.
+func TestReviewLateClosePrecedesFenceRelease(t *testing.T) {
+	d := newDaemon(t)
+	client := dial(t, d)
+	mgr := newReviewManager(t, client, newMemStore(), func(cfg *Config) {
+		cfg.CloseTimeout = 500 * time.Millisecond
+		cfg.OpenRecoveryAfter = 2 * time.Second
+	})
+	openRelease := d.BlockHandler(omorpc.CmdOpenSession)
+	closeRelease := d.BlockHandler(omorpc.CmdCloseSession)
+	budgetedAcquire(t, mgr, testChat{id: "a", cwd: t.TempDir()}, 60*time.Millisecond)
+
+	marker := openFenceMarker(mgr, "a")
+	if marker == nil {
+		t.Fatal("pending-open fence absent after the caller budget expired")
+	}
+
+	// The late SUCCESS lands inside the first grace; its route close parks
+	// at the daemon mid-RPC.
+	openRelease()
+	if !d.AwaitRequestCount(omorpc.CmdCloseSession, 1, testTimeout) {
+		t.Fatal("late successful open was never closed")
+	}
+
+	// The close is provably in flight: the fence and the detached-open
+	// slot must both still be held, because settlement releases them only
+	// after the close settles.
+	mgr.mu.Lock()
+	fenceHeld := mgr.pendingOpen["a"] != nil
+	held := len(mgr.openSlots)
+	mgr.mu.Unlock()
+	if !fenceHeld || held != 1 {
+		t.Fatalf("late close in flight but fence held=%v detached-open slots=%d: the release must strictly follow the close", fenceHeld, held)
+	}
+
+	// Completing the close is what releases fence and slot.
+	closeRelease()
+	awaitOpenFenceReleased(t, mgr, "a", "fence release after the late close settled")
+	awaitHeldOpenSlots(t, mgr, 0, "detached-open slot release after the late close settled")
+	if _, ok := mgr.Get("a"); ok {
+		t.Fatal("late success was published")
+	}
+	if live := d.LiveSessions(); len(live) != 0 {
+		t.Fatalf("late open left live provider routes: %v", live)
 	}
 }
