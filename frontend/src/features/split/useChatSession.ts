@@ -117,7 +117,7 @@ export function useChatSession(
     const ctrl = new AbortController();
     const token = frameState.beginActivityHydration();
     void getChatActivity(session.wsId, session.id, ctrl.signal).then(
-      (activity) => frameState.hydrateActivities(token, activity.history.task, activity.history.dag, activity.taskDigest, activity.history.taskOversized),
+      (activity) => frameState.hydrateActivities(token, activity.history.task, activity.history.dag, activity.taskDigest, activity.history.taskOversized, activity.dagDigest),
       () => frameState.cancelActivityHydration(token),
     );
     return () => {

@@ -107,14 +107,41 @@ async function run(evidenceDir) {
     const readyFrame = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'ready' && row.frame.sessionId === 'qa-counts-chat', 'chat ready');
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await readyFrame;
+    // Nothing has been emitted yet: the closed shelf must not pin initial zeros.
+    await page.locator('.th-chat-input-inner').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('[data-activity-tab="agents"] .th-activity-tab-count').count(), 0);
     const activityFrame = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'sessions.activity' && row.frame.taskDigest?.running_count === 50, 'exact activity frame');
     const emitted = await context.request.post(url + '/__qa/emit');
     assert.equal(emitted.status(), 200, await emitted.text());
     const wsReceipt = await activityFrame;
     const wsDigest = wsReceipt.frame.taskDigest;
     assert.equal(wsDigest.running_count, 50); assert.equal(wsDigest.total_count, 600); assert.equal(wsDigest.truncated, true); assert.equal(wsDigest.tasks.length, 512);
+    assert.equal(wsDigest.agent_running_count, 50); assert.equal(wsDigest.agent_total_count, 600);
+    if (wsReceipt.frame.dagDigest !== undefined) {
+      assert.equal(wsReceipt.frame.dagDigest.agent_running_count, 50);
+      assert.equal(wsReceipt.frame.dagDigest.agent_total_count, 600);
+    }
     await writeFile(join(evidenceDir, 'sessions-activity-frame.json'), JSON.stringify(wsReceipt, null, 2) + '\n');
-    item('2', 'sessions.activity carries the exact pre-truncation scalars', true, ['sessions-activity-frame.json'], { runningCount: 50, totalCount: 600, retainedRows: 512, truncated: true });
+    item('2', 'sessions.activity carries the exact pre-truncation scalars', true, ['sessions-activity-frame.json'], { runningCount: 50, totalCount: 600, agentRunningCount: 50, agentTotalCount: 600, retainedRows: 512, truncated: true });
+
+    // Count-only authority reaches the attached pane while every tab stays
+    // closed: the emitted rows carry no names, so only the frame scalars can
+    // render the Subagents count, and no roster read may repair it.
+    const authorityFrame = await wire.wait((_, row) => row.direction === 'received'
+      && row.frame?.type === 'extensionEvent' && row.frame?.name === 'omo.task.updated'
+      && row.frame?.data?.agent_running_count !== undefined, 'attached count authority frame');
+    assert.equal(authorityFrame.frame.data.running_count, 50);
+    assert.equal(authorityFrame.frame.data.total_count, 600);
+    assert.equal(authorityFrame.frame.data.agent_running_count, 50);
+    assert.equal(authorityFrame.frame.data.agent_total_count, 600);
+    assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'false');
+    const closedAgentsCount = page.locator('[data-activity-tab="agents"] .th-activity-tab-count');
+    await closedAgentsCount.waitFor({ state: 'visible' });
+    assert.equal((await closedAgentsCount.textContent())?.trim(), '50/600');
+    const closedRosterFetches = network.rows.filter(row => row.event === 'request' && (row.path === taskPath || row.path.startsWith(dagPrefix)));
+    assert.deepEqual(closedRosterFetches, []);
+    await writeFile(join(evidenceDir, 'attached-count-frame.json'), JSON.stringify(authorityFrame, null, 2) + '\n');
+    item('3', 'Subagents tab count exists, equals the exact authority while closed, and updates live from the attached frame without any roster fetch', true, ['attached-count-frame.json'], { closedCount: '50/600', rosterFetchesWhileClosed: 0 });
 
     const jar = join(fixtureRoot, 'curl.cookies');
     const curlLogin = await command('curl', ['-sS', '-i', '-c', jar, '-H', 'Content-Type: application/json', '--data', '{"password":"exact-counts-isolated"}', url + '/api/login']);
@@ -125,8 +152,9 @@ async function run(evidenceDir) {
     const liveBody = JSON.parse(curlLive.stdout.slice(splitAt).replace(/^\r?\n\r?\n/, ''));
     const liveRow = liveBody.sessions.find(row => row.id === 'qa-counts-chat'); assert.ok(liveRow);
     assert.equal(liveRow.task_digest.running_count, 50); assert.equal(liveRow.task_digest.total_count, 600);
+    assert.equal(liveRow.task_digest.agent_running_count, 50); assert.equal(liveRow.task_digest.agent_total_count, 600);
     assert.equal(liveRow.task_digest.truncated, true); assert.equal(liveRow.task_digest.tasks.length, 512);
-    item('1', 'authenticated curl -i preserves exact counts with a truncated row list', true, ['curl-login.txt', 'curl-sessions-live.txt'], { runningCount: 50, totalCount: 600, retainedRows: 512, truncated: true });
+    item('1', 'authenticated curl -i preserves exact counts with a truncated row list', true, ['curl-login.txt', 'curl-sessions-live.txt'], { runningCount: 50, totalCount: 600, agentRunningCount: 50, agentTotalCount: 600, retainedRows: 512, truncated: true });
 
     await network.wait(rows => rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length >= 3, 'three polling responses', 15_000);
     const closedBoundary = network.rows.length;
@@ -135,7 +163,7 @@ async function run(evidenceDir) {
     assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'false');
     assert.deepEqual(forbiddenClosed, []);
     await writeFile(join(evidenceDir, 'network-closed-tabs.json'), JSON.stringify(closedWindow, null, 2) + '\n');
-    item('3', 'three closed-tab polling cycles issue no roster or DAG reads', true, ['network-closed-tabs.json'], { pollingResponses: closedWindow.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length, taskRequests: 0, dagRequests: 0 });
+    item('4', 'three closed-tab polling cycles issue no roster or DAG reads', true, ['network-closed-tabs.json'], { pollingResponses: closedWindow.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length, taskRequests: 0, dagRequests: 0 });
 
     const badge = page.locator('.th-tree-running--workspace');
     await badge.waitFor({ state: 'visible' });
@@ -143,7 +171,7 @@ async function run(evidenceDir) {
     const compactMarkers = await page.locator('.th-tree-running, .th-activity-tab-count').allTextContents();
     const partialMarkers = compactMarkers.filter(text => /[?+]/.test(text));
     const badgeShot = join(evidenceDir, 'sidebar-badge-50.png'); await page.screenshot({ path: badgeShot, fullPage: true });
-    item('4', 'sidebar badge renders exactly 50 with no question-mark or plus marker anywhere', partialMarkers.length === 0, ['sidebar-badge-50.png'], { badge: '50', compactMarkers, partialMarkers });
+    item('5', 'sidebar badge renders exactly 50 with no question-mark or plus marker anywhere', partialMarkers.length === 0, ['sidebar-badge-50.png'], { badge: '50', compactMarkers, partialMarkers });
 
     const beforeOpen = network.rows.filter(row => row.event === 'request' && row.path === taskPath).length;
     assert.equal(beforeOpen, 0);
@@ -159,7 +187,7 @@ async function run(evidenceDir) {
     const openBoundary = network.rows.length;
     await writeFile(join(evidenceDir, 'network-open-agents.json'), JSON.stringify(network.rows.slice(closedBoundary, openBoundary), null, 2) + '\n');
     await page.screenshot({ path: join(evidenceDir, 'agents-full-roster-50.png'), fullPage: true });
-    item('5', 'opening Subagents fires exactly one full-roster read and renders all 50 authoritative rows', true, ['network-open-agents.json', 'agents-full-roster-50.png'], { taskRequests: 1, authoritativeRosterRows: 50, renderedRowsIncludingDigestHistory: await rosterRows.count() });
+    item('6', 'opening Subagents fires exactly one full-roster read and renders all 50 authoritative rows', true, ['network-open-agents.json', 'agents-full-roster-50.png'], { taskRequests: 1, authoritativeRosterRows: 50, renderedRowsIncludingDigestHistory: await rosterRows.count() });
 
     await page.locator('[data-activity-tab="agents"]').click();
     await page.locator('.th-activity-shelf[data-open="false"]').waitFor({ state: 'attached' });
@@ -168,7 +196,19 @@ async function run(evidenceDir) {
     const postClose = network.rows.slice(openBoundary);
     assert.equal(network.rows.filter(row => row.event === 'request' && row.path === taskPath).length, 1);
     await writeFile(join(evidenceDir, 'network-after-close.json'), JSON.stringify(postClose, null, 2) + '\n');
-    item('6', 'closing Subagents stops full-roster reads while scalar polling continues', true, ['network-after-close.json'], { totalTaskRequests: 1, additionalTaskRequests: 0, additionalPollingResponses: network.rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length - pollsAtClose });
+    item('7', 'closing Subagents stops full-roster reads while scalar polling continues', true, ['network-after-close.json'], { totalTaskRequests: 1, additionalTaskRequests: 0, additionalPollingResponses: network.rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length - pollsAtClose });
+
+    // Reattach hydration must reproduce the exact authority with tabs closed,
+    // again without any roster read beyond the single open from item 6.
+    const reloadReady = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'ready' && row.frame.sessionId === 'qa-counts-chat', 'reloaded chat ready');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await reloadReady;
+    const reloadedCount = page.locator('[data-activity-tab="agents"] .th-activity-tab-count');
+    await reloadedCount.waitFor({ state: 'visible' });
+    assert.equal((await reloadedCount.textContent())?.trim(), '50/600');
+    assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'false');
+    assert.equal(network.rows.filter(row => row.event === 'request' && row.path === taskPath).length, 1);
+    item('8', 'reattach hydration renders the exact authority on the closed shelf with no additional roster fetch', true, ['browser-network.json'], { reloadedCount: '50/600', totalTaskRequests: 1 });
 
     await writeFile(join(evidenceDir, 'browser-network.json'), JSON.stringify(network.rows, null, 2) + '\n');
     await writeFile(join(evidenceDir, 'browser-websocket.json'), JSON.stringify(wire.rows, null, 2) + '\n');
@@ -190,7 +230,7 @@ async function run(evidenceDir) {
     if (fixtureRoot) { try { await rm(fixtureRoot, { recursive: true, force: true }); report.cleanup.fixtureRootRemoved = !(await exists(fixtureRoot)); } catch (error) { report.cleanup.fixtureRootRemoved = false; report.errors.push({ cleanup: 'fixtureRoot', error: String(error) }); } }
     report.finishedAt = new Date().toISOString();
     const cleanupPassed = report.cleanup.browserContextClosed === true && report.cleanup.browserProfileRemoved === true && report.cleanup.fixtureProcess?.exited === true && report.cleanup.portReleased === true && report.cleanup.fixtureRootRemoved === true;
-    if (!cleanupPassed || report.errors.length > 0 || report.items.length !== 6 || report.items.some(row => row.status !== 'PASS')) report.status = 'FAIL';
+    if (!cleanupPassed || report.errors.length > 0 || report.items.length !== 8 || report.items.some(row => row.status !== 'PASS')) report.status = 'FAIL';
     await writeFile(join(evidenceDir, runFile), JSON.stringify(report, null, 2) + '\n');
   }
   if (failure) throw failure;

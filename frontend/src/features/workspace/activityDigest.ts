@@ -9,7 +9,8 @@ function optCount(value: unknown): number | undefined {
 
 /** Compact in-memory task summary from GET /api/sessions/live `task_digest`.
  * `running_count`/`total_count` are the server's pre-truncation scalars and
- * are authoritative over the retained `tasks` rows. */
+ * are authoritative over the retained `tasks` rows; the agent pair is the
+ * exact deduplicated aggregate and the sole count authority for the UI. */
 export type TaskDigestEntry = {
   readonly taskId: string;
   readonly status: string;
@@ -23,11 +24,14 @@ export type TaskDigest = {
   readonly receivedAt?: string;
   readonly taskRunningCount?: number;
   readonly taskTotalCount?: number;
+  readonly taskAgentRunningCount?: number;
+  readonly taskAgentTotalCount?: number;
 };
 
 /** Compact in-memory DAG summary from GET /api/sessions/live `dag_digest`.
  * `running_count` is the server's node-based pre-truncation running sum over
- * all runs, before any task-roster overlap removal. */
+ * all runs, before any task-roster overlap removal; the agent pair carries the
+ * same exact deduplicated aggregate as the task digest. */
 export type DagDigestRun = {
   readonly runId: string;
   readonly status: string;
@@ -39,6 +43,8 @@ export type DagDigest = {
   readonly truncated: boolean;
   readonly receivedAt?: string;
   readonly dagRunningCount?: number;
+  readonly agentRunningCount?: number;
+  readonly agentTotalCount?: number;
 };
 
 function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry | null {
@@ -96,12 +102,16 @@ export function parseTaskDigest(value: unknown): TaskDigest | null {
   const receivedAt = optString(value, "received_at");
   const taskRunningCount = optCount(value["running_count"]);
   const taskTotalCount = optCount(value["total_count"]);
+  const taskAgentRunningCount = optCount(value["agent_running_count"]);
+  const taskAgentTotalCount = optCount(value["agent_total_count"]);
   return {
     tasks,
     truncated,
     ...(typeof receivedAt === "string" ? { receivedAt } : {}),
     ...(taskRunningCount === undefined ? {} : { taskRunningCount }),
     ...(taskTotalCount === undefined ? {} : { taskTotalCount }),
+    ...(taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount }),
+    ...(taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount }),
   };
 }
 
@@ -114,10 +124,14 @@ export function parseDagDigest(value: unknown): DagDigest | null {
   if (runs === null) return null;
   const receivedAt = optString(value, "received_at");
   const dagRunningCount = optCount(value["running_count"]);
+  const agentRunningCount = optCount(value["agent_running_count"]);
+  const agentTotalCount = optCount(value["agent_total_count"]);
   return {
     runs,
     truncated,
     ...(typeof receivedAt === "string" ? { receivedAt } : {}),
     ...(dagRunningCount === undefined ? {} : { dagRunningCount }),
+    ...(agentRunningCount === undefined ? {} : { agentRunningCount }),
+    ...(agentTotalCount === undefined ? {} : { agentTotalCount }),
   };
 }

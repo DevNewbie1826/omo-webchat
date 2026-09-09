@@ -248,6 +248,10 @@ export function summarizeLiveSession(
         ? 0
         : countDigestDagRunning(dagDigest.runs, taskIds)
     : overlap === null ? dagScalar : Math.max(0, dagScalar - overlap);
+  const agentRunning = taskDigest?.taskAgentRunningCount
+    ?? parsedTask?.taskAgentRunningCount
+    ?? dagDigest?.agentRunningCount
+    ?? parsedDag?.agentRunningCount;
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -263,7 +267,10 @@ export function summarizeLiveSession(
     ...(info.dagDigest === undefined ? {} : { dagDigest: info.dagDigest }),
     taskSideOversized: info.taskOversized === true,
     dagSideOversized: info.dagOversized === true,
-    runningCount: taskRunning + dagRunning,
+    // The exact deduplicated agent-work aggregate is the sole running
+    // authority when any transport carries it: raw task+DAG scalars are never
+    // summed and retained rows never repair it.
+    runningCount: agentRunning ?? (taskRunning + dagRunning),
     doneCount: info.taskOversized === true && taskDigest === undefined ? 0 : counts.done,
     dagDone,
     dagTotal,

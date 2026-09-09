@@ -1,7 +1,48 @@
 import { describe, expect, it } from "vitest";
 import { parseTaskUpdated } from "./activityParse";
+import { parseTaskCounts } from "./activityParseTask";
 
 describe("parseTaskUpdated", () => {
+  it("parses the count authority scalars from a snapshot", () => {
+    const parsed = parseTaskUpdated({
+      truncated_tasks: true,
+      running_count: 50,
+      total_count: 600,
+      agent_running_count: 50,
+      agent_total_count: 600,
+      tasks: [],
+    });
+    expect(parsed).toMatchObject({
+      taskRunningCount: 50,
+      taskTotalCount: 600,
+      taskAgentRunningCount: 50,
+      taskAgentTotalCount: 600,
+    });
+    // Malformed scalars are absent, not zero, and never reject the payload.
+    const malformed = parseTaskUpdated({ tasks: [], agent_running_count: -1, agent_total_count: "many" });
+    expect(malformed).toMatchObject({ tasks: [] });
+    expect(malformed?.taskAgentRunningCount).toBeUndefined();
+    expect(malformed?.taskAgentTotalCount).toBeUndefined();
+  });
+
+  it("reads count-only authority without touching rows", () => {
+    expect(parseTaskCounts({
+      running_count: 1,
+      total_count: 2,
+      agent_running_count: 3,
+      agent_total_count: 4,
+      tasks: "ignored",
+    })).toEqual({
+      taskRunningCount: 1,
+      taskTotalCount: 2,
+      taskAgentRunningCount: 3,
+      taskAgentTotalCount: 4,
+    });
+    expect(parseTaskCounts({ tasks: [] })).toEqual({});
+    expect(parseTaskCounts("nope")).toBeNull();
+    expect(parseTaskCounts(null)).toBeNull();
+  });
+
   it("parses a well-formed snapshot and live_progress when present", () => {
     const parsed = parseTaskUpdated({
       parent_session_id: "sess-1",

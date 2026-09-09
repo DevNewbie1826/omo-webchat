@@ -159,6 +159,8 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const taskCounts = activities as ActivityState & {
     readonly taskRunningCount?: number;
     readonly taskTotalCount?: number;
+    readonly taskAgentRunningCount?: number;
+    readonly taskAgentTotalCount?: number;
   };
   const tasks = orderActivities(
     [...taskRows, ...workflow.tasks],
@@ -175,7 +177,8 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   // moment everything turns terminal. It hides only when there is genuinely
   // nothing to show, including no marker for omitted historical rows.
   const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
-  const hasTaskCount = taskCounts.taskTotalCount !== undefined && taskCounts.taskTotalCount > 0;
+  const hasTaskCount = (taskCounts.taskTotalCount !== undefined && taskCounts.taskTotalCount > 0)
+    || (taskCounts.taskAgentTotalCount !== undefined && taskCounts.taskAgentTotalCount > 0);
   const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || hasTaskCount || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
@@ -224,6 +227,13 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
       })();
     }
     if (tab === "agents") {
+      // The server's exact deduplicated agent-work aggregate is the sole
+      // authority for this slot: raw task+DAG scalars are never summed and
+      // retained workflow rows are never added to a full-roster scalar. The
+      // legacy fallbacks below only serve servers that predate the aggregate.
+      if (taskCounts.taskAgentRunningCount !== undefined && taskCounts.taskAgentTotalCount !== undefined) {
+        return taskCounts.taskAgentTotalCount === 0 ? null : `${taskCounts.taskAgentRunningCount}/${taskCounts.taskAgentTotalCount}`;
+      }
       const hasTaskScalars = taskCounts.taskRunningCount !== undefined
         && taskCounts.taskTotalCount !== undefined;
       const workflowRunning = workflow.tasks.filter((task) => task.status === "running").length;

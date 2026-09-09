@@ -58,6 +58,27 @@ describe("canonical task authority through all sidebar sources", () => {
     counts(0, 3);
     expect(merged[0]).toMatchObject({ runningCount: 3 });
   });
+  it("takes the agent aggregate as the sole running authority across poll and push", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 50, total_count: 600,
+      agent_running_count: 50, agent_total_count: 600 });
+    counts(0, 50);
+    push({ tasks: [row("running", t3)], agent_running_count: 51, agent_total_count: 601 });
+    counts(0, 51);
+  });
+  it("keeps the exact agent aggregate through the REST digest authority chain", async () => {
+    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
+      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true,
+      running_count: 50, total_count: 600, agent_running_count: 50, agent_total_count: 600 } });
+    counts(0, 50);
+    expect(merged[0]).toMatchObject({ runningCount: 50 });
+  });
+  it("falls back to the DAG frame's aggregate when the task side predates the agent scalars", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 2 });
+    counts(0, 1);
+    act(() => ingestExtensionEvent("s", "omo.dag.updated",
+      { truncated_runs: false, runs: [], running_count: 9, agent_running_count: 4, agent_total_count: 8 }));
+    expect(merged[0]).toMatchObject({ runningCount: 4 });
+  });
 
   it("keeps compact correction authority over stale/equal rich enrichment", async () => {
     await poll(null, "s", { task_oversized: true, task_digest: { tasks: [

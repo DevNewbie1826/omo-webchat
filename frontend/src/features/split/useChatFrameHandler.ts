@@ -4,6 +4,9 @@ import type { ApprovalRequest } from "./ApprovalModal";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";
+import { parseTaskCounts } from "./activityParseTask";
+import { parseDagCounts } from "./activityParseDag";
+import { applyCountAuthority } from "./taskAuthority";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import { type UiMessage } from "./chatEntries";
@@ -227,7 +230,14 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         ingestExtensionEvent(frame.sessionId, frame.name, frame.data);
         const activityEvent = validatedActivityEvent(frame.name, frame.data);
         const before = bindings.activitiesRef.current;
-        const next = applyActivityEvent(before, frame.name, frame.data);
+        let next = applyActivityEvent(before, frame.name, frame.data);
+        // Count-only authority rides on accepted snapshot frames beside the
+        // rows: the scalars must reach the shelf live while tabs stay closed,
+        // with no roster fetch to repair them. A DAG frame's node running sum
+        // is not a task scalar; its aggregate maps onto the shared fields.
+        const counts = frame.name === "omo.task.updated" ? parseTaskCounts(frame.data)
+          : frame.name === "omo.dag.updated" ? parseDagCounts(frame.data) : null;
+        if (counts !== null) next = applyCountAuthority(next, counts);
         if (next !== before) bindings.applyActivities(next);
         if (activityEvent !== null) {
           // Record which domains the reducer actually mutated so hydration

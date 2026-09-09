@@ -11,7 +11,9 @@ import {
 } from "./ActivityShelf.support";
 import type { ActivityDagRun } from "./activityTypes";
 import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
-import { parseDagUpdated } from "./activityParseDag";
+import { parseDagCounts, parseDagUpdated } from "./activityParseDag";
+import { parseTaskCounts } from "./activityParseTask";
+import { applyCountAuthority } from "./taskAuthority";
 import { requireElement } from "./chatPaneTestHarness";
 
 function sourceRun(overrides: Partial<ActivityDagRun> = {}): ActivityDagRun {
@@ -150,11 +152,16 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     expect(agentsPanel().textContent).not.toContain("retained child");
   });
 
-  it("uses exact task payload scalars as the base and adds deduplicated workflow rows", () => {
+  it("renders the server agent aggregate instead of retained rows plus workflow", () => {
+    // Hydrate through the same boundary the pane uses: the digest scalars are
+    // the exact pre-truncation authority, so the retained running task and the
+    // DAG-only workflow row must NOT be added onto it (that would show 4/6).
     let state = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
       truncated_tasks: true,
       running_count: 3,
       total_count: 5,
+      agent_running_count: 3,
+      agent_total_count: 5,
       tasks: [{
         task_id: "task-a", name: "authoritative task", status: "running",
         updated_at: "2026-09-09T10:00:00Z",
@@ -174,11 +181,78 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     });
 
     renderShelf(harness, state);
-    expect(count()).toBe("4/6");
+    expect(count()).toBe("3/5");
     expect(agentsTab().getAttribute("title")).toBeNull();
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
     expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+  });
+
+  it("takes a live count-only DAG frame as the aggregate while the shelf stays closed", () => {
+    let state = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
+      truncated_tasks: true,
+      tasks: [{
+        task_id: "task-a", name: "authoritative task", status: "running",
+        updated_at: "2026-09-09T10:00:00Z",
+      }],
+    });
+    state = applyActivityHistorySnapshot(state, "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [{
+        run_id: "scalar-run", run_key: "plan", name: "Scalar graph", status: "running",
+        updated_at: "2026-09-09T10:00:00Z", counts: { total: 2, running: 2 },
+        nodes: [
+          { id: "a", prompt: "task-backed", depends_on: [], state: "running", task_id: "task-a" },
+          { id: "b", prompt: "workflow-only", depends_on: [], state: "running" },
+        ],
+        edges: [], waves: [], truncated_nodes: true,
+      }],
+    });
+    // Without scalars the exact local rows are the fallback.
+    renderShelf(harness, state);
+    expect(harness.container.querySelector(".th-activity-shelf")?.getAttribute("data-open")).toBe("false");
+    expect(count()).toBe("2/2");
+
+    // The frame handler composes row reconciliation with count-only authority;
+    // a DAG frame carries the aggregate alone and still updates the closed tab.
+    const dagData = {
+      parent_session_id: "sess", truncated_runs: false, runs: [],
+      running_count: 9, agent_running_count: 5, agent_total_count: 7,
+    };
+    const next = applyCountAuthority(
+      applyActivityEvent(state, "omo.dag.updated", dagData),
+      parseDagCounts(dagData)!,
+    );
+    expect(next).not.toBe(state);
+    renderShelf(harness, next);
+    expect(harness.container.querySelector(".th-activity-shelf")?.getAttribute("data-open")).toBe("false");
+    expect(count()).toBe("5/7");
+  });
+
+  it("keeps rendering while a task frame's count authority arrives beside stale rows", () => {
+    const base = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
+      truncated_tasks: false,
+      tasks: [{
+        task_id: "task-a", name: "kept", status: "running",
+        updated_at: "2026-09-09T10:02:00Z",
+      }],
+    });
+    renderShelf(harness, base);
+    expect(count()).toBe("1/1");
+
+    // A stale row beside a newer accepted one is rejected for rows, but the
+    // frame's scalars describe the accepted state and must still land.
+    const frame = {
+      parent_session_id: "sess", truncated_tasks: true,
+      running_count: 4, total_count: 6, agent_running_count: 4, agent_total_count: 6,
+      tasks: [{ task_id: "task-a", status: "completed", updated_at: "2026-09-09T10:01:00Z" }],
+    };
+    const next = applyCountAuthority(
+      applyActivityEvent(base, "omo.task.updated", frame),
+      parseTaskCounts(frame)!,
+    );
+    renderShelf(harness, next);
+    expect(count()).toBe("4/6");
   });
 
   describe.each([

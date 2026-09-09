@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { applyActivityEvent, applyActivityHistorySnapshot, applyTaskHistorySnapshot, applyRunFlight, emptyActivityState } from "./activityState";
 import { parseTaskUpdated } from "./activityParseTask";
-import { parseTaskDigest } from "../workspace/activityDigest";
-import { applyTaskActivity, mergeTaskAuthorities, rawTaskRevision, taskAuthorityPayload } from "./taskAuthority";
+import { parseDagDigest, parseTaskDigest } from "../workspace/activityDigest";
+import { applyCountAuthority, applyTaskActivity, mergeTaskAuthorities, rawTaskRevision, reconcileTaskSources, taskAuthorityPayload, type TaskAuthority } from "./taskAuthority";
 
 const t1 = "2026-09-07T10:01:00Z";
 const t2 = "2026-09-07T10:02:00Z";
@@ -158,6 +158,56 @@ describe("task source authority", () => {
     expect(rawTaskRevision(enriched)).toBe(Date.parse(t2));
     expect(taskAuthorityPayload(merged)).toMatchObject({ tasks: [expect.objectContaining({ updated_at: t2, raw_status: "running" })] });
     expect(applyTaskActivity(enriched, { at: "2026-09-07T10:04:00Z", currentTool: "stale" })).toBe(enriched);
+  });
+
+  it("carries the agent aggregate through digests, rich payloads, merges, and wire projection", () => {
+    const digest = parseTaskDigest({
+      tasks: [row("running", t3)], truncated: true,
+      running_count: 50, total_count: 600, agent_running_count: 50, agent_total_count: 600,
+    });
+    expect(digest).not.toBeNull();
+    let state = applyTaskHistorySnapshot(emptyActivityState(), null, new Set(), digest!);
+    expect(state).toMatchObject({ taskAgentRunningCount: 50, taskAgentTotalCount: 600 });
+    // A rich payload without the scalars retains the established authority.
+    state = reconcileTaskSources(state, parseTaskUpdated({ tasks: [row("running", t3)] }), undefined);
+    expect(state).toMatchObject({ taskAgentRunningCount: 50, taskAgentTotalCount: 600 });
+    // A rich payload with newer scalars updates it.
+    state = reconcileTaskSources(state, parseTaskUpdated({
+      tasks: [row("running", t3)], running_count: 51, total_count: 601, agent_running_count: 51, agent_total_count: 601,
+    }), undefined);
+    expect(state).toMatchObject({ taskAgentRunningCount: 51, taskAgentTotalCount: 601 });
+    // Alias migration keeps the newer side's aggregate.
+    const merged = mergeTaskAuthorities(state, emptyActivityState());
+    expect(merged).toMatchObject({ taskAgentRunningCount: 51, taskAgentTotalCount: 601 });
+    expect(taskAuthorityPayload(state)).toMatchObject({
+      running_count: 51, total_count: 601, agent_running_count: 51, agent_total_count: 601,
+    });
+  });
+
+  it("applies count-only authority from either snapshot frame without inventing zeros", () => {
+    const state = emptyActivityState();
+    expect((state as TaskAuthority).taskAgentRunningCount).toBeUndefined();
+    // A DAG frame carries only the agent pair; the node sum is not a task scalar.
+    let next = applyCountAuthority(state, { taskAgentRunningCount: 4, taskAgentTotalCount: 8 });
+    expect(next).toMatchObject({ taskAgentRunningCount: 4, taskAgentTotalCount: 8 });
+    expect((next as TaskAuthority).taskRunningCount).toBeUndefined();
+    // Omitted scalars retain the established authority; nothing pins a zero.
+    expect(applyCountAuthority(next, {})).toBe(next);
+    next = applyCountAuthority(next, { taskRunningCount: 2, taskTotalCount: 4, taskAgentRunningCount: 3, taskAgentTotalCount: 6 });
+    expect(next).toMatchObject({ taskRunningCount: 2, taskTotalCount: 4, taskAgentRunningCount: 3, taskAgentTotalCount: 6 });
+  });
+
+  it("backfills the agent aggregate from the DAG digest when the task digest predates it", () => {
+    const dagDigest = parseDagDigest({
+      runs: [], truncated: true, running_count: 9, agent_running_count: 4, agent_total_count: 8,
+    });
+    expect(dagDigest).not.toBeNull();
+    const state = applyCountAuthority(emptyActivityState(), {
+      ...(dagDigest!.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigest!.agentRunningCount }),
+      ...(dagDigest!.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigest!.agentTotalCount }),
+    });
+    expect(state).toMatchObject({ taskAgentRunningCount: 4, taskAgentTotalCount: 8 });
+    expect((state as TaskAuthority).taskRunningCount).toBeUndefined();
   });
 
 });

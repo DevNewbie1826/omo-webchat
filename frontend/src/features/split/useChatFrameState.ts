@@ -14,8 +14,11 @@ import {
   type ActivityHydrationBuffer,
   type BufferedActivityEvent,
 } from "./activityState";
-import { parseTaskDigest } from "../workspace/activityDigest";
+import { parseDagDigest, parseTaskDigest } from "../workspace/activityDigest";
 import type { ActivityState } from "./activityTypes";
+import { applyCountAuthority } from "./taskAuthority";
+import { parseTaskCounts } from "./activityParseTask";
+import { parseDagCounts } from "./activityParseDag";
 import { emptyTodoAuthority, unbindTodoAuthority } from "./todoAuthority";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -448,17 +451,35 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const cancelActivityHydration = (token: number): void => {
     if (activityHydrationRef.current?.token === token) activityHydrationRef.current = null;
   };
-  const hydrateActivities = (token: number, task: unknown, dag: unknown, taskDigest?: unknown, taskOversized = false): void => {
+  const hydrateActivities = (token: number, task: unknown, dag: unknown, taskDigest?: unknown, taskOversized = false, dagDigest?: unknown): void => {
     const hydration = activityHydrationRef.current;
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
     next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
+    // The DAG digest carries the same exact agent aggregate as the task side;
+    // backfill it when the task digest is absent or predates the agent pair so
+    // hydration never leaves the pane on stale or missing count authority.
+    const dagDigestParsed = parseDagDigest(dagDigest);
+    next = applyCountAuthority(next, {
+      ...(dagDigestParsed?.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigestParsed.agentRunningCount }),
+      ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
+    });
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
       // would remove REST-only rows or reverse both-unknown legacy ordering.
       if (event.name !== "omo.dag.updated" && event.name !== "omo.task.updated") next = applyActivityEvent(next, event.name, event.data);
+      // Snapshot count authority still applies: a live or replayed frame that
+      // landed while hydration was in flight carries the accepted revision
+      // state, which a slower historical digest must not pin over with stale
+      // zeros.
+      else {
+        const counts = event.name === "omo.task.updated"
+          ? parseTaskCounts(event.data)
+          : parseDagCounts(event.data);
+        if (counts !== null) next = applyCountAuthority(next, counts);
+      }
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };

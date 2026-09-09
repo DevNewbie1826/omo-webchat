@@ -651,27 +651,30 @@ describe("summarizeLiveSession", () => {
       expect(taskDigest.taskRunningCount).toBe(50);
     });
 
-    it("sums the task and dag scalars and removes only provable roster overlap", () => {
+    it("takes the agent aggregate as the sole running authority under truncation", () => {
       vi.useFakeTimers();
       vi.setSystemTime(NOW);
+      // The same 50 running identities exist on both sides; retained rows are a
+      // truncated prefix. Summing the per-side scalars would double count.
       const taskDigest = digestWith({
-        tasks: [
-          { task_id: "t1", status: "running", updated_at: FRESH_AT },
-          { task_id: "t2", status: "running", updated_at: FRESH_AT },
-        ],
+        tasks: [{ task_id: "t1", status: "running", updated_at: FRESH_AT }],
         truncated: true,
-        running_count: 2,
+        running_count: 50,
+        total_count: 600,
+        agent_running_count: 50,
+        agent_total_count: 600,
       });
       const dagDigest = parseDagDigest({
         runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1", "t2"] }],
         truncated: true,
-        running_count: 5,
+        running_count: 50,
+        agent_running_count: 50,
+        agent_total_count: 600,
       });
       if (dagDigest === null) throw new Error("Invalid dag digest fixture");
-      expect(dagDigest.dagRunningCount).toBe(5);
-      // Truncated identity on both sides: the summed scalars are authoritative.
+      expect(dagDigest.dagRunningCount).toBe(50);
       const summary = summarizeLiveSession({
-        id: "scalar-sum",
+        id: "agent-authority",
         title: "",
         task: null,
         dag: null,
@@ -681,8 +684,65 @@ describe("summarizeLiveSession", () => {
         dagDigest,
       });
 
-      expect(summary.runningCount).toBe(7);
-      expect(summary.dagRunning).toBe(5);
+      expect(summary.runningCount).toBe(50);
+      expect(summary.runningCount).not.toBe(
+        (taskDigest.taskRunningCount ?? 0) + (dagDigest.dagRunningCount ?? 0));
+    });
+
+    it("keeps the exact agent aggregate when retained rows double-count an overlap", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      // t1 appears on both retained sides, so row inference would say 2 while
+      // the accepted full membership contains exactly one running agent work.
+      const taskDigest = digestWith({
+        tasks: [
+          { task_id: "t1", status: "running", updated_at: FRESH_AT },
+          { task_id: "t2", status: "running", updated_at: FRESH_AT },
+        ],
+        truncated: true,
+        running_count: 1,
+        total_count: 2,
+        agent_running_count: 1,
+        agent_total_count: 2,
+      });
+      const dagDigest = parseDagDigest({
+        runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1"] }],
+        truncated: true,
+        running_count: 1,
+        agent_running_count: 1,
+        agent_total_count: 2,
+      });
+      if (dagDigest === null) throw new Error("Invalid dag digest fixture");
+      const summary = summarizeLiveSession({
+        id: "agent-overlap",
+        title: "",
+        task: null,
+        dag: null,
+        taskOversized: true,
+        dagOversized: true,
+        taskDigest,
+        dagDigest,
+      });
+
+      expect(summary.runningCount).toBe(1);
+    });
+
+    it("consumes the disjoint full-source aggregate from both snapshot payloads", () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      // Two direct task lanes and two DAG-running nodes, one of which backs a
+      // task lane: the aggregate counts DAG-only work once and the overlap
+      // once, so the naive scalar sum (4) would double count.
+      const summary = summarizeLiveSession({
+        id: "agent-disjoint",
+        title: "",
+        task: { tasks: [], running_count: 2, total_count: 4, agent_running_count: 3, agent_total_count: 8 },
+        dag: { runs: [], truncated_runs: false, running_count: 2, agent_running_count: 3, agent_total_count: 8 },
+        ...NOT_OVERSIZED,
+      });
+
+      expect(summary.runningCount).toBe(3);
+      expect(summary.runningCount).not.toBe(2 + 2);
     });
 
     it("parses payload-level running_count and total_count", () => {
@@ -891,6 +951,50 @@ describe("activityDigest received_at", () => {
       runs: [{ runId: "r1", status: "running", runningTaskIds: [] }],
       truncated: false,
     });
+  });
+
+  it("parses the agent aggregate onto both digests", () => {
+    expect(parseTaskDigest({
+      tasks: [{ task_id: "t1", status: "running" }],
+      truncated: true,
+      running_count: 50,
+      total_count: 600,
+      agent_running_count: 50,
+      agent_total_count: 600,
+    })).toEqual({
+      tasks: [{ taskId: "t1", status: "running" }],
+      truncated: true,
+      taskRunningCount: 50,
+      taskTotalCount: 600,
+      taskAgentRunningCount: 50,
+      taskAgentTotalCount: 600,
+    });
+    expect(parseDagDigest({
+      runs: [{ run_id: "r1", status: "running", running_task_ids: ["t1"] }],
+      truncated: true,
+      running_count: 50,
+      agent_running_count: 50,
+      agent_total_count: 600,
+    })).toEqual({
+      runs: [{ runId: "r1", status: "running", runningTaskIds: ["t1"] }],
+      truncated: true,
+      dagRunningCount: 50,
+      agentRunningCount: 50,
+      agentTotalCount: 600,
+    });
+  });
+
+  it("omits absent agent scalars and keeps digests valid on non-integer ones", () => {
+    expect(parseTaskDigest({
+      tasks: [],
+      truncated: false,
+      agent_running_count: "many",
+    })).toEqual({ tasks: [], truncated: false });
+    expect(parseDagDigest({
+      runs: [],
+      truncated: false,
+      agent_total_count: null,
+    })).toEqual({ runs: [], truncated: false });
   });
 
   it("still rejects a malformed tasks array when received_at is present", () => {
