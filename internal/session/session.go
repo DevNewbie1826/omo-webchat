@@ -85,6 +85,7 @@ type Session struct {
 	writePrepareMu                                                          sync.Mutex
 	writePrepared                                                           bool
 	closed, closing, resumable, invalidated                                 bool
+	workAtLoss                                                              bool
 	quarantineErr                                                           *ExternalWriteError
 	readyPublished                                                          bool
 	promptInFlight, providerRunActive, compactionActive, localCommandActive bool
@@ -716,7 +717,9 @@ func (s *Session) publishDetachedOutcome(err error, command, requestID string) {
 }
 
 func (s *Session) publishDetachedOutcomeWithPolicy(err error, command, requestID string, suppressResumable bool) {
-	if suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
+	// Every completion path (including a recovery retry) must withhold an
+	// ambiguous post-write result. Only explicit replay may deduplicate it.
+	if errors.Is(err, ErrSendOutcomeUnknown) || suppressResumable && errors.Is(err, ErrSessionResumable) || err == nil && requestID == "" {
 		return
 	}
 	owner := s.operationOwner()
@@ -1690,6 +1693,7 @@ func (s *Session) invalidate(code, message string) {
 		s.lifecycleMu.Unlock()
 		return
 	}
+	s.workAtLoss = s.activeLocked()
 	s.invalidated = true
 	s.resumable = true
 	s.promptInFlight = false

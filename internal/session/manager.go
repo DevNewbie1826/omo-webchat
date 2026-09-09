@@ -362,7 +362,7 @@ func (m *Manager) scheduleSessionReconciliation() {
 		}
 		// Never nest lifecycleMu under Manager.mu.
 		s.lifecycleMu.Lock()
-		worthy := !s.closed && (s.broadcast.count() != 0 || s.activeLocked() ||
+		worthy := !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.workAtLoss ||
 			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
 		resumable := !s.closed && s.resumable
 		s.lifecycleMu.Unlock()
@@ -453,7 +453,7 @@ func (m *Manager) triggerProactiveReconnect(lost omorpc.EpochToken) {
 		}
 		// Never nest lifecycleMu under Manager.mu.
 		s.lifecycleMu.Lock()
-		worthy = !s.closed && (s.broadcast.count() != 0 || s.activeLocked() ||
+		worthy = !s.closed && (s.broadcast.count() != 0 || s.activeLocked() || s.workAtLoss ||
 			(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0))
 		s.lifecycleMu.Unlock()
 		if worthy {
@@ -479,6 +479,29 @@ func (m *Manager) triggerProactiveReconnect(lost omorpc.EpochToken) {
 		// the dial budget, and manager shutdown cancels the wait.
 		if err := m.cfg.Client.EnsureConnected(m.shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("proactive transport recovery failed", "error", err)
+			// Establish the loss publication barrier first, even if the event
+			// observer has not drained this epoch yet. Terminal failure must
+			// follow provider_disconnected, never precede it.
+			m.invalidateEpoch(lost)
+			for _, s := range retained {
+				if s.epoch != lost {
+					continue
+				}
+				m.mu.Lock()
+				current := m.byChat[s.chatID] == s && !m.closed
+				_, retired := m.retiredDurable[s.durableID]
+				m.mu.Unlock()
+				if !current || retired {
+					continue
+				}
+				s.lifecycleMu.Lock()
+				if !s.closed && s.resumable {
+					s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{
+						Code: "reconnect_exhausted", Message: "provider reconnection failed; please retry",
+					}})
+				}
+				s.lifecycleMu.Unlock()
+			}
 		}
 	}()
 }

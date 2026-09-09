@@ -823,12 +823,7 @@ func (op *chatSendOperation) bindResumed(ctx context.Context, stale, acquired *s
 	if oldDetach != nil {
 		oldDetach()
 	}
-	op.bridge.publishQueueToConnection(op.conn, acquired)
-	op.bridge.scheduleIdleDrain(op.chatID, acquired)
-	op.conn.queryState(ctx, acquired)
-	op.conn.queryModels(ctx, acquired)
-	op.conn.queryCommands(ctx, acquired)
-	op.conn.queryStats(ctx, acquired)
+	op.conn.initializeBinding(ctx, op.chatID, acquired)
 	return true
 }
 
@@ -1081,12 +1076,7 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 			}
 			return session.ErrSubscriberDetached
 		}
-		c.bridge.publishQueueToConnection(c, acquired)
-		c.bridge.scheduleIdleDrain(f.ChatID, acquired)
-		c.queryState(ctx, acquired)
-		c.queryModels(ctx, acquired)
-		c.queryCommands(ctx, acquired)
-		c.queryStats(ctx, acquired)
+		c.initializeBinding(ctx, f.ChatID, acquired)
 		return nil
 	}
 	var sess *session.Session
@@ -1619,6 +1609,17 @@ func sessionErrorFrame(err error, command, requestID, sessionID string) any {
 		frame["requestId"] = requestID
 	}
 	return frame
+}
+
+// initializeBinding restores authoritative controls after both explicit
+// attachment and automatic rebinding; replay alone contains no live state.
+func (c *connection) initializeBinding(ctx context.Context, chatID string, s *session.Session) {
+	c.bridge.publishQueueToConnection(c, s)
+	c.bridge.scheduleIdleDrain(chatID, s)
+	c.queryState(ctx, s)
+	c.queryModels(ctx, s)
+	c.queryCommands(ctx, s)
+	c.queryStats(ctx, s)
 }
 
 func (c *connection) queryState(ctx context.Context, s *session.Session) error {
