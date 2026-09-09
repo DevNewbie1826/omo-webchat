@@ -1,5 +1,5 @@
 {
-  "name": "omo-webchat-win32-arm64",
+  "name": "omo-webchat-windows-arm64",
   "version": "0.1.0",
   "description": "Prebuilt omo-webchat server binary for win32/arm64 (Go windows/arm64).",
   "repository": "https://github.com/DevNewbie1826/omo-webchat",

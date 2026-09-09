@@ -323,7 +323,8 @@ function packPackages(workRepo, tarballDir, env) {
 }
 
 function manifestName(label) {
-  return `omo-webchat-${label}`;
+  // Published npm names use "windows" where the platform token is "win32".
+  return `omo-webchat-${label.replace(/^win32-/, 'windows-')}`;
 }
 
 function hostTarget() {
@@ -460,7 +461,7 @@ test('archive to packed npx contract', { timeout: 180_000 }, async (t) => {
   await t.test('native npm install and npx preserve argv, CHAT_PI_BINARY, and nonzero exit', () => {
     console.log(`HOST_NPX_SURFACE=${process.platform}-${process.arch}`);
     installHostPackages(project, packed, env);
-    const hostPkg = `omo-webchat-${process.platform}-${process.arch}`;
+    const hostPkg = `omo-webchat-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
     assert.equal(fs.existsSync(path.join(project, 'node_modules', hostPkg, 'package.json')), true);
     assert.equal(
       fs.existsSync(path.join(project, 'node_modules/omo-webchat-windows-x64/package.json')),

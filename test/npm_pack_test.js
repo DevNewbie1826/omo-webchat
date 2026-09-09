@@ -14,7 +14,7 @@ test('pack runs strict generator and real npm pack for all seven exact packages 
   const m = manifest(ctx);
   assert.equal(m.version, version);
   assert.equal(m.sourceCommit, ctx.sourceCommit);
-  assert.deepEqual(m.packages.map((p) => p.name).sort(), ['omo-webchat', ...targets.map((p) => `omo-webchat-${p}`)].sort());
+  assert.deepEqual(m.packages.map((p) => p.name).sort(), ['omo-webchat', ...targets.map((p) => `omo-webchat-${p.replace(/^win32-/, 'windows-')}`)].sort());
   for (const p of m.packages) {
     assert.equal(p.version, version);
     assert.equal(path.basename(p.file), p.file);
@@ -26,7 +26,7 @@ test('pack runs strict generator and real npm pack for all seven exact packages 
     assert.equal(payload.version, version);
     if (p.platform) {
       assert.deepEqual(payload.os, [p.platform.os]); assert.deepEqual(payload.cpu, [p.platform.cpu]);
-    } else assert.deepEqual(payload.optionalDependencies, Object.fromEntries(targets.map((p) => [`omo-webchat-${p}`, version])));
+    } else assert.deepEqual(payload.optionalDependencies, Object.fromEntries(targets.map((p) => [`omo-webchat-${p.replace(/^win32-/, 'windows-')}`, version])));
   }
   assert.deepEqual(fs.readFileSync(path.join(ctx.root, 'npm/cli/package.json')), before);
   assert.equal(m.archives.length, 9); // Six archives, checksums and both notices.
