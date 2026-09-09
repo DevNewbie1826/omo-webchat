@@ -1469,17 +1469,23 @@ func (m *Manager) openCall(ctx context.Context, chatID, cwd, path string, marker
 // connection-epoch death settles it, per CallDetached's existing contract.
 func (m *Manager) awaitDetachedCompletion(chatID, path string, marker chan struct{}, completion chan openResult) {
 	settle := func(got openResult) {
+		// The late route is closed BEFORE the fence or slot is released: a
+		// successor open admitted the moment the fence clears can reach the
+		// provider while the route this open minted is only addressable by
+		// its original handle, so the successor's open could supersede that
+		// handle and strand the late route. Reacquisition waits for the
+		// retained completion - including its epoch-bound close - exactly as
+		// the pre-recovery cleanup path always ordered it.
+		if got.err == nil && got.response != nil {
+			var late omorpc.OpenSessionData
+			if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
+				m.discardRouting(chatID, late.SessionID, got.epoch)
+			}
+		}
 		if !m.clearPendingOpenMarker(chatID, marker) {
 			// The fence was recovered earlier: its detached-open slot stayed
 			// held, and settlement of the correlation is what releases it.
 			<-m.openSlots
-		}
-		if got.err != nil || got.response == nil {
-			return
-		}
-		var late omorpc.OpenSessionData
-		if json.Unmarshal(got.response.Data, &late) == nil && late.SessionID != "" {
-			m.discardRouting(chatID, late.SessionID, got.epoch)
 		}
 	}
 	if m.cfg.OpenRecoveryAfter <= 0 {
