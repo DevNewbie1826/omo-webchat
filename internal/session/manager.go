@@ -1242,11 +1242,28 @@ func (m *Manager) RouteCleanupDone(route string) <-chan struct{} {
 // barrier, an already-active cleanup, or a retired-route registry at its
 // admission bound each refuse admission; a bound refusal defers the
 // route's cleanup entirely rather than evicting a retained retirement.
-// The close RPC itself runs outside m.mu.
+// A connection epoch that already died - or was already invalidated -
+// also refuses admission before any bookkeeping: a recovery holding a
+// stale list_sessions result from that epoch must never reinsert the
+// retirement detachEpoch already cleared, or consume the admission bound
+// a live successor epoch's reconciliation still needs. The close RPC
+// itself runs outside m.mu.
 func (m *Manager) beginRecoveryClose(chatID, route string, epoch omorpc.EpochToken) (chan struct{}, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || m.byRoute[route] != nil {
+		return nil, false
+	}
+	if _, invalidated := m.invalidatedEpochs[epoch]; invalidated {
+		// The epoch that minted this stale list result already died and was
+		// detached; admitting would reinsert bookkeeping that detachEpoch
+		// cleared and let a dead epoch consume the admission bound.
+		return nil, false
+	}
+	if !m.cfg.Client.EpochCurrent(epoch) {
+		// The token died without the invalidation barrier being observable
+		// yet; either way this epoch's routes are gone and can never be
+		// published, so there is nothing left to protect against.
 		return nil, false
 	}
 	if _, cleaning := m.routeCleanup[route]; cleaning {

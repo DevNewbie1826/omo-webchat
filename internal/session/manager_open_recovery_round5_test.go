@@ -297,3 +297,57 @@ func TestRetirementBoundRefusesNewRetirements(t *testing.T) {
 		t.Fatalf("refused-retirement route unusable: %v", err)
 	}
 }
+
+// Round-6 review regression: recovery admission must refuse a connection
+// epoch that died while a stale list_sessions result was in flight. The
+// guard runs inside the admission critical section, before any bookkeeping,
+// so a dead epoch's retirement can never be reinserted after detachEpoch
+// cleared it - and can therefore never consume the admission bound that a
+// live successor epoch's reconciliation still needs.
+func TestRetirementAdmissionRefusesDeadEpoch(t *testing.T) {
+	// Short socket root: the unix path length bound cannot fit t.TempDir().
+	root, err := os.MkdirTemp("", "sess-dead-epoch-")
+	if err != nil {
+		t.Fatalf("temporary daemon directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	d := omorpctest.New(root)
+	if err := d.Start(); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	client := dial(t, d)
+	mgr := newBoundedRecoveryManager(t, client, newKeyedParkStore(), 1)
+
+	// A witness session observes the old epoch's invalidation, which proves
+	// detachEpoch completed for the dead token before the stale admission.
+	witnessRec := newRecorder(4)
+	acquire(t, mgr, testChat{id: "witness", cwd: t.TempDir()}, witnessRec)
+	witnessRec.next(t) // ready
+
+	oldToken, oldEvents := client.CurrentEpoch()
+	d.Stop()
+	select {
+	case <-oldEvents:
+	case <-time.After(testTimeout):
+		t.Fatal("old epoch did not close")
+	}
+	witnessRec.awaitError(t, "provider_disconnected")
+
+	// A stale recovery carrying the dead token tries to admit an unowned
+	// route it observed on the old epoch. Admission must refuse before any
+	// bookkeeping: no retirement record, no cleanup reservation, no
+	// retiring registration.
+	if cleanup, ok := mgr.beginRecoveryClose("victim", "rpc-stale", oldToken); ok {
+		t.Fatalf("recovery admitted a retirement on dead connection epoch: route=rpc-stale")
+	} else if cleanup != nil {
+		t.Fatal("refused dead-epoch admission still returned cleanup bookkeeping")
+	}
+	mgr.mu.Lock()
+	retired := len(mgr.retiredRoutes)
+	cleaning := len(mgr.routeCleanup)
+	retiring := len(mgr.retiringByChat)
+	mgr.mu.Unlock()
+	if retired != 0 || cleaning != 0 || retiring != 0 {
+		t.Fatalf("dead-epoch admission left bookkeeping: retired=%d cleanup=%d retiring=%d", retired, cleaning, retiring)
+	}
+}
