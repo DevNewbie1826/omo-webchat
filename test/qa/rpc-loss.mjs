@@ -3,7 +3,7 @@
  */
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -111,6 +111,7 @@ try {
  const before=await control('/state');
  for(const c of targets)await gate(c);
  const from=observed.mark();const ready=targets.map(c=>wait('ready',c.id,from));
+ const hydrated=targets.map(c=>observed.wait(r=>frame('entries',c.id)(r)&&r.frame.final===true,{after:from,timeout:15000,label:`terminal recovery history ${c.id}`}));
  await control('/drop',{});
  // The fixture's request feed wakes one waiter per signal; concurrent /await
  // calls can consume each other's only signal and starve. Counts are checked
@@ -120,7 +121,7 @@ try {
   if(midflight)await midflight();
   for(const c of targets)await release(c);
   await Promise.all(ready);
-  const hydrated=targets.map(c=>wait('queue',c.id,from));await Promise.all(hydrated);
+  await Promise.all(hydrated);
   const after=await control('/state');
   for(const c of targets){ assert.equal(opens(after,c)-opens(before,c),1,'single recovery open per chat');const row=observed.timeline.find(r=>r.sequence>from&&frame('ready',c.id)(r));assert.equal(row.frame.piSessionId,c.durableId,'same durable identity'); }
   return {before,after,pending,from};
@@ -145,9 +146,11 @@ try {
   const from=observed.mark();const failed=observed.wait(r=>frame('error',a.id)(r)&&r.frame.code==='resume_failed',{after:from,label:'S2 resume failure'});
   const open=control('/await',{path:a.path,command:'open_session',count:opens(before,a)+1});
   await control('/drop',{});await open;await capture('S2-pending');
+  // Subscribe to the actual render before allowing the failure to arrive.
+  await dom(()=>!!document.querySelector('[data-recovery-phase="incomplete"].th-chat-status-item--warn'));
   await release(a);const failure=await failed;
-  // The protocol result is the barrier; native paint is captured without artificial delays.
-  const ui=await capture('S2-incomplete');
+  await doneDOM();
+  await capture('S2-incomplete');
   // Recovery states are per-pane: the sibling chat recovered legitimately, so
   // only the failed chat's pane must carry the incomplete warning and never a
   // success report.
@@ -160,16 +163,25 @@ try {
  // Explicit setup between independent scenarios restores the failed session.
  await reload();
  await scenario('S3',async(before)=>{
-  await control('/gate',{command:'prompt',path:a.path});
+  const text='S3 single mid-flight prompt';
+  await control('/prompt-before-apply',{path:a.path});
   const count=before.requests.filter(r=>r.type==='prompt').length;
-  const written=control('/await',{path:a.path,command:'prompt',count:before.requests.filter(r=>r.type==='prompt'&&r.message?.startsWith('S1')).length+1});
-  await input(a).fill('S3 single mid-flight prompt');await input(a).press('Enter');await written;
+  const entryCount=before.sessions.find(s=>s.path===a.path).entryCount;
+  const written=control('/await-prompt-before-apply',{path:a.path});
+  await input(a).fill(text);await input(a).press('Enter');await written;
   await save('S3-written-before-response.json',await control('/state'));
-  await dropCycle('S3',chats,()=>control('/release',{command:'prompt',path:a.path}));
+  // Keep the accepted route's prompt held across the entire recovery replay.
+  // A generic pre-route handler gate cannot prove durable application.
+  await dropCycle('S3');
+  const applied=control('/await-history',{path:a.path,count:entryCount+1});
+  await control('/release',{command:'prompt',path:a.path});await applied;
+  const durable=(await readFile(a.path,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+  const matching=durable.filter(entry=>entry.type==='message'&&entry.message?.role==='user'&&entry.message.content===text);
+  await save('S3-durable-history.json',durable);
+  assert.equal(matching.length,1,'exactly one matching durable user turn');
   const after=await control('/state');
   assert.equal(after.requests.filter(r=>r.type==='prompt').length-count,1,'NO duplicate prompt RPC');
-  assert.equal(after.requests.filter(r=>r.type==='prompt'&&r.message==='S3 single mid-flight prompt').length,1);
-  return {promptRequestCount:1};
+  return {promptRequestCount:1,durableMatchingTurns:matching.length};
  });
  await scenario('S4',async()=>{
   const cycles=[];

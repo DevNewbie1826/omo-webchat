@@ -41,6 +41,7 @@ func main() {
 	defer d.Stop()
 	var mu sync.Mutex
 	gates := map[string]func(){}
+	promptEntered := map[string]<-chan struct{}{}
 	defer func() {
 		for _, release := range gates {
 			release()
@@ -78,10 +79,43 @@ func main() {
 			reply(map[string]any{"ok": true})
 			return
 		}
+		if r.URL.Path == "/await-history" {
+			if !d.AwaitSessionEntryCount(q.Path, q.Count, 15*time.Second) {
+				http.Error(w, "durable application deadline", 504)
+				return
+			}
+			reply(map[string]any{"ok": true})
+			return
+		}
+		if r.URL.Path == "/await-prompt-before-apply" {
+			mu.Lock()
+			entered := promptEntered[q.Path]
+			mu.Unlock()
+			if entered == nil {
+				http.Error(w, "no prompt barrier", 409)
+				return
+			}
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			defer cancel()
+			select {
+			case <-entered:
+				reply(map[string]any{"ok": true})
+			case <-ctx.Done():
+				http.Error(w, "prompt application barrier deadline", 504)
+			}
+			return
+		}
 		mu.Lock()
 		defer mu.Unlock()
 		key := q.Command + q.Path
 		switch r.URL.Path {
+		case "/prompt-before-apply":
+			key = "prompt" + q.Path
+			if gates[key] != nil {
+				http.Error(w, "gate already held", 409)
+				return
+			}
+			promptEntered[q.Path], gates[key] = d.BlockPromptBeforeApply(q.Path)
 		case "/gate":
 			if gates[key] != nil {
 				http.Error(w, "gate already held", 409)
@@ -92,6 +126,9 @@ func main() {
 			if release := gates[key]; release != nil {
 				release()
 				delete(gates, key)
+				if q.Command == "prompt" {
+					delete(promptEntered, q.Path)
+				}
 			}
 		case "/drop":
 			d.DropConnections()
