@@ -1474,10 +1474,10 @@ func deliveryUncertain(err error) bool {
 }
 
 func (h *Handler) publishDispatchUncertain(chatID string, item sendqueue.Item) {
-	payload, _ := json.Marshal(map[string]any{"itemId": item.ID, "requestId": item.RequestID})
-	h.publishChatFrame(chatID, wscontract.NoticeFrame{
-		Type: "notice", SessionID: chatID, Kind: "queue_delivery_uncertain",
-		At: time.Now().UTC().Format(time.RFC3339Nano), Payload: payload,
+	h.cfg.Manager.PublishNotice(chatID, map[string]any{
+		"kind":      "queue_delivery_uncertain",
+		"itemId":    item.ID,
+		"requestId": item.RequestID,
 	})
 }
 

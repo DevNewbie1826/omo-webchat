@@ -72,9 +72,11 @@ func TestQueueExternalAppendUnknownCursorRequiresExplicitRecoveryWithoutResend(t
 			}
 			beforeQueries := h.daemon.RequestCount(omorpc.CmdGetEntries)
 			h.bridge.SessionRunSettled(chat, sess)
-			if notice := frames.next(t, "notice"); notice["kind"] != "queue_delivery_uncertain" {
-				t.Fatalf("queue notice=%v", notice)
+			parked := frames.next(t, "notice")
+			if parked["kind"] != "queue_delivery_uncertain" {
+				t.Fatalf("queue notice=%v", parked)
 			}
+			parkedNid, _ := parked["nid"].(string)
 			if frame := frames.next(t, "error"); frame["code"] != "external-write-detected" || !strings.Contains(fmt.Sprint(frame["message"]), "Entry not found: external-end") {
 				t.Fatalf("real provider error/quarantine=%v", frame)
 			}
@@ -129,6 +131,15 @@ func TestQueueExternalAppendUnknownCursorRequiresExplicitRecoveryWithoutResend(t
 			}
 			releaseOpen()
 			recoveredFrames.next(t, "ready")
+			// The journaled delivery notice replays on every attach with the
+			// identity it was stamped with at park time; only a notice with a
+			// NEW nid would mean the recovered inspection parked the delivery
+			// again, which the completion await below still rejects.
+			replayed := recoveredFrames.next(t, "notice")
+			replayedNid, _ := replayed["nid"].(string)
+			if replayed["kind"] != "queue_delivery_uncertain" || replayedNid == "" || replayedNid != parkedNid {
+				t.Fatalf("replayed delivery notice identity changed: parked nid=%q replayed=%v", parkedNid, replayed)
+			}
 			awaitQueueHistoryCompletion(t, recoveredFrames, revision+3)
 			wantPrompts := 1 // A reserved item has never been attempted.
 			if attempted {

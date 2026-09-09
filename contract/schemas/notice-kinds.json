@@ -11,7 +11,12 @@
         "retry_fallback_succeeded",
         "retry_fallback_exhausted",
         "server_fallback_aborted",
-        "high_reasoning_warning"
+        "high_reasoning_warning",
+        "auto_retry_start",
+        "auto_retry_end",
+        "compaction_error",
+        "queue_delivery_uncertain",
+        "extension_notify"
       ]
     }
   }

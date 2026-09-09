@@ -1550,11 +1550,25 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			initial = append(initial, outcome)
 		}
 	}
-	queueSize := s.queueSize
-	if queueSize < len(initial) {
-		queueSize = len(initial)
+	// Journaled durable notices replay after retained send outcomes. The
+	// journal fence spans snapshot and subscriber registration, placing each
+	// notice on exactly one side of the replay/live delivery boundary.
+	var id uint64
+	var target *subscription
+	var rawDetach func()
+	attach := func(notices []Frame) {
+		initial = append(initial, notices...)
+		queueSize := s.queueSize
+		if queueSize < len(initial) {
+			queueSize = len(initial)
+		}
+		id, target, rawDetach = s.broadcast.attach(sub, queueSize, initial)
 	}
-	id, target, rawDetach := s.broadcast.attach(sub, queueSize, initial)
+	if s.manager != nil {
+		s.manager.withNoticeReplay(s.chatID, s, attach)
+	} else {
+		attach(nil)
+	}
 	for _, frame := range replayInitial {
 		s.publishLocked(frame)
 	}
@@ -1568,6 +1582,9 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 			rawDetach()
 			if id != 0 {
 				s.lifecycleMu.Lock()
+				if s.manager != nil && s.broadcast.count() == 0 {
+					s.manager.unregisterNoticeSession(s.chatID, s)
+				}
 				s.scheduleIdleLocked()
 				s.lifecycleMu.Unlock()
 			}
@@ -1818,6 +1835,12 @@ func (s *Session) summaryLocked() Summary {
 	}
 }
 func (s *Session) publishLocked(f Frame) {
+	if f.Kind == FrameNotice && s.manager != nil {
+		// The journal fence covers both admission and broadcaster fanout so an
+		// attaching subscriber receives this frame through replay or live delivery.
+		s.manager.publishNotice(s.chatID, f, s.broadcast.publish)
+		return
+	}
 	if f.Kind == FrameReady {
 		s.readyPublished = true
 	}
