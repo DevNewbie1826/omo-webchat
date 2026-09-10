@@ -83,6 +83,29 @@ describe("ordered agent aggregate authority (review r2 F3)", () => {
     expect(summary.runningCount).toBe(4);
   });
 
+  it("a current task digest outranks a cached DAG snapshot scalar within one envelope", () => {
+    const summary = summarizeLiveSession(infoWith({
+      taskDigest: {
+        tasks: [],
+        truncated: true,
+        receivedAt: "2026-09-10T11:30:00Z",
+        taskAgentRunningCount: 2, taskAgentTotalCount: 2,
+      },
+      dag: {
+        parent_session_id: "s1", truncated_runs: false, running_count: 1,
+        agent_running_count: 1, agent_total_count: 1,
+        runs: [{
+          run_id: "r1", run_key: "r1", name: "Graph", status: "running",
+          updated_at: "2026-09-10T10:01:00Z",
+          counts: { total: 1, pending: 0, blocked: 0, scheduled: 0, running: 1, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+          nodes: [{ id: "n1", task_id: "dag-work", prompt: "DAG only", depends_on: [], state: "running" }],
+          edges: [], waves: [],
+        }],
+      },
+    }), NOW);
+    expect(summary.runningCount).toBe(2);
+  });
+
   it("timestamp-less parsed frames rank below timestamped digests", () => {
     const summary = summarizeLiveSession(infoWith({
       task: { parent_session_id: "s1", truncated_tasks: false, tasks: [{ task_id: "t1", status: "running", updated_at: "2026-09-10T10:00:00Z" }], running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 },

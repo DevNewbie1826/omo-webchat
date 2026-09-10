@@ -190,15 +190,18 @@ export function reconcileTaskSources<T extends TaskAuthority>(
     ? { ...reconcileTaskAuthority(state, [], { mergeOnly: true, truncated: true }), taskUnavailable: true } : state;
   const truncated = digest === undefined ? rich?.truncatedTasks === true || options.oversized === true : digest.truncated;
   const partial = rich?.truncatedTasks === true || options.oversized === true;
+  // Within one envelope the digest is the server's current computed aggregate;
+  // the rich payload's scalars can be a cached per-side snapshot and only fill
+  // fields the digest does not carry.
   const scalars = {
-    ...(digest?.taskRunningCount === undefined ? {} : { taskRunningCount: digest.taskRunningCount }),
-    ...(digest?.taskTotalCount === undefined ? {} : { taskTotalCount: digest.taskTotalCount }),
-    ...(digest?.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: digest.taskAgentRunningCount }),
-    ...(digest?.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: digest.taskAgentTotalCount }),
     ...(rich?.taskRunningCount === undefined ? {} : { taskRunningCount: rich.taskRunningCount }),
     ...(rich?.taskTotalCount === undefined ? {} : { taskTotalCount: rich.taskTotalCount }),
     ...(rich?.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: rich.taskAgentRunningCount }),
     ...(rich?.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: rich.taskAgentTotalCount }),
+    ...(digest?.taskRunningCount === undefined ? {} : { taskRunningCount: digest.taskRunningCount }),
+    ...(digest?.taskTotalCount === undefined ? {} : { taskTotalCount: digest.taskTotalCount }),
+    ...(digest?.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: digest.taskAgentRunningCount }),
+    ...(digest?.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: digest.taskAgentTotalCount }),
   };
   if (digest === undefined) return reconcileTaskAuthority(state, rich!.tasks, { ...options, truncated, ...scalars });
   // Unknown revisions are still arrival-ordered, once per source envelope.

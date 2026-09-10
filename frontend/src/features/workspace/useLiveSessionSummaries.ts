@@ -295,11 +295,12 @@ export function summarizeLiveSession(
 
 
 /** Within one summary envelope the aggregate is structural, never a clock
- * comparison: the DAG side is the later completion source, a DAG digest
- * backs a cached oversized side, and a task digest is the authoritative
- * compact projection of its side. Ordering across separate deliveries is
- * decided by the shared store's accepted-delivery admission clock before
- * this fallback ever runs. */
+ * comparison: the current server-computed digests are the aggregate
+ * authority while a snapshot payload's scalar can be a cached per-side
+ * snapshot, so both digests outrank both payloads; the DAG side remains the
+ * later completion source within each tier, and ordering across separate
+ * deliveries is decided by the shared store's accepted-delivery admission
+ * clock before this fallback ever runs. */
 function orderedAgentAuthority(
   parsedTask: ParsedTaskUpdated | null,
   taskDigest: TaskDigest | undefined,
@@ -309,11 +310,11 @@ function orderedAgentAuthority(
   if (dagDigest?.agentRunningCount !== undefined) {
     return { running: dagDigest.agentRunningCount, total: dagDigest.agentTotalCount };
   }
-  if (parsedDag?.agentRunningCount !== undefined) {
-    return { running: parsedDag.agentRunningCount, total: parsedDag.agentTotalCount };
-  }
   if (taskDigest?.taskAgentRunningCount !== undefined) {
     return { running: taskDigest.taskAgentRunningCount, total: taskDigest.taskAgentTotalCount };
+  }
+  if (parsedDag?.agentRunningCount !== undefined) {
+    return { running: parsedDag.agentRunningCount, total: parsedDag.agentTotalCount };
   }
   if (parsedTask?.taskAgentRunningCount !== undefined) {
     return { running: parsedTask.taskAgentRunningCount, total: parsedTask.taskAgentTotalCount };

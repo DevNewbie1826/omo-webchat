@@ -124,15 +124,16 @@ export function acceptLiveDagCounts(
 }
 
 /** The aggregate rides beside the DAG rows; a digest backs an absent or
- * oversized payload. No agent scalar means no delivery. */
+ * oversized payload. No agent scalar means no delivery. Within one envelope
+ * the digest is the server's current computed aggregate: the snapshot
+ * payload's per-side scalar can be a cached older snapshot and only fills
+ * fields the digest does not carry. */
 function dagCountsOf(
   info: { readonly dag?: unknown; readonly dagDigest?: DagDigest },
 ): CountAuthority | null {
   const payload = parseDagCounts(info.dag);
-  if (payload !== null
-    && (payload.taskAgentRunningCount !== undefined || payload.taskAgentTotalCount !== undefined)) return payload;
-  const running = info.dagDigest?.agentRunningCount;
-  const total = info.dagDigest?.agentTotalCount;
+  const running = info.dagDigest?.agentRunningCount ?? payload?.taskAgentRunningCount;
+  const total = info.dagDigest?.agentTotalCount ?? payload?.taskAgentTotalCount;
   if (running === undefined && total === undefined) return null;
   return {
     ...(running === undefined ? {} : { taskAgentRunningCount: running }),
