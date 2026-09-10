@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
+import type { ParsedDagUpdated } from "../split/activityParseDag";
+import type { ParsedTaskUpdated } from "../split/activityParseTask";
 import { isRecord } from "../../lib/chatWsParseFields";
 import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
@@ -248,10 +250,9 @@ export function summarizeLiveSession(
         ? 0
         : countDigestDagRunning(dagDigest.runs, taskIds)
     : overlap === null ? dagScalar : Math.max(0, dagScalar - overlap);
-  const agentRunning = taskDigest?.taskAgentRunningCount
-    ?? parsedTask?.taskAgentRunningCount
-    ?? dagDigest?.agentRunningCount
-    ?? parsedDag?.agentRunningCount;
+  const agentRunning = orderedAgentAuthority(
+    parsedTask, taskDigest, parsedDag, info.dagDigest,
+  )?.running;
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -277,6 +278,58 @@ export function summarizeLiveSession(
     lastLine: lastLineOf(tasks),
     dagRunning,
   };
+}
+
+
+function parsedTaskRecencyMs(parsed: ParsedTaskUpdated | null): number {
+  let latest = -Infinity;
+  for (const task of parsed?.tasks ?? []) {
+    const ms = task.updatedAt === undefined ? null : Date.parse(task.updatedAt);
+    if (ms !== null && !Number.isNaN(ms) && ms > latest) latest = ms;
+  }
+  return latest;
+}
+
+function parsedDagRecencyMs(parsed: ParsedDagUpdated | null): number {
+  let latest = -Infinity;
+  for (const run of parsed?.runs ?? []) {
+    const ms = run.updatedAt === undefined ? null : Date.parse(run.updatedAt);
+    if (ms !== null && !Number.isNaN(ms) && ms > latest) latest = ms;
+  }
+  return latest;
+}
+
+/** One ordered aggregate across task and DAG deliveries: the most recent
+ * source wins; ties prefer the DAG side (the later completion source). */
+function orderedAgentAuthority(
+  parsedTask: ParsedTaskUpdated | null,
+  taskDigest: TaskDigest | undefined,
+  parsedDag: ParsedDagUpdated | null,
+  dagDigest: DagDigest | undefined,
+): { readonly running: number; readonly total: number | undefined } | undefined {
+  const candidates: { side: "task" | "dag"; at: number; running: number; total: number | undefined }[] = [];
+  const taskLiveRunning = parsedTask?.taskAgentRunningCount;
+  if (taskLiveRunning !== undefined) {
+    candidates.push({ side: "task", at: parsedTaskRecencyMs(parsedTask), running: taskLiveRunning, total: parsedTask?.taskAgentTotalCount });
+  }
+  if (taskDigest?.taskAgentRunningCount !== undefined) {
+    candidates.push({ side: "task", at: digestReceivedMs(taskDigest.receivedAt) ?? -Infinity, running: taskDigest.taskAgentRunningCount, total: taskDigest.taskAgentTotalCount });
+  }
+  const dagLiveRunning = parsedDag?.agentRunningCount;
+  if (dagLiveRunning !== undefined) {
+    candidates.push({ side: "dag", at: parsedDagRecencyMs(parsedDag), running: dagLiveRunning, total: parsedDag?.agentTotalCount });
+  }
+  if (dagDigest?.agentRunningCount !== undefined) {
+    candidates.push({ side: "dag", at: digestReceivedMs(dagDigest.receivedAt) ?? -Infinity, running: dagDigest.agentRunningCount, total: dagDigest.agentTotalCount });
+  }
+  if (candidates.length === 0) return undefined;
+  let best = candidates[0]!;
+  for (const candidate of candidates.slice(1)) {
+    if (candidate.at > best.at || (candidate.at === best.at && candidate.side === "dag" && best.side === "task")) {
+      best = candidate;
+    }
+  }
+  return { running: best.running, total: best.total };
 }
 
 /** Per-session activity rollups for live sessions, from the shared poller. */

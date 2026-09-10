@@ -457,9 +457,9 @@ function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {
 /** Complete REST membership removes even terminal rows unless actually touched. */
 export function applyTaskHistorySnapshot(
   state: ActivityState, data: unknown, touched: ReadonlySet<string> = new Set(),
-  digest?: TaskDigest, oversized = false,
+  digest?: TaskDigest, oversized = false, countRequestedMs?: number,
 ): ActivityState {
-  return reconcileTaskSources(state, parseTaskUpdated(data), digest, { history: true, touched, oversized });
+  return reconcileTaskSources(state, parseTaskUpdated(data), digest, { history: true, touched, oversized, ...(countRequestedMs === undefined ? {} : { countRequestedMs }) });
 }
 
 export function applyActivityHistorySnapshot(state: ActivityState, name: string, data: unknown): ActivityState {

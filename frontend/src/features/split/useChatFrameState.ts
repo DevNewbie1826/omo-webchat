@@ -178,6 +178,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const activityHydrationRef = useRef<{
     readonly token: number;
     readonly buffer: ActivityHydrationBuffer;
+    readonly requestedMs: number;
     readonly touchedDags: Set<string>;
     readonly touchedTasks: Set<string>;
   } | null>(null);
@@ -445,7 +446,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // Both domains reconcile per ID; touches outlive the bounded progress buffer.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set(), touchedTasks: new Set() };
+    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set(), touchedTasks: new Set(), requestedMs: Date.now() };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
@@ -456,7 +457,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized);
+    next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized, hydration.requestedMs);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
     // The DAG digest carries the same exact agent aggregate as the task side;
     // backfill it when the task digest is absent or predates the agent pair so
@@ -465,7 +466,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     next = applyCountAuthority(next, {
       ...(dagDigestParsed?.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigestParsed.agentRunningCount }),
       ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
-    });
+    }, hydration.requestedMs);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
       // would remove REST-only rows or reverse both-unknown legacy ordering.
@@ -478,7 +479,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
         const counts = event.name === "omo.task.updated"
           ? parseTaskCounts(event.data)
           : parseDagCounts(event.data);
-        if (counts !== null) next = applyCountAuthority(next, counts);
+        if (counts !== null) next = applyCountAuthority(next, counts, Date.now());
       }
     }
     if (next !== activitiesRef.current) applyActivities(next);
