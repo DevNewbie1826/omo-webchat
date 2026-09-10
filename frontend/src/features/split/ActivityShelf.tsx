@@ -245,9 +245,9 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
         : tasks.length;
       return total === 0 ? null : `${running}/${total}`;
     }
-    // Overview totals are not catalog totals. Exact counts live on the full selected run.
+    // Overview totals are not catalog totals. Exact counts live on the full
+    // runs loaded in the DAG tab; retained-row sums serve legacy servers.
     if (dagSource !== undefined || dags.length === 0) return null;
-    if (activities.truncatedDags || dags.some(run => run.truncated)) return t("activity.partial");
     const done = dags.reduce((sum, run) => sum + run.counts.completed, 0);
     const total = dags.reduce((sum, run) => sum + run.counts.total, 0);
     return `${done}/${total}`;
@@ -458,8 +458,6 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                     : dags.length > 0
                       ? <p className="th-activity-dag-name">{dags.map(run => run.name).join(", ")}</p>
                       : <p className="th-activity-empty">{t("activity.emptyDag")}</p>)}
-                {tab === "dag" && dagSource === undefined && activities.truncatedDags === true
-                  && <p className="th-activity-partial">{t("activity.partial")}</p>}
               </div>
             ))}
           </div>}

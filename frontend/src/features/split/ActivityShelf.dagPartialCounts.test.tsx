@@ -64,6 +64,21 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     );
   }
 
+  /** The current count surface: the Subagents tab strip renders exactly its
+   * label plus the exact running/total scalar in the count slot — no other
+   * numeric or marker text can appear on the tab. */
+  function exactCountSurface(expected: string | null): void {
+    expect([...agentsTab().querySelectorAll("span")].map(span => span.textContent))
+      .toEqual(expected === null ? ["activity.subagents"] : ["activity.subagents", expected]);
+  }
+
+  /** Panel-absence invariant: no element carrying a partial class exists
+   * anywhere in the mounted shelf, whatever the truncation inputs. Exactness
+   * is the shipped surface, so a partial-classed note can never appear. */
+  function noPartialSurface(): void {
+    expect(harness.container.querySelector('[class*="partial"]')).toBeNull();
+  }
+
   it("uses exact local retained counts through partial-to-full DAG updates", () => {
     const full = sourceRun();
     const partial = sourceRun({ nodes: full.nodes.slice(0, 1), truncated: true });
@@ -75,7 +90,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
       tab.getAttribute("data-activity-tab"))).toEqual(["todo", "agents", "dag"]);
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
-    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+    exactCountSurface("1/1");
+    noPartialSurface();
     click(agentsTab());
     expect(count()).toBe("1/1");
 
@@ -84,7 +100,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     expect(agentsTab().getAttribute("title")).toBeNull();
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
-    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+    exactCountSurface("2/2");
+    noPartialSurface();
   });
 
   it("scales exact local counts for larger retained rosters", () => {
@@ -118,7 +135,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     click(agentsTab());
     expect(agentsPanel().querySelector(".th-activity-empty")?.textContent).toBe("activity.emptyAgents");
     expect(count()).toBeNull();
-    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+    exactCountSurface(null);
+    noPartialSurface();
   });
 
   it("renders exact zero running for retained completed nodes", () => {
@@ -185,7 +203,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     expect(agentsTab().getAttribute("title")).toBeNull();
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
-    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+    exactCountSurface("3/5");
+    noPartialSurface();
   });
 
   it("takes a live count-only DAG frame as the aggregate while the shelf stays closed", () => {
@@ -305,7 +324,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
         expect(agentsTab().getAttribute("title")).toBeNull();
         click(agentsTab());
         expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
-        expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+        exactCountSurface(exactCount);
+        noPartialSurface();
 
         state = apply(state, "omo.dag.updated", snapshot([{
           ...exactRun, updated_at: "2026-09-09T10:02:00Z",
@@ -317,7 +337,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
         expect(state.tasks.get(taskId)).toBe(task);
         expect(agentsTab().getAttribute("title")).toBeNull();
         expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
-        expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+        exactCountSurface(exactCount);
+        noPartialSurface();
       });
     });
 
@@ -379,7 +400,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
       expect(state.dags.get("raw-run")?.nodes).toHaveLength(retained);
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(retained);
-      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+      exactCountSurface(expected);
+      noPartialSurface();
       const incumbent = state.dags.get("raw-run");
       state = apply(state, "omo.dag.updated", snapshot([wireRun()]));
       expect(state.dags.get("raw-run")).toBe(incumbent);
@@ -421,7 +443,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(retained);
       expect(agentsPanel().querySelector(".th-activity-empty") === null).toBe(retained > 0);
-      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+      exactCountSurface(expected);
+      noPartialSurface();
 
       state = apply(state, "omo.dag.updated", snapshot([wireRun({ updated_at: newer })]));
       renderShelf(harness, state);
@@ -429,7 +452,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
       expect(state.truncatedDags).toBe(false);
       expect(state.dags.get("raw-run")?.truncated).toBe(false);
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
-      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+      exactCountSurface("2/2");
+      noPartialSurface();
     });
 
     it.each(["2026-09-09T09:59:00Z", revision, undefined])("does not contaminate complete authority with rejected partial revision %s", (updated_at) => {
@@ -483,7 +507,8 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
       renderShelf(harness, state);
       expect(count()).toBe("1/2");
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
-      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+      exactCountSurface("1/2");
+      noPartialSurface();
     });
 
     it("keeps dropped topology local and preserves F1 task identity provenance", () => {
@@ -511,6 +536,7 @@ describe("ActivityShelf exact DAG-derived Subagents counts", () => {
     expect(count()).toBeNull();
     click(agentsTab());
     expect(agentsPanel().querySelector(".th-activity-empty")?.textContent).toBe("activity.emptyAgents");
-    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+    exactCountSurface(null);
+    noPartialSurface();
   });
 });

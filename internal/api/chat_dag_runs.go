@@ -9,17 +9,32 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
+// dagCatalogCursor is a value-encoded keyset cursor over the catalog's total
+// order (session.DagCatalogLess: updated_at DESC, run_id DESC tiebreak). It
+// carries the composite key of the last emitted entry - updated_at encoded as
+// the comparator's normalized clock (the raw string when it parses as an
+// RFC3339 instant, the empty oldest-clock key when the store accepted a
+// missing or unparseable clock) plus run_id - never a page position, so
+// concurrent appends cannot shift page boundaries: runs sorting before the
+// key stay behind the walk and never duplicate, runs sorting after it surface
+// on a later page. The normalized clock makes every emitted cursor resumable
+// by this endpoint even at a malformed-clock boundary, while the emitted
+// catalog entries keep their original raw clock metadata. Version 2 replaced
+// the retired v1 runId-only key of the old ascending order; v1 cursors are
+// rejected so no token can be misread under the new order.
 type dagCatalogCursor struct {
-	Version   int    `json:"v"`
-	Workspace string `json:"ws"`
-	Chat      string `json:"chat"`
-	After     string `json:"after"`
+	Version        int    `json:"v"`
+	Workspace      string `json:"ws"`
+	Chat           string `json:"chat"`
+	AfterUpdatedAt string `json:"after_updated_at"`
+	AfterRunID     string `json:"after_run_id"`
 }
 
 type dagCatalogResponse struct {
@@ -66,6 +81,14 @@ func validDagRunID(id string) bool {
 	return id != "" && id != "." && id != ".." && utf8.ValidString(id) && !strings.ContainsAny(id, "/\\\x00")
 }
 
+func validDagCursorTimestamp(updatedAt string) bool {
+	if updatedAt == "" {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339, updatedAt)
+	return err == nil
+}
+
 func (s *Server) handleGetChatDagRun(w http.ResponseWriter, r *http.Request) {
 	cwd, parent, ok := s.dagChatScope(w, r)
 	if !ok {
@@ -107,7 +130,7 @@ func (s *Server) handleListChatDagRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	after := ""
+	afterUpdatedAt, afterRunID := "", ""
 	if values, present := query["cursor"]; present {
 		var cursor dagCatalogCursor
 		if len(values) != 1 {
@@ -115,22 +138,39 @@ func (s *Server) handleListChatDagRuns(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data, err := base64.RawURLEncoding.Strict().DecodeString(values[0])
-		if err != nil || json.Unmarshal(data, &cursor) != nil || cursor.Version != 1 || cursor.Workspace != r.PathValue("wsId") || cursor.Chat != r.PathValue("chatId") || !validDagRunID(cursor.After) {
+		if err != nil || json.Unmarshal(data, &cursor) != nil || cursor.Version != 2 || cursor.Workspace != r.PathValue("wsId") || cursor.Chat != r.PathValue("chatId") || !validDagRunID(cursor.AfterRunID) || !validDagCursorTimestamp(cursor.AfterUpdatedAt) {
 			writeError(w, http.StatusBadRequest, "invalid DAG catalog cursor")
 			return
 		}
-		after = cursor.After
+		afterUpdatedAt, afterRunID = cursor.AfterUpdatedAt, cursor.AfterRunID
 	}
 	entries, err := session.ReadDagCatalog(r.Context(), cwd, parent)
 	if err != nil {
 		s.writeDagError(w, r, err)
 		return
 	}
-	start := sort.Search(len(entries), func(i int) bool { return entries[i].RunID > after })
+	// Keyset resume over the same total order the catalog is sorted in: the
+	// next page starts at the first entry sorting strictly after (older than)
+	// the cursor's composite key, so pages concatenate without gaps or
+	// duplicates across page boundaries, including inside equal-updated_at
+	// clusters where only the run_id tiebreak separates neighbors. Without a
+	// cursor the walk starts at the newest entry.
+	start := 0
+	if afterRunID != "" {
+		key := session.DagCatalogEntry{RunID: afterRunID, UpdatedAt: afterUpdatedAt}
+		start = sort.Search(len(entries), func(i int) bool { return session.DagCatalogLess(key, entries[i]) })
+	}
 	end := min(start+limit, len(entries))
 	response := dagCatalogResponse{Runs: entries[start:end]}
 	if end < len(entries) {
-		data, err := json.Marshal(dagCatalogCursor{Version: 1, Workspace: r.PathValue("wsId"), Chat: r.PathValue("chatId"), After: entries[end-1].RunID})
+		// The cursor's clock key is the comparator's normalized clock, not
+		// the boundary entry's raw metadata: a missing or unparseable source
+		// clock ranks oldest and encodes as the empty oldest-clock key, so
+		// every emitted cursor validates on resume and lands on the boundary
+		// entry's exact position in the total order. The emitted entries
+		// above still carry the original raw clocks.
+		boundary := entries[end-1]
+		data, err := json.Marshal(dagCatalogCursor{Version: 2, Workspace: r.PathValue("wsId"), Chat: r.PathValue("chatId"), AfterUpdatedAt: session.DagCatalogCursorClock(boundary.UpdatedAt), AfterRunID: boundary.RunID})
 		if err != nil {
 			s.writeDagError(w, r, err)
 			return

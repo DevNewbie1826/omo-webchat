@@ -44,6 +44,19 @@ test('initial-discovery wildcard claims the incoming detail request synchronousl
   finally { await gate.stop(); await handled; }
 });
 
+test('catalog arm captures the list path and does not consume a detail', async () => {
+  const gate = createResponseGate(async req => new Response(req.url, { status: 200 }));
+  const catalog = gate.arm('catalog'), extra = gate.arm('dense-64');
+  const listed = gate.handle(new Request('http://127.0.0.1/api/workspaces/qa-dag/chats/qa-chat/dag-runs?limit=10'));
+  const detailed = gate.handle(request('dense-64'));
+  await Promise.all([catalog.captured, extra.captured]);
+  assert.equal(catalog.receipt.path, '/api/workspaces/qa-dag/chats/qa-chat/dag-runs');
+  assert.equal(catalog.receipt.search, '?limit=10');
+  assert.equal(extra.receipt.path.endsWith('/dense-64'), true);
+  catalog.release(); extra.release();
+  await listed; await detailed; await gate.stop();
+});
+
 test('complete validator detects identity/dependency/text/state/count loss, not only node length', () => {
   const expected = { run_id: 'r', counts: { total: 2 }, nodes: [
     { id: 'a', depends_on: [], prompt: 'x'.repeat(2048), state: 'completed', attempt: 1 },

@@ -225,21 +225,6 @@ button.th-activity-bar:hover {
   text-align: center;
 }
 
-/* Relocated partial-history notice: it lives inside the affected Agents or
-   DAG content (also when truncation retains zero rows), no longer in a
-   summary bar. Compact, muted, textual — same token scale as the micro
-   metadata rows. */
-.th-activity-partial {
-  margin: 0;
-  padding: 0 var(--th-space-2);
-  color: var(--th-muted);
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  text-align: center;
-}
-
 /* The panel itself no longer scrolls; each tabpanel owns its scrollport. */
 .th-activity-panel {
   position: relative;
@@ -515,6 +500,14 @@ button.th-activity-bar:hover {
 
 .th-activity-dag-freshness[role="alert"] {
   color: var(--th-warning);
+}
+
+/* The list-end sentinel must be a real layout box: the intersection
+   contract only reports targets with rendered height, so a zero-height
+   sentinel can never intersect its scrollport — even with the DAG tabpanel
+   scrolled flush to its end. */
+.th-activity-dag-sentinel {
+  min-height: 1px;
 }
 
 .th-activity-dag-details summary {

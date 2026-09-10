@@ -21,6 +21,7 @@ test('F1 owned source is first in both source orderings without losing dense top
   const next = await prepareF1Source(fixture);
   assert.equal(next.runId, '000-f1-dense-64'); assert.equal(next.runKey, next.runId);
   assert.equal(fixture.manifest.runs[0], next.runId);
+  assert.equal(fixture.manifest.newestFirst[0], next.runId);
   assert.equal(fixture.manifest.runs.length, 3);
   assert.equal(fixture.manifest.files[next.runId], 'record-dense.json');
   assert.equal(fixture.manifest.files['dense-64'], undefined);

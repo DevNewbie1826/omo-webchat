@@ -307,7 +307,6 @@
   "activity.status.blocked": "blocked",
   "activity.status.scheduled": "scheduled",
   "activity.status.skipped": "skipped",
-  "activity.partial": "Partial history shown",
   "activity.tabs": "Activity sections",
   "activity.subagents": "Subagents",
   "activity.emptyTodo": "No todo list yet",

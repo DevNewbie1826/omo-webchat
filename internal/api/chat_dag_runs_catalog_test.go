@@ -89,8 +89,19 @@ func TestChatDagRunCatalog(t *testing.T) {
 			}
 			cursor = *body.NextCursor
 		}
-		if len(seen) != total+1 || !sort.StringsAreSorted(ids) {
-			t.Fatalf("discovery returned %d unsorted=%v", len(seen), !sort.StringsAreSorted(ids))
+		if len(seen) != total+1 {
+			t.Fatalf("discovery returned %d", len(seen))
+		}
+		// Updated for the newest-first catalog contract: every fixture here
+		// shares one updated_at, so the order is fully determined by the
+		// documented run_id DESC tiebreak and the concatenated pages must
+		// enumerate run IDs in descending order (was: ascending run ID order).
+		ascending := append([]string(nil), ids...)
+		sort.Strings(ascending)
+		for i := range ids {
+			if ids[i] != ascending[len(ascending)-1-i] {
+				t.Fatalf("discovery returned %d not in descending run ID order", len(seen))
+			}
 		}
 		for i := range total {
 			if !seen[fmt.Sprintf("run-%04d", i)] {
@@ -113,10 +124,15 @@ func TestChatDagRunCatalog(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &first); err != nil {
 			t.Fatal(err)
 		}
-		if len(first.Runs) != 1 || first.Runs[0].RunID != "a" || first.NextCursor == nil {
+		// Updated for the newest-first catalog contract: both fixtures share
+		// one updated_at, so the run_id DESC tiebreak orders "b" before "a"
+		// (was: ascending run ID order, "a" first).
+		if len(first.Runs) != 1 || first.Runs[0].RunID != "b" || first.NextCursor == nil {
 			t.Fatal("first page incorrect")
 		}
-		if err := os.Rename(filepath.Join(f.dir, "second.json"), filepath.Join(f.dir, "renamed.json")); err != nil {
+		// Rename the page-2 run's file between pages: the keyset cursor must
+		// still resolve "a" through its embedded identity.
+		if err := os.Rename(filepath.Join(f.dir, "first.json"), filepath.Join(f.dir, "renamed.json")); err != nil {
 			t.Fatal(err)
 		}
 		rec = f.get(t, "?limit=1&cursor="+url.QueryEscape(*first.NextCursor))
@@ -127,7 +143,7 @@ func TestChatDagRunCatalog(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &second); err != nil {
 			t.Fatal(err)
 		}
-		if len(second.Runs) != 1 || second.Runs[0].RunID != "b" || second.NextCursor != nil {
+		if len(second.Runs) != 1 || second.Runs[0].RunID != "a" || second.NextCursor != nil {
 			t.Fatalf("second page incorrect: %+v", second)
 		}
 	})

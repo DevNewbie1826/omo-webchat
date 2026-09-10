@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 export const deadline = 15_000;
+export const catalogPageSize = 10;
 export const longRunIDs = ['0', '1'].map(suffix => 'a'.repeat(600) + suffix);
 export const catalogPath = '/api/workspaces/qa-dag/chats/qa-chat/dag-runs';
 export const detailPath = id => `${catalogPath}/${encodeURIComponent(id)}`;
+export const isCatalogPath = path => path === catalogPath;
+export const isDetailPath = path => path.startsWith(`${catalogPath}/`);
 
 export function parseArgs(args) {
   assert.equal(args.length, 2, 'one --evidence-dir argument is required');
@@ -38,14 +41,16 @@ export function createResponseGate(upstream, receipts = []) {
   }
   async function handle(request) {
     assert.equal(stopped, false);
-    const path = new URL(request.url).pathname;
-    const barrier = barriers.find(item => item.state === 'armed' && (path === detailPath(item.id)
-      || (item.id === '*' && path.startsWith(catalogPath + '/'))));
+    const url = new URL(request.url);
+    const path = url.pathname, search = url.search;
+    const barrier = barriers.find(item => item.state === 'armed' && (
+      (item.id === 'catalog' && isCatalogPath(path))
+      || (item.id !== 'catalog' && isDetailPath(path) && (path === detailPath(item.id) || item.id === '*'))));
     if (barrier) barrier.state = 'fetching';
     try {
       const response = await upstream(request);
       const body = await response.text();
-      const row = { sequence: receipts.length + 1, method: request.method, path, status: response.status,
+      const row = { sequence: receipts.length + 1, method: request.method, path, search, status: response.status,
         headers: Object.fromEntries(response.headers), body };
       receipts.push(row);
       if (barrier) {

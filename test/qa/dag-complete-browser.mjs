@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { installDOMSignals } from './dag-state-ordering.mjs';
-import { assertComplete, bounded, createResponseGate, expectedRun } from './dag-complete-controls.mjs';
+import { assertComplete, bounded, createResponseGate, expectedRun, isCatalogPath, isDetailPath } from './dag-complete-controls.mjs';
 import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
 import { save, transcript } from './dag-complete-fixture.mjs';
 
@@ -36,7 +36,25 @@ export async function waitForTranscript(page, entries) {
 export async function actionDOM(page, predicate, action, args) {
   const signal = await armDOM(page, predicate, args); await action(); await doneDOM(page, signal);
 }
-export const statusIs = status => document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status') === status;
+/** Restored list contract: the catalog state (loading/ready/empty/error) is a
+ * section-level fact exposed as data-activity-dag-catalog, while
+ * data-activity-dag-status exists only on each mounted run article. */
+export const catalogIs = status => document.querySelector('.th-activity-dag-complete')?.getAttribute('data-activity-dag-catalog') === status;
+export const runStatusIs = ({ runId, status }) => {
+  const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+    .find(node => node.getAttribute('data-activity-dag-run') === runId);
+  return article !== undefined && article.getAttribute('data-activity-dag-status') === status;
+};
+/** Every run-scoped observation identifies its article by the EXACT run ID.
+ * A checkpoint-shaped caller (camelCase runId) must pass that ID or a
+ * converted expected document; a raw object identity can never select an
+ * article, so it fails loudly instead of matching zero articles silently. */
+export const runArticleSelector = runId => {
+  assert.equal(typeof runId, 'string', `run identity must be the exact run ID string, got ${typeof runId}`);
+  assert.ok(runId.length > 0, 'run identity must be a non-empty run ID');
+  return `article[data-activity-dag-run=${JSON.stringify(runId)}]`;
+};
+export const runArticle = (page, expected) => page.locator(runArticleSelector(expected.run_id ?? expected));
 
 /** Tear down the old pane before changing layout. The next navigation starts
  * one binding at the final viewport, rather than racing a responsive remount. */
@@ -103,10 +121,21 @@ export async function prepareSubagentsScenario({ page, observed, fixture, url = 
   assert.equal(expected.counts.running, expected.counts.total, 'controlled source has only running nodes');
   assert.equal(expected.counts.total, options.retained === 12 ? 64 : 2);
   await fixture.replace(source.runId, next);
-  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'scenario-clear-after-REST-hydration');
-  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: options.partial,
+  // The count authority is the exact agent aggregate that rides the snapshot
+  // envelope (agent_running_count/agent_total_count over the full source),
+  // never the retained row projection: a truncated frame still reports the
+  // exact totals. scalarCount:false drives surfaces that consume only the
+  // activity-state reducer, whose exact local fallback counts retained rows.
+  const aggregate = { agent_running_count: expected.counts.running, agent_total_count: expected.counts.total };
+  const expectedCount = options.scalarCount === false
+    ? (options.retained > 0 ? `${options.retained}/${options.retained}` : null)
+    : `${expected.counts.running}/${expected.counts.total}`;
+  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [], ...aggregate } }, 'scenario-clear-after-REST-hydration');
+  await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: options.partial, ...aggregate,
     runs: [{ ...expected, nodes: expected.nodes.slice(0, options.retained), edges: options.partial ? [] : expected.edges, waves: [], truncated_nodes: options.partial }] } }, 'scenario-fresh-source-after-clear');
-  return { ...await assertSubagents(page, options), sourceCounts: expected.counts, sourceRevision: revision,
+  return { ...await assertSubagents(page, { count: expectedCount, rows: options.partial ? options.retained : 2 }),
+    retained: options.retained, qualified: options.partial,
+    sourceCounts: expected.counts, sourceRevision: revision, aggregate,
     hydration: { socketId: binding.socketId, transcriptEntries: historyFrame.frame.entries.length, activityStatus: response.status(), marker, transcriptTail } };
 }
 
@@ -123,10 +152,14 @@ export async function browserGate(page, receipts) {
     running.catch(error => errors.push(String(error))).finally(() => handlers.delete(running));
     return running;
   };
-  await page.route('**/dag-runs/*', handler);
+  const match = url => {
+    const path = new URL(url).pathname;
+    return isCatalogPath(path) || isDetailPath(path);
+  };
+  await page.route(match, handler);
   return { ...gate, async stop() {
     const receipt = await gate.stop(); await Promise.allSettled([...handlers]);
-    await page.unroute('**/dag-runs/*', handler); return { ...receipt, errors };
+    await page.unroute(match, handler); return { ...receipt, errors };
   } };
 }
 
@@ -145,20 +178,78 @@ export async function reconnectWithoutReplay({ deliver, frame, gate, observed, d
   return { beforeSocket: before.socketId, afterSocket: after.socketId, replayed: false };
 }
 
+/** The restored list ships no partial-qualification surface: no element
+ * carrying a partial class inside the DAG tabpanel, and no count slot on the
+ * DAG tab (exact counts live per full run, never on the overview tab). */
+export async function assertDagHasNoPartial(page) {
+  const observed = await page.evaluate(() => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    const tab = document.querySelector('[data-activity-tab="dag"]');
+    const tabCount = tab?.querySelector('.th-activity-tab-count')?.textContent ?? null;
+    return {
+      partialClassed: [...document.querySelectorAll('[data-activity-tabpanel="dag"] [class*="partial"]')].length,
+      tabCount, qualifiedCount: tabCount !== null && /[+?]$/.test(tabCount),
+      catalog: panel?.querySelector('.th-activity-dag-complete')?.getAttribute('data-activity-dag-catalog') ?? null,
+    };
+  });
+  assert.equal(observed.partialClassed, 0, 'no partial-classed element in the DAG tabpanel');
+  assert.equal(observed.tabCount, null, 'the DAG tab carries no overview count slot');
+  assert.equal(observed.qualifiedCount, false, 'no qualified count marker on the DAG tab');
+  return observed;
+}
+
+export async function openDagTab(page) {
+  const state = await page.evaluate(() => ({
+    selected: document.querySelector('[data-activity-tab="dag"]')?.getAttribute('aria-selected') === 'true',
+    open: document.querySelector('.th-activity-shelf')?.getAttribute('data-open') === 'true',
+  }));
+  if (state.selected && state.open) return false;
+  await page.locator('[role="tab"][data-activity-tab="dag"]').click();
+  return true;
+}
+
+export async function scrollDagListEnd(page) {
+  await actionDOM(page, () => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    if (!panel || panel.scrollHeight <= panel.clientHeight) return false;
+    return Math.ceil(panel.scrollTop + panel.clientHeight) >= panel.scrollHeight - 1;
+  }, () => page.evaluate(() => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    const chain = [];
+    for (let node = panel; node && node !== document.documentElement; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) chain.push(node);
+    }
+    for (const node of chain) node.scrollTo({ top: node.scrollHeight, behavior: 'instant' });
+  }));
+}
+
+export function dagRunReceipts(http, since = 0) {
+  return http.slice(since).filter(row => isCatalogPath(row.path) || isDetailPath(row.path));
+}
+
+/** Full-document identity for one run article: the graph, the details block
+ * and the token all come from the accepted complete original. expected must
+ * carry the accepted document's content_token (assertComplete-checked hex). */
 export async function assertSurface(page, expected, mode, expectedStatus = 'complete') {
-  const observed = await page.evaluate(mode => {
-    const nodes = [...document.querySelectorAll('.th-activity-gnode')];
+  assert.match(expected.content_token ?? '', /^[a-f0-9]{64}$/, `surface assertion for ${expected.run_id} requires the accepted document token`);
+  const observed = await page.evaluate(({ mode, runId }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId) ?? null;
+    const root = article ?? document.createElement('article');
+    const nodes = [...root.querySelectorAll('.th-activity-gnode')];
     const geometry = nodes.map(node => {
-      const [, x, y] = /translate\(([-\d.]+)[, ]+([-\d.]+)\)/.exec(node.getAttribute('transform'));
+      const transform = /translate\(([-\d.]+)[, ]+([-\d.]+)\)/.exec(node.getAttribute('transform') ?? '');
       const rect = node.querySelector('rect');
-      return { id: node.dataset.node, x: Number(x), y: Number(y), width: Number(rect.getAttribute('width')), height: Number(rect.getAttribute('height')) };
+      return { id: node.dataset.node, x: Number(transform?.[1]), y: Number(transform?.[2]),
+        width: Number(rect?.getAttribute('width')), height: Number(rect?.getAttribute('height')) };
     });
-    const edges = [...document.querySelectorAll('.th-activity-gedge')].map(edge => {
+    const edges = [...root.querySelectorAll('.th-activity-gedge')].map(edge => {
       const from = geometry.find(node => node.x + node.width === Number(edge.getAttribute('x1')) && node.y + node.height / 2 === Number(edge.getAttribute('y1')));
       const to = geometry.find(node => node.x === Number(edge.getAttribute('x2')) && node.y + node.height / 2 === Number(edge.getAttribute('y2')));
       return { from: from?.id, to: to?.id };
     });
-    const details = [...document.querySelectorAll('[data-activity-dag-node]')].map(node => ({
+    const details = [...root.querySelectorAll('details[data-activity-dag-total] [data-activity-dag-node]')].map(node => ({
       id: node.getAttribute('data-activity-dag-node'), prompt: node.querySelector('[data-activity-dag-prompt]')?.textContent,
       depends_on: [...node.querySelectorAll('dd > div')].map(dep => dep.textContent),
       attempt: Number(node.querySelector('[data-activity-dag-attempt]')?.textContent),
@@ -166,17 +257,24 @@ export async function assertSurface(page, expected, mode, expectedStatus = 'comp
       metadata: [...node.querySelectorAll('dd')].map(value => value.textContent),
     }));
     const transcript = document.querySelector('.th-chat-body');
-    return { mode, status: document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status'),
-      token: document.querySelector('[data-content-token]')?.getAttribute('data-content-token'),
-      selected: document.querySelector('[data-activity-dag-select]')?.value,
-      total: Number(document.querySelector('[data-activity-dag-total]')?.getAttribute('data-activity-dag-total')),
-      graphIDs: nodes.map(node => node.dataset.node), listCount: document.querySelectorAll('.th-activity-dnode').length,
-      counts: Object.fromEntries([...document.querySelectorAll('[data-activity-dag-count]')].map(node => [node.getAttribute('data-activity-dag-count'), Number(node.getAttribute('data-count'))])),
+    return { mode, found: article !== null, name: article?.querySelector('.th-activity-dag-name')?.textContent ?? null,
+      status: article?.getAttribute('data-activity-dag-status') ?? null,
+      token: article?.getAttribute('data-content-token') ?? null,
+      total: Number(root.querySelector('details[data-activity-dag-total]')?.getAttribute('data-activity-dag-total')),
+      detailBlocks: root.querySelectorAll('details[data-activity-dag-total]').length,
+      graphIDs: nodes.map(node => node.dataset.node), listCount: root.querySelectorAll('.th-activity-dnode').length,
+      counts: Object.fromEntries([...root.querySelectorAll('[data-activity-dag-count]')].map(node => [node.getAttribute('data-activity-dag-count'), Number(node.getAttribute('data-count'))])),
+      headerCounts: article?.querySelector('.th-activity-dag-counts')?.textContent ?? null,
       edges, details, transcript: { height: transcript?.scrollHeight, client: transcript?.clientHeight },
       viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
-  }, mode);
-  assert.equal(observed.status, expectedStatus); assert.equal(observed.selected, expected.run_id);
+  }, { mode, runId: expected.run_id });
+  assert.equal(observed.found, true, `run article ${expected.run_id}`);
+  assert.equal(observed.status, expectedStatus, `${expected.run_id} article status`);
+  assert.equal(observed.token, expected.content_token, `${expected.run_id} article carries the accepted document token`);
+  assert.equal(observed.name, expected.name);
+  assert.equal(observed.detailBlocks, 1, `${expected.run_id} exposes exactly one details block`);
   assert.equal(observed.total, expected.nodes.length);
+  if (observed.headerCounts) assert.equal(observed.headerCounts.includes(`${expected.counts.completed}/${expected.counts.total}`), true);
   const ids = expected.nodes.map(node => node.id);
   assert.deepEqual(observed.details.map(node => node.id), ids);
   for (const node of expected.nodes) {
@@ -188,12 +286,42 @@ export async function assertSurface(page, expected, mode, expectedStatus = 'comp
   for (const [state, count] of Object.entries(expected.counts)) if (state !== 'total') assert.equal(observed.counts[state], count);
   if (mode === 'graph') {
     assert.deepEqual(observed.graphIDs, ids);
+    assert.equal(observed.listCount, 0, 'graph view renders no list rows for this run');
     const sorted = edges => edges.map(edge => JSON.stringify([edge.from, edge.to])).sort();
     assert.deepEqual(sorted(observed.edges), sorted(expected.edges));
-  } else assert.equal(observed.listCount, ids.length);
+  } else {
+    assert.equal(observed.listCount, ids.length);
+    assert.equal(observed.graphIDs.length, 0, 'list view renders no graph nodes for this run');
+  }
   assert.ok(observed.transcript.height > observed.transcript.client, '100-message transcript genuinely overflows');
   assert.ok(observed.documentWidth <= observed.viewport.width, 'no document horizontal overflow');
   return observed;
+}
+
+/** The newest-first list: articles in catalog order, each complete with its
+ * own accepted graph, details and token. The run picker stays absent. */
+export async function assertList(page, expecteds, expectedStatus = 'complete') {
+  const observed = await page.evaluate(() => {
+    const articles = [...document.querySelectorAll('article[data-activity-dag-run]')];
+    return {
+      catalog: document.querySelector('.th-activity-dag-complete')?.getAttribute('data-activity-dag-catalog') ?? null,
+      ids: articles.map(article => article.getAttribute('data-activity-dag-run')),
+      statuses: articles.map(article => article.getAttribute('data-activity-dag-status')),
+      names: articles.map(article => article.querySelector('.th-activity-dag-name')?.textContent ?? ''),
+      graphs: articles.map(article => article.querySelectorAll('.th-activity-gnode').length),
+      picker: document.querySelector('[data-activity-dag-select]') !== null,
+    };
+  });
+  assert.equal(observed.catalog, 'ready');
+  assert.equal(observed.picker, false, 'run picker is absent from the restored list');
+  assert.deepEqual(observed.ids, expecteds.map(item => item.run_id), 'article order equals the newest-first catalog page');
+  assert.deepEqual(observed.statuses, expecteds.map(() => expectedStatus));
+  assert.deepEqual(observed.names, expecteds.map(item => item.name));
+  assert.deepEqual(observed.graphs, expecteds.map(item => item.nodes.length));
+  const surfaces = [];
+  for (const expected of expecteds) surfaces.push(await assertSurface(page, expected, 'graph', expectedStatus));
+  await assertDagHasNoPartial(page);
+  return { ...observed, surfaces };
 }
 
 export async function screenshotPath(page, path) {
@@ -201,24 +329,28 @@ export async function screenshotPath(page, path) {
   return path;
 }
 
-export async function assertSubagents(page, { partial, retained }) {
+/** Marker-free Subagents contract: the tab carries the exact count the
+ * engine's authority computed - the server aggregate when scalars were
+ * delivered, else the exact retained deduplicated rows - or no count slot at
+ * all when nothing is retained and no scalar exists. No partial element, no
+ * qualification title, no `N+`/`?` marker: exactness is the shipped surface. */
+export async function assertSubagents(page, { count, rows }) {
+  assert.equal(typeof count === 'string' || count === null, true);
+  assert.equal(typeof rows, 'number');
   const observed = await page.evaluate(() => ({
     count: document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent ?? null,
-    partial: document.querySelector('[data-activity-tabpanel="agents"] .th-activity-partial')?.textContent ?? null,
+    partial: document.querySelector('[data-activity-tabpanel="agents"] [class*="partial"]')?.textContent ?? null,
     selected: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected'),
     explanation: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('title'),
+    rows: [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].map(node => node.textContent),
   }));
   assert.equal(observed.selected, 'true');
-  if (partial) {
-    assert.equal(observed.count, retained > 0 ? `${retained}+` : '?');
-    assert.equal(observed.partial, english['activity.partial']);
-    assert.equal(observed.explanation, english['activity.partial']);
-    assert.notEqual(observed.count, `${retained}/${retained}`);
-  } else {
-    assert.equal(observed.count, '2/2');
-    assert.equal(observed.partial, null);
-  }
-  return { ...observed, retained, qualified: partial };
+  assert.equal(observed.partial, null, 'no partial-classed element on the Subagents surface');
+  assert.equal(observed.explanation, null, 'no partial qualification title on the Subagents tab');
+  if (observed.count !== null) assert.equal(/[+?]$/.test(observed.count), false, 'Subagents count is an exact running/total pair, never a qualified lower bound');
+  assert.equal(observed.count, count, 'exact marker-free Subagents count');
+  assert.equal(observed.rows.length, rows, 'exactly the retained rows are listed');
+  return observed;
 }
 
 export async function assertTabBounds(page) {
@@ -265,7 +397,7 @@ export async function settleLayout(page) {
 export async function capture(page, evidenceDir, name, observation, description) {
   await settleLayout(page);
   const tabs = await assertTabBounds(page);
-  const expandedDescription = description && await assertExpandedPrompt(page, description.node, description.edge);
+  const expandedDescription = description && await assertExpandedPrompt(page, description.node, description.edge, description.run);
   const geometry = await page.evaluate(() => Object.fromEntries(['.th-chat-body', '.th-chat-input textarea', '.th-activity-panel'].map(selector => {
     const node = document.querySelector(selector), rect = node?.getBoundingClientRect();
     return [selector, rect && { ...rect.toJSON(), visible: node.checkVisibility() }];
@@ -276,16 +408,38 @@ export async function capture(page, evidenceDir, name, observation, description)
   await save(evidenceDir, `${name}.json`, { ...observation, geometry, tabs, expandedDescription });
 }
 
-export async function view(page, mode) {
-  await actionDOM(page, mode => document.querySelector(`[data-view="${mode}"]`)?.getAttribute('aria-pressed') === 'true'
-    && document.querySelectorAll(mode === 'graph' ? '.th-activity-gnode' : '.th-activity-dnode').length === 64,
-  () => page.locator(`[data-view="${mode}"]`).click(), mode);
+/** The graph/list choice is per run. Toggling one article swaps only that
+ * article's own view; sibling articles keep theirs. */
+export async function view(page, expected, mode) {
+  assert.ok(['graph', 'list'].includes(mode));
+  await actionDOM(page, ({ runId, mode, total }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    if (!article) return false;
+    const shown = article.querySelectorAll(mode === 'graph' ? '.th-activity-gnode' : '.th-activity-dnode').length;
+    const hidden = article.querySelectorAll(mode === 'graph' ? '.th-activity-dnode' : '.th-activity-gnode').length;
+    return article.querySelector(`[data-view="${mode}"]`)?.getAttribute('aria-pressed') === 'true'
+      && shown === total && hidden === 0;
+  }, () => runArticle(page, expected).locator(`[data-view="${mode}"]`).click(), { runId: expected.run_id, mode, total: expected.nodes.length });
 }
 
-async function promptGeometry(page, node, edge, scroll) {
+/** Sibling articles must be untouched by another article's view toggle. */
+export async function viewIsolation(page, expected, other) {
+  await actionDOM(page, ({ runId, total }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    return article?.querySelector('[data-view="graph"]')?.getAttribute('aria-pressed') === 'true'
+      && article.querySelectorAll('.th-activity-gnode').length === total;
+  }, () => {}, { runId: other.run_id, total: other.nodes.length });
+}
+
+async function promptGeometry(page, node, edge, scroll, run) {
   assert.ok(['start', 'end'].includes(edge));
-  return bounded(page.evaluate(async ({ id, edge, scroll }) => {
-    const detail = [...document.querySelectorAll('[data-activity-dag-node]')].find(node => node.getAttribute('data-activity-dag-node') === id);
+  return bounded(page.evaluate(async ({ id, edge, scroll, runId }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId) ?? null;
+    const root = article ?? document;
+    const detail = [...root.querySelectorAll('[data-activity-dag-node]')].find(item => item.getAttribute('data-activity-dag-node') === id);
     const prompt = detail?.querySelector('[data-activity-dag-prompt]');
     if (!prompt || !detail.open || !detail.closest('details[data-activity-dag-total]')?.open) throw new Error('description must be expanded with a prompt body');
     const walker = document.createTreeWalker(prompt, NodeFilter.SHOW_TEXT), text = [];
@@ -320,11 +474,11 @@ async function promptGeometry(page, node, edge, scroll) {
       visible: prompt.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
       body: prompt.getBoundingClientRect().toJSON(), painted: range.getBoundingClientRect().toJSON(), clip,
       scroll: scrollable.map(parent => ({ className: parent.className, top: parent.scrollTop, height: parent.scrollHeight, client: parent.clientHeight })) };
-  }, { id: node.id, edge, scroll }), 'expanded description scroll/layout');
+  }, { id: node.id, edge, scroll, runId: run?.run_id }), 'expanded description scroll/layout');
 }
 
-export async function assertExpandedPrompt(page, node, edge) {
-  const observed = await promptGeometry(page, node, edge, false);
+export async function assertExpandedPrompt(page, node, edge, run) {
+  const observed = await promptGeometry(page, node, edge, false, run);
   assert.equal(observed.prompt, node.prompt, 'full original description equality');
   assert.ok(observed.visible && observed.body.width > 0 && observed.body.height > 0, 'expanded prompt body visible');
   const { painted, clip } = observed;
@@ -334,28 +488,52 @@ export async function assertExpandedPrompt(page, node, edge) {
 }
 
 export async function descriptions(page, expected, edge = 'start') {
-  const parent = page.locator('details[data-activity-dag-total]');
-  if (!await parent.evaluate(node => node.open)) await actionDOM(page, () => document.querySelector('details[data-activity-dag-total]')?.open,
-    () => parent.locator(':scope > summary').click());
-  const node = expected.nodes.at(-1), detail = page.locator(`[data-activity-dag-node="${node.id}"]`);
-  if (!await detail.evaluate(element => element.open)) await actionDOM(page, id => document.querySelector(`[data-activity-dag-node="${id}"]`)?.open,
-    () => detail.locator(':scope > summary').click(), node.id);
+  const card = runArticle(page, expected);
+  const parent = card.locator('details[data-activity-dag-total]');
+  if (!await parent.evaluate(node => node.open)) await actionDOM(page, ({ runId }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    return article?.querySelector('details[data-activity-dag-total]')?.open === true;
+  }, () => parent.locator(':scope > summary').click(), { runId: expected.run_id });
+  const node = expected.nodes.at(-1), detail = card.locator(`[data-activity-dag-node="${node.id}"]`);
+  if (!await detail.evaluate(element => element.open)) await actionDOM(page, ({ runId, id }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    return article?.querySelector(`[data-activity-dag-node="${id}"]`)?.open === true;
+  }, () => detail.locator(':scope > summary').click(), { runId: expected.run_id, id: node.id });
   const prompt = detail.locator('[data-activity-dag-prompt]');
   assert.equal(await prompt.textContent(), node.prompt);
   assert.equal(Buffer.byteLength(await prompt.textContent()), 2048);
-  await promptGeometry(page, node, edge, true);
-  return assertExpandedPrompt(page, node, edge);
+  await promptGeometry(page, node, edge, true, expected);
+  return assertExpandedPrompt(page, node, edge, expected);
 }
 
-export async function closeDescriptions(page) {
+export async function closeDescriptions(page, expected) {
   // Restore graph space only AFTER the expanded body screenshots have been saved.
-  await actionDOM(page, () => !document.querySelector('details[data-activity-dag-total]')?.open,
-    () => page.locator('details[data-activity-dag-total] > summary').click());
+  const card = expected ? runArticle(page, expected) : page.locator('details[data-activity-dag-total]').first();
+  const summary = expected ? card.locator('details[data-activity-dag-total] > summary') : page.locator('details[data-activity-dag-total] > summary');
+  await actionDOM(page, runId => {
+    if (!runId) return !document.querySelector('details[data-activity-dag-total]')?.open;
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    return article?.querySelector('details[data-activity-dag-total]')?.open === false;
+  }, () => summary.click(), expected?.run_id);
 }
 
+/** Strict per-article completion: exact run ID, exact accepted token (no
+ * missing/empty escape), complete graph node count, and the whole per-node
+ * detail set inside the article's own details block. */
 export async function releaseComplete({ page, held, expected }) {
   const document = JSON.parse((await held.captured).body); assertComplete(document, expected);
-  const signal = await armDOM(page, token => document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status') === 'complete'
-    && document.querySelector('[data-content-token]')?.getAttribute('data-content-token') === token, document.content_token);
+  const signal = await armDOM(page, ({ name, runId, total, token }) => {
+    const article = [...document.querySelectorAll('article[data-activity-dag-run]')]
+      .find(node => node.getAttribute('data-activity-dag-run') === runId);
+    if (!article) return false;
+    return article.getAttribute('data-activity-dag-status') === 'complete'
+      && article.getAttribute('data-content-token') === token
+      && article.querySelector('.th-activity-dag-name')?.textContent === name
+      && article.querySelectorAll('.th-activity-gnode').length === total
+      && article.querySelectorAll('[data-activity-dag-node]').length === total;
+  }, { name: expected.name, runId: expected.run_id, total: expected.nodes.length, token: document.content_token });
   held.release(); await doneDOM(page, signal); return document;
 }

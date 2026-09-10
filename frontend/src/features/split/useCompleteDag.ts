@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiJson } from "../../lib/api";
 import { CompleteDagError, parseCompleteDag, parseDagCatalog, type CompleteDag, type DagCatalogEntry } from "./activityCompleteParse";
 import { parseDagUpdatedAt } from "./activityParseDag";
@@ -9,14 +9,10 @@ export interface DagSource {
   readonly chatId: string;
   readonly connected: boolean;
 }
-export type CompleteDagStatus = "loading" | "complete" | "refreshing" | "stale" | "error" | "empty";
-interface FullState {
-  readonly selected: string | null;
-  readonly document: CompleteDag | null;
-  readonly fingerprint: string;
-  readonly status: CompleteDagStatus;
-  readonly error: boolean;
-}
+export type CompleteDagStatus = "loading" | "complete" | "refreshing" | "stale" | "error";
+export type DagCatalogStatus = "loading" | "ready" | "empty" | "error";
+/** The DAG tab list advances one fixed-size catalog page at a time. */
+export const DAG_PAGE_SIZE = 10;
 
 /** Activity clocks and heartbeat sequence numbers are not topology revisions. */
 function topologyKey(run: ActivityDagRun | undefined): string {
@@ -47,43 +43,48 @@ function fullFactsKey(run: ActivityDagRun): string {
   return JSON.stringify([run.runKey, run.name, run.createdAt, topologyKey(run)]);
 }
 
-export function useCompleteDag(source: DagSource | undefined, active: boolean, activities: ActivityState) {
-  const base = source === undefined ? "" : `/api/workspaces/${encodeURIComponent(source.wsId)}/chats/${encodeURIComponent(source.chatId)}/dag-runs`;
-  const connected = source?.connected === true;
-  const [binding, setBinding] = useState(base);
-  const [catalog, setCatalog] = useState<readonly DagCatalogEntry[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(true);
-  const [catalogError, setCatalogError] = useState(false);
-  const [chosen, setChosen] = useState<{ id: string | null; explicit: boolean }>(() => ({
-    id: activities.dags.keys().next().value ?? null, explicit: false,
-  }));
-  const [retryEpoch, setRetryEpoch] = useState(0);
-  const [full, setFull] = useState<FullState>({ selected: null, document: null, fingerprint: "", status: "loading", error: false });
-  const selected = chosen.id ?? catalog[0]?.runId ?? null;
-  const summary = selected === null ? undefined : activities.dags.get(selected);
+/** Progress is an overlay, never topology/status authority. Attempt and state
+ *  identity prevent a late progress event from reviving an old attempt. */
+function withLiveProgress(run: ActivityDagRun, summary: ActivityDagRun | undefined): ActivityDagRun {
+  if (summary === undefined) return run;
+  return { ...run, nodes: run.nodes.map(node => {
+    const live = summary.nodes.find(candidate => candidate.id === node.id);
+    if (!live || live.state !== node.state || live.attempt !== node.attempt) return node;
+    return { ...node,
+      ...(live.activity === undefined ? {} : { activity: live.activity }),
+      ...(live.currentTool === undefined ? {} : { currentTool: live.currentTool }),
+      ...(live.lastAssistantLine === undefined ? {} : { lastAssistantLine: live.lastAssistantLine }),
+      ...(live.turns === undefined ? {} : { turns: live.turns }),
+      ...(live.toolCalls === undefined ? {} : { toolCalls: live.toolCalls }),
+      ...(live.lastActivityAt === undefined ? {} : { lastActivityAt: live.lastActivityAt }),
+    };
+  }) };
+}
+
+export interface CompleteDagRunState {
+  readonly document: CompleteDag | null;
+  readonly fingerprint: string;
+  readonly status: CompleteDagStatus;
+  readonly error: boolean;
+}
+
+/** Facts shared by every run row: freshness high-water marks and accepted
+ *  full facts (both keyed by run id and cleared, never replaced, on a source
+ *  binding change) plus the document store updater. The maps are stable
+ *  objects so per-run effects can capture them once and read forever. */
+export interface CompleteDagFacts {
+  readonly known: Map<string, number>;
+  readonly accepted: Map<string, { revision: number | undefined; facts: string }>;
+  readonly update: (runId: string, next: (previous: CompleteDagRunState) => CompleteDagRunState) => void;
+}
+
+/** Per-run retrieval for one catalog row. The document lives in the shelf
+ *  level store, so folding the transient panel only aborts the read; the
+ *  accepted facts and their fencing authority survive every DOM change. */
+export function useCompleteDagRun(base: string, active: boolean, runId: string, connected: boolean,
+  activities: ActivityState, facts: CompleteDagFacts, retryEpoch: number): void {
+  const summary = activities.dags.get(runId);
   const fingerprint = topologyKey(summary);
-  const membership = JSON.stringify([...activities.dags.keys()].sort());
-  const known = useRef(new Map<string, number>());
-  // Accepted full authority outlives picker changes, but never a source binding.
-  // Retain equality facts, not opaque tokens or another run's display document.
-  const accepted = useRef(new Map<string, { revision: number | undefined; facts: string }>());
-  // React restarts this render before committing children, so a new chat can
-  // never paint the previous binding's graph. Panel folding does not reset it.
-  if (binding !== base) {
-    setBinding(base);
-    setCatalog([]);
-    setCatalogLoading(true);
-    setCatalogError(false);
-    setChosen({ id: activities.dags.keys().next().value ?? null, explicit: false });
-    setFull({ selected: null, document: null, fingerprint: "", status: "loading", error: false });
-    known.current = new Map();
-    accepted.current = new Map();
-  }
-  for (const [id, revision] of activities.dagFreshness ?? []) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
-  for (const [id, run] of activities.dags) {
-    const revision = parseDagUpdatedAt(run.updatedAt);
-    if (revision !== undefined) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
-  }
   const latest = useRef({ fingerprint, connected, summary });
   latest.current = { fingerprint, connected, summary };
   const refresh = useRef<(() => void) | null>(null);
@@ -91,56 +92,14 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
   useEffect(() => {
     if (!active || !base) return;
     const controller = new AbortController();
-    setCatalogLoading(true);
-    setCatalogError(false);
-    const load = async (): Promise<void> => {
-      const entries = new Map<string, DagCatalogEntry>();
-      const cursors = new Set<string>();
-      let cursor: string | null = null;
-      do {
-        const value = await apiJson<unknown>(`${base}${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        const page = parseDagCatalog(value);
-        if (page === null) throw new CompleteDagError("invalid");
-        for (const run of page.runs) {
-          if (entries.has(run.runId)) throw new CompleteDagError("invalid");
-          entries.set(run.runId, run);
-        }
-        setCatalog([...entries.values()]);
-        setChosen(previous => {
-          // Only a finished catalog establishes absence. Explicit choices survive
-          // pagination, refresh failures, and closing/reopening the panel.
-          if (previous.explicit || (previous.id !== null && (page.nextCursor !== null || entries.has(previous.id)))) return previous;
-          return { id: entries.keys().next().value ?? null, explicit: false };
-        });
-        cursor = page.nextCursor;
-        if (cursor !== null) {
-          if (cursors.has(cursor)) throw new CompleteDagError("invalid");
-          cursors.add(cursor);
-        }
-      } while (cursor !== null);
-    };
-    void load().catch((error: unknown) => {
-      if (controller.signal.aborted) return;
-      // HTTP/JSON failures are explicit UI errors, never an authoritative empty catalog.
-      if (error instanceof Error) setCatalogError(true);
-      else throw error;
-    }).finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
-    return () => controller.abort();
-  }, [base, active, connected, membership, retryEpoch]);
-
-  useEffect(() => {
-    if (!active || !base || selected === null) return;
-    const controller = new AbortController();
     let requested = 0;
     let running = false;
     let observed = latest.current;
     const invalidate = (): void => {
       requested++;
-      setFull(previous => ({
-        selected, document: previous.selected === selected ? previous.document : null,
-        fingerprint: previous.fingerprint, status: previous.selected === selected && previous.document ? "refreshing" : "loading", error: false,
-      }));
+      facts.update(runId, previous => previous.document !== null
+        ? { document: previous.document, fingerprint: previous.fingerprint, status: "refreshing", error: false }
+        : { document: null, fingerprint: previous.fingerprint, status: "loading", error: false });
       if (running) return;
       running = true;
       const load = async (): Promise<void> => {
@@ -149,32 +108,32 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
           const ticket = requested;
           const inputKey = latest.current.fingerprint;
           try {
-            const value = await apiJson<unknown>(`${base}/${encodeURIComponent(selected)}`, { signal: controller.signal });
+            const value = await apiJson<unknown>(`${base}/${encodeURIComponent(runId)}`, { signal: controller.signal });
             if (controller.signal.aborted) return;
             // A meaningful change during this read requires one post-fetch read.
             // Do not cancel a stable document on every update/heartbeat.
             if (ticket !== requested) { completed = ticket; continue; }
             const document = parseCompleteDag(value);
-            if (document === null || document.run.runId !== selected) throw new CompleteDagError("invalid");
+            if (document === null || document.run.runId !== runId) throw new CompleteDagError("invalid");
             const revision = parseDagUpdatedAt(document.run.updatedAt);
-            const highWater = known.current.get(selected);
+            const highWater = facts.known.get(runId);
             if (highWater !== undefined && (revision === undefined || revision < highWater)) throw new CompleteDagError("stale");
             const { summary: knownSummary } = latest.current;
-            const prior = accepted.current.get(selected);
-            const facts = fullFactsKey(document.run);
+            const prior = facts.accepted.get(runId);
+            const nextFacts = fullFactsKey(document.run);
             // Equal revisions permit enrichment, not conflicting state replacement.
             // Opaque tokens prove equality only; a different token supplies no order.
             if (knownSummary !== undefined && revision === parseDagUpdatedAt(knownSummary.updatedAt)
               && conflictsWithSummary(document.run, knownSummary)) throw new CompleteDagError("stale");
             if (prior !== undefined && revision === prior.revision
-              && facts !== prior.facts) throw new CompleteDagError("stale");
-            if (revision !== undefined) known.current.set(selected, revision);
-            accepted.current.set(selected, { revision, facts });
-            setFull({ selected, document, fingerprint: inputKey, status: "complete", error: false });
+              && nextFacts !== prior.facts) throw new CompleteDagError("stale");
+            if (revision !== undefined) facts.known.set(runId, revision);
+            facts.accepted.set(runId, { revision, facts: nextFacts });
+            facts.update(runId, () => ({ document, fingerprint: inputKey, status: "complete", error: false }));
           } catch (error: unknown) {
             if (controller.signal.aborted) return;
             if (!(error instanceof Error)) throw error;
-            if (ticket === requested) setFull(previous => ({ ...previous,
+            if (ticket === requested) facts.update(runId, previous => ({ ...previous,
               status: previous.document !== null || (error instanceof CompleteDagError && error.kind === "stale") ? "stale" : "error",
               error: true,
             }));
@@ -193,35 +152,179 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
     };
     invalidate();
     return () => { controller.abort(); refresh.current = null; };
-  }, [base, active, selected, retryEpoch]);
+  }, [base, active, runId, retryEpoch, facts]);
 
   useEffect(() => { refresh.current?.(); }, [fingerprint, connected]);
+}
+
+export interface CompleteDagRow {
+  readonly entry: DagCatalogEntry;
+  readonly run: ActivityDagRun | null;
+  readonly status: CompleteDagStatus;
+  readonly error: boolean;
+  readonly contentToken: string;
+  /** True only for rows authorized by the current opening's own catalog
+   *  pages: rows retained across an opening or restart stay rendered but
+   *  are fenced from reading until that opening's first page re-admits
+   *  them. */
+  readonly authorized: boolean;
+}
+
+export interface CompleteDagData {
+  /** The newest-first run list: one row per catalog entry, in catalog order. */
+  readonly rows: readonly CompleteDagRow[];
+  readonly catalogStatus: DagCatalogStatus;
+  readonly hasMore: boolean;
+  readonly loadingMore: boolean;
+  readonly loadMore: () => void;
+  readonly retry: () => void;
+  /** Binding for the per-run retrieval hook rendered by each row. */
+  readonly runScope: {
+    readonly base: string;
+    readonly active: boolean;
+    readonly connected: boolean;
+    readonly facts: CompleteDagFacts;
+    readonly retryEpoch: number;
+  };
+}
+
+export function useCompleteDag(source: DagSource | undefined, active: boolean, activities: ActivityState): CompleteDagData {
+  const base = source === undefined ? "" : `/api/workspaces/${encodeURIComponent(source.wsId)}/chats/${encodeURIComponent(source.chatId)}/dag-runs`;
+  const connected = source?.connected === true;
+  const [binding, setBinding] = useState(base);
+  const [catalog, setCatalog] = useState<{ entries: readonly DagCatalogEntry[]; nextCursor: string | null; opening: number }>({ entries: [], nextCursor: null, opening: 0 });
+  const [catalogStatus, setCatalogStatus] = useState<DagCatalogStatus>("loading");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [docs, setDocs] = useState<ReadonlyMap<string, CompleteDagRunState>>(new Map());
+  const [retryEpoch, setRetryEpoch] = useState(0);
+  /** The catalog walk epoch: every fresh opening or restart bumps it, and
+   *  catalog entries carry the epoch of the walk that loaded them. */
+  const [opening, setOpening] = useState(0);
+  const known = useRef(new Map<string, number>());
+  const accepted = useRef(new Map<string, { revision: number | undefined; facts: string }>());
+  const catalogRef = useRef(catalog);
+  catalogRef.current = catalog;
+  const controllerRef = useRef<AbortController | null>(null);
+  const pageInFlight = useRef(false);
+  const restartRef = useRef("");
+  const openingRef = useRef(0);
+  const update = useCallback((runId: string, next: (previous: CompleteDagRunState) => CompleteDagRunState): void => {
+    setDocs(previous => {
+      const prior = previous.get(runId) ?? { document: null, fingerprint: "", status: "loading", error: false };
+      const value = next(prior);
+      if (value === prior) return previous;
+      const docs = new Map(previous);
+      docs.set(runId, value);
+      return docs;
+    });
+  }, []);
+  const facts = useMemo<CompleteDagFacts>(() => ({ known: known.current, accepted: accepted.current, update }), [update]);
+  const membership = JSON.stringify([...activities.dags.keys()].sort());
+  // React restarts this render before committing children, so a new chat can
+  // never paint the previous binding's graph. Panel folding does not reset it.
+  if (binding !== base) {
+    setBinding(base);
+    setCatalog({ entries: [], nextCursor: null, opening: 0 });
+    setDocs(new Map());
+    pageInFlight.current = false;
+    // Clearing keeps the shared fact objects stable across bindings while
+    // still establishing a fresh authority domain for the new chat.
+    known.current.clear();
+    accepted.current.clear();
+  }
+  // A fresh opening or restart (reconnect, retained-snapshot membership
+  // change, explicit retry, tab reopen) begins a new newest-ten catalog
+  // walk. Resetting during render — like the binding reset above — means
+  // the restart commit never admits row reads: rows retained from an
+  // earlier walk render fenced until this walk's own catalog pages stamp
+  // them again, so an opening reads exactly its newest page.
+  const restart = JSON.stringify([base, active, connected, membership, retryEpoch]);
+  if (restartRef.current !== restart) {
+    restartRef.current = restart;
+    openingRef.current += 1;
+    setOpening(openingRef.current);
+    setCatalogStatus("loading");
+    setLoadingMore(false);
+    pageInFlight.current = false;
+  }
+  for (const [id, revision] of activities.dagFreshness ?? []) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
+  for (const [id, run] of activities.dags) {
+    const revision = parseDagUpdatedAt(run.updatedAt);
+    if (revision !== undefined) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
+  }
+
+  const loadPage = useCallback(async (controller: AbortController, cursor: string | null, replace: boolean, walk: number): Promise<void> => {
+    try {
+      const query = `limit=${DAG_PAGE_SIZE}${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
+      const value = await apiJson<unknown>(`${base}?${query}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      const page = parseDagCatalog(value);
+      if (page === null) throw new CompleteDagError("invalid");
+      if (replace) {
+        setCatalog({ entries: page.runs, nextCursor: page.nextCursor, opening: walk });
+        setCatalogStatus(page.runs.length === 0 ? "empty" : "ready");
+      } else {
+        // A run repeating across pages breaks the cursor walk's uniqueness.
+        const seen = new Set(catalogRef.current.entries.map(entry => entry.runId));
+        if (page.runs.some(entry => seen.has(entry.runId))) throw new CompleteDagError("invalid");
+        setCatalog(previous => ({ entries: [...previous.entries, ...page.runs], nextCursor: page.nextCursor, opening: walk }));
+        setCatalogStatus("ready");
+      }
+    } catch (error: unknown) {
+      if (controller.signal.aborted) return;
+      // HTTP/JSON failures are explicit UI errors, never an authoritative empty catalog.
+      if (error instanceof Error) setCatalogStatus("error");
+      else throw error;
+    } finally {
+      if (!controller.signal.aborted) {
+        pageInFlight.current = false;
+        setLoadingMore(false);
+      }
+    }
+  }, [base]);
+
+  // Reconnection, retained-snapshot membership changes and explicit retries
+  // all restart the list at the newest page; deeper pages return on scroll.
+  useEffect(() => {
+    if (!active || !base) return;
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    pageInFlight.current = true;
+    void loadPage(controller, null, true, openingRef.current);
+    return () => { controller.abort(); controllerRef.current = null; };
+  }, [base, active, connected, membership, retryEpoch, loadPage]);
+
+  const loadMore = useCallback((): void => {
+    const controller = controllerRef.current;
+    if (controller === null || pageInFlight.current) return;
+    const { nextCursor, opening: walk } = catalogRef.current;
+    // Continuation belongs to the current opening alone: a restart between
+    // the commit and the observer disconnect must not let a retained walk's
+    // cursor consume a page.
+    if (nextCursor === null || walk !== openingRef.current) return;
+    pageInFlight.current = true;
+    setLoadingMore(true);
+    void loadPage(controller, nextCursor, false, walk);
+  }, [loadPage]);
+
   useEffect(() => {
     const visible = (): void => { if (document.visibilityState === "visible") setRetryEpoch(epoch => epoch + 1); };
     document.addEventListener("visibilitychange", visible);
     return () => document.removeEventListener("visibilitychange", visible);
   }, []);
 
-  const complete = full.selected === selected ? full.document : null;
-  const current = full.status === "complete" && full.fingerprint === fingerprint && connected;
-  const status: CompleteDagStatus = selected === null ? (catalogLoading ? "loading" : catalogError ? "error" : "empty")
-    : full.selected !== selected ? "loading"
-    : !connected ? "stale"
-    : full.status === "complete" && !current ? "refreshing" : full.status;
-  // Progress is an overlay, never topology/status authority. Attempt and state
-  // identity prevent a late progress event from reviving an old attempt.
-  const run = complete === null ? null : { ...complete.run, nodes: complete.run.nodes.map(node => {
-    const live = summary?.nodes.find(candidate => candidate.id === node.id);
-    if (!live || live.state !== node.state || live.attempt !== node.attempt) return node;
-    return { ...node,
-      ...(live.activity === undefined ? {} : { activity: live.activity }),
-      ...(live.currentTool === undefined ? {} : { currentTool: live.currentTool }),
-      ...(live.lastAssistantLine === undefined ? {} : { lastAssistantLine: live.lastAssistantLine }),
-      ...(live.turns === undefined ? {} : { turns: live.turns }),
-      ...(live.toolCalls === undefined ? {} : { toolCalls: live.toolCalls }),
-      ...(live.lastActivityAt === undefined ? {} : { lastActivityAt: live.lastActivityAt }),
-    };
-  }) };
-  return { catalog, catalogLoading, catalogError, selected, select: (id: string) => setChosen({ id, explicit: true }), run, status, error: full.error,
-    retry: () => setRetryEpoch(epoch => epoch + 1), contentToken: complete?.contentToken };
+  const rows = catalog.entries.map(entry => {
+    const state = docs.get(entry.runId);
+    const summary = activities.dags.get(entry.runId);
+    const stored = state?.status ?? "loading";
+    const status: CompleteDagStatus = !connected ? "stale"
+      : stored === "complete" && state !== undefined && state.fingerprint !== topologyKey(summary) ? "refreshing"
+      : stored;
+    const document = state?.document ?? null;
+    return { entry, run: document === null ? null : withLiveProgress(document.run, summary), status,
+      error: state?.error ?? false, contentToken: document?.contentToken ?? "", authorized: catalog.opening === opening };
+  });
+  return { rows, catalogStatus, hasMore: catalog.nextCursor !== null, loadingMore,
+    loadMore, retry: () => setRetryEpoch(epoch => epoch + 1),
+    runScope: { base, active, connected, facts, retryEpoch } };
 }

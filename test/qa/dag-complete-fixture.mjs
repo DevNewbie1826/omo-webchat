@@ -84,6 +84,34 @@ export async function startCompleteFixture({ evidenceDir, port = 18763 }) {
       await writeFile(path + '.qa-next', JSON.stringify(record), { mode: 0o600 });
       await rename(path + '.qa-next', path);
     }
-    return { url, manifest, storeRoot, source, replace, expected: async id => expectedRun(await source(id)), transport, stop };
+    async function isolateEmptyCatalog() {
+      const runsDir = join(storeRoot, 'workspace', '.omo', 'senpi-task', 'dag', 'runs');
+      const aside = `${runsDir}.qa-aside`;
+      await rename(runsDir, aside);
+      await mkdir(runsDir, { recursive: true, mode: 0o700 });
+      return async () => {
+        await rm(runsDir, { recursive: true, force: true });
+        await rename(aside, runsDir);
+      };
+    }
+    /** An invalid owned record makes the real server reject the catalog read
+     * itself, which the browser must surface as a catalog boundary error -
+     * never as an authoritative empty catalog. */
+    async function breakCatalogWithInvalidRecord() {
+      const broken = join(storeRoot, 'workspace', '.omo', 'senpi-task', 'dag', 'runs', 'record-qa-invalid.json');
+      await writeFile(broken, '{ this record is not JSON', { mode: 0o600 });
+      return async () => { await rm(broken, { force: true }); };
+    }
+    /** Withdraw one run's owned file after a catalog page already listed it:
+     * its next detail read is a real 404 while the catalog itself stays
+     * healthy, exercising a first-read failure per article. */
+    async function withdrawRun(runId) {
+      const path = join(storeRoot, manifest.files[runId]);
+      const aside = `${path}.qa-aside`;
+      await rename(path, aside);
+      return async () => { await rename(aside, path); };
+    }
+    return { url, manifest, storeRoot, source, replace, isolateEmptyCatalog, breakCatalogWithInvalidRecord, withdrawRun,
+      expected: async id => expectedRun(await source(id)), transport, stop };
   } catch (error) { await stop(); throw error; }
 }

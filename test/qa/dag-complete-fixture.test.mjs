@@ -25,6 +25,12 @@ test('real Chrome machinery holds actual Go 401 responses and exact DOM barriers
     fixture = await startCompleteFixture({ evidenceDir, port: 0 }); root = fixture.storeRoot;
     port = Number(new URL(fixture.url).port);
     assert.equal(fixture.manifest.runs.length, 539);
+    assert.equal(fixture.manifest.newestFirst.length, 539);
+    assert.deepEqual(fixture.manifest.newestFirst.slice(0, 4), ['dense-64', 'long-identities', longRunIDs[1], longRunIDs[0]]);
+    const stamps = [];
+    for (const id of fixture.manifest.newestFirst.slice(0, 25)) stamps.push((await fixture.source(id)).updatedAt);
+    assert.equal(new Set(stamps).size, 25);
+    for (let index = 1; index < stamps.length; index++) assert.ok(Date.parse(stamps[index - 1]) > Date.parse(stamps[index]));
     const before = await fixture.source('dense-64'), next = structuredClone(before); next.nodes[0].attempt = 7;
     await fixture.replace('dense-64', next); assert.equal((await fixture.source('dense-64')).nodes[0].attempt, 7);
     await fixture.replace('dense-64', before); assert.deepEqual(await fixture.source('dense-64'), before);
@@ -163,20 +169,24 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
     const errors = []; page.on('pageerror', error => errors.push(String(error)));
     await page.route('**/reducer.js', route => route.fulfill({ contentType: 'text/javascript', body: reducer }));
     await page.route('**/remount-machinery', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
-      <button data-activity-tab="agents" aria-selected="false"><span class="th-activity-tab-count"></span></button>
+      <button data-activity-tab="agents" aria-selected="false"></button>
       <div class="th-chat-input"><textarea></textarea></div><div class="th-chat-body"></div><main></main>
       <script type="module">
         import { emptyActivityState, applyActivityEvent, applyActivityHistorySnapshot } from '/reducer.js';
-        import english from '/shipped-en.json' with { type: 'json' };
         const button = document.querySelector('button');
         const machine = window.machine = { state: emptyActivityState(), selected: false, historyApplied: false, delivered: [] };
         function render() {
+          // Marker-free count surface: exact running/total over the retained
+          // deduplicated rows, or no count slot at all when nothing remains.
           const runs = [...machine.state.dags.values()], nodes = runs.flatMap(run => run.nodes);
-          const partial = machine.state.truncatedDags || runs.some(run => run.truncated);
           const running = nodes.filter(node => node.state === 'running').length;
           button.setAttribute('aria-selected', String(machine.selected));
-          if (partial) button.title = english['activity.partial']; else button.removeAttribute('title');
-          button.querySelector('span').textContent = partial ? (running ? running + '+' : '?') : (nodes.length ? running + '/' + nodes.length : '');
+          button.removeAttribute('title');
+          let span = button.querySelector('.th-activity-tab-count');
+          if (nodes.length) {
+            if (!span) { span = document.createElement('span'); span.className = 'th-activity-tab-count'; button.append(span); }
+            span.textContent = running + '/' + nodes.length;
+          } else span?.remove();
           const main = document.querySelector('main'); main.replaceChildren();
           if (!machine.selected) return;
           const panel = document.createElement('section'); panel.dataset.activityTabpanel = 'agents'; main.append(panel);
@@ -184,7 +194,6 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
             const row = document.createElement('span'); row.className = 'th-activity-agent-name';
             row.textContent = '(' + run.name + ') - ' + (node.label ?? node.prompt); panel.append(row);
           }
-          if (partial) { const note = document.createElement('p'); note.className = 'th-activity-partial'; note.textContent = english['activity.partial']; panel.append(note); }
         }
         button.onclick = () => { machine.selected = true; render(); };
         window.addEventListener('resize', () => { machine.selected = false; machine.state = emptyActivityState(); render(); });
@@ -211,7 +220,6 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
           if (frame.type === 'message') document.querySelector('.th-chat-body').append(frame.message.content);
         };
       </script>` }));
-    await page.route('**/shipped-en.json', route => route.fulfill({ path: join(import.meta.dirname, '../../frontend/src/i18n/locales/en.json'), contentType: 'application/json' }));
     // Seed the already-reset pane that r3 encountered. Width equality cannot
     // restore its selected tab, native binding, or discarded controlled state.
     await page.route('**/qa-empty', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body></body></html>' }));
@@ -242,7 +250,7 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
         assert.ok(Date.parse(record.updatedAt) > Date.parse(priorRevision)); calls.push('replace');
         await fixture.replace(id, record);
       } }, url: fixture.url + '/remount-machinery', viewport: { width, height: width === 390 ? 844 : 800 }, source, revision,
-        options: { retained, partial }, async deliver(frame) {
+        options: { retained, partial, scalarCount: false }, async deliver(frame) {
           calls.push(frame.data.runs.length ? 'snapshot' : 'clear');
           const sentinel = `remount-delivery-${++sequence}`;
           const processed = await armDOM(page, value => document.querySelector('.th-chat-body')?.textContent.includes(value), sentinel);
@@ -260,8 +268,13 @@ test('responsive scenario rebinds and hydrates before selecting Subagents and ad
         assert.deepEqual(calls, [], 'no fixture mutation or controlled packet before held REST hydration');
         release();
         const result = await running;
-        assert.equal(result.count, partial ? retained ? `${retained}+` : '?' : '2/2');
+        // This machinery UI consumes only the activity-state reducer, whose
+        // exact local fallback counts retained rows; the aggregate fields the
+        // scenario delivers apply on the real SPA surface (the lead's run).
+        assert.equal(result.count, partial ? retained ? `${retained}/${retained}` : null : '2/2');
         assert.equal(result.selected, 'true');
+        assert.equal(result.partial, null);
+        assert.equal(result.explanation, null);
         assert.equal(result.sourceRevision, revision);
         assert.equal(result.sourceCounts.running, retained === 12 ? 64 : 2);
         assert.deepEqual(calls, ['replace', 'clear', 'snapshot']);
