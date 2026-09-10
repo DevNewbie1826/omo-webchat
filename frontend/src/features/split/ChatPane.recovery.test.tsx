@@ -29,9 +29,9 @@ const chatSession = {
 } as const;
 
 /**
- * C3 DOM surface: each recovery phase renders as a distinct status item, and
- * recovery-incomplete is always a warning carrying the reason — never a
- * normal or success treatment.
+ * C3 DOM surface: reconnecting and pending-replay phases render as a status
+ * item, a completed replay renders nothing at all, and recovery-incomplete is
+ * always a warning carrying the reason — never a normal or success treatment.
  */
 describe("ChatPane recovery states", () => {
 	let container: HTMLDivElement;
@@ -118,14 +118,13 @@ describe("ChatPane recovery states", () => {
 		expect(item?.textContent).toContain("chat.recoveryResuming");
 	});
 
-	it("renders recovered after terminal rebinding history", () => {
+	it("renders no recovery item after terminal rebinding history", () => {
 		act(() => disconnect());
 		act(() => reconnect());
 		act(() => ready(true));
 		act(history);
-		const item = recoveryItem();
-		expect(item?.dataset["recoveryPhase"]).toBe("recovered");
-		expect(item?.textContent).toContain("chat.recoveryRecovered");
+		// A successful replay is silent: no status item lingers afterwards.
+		expect(recoveryItem()).toBeNull();
 	});
 
 	it("renders recovery-incomplete as a warning with the reason, never as success", () => {
@@ -175,14 +174,14 @@ describe("ChatPane recovery states", () => {
 		expect(transientError()).toBeNull();
 	});
 
-	it("renders recovered after the automatic rebinding replay, with no stale loss text", () => {
+	it("renders no recovery item after the automatic rebinding replay, with no stale loss text", () => {
 		act(() => ready(false));
 		act(() => providerLoss());
 		act(() => ready(true));
 		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("resuming");
 		act(history);
-		expect(recoveryItem()?.dataset["recoveryPhase"]).toBe("recovered");
-		expect(recoveryItem()?.className).toContain("th-chat-status-item--live");
+		// A successful rebinding replay is silent; only the stale loss text check remains.
+		expect(recoveryItem()).toBeNull();
 		expect(transientError()).toBeNull();
 	});
 

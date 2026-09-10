@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { recoveryAfterClose, recoveryAfterError, recoveryAfterHistory, recoveryAfterOpen, recoveryAfterProviderLoss, recoveryAfterReady } from "./recoveryState";
 
 describe("recovery replay boundary", () => {
- it("uses readiness to start resuming and terminal history to end the recovery window", () => {
+ it("uses readiness to start resuming and terminal history to end the recovery window silently", () => {
   const lost = recoveryAfterProviderLoss(null);
   expect(lost.phase).toBe("reconnecting");
   const ready = recoveryAfterReady(lost, true);
@@ -10,7 +10,8 @@ describe("recovery replay boundary", () => {
   const partial = recoveryAfterHistory(ready, false);
   expect(partial?.phase).toBe("resuming");
   const complete = recoveryAfterHistory(partial, true);
-  expect(complete?.phase).toBe("recovered");
+  // A successful replay is silent: the recovery window closes with no phase.
+  expect(complete).toBeNull();
   expect(recoveryAfterError(complete, "provider_error", "later ordinary history query", "get_entries")).toBe(complete);
   expect(recoveryAfterError(ready, "provider_error", "ordinary send", "chat.send")).toBe(ready);
  });
@@ -23,7 +24,8 @@ describe("recovery replay boundary", () => {
   expect(recoveryAfterProviderLoss(failure)).toBe(failure);
  });
  it("accepts authoritative fresh-route readiness without waiting for nonexistent history", () => {
-  expect(recoveryAfterReady(recoveryAfterProviderLoss(null), false)?.phase).toBe("recovered");
+  // Fresh routes have no history stream; authoritative readiness closes the window silently.
+  expect(recoveryAfterReady(recoveryAfterProviderLoss(null), false)).toBeNull();
   expect(recoveryAfterReady(null, false)).toBeNull();
  });
 });

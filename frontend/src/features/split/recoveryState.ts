@@ -1,5 +1,5 @@
 /** Recovery is complete only after authoritative history, not route readiness. */
-export type RecoveryPhase = "reconnecting" | "resuming" | "recovered" | "incomplete";
+export type RecoveryPhase = "reconnecting" | "resuming" | "incomplete";
 
 export interface RecoveryState {
 	readonly phase: RecoveryPhase;
@@ -47,8 +47,9 @@ export function recoveryAfterReady(
 	resumed: boolean,
 ): RecoveryState | null {
 	if (current?.phase !== "reconnecting" && current?.phase !== "resuming") return current;
-	// Fresh routes have no history stream. Initial attach still stays null.
-	return { phase: resumed ? "resuming" : "recovered" };
+	// Fresh routes have no history stream. Initial attach still stays null;
+	// authoritative readiness closes a successful window silently.
+	return resumed ? { phase: "resuming" } : null;
 }
 
 export function recoveryAfterHistory(
@@ -56,7 +57,8 @@ export function recoveryAfterHistory(
 	final: boolean,
 ): RecoveryState | null {
 	if (current?.phase !== "reconnecting" && current?.phase !== "resuming") return current;
-	return { phase: final ? "recovered" : "resuming" };
+	// Terminal history closes a successful replay silently; only failures surface.
+	return final ? null : { phase: "resuming" };
 }
 
 export function recoveryAfterError(

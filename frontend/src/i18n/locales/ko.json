@@ -175,7 +175,6 @@
   "chat.loading": "불러오는 중…",
   "chat.reconnecting": "재연결 중…",
   "chat.recoveryResuming": "세션 재개 중…",
-  "chat.recoveryRecovered": "세션이 복구되었습니다",
   "chat.recoveryIncomplete": "복구가 완료되지 않았습니다",
   "chat.responding": "응답 중",
   "chat.contextUsage": "컨텍스트",

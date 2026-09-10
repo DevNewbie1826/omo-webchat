@@ -103,7 +103,6 @@ export function ChatPane({
   const recoveryLabel = chat.recovery === null ? undefined
     : chat.recovery.phase === "reconnecting" ? t("chat.reconnecting")
     : chat.recovery.phase === "resuming" ? t("chat.recoveryResuming")
-    : chat.recovery.phase === "recovered" ? t("chat.recoveryRecovered")
     : t("chat.recoveryIncomplete");
 
   const modelPicker = (
@@ -270,7 +269,7 @@ export function ChatPane({
                 className={`th-chat-status-item th-chat-recovery${
                   chat.recovery.phase === "incomplete" || chat.recovery.phase === "reconnecting"
                     ? " th-chat-status-item--warn"
-                    : chat.recovery.phase === "recovered" ? " th-chat-status-item--live" : ""}`}
+                    : ""}`}
                 data-recovery-phase={chat.recovery.phase}
                 title={chat.recovery.reason}
               >
