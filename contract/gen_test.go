@@ -31,6 +31,9 @@ func TestGeneratorsFailClosed(t *testing.T) {
 	for _, tc := range tests {
 		for _, generator := range generators {
 			t.Run(tc.name+"/"+generator.name, func(t *testing.T) {
+				if _, err := exec.LookPath(generator.args[0]); err != nil {
+					t.Skipf("generator %q not found in PATH; cannot exercise %s fail-closed checks: %v", generator.args[0], generator.name, err)
+				}
 				dir := copySchemas(t)
 				path := filepath.Join(dir, "shared-types.json")
 				raw, err := os.ReadFile(path)
