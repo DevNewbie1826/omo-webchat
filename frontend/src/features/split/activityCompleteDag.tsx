@@ -81,6 +81,23 @@ function CompleteDagRunRow({ row, index, base, active, connected, activities, fa
   );
 }
 
+/** The sentinel's real scrollport: the nearest ancestor whose overflow
+ *  clips vertically (the DAG tabpanel). Judging the sentinel's intersection
+ *  against that container — not the viewport — ties the report to where the
+ *  sentinel sits inside the scrolling list alone; its place in the page
+ *  cannot mask a flush scroll. The shorthand is read because some layout
+ *  engines expose `overflow` but not its `overflow-y` longhand; a non-visible
+ *  shorthand always implies a clipping longhand in engines that expose both. */
+function scrollportOf(target: Element): Element | null {
+  for (let node = target.parentElement; node !== null; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    const clips = style.overflowY === "auto" || style.overflowY === "scroll"
+      || style.overflow === "auto" || style.overflow === "scroll";
+    if (clips) return node;
+  }
+  return null;
+}
+
 export function CompleteDagSection({ data, activities, ...props }: CompleteDagSectionProps) {
   const { t } = props;
   // The graph/list choice is per run and starts from the shelf's view; once a
@@ -99,9 +116,13 @@ export function CompleteDagSection({ data, activities, ...props }: CompleteDagSe
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!hasMore || !settled || sentinel === null || typeof IntersectionObserver === "undefined") return;
+    // The sentinel must intersect the real scrollport at the real list
+    // bottom: its shipped min-height keeps the empty box a non-zero layout
+    // box (a zero-height target never intersects, even flush inside the
+    // clip), and the observer root is the tabpanel scrollport itself.
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) data.loadMore();
-    });
+    }, { root: scrollportOf(sentinel) });
     observer.observe(sentinel);
     return () => observer.disconnect();
     // Re-observing after each append lets a still-visible sentinel deliver a
@@ -129,7 +150,7 @@ export function CompleteDagSection({ data, activities, ...props }: CompleteDagSe
         />
       ))}
       {data.loadingMore && <p className="th-activity-dag-freshness" role="status">{t("activity.dagCatalogLoading")}</p>}
-      {hasMore && <div ref={sentinelRef} className="th-activity-dag-freshness" data-activity-dag-sentinel />}
+      {hasMore && <div ref={sentinelRef} className="th-activity-dag-freshness th-activity-dag-sentinel" data-activity-dag-sentinel />}
     </section>
   );
 }
