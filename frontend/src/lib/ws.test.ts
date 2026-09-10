@@ -262,8 +262,11 @@ describe("connectWs resume liveness probe", () => {
     await vi.advanceTimersByTimeAsync(600);
     expect(onClose).not.toHaveBeenCalled();
 
-    // ...and closes exactly at the 2s probe deadline (41.5s), not before.
-    await vi.advanceTimersByTimeAsync(1_500);
+    // ...and closes exactly at the 2s probe deadline: no close at +1,999ms...
+    await vi.advanceTimersByTimeAsync(1_399);
+    expect(onClose).not.toHaveBeenCalled();
+    // ...one 4000 close at +2,000ms.
+    await vi.advanceTimersByTimeAsync(1);
     expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
