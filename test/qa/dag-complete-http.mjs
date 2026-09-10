@@ -35,8 +35,10 @@ export async function httpAudit({ fixture, request, evidenceDir }) {
       }
       for (let index = 1; index < page.runs.length; index++) {
         const newer = Date.parse(page.runs[index - 1].updated_at), older = Date.parse(page.runs[index].updated_at);
-        assert.ok(newer > older || (newer === older && page.runs[index - 1].run_id < page.runs[index].run_id),
-          'catalog page is updated_at DESC, run_id ASC on ties');
+        // The catalog's total order is updated_at DESC with a run_id DESC
+        // tiebreak (the same order the keyset cursor walks).
+        assert.ok(newer > older || (newer === older && page.runs[index - 1].run_id > page.runs[index].run_id),
+          'catalog page is updated_at DESC, run_id DESC on ties');
       }
       cursor = page.next_cursor;
       assert.ok(cursor === null || typeof cursor === 'string');

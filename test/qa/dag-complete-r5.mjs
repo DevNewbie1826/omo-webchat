@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { expectedRun, assertComplete, catalogPageSize } from './dag-complete-controls.mjs';
 import { save, transcript } from './dag-complete-fixture.mjs';
 import { r7Proof, taskHistoryFields } from './dag-complete-r7.mjs';
-import { actionDOM, armDOM, doneDOM, statusIs, assertSurface, assertSubagents, capture, releaseComplete, resetScenarioViewport, runCard, waitForTranscript } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, doneDOM, runStatusIs, assertSurface, assertSubagents, capture, releaseComplete, resetScenarioViewport, runArticle, waitForTranscript } from './dag-complete-browser.mjs';
 
 const activityPath = '/api/workspaces/qa-dag/chats/qa-chat/activity';
 export async function prepareF1Source(fixture) {
@@ -69,13 +69,14 @@ export function taskTransition(full) {
 /** A real native reconnect re-runs REST hydration on the SAME mounted state.
  * Do not reload/navigate here: that would erase the older exact identity and
  * turn the regression into the already-covered initial lossy hydration case. */
-export async function rehydrateREST({ page, observed, fixture, raw, wire, beforeFulfill, task }) {
+export async function rehydrateREST({ page, observed, fixture, raw, wire, beforeFulfill, task, digest }) {
   const handler = async route => {
     const response = await route.fetch(); assert.equal(response.status(), 200);
     const original = await response.json();
     assert.deepEqual(original.task?.tasks ?? [], []); assert.notEqual(original.task_oversized, true);
     await beforeFulfill();
-    const body = { ...original, dag: raw, ...taskHistoryFields(task) };
+    const body = { ...original, dag: raw, ...taskHistoryFields(task),
+      ...(digest === undefined ? {} : { task_digest: digest, dag_digest: digest }) };
     wire.push({ surface: 'REST', transition: true, original, delivered: body });
     await route.fulfill({ response, json: body });
   };
@@ -120,19 +121,34 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
   }
   const agents = () => actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true',
     () => page.locator('[data-activity-tab="agents"]').click());
-  async function counts(options) {
-    const count = options.partial ? options.retained ? `${options.retained}+` : '?' : '2/2';
-    await doneDOM(page, await armDOM(page, count => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === count, count));
-    return assertSubagents(page, options);
+  /** The exact agent aggregate this scenario's real REST hydration carried:
+   * the count authority stays exact through every later loss shape while
+   * only the retained rows change. */
+  function aggregateOf(delivered) {
+    const digest = delivered.dag_digest ?? {};
+    assert.equal(digest.truncated, false, 'exact aggregate must not be truncated');
+    assert.ok(Number.isInteger(digest.agent_running_count) && Number.isInteger(digest.agent_total_count),
+      'the real activity response carries the exact agent aggregate');
+    const task = delivered.task_digest ?? {};
+    assert.equal(task.agent_running_count, digest.agent_running_count, 'task and DAG digests agree on the running aggregate');
+    assert.equal(task.agent_total_count, digest.agent_total_count, 'task and DAG digests agree on the total aggregate');
+    return { running: digest.agent_running_count, total: digest.agent_total_count };
   }
-  async function fresh(viewport, raw, task, beforeFulfill = async () => {}) {
+  async function counts(options, aggregate) {
+    assert.ok(aggregate, 'the scenario aggregate must be captured from the real response');
+    const count = `${aggregate.running}/${aggregate.total}`;
+    await doneDOM(page, await armDOM(page, count => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === count, count));
+    return assertSubagents(page, { count, rows: options.partial ? options.retained : 2 });
+  }
+  async function fresh(viewport, raw, task, beforeFulfill = async () => {}, digest) {
     await resetScenarioViewport(page, fixture.url, viewport);
     const handler = async route => {
       const response = await route.fetch(); assert.equal(response.status(), 200);
       const original = await response.json();
       assert.deepEqual(original.task?.tasks ?? [], []);
       assert.notEqual(original.task_oversized, true);
-      const body = { ...original, ...(raw === undefined ? {} : { dag: raw }), ...taskHistoryFields(task) };
+      const body = { ...original, ...(raw === undefined ? {} : { dag: raw }), ...taskHistoryFields(task),
+        ...(digest === undefined ? {} : { task_digest: digest, dag_digest: digest }) };
       wire.push({ surface: 'REST', injected: raw !== undefined, original, delivered: body });
       await beforeFulfill();
       await route.fulfill({ response, json: body });
@@ -169,10 +185,12 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     assert.ok(loaded.length > 0);
     const held = Object.fromEntries(loaded.map(runId => [runId, gate.arm(runId)]));
     catalog.release();
+    let token;
     for (const runId of loaded) {
-      await releaseComplete({ page, held: held[runId], expected: runId === id ? expected : await fixture.expected(runId) });
+      const document = await releaseComplete({ page, held: held[runId], expected: runId === id ? expected : await fixture.expected(runId) });
+      if (runId === id) token = document.content_token;
     }
-    return assertSurface(page, expected, 'graph');
+    return assertSurface(page, { ...expected, content_token: token }, 'graph');
   }
   try {
     // F1 uses an unchanged actual activity response and actual complete HTTP.
@@ -216,10 +234,13 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     assertComplete(rejectedDocument, expectedRun(conflict));
     assert.equal(rejectedDocument.run.updated_at, accepted.run.updated_at);
     assert.notEqual(rejectedDocument.content_token, accepted.content_token);
-    const stale = await armDOM(page, statusIs, 'stale'); rejected.release(); await doneDOM(page, stale);
-    assert.equal(await runCard(page, expectedRun(a)).locator('.th-activity-gnode').count(), 0);
-    assert.equal(await runCard(page, expectedRun(a)).locator('[data-activity-dag-total]').count(), 0);
-    const staleObservation = { viewport: desktop, status: 'stale', graphNodes: 0, acceptedToken: accepted.content_token, rejectedToken: rejectedDocument.content_token };
+    const stale = await armDOM(page, runStatusIs, { runId: a.runId, status: 'stale' }); rejected.release(); await doneDOM(page, stale);
+    const conflictCard = runArticle(page, a);
+    assert.equal(await conflictCard.getAttribute('data-activity-dag-status'), 'stale');
+    assert.equal(await conflictCard.locator('.th-activity-gnode').count(), expectedRun(a).nodes.length, 'an equal-version conflict cannot replace the accepted graph');
+    assert.equal(await conflictCard.getAttribute('data-content-token'), accepted.content_token, 'the accepted identity token survives the equal-version conflict');
+    assert.equal(await conflictCard.locator('details[data-activity-dag-total]').count(), 1, 'the accepted details block survives');
+    const staleObservation = { viewport: desktop, status: 'stale', graphNodes: expectedRun(a).nodes.length, acceptedToken: accepted.content_token, rejectedToken: rejectedDocument.content_token };
     await capture(page, evidenceDir, 'F2-equal-conflict', staleObservation);
     record('F2-list-a-b-equal-conflict-rejected', staleObservation);
     for (const id of ids) if (id !== a.runId) held[id].release();
@@ -232,13 +253,13 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
       await releaseComplete({ page, held: held[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
     }
     assert.notEqual(equal.content_token, accepted.content_token); assert.deepEqual(equal.run, accepted.run);
-    await capture(page, evidenceDir, 'F2-equal-facts-token', await assertSurface(page, expectedRun(a), 'graph'));
+    await capture(page, evidenceDir, 'F2-equal-facts-token', await assertSurface(page, { ...expectedRun(a), content_token: equal.content_token }, 'graph'));
     record('F2-equal-facts-different-token-accepted', { old: accepted.content_token, token: equal.content_token });
     conflict.updatedAt = '2026-09-09T13:01:00Z'; conflict.nodes[0].attempt++;
     await fixture.replace(a.runId, conflict);
     fixture.manifest.newestFirst = [a.runId, ...fixture.manifest.newestFirst.filter(id => id !== a.runId)];
     held = await refreshPage(pageIds());
-    await releaseComplete({ page, held: held[a.runId], expected: expectedRun(conflict) });
+    const conflictToken = (await releaseComplete({ page, held: held[a.runId], expected: expectedRun(conflict) })).content_token;
     for (const id of pageIds()) {
       if (id === a.runId) continue;
       await releaseComplete({ page, held: held[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
@@ -249,7 +270,7 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
       if (id === a.runId) continue;
       await releaseComplete({ page, held: newerRetry[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
     }
-    await capture(page, evidenceDir, 'F2-newer-retry', await assertSurface(page, expectedRun(conflict), 'graph'));
+    await capture(page, evidenceDir, 'F2-newer-retry', await assertSurface(page, { ...expectedRun(conflict), content_token: conflictToken }, 'graph'));
     record('F2-list-a-b-strictly-newer-retry-accepted', { revision: conflict.updatedAt, attempt: conflict.nodes[0].attempt });
 
     // F3 raw wire, not pre-parsed ActivityState. Both REST and native WS paths
@@ -263,10 +284,11 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
         const complete = expectedRun(pair);
         const baseline = { parent_session_id: 'qa-chat', truncated_runs: false, runs: [{ ...complete, waves: [] }] };
         const input = rawLoss(complete, kind);
-        if (surface === 'REST') await fresh(viewport, input);
-        else {
-          const older = structuredClone(baseline); older.runs[0].updated_at = new Date(Date.parse(pair.updatedAt) - 1000).toISOString();
-          await fresh(viewport, older); await counts({ partial: false, retained: 2 });
+        const older = structuredClone(baseline); older.runs[0].updated_at = new Date(Date.parse(pair.updatedAt) - 1000).toISOString();
+        const hydrated = surface === 'REST' ? await fresh(viewport, input) : await fresh(viewport, older);
+        const aggregate = aggregateOf(hydrated);
+        if (surface !== 'REST') {
+          await counts({ partial: false, retained: 2 }, aggregate);
           // Remove baseline membership before lost-run packets: otherwise an
           // honest lower bound of two would correctly survive unknown loss.
           await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'F3-live-clear-after-REST-hydration');
@@ -274,17 +296,18 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
           wire.push({ surface, kind, delivered: input });
         }
         const retained = kind === 'malformed' || kind === 'run-local' ? 1 : 0;
-        // duplicate-run/duplicate-node must show `?` after quarantine under the
-        // committed F3-R6 contract; exact counts or inflated bounds fail.
+        // Every loss shape keeps the count at the exact hydration aggregate;
+        // only the retained rows shrink. duplicate-run/duplicate-node keep the
+        // exact pair too - inflated bounds or markers fail.
         const label = `F3-${surface}-${kind}-${viewport.width}`;
-        const partial = await counts({ partial: true, retained });
+        const partial = await counts({ partial: true, retained }, aggregate);
         await capture(page, evidenceDir, label, { ...partial, viewport });
         record(label, { ...partial, viewport, raw: input, screenshot: `${label}.png` });
         pair.updatedAt = new Date(Date.parse(pair.updatedAt) + 1000).toISOString();
         await fixture.replace(pair.runId, pair);
         const recovered = expectedRun(pair);
         await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [{ ...recovered, waves: [] }] } }, `${label}-complete-recovery-wire`);
-        const exact = await counts({ partial: false, retained: 2 });
+        const exact = await counts({ partial: false, retained: 2 }, aggregate);
         await capture(page, evidenceDir, `${label}-recovered`, { ...exact, viewport });
         await capture(page, evidenceDir, `${label}-full-graph`, await openFull(pair.runId, recovered));
         record(`${label}-complete-2-of-2-and-original-graph`, { ...exact, viewport, revision: pair.updatedAt });

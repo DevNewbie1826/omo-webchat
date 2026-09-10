@@ -4,7 +4,6 @@ import { mixedTaskCase, assertMixedSubagents, taskHistoryFields } from './dag-co
 import { rehydrateREST } from './dag-complete-r5.mjs';
 import { transcript } from './dag-complete-fixture.mjs';
 import { bounded } from './dag-complete-controls.mjs';
-import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
 
 test('F4 mixed wire uses one full task identity and only the same DAG child loses identity authority', () => {
   let sequence = 0;
@@ -16,6 +15,16 @@ test('F4 mixed wire uses one full task identity and only the same DAG child lose
     assert.deepEqual(taskHistoryFields(input.task), { task: input.task, task_digest: undefined });
     const wireBody = JSON.parse(JSON.stringify({ task_digest: { tasks: [], truncated: false }, ...taskHistoryFields(input.task) }));
     assert.deepEqual(wireBody, { task: input.task });
+    // The exact aggregate rides both surfaces and both digests agree with it.
+    const running = taskState === 'running' ? 1 : 0;
+    assert.deepEqual(input.aggregate, { agent_running_count: running, agent_total_count: 1 });
+    assert.deepEqual(input.digest, { tasks: [], truncated: false, running_count: running, total_count: 1, ...input.aggregate });
+    assert.deepEqual(input.liveTask, { ...input.task, ...input.aggregate });
+    assert.deepEqual(input.liveBaselineTask, { ...input.baselineTask, ...input.aggregate });
+    for (const snapshot of [input.exact, input.lossy, input.recovered]) {
+      assert.equal(snapshot.agent_running_count, running);
+      assert.equal(snapshot.agent_total_count, 1);
+    }
     assert.equal(Buffer.byteLength(task.task_id), 601); assert.equal(task.status, taskState);
     assert.equal(old.nodes[0].task_id, task.task_id); assert.equal(recovered.nodes[0].task_id, task.task_id);
     assert.equal(Buffer.byteLength(lossy.nodes[0].task_id), 512);
@@ -32,13 +41,16 @@ test('F4 mixed wire uses one full task identity and only the same DAG child lose
     assert.ok(Date.parse(lossy.updated_at) < Date.parse(recovered.updated_at));
     assert.ok(Date.parse(input.baselineTask.tasks[0].updated_at) < Date.parse(task.updated_at));
     assert.equal(input.exactCount, taskState === 'running' ? '1/1' : '0/1');
-    assert.equal(input.partialCount, taskState === 'running' ? '1+' : '?');
+    // Marker-free surface: every stage, including the lossy one, counts the
+    // single authoritative row exactly.
+    assert.equal(input.partialCount, input.exactCount);
+    assert.equal(/[+?]$/.test(input.partialCount), false);
   }
 });
 
 test('mixed count assertion rejects inflated counts, duplicate rows and leaked qualification after recovery', async () => {
   const previous = globalThis.document;
-  const state = { count: '1+', rows: ['wire-task'], partial: english['activity.partial'], explanation: english['activity.partial'] };
+  const state = { count: '1/1', rows: ['wire-task'], partial: null, explanation: null };
   globalThis.document = {
     querySelectorAll: () => state.rows.map(textContent => ({ textContent })),
     querySelector: selector => selector.includes('tab-count') ? { textContent: state.count }
@@ -47,17 +59,21 @@ test('mixed count assertion rejects inflated counts, duplicate rows and leaked q
   };
   const page = { evaluate: async (fn, args) => fn(args), locator: () => ({ count: async () => 0 }) };
   try {
-    const expected = { name: 'wire-task', count: '1+', partial: true };
+    const expected = { name: 'wire-task', count: '1/1', partial: true };
     await assertMixedSubagents(page, expected);
-    for (const count of ['2/2', '2+', '1/2', '1+']) {
+    for (const count of ['2/2', '2+', '1/2', '1+', '?', '0/1']) {
       state.count = count;
-      await assert.rejects(assertMixedSubagents(page, { ...expected, count: '?' }));
+      await assert.rejects(assertMixedSubagents(page, expected));
     }
-    state.count = '1+'; state.rows.push('duplicate');
+    state.count = '1/1'; state.rows.push('duplicate');
     await assert.rejects(assertMixedSubagents(page, expected)); state.rows.pop();
+    // The marker-free surface leaks no qualification: a title or a partial
+    // element is a failure even when the count itself is exact.
+    state.explanation = 'qualified';
+    await assert.rejects(assertMixedSubagents(page, expected)); state.explanation = null;
+    state.partial = 'partial sentinel';
+    await assert.rejects(assertMixedSubagents(page, expected)); state.partial = null;
     state.count = '0/1';
-    await assert.rejects(assertMixedSubagents(page, { ...expected, count: '0/1', partial: false }));
-    state.partial = null; state.explanation = null;
     await assertMixedSubagents(page, { ...expected, count: '0/1', partial: false });
   } finally {
     if (previous === undefined) delete globalThis.document; else globalThis.document = previous;

@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { root, save } from './dag-complete-fixture.mjs';
 import { armDOM, doneDOM, capture } from './dag-complete-browser.mjs';
-import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
 
 /** Fail before allocating browser/server resources. The QA commit may descend
  * from the producer commit, but neither an uncommitted fix nor a stale tree is
@@ -44,15 +43,27 @@ export function mixedTaskCase({ taskState, truncated, sequence }) {
     status: 'running', updated_at: revision(0), truncated_nodes: false,
     counts: { total: 1, running: 1 }, edges: [], waves: [],
     nodes: [{ id: 'same-child', prompt: 'same child', state: 'running', depends_on: [], attempt: 1, task_id: taskID }] };
-  const envelope = value => ({ parent_session_id: 'qa-chat', truncated_runs: false, runs: [value] });
+  // The exact agent aggregate rides both wire surfaces: the digest the REST
+  // boundary carries and the envelope fields the live frames carry. One
+  // authoritative task means an exact 1/1 or 0/1 at every stage.
+  const running = taskState === 'running' ? 1 : 0;
+  const aggregate = { agent_running_count: running, agent_total_count: 1 };
+  const digest = { tasks: [], truncated: false, running_count: running, total_count: 1, ...aggregate };
+  const envelope = value => ({ parent_session_id: 'qa-chat', truncated_runs: false, ...aggregate, runs: [value] });
   const lossy = structuredClone(run);
   lossy.updated_at = revision(1); lossy.truncated_nodes = truncated;
   lossy.nodes[0].task_id = taskID.slice(0, 512); lossy.nodes[0].task_id_truncated = true;
   const recovered = structuredClone(run); recovered.updated_at = revision(3);
   const baselineTask = structuredClone(task);
   baselineTask.tasks[0].name += '-baseline'; baselineTask.tasks[0].updated_at = revision(0);
-  return { task, baselineTask, exact: envelope(run), lossy: envelope(lossy), recovered: envelope(recovered),
-    exactCount: taskState === 'running' ? '1/1' : '0/1', partialCount: taskState === 'running' ? '1+' : '?' };
+  const liveTask = { ...structuredClone(task), ...aggregate };
+  const liveBaselineTask = { ...structuredClone(baselineTask), ...aggregate };
+  return { task, baselineTask, liveTask, liveBaselineTask, digest, aggregate, exact: envelope(run), lossy: envelope(lossy), recovered: envelope(recovered),
+    exactCount: taskState === 'running' ? '1/1' : '0/1',
+    // The marker-free surface counts the authoritative row exactly at every
+    // stage: the lossy child's truncated task identity can never add a second
+    // row, and an exact count never degrades into a qualified lower bound.
+    partialCount: taskState === 'running' ? '1/1' : '0/1' };
 }
 
 // The name is a wire sentinel for task hydration, not pinned product prose.
@@ -65,16 +76,18 @@ export function mixedStateIs({ count, name }) {
 export async function assertMixedSubagents(page, { count, name, partial }) {
   assert.equal(await page.evaluate(mixedStateIs, { count, name }), true, 'one authoritative task, no duplicate DAG row');
   const actual = await page.evaluate(() => ({
-    count: document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent,
+    count: document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent ?? null,
     selected: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected'),
     explanation: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('title'),
     partial: document.querySelector('[data-activity-tabpanel="agents"] .th-activity-partial')?.textContent ?? null,
     rows: [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].map(node => node.textContent),
   }));
   assert.equal(actual.selected, 'true');
-  assert.equal(actual.partial, partial ? english['activity.partial'] : null);
-  if (partial) assert.equal(actual.explanation, english['activity.partial']);
-  else assert.notEqual(actual.explanation, english['activity.partial']);
+  assert.equal(actual.count, count, 'exact marker-free mixed count');
+  assert.equal(actual.rows.length, 1, 'one authoritative task row, never a duplicate DAG row');
+  assert.equal(actual.partial, null, 'no partial marker element on the mixed surface');
+  assert.equal(actual.explanation, null, 'no partial qualification title on the mixed surface');
+  if (actual.count !== null) assert.equal(/[+?]$/.test(actual.count), false, 'mixed count is exact, never a qualified lower bound');
   assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'mixed count proof does not open or inject full detail');
   return actual;
 }
@@ -96,9 +109,9 @@ export async function r7Proof({ page, observed, fixture, deliver, record, eviden
           const lossy = { name, count: input.partialCount, partial: true };
           let initialSignal;
           const initial = surface === 'live' ? { ...exact, name: input.baselineTask.tasks[0].name } : transition ? exact : lossy;
-          const initialRaw = surface === 'live' ? { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } : transition ? input.exact : input.lossy;
-          const initialTask = surface === 'live' ? input.baselineTask : input.task;
-          await fresh(viewport, initialRaw, initialTask, async () => { initialSignal = await armDOM(page, mixedStateIs, initial); });
+          const initialRaw = surface === 'live' ? { parent_session_id: 'qa-chat', truncated_runs: false, ...input.aggregate, runs: [] } : transition ? input.exact : input.lossy;
+          const initialTask = surface === 'live' ? input.liveBaselineTask : input.task;
+          await fresh(viewport, initialRaw, initialTask, async () => { initialSignal = await armDOM(page, mixedStateIs, initial); }, input.digest);
           await doneDOM(page, initialSignal);
           await assertMixedSubagents(page, initial);
           async function send(raw, stage, expected) {
@@ -106,7 +119,7 @@ export async function r7Proof({ page, observed, fixture, deliver, record, eviden
             let reconnect;
             if (surface === 'REST') {
               const incumbent = stage === 'recovered' ? lossy : exact;
-              reconnect = await rehydrateREST({ page, observed, fixture, raw, task: input.task, wire,
+              reconnect = await rehydrateREST({ page, observed, fixture, raw, task: input.task, digest: input.digest, wire,
                 beforeFulfill: () => assertMixedSubagents(page, incumbent) });
             } else {
               await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: raw }, `${label}-${stage}-wire`);
@@ -124,8 +137,8 @@ export async function r7Proof({ page, observed, fixture, deliver, record, eviden
           }
           if (surface === 'live') {
             const taskSignal = await armDOM(page, mixedStateIs, exact);
-            await deliver({ type: 'extensionEvent', name: 'omo.task.updated', data: input.task }, `${label}-authoritative-task-wire`);
-            wire.push({ surface, stage: 'task', delivered: input.task });
+            await deliver({ type: 'extensionEvent', name: 'omo.task.updated', data: input.liveTask }, `${label}-authoritative-task-wire`);
+            wire.push({ surface, stage: 'task', delivered: input.liveTask });
             await doneDOM(page, taskSignal);
             if (transition) await send(input.exact, 'exact', exact);
           }
