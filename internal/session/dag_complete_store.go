@@ -267,6 +267,22 @@ func dagCatalogInstant(updatedAt string) time.Time {
 	return time.Time{}
 }
 
+// DagCatalogCursorClock returns updated_at in the form a catalog keyset
+// cursor encodes as its clock key: the original string when it parses as the
+// comparator's RFC3339 instant, and the empty oldest-clock key when the
+// comparator ranks the run oldest (a missing or unparseable clock). The
+// returned value compares identically to the original clock under
+// DagCatalogLess and is either empty or a parseable RFC3339 timestamp, so a
+// cursor built from it resumes at the boundary entry's exact position and is
+// accepted by the paginated endpoint's cursor validation. Catalog entries
+// keep their original raw clocks; only the cursor key is normalized.
+func DagCatalogCursorClock(updatedAt string) string {
+	if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+		return ""
+	}
+	return updatedAt
+}
+
 // ReadDagCatalog retains only metadata, but validates each full owned graph so
 // invalid checkpoints cannot masquerade as authoritative exact catalog counts.
 // There is no arbitrary candidate, byte, or selected-run scan cap.

@@ -18,12 +18,17 @@ import (
 
 // dagCatalogCursor is a value-encoded keyset cursor over the catalog's total
 // order (session.DagCatalogLess: updated_at DESC, run_id DESC tiebreak). It
-// carries the composite key (updated_at, run_id) of the last emitted entry,
-// never a page position, so concurrent appends cannot shift page boundaries:
-// runs sorting before the key stay behind the walk and never duplicate, runs
-// sorting after it surface on a later page. Version 2 replaced the retired v1
-// runId-only key of the old ascending order; v1 cursors are rejected so no
-// token can be misread under the new order.
+// carries the composite key of the last emitted entry - updated_at encoded as
+// the comparator's normalized clock (the raw string when it parses as an
+// RFC3339 instant, the empty oldest-clock key when the store accepted a
+// missing or unparseable clock) plus run_id - never a page position, so
+// concurrent appends cannot shift page boundaries: runs sorting before the
+// key stay behind the walk and never duplicate, runs sorting after it surface
+// on a later page. The normalized clock makes every emitted cursor resumable
+// by this endpoint even at a malformed-clock boundary, while the emitted
+// catalog entries keep their original raw clock metadata. Version 2 replaced
+// the retired v1 runId-only key of the old ascending order; v1 cursors are
+// rejected so no token can be misread under the new order.
 type dagCatalogCursor struct {
 	Version        int    `json:"v"`
 	Workspace      string `json:"ws"`
@@ -158,7 +163,14 @@ func (s *Server) handleListChatDagRuns(w http.ResponseWriter, r *http.Request) {
 	end := min(start+limit, len(entries))
 	response := dagCatalogResponse{Runs: entries[start:end]}
 	if end < len(entries) {
-		data, err := json.Marshal(dagCatalogCursor{Version: 2, Workspace: r.PathValue("wsId"), Chat: r.PathValue("chatId"), AfterUpdatedAt: entries[end-1].UpdatedAt, AfterRunID: entries[end-1].RunID})
+		// The cursor's clock key is the comparator's normalized clock, not
+		// the boundary entry's raw metadata: a missing or unparseable source
+		// clock ranks oldest and encodes as the empty oldest-clock key, so
+		// every emitted cursor validates on resume and lands on the boundary
+		// entry's exact position in the total order. The emitted entries
+		// above still carry the original raw clocks.
+		boundary := entries[end-1]
+		data, err := json.Marshal(dagCatalogCursor{Version: 2, Workspace: r.PathValue("wsId"), Chat: r.PathValue("chatId"), AfterUpdatedAt: session.DagCatalogCursorClock(boundary.UpdatedAt), AfterRunID: boundary.RunID})
 		if err != nil {
 			s.writeDagError(w, r, err)
 			return
