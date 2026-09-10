@@ -82,7 +82,8 @@ export async function createRegistry({ tarballs = [], failPublishAt, hidePublish
   function store(manifest, bytes, tags) {
     const { name, version } = manifest;
     const existing = packages.get(name);
-    if (existing && Object.hasOwn(existing.versions, version)) {
+    if ((existing && Object.hasOwn(existing.versions, version))
+      || (concealed.get(name) ?? []).some((entry) => entry.version === version)) {
       throw Object.assign(new Error('Version already exists'), { status: 409, code: 'EPUBLISHCONFLICT' });
     }
     const tarballPath = `/${name}/-/${name.split('/').at(-1)}-${version}.tgz`;
@@ -126,15 +127,18 @@ export async function createRegistry({ tarballs = [], failPublishAt, hidePublish
       const name = parts.splice(0, route.startsWith('/@') ? 2 : 1).join('/');
       if (parts.length === 0 && concealed.has(name)) {
         const document = packages.get(name);
+        const stillHidden = [];
         for (const entry of concealed.get(name)) {
-          if (entry.getsRemaining > 0) entry.getsRemaining -= 1;
-          if (entry.getsRemaining === 0 && document) {
+          if (entry.getsRemaining > 0) {
+            if (request.method === 'GET') entry.getsRemaining -= 1;
+            stillHidden.push(entry);
+          } else if (document) {
             document.versions[entry.version] = entry.metadata;
             Object.assign(document['dist-tags'], entry.tags);
-            concealed.set(name, concealed.get(name).filter((other) => other !== entry));
           }
         }
-        if (concealed.get(name).length === 0) concealed.delete(name);
+        if (stillHidden.length === 0) concealed.delete(name);
+        else concealed.set(name, stillHidden);
       }
       const document = packages.get(name);
       let body = document;

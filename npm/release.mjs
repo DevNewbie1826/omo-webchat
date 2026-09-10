@@ -222,11 +222,13 @@ async function publish(manifestFile, tag, registry, provenance) {
       // first read. NPM_CONFIRM_POLL_MS is a test-only cadence knob.
       const pollMs = Number(process.env.NPM_CONFIRM_POLL_MS ?? '10000');
       let document = await remote(endpoint, entry.name);
-      for (let attempt = 0; attempt < 12 && !(document !== undefined && await matching(document, entry, tag)); attempt++) {
+      let confirmed = document !== undefined && await matching(document, entry, tag);
+      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, pollMs));
         document = await remote(endpoint, entry.name);
+        confirmed = document !== undefined && await matching(document, entry, tag);
       }
-      requireValue(document !== undefined && await matching(document, entry, tag), `Publication was not confirmed: ${entry.name}`);
+      requireValue(confirmed, `Publication was not confirmed: ${entry.name}`);
       console.log(`published: ${entry.name}@${entry.version} (${tag})`);
     }
   } finally { await fs.rm(staging, { recursive: true, force: true }); }

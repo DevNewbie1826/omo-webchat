@@ -284,3 +284,38 @@ test('close joins an in-flight incomplete publication and its connection', optio
   assert.equal(registry.requests[0].status, 'disconnected');
   assert.equal(registry.requests[0].error, 'ECONNRESET');
 });
+
+test('concealed publication becomes visible on the N+1st root read only', options, async (t) => {
+  for (const hidden of [0, 1, 2]) {
+    const ctx = await setup(t, { hidePublishedGets: hidden });
+    const name = `fixture-conceal-${hidden}`;
+    const bytes = await readFile(await pack(ctx, { name, version: '1.0.0' }));
+    const put = await json(`${ctx.registry.url}/${name}`, { method: 'PUT', body: JSON.stringify(publishBody(name, '1.0.0', bytes)), headers: { 'content-type': 'application/json' } });
+    assert.equal(put.status, 201);
+    const visible = async () => {
+      const read = await json(`${ctx.registry.url}/${name}`);
+      return read.status === 200 && read.body.versions?.['1.0.0'] !== undefined;
+    };
+    for (let read = 0; read < hidden; read++) {
+      assert.equal(await fetch(`${ctx.registry.url}/${name}`, { method: 'HEAD' }).then((r) => r.status), 200);
+      assert.equal(await visible(), false, `hidden=${hidden} read=${read} must stay concealed`);
+    }
+    assert.equal(await visible(), true, `hidden=${hidden} must reveal after ${hidden} reads`);
+  }
+});
+
+test('a concealed version stays immutable across duplicate publications', options, async (t) => {
+  const ctx = await setup(t, { hidePublishedGets: 2 });
+  const name = 'fixture-conceal-immutable';
+  const bytes = await readFile(await pack(ctx, { name, version: '1.0.0' }));
+  const publish = { method: 'PUT', headers: { 'content-type': 'application/json' } };
+  const first = await json(`${ctx.registry.url}/${name}`, { ...publish, body: JSON.stringify(publishBody(name, '1.0.0', bytes)) });
+  assert.equal(first.status, 201);
+  await json(`${ctx.registry.url}/${name}`);
+  const duplicate = await json(`${ctx.registry.url}/${name}`, { ...publish, body: JSON.stringify(publishBody(name, '1.0.0', await readFile(await pack(ctx, { name, version: '1.0.0' })))) });
+  assert.equal(duplicate.status, 409);
+  assert.equal(duplicate.body.error, 'EPUBLISHCONFLICT');
+  assert.equal((await json(`${ctx.registry.url}/${name}`)).body.versions?.['1.0.0'], undefined, 'one budget read consumed, one remains');
+  const revealed = await json(`${ctx.registry.url}/${name}`);
+  assert.equal(revealed.body.versions['1.0.0'].dist.integrity, `sha512-${sha(bytes)}`);
+});
