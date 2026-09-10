@@ -10,6 +10,7 @@ class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
   readyState = FakeWebSocket.CONNECTING;
+  readonly sent: string[] = [];
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
@@ -19,7 +20,9 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
   }
 
-  send(_data: string): void {}
+  send(data: string): void {
+    this.sent.push(data);
+  }
 
   serverOpen(): void {
     this.readyState = FakeWebSocket.OPEN;
@@ -131,6 +134,89 @@ describe("connectWs", () => {
     expect(onClose).toHaveBeenCalledExactlyOnceWith(4001);
     expect(FakeWebSocket.instances).toHaveLength(2);
     visibility.mockRestore();
+  });
+});
+
+describe("connectWs resume liveness probe", () => {
+  let conn: WsConn | null = null;
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    conn?.close();
+    conn = null;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  const pingCount = (socket: FakeWebSocket): number =>
+    socket.sent.filter((data) => (JSON.parse(data) as { type: string }).type === "ping").length;
+
+  /** Opens a connection and makes it healthy: one heartbeat tick, pong answered. */
+  const openHealthy = (onClose?: (code: number) => void): FakeWebSocket => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    conn = connectWs(
+      "/chat",
+      onClose ? { onMessage: () => undefined, onClose } : { onMessage: () => undefined },
+    );
+    const socket = FakeWebSocket.instances[0]!;
+    expect(socket).toBeDefined();
+    socket.serverOpen();
+    return socket;
+  };
+
+  it("detects a dead-but-open socket at resume without waiting for the heartbeat interval", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+
+    // Healthy: the first 20s heartbeat tick pings and the pong answers it.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(pingCount(socket)).toBe(1);
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+
+    // The transport dies without onclose firing (mobile backgrounding). The
+    // test simply stops answering pings; the socket is still "OPEN".
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(pingCount(socket)).toBe(2); // probe ping sent at resume time
+
+    // The short resume deadline (not the 20s heartbeat) catches the corpse.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+
+    // The reconnect scheduled by the same path opens after its 1s backoff —
+    // still without advancing anywhere near the 20s heartbeat interval.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("send fails fast during the resume probe and unblocks after pong", async () => {
+    const socket = openHealthy();
+    await vi.advanceTimersByTimeAsync(20_000);
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+    expect(conn!.send({ type: "x" })).toBe(true);
+
+    // Resume with an OPEN socket arms the short probe: sends fail fast.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(conn!.send({ type: "x" })).toBe(false);
+
+    // Pong in time clears the suspect window: sends flow again.
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+    expect(conn!.send({ type: "x" })).toBe(true);
+  });
+
+  it("normal heartbeat pong wait does not block send", async () => {
+    const socket = openHealthy();
+
+    // Ping sent at the 20s tick, pong not yet delivered: the ordinary
+    // awaitingPong window must not fail sends.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(pingCount(socket)).toBe(1);
+    expect(conn!.send({ type: "x" })).toBe(true);
   });
 });
 
