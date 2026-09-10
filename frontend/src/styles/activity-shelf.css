@@ -535,6 +535,10 @@ button.th-activity-bar:hover {
   overflow-wrap: anywhere;
 }
 
+.th-activity-dag-complete > .th-activity-dag-toolbar {
+  margin-bottom: var(--th-space-3);
+}
+
 .th-activity-dag-toolbar {
   display: flex;
   flex: none;
