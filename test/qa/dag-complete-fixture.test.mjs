@@ -25,6 +25,12 @@ test('real Chrome machinery holds actual Go 401 responses and exact DOM barriers
     fixture = await startCompleteFixture({ evidenceDir, port: 0 }); root = fixture.storeRoot;
     port = Number(new URL(fixture.url).port);
     assert.equal(fixture.manifest.runs.length, 539);
+    assert.equal(fixture.manifest.newestFirst.length, 539);
+    assert.deepEqual(fixture.manifest.newestFirst.slice(0, 4), ['dense-64', 'long-identities', longRunIDs[1], longRunIDs[0]]);
+    const stamps = [];
+    for (const id of fixture.manifest.newestFirst.slice(0, 25)) stamps.push((await fixture.source(id)).updatedAt);
+    assert.equal(new Set(stamps).size, 25);
+    for (let index = 1; index < stamps.length; index++) assert.ok(Date.parse(stamps[index - 1]) > Date.parse(stamps[index]));
     const before = await fixture.source('dense-64'), next = structuredClone(before); next.nodes[0].attempt = 7;
     await fixture.replace('dense-64', next); assert.equal((await fixture.source('dense-64')).nodes[0].attempt, 7);
     await fixture.replace('dense-64', before); assert.deepEqual(await fixture.source('dense-64'), before);

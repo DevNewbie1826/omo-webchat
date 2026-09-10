@@ -84,6 +84,17 @@ export async function startCompleteFixture({ evidenceDir, port = 18763 }) {
       await writeFile(path + '.qa-next', JSON.stringify(record), { mode: 0o600 });
       await rename(path + '.qa-next', path);
     }
-    return { url, manifest, storeRoot, source, replace, expected: async id => expectedRun(await source(id)), transport, stop };
+    async function isolateEmptyCatalog() {
+      const runsDir = join(storeRoot, 'workspace', '.omo', 'senpi-task', 'dag', 'runs');
+      const aside = `${runsDir}.qa-aside`;
+      await rename(runsDir, aside);
+      await mkdir(runsDir, { recursive: true, mode: 0o700 });
+      return async () => {
+        await rm(runsDir, { recursive: true, force: true });
+        await rename(aside, runsDir);
+      };
+    }
+    return { url, manifest, storeRoot, source, replace, isolateEmptyCatalog,
+      expected: async id => expectedRun(await source(id)), transport, stop };
   } catch (error) { await stop(); throw error; }
 }

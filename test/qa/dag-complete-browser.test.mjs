@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertSubagents, assertSurface, reconnectWithoutReplay, screenshotPath } from './dag-complete-browser.mjs';
+import { assertDagHasNoPartial, assertList, assertSubagents, assertSurface, reconnectWithoutReplay, screenshotPath } from './dag-complete-browser.mjs';
 import * as proof from './dag-complete-browser.mjs';
 import { chromePath, loadDriver } from './dag-complete-fixture.mjs';
 import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
@@ -54,12 +54,13 @@ const states = ['pending', 'blocked', 'scheduled', 'running', 'completed', 'fail
 function surfaceFixture() {
   const nodes = Array.from({ length: 64 }, (_, index) => ({ id: `node-${index}`, prompt: 'x'.repeat(2048), attempt: index,
     state: states[index % states.length], depends_on: Array.from({ length: index }, (_, from) => `node-${from}`) }));
-  const expected = { run_id: 'dense-64', nodes, counts: { total: 64, ...Object.fromEntries(states.map(state => [state, 8])) },
+  const expected = { run_id: 'dense-64', name: 'dense-64', nodes, counts: { total: 64, completed: 8, ...Object.fromEntries(states.map(state => [state, 8])) },
     edges: nodes.flatMap(node => node.depends_on.map(from => ({ from, to: node.id }))) };
   const html = `<style>body{margin:0}svg{width:1280px;height:20px}</style>
     <section data-activity-dag-status="complete" data-content-token="${'a'.repeat(64)}">
-    <select data-activity-dag-select><option value="dense-64">dense-64</option></select>
     <div class="th-chat-body" style="height:60px;overflow:auto"><div style="height:500px">transcript</div></div>
+    <div class="th-activity-dag" data-activity-dag-run="dense-64">
+    <div class="th-activity-dag-head"><span class="th-activity-dag-name">dense-64</span><span class="th-activity-dag-counts">8/64</span></div>
     <svg>${nodes.map((node, i) => `<g class="th-activity-gnode" data-node="${node.id}" transform="translate(${i * 20}, 0)"><rect width="10" height="10"/></g>`).join('')}
     ${expected.edges.map(edge => `<line class="th-activity-gedge" x1="${Number(edge.from.slice(5)) * 20 + 10}" y1="5" x2="${Number(edge.to.slice(5)) * 20}" y2="5"/>`).join('')}</svg>
     ${states.map(state => `<div data-activity-dag-count="${state}" data-count="8"></div>`).join('')}
@@ -67,7 +68,7 @@ function surfaceFixture() {
     ${nodes.map(node => `<details data-activity-dag-node="${node.id}"><summary>${node.id} - ${english[`activity.status.${node.state}`]}</summary>
       <dl><dd>${node.depends_on.map(dep => `<div>${dep}</div>`).join('')}</dd><dd data-activity-dag-attempt>${node.attempt}</dd></dl>
       <p data-activity-dag-prompt>${node.prompt}</p></details>`).join('')}</details>
-    <ul>${nodes.map(node => `<li class="th-activity-dnode">${node.id}</li>`).join('')}</ul></section>`;
+    <ul>${nodes.map(node => `<li class="th-activity-dnode">${node.id}</li>`).join('')}</ul></div></section>`;
   return { expected, html };
 }
 
@@ -82,6 +83,15 @@ test('Chrome surface observer proves 64 original identities/2016 edge endpoints 
     await page.setContent(html);
     const result = await assertSurface(page, expected, 'graph'); assert.equal(result.edges.length, 2016);
     await assertSurface(page, expected, 'list');
+    const listed = await assertList(page, [expected]); assert.deepEqual(listed.names, ['dense-64']);
+    await assertDagHasNoPartial(page);
+    await page.evaluate(text => {
+      const panel = document.querySelector('section');
+      panel.setAttribute('data-activity-tabpanel', 'dag');
+      const note = document.createElement('p'); note.className = 'th-activity-partial'; note.textContent = text; panel.append(note);
+    }, english['activity.partial']);
+    await assert.rejects(assertDagHasNoPartial(page));
+    await page.setContent(html);
     const screenshot = await screenshotPath(page, join(directory, 'observer.png'));
     assert.equal(typeof screenshot, 'string');
     assert.deepEqual((await readFile(screenshot)).subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
@@ -128,9 +138,10 @@ test('painted tab bounds and expanded prompt proof reject crossing text, clippin
     await page.route('**/observer', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
     await page.goto('http://dag-machinery.test/observer');
     const node = { id: 'last', prompt: 'Description text'.repeat(128) };
+    const run = { name: 'last-run', nodes: [node] };
     const html = `<style>body{margin:0;font:14px sans-serif}.tabs{display:flex;width:100%;gap:4px}button{flex:1;min-width:0;height:30px;display:flex;justify-content:center;gap:4px}.panel{height:180px;overflow:auto}p{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}</style>
       <div class="tabs">${['todo','agents','dag'].map(tab => `<button data-activity-tab="${tab}"><span class="th-activity-tab-label">${tab}</span><span class="th-activity-tab-count">12+</span></button>`).join('')}</div>
-      <div class="panel"><details data-activity-dag-total="1"><summary>Descriptions</summary><details data-activity-dag-node="last"><summary>Last node</summary><p data-activity-dag-prompt>${node.prompt}</p></details></details></div>`;
+      <div class="panel"><div class="th-activity-dag"><span class="th-activity-dag-name">last-run</span><details data-activity-dag-total="1"><summary>Descriptions</summary><details data-activity-dag-node="last"><summary>Last node</summary><p data-activity-dag-prompt>${node.prompt}</p></details></details></div></div>`;
     for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
       await page.setViewportSize(viewport); await page.setContent(html);
       const tabs = await proof.assertTabBounds(page); assert.equal(tabs.tabs.length, 3);
@@ -140,12 +151,12 @@ test('painted tab bounds and expanded prompt proof reject crossing text, clippin
       });
       await assert.rejects(proof.assertTabBounds(page), /tab.*(bounds|overlap)/);
       await page.setContent(html);
-      await assert.rejects(proof.assertExpandedPrompt(page, node, 'start'), /expanded/);
-      await proof.descriptions(page, { nodes: [node] }, 'start');
-      const start = await proof.assertExpandedPrompt(page, node, 'start');
+      await assert.rejects(proof.assertExpandedPrompt(page, node, 'start', run), /expanded/);
+      await proof.descriptions(page, run, 'start');
+      const start = await proof.assertExpandedPrompt(page, node, 'start', run);
       assert.equal(start.prompt, node.prompt); assert.equal(start.edge, 'start');
-      await proof.descriptions(page, { nodes: [node] }, 'end');
-      const end = await proof.assertExpandedPrompt(page, node, 'end');
+      await proof.descriptions(page, run, 'end');
+      const end = await proof.assertExpandedPrompt(page, node, 'end', run);
       assert.equal(end.edge, 'end'); assert.ok(end.scroll.some(box => box.top > 0));
       for (const mutate of [
         () => document.querySelector('[data-activity-dag-node]').open = false,
@@ -156,8 +167,8 @@ test('painted tab bounds and expanded prompt proof reject crossing text, clippin
         () => document.querySelector('.panel').scrollTop = 0,
       ]) {
         await page.evaluate(mutate);
-        await assert.rejects(proof.assertExpandedPrompt(page, node, 'end'));
-        await page.setContent(html); await proof.descriptions(page, { nodes: [node] }, 'end');
+        await assert.rejects(proof.assertExpandedPrompt(page, node, 'end', run));
+        await page.setContent(html); await proof.descriptions(page, run, 'end');
       }
     }
   } finally {

@@ -8,16 +8,14 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { observeSockets } from './heartbeat-liveness.mjs';
-import { assertComplete, bounded, catalogPath, detailPath, expectedRun, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
+import { assertComplete, bounded, catalogPageSize, expectedRun, isCatalogPath, isDetailPath, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
 import { r5Proof } from './dag-complete-r5.mjs';
-import { requireR7Ready } from './dag-complete-r7.mjs';
-import { actionDOM, armDOM, assertSurface, browserGate, capture, closeDescriptions, descriptions, doneDOM, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, screenshotPath, setupDOM, statusIs, view, waitForTranscript } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, assertList, assertSurface, browserGate, capture, closeDescriptions, dagRunReceipts, descriptions, doneDOM, openDagTab, prepareSubagentsScenario, reconnectWithoutReplay, releaseComplete, resetScenarioViewport, runCard, screenshotPath, scrollDagListEnd, setupDOM, statusIs, view, waitForTranscript } from './dag-complete-browser.mjs';
 
 export async function run({ evidenceDir }) {
   assert.ok(globalThis.Bun, 'Run with bun test/qa/dag-complete.mjs');
-  await requireR7Ready();
   evidenceDir = resolve(evidenceDir); await mkdir(evidenceDir, { recursive: true });
   const report = { passed: false, actions: [], errors: [], startedAt: new Date().toISOString() };
   const cleanup = { errors: [] }, http = [];
@@ -32,45 +30,82 @@ export async function run({ evidenceDir }) {
   const head = await command('git', ['rev-parse', 'HEAD'], { cwd: root });
   const diff = await command('git', ['diff', '--stat'], { cwd: root });
   report.input = { head: head.stdout.trim(), diff: diff.stdout };
-  let expected, revisionDocument;
-  async function select(id) {
-    const held = gate.arm(id);
-    await page.locator('[data-activity-dag-select]').selectOption(id);
-    await held.captured; return held;
-  }
-  async function open(implicitDefault = false) {
-    // The initial real summary may contain only the legacy 512-byte prefix.
-    // Never select an option to rescue this: the authoritative default must load itself.
-    const held = gate.arm(implicitDefault ? longRunIDs[0] : '*');
-    const catalogReady = await armDOM(page, count => document.querySelector('[data-activity-dag-select]')?.options.length === count, fixture.manifest.runs.length);
-    const loading = await armDOM(page, statusIs, 'loading');
-    await page.locator('[role="tab"][data-activity-tab="dag"]').click();
-    const receipt = await held.captured; await doneDOM(page, loading);
-    const id = decodeURIComponent(receipt.path.split('/').at(-1));
-    assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'no partial primary graph while initial full read is held');
-    assert.equal(await page.locator('[data-activity-dag-status]').getAttribute('data-activity-dag-status'), 'loading');
-    await releaseComplete({ page, held, expected: await fixture.expected(id) });
-    await doneDOM(page, catalogReady);
-    assert.deepEqual((await page.locator('[data-activity-dag-select] option').evaluateAll(nodes => nodes.map(node => node.value))).sort(), fixture.manifest.runs);
-    record('automatic-default-and-complete-catalog', { defaultRun: id, options: fixture.manifest.runs.length });
-    if (implicitDefault) {
-      assert.equal(id, longRunIDs[0]);
-      assert.equal(await page.locator('[data-activity-dag-select]').inputValue(), longRunIDs[0]);
-      assert.equal((await page.locator('[data-activity-dag-select] option').evaluateAll(nodes => nodes.map(node => node.value))).includes(longRunIDs[0].slice(0, 512)), false);
-      await capture(page, evidenceDir, 'C2-long-implicit-default', await assertSurface(page, await fixture.expected(id), 'graph'));
-      const other = await fixture.expected(longRunIDs[1]);
-      await releaseComplete({ page, held: await select(longRunIDs[1]), expected: other });
-      const lastPage = page.waitForResponse(async response => new URL(response.url()).pathname === catalogPath && response.status() === 200 && (await response.json()).next_cursor === null);
-      const explicit = gate.arm(longRunIDs[1]);
-      await page.locator('[data-activity-dag-retry]').click();
-      await releaseComplete({ page, held: explicit, expected: other }); await lastPage;
-      await deliver({ type: 'extensionEvent', name: 'omo.dag.heartbeat', data: { at: '2026-09-08T10:00:01Z', runs: [] } }, 'long-explicit-selection-after-paginated-refresh');
-      await capture(page, evidenceDir, 'C2-long-explicit-selection', await assertSurface(page, other, 'graph'));
-      record('implicit-truncated-default-and-distinct-exact-long-identities', { prefixBytes: 512, exactIDs: longRunIDs, options: fixture.manifest.runs.length });
+  let expected, revisionDocument, loadedExpecteds = [];
+  const pageIds = (start, count = catalogPageSize) => fixture.manifest.newestFirst.slice(start, start + count);
+  const nodeCount = expecteds => expecteds.reduce((sum, item) => sum + item.nodes.length, 0);
+  async function expectedsFor(ids) { return Promise.all(ids.map(id => fixture.expected(id))); }
+  async function releasePage(ids, held, expectedById = {}) {
+    const expecteds = [];
+    for (const [index, id] of ids.entries()) {
+      const item = expectedById[id] ?? await fixture.expected(id);
+      expecteds.push(item);
+      await releaseComplete({ page, held: held[index], expected: item });
     }
-    if (id !== 'dense-64' || implicitDefault) await releaseComplete({ page, held: await select('dense-64'), expected });
+    return expecteds;
+  }
+  async function openList({ expectNewest = true } = {}) {
+    const catalogHeld = gate.arm('catalog');
+    const loading = await armDOM(page, statusIs, 'loading');
+    assert.equal(await openDagTab(page), true);
+    await catalogHeld.captured; await doneDOM(page, loading);
+    assert.equal(await page.locator('[data-activity-dag-status]').getAttribute('data-activity-dag-status'), 'loading');
+    assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'no partial primary graph while the catalog is held');
+    const body = JSON.parse(catalogHeld.receipt.body);
+    const ids = body.runs.map(run => run.run_id);
+    assert.equal(ids.length, catalogPageSize);
+    if (expectNewest) {
+      assert.deepEqual(ids, pageIds(0));
+      assert.equal(body.runs.some(run => run.run_id === longRunIDs[0].slice(0, 512) || run.run_id === longRunIDs[1].slice(0, 512)), false);
+      assert.equal(ids.includes(longRunIDs[0]) && ids.includes(longRunIDs[1]), true);
+    }
+    const held = ids.map(id => gate.arm(id));
+    catalogHeld.release();
+    await Promise.all(held.map(item => item.captured));
+    assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'no partial primary graph while initial full reads are held');
+    loadedExpecteds = await releasePage(ids, held);
+    const listed = await assertList(page, loadedExpecteds);
+    record('automatic-newest-page-and-complete-catalog', { ids, catalogRequests: dagRunReceipts(http).filter(row => isCatalogPath(row.path)).length,
+      details: dagRunReceipts(http).filter(row => isDetailPath(row.path)).length, rendered: listed.names.length });
+    return listed;
+  }
+  async function loadMore() {
+    const nextIds = pageIds(catalogPageSize);
+    const priorNames = loadedExpecteds.map(item => item.name);
+    const catalogHeld = gate.arm('catalog');
+    const last = await fixture.expected(nextIds.at(-1));
+    const rendered = await armDOM(page, ({ count, lastName, lastNodes }) => {
+      const cards = [...document.querySelectorAll('.th-activity-dag')];
+      const card = cards.at(-1);
+      return cards.length === count
+        && card?.querySelector('.th-activity-dag-name')?.textContent === lastName
+        && card.querySelectorAll('.th-activity-gnode').length === lastNodes;
+    }, { count: catalogPageSize * 2, lastName: last.name, lastNodes: last.nodes.length });
+    await scrollDagListEnd(page);
+    const body = JSON.parse((await catalogHeld.captured).body);
+    assert.deepEqual(body.runs.map(run => run.run_id), nextIds);
+    const held = nextIds.map(id => gate.arm(id));
+    catalogHeld.release();
+    await Promise.all(held.map(item => item.captured));
+    const extraGraphs = await page.evaluate(names => names.reduce((sum, name) => {
+      const card = [...document.querySelectorAll('.th-activity-dag')].find(node => node.querySelector('.th-activity-dag-name')?.textContent === name);
+      return sum + (card?.querySelectorAll('.th-activity-gnode').length ?? 0);
+    }, 0), (await expectedsFor(nextIds)).map(item => item.name));
+    assert.equal(extraGraphs, 0, 'no partial next-page graphs while full reads are held');
+    assert.deepEqual(await page.locator('.th-activity-dag .th-activity-dag-name').evaluateAll(nodes => nodes.map(node => node.textContent).slice(0, priorNames.length)), priorNames);
+    const extra = await releasePage(nextIds, held);
+    await doneDOM(page, rendered);
+    loadedExpecteds = [...loadedExpecteds, ...extra];
+    const listed = await assertList(page, loadedExpecteds);
+    const catalogs = dagRunReceipts(http).filter(row => isCatalogPath(row.path));
+    const details = dagRunReceipts(http).filter(row => isDetailPath(row.path));
+    assert.equal(catalogs.length, 2, 'exactly two catalog pages after one more-page scroll');
+    assert.equal(details.length, catalogPageSize * 2, 'exactly twenty full-run reads after one more-page scroll');
+    assert.equal(listed.names.length, catalogPageSize * 2);
+    record('scroll-end-next-page', { ids: nextIds, catalogRequests: catalogs.length, details: details.length, rendered: listed.names.length });
+    return listed;
   }
   async function visit(reload = false, navigate = false) {
+    const marked = http.length;
     const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat', { label: '100-message native transcript' });
     if (reload && !navigate) await page.reload({ waitUntil: 'domcontentloaded' }); else await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
     const history = (await entries).frame.entries;
@@ -82,7 +117,7 @@ export async function run({ evidenceDir }) {
       await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
         runs: [{ ...original, run_id: longRunIDs[0].slice(0, 512), nodes: [], edges: [], waves: [] }] } }, 'truncated-implicit-summary-before-opening-DAG');
     }
-    await open(!reload);
+    assert.deepEqual(dagRunReceipts(http, marked), [], 'DAG tab closed: zero graph/full-run fetches; scalar polling only');
   }
   async function deliver(frame, label) {
     const sentinel = `dag-qa-event-${report.actions.length}`;
@@ -99,10 +134,10 @@ export async function run({ evidenceDir }) {
     for (const edge of ['start', 'end']) {
       await descriptions(page, expected, edge);
       const observation = await assertSurface(page, expected, 'graph');
-      await capture(page, evidenceDir, `${name}-description-${edge}`, observation, { node: expected.nodes.at(-1), edge });
+      await capture(page, evidenceDir, `${name}-description-${edge}`, observation, { node: expected.nodes.at(-1), edge, run: expected });
       record(`${name}-description-${edge}`, { expanded: true, bytes: 2048, edge, screenshot: `${name}-description-${edge}.png` });
     }
-    await closeDescriptions(page);
+    await closeDescriptions(page, expected);
   }
   let scenarioRevision = 0;
   async function subagentsProof(name, options, source) {
@@ -129,47 +164,103 @@ export async function run({ evidenceDir }) {
     revisionDocument = documents['dense-64']; record('actual-Go-HTTP-catalog-detail-auth-path-guards');
     observed = observeSockets(page); await setupDOM(page); gate = await browserGate(page, http);
     page.on('pageerror', error => report.errors.push({ type: 'pageerror', error: String(error) }));
-    await visit(); await snap('C2-desktop');
+    await visit();
+    await openList();
+    await snap('C2-desktop');
     await expandedDescriptions('C2-desktop'); record('full-2048-byte-description-expanded');
-    await view(page, 'list'); await snap('C2-desktop-list', 'list'); await view(page, 'graph');
+    await view(page, 'list', nodeCount(loadedExpecteds)); await snap('C2-desktop-list', 'list'); await view(page, 'graph', nodeCount(loadedExpecteds));
     await actionDOM(page, () => document.querySelector('.th-chat-body')?.scrollTop === 0,
       () => page.locator('.th-chat-body').evaluate(node => node.scrollTo({ top: 0, behavior: 'instant' })));
     await snap('C2-desktop-top');
+    await capture(page, evidenceDir, 'C2-long-exact-identities', await assertSurface(page, await fixture.expected(longRunIDs[0]), 'graph'));
+    record('implicit-truncated-summary-and-distinct-exact-long-identities', { prefixBytes: 512, exactIDs: longRunIDs, rendered: loadedExpecteds.map(item => item.run_id) });
+    await loadMore();
+    await capture(page, evidenceDir, 'C2-load-more', await assertSurface(page, expected, 'graph'));
+
+    const restoreRuns = await fixture.isolateEmptyCatalog();
+    const emptyCatalog = gate.arm('catalog');
+    const empty = await armDOM(page, statusIs, 'empty');
+    await page.locator('[data-activity-dag-retry]').click();
+    assert.deepEqual(JSON.parse((await emptyCatalog.captured).body).runs, []);
+    emptyCatalog.release(); await doneDOM(page, empty);
+    assert.equal(await page.locator('[data-activity-dag-status]').getAttribute('data-activity-dag-status'), 'empty');
+    assert.equal(await page.locator('.th-activity-dag').count(), 0);
+    await capture(page, evidenceDir, 'C2-empty', { viewport: { width: 1280, height: 800 }, status: 'empty', rendered: 0 });
+    record('forced-empty-catalog-renders-empty');
+    await restoreRuns();
+    loadedExpecteds = [];
+    const restoredCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const restoredBody = JSON.parse((await restoredCatalog.captured).body);
+    const restoredIds = restoredBody.runs.map(run => run.run_id);
+    assert.deepEqual(restoredIds, pageIds(0));
+    const restoredHeld = restoredIds.map(id => gate.arm(id));
+    restoredCatalog.release();
+    loadedExpecteds = await releasePage(restoredIds, restoredHeld);
+    await assertList(page, loadedExpecteds);
 
     // A real invalid owned checkpoint supplies HTTP 422; no fake DAG error body.
-    const brokenId = 'history-000', original = await fixture.source(brokenId), broken = structuredClone(original);
+    const brokenId = 'dense-64', original = await fixture.source(brokenId), broken = structuredClone(original);
     broken.definition.nodes.push(structuredClone(broken.definition.nodes[0]));
     await fixture.replace(brokenId, broken);
-    const invalid = await select(brokenId); assert.equal(invalid.receipt.status, 422);
+    const errorCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const errorIds = JSON.parse((await errorCatalog.captured).body).runs.map(run => run.run_id);
+    const errorHeld = Object.fromEntries(errorIds.map(id => [id, gate.arm(id)]));
+    errorCatalog.release();
+    const invalid = errorHeld[brokenId]; assert.equal((await invalid.captured).status, 422);
     const errorDOM = await armDOM(page, statusIs, 'error'); invalid.release(); await doneDOM(page, errorDOM);
-    assert.equal(await page.locator('.th-activity-gnode').count(), 0);
+    assert.equal(await runCard(page, expected).locator('.th-activity-gnode').count(), 0);
     assert.equal(await page.locator('[role="alert"]').count() > 0, true); record('owned-malformed-422-no-primary-topology');
     await fixture.replace(brokenId, original);
-    const retry = gate.arm(brokenId); await page.locator('[data-activity-dag-retry]').click();
-    await releaseComplete({ page, held: retry, expected: expectedRun(original) });
-    await releaseComplete({ page, held: await select('dense-64'), expected });
+    const retryCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const retryIds = JSON.parse((await retryCatalog.captured).body).runs.map(run => run.run_id);
+    const retryHeld = retryIds.map(id => gate.arm(id));
+    retryCatalog.release();
+    loadedExpecteds = await releasePage(retryIds, retryHeld);
+    await assertList(page, loadedExpecteds);
 
-    // Each request keeps its own actual Go body. Abort the old browser generation.
-    const old = await select('history-001');
-    const aborted = page.waitForEvent('requestfailed', { predicate: request => new URL(request.url()).pathname === detailPath('history-001'), timeout: 15000 });
-    const selected = await select('dense-64'); await aborted;
-    await releaseComplete({ page, held: selected, expected }); old.release();
-    await assertSurface(page, expected, 'graph'); record('late-request-generation-cannot-replace-selection');
+    // Each request keeps its own actual Go body. Reverse-release cannot swap cards.
+    const genCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const genIds = JSON.parse((await genCatalog.captured).body).runs.map(run => run.run_id);
+    const genHeld = genIds.map(id => gate.arm(id));
+    genCatalog.release();
+    await Promise.all(genHeld.map(item => item.captured));
+    const genExpecteds = [];
+    for (let index = genIds.length - 1; index >= 0; index--) {
+      genExpecteds[index] = await fixture.expected(genIds[index]);
+      await releaseComplete({ page, held: genHeld[index], expected: genExpecteds[index] });
+    }
+    loadedExpecteds = genExpecteds;
+    await assertList(page, loadedExpecteds);
+    record('late-request-generation-cannot-replace-neighbor-cards');
 
     // Hold an already-read old source, atomically install a new checkpoint, and
     // announce a newer partial summary while full retrieval is in flight.
-    const heldOld = gate.arm('dense-64'); await page.locator('[data-activity-dag-retry]').click(); await heldOld.captured;
+    const oldCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const oldIds = JSON.parse((await oldCatalog.captured).body).runs.map(run => run.run_id);
+    const oldHeld = oldIds.map(id => gate.arm(id));
+    oldCatalog.release();
+    const denseIndex = oldIds.indexOf('dense-64');
+    await oldHeld[denseIndex].captured;
     const newer = await fixture.source('dense-64'); newer.updatedAt = '2026-09-08T10:01:00Z'; newer.nodes[0].state = 'completed';
     await fixture.replace('dense-64', newer); expected = expectedRun(newer);
     const heldNew = gate.arm('dense-64');
     const partial = { ...expected, nodes: expected.nodes.slice(0, 1), edges: [], waves: [], truncated_nodes: true };
     await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true, runs: [partial] } }, 'newer-partial-during-full-read');
-    assert.equal(await page.locator('.th-activity-gnode').count(), 64);
+    assert.equal(await runCard(page, expected).locator('.th-activity-gnode').count(), 64);
     assert.equal(await page.locator('[data-activity-dag-status]').getAttribute('data-activity-dag-status'), 'refreshing');
-    assertComplete(JSON.parse(heldOld.receipt.body), revisionDocument.run); heldOld.release();
+    assertComplete(JSON.parse(oldHeld[denseIndex].receipt.body), revisionDocument.run);
+    for (const [index, id] of oldIds.entries()) {
+      if (id === 'dense-64') oldHeld[index].release();
+      else await releaseComplete({ page, held: oldHeld[index], expected: await fixture.expected(id) });
+    }
     await heldNew.captured;
     assert.equal(await page.locator('[data-activity-dag-status]').getAttribute('data-activity-dag-status'), 'refreshing');
-    assert.equal(await page.locator('.th-activity-gnode').count(), 64);
+    assert.equal(await runCard(page, expected).locator('.th-activity-gnode').count(), 64);
     const fresh = await releaseComplete({ page, held: heldNew, expected });
     assert.notEqual(fresh.content_token, revisionDocument.content_token);
     await save(evidenceDir, 'C4-stable.json', { boundary: 'old Go response captured before owned atomic rename; next read is wholly new',
@@ -193,19 +284,30 @@ export async function run({ evidenceDir }) {
     const stableSource = await fixture.source('dense-64'), conflict = structuredClone(stableSource);
     conflict.nodes[0].state = 'running';
     await fixture.replace('dense-64', conflict);
-    const conflictingFull = gate.arm('dense-64'); await page.locator('[data-activity-dag-retry]').click();
+    const conflictCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const conflictIds = JSON.parse((await conflictCatalog.captured).body).runs.map(run => run.run_id);
+    const conflictHeld = Object.fromEntries(conflictIds.map(id => [id, gate.arm(id)]));
+    conflictCatalog.release();
+    const conflictingFull = conflictHeld['dense-64'];
     assertComplete(JSON.parse((await conflictingFull.captured).body), expectedRun(conflict));
     const staleFull = await armDOM(page, statusIs, 'stale'); conflictingFull.release(); await doneDOM(page, staleFull);
     const retained = await assertSurface(page, expected, 'graph', 'stale');
     assert.equal(retained.token, fresh.content_token);
     await capture(page, evidenceDir, 'C2-equal-version-full-conflict', retained);
     record('equal-version-conflicting-full-retains-original-facts', { token: retained.token, rejectedToken: JSON.parse(conflictingFull.receipt.body).content_token });
+    for (const id of conflictIds) if (id !== 'dense-64') conflictHeld[id].release();
     await fixture.replace('dense-64', stableSource);
-    const restoredFull = gate.arm('dense-64'); await page.locator('[data-activity-dag-retry]').click();
-    await releaseComplete({ page, held: restoredFull, expected });
+    expected = expectedRun(stableSource);
+    const restoredCatalog2 = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const restoredIds2 = JSON.parse((await restoredCatalog2.captured).body).runs.map(run => run.run_id);
+    const restoredHeld2 = restoredIds2.map(id => gate.arm(id));
+    restoredCatalog2.release();
+    loadedExpecteds = await releasePage(restoredIds2, restoredHeld2, { 'dense-64': expected });
+    await assertList(page, loadedExpecteds);
 
     // An actual two-node checkpoint disagrees with a known partial node's state.
-    // No complete document for this run has been admitted by the browser yet.
     let pairSource = await fixture.source('long-identities');
     pairSource.updatedAt = '2026-09-08T10:05:00Z'; pairSource.status = 'running';
     for (const node of pairSource.nodes) { node.state = 'running'; delete node.completedAt; }
@@ -213,19 +315,29 @@ export async function run({ evidenceDir }) {
     let pair = expectedRun(pairSource);
     const partialConflict = { ...pair, nodes: [{ ...pair.nodes[0], state: 'completed' }], edges: [], waves: [] };
     await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true, runs: [partialConflict] } }, 'known-partial-equal-version-conflicting-state');
-    const rejectedPartial = await select('long-identities');
-    assertComplete(JSON.parse(rejectedPartial.receipt.body), pair);
+    const rejectedCatalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const rejectedIds = JSON.parse((await rejectedCatalog.captured).body).runs.map(run => run.run_id);
+    const rejectedHeld = Object.fromEntries(rejectedIds.map(id => [id, gate.arm(id)]));
+    rejectedCatalog.release();
+    const rejectedPartial = rejectedHeld['long-identities'];
+    assertComplete(JSON.parse((await rejectedPartial.captured).body), pair);
     const stalePartial = await armDOM(page, statusIs, 'stale'); rejectedPartial.release(); await doneDOM(page, stalePartial);
-    assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'conflicting partial cannot become a current full graph');
-    assert.equal(await page.locator('[data-activity-dag-total]').count(), 0);
+    assert.equal(await runCard(page, pair).locator('.th-activity-gnode').count(), 0, 'conflicting partial cannot become a current full graph');
+    assert.equal(await runCard(page, pair).locator('[data-activity-dag-total]').count(), 0);
     await screenshotPath(page, join(evidenceDir, 'C2-equal-version-partial-conflict.png'));
     record('equal-version-partial-conflict-stays-explicit-stale', { status: 'stale', graphNodes: 0, receivedToken: JSON.parse(rejectedPartial.receipt.body).content_token });
+    for (const id of rejectedIds) if (id !== 'long-identities') rejectedHeld[id].release();
 
     pairSource.updatedAt = '2026-09-08T10:06:00Z'; await fixture.replace('long-identities', pairSource); pair = expectedRun(pairSource);
-    const enrichment = gate.arm('long-identities');
+    const enrichCatalog = gate.arm('catalog');
     await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
       runs: [{ ...pair, nodes: pair.nodes.slice(0, 1), edges: [], waves: [] }] } }, 'nonconflicting-partial-same-version-enrichment');
-    await releaseComplete({ page, held: enrichment, expected: pair });
+    await page.locator('[data-activity-dag-retry]').click();
+    const enrichIds = JSON.parse((await enrichCatalog.captured).body).runs.map(run => run.run_id);
+    const enrichHeld = enrichIds.map(id => gate.arm(id));
+    enrichCatalog.release();
+    loadedExpecteds = await releasePage(enrichIds, enrichHeld, { 'long-identities': pair });
     await capture(page, evidenceDir, 'C2-same-version-enrichment', await assertSurface(page, pair, 'graph'));
     record('same-version-full-enriches-nonconflicting-original-topology', { total: 2, exactNodeIDs: pair.nodes.map(node => node.id) });
 
@@ -240,18 +352,19 @@ export async function run({ evidenceDir }) {
       await subagentsProof(name, { partial, retained }, pairSource);
     }
     pair = await fixture.expected('long-identities');
-    // Fresh panes have no remembered run selection. Discover the real catalog
-    // and explicitly select the authoritative pair through the actual control.
-    await open();
-    await releaseComplete({ page, held: await select('long-identities'), expected: pair });
+    const denseNow = await fixture.source('dense-64');
+    denseNow.updatedAt = '2026-09-08T12:00:00Z';
+    await fixture.replace('dense-64', denseNow);
+    expected = expectedRun(denseNow);
+    fixture.manifest.newestFirst = ['dense-64', ...fixture.manifest.newestFirst.filter(id => id !== 'dense-64')];
+    await openList();
     await capture(page, evidenceDir, 'C2-subagents-authoritative-full-two', await assertSurface(page, pair, 'graph'));
-    record('partial-Subagents-qualified-and-authoritative-full-two-restored', { running: 2, total: 2 });
-    await releaseComplete({ page, held: await select('dense-64'), expected });
+    record('partial-Subagents-qualified-and-authoritative-full-two-restored', { running: pair.counts.running, total: pair.counts.total });
     await resetScenarioViewport(page, fixture.url, { width: 1280, height: 800 });
-    await visit(true, true); await visit(true); await snap('C2-reload');
+    await visit(true, true); await visit(true); await openList(); await snap('C2-reload');
     await resetScenarioViewport(page, fixture.url, { width: 390, height: 844 });
-    await visit(true, true); await visit(true); await snap('C2-mobile');
-    await expandedDescriptions('C2-mobile'); await view(page, 'list'); await snap('C2-mobile-list', 'list'); await view(page, 'graph');
+    await visit(true, true); await visit(true); await openList(); await snap('C2-mobile');
+    await expandedDescriptions('C2-mobile'); await view(page, 'list', nodeCount(loadedExpecteds)); await snap('C2-mobile-list', 'list'); await view(page, 'graph', nodeCount(loadedExpecteds));
     await r5Proof({ page, observed, fixture, gate, deliver, record, evidenceDir });
     assert.equal(fixture.transport.base.frames.filter(frame => frame.type === 'chat.send').length, 0);
     assert.deepEqual(report.errors, []); report.passed = true;

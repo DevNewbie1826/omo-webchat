@@ -59,8 +59,9 @@ type checkpoint struct {
 	Nodes []runtimeNode `json:"nodes"`
 }
 type fixtureManifest struct {
-	Runs  []string          `json:"runs"`
-	Files map[string]string `json:"files"`
+	Runs        []string          `json:"runs"`
+	NewestFirst []string          `json:"newestFirst"`
+	Files       map[string]string `json:"files"`
 }
 
 func makeCheckpoint(id string, count, promptBytes int) checkpoint {
@@ -132,7 +133,11 @@ func seedFixture(root string) (fixtureManifest, *cursorstore.Store, error) {
 	if err := store.SaveWorkspace(cursorstore.Workspace{ID: "other-workspace", Name: "Other", Path: filepath.Join(root, "other")}); err != nil {
 		return manifest, nil, err
 	}
+	base := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	add := func(row checkpoint) error {
+		stamp := base.Add(time.Duration(len(manifest.Runs)) * time.Second).UTC().Format(time.RFC3339)
+		row.Created = stamp
+		row.Updated = stamp
 		relative := filepath.Join("workspace", ".omo", "senpi-task", "dag", "runs", fmt.Sprintf("record-%04d.json", len(manifest.Runs)))
 		if err := writeFixtureJSON(filepath.Join(root, relative), row); err != nil {
 			return err
@@ -141,8 +146,23 @@ func seedFixture(root string) (fixtureManifest, *cursorstore.Store, error) {
 		manifest.Files[row.RunID] = relative
 		return nil
 	}
-	for i := 0; i < 518; i++ {
+	for i := 0; i < 514; i++ {
 		if err := add(makeCheckpoint(fmt.Sprintf("history-%03d", i), 1, 128)); err != nil {
+			return manifest, nil, err
+		}
+	}
+	// huge-record stays in the catalog for HTTP identity proofs but is the
+	// 25th-newest run so the first two rendered pages never mount its body.
+	if err := add(makeCheckpoint("huge-record", 2, (2<<20)+2048)); err != nil {
+		return manifest, nil, err
+	}
+	for i := 514; i < 518; i++ {
+		if err := add(makeCheckpoint(fmt.Sprintf("history-%03d", i), 1, 128)); err != nil {
+			return manifest, nil, err
+		}
+	}
+	for i := 0; i < 16; i++ {
+		if err := add(makeCheckpoint(fmt.Sprintf("multi-%02d", i), 16, 2048)); err != nil {
 			return manifest, nil, err
 		}
 	}
@@ -157,15 +177,11 @@ func seedFixture(root string) (fixtureManifest, *cursorstore.Store, error) {
 			return manifest, nil, err
 		}
 	}
-	for i := 0; i < 16; i++ {
-		if err := add(makeCheckpoint(fmt.Sprintf("multi-%02d", i), 16, 2048)); err != nil {
-			return manifest, nil, err
-		}
+	if err := add(makeCheckpoint("long-identities", 2, 2048)); err != nil {
+		return manifest, nil, err
 	}
-	for _, row := range []checkpoint{makeCheckpoint("dense-64", 64, 2048), makeCheckpoint("huge-record", 2, (2<<20)+2048), makeCheckpoint("long-identities", 2, 2048)} {
-		if err := add(row); err != nil {
-			return manifest, nil, err
-		}
+	if err := add(makeCheckpoint("dense-64", 64, 2048)); err != nil {
+		return manifest, nil, err
 	}
 	malformed := makeCheckpoint("malformed", 2, 2048)
 	malformed.Parent = "malformed-chat"
@@ -183,6 +199,11 @@ func seedFixture(root string) (fixtureManifest, *cursorstore.Store, error) {
 	if err := os.Symlink(outside, filepath.Join(workspace, "escape", ".omo", "senpi-task")); err != nil {
 		return manifest, nil, err
 	}
+	newestFirst := make([]string, len(manifest.Runs))
+	for i, id := range manifest.Runs {
+		newestFirst[len(manifest.Runs)-1-i] = id
+	}
+	manifest.NewestFirst = newestFirst
 	sort.Strings(manifest.Runs)
 	if err := writeFixtureJSON(filepath.Join(root, "manifest.json"), manifest); err != nil {
 		return manifest, nil, err

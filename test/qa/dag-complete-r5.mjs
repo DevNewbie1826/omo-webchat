@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { expectedRun, assertComplete } from './dag-complete-controls.mjs';
+import { expectedRun, assertComplete, catalogPageSize } from './dag-complete-controls.mjs';
 import { save, transcript } from './dag-complete-fixture.mjs';
 import { r7Proof, taskHistoryFields } from './dag-complete-r7.mjs';
-import { actionDOM, armDOM, doneDOM, statusIs, assertSurface, assertSubagents, capture, releaseComplete, resetScenarioViewport, waitForTranscript } from './dag-complete-browser.mjs';
+import { actionDOM, armDOM, doneDOM, statusIs, assertSurface, assertSubagents, capture, releaseComplete, resetScenarioViewport, runCard, waitForTranscript } from './dag-complete-browser.mjs';
 
 const activityPath = '/api/workspaces/qa-dag/chats/qa-chat/activity';
 export async function prepareF1Source(fixture) {
@@ -21,7 +21,9 @@ export async function prepareF1Source(fixture) {
   fixture.manifest.files[id] = fixture.manifest.files[oldID];
   delete fixture.manifest.files[oldID];
   fixture.manifest.runs = fixture.manifest.runs.map(run => run === oldID ? id : run).sort();
+  fixture.manifest.newestFirst = [id, ...(fixture.manifest.newestFirst ?? []).filter(run => run !== oldID && run !== id)];
   assert.equal(fixture.manifest.runs[0], id);
+  assert.equal(fixture.manifest.newestFirst[0], id);
   return source;
 }
 
@@ -105,10 +107,17 @@ export async function rehydrateREST({ page, observed, fixture, raw, wire, before
  * F3 and r6 transition activity inputs are injected before real REST/WS parsers. */
 export async function r5Proof({ page, observed, fixture, gate, deliver, record, evidenceDir }) {
   const wire = [];
-  const select = async id => {
-    const held = gate.arm(id); await page.locator('[data-activity-dag-select]').selectOption(id);
-    await held.captured; return held;
-  };
+  const pageIds = () => fixture.manifest.newestFirst.slice(0, catalogPageSize);
+  async function refreshPage(ids = pageIds()) {
+    const catalog = gate.arm('catalog');
+    await page.locator('[data-activity-dag-retry]').click();
+    const body = JSON.parse((await catalog.captured).body);
+    assert.deepEqual(body.runs.map(run => run.run_id), ids);
+    const held = Object.fromEntries(ids.map(id => [id, gate.arm(id)]));
+    catalog.release();
+    await Promise.all(Object.values(held).map(item => item.captured));
+    return held;
+  }
   const agents = () => actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true',
     () => page.locator('[data-activity-tab="agents"]').click());
   async function counts(options) {
@@ -150,19 +159,19 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     } finally { await page.unroute(`**${activityPath}`, handler); }
   }
   async function openFull(id, expected, automatic = false) {
-    const first = gate.arm('*');
-    const catalog = await armDOM(page, ({ id, total }) => {
-      const options = [...(document.querySelector('[data-activity-dag-select]')?.options ?? [])];
-      return options.length === total && options.some(option => option.value === id);
-    }, { id, total: fixture.manifest.runs.length });
+    const catalog = gate.arm('catalog');
     await page.locator('[data-activity-tab="dag"]').click();
-    const receipt = await first.captured;
-    const initial = decodeURIComponent(receipt.path.split('/').at(-1));
-    if (automatic) assert.equal(initial, id, 'actual projected default loads without picker rescue');
-    await releaseComplete({ page, held: first, expected: await fixture.expected(initial) });
-    await doneDOM(page, catalog);
-    assert.deepEqual((await page.locator('[data-activity-dag-select] option').evaluateAll(nodes => nodes.map(node => node.value))).sort(), fixture.manifest.runs);
-    if (initial !== id) await releaseComplete({ page, held: await select(id), expected });
+    const body = JSON.parse((await catalog.captured).body);
+    const loaded = body.runs.map(run => run.run_id);
+    if (automatic) assert.equal(loaded[0], id, 'newest catalog page leads with the owned run');
+    assert.equal(loaded.includes(id), true);
+    assert.equal(loaded.length <= catalogPageSize, true);
+    assert.ok(loaded.length > 0);
+    const held = Object.fromEntries(loaded.map(runId => [runId, gate.arm(runId)]));
+    catalog.release();
+    for (const runId of loaded) {
+      await releaseComplete({ page, held: held[runId], expected: runId === id ? expected : await fixture.expected(runId) });
+    }
     return assertSurface(page, expected, 'graph');
   }
   try {
@@ -185,42 +194,63 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     await capture(page, evidenceDir, 'F1-actual-projection-full-task-601', await openFull(source.runId, full, true));
     record('F1-actual-REST-projection-full-601-byte-task-identity', { projected, full: full.nodes[0], revision: full.updated_at });
 
-    // F2: erase only nonterminal overview membership, not the hook's accepted
-    // full facts. a is then discovered/selected solely via the actual picker.
-    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'F2-empty-overview-before-historical-picker');
+    // F2: erase only nonterminal overview membership, not accepted full facts.
+    // Historical a/b become the newest catalog rows and load as list cards.
+    await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: false, runs: [] } }, 'F2-empty-overview-before-historical-list');
     const a = await fixture.source('history-002'), b = await fixture.source('history-003');
     a.updatedAt = '2026-09-09T13:00:00Z'; a.nodes[0].state = 'completed'; a.nodes[0].completedAt = a.updatedAt;
-    await fixture.replace(a.runId, a);
-    const accepted = await releaseComplete({ page, held: await select(a.runId), expected: expectedRun(a) });
-    await releaseComplete({ page, held: await select(b.runId), expected: expectedRun(b) });
+    b.updatedAt = '2026-09-09T12:59:00Z';
+    await fixture.replace(a.runId, a); await fixture.replace(b.runId, b);
+    fixture.manifest.newestFirst = [a.runId, b.runId, ...fixture.manifest.newestFirst.filter(id => id !== a.runId && id !== b.runId)];
+    const ids = pageIds();
+    let held = await refreshPage(ids);
+    const accepted = await releaseComplete({ page, held: held[a.runId], expected: expectedRun(a) });
+    for (const id of ids) {
+      if (id === a.runId) continue;
+      await releaseComplete({ page, held: held[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
+    }
     const conflict = structuredClone(a); conflict.nodes[0].state = 'running'; delete conflict.nodes[0].completedAt;
     await fixture.replace(a.runId, conflict);
-    const rejected = await select(a.runId), rejectedDocument = JSON.parse(rejected.receipt.body);
+    held = await refreshPage(ids);
+    const rejected = held[a.runId], rejectedDocument = JSON.parse(rejected.receipt.body);
     assertComplete(rejectedDocument, expectedRun(conflict));
     assert.equal(rejectedDocument.run.updated_at, accepted.run.updated_at);
     assert.notEqual(rejectedDocument.content_token, accepted.content_token);
     const stale = await armDOM(page, statusIs, 'stale'); rejected.release(); await doneDOM(page, stale);
-    assert.equal(await page.locator('[data-activity-dag-select]').inputValue(), a.runId);
-    assert.equal(await page.locator('.th-activity-gnode').count(), 0);
-    assert.equal(await page.locator('[data-activity-dag-total]').count(), 0);
+    assert.equal(await runCard(page, expectedRun(a)).locator('.th-activity-gnode').count(), 0);
+    assert.equal(await runCard(page, expectedRun(a)).locator('[data-activity-dag-total]').count(), 0);
     const staleObservation = { viewport: desktop, status: 'stale', graphNodes: 0, acceptedToken: accepted.content_token, rejectedToken: rejectedDocument.content_token };
-    await capture(page, evidenceDir, 'F2-picker-equal-conflict', staleObservation);
-    record('F2-picker-a-b-a-equal-conflict-rejected', staleObservation);
+    await capture(page, evidenceDir, 'F2-equal-conflict', staleObservation);
+    record('F2-list-a-b-equal-conflict-rejected', staleObservation);
+    for (const id of ids) if (id !== a.runId) held[id].release();
     // Unknown checkpoint property changes original bytes/token, not full facts.
     await fixture.replace(a.runId, { ...a, qaOpaqueTokenSalt: 'r5-equal-facts' });
-    await releaseComplete({ page, held: await select(b.runId), expected: expectedRun(b) });
-    const equal = await releaseComplete({ page, held: await select(a.runId), expected: expectedRun(a) });
+    held = await refreshPage(ids);
+    const equal = await releaseComplete({ page, held: held[a.runId], expected: expectedRun(a) });
+    for (const id of ids) {
+      if (id === a.runId) continue;
+      await releaseComplete({ page, held: held[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
+    }
     assert.notEqual(equal.content_token, accepted.content_token); assert.deepEqual(equal.run, accepted.run);
-    await capture(page, evidenceDir, 'F2-picker-equal-facts-token', await assertSurface(page, expectedRun(a), 'graph'));
+    await capture(page, evidenceDir, 'F2-equal-facts-token', await assertSurface(page, expectedRun(a), 'graph'));
     record('F2-equal-facts-different-token-accepted', { old: accepted.content_token, token: equal.content_token });
-    await releaseComplete({ page, held: await select(b.runId), expected: expectedRun(b) });
     conflict.updatedAt = '2026-09-09T13:01:00Z'; conflict.nodes[0].attempt++;
     await fixture.replace(a.runId, conflict);
-    await releaseComplete({ page, held: await select(a.runId), expected: expectedRun(conflict) });
-    const newerRetry = gate.arm(a.runId); await page.locator('[data-activity-dag-retry]').click();
-    await releaseComplete({ page, held: newerRetry, expected: expectedRun(conflict) });
-    await capture(page, evidenceDir, 'F2-picker-newer-retry', await assertSurface(page, expectedRun(conflict), 'graph'));
-    record('F2-picker-a-b-a-strictly-newer-retry-accepted', { revision: conflict.updatedAt, attempt: conflict.nodes[0].attempt });
+    fixture.manifest.newestFirst = [a.runId, ...fixture.manifest.newestFirst.filter(id => id !== a.runId)];
+    held = await refreshPage(pageIds());
+    await releaseComplete({ page, held: held[a.runId], expected: expectedRun(conflict) });
+    for (const id of pageIds()) {
+      if (id === a.runId) continue;
+      await releaseComplete({ page, held: held[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
+    }
+    const newerRetry = await refreshPage(pageIds());
+    await releaseComplete({ page, held: newerRetry[a.runId], expected: expectedRun(conflict) });
+    for (const id of pageIds()) {
+      if (id === a.runId) continue;
+      await releaseComplete({ page, held: newerRetry[id], expected: id === b.runId ? expectedRun(b) : await fixture.expected(id) });
+    }
+    await capture(page, evidenceDir, 'F2-newer-retry', await assertSurface(page, expectedRun(conflict), 'graph'));
+    record('F2-list-a-b-strictly-newer-retry-accepted', { revision: conflict.updatedAt, attempt: conflict.nodes[0].attempt });
 
     // F3 raw wire, not pre-parsed ActivityState. Both REST and native WS paths
     // include node loss, no retained nodes, lost run, and local-only partial.

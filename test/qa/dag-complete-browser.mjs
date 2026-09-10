@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { installDOMSignals } from './dag-state-ordering.mjs';
-import { assertComplete, bounded, createResponseGate, expectedRun } from './dag-complete-controls.mjs';
+import { assertComplete, bounded, createResponseGate, expectedRun, isCatalogPath, isDetailPath } from './dag-complete-controls.mjs';
 import english from '../../frontend/src/i18n/locales/en.json' with { type: 'json' };
+import korean from '../../frontend/src/i18n/locales/ko.json' with { type: 'json' };
 import { save, transcript } from './dag-complete-fixture.mjs';
 
 export const armDOM = (page, predicate, args) => page.evaluate(({ source, args }) => window.__dagQA.arm(source, args), { source: String(predicate), args });
@@ -123,10 +124,14 @@ export async function browserGate(page, receipts) {
     running.catch(error => errors.push(String(error))).finally(() => handlers.delete(running));
     return running;
   };
-  await page.route('**/dag-runs/*', handler);
+  const match = url => {
+    const path = new URL(url).pathname;
+    return isCatalogPath(path) || isDetailPath(path);
+  };
+  await page.route(match, handler);
   return { ...gate, async stop() {
     const receipt = await gate.stop(); await Promise.allSettled([...handlers]);
-    await page.unroute('**/dag-runs/*', handler); return { ...receipt, errors };
+    await page.unroute(match, handler); return { ...receipt, errors };
   } };
 }
 
@@ -145,20 +150,73 @@ export async function reconnectWithoutReplay({ deliver, frame, gate, observed, d
   return { beforeSocket: before.socketId, afterSocket: after.socketId, replayed: false };
 }
 
+export async function assertDagHasNoPartial(page) {
+  const observed = await page.evaluate(({ en, ko }) => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    const tab = document.querySelector('[data-activity-tab="dag"]');
+    const text = `${panel?.innerText ?? ''}\n${tab?.getAttribute('title') ?? ''}\n${tab?.textContent ?? ''}`;
+    return { text, partialNodes: [...document.querySelectorAll('[data-activity-tabpanel="dag"] .th-activity-partial')].map(node => node.textContent) };
+  }, { en: english['activity.partial'], ko: korean['activity.partial'] });
+  assert.equal(observed.partialNodes.length, 0);
+  assert.equal(observed.text.includes(english['activity.partial']), false);
+  assert.equal(observed.text.includes(korean['activity.partial']), false);
+  return observed;
+}
+
+export function runCard(page, expected) {
+  const name = expected.name ?? expected;
+  return page.locator('.th-activity-dag', { has: page.locator('.th-activity-dag-name', { hasText: new RegExp(`^${String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
+}
+
+export async function openDagTab(page) {
+  const state = await page.evaluate(() => ({
+    selected: document.querySelector('[data-activity-tab="dag"]')?.getAttribute('aria-selected') === 'true',
+    open: document.querySelector('.th-activity-shelf')?.getAttribute('data-open') === 'true',
+  }));
+  if (state.selected && state.open) return false;
+  await page.locator('[role="tab"][data-activity-tab="dag"]').click();
+  return true;
+}
+
+export async function scrollDagListEnd(page) {
+  await actionDOM(page, () => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    if (!panel || panel.scrollHeight <= panel.clientHeight) return false;
+    return Math.ceil(panel.scrollTop + panel.clientHeight) >= panel.scrollHeight - 1;
+  }, () => page.evaluate(() => {
+    const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+    const chain = [];
+    for (let node = panel; node && node !== document.documentElement; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) chain.push(node);
+    }
+    for (const node of chain) node.scrollTo({ top: node.scrollHeight, behavior: 'instant' });
+  }));
+}
+
+export function dagRunReceipts(http, since = 0) {
+  return http.slice(since).filter(row => isCatalogPath(row.path) || isDetailPath(row.path));
+}
+
 export async function assertSurface(page, expected, mode, expectedStatus = 'complete') {
-  const observed = await page.evaluate(mode => {
-    const nodes = [...document.querySelectorAll('.th-activity-gnode')];
+  const observed = await page.evaluate(({ mode, runId, name }) => {
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const card = cards.find(node => node.getAttribute('data-activity-dag-run') === runId)
+      ?? cards.find(node => node.querySelector('.th-activity-dag-name')?.textContent === name)
+      ?? null;
+    const root = card ?? document;
+    const nodes = [...root.querySelectorAll('.th-activity-gnode')];
     const geometry = nodes.map(node => {
       const [, x, y] = /translate\(([-\d.]+)[, ]+([-\d.]+)\)/.exec(node.getAttribute('transform'));
       const rect = node.querySelector('rect');
       return { id: node.dataset.node, x: Number(x), y: Number(y), width: Number(rect.getAttribute('width')), height: Number(rect.getAttribute('height')) };
     });
-    const edges = [...document.querySelectorAll('.th-activity-gedge')].map(edge => {
+    const edges = [...root.querySelectorAll('.th-activity-gedge')].map(edge => {
       const from = geometry.find(node => node.x + node.width === Number(edge.getAttribute('x1')) && node.y + node.height / 2 === Number(edge.getAttribute('y1')));
       const to = geometry.find(node => node.x === Number(edge.getAttribute('x2')) && node.y + node.height / 2 === Number(edge.getAttribute('y2')));
       return { from: from?.id, to: to?.id };
     });
-    const details = [...document.querySelectorAll('[data-activity-dag-node]')].map(node => ({
+    const details = [...root.querySelectorAll('[data-activity-dag-node]')].map(node => ({
       id: node.getAttribute('data-activity-dag-node'), prompt: node.querySelector('[data-activity-dag-prompt]')?.textContent,
       depends_on: [...node.querySelectorAll('dd > div')].map(dep => dep.textContent),
       attempt: Number(node.querySelector('[data-activity-dag-attempt]')?.textContent),
@@ -166,17 +224,21 @@ export async function assertSurface(page, expected, mode, expectedStatus = 'comp
       metadata: [...node.querySelectorAll('dd')].map(value => value.textContent),
     }));
     const transcript = document.querySelector('.th-chat-body');
-    return { mode, status: document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status'),
-      token: document.querySelector('[data-content-token]')?.getAttribute('data-content-token'),
-      selected: document.querySelector('[data-activity-dag-select]')?.value,
-      total: Number(document.querySelector('[data-activity-dag-total]')?.getAttribute('data-activity-dag-total')),
-      graphIDs: nodes.map(node => node.dataset.node), listCount: document.querySelectorAll('.th-activity-dnode').length,
-      counts: Object.fromEntries([...document.querySelectorAll('[data-activity-dag-count]')].map(node => [node.getAttribute('data-activity-dag-count'), Number(node.getAttribute('data-count'))])),
+    return { mode, found: card !== null, name: card?.querySelector('.th-activity-dag-name')?.textContent ?? null,
+      names: cards.map(node => node.querySelector('.th-activity-dag-name')?.textContent ?? ''),
+      status: document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status'),
+      token: card?.getAttribute('data-content-token') ?? document.querySelector('[data-content-token]')?.getAttribute('data-content-token'),
+      total: Number((card ?? document).querySelector('[data-activity-dag-total]')?.getAttribute('data-activity-dag-total')),
+      graphIDs: nodes.map(node => node.dataset.node), listCount: root.querySelectorAll('.th-activity-dnode').length,
+      counts: Object.fromEntries([...root.querySelectorAll('[data-activity-dag-count]')].map(node => [node.getAttribute('data-activity-dag-count'), Number(node.getAttribute('data-count'))])),
+      headerCounts: card?.querySelector('.th-activity-dag-counts')?.textContent ?? null,
       edges, details, transcript: { height: transcript?.scrollHeight, client: transcript?.clientHeight },
       viewport: { width: innerWidth, height: innerHeight }, documentWidth: document.documentElement.scrollWidth };
-  }, mode);
-  assert.equal(observed.status, expectedStatus); assert.equal(observed.selected, expected.run_id);
+  }, { mode, runId: expected.run_id, name: expected.name });
+  assert.equal(observed.found, true, `run card ${expected.run_id}`);
+  assert.equal(observed.status, expectedStatus); assert.equal(observed.name, expected.name);
   assert.equal(observed.total, expected.nodes.length);
+  if (observed.headerCounts) assert.equal(observed.headerCounts.includes(`${expected.counts.completed}/${expected.counts.total}`), true);
   const ids = expected.nodes.map(node => node.id);
   assert.deepEqual(observed.details.map(node => node.id), ids);
   for (const node of expected.nodes) {
@@ -194,6 +256,23 @@ export async function assertSurface(page, expected, mode, expectedStatus = 'comp
   assert.ok(observed.transcript.height > observed.transcript.client, '100-message transcript genuinely overflows');
   assert.ok(observed.documentWidth <= observed.viewport.width, 'no document horizontal overflow');
   return observed;
+}
+
+export async function assertList(page, expecteds, expectedStatus = 'complete') {
+  const observed = await page.evaluate(() => ({
+    status: document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status'),
+    names: [...document.querySelectorAll('.th-activity-dag .th-activity-dag-name')].map(node => node.textContent),
+    graphs: [...document.querySelectorAll('.th-activity-dag')].map(card => card.querySelectorAll('.th-activity-gnode').length),
+    picker: document.querySelector('[data-activity-dag-select]') !== null,
+  }));
+  assert.equal(observed.status, expectedStatus);
+  assert.equal(observed.picker, false, 'run picker is absent from the restored list');
+  assert.deepEqual(observed.names, expecteds.map(item => item.name));
+  assert.deepEqual(observed.graphs, expecteds.map(item => item.nodes.length));
+  const surfaces = [];
+  for (const expected of expecteds) surfaces.push(await assertSurface(page, expected, 'graph', expectedStatus));
+  await assertDagHasNoPartial(page);
+  return { ...observed, surfaces };
 }
 
 export async function screenshotPath(page, path) {
@@ -265,7 +344,7 @@ export async function settleLayout(page) {
 export async function capture(page, evidenceDir, name, observation, description) {
   await settleLayout(page);
   const tabs = await assertTabBounds(page);
-  const expandedDescription = description && await assertExpandedPrompt(page, description.node, description.edge);
+  const expandedDescription = description && await assertExpandedPrompt(page, description.node, description.edge, description.run);
   const geometry = await page.evaluate(() => Object.fromEntries(['.th-chat-body', '.th-chat-input textarea', '.th-activity-panel'].map(selector => {
     const node = document.querySelector(selector), rect = node?.getBoundingClientRect();
     return [selector, rect && { ...rect.toJSON(), visible: node.checkVisibility() }];
@@ -276,16 +355,23 @@ export async function capture(page, evidenceDir, name, observation, description)
   await save(evidenceDir, `${name}.json`, { ...observation, geometry, tabs, expandedDescription });
 }
 
-export async function view(page, mode) {
-  await actionDOM(page, mode => document.querySelector(`[data-view="${mode}"]`)?.getAttribute('aria-pressed') === 'true'
-    && document.querySelectorAll(mode === 'graph' ? '.th-activity-gnode' : '.th-activity-dnode').length === 64,
-  () => page.locator(`[data-view="${mode}"]`).click(), mode);
+export async function view(page, mode, nodeCount) {
+  assert.equal(typeof nodeCount, 'number');
+  await actionDOM(page, ({ mode, nodeCount }) => document.querySelector(`[data-view="${mode}"]`)?.getAttribute('aria-pressed') === 'true'
+    && document.querySelectorAll(mode === 'graph' ? '.th-activity-gnode' : '.th-activity-dnode').length === nodeCount,
+  () => page.locator(`[data-view="${mode}"]`).click(), { mode, nodeCount });
 }
 
-async function promptGeometry(page, node, edge, scroll) {
+async function promptGeometry(page, node, edge, scroll, run) {
   assert.ok(['start', 'end'].includes(edge));
-  return bounded(page.evaluate(async ({ id, edge, scroll }) => {
-    const detail = [...document.querySelectorAll('[data-activity-dag-node]')].find(node => node.getAttribute('data-activity-dag-node') === id);
+  return bounded(page.evaluate(async ({ id, edge, scroll, runId, name }) => {
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const card = (runId || name)
+      ? cards.find(item => item.getAttribute('data-activity-dag-run') === runId)
+        ?? cards.find(item => item.querySelector('.th-activity-dag-name')?.textContent === name)
+      : null;
+    const root = card ?? document;
+    const detail = [...root.querySelectorAll('[data-activity-dag-node]')].find(item => item.getAttribute('data-activity-dag-node') === id);
     const prompt = detail?.querySelector('[data-activity-dag-prompt]');
     if (!prompt || !detail.open || !detail.closest('details[data-activity-dag-total]')?.open) throw new Error('description must be expanded with a prompt body');
     const walker = document.createTreeWalker(prompt, NodeFilter.SHOW_TEXT), text = [];
@@ -320,11 +406,11 @@ async function promptGeometry(page, node, edge, scroll) {
       visible: prompt.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
       body: prompt.getBoundingClientRect().toJSON(), painted: range.getBoundingClientRect().toJSON(), clip,
       scroll: scrollable.map(parent => ({ className: parent.className, top: parent.scrollTop, height: parent.scrollHeight, client: parent.clientHeight })) };
-  }, { id: node.id, edge, scroll }), 'expanded description scroll/layout');
+  }, { id: node.id, edge, scroll, runId: run?.run_id, name: run?.name }), 'expanded description scroll/layout');
 }
 
-export async function assertExpandedPrompt(page, node, edge) {
-  const observed = await promptGeometry(page, node, edge, false);
+export async function assertExpandedPrompt(page, node, edge, run) {
+  const observed = await promptGeometry(page, node, edge, false, run);
   assert.equal(observed.prompt, node.prompt, 'full original description equality');
   assert.ok(observed.visible && observed.body.width > 0 && observed.body.height > 0, 'expanded prompt body visible');
   const { painted, clip } = observed;
@@ -334,28 +420,49 @@ export async function assertExpandedPrompt(page, node, edge) {
 }
 
 export async function descriptions(page, expected, edge = 'start') {
-  const parent = page.locator('details[data-activity-dag-total]');
-  if (!await parent.evaluate(node => node.open)) await actionDOM(page, () => document.querySelector('details[data-activity-dag-total]')?.open,
-    () => parent.locator(':scope > summary').click());
-  const node = expected.nodes.at(-1), detail = page.locator(`[data-activity-dag-node="${node.id}"]`);
-  if (!await detail.evaluate(element => element.open)) await actionDOM(page, id => document.querySelector(`[data-activity-dag-node="${id}"]`)?.open,
-    () => detail.locator(':scope > summary').click(), node.id);
+  const card = runCard(page, expected);
+  const parent = card.locator('details[data-activity-dag-total]');
+  if (!await parent.evaluate(node => node.open)) await actionDOM(page, ({ name }) => {
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const match = cards.find(node => node.querySelector('.th-activity-dag-name')?.textContent === name);
+    return match?.querySelector('details[data-activity-dag-total]')?.open === true;
+  }, () => parent.locator(':scope > summary').click(), { name: expected.name });
+  const node = expected.nodes.at(-1), detail = card.locator(`[data-activity-dag-node="${node.id}"]`);
+  if (!await detail.evaluate(element => element.open)) await actionDOM(page, ({ name, id }) => {
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const match = cards.find(item => item.querySelector('.th-activity-dag-name')?.textContent === name);
+    return match?.querySelector(`[data-activity-dag-node="${id}"]`)?.open === true;
+  }, () => detail.locator(':scope > summary').click(), { name: expected.name, id: node.id });
   const prompt = detail.locator('[data-activity-dag-prompt]');
   assert.equal(await prompt.textContent(), node.prompt);
   assert.equal(Buffer.byteLength(await prompt.textContent()), 2048);
-  await promptGeometry(page, node, edge, true);
-  return assertExpandedPrompt(page, node, edge);
+  await promptGeometry(page, node, edge, true, expected);
+  return assertExpandedPrompt(page, node, edge, expected);
 }
 
-export async function closeDescriptions(page) {
+export async function closeDescriptions(page, expected) {
   // Restore graph space only AFTER the expanded body screenshots have been saved.
-  await actionDOM(page, () => !document.querySelector('details[data-activity-dag-total]')?.open,
-    () => page.locator('details[data-activity-dag-total] > summary').click());
+  const card = expected ? runCard(page, expected) : page.locator('details[data-activity-dag-total]').first();
+  const summary = expected ? card.locator('details[data-activity-dag-total] > summary') : page.locator('details[data-activity-dag-total] > summary');
+  await actionDOM(page, name => {
+    if (!name) return !document.querySelector('details[data-activity-dag-total]')?.open;
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const match = cards.find(node => node.querySelector('.th-activity-dag-name')?.textContent === name);
+    return match?.querySelector('details[data-activity-dag-total]')?.open === false;
+  }, () => summary.click(), expected?.name);
 }
 
 export async function releaseComplete({ page, held, expected }) {
   const document = JSON.parse((await held.captured).body); assertComplete(document, expected);
-  const signal = await armDOM(page, token => document.querySelector('[data-activity-dag-status]')?.getAttribute('data-activity-dag-status') === 'complete'
-    && document.querySelector('[data-content-token]')?.getAttribute('data-content-token') === token, document.content_token);
+  const signal = await armDOM(page, ({ name, runId, total, token }) => {
+    const cards = [...document.querySelectorAll('.th-activity-dag')];
+    const card = cards.find(node => node.getAttribute('data-activity-dag-run') === runId)
+      ?? cards.find(node => node.querySelector('.th-activity-dag-name')?.textContent === name);
+    if (!card) return false;
+    const tokenNow = card.getAttribute('data-content-token');
+    return card.querySelectorAll('.th-activity-gnode').length === total
+      && card.querySelectorAll('[data-activity-dag-node]').length === total
+      && (tokenNow === null || tokenNow === '' || tokenNow === token);
+  }, { name: expected.name, runId: expected.run_id, total: expected.nodes.length, token: document.content_token });
   held.release(); await doneDOM(page, signal); return document;
 }

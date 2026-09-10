@@ -18,8 +18,49 @@ func TestFixtureSeedPreservesScaleIdentityAndOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(manifest.Runs) != 539 {
-		t.Fatalf("catalog size=%d", len(manifest.Runs))
+	if len(manifest.Runs) != 539 || len(manifest.NewestFirst) != 539 {
+		t.Fatalf("catalog size=%d newest=%d", len(manifest.Runs), len(manifest.NewestFirst))
+	}
+	if manifest.NewestFirst[0] != "dense-64" || manifest.NewestFirst[1] != "long-identities" {
+		t.Fatalf("newest-first prefix=%v", manifest.NewestFirst[:2])
+	}
+	stamps := map[string]string{}
+	for _, id := range manifest.Runs {
+		raw, err := os.ReadFile(filepath.Join(root, manifest.Files[id]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row checkpoint
+		if err := json.Unmarshal(raw, &row); err != nil {
+			t.Fatal(err)
+		}
+		if row.Updated == "" || stamps[row.Updated] != "" {
+			t.Fatalf("updated_at collision %s %s %s", row.Updated, stamps[row.Updated], id)
+		}
+		stamps[row.Updated] = id
+	}
+	if len(stamps) != 539 {
+		t.Fatalf("distinct updated_at=%d", len(stamps))
+	}
+	for i := 1; i < len(manifest.NewestFirst); i++ {
+		newer, err := os.ReadFile(filepath.Join(root, manifest.Files[manifest.NewestFirst[i-1]]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		older, err := os.ReadFile(filepath.Join(root, manifest.Files[manifest.NewestFirst[i]]))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var a, b checkpoint
+		if err := json.Unmarshal(newer, &a); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(older, &b); err != nil {
+			t.Fatal(err)
+		}
+		if a.Updated <= b.Updated {
+			t.Fatalf("newest-first order %s %s then %s %s", a.RunID, a.Updated, b.RunID, b.Updated)
+		}
 	}
 	for _, suffix := range []string{"0", "1"} {
 		id := strings.Repeat("a", 600) + suffix
