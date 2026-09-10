@@ -865,12 +865,97 @@ func resolveLauncherInstallation(command string, env []string) (launcherInstalla
 		}
 	}
 	if entry == "" {
-		return launcherInstallation{}, true, errors.New("launcher entry is unavailable")
+		var err error
+		entry, err = nodeSiblingLauncherEntry(command, env)
+		if err != nil {
+			return launcherInstallation{}, true, err
+		}
 	}
 	if filepath.Base(entry) == "omo-agent-toolkit.js" {
 		entry = filepath.Join(filepath.Dir(entry), "omo.js")
 	}
 	return launcherInstallation{entry: entry, root: filepath.Dir(filepath.Dir(entry))}, true, nil
+}
+
+// nodeSiblingLauncherEntry supports the unmarked npm forwarder without running
+// it. Match its shell body conservatively: an arbitrary executable named omo
+// must not borrow the installation beside an unrelated PATH-selected Node.
+func nodeSiblingLauncherEntry(command string, env []string) (string, error) {
+	const body = `node_path=$(command -v node 2>/dev/null) || {
+echo "omo: Node.js is not available; install Node.js 24+ and omo-ai@beta" >&2
+exit 127
+}
+resolved_node=$(readlink -f "$node_path" 2>/dev/null) || resolved_node=$node_path
+native_omo=$(dirname "$resolved_node")/omo
+if [ ! -x "$native_omo" ] || [ "$native_omo" = "$0" ]; then
+echo "omo: OmO Native is missing beside $resolved_node; run: npm i -g omo-ai@beta" >&2
+exit 127
+fi
+exec "$native_omo" "$@"`
+	data, err := os.ReadFile(command)
+	if err != nil {
+		return "", fmt.Errorf("read launcher forwarder: %w", err)
+	}
+	lines := make([]string, 0)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			lines = append(lines, line)
+		}
+	}
+	if !strings.HasPrefix(string(data), "#!/bin/sh\n") || strings.Join(lines, "\n") != body {
+		return "", errors.New("launcher entry is unavailable")
+	}
+	path, _ := lookupEnv(env, "PATH")
+	for _, dir := range filepath.SplitList(path) {
+		// A relative PATH depends on the child's working directory, not ours.
+		if !filepath.IsAbs(dir) {
+			return "", errors.New("launcher forwarder requires an absolute Node PATH")
+		}
+		node, err := exec.LookPath(filepath.Join(dir, "node"))
+		if err != nil {
+			continue
+		}
+		node, err = filepath.EvalSymlinks(node)
+		if err != nil {
+			return "", fmt.Errorf("resolve forwarder Node: %w", err)
+		}
+		// Only the first executable Node counts, just as in command -v node.
+		// Require its sibling's native npm symlink, not a second wrapper.
+		sibling := filepath.Join(filepath.Dir(node), "omo")
+		link, err := os.Lstat(sibling)
+		if err != nil {
+			return "", fmt.Errorf("stat forwarder Node sibling: %w", err)
+		}
+		if link.Mode()&os.ModeSymlink == 0 {
+			return "", errors.New("forwarder Node sibling is not an npm symlink")
+		}
+		entry, err := filepath.EvalSymlinks(sibling)
+		if err != nil {
+			return "", fmt.Errorf("resolve forwarder Node sibling: %w", err)
+		}
+		expected := filepath.Join(filepath.Dir(filepath.Dir(node)), "lib", "node_modules", "omo-ai", "bin", "omo.js")
+		expected, err = filepath.EvalSymlinks(expected)
+		if err != nil {
+			return "", fmt.Errorf("resolve forwarder npm entry: %w", err)
+		}
+		if entry != expected {
+			return "", errors.New("forwarder Node sibling points outside its npm installation")
+		}
+		info, err := os.Stat(entry)
+		if err != nil {
+			return "", fmt.Errorf("stat forwarder npm entry: %w", err)
+		}
+		forwarder, err := os.Stat(command)
+		if err != nil {
+			return "", fmt.Errorf("stat launcher forwarder: %w", err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 || os.SameFile(info, forwarder) {
+			return "", errors.New("forwarder npm entry is not a distinct executable")
+		}
+		return entry, nil
+	}
+	return "", errors.New("launcher forwarder Node is unavailable on PATH")
 }
 
 func launcherExtension(command string, env []string) (string, bool, error) {
