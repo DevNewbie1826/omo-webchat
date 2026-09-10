@@ -175,7 +175,6 @@
   "chat.loading": "Loading…",
   "chat.reconnecting": "Reconnecting…",
   "chat.recoveryResuming": "Resuming session…",
-  "chat.recoveryRecovered": "Session recovered",
   "chat.recoveryIncomplete": "Recovery incomplete",
   "chat.responding": "Responding",
   "chat.contextUsage": "Context",

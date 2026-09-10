@@ -8,11 +8,11 @@ import {
 } from "./useChatSession.reconnect.support";
 
 /**
- * C3: the UI must distinguish the four RPC recovery states the c2 seam makes
+ * C3: the UI must distinguish the RPC recovery states the c2 seam makes
  * observable — reconnecting (socket lost), resuming (transport re-established,
- * rebinding replay pending), recovered (ready replay observed), and incomplete
- * (the server mapped a resume failure) — instead of collapsing them into one
- * generic connected flag.
+ * rebinding replay pending), and incomplete (the server mapped a resume
+ * failure) — instead of collapsing them into one generic connected flag. A
+ * completed replay clears the state entirely: a successful resume is silent.
  */
 describe("useChatSession recovery states", () => {
 	let harness: ReconnectHarness;
@@ -39,7 +39,7 @@ describe("useChatSession recovery states", () => {
 		expect(harness.current?.recovery).toBeNull();
 	});
 
-	it("distinguishes reconnecting, resuming, and recovered across a drop cycle", () => {
+	it("distinguishes reconnecting, resuming, and silent success across a drop cycle", () => {
 		act(() => ready(false));
 		expect(harness.current?.recovery).toBeNull();
 
@@ -52,7 +52,7 @@ describe("useChatSession recovery states", () => {
 		act(() => ready(true));
 		expect(harness.current?.recovery?.phase).toBe("resuming");
 		act(history);
-		expect(harness.current?.recovery?.phase).toBe("recovered");
+		expect(harness.current?.recovery ?? null).toBeNull();
 	});
 
 	it("marks recovery incomplete with the reason when the resume fails mid-recovery", () => {
@@ -74,7 +74,7 @@ describe("useChatSession recovery states", () => {
 		);
 	});
 
-	it("never reports an incomplete recovery as recovered when a later ready arrives", () => {
+	it("never clears an incomplete recovery when a later ready arrives", () => {
 		act(() => harness.disconnect());
 		act(() => harness.reconnect());
 		act(() =>
@@ -94,7 +94,7 @@ describe("useChatSession recovery states", () => {
 		act(() => harness.reconnect());
 		act(() => ready(true));
 		act(history);
-		expect(harness.current?.recovery?.phase).toBe("recovered");
+		expect(harness.current?.recovery ?? null).toBeNull();
 
 		act(() => harness.disconnect());
 		expect(harness.current?.recovery?.phase).toBe("reconnecting");
@@ -157,7 +157,7 @@ describe("useChatSession recovery states", () => {
 		act(() => ready(true));
 		expect(harness.current?.recovery?.phase).toBe("resuming");
 		act(history);
-		expect(harness.current?.recovery?.phase).toBe("recovered");
+		expect(harness.current?.recovery ?? null).toBeNull();
 	});
 
 	it("marks a server-driven cycle incomplete when the automatic resume fails", () => {
@@ -200,12 +200,12 @@ describe("useChatSession recovery states", () => {
 		act(() => loss());
 		act(() => ready(true));
 		act(history);
-		expect(harness.current?.recovery?.phase).toBe("recovered");
+		expect(harness.current?.recovery ?? null).toBeNull();
 
 		act(() => loss());
 		expect(harness.current?.recovery?.phase).toBe("reconnecting");
 		act(() => ready(true));
 		act(history);
-		expect(harness.current?.recovery?.phase).toBe("recovered");
+		expect(harness.current?.recovery ?? null).toBeNull();
 	});
 });
