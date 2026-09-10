@@ -160,7 +160,10 @@ describe("ActivityShelf agents tab roster fetch", () => {
       "Full agent 3",
       "Full agent 4",
     ]);
-    expect(harness.container.querySelector(".th-activity-partial")).toBeNull();
+    // The tab strip is the count surface: exactly the label plus the exact
+    // local running/total scalar — no additional numeric or marker text.
+    expect([...tab("agents").querySelectorAll("span")].map(span => span.textContent))
+      .toEqual(["activity.subagents", "1/1"]);
   });
 
   it("stops fetching after the agents tab closes", async () => {

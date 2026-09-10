@@ -146,7 +146,7 @@ describe("complete DAG dashboard", () => {
     expect(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh").textContent).toBe("activity.dagRefresh");
   });
 
-  it("loads exactly one more catalog page of ten when the list-end sentinel becomes visible", async () => {
+  it("loads exactly one more catalog page of ten from the settled list end, never from placeholders", async () => {
     const firstTen = Array.from({ length: 10 }, (_unused, index) => `first-${index}`);
     const secondTen = Array.from({ length: 10 }, (_unused, index) => `second-${index}`);
     render(); open();
@@ -154,18 +154,76 @@ describe("complete DAG dashboard", () => {
     expect(harness.container.querySelector(".th-activity-dag-complete > .th-activity-dag-freshness[role='status']")?.textContent).toBe("activity.dagCatalogLoading");
     await reply(request(firstPage), catalog(firstTen, "cursor-2"));
     expect(rowIds()).toEqual(firstTen);
-    const sentinel = requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "list-end sentinel");
     expect(requests.some(item => item.url === pageAfter("cursor-2"))).toBe(false);
-    revealSentinel(sentinel);
-    revealSentinel(sentinel);
+    // While the first page's originals are still compact loading
+    // placeholders, the list end is not settled: their provisional height
+    // keeps the sentinel in view, so an intersection report over them is a
+    // layout artifact — it must not consume the next catalog page.
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
+    expect(requests.some(item => item.url === pageAfter("cursor-2"))).toBe(false);
+    for (const id of firstTen) await reply(request(`${base}/${id}`), full(id));
+    // Settled list end: one reveal consumes exactly one more page of ten.
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
     await reply(request(pageAfter("cursor-2")), catalog(secondTen, "cursor-3"));
     expect(rowIds()).toEqual([...firstTen, ...secondTen]);
     expect(requests.filter(item => item.url === pageAfter("cursor-2"))).toHaveLength(1);
+    // The appended rows are placeholders again — still not a settled end.
     revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel after append"));
+    expect(requests.some(item => item.url === pageAfter("cursor-3"))).toBe(false);
+    for (const id of secondTen) await reply(request(`${base}/${id}`), full(id));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel after append"));
     await reply(request(pageAfter("cursor-3")), catalog([], null));
     expect(harness.container.querySelector("[data-activity-dag-sentinel]")).toBeNull();
     expect(rowIds()).toEqual([...firstTen, ...secondTen]);
+    expect(requests.filter(item => item.url === pageAfter("cursor-2"))).toHaveLength(1);
     expect(requests.filter(item => item.url === pageAfter("cursor-3"))).toHaveLength(1);
+  });
+
+  it("holds the opening fetch budget at the newest ten while all originals are slow", async () => {
+    const slow = Array.from({ length: 10 }, (_unused, index) => `slow-${index}`);
+    const originalReads = (): number => requests.filter(item => item.url.startsWith(`${base}/slow-`)).length;
+    render(); open();
+    await reply(request(firstPage), catalog(slow, "cursor-2"));
+    // Only the newest page's ten originals are authorized reads, and the
+    // placeholder sentinel report above admits no eleventh.
+    expect(originalReads()).toBe(10);
+    expect(rowIds()).toEqual(slow);
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "placeholder sentinel"));
+    expect(originalReads()).toBe(10);
+    expect(requests.some(item => item.url === pageAfter("cursor-2"))).toBe(false);
+  });
+
+  it("fetches only the newest page again after close and reopen of a multi-page list", async () => {
+    const newest = Array.from({ length: 10 }, (_unused, index) => `newest-${index}`);
+    const deeper = Array.from({ length: 10 }, (_unused, index) => `deeper-${index}`);
+    const reads = (prefix: string): number => requests.filter(item => item.url.startsWith(`${base}/${prefix}-`)).length;
+    render(); open();
+    await reply(request(firstPage), catalog(newest, "cursor-2"));
+    for (const id of newest) await reply(request(`${base}/${id}`), full(id));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "settled sentinel"));
+    await reply(request(pageAfter("cursor-2")), catalog(deeper, null));
+    for (const id of deeper) await reply(request(`${base}/${id}`), full(id));
+    expect(rowIds()).toEqual([...newest, ...deeper]);
+    expect(reads("newest")).toBe(10);
+    expect(reads("deeper")).toBe(10);
+    // Close and reopen the tab. Until this opening's own catalog page
+    // arrives, every retained row — the deeper page included — is fenced
+    // from reading: no original is re-read at all.
+    open(); open();
+    expect(requests.filter(item => item.url === firstPage)).toHaveLength(2);
+    expect(reads("newest")).toBe(10);
+    expect(reads("deeper")).toBe(10);
+    await reply(request(firstPage, 1), catalog(newest, "cursor-2"));
+    // Only this opening's newest page re-reads; the deeper rows stay
+    // unfetched until a real scroll asks for their catalog page again.
+    for (const id of newest) await reply(request(`${base}/${id}`, 1), full(id));
+    expect(reads("newest")).toBe(20);
+    expect(reads("deeper")).toBe(10);
+    expect(rowIds()).toEqual(newest);
+    expect(requests.filter(item => item.url === pageAfter("cursor-2"))).toHaveLength(1);
   });
 
   it("surfaces catalog retrieval errors explicitly and recovers through the refresh button", async () => {
@@ -375,6 +433,7 @@ describe("complete DAG dashboard", () => {
     await reply(request(`${base}/r1`), completed);
     expect(status()).toBe("complete");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
     await reply(request(`${base}/r1`, 1), uniform("running", revision, "b".repeat(64)));
     expect(status()).toBe("stale");
     expect(harness.container.querySelector("[data-content-token]")?.getAttribute("data-content-token")).toBe(completed.content_token);
@@ -425,6 +484,7 @@ describe("complete DAG dashboard", () => {
         ...(kind === "prompt" ? { prompt: "changed full description" } : {}),
       }));
       click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+      await reply(request(firstPage, 1), catalog(["a", "b"]));
       await replyF2(request(`${base}/a`, 1), { ...doc, run: { ...doc.run,
         updated_at: kind === "missing" ? undefined : kind === "invalid" ? "unknown" : doc.run.updated_at,
       } }, "a");
@@ -442,6 +502,7 @@ describe("complete DAG dashboard", () => {
   it("accepts F2 equal facts with a different lower token after a refresh", async () => {
     await roundTripF2();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"), "a");
     expect(status("a")).toBe("complete");
     expect(rowOf("a").getAttribute("data-content-token")).toBe("a");
@@ -451,12 +512,14 @@ describe("complete DAG dashboard", () => {
   it("accepts F2 strictly newer retry and then fences that revision across another refresh", async () => {
     await roundTripF2();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog(["a", "b"]));
     const retry = documentF2("running", newer, "a");
     retry.run.nodes = retry.run.nodes.map(node => ({ ...node, attempt: 2 }));
     await replyF2(request(`${base}/a`, 1), retry, "a");
     expect(status("a")).toBe("complete");
     expect(rowOf("a").querySelector("[data-activity-dag-attempt]")?.textContent).toBe("2");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 2), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 2), documentF2("completed", newer, "z"), "a");
     expect(status("a")).toBe("stale");
     // The fenced equal-revision replacement keeps the accepted retry facts.
@@ -467,9 +530,11 @@ describe("complete DAG dashboard", () => {
   it("does not let an F2 rejection poison the accepted facts on explicit retry", async () => {
     await roundTripF2();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "a"), "a");
     expect(status("a")).toBe("stale");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "retry"));
+    await reply(request(firstPage, 2), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"), "a");
     expect(status("a")).toBe("complete");
   });
@@ -478,6 +543,7 @@ describe("complete DAG dashboard", () => {
     await roundTripF2();
     if (kind === "fold") { open(); open(); }
     else { render(activityState(), false); render(activityState(), true); }
+    await reply(request(firstPage, kind === "fold" ? 1 : 2), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "b"), "a");
     expect(status("a")).toBe("stale");
     expect(rowOf("a").querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
@@ -486,10 +552,12 @@ describe("complete DAG dashboard", () => {
   it("aborts in-flight per-run reads when the tab closes so late responses cannot poison authority", async () => {
     await roundTripF2();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog(["a", "b"]));
     const cancelled = request(`${base}/a`, 1);
     open(); open();
     expect(cancelled.signal?.aborted).toBe(true);
     await reply(cancelled, documentF2("running", newer, "cancelled"));
+    await reply(request(firstPage, 2), catalog(["a", "b"]));
     await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"), "a");
     expect(status("a")).toBe("complete");
   });
@@ -497,6 +565,7 @@ describe("complete DAG dashboard", () => {
   it.each(["chat", "workspace"])("resets F2 equality authority for a new %s binding", async kind => {
     await roundTripF2();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog(["a", "b"]));
     const cancelled = request(`${base}/a`, 1);
     const source = { wsId: kind === "workspace" ? "other" : "ws", chatId: kind === "chat" ? "other" : "chat", connected: true };
     act(() => harness.root.render(<I18nContext.Provider value={i18n}><ActivityShelf activities={activityState()} dagSource={source} /></I18nContext.Provider>));
@@ -538,6 +607,7 @@ describe("complete DAG dashboard", () => {
       nodes: previous.run.nodes.map(node => ({ ...node, prompt: "conflicting full prompt" })),
     } } : full("r1", revision, 4);
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
     await reply(request(`${base}/r1`, 1), changed);
     expect(status()).toBe("stale"); expect(nodes()).toEqual(previous.run.nodes.map(node => node.id));
     expect(harness.container.querySelector("[data-activity-dag-prompt]")?.textContent).toBe(previous.run.nodes[0]?.prompt);
@@ -547,6 +617,7 @@ describe("complete DAG dashboard", () => {
     render(activityState()); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), uniform("completed", revision, "z"));
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
     await reply(request(`${base}/r1`, 1), uniform("completed", revision, "a"));
     expect(status()).toBe("complete");
     expect(harness.container.querySelector("[data-content-token]")?.getAttribute("data-content-token")).toBe("a");
@@ -557,6 +628,7 @@ describe("complete DAG dashboard", () => {
     render(projected(completed)); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), completed);
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
     const retry = uniform("running", newer, "a");
     retry.run.nodes = retry.run.nodes.map(node => ({ ...node, attempt: 2 }));
     await reply(request(`${base}/r1`, 1), retry);
@@ -568,6 +640,7 @@ describe("complete DAG dashboard", () => {
   it.each(["missing", "invalid"])("rejects %s full revisions after a known revision", async kind => {
     await load();
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
     const doc = full();
     await reply(request(`${base}/r1`, 1), { ...doc, run: { ...doc.run, updated_at: kind === "missing" ? undefined : "unknown" } });
     expect(status()).toBe("stale"); expect(nodes()).toHaveLength(3);
@@ -681,6 +754,7 @@ describe("complete DAG dashboard", () => {
     await load(); render(partial(), false);
     expect(status()).toBe("stale");
     render(partial(), true);
+    await reply(request(firstPage, 2), catalog());
     await reply(request(`${base}/r1`, 1), full("r1", newer, 4));
     expect(nodes()).toHaveLength(4);
     expect(status()).toBe("complete");
@@ -719,6 +793,7 @@ describe("complete DAG dashboard", () => {
     await reply(request(`${base}/r1`), { error: "invalid checkpoint" }, 422);
     expect(nodes()).toEqual([]); expect(status()).toBe("error");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "retry"));
+    await reply(request(firstPage, 1), catalog());
     await reply(request(`${base}/r1`, 1), full());
     expect(status()).toBe("complete");
   });

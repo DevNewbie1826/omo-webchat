@@ -163,6 +163,11 @@ export interface CompleteDagRow {
   readonly status: CompleteDagStatus;
   readonly error: boolean;
   readonly contentToken: string;
+  /** True only for rows authorized by the current opening's own catalog
+   *  pages: rows retained across an opening or restart stay rendered but
+   *  are fenced from reading until that opening's first page re-admits
+   *  them. */
+  readonly authorized: boolean;
 }
 
 export interface CompleteDagData {
@@ -187,17 +192,22 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
   const base = source === undefined ? "" : `/api/workspaces/${encodeURIComponent(source.wsId)}/chats/${encodeURIComponent(source.chatId)}/dag-runs`;
   const connected = source?.connected === true;
   const [binding, setBinding] = useState(base);
-  const [catalog, setCatalog] = useState<{ entries: readonly DagCatalogEntry[]; nextCursor: string | null }>({ entries: [], nextCursor: null });
+  const [catalog, setCatalog] = useState<{ entries: readonly DagCatalogEntry[]; nextCursor: string | null; opening: number }>({ entries: [], nextCursor: null, opening: 0 });
   const [catalogStatus, setCatalogStatus] = useState<DagCatalogStatus>("loading");
   const [loadingMore, setLoadingMore] = useState(false);
   const [docs, setDocs] = useState<ReadonlyMap<string, CompleteDagRunState>>(new Map());
   const [retryEpoch, setRetryEpoch] = useState(0);
+  /** The catalog walk epoch: every fresh opening or restart bumps it, and
+   *  catalog entries carry the epoch of the walk that loaded them. */
+  const [opening, setOpening] = useState(0);
   const known = useRef(new Map<string, number>());
   const accepted = useRef(new Map<string, { revision: number | undefined; facts: string }>());
   const catalogRef = useRef(catalog);
   catalogRef.current = catalog;
   const controllerRef = useRef<AbortController | null>(null);
   const pageInFlight = useRef(false);
+  const restartRef = useRef("");
+  const openingRef = useRef(0);
   const update = useCallback((runId: string, next: (previous: CompleteDagRunState) => CompleteDagRunState): void => {
     setDocs(previous => {
       const prior = previous.get(runId) ?? { document: null, fingerprint: "", status: "loading", error: false };
@@ -209,13 +219,12 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
     });
   }, []);
   const facts = useMemo<CompleteDagFacts>(() => ({ known: known.current, accepted: accepted.current, update }), [update]);
+  const membership = JSON.stringify([...activities.dags.keys()].sort());
   // React restarts this render before committing children, so a new chat can
   // never paint the previous binding's graph. Panel folding does not reset it.
   if (binding !== base) {
     setBinding(base);
-    setCatalog({ entries: [], nextCursor: null });
-    setCatalogStatus("loading");
-    setLoadingMore(false);
+    setCatalog({ entries: [], nextCursor: null, opening: 0 });
     setDocs(new Map());
     pageInFlight.current = false;
     // Clearing keeps the shared fact objects stable across bindings while
@@ -223,14 +232,28 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
     known.current.clear();
     accepted.current.clear();
   }
+  // A fresh opening or restart (reconnect, retained-snapshot membership
+  // change, explicit retry, tab reopen) begins a new newest-ten catalog
+  // walk. Resetting during render — like the binding reset above — means
+  // the restart commit never admits row reads: rows retained from an
+  // earlier walk render fenced until this walk's own catalog pages stamp
+  // them again, so an opening reads exactly its newest page.
+  const restart = JSON.stringify([base, active, connected, membership, retryEpoch]);
+  if (restartRef.current !== restart) {
+    restartRef.current = restart;
+    openingRef.current += 1;
+    setOpening(openingRef.current);
+    setCatalogStatus("loading");
+    setLoadingMore(false);
+    pageInFlight.current = false;
+  }
   for (const [id, revision] of activities.dagFreshness ?? []) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
   for (const [id, run] of activities.dags) {
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined) known.current.set(id, Math.max(known.current.get(id) ?? -Infinity, revision));
   }
-  const membership = JSON.stringify([...activities.dags.keys()].sort());
 
-  const loadPage = useCallback(async (controller: AbortController, cursor: string | null, replace: boolean): Promise<void> => {
+  const loadPage = useCallback(async (controller: AbortController, cursor: string | null, replace: boolean, walk: number): Promise<void> => {
     try {
       const query = `limit=${DAG_PAGE_SIZE}${cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
       const value = await apiJson<unknown>(`${base}?${query}`, { signal: controller.signal });
@@ -238,13 +261,13 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
       const page = parseDagCatalog(value);
       if (page === null) throw new CompleteDagError("invalid");
       if (replace) {
-        setCatalog({ entries: page.runs, nextCursor: page.nextCursor });
+        setCatalog({ entries: page.runs, nextCursor: page.nextCursor, opening: walk });
         setCatalogStatus(page.runs.length === 0 ? "empty" : "ready");
       } else {
         // A run repeating across pages breaks the cursor walk's uniqueness.
         const seen = new Set(catalogRef.current.entries.map(entry => entry.runId));
         if (page.runs.some(entry => seen.has(entry.runId))) throw new CompleteDagError("invalid");
-        setCatalog(previous => ({ entries: [...previous.entries, ...page.runs], nextCursor: page.nextCursor }));
+        setCatalog(previous => ({ entries: [...previous.entries, ...page.runs], nextCursor: page.nextCursor, opening: walk }));
         setCatalogStatus("ready");
       }
     } catch (error: unknown) {
@@ -267,20 +290,21 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
     const controller = new AbortController();
     controllerRef.current = controller;
     pageInFlight.current = true;
-    setLoadingMore(false);
-    setCatalogStatus("loading");
-    void loadPage(controller, null, true);
+    void loadPage(controller, null, true, openingRef.current);
     return () => { controller.abort(); controllerRef.current = null; };
   }, [base, active, connected, membership, retryEpoch, loadPage]);
 
   const loadMore = useCallback((): void => {
     const controller = controllerRef.current;
     if (controller === null || pageInFlight.current) return;
-    const cursor = catalogRef.current.nextCursor;
-    if (cursor === null) return;
+    const { nextCursor, opening: walk } = catalogRef.current;
+    // Continuation belongs to the current opening alone: a restart between
+    // the commit and the observer disconnect must not let a retained walk's
+    // cursor consume a page.
+    if (nextCursor === null || walk !== openingRef.current) return;
     pageInFlight.current = true;
     setLoadingMore(true);
-    void loadPage(controller, cursor, false);
+    void loadPage(controller, nextCursor, false, walk);
   }, [loadPage]);
 
   useEffect(() => {
@@ -298,7 +322,7 @@ export function useCompleteDag(source: DagSource | undefined, active: boolean, a
       : stored;
     const document = state?.document ?? null;
     return { entry, run: document === null ? null : withLiveProgress(document.run, summary), status,
-      error: state?.error ?? false, contentToken: document?.contentToken ?? "" };
+      error: state?.error ?? false, contentToken: document?.contentToken ?? "", authorized: catalog.opening === opening };
   });
   return { rows, catalogStatus, hasMore: catalog.nextCursor !== null, loadingMore,
     loadMore, retry: () => setRetryEpoch(epoch => epoch + 1),

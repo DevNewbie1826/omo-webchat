@@ -89,17 +89,25 @@ export function CompleteDagSection({ data, activities, ...props }: CompleteDagSe
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const hasMore = data.hasMore;
   const rowCount = data.rows.length;
+  // Continuation arms only from the settled list end: every visible row
+  // must be an authorized full document of the current catalog walk. A
+  // loading placeholder's height is provisional, so a sentinel
+  // intersection over placeholders is a layout artifact — never a user's
+  // arrival at the end — and must not consume the next page.
+  const settled = data.catalogStatus === "ready" && rowCount > 0
+    && data.rows.every(row => row.authorized && row.run !== null);
   useEffect(() => {
     const sentinel = sentinelRef.current;
-    if (!hasMore || sentinel === null || typeof IntersectionObserver === "undefined") return;
+    if (!hasMore || !settled || sentinel === null || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) data.loadMore();
     });
     observer.observe(sentinel);
     return () => observer.disconnect();
     // Re-observing after each append lets a still-visible sentinel deliver a
-    // fresh initial entry, continuing the scroll without a pointer gesture.
-  }, [hasMore, rowCount, data.loadMore]);
+    // fresh initial entry, continuing the scroll without a pointer gesture —
+    // but only once the appended rows have settled into their real layout.
+  }, [hasMore, settled, rowCount, data.loadMore]);
   return (
     <section className="th-activity-dag-complete" data-activity-dag-catalog={data.catalogStatus}>
       <div className="th-activity-dag-toolbar">
@@ -110,7 +118,7 @@ export function CompleteDagSection({ data, activities, ...props }: CompleteDagSe
       {data.catalogStatus === "empty" && <p className="th-activity-empty">{t("activity.emptyDag")}</p>}
       {data.rows.map((row, index) => (
         <CompleteDagRunRow key={row.entry.runId} row={row} index={index}
-          base={data.runScope.base} active={data.runScope.active} connected={data.runScope.connected}
+          base={data.runScope.base} active={data.runScope.active && row.authorized} connected={data.runScope.connected}
           facts={data.runScope.facts} retryEpoch={data.runScope.retryEpoch}
           activities={activities} panelActive={props.active}
           view={runViews[row.entry.runId] ?? props.view}

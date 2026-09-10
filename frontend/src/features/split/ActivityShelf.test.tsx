@@ -54,17 +54,18 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelector(".th-activity-agent-name")?.textContent).toContain("Retained prefix task");
     expect(harness.container.querySelector(".th-activity-dag-name")?.textContent).toContain("Retained prefix DAG");
-    // Exact scalars are the only count authority: no partial marker ships
-    // anywhere in the shelf, not on a tab and not inside the DAG contents.
+    // Exact scalars are the only count authority: the DAG tab renders
+    // exactly its label plus the exact retained done/total scalar — no
+    // partial-history marker can appear on a tab or in the DAG contents.
     // The removed key is assembled, never spelled out, so repo-wide marker
     // greps stay literally empty.
     const removedKey = ["activity", "partial"].join(".");
-    expect(harness.container.querySelectorAll(".th-activity-partial")).toHaveLength(0);
-    expect(harness.container.textContent).not.toContain(removedKey);
     const dagTab = requireElement(
       harness.container.querySelector<HTMLButtonElement>('[data-activity-tab="dag"]'),
       "dag tab",
     );
+    expect([...dagTab.querySelectorAll("span")].map(span => span.textContent)).toEqual(["activity.dag", "2/3"]);
+    expect(harness.container.textContent).not.toContain(removedKey);
     expect(dagTab.querySelector(".th-activity-tab-count")?.textContent).toBe("2/3");
   });
 
@@ -73,18 +74,20 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelector(".th-activity-shelf")).not.toBeNull();
     // Zero retained rows still show the plain empty state through the DAG tab.
-    click(
-      requireElement(
-        harness.container.querySelector<HTMLButtonElement>('[role="tab"][data-activity-tab="dag"]'),
-        "dag tab",
-      ),
+    const dagTab = requireElement(
+      harness.container.querySelector<HTMLButtonElement>('[role="tab"][data-activity-tab="dag"]'),
+      "dag tab",
     );
+    click(dagTab);
     const dagPanel = requireElement(
       harness.container.querySelector<HTMLElement>('[data-activity-tabpanel="dag"]'),
       "dag tabpanel",
     );
     expect(dagPanel.querySelector(".th-activity-empty")?.textContent).toBe("activity.emptyDag");
-    expect(dagPanel.querySelector(".th-activity-partial")).toBeNull();
+    // With zero retained rows there is no count scalar either: the DAG tab
+    // renders exactly its label, nothing else.
+    expect([...dagTab.querySelectorAll("span")].map(span => span.textContent)).toEqual(["activity.dag"]);
+    expect(dagTab.querySelector(".th-activity-tab-count")).toBeNull();
     expect(harness.container.textContent).not.toContain(["activity", "partial"].join("."));
   });
 

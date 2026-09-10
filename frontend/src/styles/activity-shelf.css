@@ -225,21 +225,6 @@ button.th-activity-bar:hover {
   text-align: center;
 }
 
-/* Relocated partial-history notice: it lives inside the affected Agents or
-   DAG content (also when truncation retains zero rows), no longer in a
-   summary bar. Compact, muted, textual — same token scale as the micro
-   metadata rows. */
-.th-activity-partial {
-  margin: 0;
-  padding: 0 var(--th-space-2);
-  color: var(--th-muted);
-  font-size: var(--th-type-micro-size);
-  font-weight: var(--th-weight-emphasize);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  text-align: center;
-}
-
 /* The panel itself no longer scrolls; each tabpanel owns its scrollport. */
 .th-activity-panel {
   position: relative;
