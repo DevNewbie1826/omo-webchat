@@ -246,4 +246,34 @@ describe("complete DAG list-end sentinel layout and continuation geometry", () =
     expect(askedFor(pageAfter("cursor-2"))).toBe(1);
     expect(askedFor(pageAfter("cursor-3"))).toBe(1);
   });
+
+  it("settles the list end when one original read fails, so pagination continues past it", async () => {
+    const firstTen = Array.from({ length: 10 }, (_unused, index) => `first-${index}`);
+    const secondTen = Array.from({ length: 10 }, (_unused, index) => `second-${index}`);
+    render(); open();
+    await reply(request(firstPage), catalog(firstTen, "cursor-2"));
+    const target = sentinel();
+    const panel = requireElement(harness.container.querySelector('[data-activity-tabpanel="dag"]'), "DAG tabpanel");
+    placeAt(panel, PANEL_CLIP);
+    const height = sentinelHeight(target);
+    // One original read fails terminally (HTTP 500, no prior document): its
+    // row is an explicit error card, not a placeholder.
+    for (const id of firstTen) {
+      if (id === "first-4") await reply(request(`${base}/${id}`), { error: "boom" }, 500);
+      else await reply(request(`${base}/${id}`), full(id));
+    }
+    // The failed row settled into its terminal error card: the sentinel is
+    // armed and a flush scroll consumes exactly the next page of ten.
+    placeAt(target, { top: PANEL_CLIP.bottom - height, bottom: PANEL_CLIP.bottom });
+    deliver();
+    expect(askedFor(pageAfter("cursor-2"))).toBe(1);
+    await reply(request(pageAfter("cursor-2")), catalog(secondTen, "cursor-3"));
+    expect(rowIds()).toEqual([...firstTen, ...secondTen]);
+    // In-flight placeholders of the appended page still block continuation.
+    deliver();
+    expect(askedFor(pageAfter("cursor-3"))).toBe(0);
+    for (const id of secondTen) await reply(request(`${base}/${id}`), full(id));
+    deliver();
+    expect(askedFor(pageAfter("cursor-3"))).toBe(1);
+  });
 });

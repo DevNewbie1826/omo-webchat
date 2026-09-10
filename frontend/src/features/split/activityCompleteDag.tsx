@@ -107,12 +107,14 @@ export function CompleteDagSection({ data, activities, ...props }: CompleteDagSe
   const hasMore = data.hasMore;
   const rowCount = data.rows.length;
   // Continuation arms only from the settled list end: every visible row
-  // must be an authorized full document of the current catalog walk. A
-  // loading placeholder's height is provisional, so a sentinel
-  // intersection over placeholders is a layout artifact — never a user's
-  // arrival at the end — and must not consume the next page.
+  // must be an authorized, terminal row of the current catalog walk — a
+  // full document OR a terminal error/stale card whose original read has
+  // concluded. A loading placeholder's height is provisional, so a
+  // sentinel intersection over placeholders is a layout artifact — never
+  // a user's arrival at the end — and must not consume the next page;
+  // but one failed original must not bar older runs from loading either.
   const settled = data.catalogStatus === "ready" && rowCount > 0
-    && data.rows.every(row => row.authorized && row.run !== null);
+    && data.rows.every(row => row.authorized && (row.run !== null || row.error));
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!hasMore || !settled || sentinel === null || typeof IntersectionObserver === "undefined") return;
