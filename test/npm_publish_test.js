@@ -305,3 +305,23 @@ test('stable release uses actual npm publish --tag latest', options, async (t) =
   ok(await publish(ctx, 'latest'));
   for (const doc of registry.packages.values()) assert.deepEqual(doc['dist-tags'], { latest: '1.2.3' });
 });
+
+test('publication confirmation polls through delayed registry visibility', options, async (t) => {
+  const ctx = await setup(t, { hidePublishedGets: 2 });
+  const { ok } = await helpers;
+  ctx.env.NPM_CONFIRM_POLL_MS = '25';
+  ok(await publish(ctx));
+  assert.deepEqual(ctx.events.map((e) => e.name), ctx.m.packages.map((p) => p.name));
+  const puts = ctx.registry.requests.flatMap((r, index) => (r.method === 'PUT' ? [{ ...r, index }] : []));
+  assert.equal(puts.length, ctx.m.packages.length);
+  for (let p = 0; p < puts.length; p++) {
+    const from = puts[p].index;
+    const to = p + 1 < puts.length ? puts[p + 1].index : ctx.registry.requests.length;
+    // Two concealed confirmation reads plus the revealing read per package.
+    const reads = ctx.registry.requests.slice(from + 1, to)
+      .filter((r) => r.method === 'GET' && r.path === `/${ctx.m.packages[p].name}`).length;
+    assert.equal(reads, 3, `confirmation reads for ${ctx.m.packages[p].name}`);
+  }
+  const archiveReads = ctx.registry.requests.filter((r) => r.method === 'GET' && r.path.includes('/-/')).length;
+  assert.equal(archiveReads, ctx.m.packages.length, 'exactly one archive validation per package');
+});

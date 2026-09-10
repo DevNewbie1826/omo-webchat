@@ -217,8 +217,18 @@ async function publish(manifestFile, tag, registry, provenance) {
       const args = ['publish', path.join(staging, path.basename(entry.file)), '--access', 'public', '--tag', tag, '--registry', endpoint.href,
         '--ignore-scripts', '--fetch-retries=0', '--fetch-timeout=30000', provenance ? '--provenance' : '--provenance=false'];
       await npm(args, { cwd: staging });
-      const document = await remote(endpoint, entry.name);
-      requireValue(document !== undefined && await matching(document, entry, tag), `Publication was not confirmed: ${entry.name}`);
+      // The registry is eventually consistent: a freshly published version
+      // can lag in the packument, so poll briefly instead of failing on the
+      // first read. NPM_CONFIRM_POLL_MS is a test-only cadence knob.
+      const pollMs = Number(process.env.NPM_CONFIRM_POLL_MS ?? '10000');
+      let document = await remote(endpoint, entry.name);
+      let confirmed = document !== undefined && await matching(document, entry, tag);
+      for (let attempt = 0; attempt < 12 && !confirmed; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        document = await remote(endpoint, entry.name);
+        confirmed = document !== undefined && await matching(document, entry, tag);
+      }
+      requireValue(confirmed, `Publication was not confirmed: ${entry.name}`);
       console.log(`published: ${entry.name}@${entry.version} (${tag})`);
     }
   } finally { await fs.rm(staging, { recursive: true, force: true }); }
