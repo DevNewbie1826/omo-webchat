@@ -44,8 +44,8 @@ const (
 )
 
 type qaTask struct {
-	id, name, status string
-	rosterFile       string
+	id, name, status, updated string
+	rosterFile                string
 }
 
 // qaState owns the named task membership, the emission generation that
@@ -62,15 +62,19 @@ type qaState struct {
 
 func newQAState() *qaState {
 	state := &qaState{byID: make(map[string]int, totalRows)}
+	// Observed truncated live/REST/WS lists kept a 512-row suffix of equal-
+	// timestamp membership and dropped every running-* id, including the
+	// completion victim. Put named running rows in that suffix so the victim
+	// stays observable on those surfaces after it completes.
+	for i := 0; i < digestRows; i++ {
+		state.tasks = append(state.tasks, qaTask{
+			id: fmt.Sprintf("digest-%03d", i), name: fmt.Sprintf("Digest task %03d", i+1), status: "completed",
+		})
+	}
 	for i := 0; i < runningRows; i++ {
 		state.tasks = append(state.tasks, qaTask{
 			id: fmt.Sprintf("running-%03d", i), name: fmt.Sprintf("Running task %03d", i+1),
 			status: "running", rosterFile: fmt.Sprintf("task-%03d.json", i),
-		})
-	}
-	for i := 0; i < digestRows; i++ {
-		state.tasks = append(state.tasks, qaTask{
-			id: fmt.Sprintf("digest-%03d", i), name: fmt.Sprintf("Digest task %03d", i+1), status: "completed",
 		})
 	}
 	for index, task := range state.tasks {
@@ -103,9 +107,12 @@ func (s *qaState) stampLocked() string {
 }
 
 func (s *qaState) rowsLocked() []any {
-	stamp := s.stampLocked()
 	rows := make([]any, 0, len(s.tasks))
 	for _, task := range s.tasks {
+		stamp := task.updated
+		if stamp == "" {
+			stamp = s.stampLocked()
+		}
 		rows = append(rows, map[string]any{"task_id": task.id, "name": task.name, "status": task.status, "updated_at": stamp})
 	}
 	return rows
@@ -149,9 +156,13 @@ func seedStore(root string) (*cursorstore.Store, error) {
 }
 
 func writeRosterRow(dir, parent string, task qaTask, updated string) error {
+	stamp := task.updated
+	if stamp == "" {
+		stamp = updated
+	}
 	row := map[string]any{
 		"task_id": task.id, "parent_session_id": parent, "status": task.status, "name": task.name,
-		"agent_type": "qa-worker", "created_at": "2026-09-09T10:00:00Z", "updated_at": updated,
+		"agent_type": "qa-worker", "created_at": "2026-09-09T10:00:00Z", "updated_at": stamp,
 	}
 	raw, err := json.Marshal(row)
 	if err != nil {
@@ -199,6 +210,10 @@ func (s *qaState) emit(store *cursorstore.Store, daemon *omorpctest.Daemon) erro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	stamp := s.stampLocked()
+	for i := range s.tasks {
+		s.tasks[i].updated = stamp
+	}
 	daemon.EmitSession(chat.SessionFile, map[string]any{
 		"type": "extension_event", "name": "omo.task.updated",
 		"data": map[string]any{"parent_session_id": chat.DurableSessionID, "truncated_tasks": false, "tasks": s.rowsLocked()},
@@ -238,11 +253,15 @@ func (s *qaState) complete(store *cursorstore.Store, daemon *omorpctest.Daemon, 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, id := range ids {
-		s.tasks[s.byID[id]].status = "completed"
-	}
 	stamp := fmt.Sprintf("2026-09-10T10:%02d:00Z", s.emissions+1)
 	s.emissions++
+	// Stamp only the flipped rows newer than the rest of the membership so
+	// the named victim stays inside the observed truncated live window.
+	for _, id := range ids {
+		index := s.byID[id]
+		s.tasks[index].status = "completed"
+		s.tasks[index].updated = stamp
+	}
 	// Mirror the flipped membership onto the on-disk task store under the
 	// same lock, so the roster and the replay below never disagree.
 	if err := rewriteRosterUnlocked(s, workspace.Path, chat.DurableSessionID, stamp); err != nil {

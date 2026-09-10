@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 
 const repo = resolve(import.meta.dirname, '../..');
-const expectedHead = process.env.QA_EXPECTED_HEAD; // unset: bind evidence to the current commit and record the tree state
+const expectedHead = process.env.QA_EXPECTED_HEAD; // unset: require a clean tree matching the pushed PR head
 const driverPath = process.env.QA_PLAYWRIGHT ?? join(homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright-core/index.mjs');
 const chromePath = process.env.QA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const runFile = 'qa-run.json';
@@ -18,7 +18,28 @@ const dagPrefix = '/api/workspaces/qa-counts/chats/qa-counts-chat/dag-runs';
 const agentsTabCount = '[data-activity-tab="agents"] .th-activity-tab-count';
 const workspaceBadge = '.th-tree-running--workspace';
 const runningIDs = Array.from({ length: 50 }, (_, index) => `running-${String(index).padStart(3, '0')}`);
+const victimID = 'running-000';
+const victimName = 'Running task 001';
+const victimRosterName = '(qa-worker) - Running task 001';
 const command = promisify(execFile);
+const pidExitScript = [
+  'import errno, os, select, sys',
+  'pid = int(sys.argv[1])',
+  'timeout = float(sys.argv[2])',
+  'try:',
+  '    os.kill(pid, 0)',
+  'except ProcessLookupError:',
+  '    raise SystemExit(0)',
+  'except PermissionError:',
+  '    pass',
+  'kq = select.kqueue()',
+  'try:',
+  '    kq.control([select.kevent(pid, filter=select.KQ_FILTER_PROC, flags=select.KQ_EV_ADD, fflags=select.KQ_NOTE_EXIT)], 0)',
+  'except OSError as error:',
+  '    raise SystemExit(0 if error.errno == errno.ESRCH else 1)',
+  'events = kq.control(None, 1, timeout)',
+  'raise SystemExit(0 if events else 1)',
+].join('\n');
 
 function deadline(promise, label, ms = 20_000) {
   let timer;
@@ -52,19 +73,50 @@ function eventLog() {
   return { rows, add, wait };
 }
 
-async function untilText(page, selector, expected, ms = 20_000) {
-  await page.waitForFunction(
-    ({ selector, expected }) => {
-      const node = document.querySelector(selector);
-      return node !== null && (node.textContent ?? '').trim() === expected;
-    },
-    { selector, expected },
-    { polling: 100, timeout: ms },
-  );
+// Arm a MutationObserver DOM-state signal and return its id without blocking
+// the triggering action. The observer runs check() immediately so an already-
+// true persistent state still resolves. Register before the action; await
+// doneDOM after. Navigation replaces the document, so re-arm on the new one.
+async function armDOM(page, source, args = null, ms = 20_000) {
+  return page.evaluate(({ source, args, ms }) => {
+    const predicate = (0, eval)(`(${source})`);
+    window.__qaDom ??= new Map();
+    const id = (window.__qaDomNext = (window.__qaDomNext ?? 0) + 1);
+    const promise = new Promise((resolveWait, reject) => {
+      let timer;
+      const finish = error => {
+        clearTimeout(timer); observer.disconnect();
+        error ? reject(error) : resolveWait(true);
+      };
+      const check = () => { try { if (predicate(args)) finish(); } catch (error) { finish(error); } };
+      const observer = new MutationObserver(check);
+      observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      timer = setTimeout(() => finish(new Error(`DOM signal deadline: ${source}`)), ms);
+      check();
+    });
+    promise.catch(() => {});
+    window.__qaDom.set(id, promise);
+    return id;
+  }, { source: String(source), args, ms });
 }
+async function doneDOM(page, id) {
+  await page.evaluate(async id => {
+    try { await window.__qaDom.get(id); } finally { window.__qaDom.delete(id); }
+  }, id);
+}
+const textIs = ({ selector, expected }) => {
+  const node = document.querySelector(selector);
+  return node !== null && (node.textContent ?? '').trim() === expected;
+};
+const absent = ({ selector }) => document.querySelector(selector) === null;
+const victimCompletedRow = ({ name }) => [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent')].some(row => {
+  const title = row.querySelector('.th-activity-agent-name')?.textContent ?? '';
+  const chip = (row.querySelector('.th-activity-chip')?.textContent ?? '').trim();
+  return title.includes(name) && chip === 'completed';
+});
 
-async function untilAbsent(page, selector, ms = 20_000) {
-  await page.waitForFunction(selector => document.querySelector(selector) === null, selector, { polling: 100, timeout: ms });
+function namedTask(tasks, id) {
+  return (Array.isArray(tasks) ? tasks : []).find(row => row?.task_id === id);
 }
 
 async function portReleased(port) {
@@ -80,8 +132,18 @@ async function exists(path) {
   try { await access(path); return true; } catch { return false; }
 }
 
+async function waitPidExit(pid, ms = 5_000) {
+  try {
+    await command('python3', ['-c', pidExitScript, String(pid), String(ms / 1000)]);
+    return true;
+  } catch {
+    try { process.kill(pid, 0); return false; } catch { return true; }
+  }
+}
+
 // Sweep any browser process still holding the QA's isolated temp profile
 // (matched by its unique mkdtemp marker) and confirm reaping via kill -0.
+// Process-exit waits are kqueue NOTE_EXIT signals with a bounded deadline.
 async function sweepChromeProcesses(marker) {
   let pids = [];
   try {
@@ -91,12 +153,13 @@ async function sweepChromeProcesses(marker) {
     if (error.code !== 1) throw error; // pgrep exits 1 when nothing matches
   }
   for (const pid of pids) { try { process.kill(pid, 'SIGTERM'); } catch {} }
-  for (let attempt = 0; attempt < 25 && pids.length > 0; attempt++) {
-    pids = pids.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
-    if (pids.length === 0) break;
-    await new Promise(resolve => setTimeout(resolve, 100));
+  const leftover = [];
+  for (const pid of pids) {
+    if (await waitPidExit(pid, 5_000)) continue;
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+    if (!(await waitPidExit(pid, 3_000))) leftover.push(pid);
   }
-  return { swept: pids.length === 0, leftover: pids };
+  return { swept: leftover.length === 0, leftover };
 }
 
 async function run(evidenceDir) {
@@ -106,24 +169,47 @@ async function run(evidenceDir) {
     tree: null, fencing: null, startedAt: new Date().toISOString(), items: [], artifacts: {}, cleanup: {}, errors: [],
   };
   const item = (id, name, passed, evidence, details = {}) => report.items.push({ id, name, status: passed ? 'PASS' : 'FAIL', evidence, ...details });
-  let fixtureRoot, profile, child, childExit, url, context, page, failure, jar;
+  let fixtureRoot, profile, child, childExit, url, context, page, failure, jar, refused;
   let stdout = '', stderr = '';
   const network = eventLog(), wire = eventLog();
   const taskGETs = () => network.rows.filter(row => row.event === 'request' && row.path === taskPath).length;
   const dagGETs = () => network.rows.filter(row => row.event === 'request' && row.path.startsWith(dagPrefix)).length;
   try {
     const head = (await command('git', ['rev-parse', 'HEAD'], { cwd: repo })).stdout.trim();
-    const treeStatus = (await command('git', ['status', '--porcelain'], { cwd: repo })).stdout;
-    if (expectedHead !== undefined) assert.equal(head, expectedHead);
+    const treeStatus = (await command('git', ['status', '--short'], { cwd: repo })).stdout;
+    const dirty = treeStatus.split('\n').filter(Boolean);
+    let prHead = null;
+    try {
+      const pr = await command('gh', ['pr', 'view', '--json', 'headRefOid'], { cwd: repo });
+      prHead = JSON.parse(pr.stdout).headRefOid;
+    } catch (error) {
+      refused = true;
+      report.head = head;
+      report.tree = { head, prHead: null, dirty, clean: dirty.length === 0 };
+      report.status = 'FAIL';
+      report.errors.push({ message: `failed to fetch pushed PR head via gh: ${error.message}` });
+      failure = error;
+      return report;
+    }
     report.head = head;
-    // r4 runs against the combined G1/G2/G3 fix lanes, which are complete in
-    // this worktree but uncommitted by DAG order; the recorded dirty-file list
-    // plus the head binds this evidence to exactly the code under test.
-    report.tree = {
-      head,
-      dirty: treeStatus.split('\n').filter(Boolean),
-      note: 'fix lanes land uncommitted by DAG order; evidence binds to head plus this recorded tree state',
-    };
+    report.tree = { head, prHead, dirty, clean: dirty.length === 0 };
+    if (expectedHead !== undefined && head !== expectedHead) {
+      refused = true;
+      report.status = 'FAIL';
+      report.errors.push({ message: `HEAD ${head} differs from QA_EXPECTED_HEAD ${expectedHead}` });
+      failure = new Error(`QA refused: HEAD ${head} differs from QA_EXPECTED_HEAD ${expectedHead}`);
+      return report;
+    }
+    if (dirty.length > 0 || head !== prHead) {
+      refused = true;
+      report.status = 'FAIL';
+      const reasons = [];
+      if (dirty.length > 0) reasons.push(`git status --short is non-empty (${dirty.length} entries)`);
+      if (head !== prHead) reasons.push(`HEAD ${head} differs from pushed PR head ${prHead}`);
+      report.errors.push({ message: `QA refused: ${reasons.join('; ')}`, dirty, head, prHead });
+      failure = new Error(`QA refused: ${reasons.join('; ')}`);
+      return report;
+    }
     fixtureRoot = await mkdtemp(join(tmpdir(), 'exact-counts-fixture-'));
     profile = await mkdtemp(join(tmpdir(), 'exact-counts-chrome-'));
     const binary = join(fixtureRoot, 'fixture');
@@ -141,6 +227,7 @@ async function run(evidenceDir) {
 
     const { chromium } = await import(pathToFileURL(driverPath).href);
     context = await chromium.launchPersistentContext(profile, { executablePath: chromePath, headless: true, viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce', timeout: 30_000 });
+    await context.addInitScript(() => { localStorage.setItem('th-lang', 'en'); });
     context.setDefaultTimeout(20_000); page = context.pages()[0];
     page.on('request', request => {
       const parsed = new URL(request.url());
@@ -148,7 +235,14 @@ async function run(evidenceDir) {
     });
     page.on('response', response => {
       const parsed = new URL(response.url());
-      if (parsed.origin === url) network.add({ event: 'response', method: response.request().method(), path: parsed.pathname + parsed.search, status: response.status(), at: new Date().toISOString() });
+      if (parsed.origin !== url) return;
+      const path = parsed.pathname + parsed.search;
+      network.add({ event: 'response', method: response.request().method(), path, status: response.status(), at: new Date().toISOString() });
+      if (path === taskPath && response.status() === 200) {
+        response.json().then(body => {
+          network.add({ event: 'roster', path, status: 200, body, at: new Date().toISOString() });
+        }).catch(() => {});
+      }
     });
     page.on('websocket', socket => {
       socket.on('framereceived', event => {
@@ -168,9 +262,10 @@ async function run(evidenceDir) {
     // Nothing has been emitted yet: the closed shelf must not pin initial zeros.
     await page.locator('.th-chat-input-inner').waitFor({ state: 'visible' });
     assert.equal(await page.locator(agentsTabCount).count(), 0);
-    // Both authority waits are registered BEFORE the emit action.
+    // Authority, activity, and closed-tab count waits are registered BEFORE emit.
     const activityFrame = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'sessions.activity' && row.frame.taskDigest?.running_count === 50, 'exact activity frame');
     const authorityFrame = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'extensionEvent' && row.frame?.name === 'omo.task.updated' && row.frame?.data?.agent_running_count !== undefined, 'attached count authority frame');
+    const closedCount50 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '50/600' });
     const emitted = await context.request.post(url + '/__qa/emit');
     assert.equal(emitted.status(), 200, await emitted.text());
     const wsReceipt = await activityFrame;
@@ -186,7 +281,8 @@ async function run(evidenceDir) {
 
     // Count-only authority reaches the attached pane while every tab stays
     // closed. The retained rows are valid NAMED live rows, so the review's
-    // zero-named-rows defect is directly asserted away.
+    // zero-named-rows defect is directly asserted away. The named completion
+    // victim is kept inside that bounded live window.
     const authority = await authorityFrame;
     const authorityData = authority.frame.data;
     assert.equal(authorityData.running_count, 50);
@@ -197,23 +293,29 @@ async function run(evidenceDir) {
     assert.equal(authorityRows.length, 512);
     const namedRows = authorityRows.filter(row => typeof row?.name === 'string' && row.name.length > 0);
     assert.equal(namedRows.length, 512, 'every retained live row must be a named row');
+    const liveVictim50 = namedTask(authorityRows, victimID);
+    assert.equal(liveVictim50?.task_id, victimID);
+    assert.equal(liveVictim50?.name, victimName);
+    assert.equal(liveVictim50?.status, 'running');
     assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'false');
-    const closedAgentsCount = page.locator(agentsTabCount);
-    await closedAgentsCount.waitFor({ state: 'visible' });
-    assert.equal((await closedAgentsCount.textContent())?.trim(), '50/600');
+    await doneDOM(page, closedCount50);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '50/600');
     const closedRosterFetches = network.rows.filter(row => row.event === 'request' && (row.path === taskPath || row.path.startsWith(dagPrefix)));
     assert.deepEqual(closedRosterFetches, []);
     await writeFile(join(evidenceDir, 'attached-count-frame.json'), JSON.stringify(authority, null, 2) + '\n');
-    item('3', 'Subagents tab count exists, equals the exact authority while closed, updates live from the attached frame of named rows without any roster fetch', true, ['attached-count-frame.json'], { closedCount: '50/600', rosterFetchesWhileClosed: 0, retainedRows: 512, namedRetainedRows: namedRows.length });
+    item('3', 'Subagents tab count exists, equals the exact authority while closed, updates live from the attached frame of named rows without any roster fetch', true, ['attached-count-frame.json'], { closedCount: '50/600', rosterFetchesWhileClosed: 0, retainedRows: 512, namedRetainedRows: namedRows.length, namedVictim: { id: victimID, name: victimName, status: 'running' } });
 
     jar = join(fixtureRoot, 'curl.cookies');
     const curlLogin = await command('curl', ['-sS', '-i', '-c', jar, '-H', 'Content-Type: application/json', '--data', '{"password":"exact-counts-isolated"}', url + '/api/login']);
     await writeFile(join(evidenceDir, 'curl-login.txt'), curlLogin.stdout);
+    const curlJSON = async (path, label) => {
+      const raw = await command('curl', ['-sS', '-i', '-b', jar, url + path]);
+      await writeFile(join(evidenceDir, label), raw.stdout);
+      const splitAt = raw.stdout.search(/\r?\n\r?\n/); assert.ok(splitAt >= 0);
+      return JSON.parse(raw.stdout.slice(splitAt).replace(/^\r?\n\r?\n/, ''));
+    };
     const curlLive = async label => {
-      const live = await command('curl', ['-sS', '-i', '-b', jar, url + livePath]);
-      await writeFile(join(evidenceDir, `curl-sessions-live${label ? '-' + label : ''}.txt`), live.stdout);
-      const splitAt = live.stdout.search(/\r?\n\r?\n/); assert.ok(splitAt >= 0);
-      const body = JSON.parse(live.stdout.slice(splitAt).replace(/^\r?\n\r?\n/, ''));
+      const body = await curlJSON(livePath, `curl-sessions-live${label ? '-' + label : ''}.txt`);
       const row = body.sessions.find(entry => entry.id === 'qa-counts-chat'); assert.ok(row);
       return row.task_digest;
     };
@@ -221,6 +323,9 @@ async function run(evidenceDir) {
     assert.equal(initialDigest.running_count, 50); assert.equal(initialDigest.total_count, 600);
     assert.equal(initialDigest.agent_running_count, 50); assert.equal(initialDigest.agent_total_count, 600);
     assert.equal(initialDigest.truncated, true); assert.equal(initialDigest.tasks.length, 512);
+    const restVictim50 = namedTask(initialDigest.tasks, victimID);
+    assert.equal(restVictim50?.task_id, victimID);
+    assert.equal(restVictim50?.status, 'running');
     item('1', 'authenticated curl -i preserves exact counts with a truncated row list', true, ['curl-login.txt', 'curl-sessions-live.txt'], { runningCount: 50, totalCount: 600, agentRunningCount: 50, agentTotalCount: 600, retainedRows: 512, truncated: true });
 
     await network.wait(rows => rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length >= 3, 'three polling responses', 15_000);
@@ -243,25 +348,35 @@ async function run(evidenceDir) {
     // ---- stage 1: open, count while open, close, count after close ----
     assert.equal(taskGETs(), 0);
     const taskResponse = network.wait((_, row) => row.event === 'response' && row.path === taskPath && row.status === 200, 'single roster response');
+    const firstRosterBody = network.wait((_, row) => row.event === 'roster' && row.status === 200, 'single roster body');
+    const openCount50 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '50/600' });
     await page.locator('[data-activity-tab="agents"]').click(); await taskResponse;
     await page.locator('[data-activity-roster-status="ready"]').waitFor({ state: 'attached' });
+    const firstRoster = await firstRosterBody;
     const rosterRows = page.locator('[data-activity-tabpanel="agents"] .th-activity-agent');
     const rosterNames = await rosterRows.locator('.th-activity-agent-name').allTextContents();
     const expectedRosterNames = Array.from({ length: 50 }, (_, index) => `(qa-worker) - Running task ${String(index + 1).padStart(3, '0')}`);
     assert.deepEqual(expectedRosterNames.filter(name => !rosterNames.includes(name)), [], 'all 50 authoritative roster rows render');
     assert.equal(taskGETs(), 1);
+    const openRosterVictim = namedTask(firstRoster.body?.tasks, victimID);
+    assert.equal(openRosterVictim?.task_id, victimID);
+    assert.equal(openRosterVictim?.name, victimName);
+    assert.equal(openRosterVictim?.status, 'running');
     // (b) exact Subagents count asserted while the tab is open.
     assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'true');
-    await untilText(page, agentsTabCount, '50/600');
+    await doneDOM(page, openCount50);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '50/600');
     const openBoundary = network.rows.length;
     await writeFile(join(evidenceDir, 'network-open-agents.json'), JSON.stringify(network.rows.slice(closedBoundary, openBoundary), null, 2) + '\n');
     await page.screenshot({ path: join(evidenceDir, 'agents-full-roster-50.png'), fullPage: true });
     item('6', 'opening Subagents fires exactly one full-roster read, renders all 50 authoritative rows, and keeps the exact count while open', true, ['network-open-agents.json', 'agents-full-roster-50.png'], { taskRequests: 1, authoritativeRosterRows: 50, renderedRowsIncludingDigestHistory: await rosterRows.count(), countWhileOpen: '50/600' });
 
+    const closedCountAfter = await armDOM(page, textIs, { selector: agentsTabCount, expected: '50/600' });
     await page.locator('[data-activity-tab="agents"]').click();
     await page.locator('.th-activity-shelf[data-open="false"]').waitFor({ state: 'attached' });
     // (c) exact Subagents count reasserted after closing the tab.
-    await untilText(page, agentsTabCount, '50/600');
+    await doneDOM(page, closedCountAfter);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '50/600');
     const pollsAtClose = network.rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length;
     await network.wait(rows => rows.filter(row => row.event === 'response' && row.path === livePath && row.status === 200).length >= pollsAtClose + 2, 'two post-close polling responses', 12_000);
     const postClose = network.rows.slice(openBoundary);
@@ -286,7 +401,11 @@ async function run(evidenceDir) {
       reloadReadySequence: reloadedReady.sequence,
     };
     // (d) exact Subagents count asserted after the newly observed reconnect.
-    await untilText(page, agentsTabCount, '50/600');
+    // The previous document is gone; arm on the new document. The 50/600
+    // count is a persistent DOM state, so check() resolves if it is already painted.
+    const reloadedCount50 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '50/600' });
+    await doneDOM(page, reloadedCount50);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '50/600');
     assert.equal(await page.locator('.th-activity-shelf').getAttribute('data-open'), 'false');
     assert.equal(taskGETs(), 1);
     item('8', 'reattach hydration renders the exact authority on the closed shelf after a generation-fenced reconnect with no additional roster fetch', true, ['browser-websocket.json'], { reloadedCount: '50/600', totalTaskRequests: 1, readySequences: { initial: initialReady.sequence, reload: reloadedReady.sequence } });
@@ -294,10 +413,12 @@ async function run(evidenceDir) {
     // ---- stage 3: complete one named task, 50 -> 49 ----
     const completionAuthority49 = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'extensionEvent' && row.frame?.name === 'omo.task.updated' && row.frame?.data?.running_count === 49, 'completion authority frame 49');
     const completionActivity49 = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'sessions.activity' && row.frame?.taskDigest?.running_count === 49, 'completion activity digest 49');
-    const completed = await context.request.post(url + '/__qa/complete', { data: { taskIds: ['running-000'] } });
+    const count49 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '49/600' });
+    const badge49 = await armDOM(page, textIs, { selector: workspaceBadge, expected: '49' });
+    const completed = await context.request.post(url + '/__qa/complete', { data: { taskIds: [victimID] } });
     assert.equal(completed.status(), 200, await completed.text());
     const completionReceipt = await completed.json();
-    assert.deepEqual(completionReceipt.completed, ['running-000']);
+    assert.deepEqual(completionReceipt.completed, [victimID]);
     assert.equal(completionReceipt.running, 49);
     const authority49 = await completionAuthority49;
     const activity49 = await completionActivity49;
@@ -305,20 +426,72 @@ async function run(evidenceDir) {
     assert.equal(authority49.frame.data.agent_running_count, 49); assert.equal(authority49.frame.data.agent_total_count, 600);
     assert.equal(activity49.frame.taskDigest.running_count, 49); assert.equal(activity49.frame.taskDigest.total_count, 600);
     assert.equal(activity49.frame.taskDigest.agent_running_count, 49); assert.equal(activity49.frame.taskDigest.agent_total_count, 600);
+    const attachedVictim49 = namedTask(authority49.frame.data.tasks, victimID);
+    assert.equal(attachedVictim49?.task_id, victimID, 'named victim must remain in the attached live projection after completion');
+    assert.equal(attachedVictim49?.name, victimName);
+    assert.equal(attachedVictim49?.status, 'completed');
+    const digestVictim49 = namedTask(activity49.frame.taskDigest.tasks, victimID);
+    assert.equal(digestVictim49?.task_id, victimID, 'named victim must remain in the sessions.activity digest after completion');
+    assert.equal(digestVictim49?.status, 'completed');
     const digest49 = await curlLive('49');
     assert.equal(digest49.running_count, 49); assert.equal(digest49.total_count, 600);
     assert.equal(digest49.agent_running_count, 49); assert.equal(digest49.agent_total_count, 600);
+    const restVictim49 = namedTask(digest49.tasks, victimID);
+    assert.equal(restVictim49?.task_id, victimID, 'named victim must remain in the REST live digest after completion');
+    assert.equal(restVictim49?.status, 'completed');
     // The tab is closed: the decrement must arrive without any roster read.
-    await untilText(page, agentsTabCount, '49/600');
-    await untilText(page, workspaceBadge, '49');
+    await doneDOM(page, count49);
+    await doneDOM(page, badge49);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '49/600');
+    assert.equal((await page.locator(workspaceBadge).textContent())?.trim(), '49');
     assert.equal(taskGETs(), 1);
+    const closedDecrementTaskGets = taskGETs();
+    // Application roster GET (not the fixture-control acknowledgement): the
+    // chat-tasks surface carries the victim identity and terminal status while
+    // the SPA tab stays closed, so this does not count as a page roster fetch.
+    const roster49 = await curlJSON(taskPath, 'curl-chat-tasks-49.txt');
+    const rosterVictim49 = namedTask(roster49.tasks, victimID);
+    assert.equal(rosterVictim49?.task_id, victimID);
+    assert.equal(rosterVictim49?.name, victimName);
+    assert.equal(rosterVictim49?.status, 'completed');
+    assert.equal(taskGETs(), closedDecrementTaskGets, 'the application roster curl must not appear as a page roster fetch');
+    // Rendered Subagents row: reopen after the closed-tab decrement so the
+    // existing closed-tab GET==1 assertion still holds, then observe the
+    // victim on the SPA roster GET body and the painted row.
+    const completionRoster = network.wait((_, row) => row.event === 'roster' && row.status === 200, 'completion roster body');
+    const completionRosterResponse = network.wait((_, row) => row.event === 'response' && row.path === taskPath && row.status === 200, 'completion roster response');
+    const victimRow = await armDOM(page, victimCompletedRow, { name: victimRosterName });
+    const openCount49 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '49/600' });
+    await page.locator('[data-activity-tab="agents"]').click();
+    await completionRosterResponse;
+    await page.locator('[data-activity-roster-status="ready"]').waitFor({ state: 'attached' });
+    const paintedRoster = await completionRoster;
+    const paintedVictim = namedTask(paintedRoster.body?.tasks, victimID);
+    assert.equal(paintedVictim?.task_id, victimID);
+    assert.equal(paintedVictim?.name, victimName);
+    assert.equal(paintedVictim?.status, 'completed');
+    await doneDOM(page, victimRow);
+    await doneDOM(page, openCount49);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '49/600');
+    assert.equal(taskGETs(), 2);
+    await writeFile(join(evidenceDir, 'completion-roster-49.json'), JSON.stringify(paintedRoster.body, null, 2) + '\n');
+    await page.screenshot({ path: join(evidenceDir, 'completion-named-row-49.png'), fullPage: true });
+    await page.locator('[data-activity-tab="agents"]').click();
+    await page.locator('.th-activity-shelf[data-open="false"]').waitFor({ state: 'attached' });
+    assert.equal(taskGETs(), 2);
     await writeFile(join(evidenceDir, 'completion-frame-49.json'), JSON.stringify({ authority: authority49, activity: activity49 }, null, 2) + '\n');
     await page.screenshot({ path: join(evidenceDir, 'completion-49.png'), fullPage: true });
-    item('9', 'a named task completion decrements the authority, digest, REST row, tab count and sidebar badge by exactly one with the tab closed', true, ['completion-frame-49.json', 'curl-sessions-live-49.txt', 'completion-49.png'], { completedTask: 'running-000', authorityCounts: '49/600', digestCounts: '49/600', restCounts: '49/600', tabCount: '49/600', sidebarBadge: '49', totalTaskRequests: 1 });
+    item('9', 'a named task completion decrements the authority, digest, REST row, tab count and sidebar badge by exactly one with the tab closed, and the named victim is completed on the roster GET and rendered Subagents row', true, ['completion-frame-49.json', 'curl-sessions-live-49.txt', 'curl-chat-tasks-49.txt', 'completion-roster-49.json', 'completion-49.png', 'completion-named-row-49.png'], {
+      completedTask: victimID, authorityCounts: '49/600', digestCounts: '49/600', restCounts: '49/600', tabCount: '49/600', sidebarBadge: '49',
+      taskRequestsAtClosedDecrement: closedDecrementTaskGets, totalTaskRequests: 2,
+      namedVictim: { id: victimID, name: victimName, status: 'completed', surfaces: ['attached live projection', 'sessions.activity digest', 'REST live digest', 'chat-tasks roster GET', 'rendered Subagents row'] },
+    });
 
     // ---- stage 4: drain the remaining named tasks, 49 -> 0 ----
     const completionAuthority0 = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'extensionEvent' && row.frame?.name === 'omo.task.updated' && row.frame?.data?.running_count === 0, 'completion authority frame 0');
     const completionActivity0 = wire.wait((_, row) => row.direction === 'received' && row.frame?.type === 'sessions.activity' && row.frame?.taskDigest?.running_count === 0, 'completion activity digest 0');
+    const count0 = await armDOM(page, textIs, { selector: agentsTabCount, expected: '0/600' });
+    const badgeGone = await armDOM(page, absent, { selector: workspaceBadge });
     const drained = await context.request.post(url + '/__qa/complete', { data: { taskIds: runningIDs.slice(1) } });
     assert.equal(drained.status(), 200, await drained.text());
     const drainedReceipt = await drained.json();
@@ -333,16 +506,18 @@ async function run(evidenceDir) {
     const digestZero = await curlLive('zero');
     assert.equal(digestZero.running_count, 0); assert.equal(digestZero.total_count, 600);
     assert.equal(digestZero.agent_running_count, 0); assert.equal(digestZero.agent_total_count, 600);
-    await untilText(page, agentsTabCount, '0/600');
+    await doneDOM(page, count0);
+    await doneDOM(page, badgeGone);
+    assert.equal((await page.locator(agentsTabCount).textContent())?.trim(), '0/600');
     // Zero running: the sidebar badge must be removed from the DOM entirely.
-    await untilAbsent(page, workspaceBadge);
     assert.equal(await page.locator(workspaceBadge).count(), 0);
+    assert.equal(taskGETs(), 2);
     await writeFile(join(evidenceDir, 'completion-frame-zero.json'), JSON.stringify({ authority: authority0, activity: activity0 }, null, 2) + '\n');
     await page.screenshot({ path: join(evidenceDir, 'zero-running-badge-removed.png'), fullPage: true });
     item('10', 'draining the remaining named tasks yields a 0/600 authority, digest and REST row, a 0/600 tab count, and a removed zero-running sidebar badge', true, ['completion-frame-zero.json', 'curl-sessions-live-zero.txt', 'zero-running-badge-removed.png'], { completedTasks: 49, authorityCounts: '0/600', restCounts: '0/600', tabCount: '0/600', sidebarBadge: 'removed' });
 
     // ---- final audits: tab gate held for the whole capture ----
-    assert.equal(taskGETs(), 1);
+    assert.equal(taskGETs(), 2);
     assert.equal(dagGETs(), 0);
     const zeroAuthorityFrames = wire.rows.filter(row => row.direction === 'received' && row.frame?.type === 'extensionEvent' && row.frame?.name === 'omo.task.updated' && row.frame?.data?.running_count === 0);
     assert.ok(zeroAuthorityFrames.length >= 1, 'the wire capture must hold a 0/600 completion authority frame');
@@ -353,7 +528,7 @@ async function run(evidenceDir) {
     await writeFile(join(evidenceDir, 'fixture-traffic.json'), JSON.stringify(fixtureReceipt, null, 2) + '\n');
     report.artifacts = {
       network: 'browser-network.json', websocket: 'browser-websocket.json', fixtureTraffic: 'fixture-traffic.json', fixtureBuild: 'fixture-build.log',
-      completion49: 'completion-frame-49.json', completionZero: 'completion-frame-zero.json',
+      completion49: 'completion-frame-49.json', completionZero: 'completion-frame-zero.json', completionRoster: 'completion-roster-49.json',
     };
     report.status = 'PASS';
   } catch (error) {
@@ -381,12 +556,14 @@ async function run(evidenceDir) {
     if (fixtureRoot) { try { await rm(fixtureRoot, { recursive: true, force: true }); report.cleanup.fixtureRootRemoved = !(await exists(fixtureRoot)); } catch (error) { report.cleanup.fixtureRootRemoved = false; report.errors.push({ cleanup: 'fixtureRoot', error: String(error) }); } }
     report.cleanup.receiptNote = 'browser context closed, isolated chrome profile swept by unique temp marker and removed, fixture SIGTERMed and reaped (kill -0), port release verified, temp fixture root removed';
     report.finishedAt = new Date().toISOString();
-    const sweep = report.cleanup.chromeSweep;
-    const cleanupPassed = report.cleanup.browserContextClosed === true
-      && sweep !== undefined && sweep.error === undefined && (sweep.swept === true || (sweep.leftover ?? []).length === 0)
-      && report.cleanup.browserProfileRemoved === true && report.cleanup.fixtureProcess?.exited === true
-      && report.cleanup.fixtureProcess?.kill0 !== 'still-alive' && report.cleanup.portReleased === true && report.cleanup.fixtureRootRemoved === true;
-    if (!cleanupPassed || report.errors.length > 0 || report.items.length !== 10 || report.items.some(row => row.status !== 'PASS')) report.status = 'BLOCKED';
+    if (!refused) {
+      const sweep = report.cleanup.chromeSweep;
+      const cleanupPassed = report.cleanup.browserContextClosed === true
+        && sweep !== undefined && sweep.error === undefined && (sweep.swept === true || (sweep.leftover ?? []).length === 0)
+        && report.cleanup.browserProfileRemoved === true && report.cleanup.fixtureProcess?.exited === true
+        && report.cleanup.fixtureProcess?.kill0 !== 'still-alive' && report.cleanup.portReleased === true && report.cleanup.fixtureRootRemoved === true;
+      if (!cleanupPassed || report.errors.length > 0 || report.items.length !== 10 || report.items.some(row => row.status !== 'PASS')) report.status = 'BLOCKED';
+    }
     await writeFile(join(evidenceDir, runFile), JSON.stringify(report, null, 2) + '\n');
   }
   if (failure) throw failure;
