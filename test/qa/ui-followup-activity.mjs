@@ -86,7 +86,7 @@ async function state(page) {
       scroll: [...document.querySelectorAll('[data-activity-tabpanel],.th-activity-graph')].map(e => ({ owner: e.dataset.activityTabpanel ?? 'graph', top: e.scrollTop, left: e.scrollLeft, height: e.clientHeight, width: e.clientWidth, scrollHeight: e.scrollHeight, scrollWidth: e.scrollWidth })),
       animations: document.getAnimations().filter(a => a.effect?.target?.closest?.('.th-activity-shelf')).map(a => ({ name: a.animationName, time: a.currentTime, playState: a.playState, node: a.effect.target.closest('[data-node]')?.dataset.node, transform: getComputedStyle(a.effect.target).transform })),
       nodes: [...document.querySelectorAll('.th-activity-gnode')].map(e => ({ id: e.dataset.node, transform: e.getAttribute('transform'), class: e.getAttribute('class'), opacity: getComputedStyle(e).opacity })),
-      partial: document.querySelector('.th-activity-partial')?.textContent ?? null,
+      partialClassed: [...document.querySelectorAll('[class*="partial"]')].map(e => e.className),
       freshness: [...document.querySelectorAll('.th-activity-quiet-note,.th-activity-severed-note')].map(e => e.textContent),
       overflow: document.documentElement.scrollWidth > innerWidth };
   });
@@ -533,10 +533,41 @@ async function motion(q, interruption = null) {
     }
     const handles = await q.page.locator('.th-activity-gnode').elementHandles();
     const before = await state(q.page);
-    await arm(q.page, () => document.querySelector('.th-activity-partial') !== null);
-    q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa', truncated_runs: true, runs: [{ ...base, updated_at: new Date().toISOString() }] } });
+    // Marker-free truncation contract: a truncated_runs delivery paints no
+    // partial-classed note anywhere and leaves the painted graph and the
+    // exact tab counts untouched. A watcher records every partial-classed
+    // insertion from before the delivery until the gate closes. The gate
+    // pairs the DOM-silent truncation frame with a stats canary on the same
+    // socket: frames are applied in delivery order, so the canary's exact
+    // painted percentage proves the earlier truncation frame was already
+    // applied when the wait resolves - no fixed sleep, no polling.
+    assert.notEqual(await q.page.evaluate(() => document.querySelector('.th-chat-status-num')?.textContent ?? null), '61%', 'the truncation canary percentage must start unpainted');
+    await q.page.evaluate(() => {
+      window.qaPartialSightings = [];
+      const partialClassed = node => typeof node.className === 'string' && node.className.includes('partial');
+      window.qaPartialWatcher = new MutationObserver(records => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            if (partialClassed(node) || node.querySelector('[class*="partial"]') !== null) window.qaPartialSightings.push(node.className);
+          }
+          if (record.attributeName === 'class' && partialClassed(record.target)
+            && !window.qaPartialSightings.includes(record.target.className)) window.qaPartialSightings.push(record.target.className);
+        }
+      });
+      window.qaPartialWatcher.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['class'] });
+    });
+    await arm(q.page, () => document.querySelector('.th-chat-status-num')?.textContent === '61%');
+    const truncatedRun = { ...base, updated_at: new Date().toISOString() };
+    q.record.actions.push({ action: 'dag-frame', run: structuredClone({ ...truncatedRun, truncated_runs: true }) });
+    q.fixture.deliver('stored-a', { type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa', truncated_runs: true, runs: [truncatedRun] } });
+    q.fixture.deliver('stored-a', { type: 'stats', contextUsage: { percent: 61, used: 61000, total: 100000 } });
     await complete(q.page);
-    assert.deepEqual((await state(q.page)).nodes.map(n => n.transform), before.nodes.map(n => n.transform));
+    const truncated = await state(q.page);
+    assert.deepEqual(await q.page.evaluate(() => { window.qaPartialWatcher.disconnect(); return window.qaPartialSightings; }), [], 'no partial-classed element ever appears across the truncated delivery');
+    assert.equal(truncated.partialClassed.length, 0, 'no partial-classed element remains mounted');
+    assert.deepEqual(truncated.nodes.map(n => n.transform), before.nodes.map(n => n.transform));
+    assert.deepEqual(truncated.tabs.map(t => [t.id, t.count]), before.tabs.map(t => [t.id, t.count]), 'exact tab counts stay stable across the truncated delivery');
     for (const handle of handles) { assert(await handle.evaluate(e => e === document.querySelector(`[data-node="${e.dataset.node}"]`))); await handle.dispose(); }
   } else {
     // Every interruption has its own browser context and unchanged six-node seed.

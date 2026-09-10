@@ -54,7 +54,7 @@ test('mixed count assertion rejects inflated counts, duplicate rows and leaked q
   globalThis.document = {
     querySelectorAll: () => state.rows.map(textContent => ({ textContent })),
     querySelector: selector => selector.includes('tab-count') ? { textContent: state.count }
-      : selector.includes('th-activity-partial') ? state.partial === null ? null : { textContent: state.partial }
+      : selector.includes('[class*="partial"]') ? state.partial === null ? null : { textContent: state.partial }
       : { getAttribute: key => key === 'aria-selected' ? 'true' : state.explanation },
   };
   const page = { evaluate: async (fn, args) => fn(args), locator: () => ({ count: async () => 0 }) };

@@ -94,12 +94,22 @@ test('Chrome surface observer proves 64 original identities/2016 edge endpoints 
     const listed = await assertList(page, [expected]); assert.deepEqual(listed.names, ['dense-64']);
     assert.deepEqual(listed.ids, ['dense-64']); assert.deepEqual(listed.statuses, ['complete']);
     await assertDagHasNoPartial(page);
+    // The F2 caller shape: fixture sources return checkpoints with a camelCase
+    // runId, and the helper resolves the article by that exact extracted ID -
+    // never by a stringified object identity. A raw checkpoint cannot select
+    // an article and must fail loudly instead of matching zero silently.
+    const checkpoint = { runId: expected.run_id, name: expected.name, nodes: expected.nodes, updatedAt: '2026-09-09T13:00:00Z' };
+    assert.equal(checkpoint.run_id, undefined);
+    assert.equal(await proof.runArticle(page, checkpoint.runId).count(), 1);
+    assert.equal(await proof.runArticle(page, { run_id: checkpoint.runId }).count(), 1);
+    assert.throws(() => proof.runArticleSelector(checkpoint), /exact run ID string/);
+    assert.equal(await page.locator(`article[data-activity-dag-run=${JSON.stringify(String(checkpoint))}]`).count(), 0);
     await page.evaluate(() => {
       const panel = document.querySelector('section');
       panel.setAttribute('data-activity-tabpanel', 'dag');
-      const note = document.createElement('p'); note.className = 'th-activity-partial'; note.textContent = 'partial sentinel'; panel.append(note);
+      const note = document.createElement('p'); note.className = 'qa-partial-fixture'; note.textContent = 'partial sentinel'; panel.append(note);
     });
-    await assert.rejects(assertDagHasNoPartial(page));
+    await assert.rejects(assertDagHasNoPartial(page), /partial-classed/);
     await page.setContent(html);
     await page.evaluate(text => {
       const tab = document.createElement('button'); tab.setAttribute('data-activity-tab', 'dag');
@@ -164,7 +174,7 @@ test('Chrome surface observer proves 64 original identities/2016 edge endpoints 
       await page.evaluate(() => {
         const tab = document.querySelector('[data-activity-tab="agents"]');
         tab.setAttribute('title', 'qualified');
-        const note = document.createElement('p'); note.className = 'th-activity-partial'; note.textContent = 'sentinel';
+        const note = document.createElement('p'); note.className = 'qa-partial-fixture'; note.textContent = 'sentinel';
         document.querySelector('[data-activity-tabpanel="agents"]').append(note);
       });
       await assert.rejects(assertSubagents(page, { count, rows: retained }));

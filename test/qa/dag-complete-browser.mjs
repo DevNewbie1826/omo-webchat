@@ -45,8 +45,15 @@ export const runStatusIs = ({ runId, status }) => {
     .find(node => node.getAttribute('data-activity-dag-run') === runId);
   return article !== undefined && article.getAttribute('data-activity-dag-status') === status;
 };
-/** Every run-scoped observation identifies its article by the EXACT run ID. */
-export const runArticleSelector = runId => `article[data-activity-dag-run=${JSON.stringify(String(runId))}]`;
+/** Every run-scoped observation identifies its article by the EXACT run ID.
+ * A checkpoint-shaped caller (camelCase runId) must pass that ID or a
+ * converted expected document; a raw object identity can never select an
+ * article, so it fails loudly instead of matching zero articles silently. */
+export const runArticleSelector = runId => {
+  assert.equal(typeof runId, 'string', `run identity must be the exact run ID string, got ${typeof runId}`);
+  assert.ok(runId.length > 0, 'run identity must be a non-empty run ID');
+  return `article[data-activity-dag-run=${JSON.stringify(runId)}]`;
+};
 export const runArticle = (page, expected) => page.locator(runArticleSelector(expected.run_id ?? expected));
 
 /** Tear down the old pane before changing layout. The next navigation starts
@@ -171,22 +178,20 @@ export async function reconnectWithoutReplay({ deliver, frame, gate, observed, d
   return { beforeSocket: before.socketId, afterSocket: after.socketId, replayed: false };
 }
 
-/** The restored list ships no partial-qualification surface: no partial
- * element or class inside the DAG tabpanel, and no count slot on the DAG tab
- * (exact counts live per full run, never on the overview tab). */
+/** The restored list ships no partial-qualification surface: no element
+ * carrying a partial class inside the DAG tabpanel, and no count slot on the
+ * DAG tab (exact counts live per full run, never on the overview tab). */
 export async function assertDagHasNoPartial(page) {
   const observed = await page.evaluate(() => {
     const panel = document.querySelector('[data-activity-tabpanel="dag"]');
     const tab = document.querySelector('[data-activity-tab="dag"]');
     const tabCount = tab?.querySelector('.th-activity-tab-count')?.textContent ?? null;
     return {
-      partialNodes: [...document.querySelectorAll('[data-activity-tabpanel="dag"] .th-activity-partial')].map(node => node.textContent),
       partialClassed: [...document.querySelectorAll('[data-activity-tabpanel="dag"] [class*="partial"]')].length,
       tabCount, qualifiedCount: tabCount !== null && /[+?]$/.test(tabCount),
       catalog: panel?.querySelector('.th-activity-dag-complete')?.getAttribute('data-activity-dag-catalog') ?? null,
     };
   });
-  assert.equal(observed.partialNodes.length, 0, 'no partial element in the DAG tabpanel');
   assert.equal(observed.partialClassed, 0, 'no partial-classed element in the DAG tabpanel');
   assert.equal(observed.tabCount, null, 'the DAG tab carries no overview count slot');
   assert.equal(observed.qualifiedCount, false, 'no qualified count marker on the DAG tab');
@@ -334,13 +339,13 @@ export async function assertSubagents(page, { count, rows }) {
   assert.equal(typeof rows, 'number');
   const observed = await page.evaluate(() => ({
     count: document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent ?? null,
-    partial: document.querySelector('[data-activity-tabpanel="agents"] .th-activity-partial')?.textContent ?? null,
+    partial: document.querySelector('[data-activity-tabpanel="agents"] [class*="partial"]')?.textContent ?? null,
     selected: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected'),
     explanation: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('title'),
     rows: [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].map(node => node.textContent),
   }));
   assert.equal(observed.selected, 'true');
-  assert.equal(observed.partial, null, 'no partial marker element on the Subagents surface');
+  assert.equal(observed.partial, null, 'no partial-classed element on the Subagents surface');
   assert.equal(observed.explanation, null, 'no partial qualification title on the Subagents tab');
   if (observed.count !== null) assert.equal(/[+?]$/.test(observed.count), false, 'Subagents count is an exact running/total pair, never a qualified lower bound');
   assert.equal(observed.count, count, 'exact marker-free Subagents count');

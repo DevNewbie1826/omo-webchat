@@ -79,13 +79,13 @@ export async function assertMixedSubagents(page, { count, name, partial }) {
     count: document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent ?? null,
     selected: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected'),
     explanation: document.querySelector('[data-activity-tab="agents"]')?.getAttribute('title'),
-    partial: document.querySelector('[data-activity-tabpanel="agents"] .th-activity-partial')?.textContent ?? null,
+    partial: document.querySelector('[data-activity-tabpanel="agents"] [class*="partial"]')?.textContent ?? null,
     rows: [...document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name')].map(node => node.textContent),
   }));
   assert.equal(actual.selected, 'true');
   assert.equal(actual.count, count, 'exact marker-free mixed count');
   assert.equal(actual.rows.length, 1, 'one authoritative task row, never a duplicate DAG row');
-  assert.equal(actual.partial, null, 'no partial marker element on the mixed surface');
+  assert.equal(actual.partial, null, 'no partial-classed element on the mixed surface');
   assert.equal(actual.explanation, null, 'no partial qualification title on the mixed surface');
   if (actual.count !== null) assert.equal(/[+?]$/.test(actual.count), false, 'mixed count is exact, never a qualified lower bound');
   assert.equal(await page.locator('.th-activity-gnode').count(), 0, 'mixed count proof does not open or inject full detail');

@@ -235,7 +235,9 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     assert.equal(rejectedDocument.run.updated_at, accepted.run.updated_at);
     assert.notEqual(rejectedDocument.content_token, accepted.content_token);
     const stale = await armDOM(page, runStatusIs, { runId: a.runId, status: 'stale' }); rejected.release(); await doneDOM(page, stale);
-    const conflictCard = runArticle(page, a);
+    // fixture.source returns a checkpoint (camelCase runId), not an expected
+    // document: the article must be selected by that exact source run ID.
+    const conflictCard = runArticle(page, a.runId);
     assert.equal(await conflictCard.getAttribute('data-activity-dag-status'), 'stale');
     assert.equal(await conflictCard.locator('.th-activity-gnode').count(), expectedRun(a).nodes.length, 'an equal-version conflict cannot replace the accepted graph');
     assert.equal(await conflictCard.getAttribute('data-content-token'), accepted.content_token, 'the accepted identity token survives the equal-version conflict');
