@@ -85,7 +85,7 @@ describe("parseChatServerFrame", () => {
       durableSessionId: "child-1",
       replacesSessionId: "child-1",
       snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
-      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1 },
+      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 },
       overflow: true,
     })).toEqual({
       type: "sessions.activity",
@@ -93,7 +93,7 @@ describe("parseChatServerFrame", () => {
       durableSessionId: "child-1",
       replacesSessionId: "child-1",
       snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
-      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1 },
+      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 },
       overflow: true,
     });
     expect(parseChatServerFrame({
