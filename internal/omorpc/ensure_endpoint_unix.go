@@ -101,14 +101,27 @@ func connectionPeerProvenance(conn net.Conn, processGroup int) peerProvenance {
 	return classifyPeerProvenance(pid, err, processGroup)
 }
 
-// removeOwnedSocket runs while EnsureDaemon holds the endpoint lock. The
-// identity comparison prevents cleanup from unlinking an endpoint that
-// replaced the one observed during this attempt.
+// removeOwnedSocket runs after reaping the owned process group, under the
+// endpoint lock. Cached device/inode pairs can be reused: require a fresh
+// refusal as well as matching identity before unlinking. The advisory lock
+// serializes cooperating replacements; a noncooperating bind between the
+// final check and unlink cannot be protected by pathname checks alone.
 func removeOwnedSocket(path string, owned *socketIdentity) error {
 	if owned == nil {
 		return nil
 	}
 	current, exists := currentSocketIdentity(path)
+	if !exists || current != *owned {
+		return nil
+	}
+	conn, err := net.DialTimeout("unix", path, time.Second)
+	if err == nil {
+		return conn.Close()
+	}
+	if !isSpawnableProbeError(err) {
+		return nil
+	}
+	current, exists = currentSocketIdentity(path)
 	if !exists || current != *owned {
 		return nil
 	}
