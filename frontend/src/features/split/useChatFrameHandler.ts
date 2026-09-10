@@ -6,7 +6,7 @@ import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./ac
 import type { ActivityState } from "./activityTypes";
 import { parseTaskCounts } from "./activityParseTask";
 import { parseDagCounts } from "./activityParseDag";
-import { applyCountAuthority } from "./taskAuthority";
+import { applyCountAuthority, type CountAuthority } from "./taskAuthority";
 import { applyTodoAuthority, bindTodoAuthority, type TodoAuthority } from "./todoAuthority";
 import { ingestExtensionEvent } from "../workspace/liveBadgeStore";
 import { type UiMessage } from "./chatEntries";
@@ -45,6 +45,8 @@ interface ChatFrameHandlerBindings {
   readonly activitiesRef: Current<ActivityState>;
   readonly todoAuthorityRef: Current<TodoAuthority>;
   readonly bufferActivityEvent: (event: NonNullable<ReturnType<typeof validatedActivityEvent>>) => void;
+  /** Record a live count delivery's admission in the pane's own ordering. */
+  readonly admitLiveCountAuthority: (counts: CountAuthority) => void;
   readonly externalRecoveryPendingRef: Current<boolean>;
   readonly externalRecoveryReadyRef: Current<boolean>;
   readonly externalRecoveryHistoryRef: Current<boolean>;
@@ -237,7 +239,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // is not a task scalar; its aggregate maps onto the shared fields.
         const counts = frame.name === "omo.task.updated" ? parseTaskCounts(frame.data)
           : frame.name === "omo.dag.updated" ? parseDagCounts(frame.data) : null;
-        if (counts !== null) next = applyCountAuthority(next, counts);
+        if (counts !== null) {
+          next = applyCountAuthority(next, counts);
+          bindings.admitLiveCountAuthority(counts);
+        }
         if (next !== before) bindings.applyActivities(next);
         if (activityEvent !== null) {
           // Record which domains the reducer actually mutated so hydration

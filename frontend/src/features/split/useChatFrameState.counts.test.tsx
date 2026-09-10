@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseChatServerFrame, type ChatServerFrame } from "../../lib/chatWs";
+import { ACTIVITY_HYDRATION_SIDE_LIMIT } from "./activityState";
 import { useChatFrameState } from "./useChatFrameState";
 
 interface ProbeState {
@@ -213,5 +214,125 @@ describe("useChatFrameState count authority", () => {
       );
     });
     expect(captured?.activities.taskAgentRunningCount).toBeUndefined();
+  });
+
+  it("a deferred hydration response cannot resurrect counts after the live snapshot leaves the bounded buffer", () => {
+    const dagUpdated = (status: string, running: number, updatedAt: string): Record<string, unknown> => ({
+      type: "extensionEvent",
+      sessionId: "chat-1",
+      name: "omo.dag.updated",
+      data: {
+        parent_session_id: "chat-1",
+        truncated_runs: false,
+        running_count: running,
+        agent_running_count: running,
+        agent_total_count: 1,
+        runs: [{
+          run_id: "r",
+          run_key: "r",
+          name: "Graph",
+          status,
+          updated_at: updatedAt,
+          counts: {
+            total: 1, pending: 0, blocked: 0, scheduled: 0, running,
+            completed: 1 - running, failed: 0, cancelled: 0, skipped: 0,
+          },
+          nodes: [{ id: "n", prompt: "Work", depends_on: [], state: status }],
+          edges: [],
+          waves: [],
+        }],
+      },
+    });
+    act(() => {
+      deliver(dagUpdated("running", 1, "2026-09-10T10:01:00Z"));
+    });
+    // The hydration request registers the older aggregate before the live
+    // completion is accepted, so its slower response is the deferred one.
+    const token = captured!.beginActivityHydration();
+    act(() => {
+      deliver(dagUpdated("completed", 0, "2026-09-10T10:02:00Z"));
+    });
+    expect(captured?.activities.taskAgentRunningCount).toBe(0);
+    act(() => {
+      // Exactly the side limit of distinct valid activity frames evicts the
+      // buffered completion snapshot from the bounded hydration buffer.
+      for (let i = 0; i < ACTIVITY_HYDRATION_SIDE_LIMIT; i += 1) {
+        deliver({
+          type: "extensionEvent",
+          sessionId: "chat-1",
+          name: "omo.dag.activity",
+          data: { runId: "r", nodeId: `unretained-${i}`, at: "2026-09-10T10:03:00Z" },
+        });
+      }
+    });
+    act(() => {
+      captured!.hydrateActivities(token, null, null, undefined, false, {
+        runs: [{ run_id: "r", status: "running", running_task_ids: [] }],
+        truncated: true,
+        running_count: 1,
+        agent_running_count: 1,
+        agent_total_count: 1,
+      });
+    });
+    expect(captured?.activities.dags.get("r")?.status).toBe("completed");
+    expect(captured?.activities.taskAgentRunningCount).toBe(0);
+  });
+
+  it("a deferred hydration response cannot resurrect counts a live frame changed without a retained-row mutation", () => {
+    const scalarsOnly = (running: number): Record<string, unknown> => ({
+      type: "extensionEvent",
+      sessionId: "chat-1",
+      name: "omo.dag.updated",
+      data: {
+        parent_session_id: "chat-1",
+        truncated_runs: false,
+        running_count: running,
+        agent_running_count: running,
+        agent_total_count: 1,
+        runs: [{
+          run_id: "r",
+          run_key: "r",
+          name: "Graph",
+          status: "running",
+          updated_at: "2026-09-10T10:01:00Z",
+          counts: {
+            total: 1, pending: 0, blocked: 0, scheduled: 0, running: 1,
+            completed: 0, failed: 0, cancelled: 0, skipped: 0,
+          },
+          nodes: [{ id: "n", prompt: "Work", depends_on: [], state: "running" }],
+          edges: [],
+          waves: [],
+        }],
+      },
+    });
+    act(() => {
+      deliver(scalarsOnly(1));
+    });
+    const token = captured!.beginActivityHydration();
+    act(() => {
+      // Same run revision: the retained row never mutates, only the scalars move.
+      deliver(scalarsOnly(0));
+    });
+    expect(captured?.activities.taskAgentRunningCount).toBe(0);
+    act(() => {
+      for (let i = 0; i < ACTIVITY_HYDRATION_SIDE_LIMIT; i += 1) {
+        deliver({
+          type: "extensionEvent",
+          sessionId: "chat-1",
+          name: "omo.dag.activity",
+          data: { runId: "r", nodeId: `unretained-${i}`, at: "2026-09-10T10:03:00Z" },
+        });
+      }
+    });
+    act(() => {
+      captured!.hydrateActivities(token, null, null, undefined, false, {
+        runs: [{ run_id: "r", status: "running", running_task_ids: [] }],
+        truncated: true,
+        running_count: 1,
+        agent_running_count: 1,
+        agent_total_count: 1,
+      });
+    });
+    expect(captured?.activities.taskAgentRunningCount).toBe(0);
   });
 });
