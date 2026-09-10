@@ -220,6 +220,12 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     const tick = (): void => {
       if (closed || ws.readyState !== WebSocket.OPEN) return;
       if (awaitingPong) {
+        if (suspect) {
+          // The resume probe owns the outstanding ping's deadline; a periodic
+          // tick landing inside the suspect window must not preempt it.
+          pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
+          return;
+        }
         // Previous ping unanswered — the connection is dead. Force a reconnect.
         handleLivenessLoss(ws);
         return;

@@ -218,6 +218,56 @@ describe("connectWs resume liveness probe", () => {
     expect(pingCount(socket)).toBe(1);
     expect(conn!.send({ type: "x" })).toBe(true);
   });
+
+  it("keeps a healthy socket alive when the resume probe straddles the periodic heartbeat tick", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+
+    // Healthy first cycle: tick at 20s, pong answered; next tick due at 40s.
+    await vi.advanceTimersByTimeAsync(20_000);
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+
+    // Resume 500ms before the next periodic tick: the probe ping is now
+    // outstanding under its 2s deadline.
+    await vi.advanceTimersByTimeAsync(19_500);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(pingCount(socket)).toBe(2);
+
+    // The periodic tick at 40s must NOT treat the probe ping as a failed
+    // heartbeat: no close before the probe deadline of 41.5s.
+    await vi.advanceTimersByTimeAsync(600);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // A pong inside the probe window recovers the suspect state and the
+    // heartbeat keeps running afterwards.
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+    expect(conn!.send({ type: "x" })).toBe(true);
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(pingCount(socket)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("still closes at the resume probe deadline when the pong never arrives across a tick", async () => {
+    const onClose = vi.fn();
+    const socket = openHealthy(onClose);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    socket.onmessage?.({ data: '{"type":"pong"}' } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(19_500);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(pingCount(socket)).toBe(2);
+
+    // Survives the periodic tick at 40s...
+    await vi.advanceTimersByTimeAsync(600);
+    expect(onClose).not.toHaveBeenCalled();
+
+    // ...and closes exactly at the 2s probe deadline (41.5s), not before.
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
 });
 
 describe("connectWs upgrade failure probe", () => {
