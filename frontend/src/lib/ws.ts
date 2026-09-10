@@ -13,6 +13,10 @@
  * - capped exponential backoff: 1s, 2s, 4s, ... capped at 10s; reset on open
  * - application ping/pong heartbeat: ping every 20s, pong timeout 10s
  * - visibilitychange probe replacing a stale socket on return to foreground
+ * - resume liveness probe: on return to the foreground with an OPEN socket,
+ *   ping immediately under a short 2s pong deadline (the 20s heartbeat would
+ *   leave a dead-but-OPEN socket unconfirmed for up to ~30s); `send` fails
+ *   fast while that short probe is unanswered, and any pong clears it
  * - upgrade-failure auth probe: a socket that closes without ever opening is
  *   likely an expired session, confirmed via a REST probe before retrying
  * - double-close guards: a stale socket reports close exactly once
@@ -53,6 +57,8 @@ export interface WsConn {
 
 const PING_INTERVAL_MS = 20_000;
 const PONG_TIMEOUT_MS = 10_000;
+/** Pong deadline for the resume-time liveness probe on an OPEN socket. */
+const RESUME_PONG_TIMEOUT_MS = 2_000;
 /** Application close code when the heartbeat detects a dead connection. */
 const CLOSE_PING_TIMEOUT = 4000;
 /** Application close code when a visibility reconnect replaces a stale socket. */
@@ -78,11 +84,15 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
   let pingTimer = 0;
   let pongTimer = 0;
   let awaitingPong = false;
+  // True while the short resume liveness probe is outstanding (suspect
+  // window): the socket looks OPEN but may be dead, so sends fail fast.
+  let suspect = false;
 
   const clearTimers = (): void => {
     window.clearTimeout(pingTimer);
     window.clearTimeout(pongTimer);
     awaitingPong = false;
+    suspect = false;
   };
 
   const backoffDelay = (): number => Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS);
@@ -135,6 +145,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       // anything else flows to the layer above untouched).
       if (frameTypeOf(parsed) === "pong") {
         awaitingPong = false;
+        suspect = false;
         window.clearTimeout(pongTimer);
         return;
       }
@@ -209,6 +220,12 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     const tick = (): void => {
       if (closed || ws.readyState !== WebSocket.OPEN) return;
       if (awaitingPong) {
+        if (suspect) {
+          // The resume probe owns the outstanding ping's deadline; a periodic
+          // tick landing inside the suspect window must not preempt it.
+          pingTimer = window.setTimeout(tick, PING_INTERVAL_MS);
+          return;
+        }
         // Previous ping unanswered — the connection is dead. Force a reconnect.
         handleLivenessLoss(ws);
         return;
@@ -241,7 +258,22 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
         handlers.onClose?.(CLOSE_VISIBILITY);
       }
       open();
+      return;
     }
+    // Foreground return with an OPEN socket: it may have died silently while
+    // backgrounded (no onclose fires). Probe now under the short deadline
+    // instead of waiting for the next heartbeat tick plus pong timeout.
+    suspect = true;
+    if (!awaitingPong) {
+      awaitingPong = true;
+      ws.send(JSON.stringify(heartbeatPing()));
+    }
+    // (Re)arm only the pong deadline; if a heartbeat ping was already
+    // outstanding, its deadline simply shortens to the resume timeout.
+    window.clearTimeout(pongTimer);
+    pongTimer = window.setTimeout(() => {
+      if (awaitingPong) handleLivenessLoss(ws);
+    }, RESUME_PONG_TIMEOUT_MS);
   };
   document.addEventListener("visibilitychange", onVisibility);
 
@@ -251,6 +283,10 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     send(msg: unknown): boolean {
       const ws = socket;
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      // During the short resume probe the socket may be a corpse; callers
+      // fail fast instead of writing into a dead transport. A normal
+      // heartbeat awaitingPong window does not block sends.
+      if (suspect) return false;
       ws.send(JSON.stringify(msg));
       return true;
     },
