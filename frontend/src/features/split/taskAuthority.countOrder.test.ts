@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyCountAuthority, reconcileTaskSources, type CountAuthority, type TaskAuthority } from "./taskAuthority";
+import { applyCountAuthority, mergeTaskAuthorities, reconcileTaskSources, type CountAuthority, type TaskAuthority } from "./taskAuthority";
 import { parseTaskUpdated } from "./activityParseTask";
 
 function bareState(running: number, total: number, admittedAt?: number): TaskAuthority {
@@ -61,5 +61,29 @@ describe("aggregate admission ordering (review r2 F4)", () => {
     }), undefined, { countRequestedMs: 300 });
     expect(fresh.taskAgentRunningCount).toBe(0);
     expect(fresh.agentCountsAdmissionMs).toBe(300);
+  });
+
+  it("a live envelope without scalars still stamps its acceptance sequence", () => {
+    const live = reconcileTaskSources(bareState(1, 1), parseTaskUpdated({
+      tasks: [{ task_id: "t1", status: "running", updated_at: "2026-09-10T12:00:00Z" }],
+    }), undefined, { countAdmissionMs: 200 });
+    expect(live.taskAgentRunningCount).toBe(1);
+    expect(live.agentCountsAdmissionMs).toBe(200);
+
+    const deferred = reconcileTaskSources(live, parseTaskUpdated({
+      tasks: [{ task_id: "t1", status: "running", updated_at: "2026-09-10T12:00:00Z" }],
+      agent_running_count: 5, agent_total_count: 5,
+    }), undefined, { countRequestedMs: 100 });
+    expect(deferred.taskAgentRunningCount).toBe(1);
+    expect(deferred.agentCountsAdmissionMs).toBe(200);
+  });
+
+  it("alias merges elect agent counts by admission clock in either direction", () => {
+    const older = applyCountAuthority(bareState(1, 1), { taskAgentRunningCount: 1, taskAgentTotalCount: 1 }, 100);
+    const newer = applyCountAuthority(bareState(2, 2), { taskAgentRunningCount: 2, taskAgentTotalCount: 2 }, 200);
+    expect(mergeTaskAuthorities(older, newer).taskAgentRunningCount).toBe(2);
+    const merged = mergeTaskAuthorities(newer, older);
+    expect(merged.taskAgentRunningCount).toBe(2);
+    expect(merged.agentCountsAdmissionMs).toBe(200);
   });
 });

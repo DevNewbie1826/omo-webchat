@@ -7,6 +7,7 @@ import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../spli
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
 import type { DagDigest, TaskDigest, DagDigestRun, TaskDigestEntry } from "./activityDigest";
 import { reconcileTaskSources } from "../split/taskAuthority";
+import { canonicalLiveSessionId, useLiveAgentAggregates } from "./liveBadgeStore";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
@@ -104,6 +105,18 @@ function digestReceivedMs(receivedAt: string | undefined): number | null {
 export interface SummaryFreshness {
   readonly sessionLive?: boolean;
   readonly heartbeatStamps?: ReadonlyMap<string, string>;
+  /** The shared store's elected agent-work aggregate. Its acceptance ordering
+   * across task and DAG deliveries has already been applied by the shared
+   * count authority, so when present it is the sole running-count authority
+   * and no payload row clock is consulted. */
+  readonly agentAggregate?: AcceptedAgentAggregate;
+}
+
+/** The accepted agent-count aggregate for one session: the exact deduplicated
+ * running/total pair the shared store elected by admission ordering. */
+export interface AcceptedAgentAggregate {
+  readonly running: number;
+  readonly total: number | undefined;
 }
 
 /** Latest known activity of a task: its row stamp, raised by any fresher
@@ -250,9 +263,9 @@ export function summarizeLiveSession(
         ? 0
         : countDigestDagRunning(dagDigest.runs, taskIds)
     : overlap === null ? dagScalar : Math.max(0, dagScalar - overlap);
-  const agentRunning = orderedAgentAuthority(
-    parsedTask, taskDigest, parsedDag, info.dagDigest,
-  )?.running;
+  const agentRunning = freshness?.agentAggregate !== undefined
+    ? freshness.agentAggregate.running
+    : orderedAgentAuthority(parsedTask, taskDigest, parsedDag, info.dagDigest)?.running;
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -281,60 +294,37 @@ export function summarizeLiveSession(
 }
 
 
-function parsedTaskRecencyMs(parsed: ParsedTaskUpdated | null): number {
-  let latest = -Infinity;
-  for (const task of parsed?.tasks ?? []) {
-    const ms = task.updatedAt === undefined ? null : Date.parse(task.updatedAt);
-    if (ms !== null && !Number.isNaN(ms) && ms > latest) latest = ms;
-  }
-  return latest;
-}
-
-function parsedDagRecencyMs(parsed: ParsedDagUpdated | null): number {
-  let latest = -Infinity;
-  for (const run of parsed?.runs ?? []) {
-    const ms = run.updatedAt === undefined ? null : Date.parse(run.updatedAt);
-    if (ms !== null && !Number.isNaN(ms) && ms > latest) latest = ms;
-  }
-  return latest;
-}
-
-/** One ordered aggregate across task and DAG deliveries: the most recent
- * source wins; ties prefer the DAG side (the later completion source). */
+/** Within one summary envelope the aggregate is structural, never a clock
+ * comparison: the DAG side is the later completion source, a DAG digest
+ * backs a cached oversized side, and a task digest is the authoritative
+ * compact projection of its side. Ordering across separate deliveries is
+ * decided by the shared store's accepted-delivery admission clock before
+ * this fallback ever runs. */
 function orderedAgentAuthority(
   parsedTask: ParsedTaskUpdated | null,
   taskDigest: TaskDigest | undefined,
   parsedDag: ParsedDagUpdated | null,
   dagDigest: DagDigest | undefined,
 ): { readonly running: number; readonly total: number | undefined } | undefined {
-  const candidates: { side: "task" | "dag"; at: number; running: number; total: number | undefined }[] = [];
-  const taskLiveRunning = parsedTask?.taskAgentRunningCount;
-  if (taskLiveRunning !== undefined) {
-    candidates.push({ side: "task", at: parsedTaskRecencyMs(parsedTask), running: taskLiveRunning, total: parsedTask?.taskAgentTotalCount });
+  if (dagDigest?.agentRunningCount !== undefined) {
+    return { running: dagDigest.agentRunningCount, total: dagDigest.agentTotalCount };
+  }
+  if (parsedDag?.agentRunningCount !== undefined) {
+    return { running: parsedDag.agentRunningCount, total: parsedDag.agentTotalCount };
   }
   if (taskDigest?.taskAgentRunningCount !== undefined) {
-    candidates.push({ side: "task", at: digestReceivedMs(taskDigest.receivedAt) ?? -Infinity, running: taskDigest.taskAgentRunningCount, total: taskDigest.taskAgentTotalCount });
+    return { running: taskDigest.taskAgentRunningCount, total: taskDigest.taskAgentTotalCount };
   }
-  const dagLiveRunning = parsedDag?.agentRunningCount;
-  if (dagLiveRunning !== undefined) {
-    candidates.push({ side: "dag", at: parsedDagRecencyMs(parsedDag), running: dagLiveRunning, total: parsedDag?.agentTotalCount });
+  if (parsedTask?.taskAgentRunningCount !== undefined) {
+    return { running: parsedTask.taskAgentRunningCount, total: parsedTask.taskAgentTotalCount };
   }
-  if (dagDigest?.agentRunningCount !== undefined) {
-    candidates.push({ side: "dag", at: digestReceivedMs(dagDigest.receivedAt) ?? -Infinity, running: dagDigest.agentRunningCount, total: dagDigest.agentTotalCount });
-  }
-  if (candidates.length === 0) return undefined;
-  let best = candidates[0]!;
-  for (const candidate of candidates.slice(1)) {
-    if (candidate.at > best.at || (candidate.at === best.at && candidate.side === "dag" && best.side === "task")) {
-      best = candidate;
-    }
-  }
-  return { running: best.running, total: best.total };
+  return undefined;
 }
 
 /** Per-session activity rollups for live sessions, from the shared poller. */
 export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionSummary[] {
   const infos = useLiveSessionInfos(enabled);
+  const aggregates = useLiveAgentAggregates();
   const [clockMs, setClockMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -345,7 +335,13 @@ export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionS
   }, [enabled]);
 
   return useMemo(
-    () => infos.map((info) => summarizeLiveSession(info, clockMs, { sessionLive: true })),
-    [infos, clockMs],
+    () => infos.map((info) => {
+      const agentAggregate = aggregates.get(canonicalLiveSessionId(info.id));
+      return summarizeLiveSession(info, clockMs, {
+        sessionLive: true,
+        ...(agentAggregate === undefined ? {} : { agentAggregate }),
+      });
+    }),
+    [infos, aggregates, clockMs],
   );
 }

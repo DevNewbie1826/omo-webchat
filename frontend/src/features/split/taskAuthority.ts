@@ -220,7 +220,9 @@ export function reconcileTaskSources<T extends TaskAuthority>(
   return next;
 }
 
-/** Alias migration is a union of per-ID decisions, including removed-row clocks. */
+/** Alias migration is a union of per-ID decisions, including removed-row clocks.
+ * The count authority stays one: the side with the newer accepted-delivery
+ * admission clock wins regardless of merge order. */
 export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority): TaskAuthority {
   let merged = reconcileTaskAuthority(first, [...second.tasks.values()], { mergeOnly: true });
   const tasks = new Map(merged.tasks), taskFreshness = new Map(merged.taskFreshness);
@@ -234,12 +236,17 @@ export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority
     if (!second.tasks.has(id)) tasks.delete(id);
     taskFreshness.set(id, revision);
   }
+  const countsFromSecond = second.taskAgentRunningCount !== undefined
+    && (second.agentCountsAdmissionMs ?? -Infinity) >= (first.agentCountsAdmissionMs ?? -Infinity);
+  const elected = countsFromSecond ? second : first;
+  const agentCountsAdmissionMs = Math.max(first.agentCountsAdmissionMs ?? -Infinity, second.agentCountsAdmissionMs ?? -Infinity);
   merged = { ...merged, tasks, taskFreshness, truncatedTasks: first.truncatedTasks === true || second.truncatedTasks === true,
     taskUnavailable: first.taskUnavailable === true || second.taskUnavailable === true,
-    ...(second.taskRunningCount === undefined ? {} : { taskRunningCount: second.taskRunningCount }),
-    ...(second.taskTotalCount === undefined ? {} : { taskTotalCount: second.taskTotalCount }),
-    ...(second.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: second.taskAgentRunningCount }),
-    ...(second.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: second.taskAgentTotalCount }) };
+    ...(elected.taskRunningCount === undefined ? {} : { taskRunningCount: elected.taskRunningCount }),
+    ...(elected.taskTotalCount === undefined ? {} : { taskTotalCount: elected.taskTotalCount }),
+    ...(elected.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: elected.taskAgentRunningCount }),
+    ...(elected.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: elected.taskAgentTotalCount }),
+    ...(Number.isFinite(agentCountsAdmissionMs) ? { agentCountsAdmissionMs } : {}) };
   return reconcileTaskAuthority(merged, [], { mergeOnly: true, truncated: merged.truncatedTasks });
 }
 

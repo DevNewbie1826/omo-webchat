@@ -80,6 +80,20 @@ describe("canonical task authority through all sidebar sources", () => {
     expect(merged[0]).toMatchObject({ runningCount: 4 });
   });
 
+  it("elects a later overview-pushed DAG aggregate over the poll task aggregate despite an older run clock", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 1,
+      agent_running_count: 2, agent_total_count: 2 });
+    counts(0, 2);
+    act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "s", durableSessionId: "s",
+      snapshots: [{ name: "omo.dag.updated", oversized: false, data: {
+        truncated_runs: false, running_count: 1, agent_running_count: 1, agent_total_count: 2,
+        runs: [{ run_id: "r1", run_key: "r1", name: "Graph", status: "running", updated_at: t1,
+          counts: { total: 1, pending: 0, blocked: 0, scheduled: 0, running: 1, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+          nodes: [{ id: "n1", prompt: "DAG only", depends_on: [], state: "running" }], edges: [], waves: [] }] } }],
+      overflow: false } as ChatServerFrame));
+    counts(0, 1);
+  });
+
   it("keeps compact correction authority over stale/equal rich enrichment", async () => {
     await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
       { task_id: "child-1", status: "completed", raw_status: "running", updated_at: t2 }], truncated: true } });
