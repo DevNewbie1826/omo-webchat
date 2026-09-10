@@ -91,20 +91,33 @@ type completeStoredRun struct {
 		Nodes []completeStoredDefinition `json:"nodes"`
 	} `json:"definition"`
 	Nodes []completeStoredNode `json:"nodes"`
-	Waves []completeStoredWave `json:"waves"`
+	// Waves stays raw: a malformed optional hint must degrade to the computed
+	// layout in storedDagWaves, never fail the checkpoint decode itself.
+	Waves json.RawMessage `json:"waves"`
 }
 
 type completeStoredWave struct {
-	Index   int      `json:"index"`
+	Index   *int64   `json:"index"`
 	NodeIDs []string `json:"nodeIds"`
 }
 
+// dagWaveMaxSafeIndex is the frontend's Number.isSafeInteger ceiling: a
+// larger lane index would make the browser-side complete-document parser
+// reject the whole response, so such hints are unusable and fall back.
+const dagWaveMaxSafeIndex = int64(9007199254740991)
+
 // Stored waves are the engine's authored layout: the lane assignment and
 // the deliberate order inside each lane. They pass through verbatim only
-// when every wave is non-empty with a distinct non-negative index and the
-// waves cover every node exactly once; anything less trustworthy falls back
-// to the computed layout instead of painting a broken arrangement.
-func storedDagWaves(stored []completeStoredWave, nodes []activityDagNode) []activityDagWave {
+// when the hint decodes, every wave carries a present, non-null, distinct
+// index in the frontend-safe range, and the waves cover every node exactly
+// once; anything less trustworthy — including malformed hint shapes, which
+// are decoded independently so they cannot invalidate the checkpoint —
+// falls back to the computed layout instead of painting a broken arrangement.
+func storedDagWaves(raw json.RawMessage, nodes []activityDagNode) []activityDagWave {
+	var stored []completeStoredWave
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &stored) != nil {
+		return dagWaves(nodes)
+	}
 	if len(stored) == 0 {
 		return dagWaves(nodes)
 	}
@@ -112,21 +125,21 @@ func storedDagWaves(stored []completeStoredWave, nodes []activityDagNode) []acti
 	for _, node := range nodes {
 		known[node.ID] = true
 	}
-	indices := make(map[int]bool, len(stored))
+	indices := make(map[int64]bool, len(stored))
 	covered := make(map[string]bool, len(nodes))
 	waves := make([]activityDagWave, 0, len(stored))
 	for _, wave := range stored {
-		if len(wave.NodeIDs) == 0 || wave.Index < 0 || indices[wave.Index] {
+		if len(wave.NodeIDs) == 0 || wave.Index == nil || *wave.Index < 0 || *wave.Index > dagWaveMaxSafeIndex || indices[*wave.Index] {
 			return dagWaves(nodes)
 		}
-		indices[wave.Index] = true
+		indices[*wave.Index] = true
 		for _, id := range wave.NodeIDs {
 			if !known[id] || covered[id] {
 				return dagWaves(nodes)
 			}
 			covered[id] = true
 		}
-		waves = append(waves, activityDagWave{Index: wave.Index, NodeIDs: append([]string(nil), wave.NodeIDs...)})
+		waves = append(waves, activityDagWave{Index: int(*wave.Index), NodeIDs: append([]string(nil), wave.NodeIDs...)})
 	}
 	if len(covered) != len(nodes) {
 		return dagWaves(nodes)

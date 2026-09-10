@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -52,8 +53,10 @@ func waveTestCheckpoint(t *testing.T, waves string) []byte {
 		},
 	}
 	if waves != "" {
-		raw := json.RawMessage(waves)
-		document["waves"] = raw
+		// RawMessage keeps malformed hint shapes (objects, strings, wrong
+		// value types) verbatim so the parser meets them as the engine could
+		// write them, not as Go types that silently coerce.
+		document["waves"] = json.RawMessage(waves)
 	}
 	data, err := json.Marshal(document)
 	if err != nil {
@@ -127,5 +130,64 @@ func TestParseCompleteDagInvalidStoredWavesFallBack(t *testing.T) {
 			t.Fatalf("waves %s: %v", waves, err)
 		}
 		assertWaveLayout(t, document.Run.Waves, [][]string{{"a", "b", "c"}})
+	}
+}
+
+// A malformed optional hint (wrong container or value types the typed decode
+// cannot represent) must degrade to the computed layout, not invalidate an
+// otherwise readable checkpoint.
+func TestParseCompleteDagMalformedWaveHintsFallBack(t *testing.T) {
+	malformed := []string{
+		`{"index":0,"nodeIds":["b","a","c"]}`,
+		`"nope"`,
+		`7`,
+		`[{"index":"0","nodeIds":["b","a","c"]}]`,
+		`[{"index":0.5,"nodeIds":["b","a","c"]}]`,
+		`[{"index":0,"nodeIds":["b",2,"c"]}]`,
+	}
+	for _, waves := range malformed {
+		document, err := parseCompleteDag(waveTestCheckpoint(t, waves))
+		if err != nil {
+			t.Fatalf("waves %s: %v", waves, err)
+		}
+		assertWaveLayout(t, document.Run.Waves, [][]string{{"a", "b", "c"}})
+	}
+}
+
+// An index must be explicitly present, non-null, and inside the frontend's
+// safe-integer range; anything else is an invented or unconsumable lane key
+// and falls back. Sparse, non-contiguous indices remain valid.
+func TestParseCompleteDagWaveIndexBoundaries(t *testing.T) {
+	for _, waves := range []string{
+		`[{"nodeIds":["b","a","c"]}]`,
+		`[{"index":null,"nodeIds":["b","a","c"]}]`,
+		`[{"index":9007199254740992,"nodeIds":["b","a","c"]}]`,
+	} {
+		document, err := parseCompleteDag(waveTestCheckpoint(t, waves))
+		if err != nil {
+			t.Fatalf("waves %s: %v", waves, err)
+		}
+		assertWaveLayout(t, document.Run.Waves, [][]string{{"a", "b", "c"}})
+	}
+
+	sparse, err := parseCompleteDag(waveTestCheckpoint(t,
+		`[{"index":2,"nodeIds":["c"]},{"index":0,"nodeIds":["b","a"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sparse.Run.Waves) != 2 || sparse.Run.Waves[0].Index != 0 ||
+		!reflect.DeepEqual(sparse.Run.Waves[0].NodeIDs, []string{"b", "a"}) ||
+		sparse.Run.Waves[1].Index != 2 || !reflect.DeepEqual(sparse.Run.Waves[1].NodeIDs, []string{"c"}) {
+		t.Fatalf("sparse waves = %+v, want lanes 0:[b a] and 2:[c]", sparse.Run.Waves)
+	}
+
+	safeMax, err := parseCompleteDag(waveTestCheckpoint(t,
+		`[{"index":9007199254740991,"nodeIds":["b","a","c"]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(safeMax.Run.Waves) != 1 || safeMax.Run.Waves[0].Index != 9007199254740991 ||
+		!reflect.DeepEqual(safeMax.Run.Waves[0].NodeIDs, []string{"b", "a", "c"}) {
+		t.Fatalf("safe-max waves = %+v, want one lane 9007199254740991:[b a c]", safeMax.Run.Waves)
 	}
 }
