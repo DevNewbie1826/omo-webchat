@@ -129,8 +129,8 @@ export async function createRegistry({ tarballs = [], failPublishAt, hidePublish
         const document = packages.get(name);
         const stillHidden = [];
         for (const entry of concealed.get(name)) {
-          if (entry.getsRemaining > 0) {
-            if (request.method === 'GET') entry.getsRemaining -= 1;
+          if (entry.getsRemaining > 0 || request.method !== 'GET') {
+            if (request.method === 'GET' && entry.getsRemaining > 0) entry.getsRemaining -= 1;
             stillHidden.push(entry);
           } else if (document) {
             document.versions[entry.version] = entry.metadata;

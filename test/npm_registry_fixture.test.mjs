@@ -301,6 +301,16 @@ test('concealed publication becomes visible on the N+1st root read only', option
       assert.equal(await visible(), false, `hidden=${hidden} read=${read} must stay concealed`);
     }
     assert.equal(await visible(), true, `hidden=${hidden} must reveal after ${hidden} reads`);
+    if (hidden > 0) {
+      const second = await readFile(await pack(ctx, { name, version: '1.0.1' }));
+      const put2 = await json(`${ctx.registry.url}/${name}`, { method: 'PUT', body: JSON.stringify(publishBody(name, '1.0.1', second)), headers: { 'content-type': 'application/json' } });
+      assert.equal(put2.status, 201);
+      for (let read = 0; read < hidden; read++) await json(`${ctx.registry.url}/${name}`);
+      assert.equal(await fetch(`${ctx.registry.url}/${name}`, { method: 'HEAD' }).then((r) => r.status), 200);
+      assert.equal(ctx.registry.packages.get(name)?.versions?.['1.0.1'], undefined, 'HEAD after an exhausted budget must not reveal');
+      const revealedSecond = await json(`${ctx.registry.url}/${name}`);
+      assert.notEqual(revealedSecond.body.versions?.['1.0.1'], undefined, 'the next GET reveals');
+    }
   }
 });
 
