@@ -12,6 +12,7 @@ const sessionTree = readStyle("session-tree");
 const termhead = readStyle("terminal-header");
 const math = readStyle("math");
 const modal = readStyle("modal-dialog");
+const activityShelf = readStyle("activity-shelf");
 const newChat = readStyle("new-chat-dialog");
 const split = readStyle("split-view");
 const fileBrowser = readStyle("file-browser");
@@ -815,5 +816,13 @@ describe("transcript error readability", () => {
     expect(declarationValue(body, "white-space")).toBe("pre-wrap");
     expect(declarationValue(body, "overflow-wrap")).toBe("anywhere");
     expect(declarationValue(body, "user-select")).toBe("text");
+  });
+});
+
+describe("activity shelf DAG contracts", () => {
+  it("separates the DAG tab refresh row from the first run card", () => {
+    const rule = activityShelf.match(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{[^}]*\}/);
+    expect(rule, "scoped refresh-toolbar spacing rule").not.toBeNull();
+    expect(rule?.[0]).toContain("margin-bottom: var(--th-space-3)");
   });
 });
