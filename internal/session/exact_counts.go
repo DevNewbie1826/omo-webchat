@@ -237,10 +237,24 @@ func (s *Session) exactActivityFrameDataLocked(name string, raw json.RawMessage,
 func (s *Session) refreshExactCountsLocked() (running, total int) {
 	running, total = exactAgentCounts(&s.taskSnapshots, &s.dagSnapshots)
 	setAgentCounts(s.taskDigest, s.dagDigest, running, total)
+	publishTaskCountAuthority(s.taskDigest, &s.taskSnapshots)
 	return running, total
 }
 
 func refreshOverviewExactCounts(entry *overviewCacheEntry) {
 	running, total := exactAgentCounts(&entry.taskSnapshots, &entry.dagSnapshots)
 	setAgentCounts(entry.task, entry.dag, running, total)
+	publishTaskCountAuthority(entry.task, &entry.taskSnapshots)
+}
+
+// Task running/total authority is the full count membership, which survives
+// bounded rich-row eviction. Publish it on the digest independent of any
+// retained-row mutation: a DAG outcome that completes an already-evicted task
+// corrects the member without a row to reconcile, and the digest must not keep
+// the stale scalar until some unrelated row change rebuilds it.
+func publishTaskCountAuthority(digest *TaskDigest, task *taskSnapshotCache) {
+	if digest == nil || !task.countAuthorityKnown {
+		return
+	}
+	digest.RunningCount, digest.TotalCount = task.runningCount, task.totalCount
 }
