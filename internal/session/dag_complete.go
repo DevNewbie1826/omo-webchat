@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"unicode/utf8"
 )
 
@@ -90,6 +91,48 @@ type completeStoredRun struct {
 		Nodes []completeStoredDefinition `json:"nodes"`
 	} `json:"definition"`
 	Nodes []completeStoredNode `json:"nodes"`
+	Waves []completeStoredWave `json:"waves"`
+}
+
+type completeStoredWave struct {
+	Index   int      `json:"index"`
+	NodeIDs []string `json:"nodeIds"`
+}
+
+// Stored waves are the engine's authored layout: the lane assignment and
+// the deliberate order inside each lane. They pass through verbatim only
+// when every wave is non-empty with a distinct non-negative index and the
+// waves cover every node exactly once; anything less trustworthy falls back
+// to the computed layout instead of painting a broken arrangement.
+func storedDagWaves(stored []completeStoredWave, nodes []activityDagNode) []activityDagWave {
+	if len(stored) == 0 {
+		return dagWaves(nodes)
+	}
+	known := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		known[node.ID] = true
+	}
+	indices := make(map[int]bool, len(stored))
+	covered := make(map[string]bool, len(nodes))
+	waves := make([]activityDagWave, 0, len(stored))
+	for _, wave := range stored {
+		if len(wave.NodeIDs) == 0 || wave.Index < 0 || indices[wave.Index] {
+			return dagWaves(nodes)
+		}
+		indices[wave.Index] = true
+		for _, id := range wave.NodeIDs {
+			if !known[id] || covered[id] {
+				return dagWaves(nodes)
+			}
+			covered[id] = true
+		}
+		waves = append(waves, activityDagWave{Index: wave.Index, NodeIDs: append([]string(nil), wave.NodeIDs...)})
+	}
+	if len(covered) != len(nodes) {
+		return dagWaves(nodes)
+	}
+	sort.SliceStable(waves, func(i, j int) bool { return waves[i].Index < waves[j].Index })
+	return waves
 }
 
 func parseCompleteDag(data []byte) (CompleteDagDocument, error) {
@@ -160,7 +203,7 @@ func parseCompleteDag(data []byte) (CompleteDagDocument, error) {
 		run.Nodes = append(run.Nodes, FullDagNode{ID: node.ID, Label: label, Prompt: *prompt, DependsOn: depends, State: node.State, TaskID: node.TaskID, Attempt: node.Attempt, StartedAt: node.StartedAt, CompletedAt: node.CompletedAt})
 		waveNodes = append(waveNodes, activityDagNode{ID: node.ID, DependsOn: depends})
 	}
-	run.Waves = dagWaves(waveNodes)
+	run.Waves = storedDagWaves(stored.Waves, waveNodes)
 	sum := sha256.Sum256(data)
 	return CompleteDagDocument{Complete: true, ContentToken: hex.EncodeToString(sum[:]), Run: run}, nil
 }
