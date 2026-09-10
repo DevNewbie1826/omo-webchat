@@ -65,7 +65,6 @@ func (c *taskSnapshotCache) mergeCountAuthority(incoming []map[string]json.RawMe
 		present[key] = true
 		current, exists := c.countMembers[key]
 		if exists && current.known && (!next.known || next.millis <= current.millis) {
-			current.present = true
 			c.countMembers[key] = current
 			continue
 		}
@@ -142,7 +141,6 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 		present[key] = true
 		current, exists := c.countRuns[key]
 		if exists && current.known && (!next.known || next.millis <= current.millis) {
-			current.present = true
 			c.countRuns[key] = current
 			continue
 		}

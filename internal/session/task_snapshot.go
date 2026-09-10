@@ -283,6 +283,14 @@ func (c *taskSnapshotCache) observe(accepted []json.RawMessage) {
 			c.evidenceClock++
 			key := taskOutcomeKey{run: runKey, task: sha256.Sum256([]byte(id))}
 			c.outcomes[key] = taskOutcomeEvidence{dagTaskOutcome: outcomes[id], serial: c.evidenceClock}
+			memberKey := sha256.Sum256([]byte(id))
+			if member, ok := c.countMembers[memberKey]; ok && member.present && !terminalTaskStatuses[member.status] && terminalTaskStatuses[outcomes[id].status] {
+				member.status = outcomes[id].status
+				c.countMembers[memberKey] = member
+				if c.countAuthorityKnown {
+					c.finishCountAuthority()
+				}
+			}
 		}
 	}
 }
