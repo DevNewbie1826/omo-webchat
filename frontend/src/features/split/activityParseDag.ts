@@ -1,10 +1,15 @@
 import { isRecord, optBoolean, optNumber, optString, optStringArray, reqString } from "../../lib/chatWsParseFields";
 import { mapDrop, optSchemaVersion } from "./activityParseShared";
+import type { CountAuthority } from "./taskAuthority";
 import type { ActivityDagCounts, ActivityDagEdge, ActivityDagNode, ActivityDagRun, ActivityDagWave } from "./activityTypes";
 
 export interface ParsedDagUpdated {
   readonly parentSessionId?: string;
   readonly truncatedRuns?: boolean;
+  /** Exact deduplicated agent-work aggregate, identical to the task side's;
+   * the sole count authority for sidebar, overview, and Subagents slots. */
+  readonly agentRunningCount?: number;
+  readonly agentTotalCount?: number;
   readonly runs: readonly ActivityDagRun[];
 }
 
@@ -171,10 +176,30 @@ export function parseDagUpdated(data: unknown): ParsedDagUpdated | null {
   // A discarded run is missing membership, not an authoritative empty list.
   const rawRuns = data["runs"];
   const lostRuns = duplicateRuns.size > 0 || (Array.isArray(rawRuns) && runs.length < rawRuns.length);
+  const agentRunningCount = optCount(data["agent_running_count"]);
+  const agentTotalCount = optCount(data["agent_total_count"]);
   return {
     runs,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+    ...(agentRunningCount !== undefined ? { agentRunningCount } : {}),
+    ...(agentTotalCount !== undefined ? { agentTotalCount } : {}),
     ...(lostRuns ? { truncatedRuns: true } : truncatedRuns !== undefined ? { truncatedRuns } : {}),
+  };
+}
+
+function optCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Count-only read of an omo.dag.updated payload. The node running sum stays
+ * out: only the shared agent aggregate maps onto the authority fields. */
+export function parseDagCounts(data: unknown): CountAuthority | null {
+  if (!isRecord(data)) return null;
+  const taskAgentRunningCount = optCount(data["agent_running_count"]);
+  const taskAgentTotalCount = optCount(data["agent_total_count"]);
+  return {
+    ...(taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount }),
+    ...(taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount }),
   };
 }
 

@@ -18,8 +18,52 @@ export interface TaskAuthority {
   /** Known revisions survive row omission until this pane/session owner retires. */
   readonly taskFreshness?: ReadonlyMap<string, number>;
   readonly truncatedTasks?: boolean;
+  /** Server pre-truncation scalars; authoritative over the retained rows. */
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
+  /** Admission clock of the newest accepted scalar delivery (live or hydration). */
+  readonly agentCountsAdmissionMs?: number;
+  /** Exact deduplicated agent-work aggregate over task and DAG membership;
+   * the sole count authority for sidebar, overview, and Subagents slots. */
+  readonly taskAgentRunningCount?: number;
+  readonly taskAgentTotalCount?: number;
   /** Oversized input without even a compact authority side is unknown. */
   readonly taskUnavailable?: boolean;
+}
+
+/** The count-only subset of a snapshot frame's authority. The DAG-side reader
+ * maps its aggregate onto the same fields; its node running sum is not a task
+ * scalar and never enters here. */
+export interface CountAuthority {
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
+  readonly taskAgentRunningCount?: number;
+  readonly taskAgentTotalCount?: number;
+}
+
+/** Merge count-only authority into a state that rows were already reconciled
+ * into. Omitted scalars retain the established authority; nothing pins zeros. */
+export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: CountAuthority, atMs?: number): T {
+  if (atMs !== undefined && state.agentCountsAdmissionMs !== undefined && atMs < state.agentCountsAdmissionMs) return state;
+  const taskRunningCount = counts.taskRunningCount ?? state.taskRunningCount;
+  const taskTotalCount = counts.taskTotalCount ?? state.taskTotalCount;
+  const taskAgentRunningCount = counts.taskAgentRunningCount ?? state.taskAgentRunningCount;
+  const taskAgentTotalCount = counts.taskAgentTotalCount ?? state.taskAgentTotalCount;
+  const agentCountsAdmissionMs = atMs === undefined && state.agentCountsAdmissionMs === undefined
+    ? state.agentCountsAdmissionMs
+    : Math.max(state.agentCountsAdmissionMs ?? -Infinity, atMs ?? -Infinity);
+  if (taskRunningCount === state.taskRunningCount && taskTotalCount === state.taskTotalCount
+    && taskAgentRunningCount === state.taskAgentRunningCount
+    && taskAgentTotalCount === state.taskAgentTotalCount
+    && agentCountsAdmissionMs === state.agentCountsAdmissionMs) return state;
+  return {
+    ...state,
+    ...(taskRunningCount === state.taskRunningCount ? {} : { taskRunningCount }),
+    ...(taskTotalCount === state.taskTotalCount ? {} : { taskTotalCount }),
+    ...(taskAgentRunningCount === state.taskAgentRunningCount ? {} : { taskAgentRunningCount }),
+    ...(taskAgentTotalCount === state.taskAgentTotalCount ? {} : { taskAgentTotalCount }),
+    ...(agentCountsAdmissionMs === state.agentCountsAdmissionMs ? {} : { agentCountsAdmissionMs }),
+  };
 }
 
 export function rawTaskRevision(task: ActivityTask): number | undefined {
@@ -74,7 +118,7 @@ function equalTask(previous: ActivityTask, incoming: ActivityTask): ActivityTask
 export function reconcileTaskAuthority<T extends TaskAuthority>(
   state: T,
   incoming: readonly ActivityTask[],
-  options: { readonly truncated?: boolean | undefined; readonly partial?: boolean; readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly mergeOnly?: boolean } = {},
+  options: { readonly truncated?: boolean | undefined; readonly partial?: boolean; readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly mergeOnly?: boolean; readonly taskRunningCount?: number; readonly taskTotalCount?: number; readonly taskAgentRunningCount?: number; readonly taskAgentTotalCount?: number; readonly countAdmissionMs?: number; readonly countRequestedMs?: number } = {},
 ): T {
   const tasks = new Map(state.tasks);
   const taskFreshness = new Map(state.taskFreshness);
@@ -108,23 +152,58 @@ export function reconcileTaskAuthority<T extends TaskAuthority>(
   const truncatedTasks = options.truncated === true || options.partial === true || [...tasks.values()].some(task => task.truncated === true || task.compact === true)
     || (state.truncatedTasks === true && !admitted && incoming.length > 0);
   const taskUnavailable = state.taskUnavailable === true && !admitted && (incoming.length > 0 || options.mergeOnly === true);
+  const countsDeferred = options.countRequestedMs !== undefined
+    && state.agentCountsAdmissionMs !== undefined
+    && options.countRequestedMs <= state.agentCountsAdmissionMs
+    && (options.taskAgentRunningCount !== state.taskAgentRunningCount
+      || options.taskAgentTotalCount !== state.taskAgentTotalCount
+      || options.taskRunningCount !== state.taskRunningCount
+      || options.taskTotalCount !== state.taskTotalCount);
+  const taskRunningCount = countsDeferred ? state.taskRunningCount : options.taskRunningCount ?? state.taskRunningCount;
+  const taskTotalCount = countsDeferred ? state.taskTotalCount : options.taskTotalCount ?? state.taskTotalCount;
+  const taskAgentRunningCount = countsDeferred ? state.taskAgentRunningCount : options.taskAgentRunningCount ?? state.taskAgentRunningCount;
+  const taskAgentTotalCount = countsDeferred ? state.taskAgentTotalCount : options.taskAgentTotalCount ?? state.taskAgentTotalCount;
+  const agentCountsAdmissionMs = options.countAdmissionMs === undefined && options.countRequestedMs === undefined && state.agentCountsAdmissionMs === undefined
+    ? state.agentCountsAdmissionMs
+    : Math.max(state.agentCountsAdmissionMs ?? -Infinity, options.countAdmissionMs ?? -Infinity, options.countRequestedMs ?? -Infinity);
   if (sameTasks && sameFreshness && truncatedTasks === (state.truncatedTasks ?? false)
-    && taskUnavailable === (state.taskUnavailable ?? false)) return state;
+    && taskUnavailable === (state.taskUnavailable ?? false)
+    && taskRunningCount === state.taskRunningCount && taskTotalCount === state.taskTotalCount
+    && taskAgentRunningCount === state.taskAgentRunningCount && taskAgentTotalCount === state.taskAgentTotalCount
+    && agentCountsAdmissionMs === state.agentCountsAdmissionMs) return state;
   return { ...state, tasks: sameTasks ? state.tasks : tasks,
-    taskFreshness: sameFreshness ? state.taskFreshness : taskFreshness, truncatedTasks, taskUnavailable };
+    taskFreshness: sameFreshness ? state.taskFreshness : taskFreshness, truncatedTasks, taskUnavailable,
+    ...(taskRunningCount === state.taskRunningCount ? {} : { taskRunningCount }),
+    ...(taskTotalCount === state.taskTotalCount ? {} : { taskTotalCount }),
+    ...(taskAgentRunningCount === state.taskAgentRunningCount ? {} : { taskAgentRunningCount }),
+    ...(taskAgentTotalCount === state.taskAgentTotalCount ? {} : { taskAgentTotalCount }),
+    ...(agentCountsAdmissionMs === state.agentCountsAdmissionMs ? {} : { agentCountsAdmissionMs }) };
 }
 
 /** A compact side and its rich prefix form one membership envelope. Reconcile
  * the compact authority first, then enrich without a second omission operation. */
 export function reconcileTaskSources<T extends TaskAuthority>(
   state: T, rich: ParsedTaskUpdated | null, digest: TaskDigest | undefined,
-  options: { readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly oversized?: boolean } = {},
+  options: { readonly history?: boolean; readonly touched?: ReadonlySet<string>; readonly oversized?: boolean; readonly countAdmissionMs?: number; readonly countRequestedMs?: number } = {},
 ): T {
   if (rich === null && digest === undefined) return options.oversized === true
     ? { ...reconcileTaskAuthority(state, [], { mergeOnly: true, truncated: true }), taskUnavailable: true } : state;
   const truncated = digest === undefined ? rich?.truncatedTasks === true || options.oversized === true : digest.truncated;
   const partial = rich?.truncatedTasks === true || options.oversized === true;
-  if (digest === undefined) return reconcileTaskAuthority(state, rich!.tasks, { ...options, truncated });
+  // Within one envelope the digest is the server's current computed aggregate;
+  // the rich payload's scalars can be a cached per-side snapshot and only fill
+  // fields the digest does not carry.
+  const scalars = {
+    ...(rich?.taskRunningCount === undefined ? {} : { taskRunningCount: rich.taskRunningCount }),
+    ...(rich?.taskTotalCount === undefined ? {} : { taskTotalCount: rich.taskTotalCount }),
+    ...(rich?.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: rich.taskAgentRunningCount }),
+    ...(rich?.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: rich.taskAgentTotalCount }),
+    ...(digest?.taskRunningCount === undefined ? {} : { taskRunningCount: digest.taskRunningCount }),
+    ...(digest?.taskTotalCount === undefined ? {} : { taskTotalCount: digest.taskTotalCount }),
+    ...(digest?.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: digest.taskAgentRunningCount }),
+    ...(digest?.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: digest.taskAgentTotalCount }),
+  };
+  if (digest === undefined) return reconcileTaskAuthority(state, rich!.tasks, { ...options, truncated, ...scalars });
   // Unknown revisions are still arrival-ordered, once per source envelope.
   // Carry matching unknown rich descriptions in the compact row rather than
   // applying the same envelope twice as two unknown raw mutations.
@@ -138,13 +217,15 @@ export function reconcileTaskSources<T extends TaskAuthority>(
     }
     return { ...task, name: task.taskId, compact: true };
   });
-  let next = reconcileTaskAuthority(state, rows, { ...options, truncated, partial: partial && rows.length > 0 });
+  let next = reconcileTaskAuthority(state, rows, { ...options, truncated, partial: partial && rows.length > 0, ...scalars });
   const knownDescriptions = (rich?.tasks ?? []).filter(task => next.tasks.has(task.taskId) && rawTaskRevision(task) !== undefined);
   next = reconcileTaskAuthority(next, knownDescriptions, { mergeOnly: true, truncated, partial: partial && rows.length > 0 });
   return next;
 }
 
-/** Alias migration is a union of per-ID decisions, including removed-row clocks. */
+/** Alias migration is a union of per-ID decisions, including removed-row clocks.
+ * The count authority stays one: the side with the newer accepted-delivery
+ * admission clock wins regardless of merge order. */
 export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority): TaskAuthority {
   let merged = reconcileTaskAuthority(first, [...second.tasks.values()], { mergeOnly: true });
   const tasks = new Map(merged.tasks), taskFreshness = new Map(merged.taskFreshness);
@@ -158,14 +239,28 @@ export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority
     if (!second.tasks.has(id)) tasks.delete(id);
     taskFreshness.set(id, revision);
   }
+  const countsFromSecond = second.taskAgentRunningCount !== undefined
+    && (second.agentCountsAdmissionMs ?? -Infinity) >= (first.agentCountsAdmissionMs ?? -Infinity);
+  const elected = countsFromSecond ? second : first;
+  const agentCountsAdmissionMs = Math.max(first.agentCountsAdmissionMs ?? -Infinity, second.agentCountsAdmissionMs ?? -Infinity);
   merged = { ...merged, tasks, taskFreshness, truncatedTasks: first.truncatedTasks === true || second.truncatedTasks === true,
-    taskUnavailable: first.taskUnavailable === true || second.taskUnavailable === true };
+    taskUnavailable: first.taskUnavailable === true || second.taskUnavailable === true,
+    ...(elected.taskRunningCount === undefined ? {} : { taskRunningCount: elected.taskRunningCount }),
+    ...(elected.taskTotalCount === undefined ? {} : { taskTotalCount: elected.taskTotalCount }),
+    ...(elected.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: elected.taskAgentRunningCount }),
+    ...(elected.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: elected.taskAgentTotalCount }),
+    ...(Number.isFinite(agentCountsAdmissionMs) ? { agentCountsAdmissionMs } : {}) };
   return reconcileTaskAuthority(merged, [], { mergeOnly: true, truncated: merged.truncatedTasks });
 }
 
 /** Wire projection for existing shelf/sidebar parsers. Activity never changes updated_at. */
 export function taskAuthorityPayload(authority: TaskAuthority): unknown {
-  return { truncated_tasks: authority.truncatedTasks === true, tasks: [...authority.tasks.values()].map(task => ({
+  return { truncated_tasks: authority.truncatedTasks === true,
+    ...(authority.taskRunningCount === undefined ? {} : { running_count: authority.taskRunningCount }),
+    ...(authority.taskTotalCount === undefined ? {} : { total_count: authority.taskTotalCount }),
+    ...(authority.taskAgentRunningCount === undefined ? {} : { agent_running_count: authority.taskAgentRunningCount }),
+    ...(authority.taskAgentTotalCount === undefined ? {} : { agent_total_count: authority.taskAgentTotalCount }),
+    tasks: [...authority.tasks.values()].map(task => ({
     task_id: task.taskId, name: task.name, status: task.status,
     raw_status: task.rawStatus, updated_at: task.activityAt === undefined ? task.updatedAt : task.rawUpdatedAt,
     task_summary: task.taskSummary, agent_type: task.agentType, category: task.category, model: task.model,

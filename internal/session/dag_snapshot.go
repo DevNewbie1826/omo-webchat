@@ -18,9 +18,12 @@ type dagFreshness struct {
 }
 
 type dagSnapshotCache struct {
-	runs      map[[sha256.Size]byte]dagFreshness
-	clock     uint64
-	oversized bool
+	runs                map[[sha256.Size]byte]dagFreshness
+	countRuns           map[[sha256.Size]byte]dagCountRun
+	runningCount        int
+	countAuthorityKnown bool
+	clock               uint64
+	oversized           bool
 }
 
 type dagSnapshotResult struct {
@@ -90,6 +93,10 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	}
 	incomingTruncated, _ := parseOptionalBool(doc, "truncated_runs")
 	truncated := incomingTruncated
+	// Provider-declared complete membership is the only basis for exact scalars;
+	// webchat-side bounds never change it.
+	fullMembership := !incomingTruncated
+	c.mergeCountAuthority(incoming, fullMembership)
 	if c.runs == nil {
 		c.runs = make(map[[sha256.Size]byte]dagFreshness)
 	}
@@ -186,6 +193,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 		return dagSnapshotResult{}, err
 	}
 	digest, _ := parseDagDigest(live)
+	digest.RunningCount = c.runningCount
 	if previousDigest != nil {
 		for _, row := range previousDigest.Runs {
 			if missing[sha256.Sum256([]byte(row.RunID))] {

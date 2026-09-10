@@ -2,6 +2,9 @@
   "enrichmentFrames": [
     {
       "data": {
+        "agent_running_count": 0,
+        "agent_total_count": 1,
+        "running_count": 0,
         "tasks": [
           {
             "name": "Refilled task",
@@ -12,6 +15,7 @@
             "updated_at": "2026-09-07T10:02:00.000Z"
           }
         ],
+        "total_count": 1,
         "truncated_tasks": true
       },
       "name": "omo.task.updated",
@@ -28,6 +32,9 @@
   "frames": [
     {
       "data": {
+        "agent_running_count": 1,
+        "agent_total_count": 1,
+        "running_count": 1,
         "tasks": [
           {
             "name": "running",
@@ -37,6 +44,7 @@
             "updated_at": "2026-09-07T10:02:00.000Z"
           }
         ],
+        "total_count": 1,
         "truncated_tasks": true
       },
       "name": "omo.task.updated",
@@ -45,6 +53,9 @@
     },
     {
       "data": {
+        "agent_running_count": 0,
+        "agent_total_count": 1,
+        "running_count": 0,
         "tasks": [
           {
             "raw_status": "running",
@@ -53,6 +64,7 @@
             "updated_at": "2026-09-07T10:02:00.000Z"
           }
         ],
+        "total_count": 1,
         "truncated_tasks": true
       },
       "name": "omo.task.updated",
@@ -69,6 +81,10 @@
         "updated_at": "2026-09-07T10:02:00.000Z"
       }
     ],
-    "truncated": true
+    "truncated": true,
+    "running_count": 0,
+    "total_count": 1,
+    "agent_running_count": 0,
+    "agent_total_count": 1
   }
 }

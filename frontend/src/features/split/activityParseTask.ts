@@ -1,12 +1,23 @@
 import { isRecord, optBoolean, optNumber, optString, reqString } from "../../lib/chatWsParseFields";
-import { taskRawStatus } from "./taskAuthority";
+import { taskRawStatus, type CountAuthority } from "./taskAuthority";
 import { mapDrop } from "./activityParseShared";
 import type { ActivityLiveProgress, ActivityTask } from "./activityTypes";
 
 export interface ParsedTaskUpdated {
   readonly parentSessionId?: string;
   readonly truncatedTasks?: boolean;
+  /** Server pre-truncation scalars, authoritative over the retained rows. */
+  readonly taskRunningCount?: number;
+  readonly taskTotalCount?: number;
+  /** Exact deduplicated agent-work aggregate; the sole count authority for
+   * sidebar, overview, and Subagents slots. */
+  readonly taskAgentRunningCount?: number;
+  readonly taskAgentTotalCount?: number;
   readonly tasks: readonly ActivityTask[];
+}
+
+function optCount(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function optStringOrNumber(record: Record<string, unknown>, key: string): string | number | null | undefined {
@@ -109,10 +120,34 @@ export function parseTaskUpdated(data: unknown): ParsedTaskUpdated | null {
   if (parentSessionId === null || truncatedTasks === null) return null;
   const tasks = mapDrop(data["tasks"], (item) => parseTask(item, parentSessionId, truncatedTasks === true));
   if (tasks === null) return null;
+  const taskRunningCount = optCount(data["running_count"]);
+  const taskTotalCount = optCount(data["total_count"]);
+  const taskAgentRunningCount = optCount(data["agent_running_count"]);
+  const taskAgentTotalCount = optCount(data["agent_total_count"]);
   return {
     tasks,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
+    ...(taskRunningCount !== undefined ? { taskRunningCount } : {}),
+    ...(taskTotalCount !== undefined ? { taskTotalCount } : {}),
+    ...(taskAgentRunningCount !== undefined ? { taskAgentRunningCount } : {}),
+    ...(taskAgentTotalCount !== undefined ? { taskAgentTotalCount } : {}),
     ...(truncatedTasks !== undefined || tasks.length !== (data["tasks"] as unknown[]).length
       ? { truncatedTasks: truncatedTasks === true || tasks.length !== (data["tasks"] as unknown[]).length } : {}),
+  };
+}
+
+/** Count-only read of an omo.task.updated payload: the scalars ride beside the
+ * rows, so a count-only update never depends on row parsing. */
+export function parseTaskCounts(data: unknown): CountAuthority | null {
+  if (!isRecord(data)) return null;
+  const taskRunningCount = optCount(data["running_count"]);
+  const taskTotalCount = optCount(data["total_count"]);
+  const taskAgentRunningCount = optCount(data["agent_running_count"]);
+  const taskAgentTotalCount = optCount(data["agent_total_count"]);
+  return {
+    ...(taskRunningCount === undefined ? {} : { taskRunningCount }),
+    ...(taskTotalCount === undefined ? {} : { taskTotalCount }),
+    ...(taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount }),
+    ...(taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount }),
   };
 }

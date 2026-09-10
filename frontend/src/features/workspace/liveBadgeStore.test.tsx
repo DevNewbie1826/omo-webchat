@@ -90,9 +90,6 @@ const IDLE_POLL_SUMMARY: LiveSessionSummary = {
   dagTotal: 0,
   lastLine: null,
   dagRunning: 0,
-  truncatedTasks: false,
-  taskOversized: false,
-  dagOversized: false,
 };
 
 interface Captured {

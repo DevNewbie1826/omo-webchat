@@ -21,9 +21,13 @@ type TaskDigestEntry struct {
 }
 
 type TaskDigest struct {
-	Tasks      []TaskDigestEntry `json:"tasks"`
-	Truncated  bool              `json:"truncated"`
-	ReceivedAt string            `json:"received_at,omitempty"`
+	Tasks             []TaskDigestEntry `json:"tasks"`
+	Truncated         bool              `json:"truncated"`
+	RunningCount      int               `json:"running_count"`
+	TotalCount        int               `json:"total_count"`
+	AgentRunningCount int               `json:"agent_running_count"`
+	AgentTotalCount   int               `json:"agent_total_count"`
+	ReceivedAt        string            `json:"received_at,omitempty"`
 }
 
 func (d TaskDigest) MarshalJSON() ([]byte, error) {
@@ -32,7 +36,8 @@ func (d TaskDigest) MarshalJSON() ([]byte, error) {
 		tasks = []TaskDigestEntry{}
 	}
 	type wire TaskDigest
-	return json.Marshal(wire{Tasks: tasks, Truncated: d.Truncated, ReceivedAt: d.ReceivedAt})
+	return json.Marshal(wire{Tasks: tasks, Truncated: d.Truncated, RunningCount: d.RunningCount, TotalCount: d.TotalCount,
+		AgentRunningCount: d.AgentRunningCount, AgentTotalCount: d.AgentTotalCount, ReceivedAt: d.ReceivedAt})
 }
 
 type RunDigestEntry struct {
@@ -51,9 +56,12 @@ func (r RunDigestEntry) MarshalJSON() ([]byte, error) {
 }
 
 type DagDigest struct {
-	Runs       []RunDigestEntry `json:"runs"`
-	Truncated  bool             `json:"truncated"`
-	ReceivedAt string           `json:"received_at,omitempty"`
+	Runs              []RunDigestEntry `json:"runs"`
+	Truncated         bool             `json:"truncated"`
+	RunningCount      int              `json:"running_count"`
+	AgentRunningCount int              `json:"agent_running_count"`
+	AgentTotalCount   int              `json:"agent_total_count"`
+	ReceivedAt        string           `json:"received_at,omitempty"`
 }
 
 func (d DagDigest) MarshalJSON() ([]byte, error) {
@@ -62,7 +70,8 @@ func (d DagDigest) MarshalJSON() ([]byte, error) {
 		runs = []RunDigestEntry{}
 	}
 	type wire DagDigest
-	return json.Marshal(wire{Runs: runs, Truncated: d.Truncated, ReceivedAt: d.ReceivedAt})
+	return json.Marshal(wire{Runs: runs, Truncated: d.Truncated, RunningCount: d.RunningCount,
+		AgentRunningCount: d.AgentRunningCount, AgentTotalCount: d.AgentTotalCount, ReceivedAt: d.ReceivedAt})
 }
 
 func parseRequiredString(doc map[string]json.RawMessage, key string) (string, bool) {

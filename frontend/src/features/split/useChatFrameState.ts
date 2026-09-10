@@ -13,9 +13,13 @@ import {
   emptyActivityState,
   type ActivityHydrationBuffer,
   type BufferedActivityEvent,
+  type LiveCountAdmission,
 } from "./activityState";
-import { parseTaskDigest } from "../workspace/activityDigest";
+import { parseDagDigest, parseTaskDigest } from "../workspace/activityDigest";
 import type { ActivityState } from "./activityTypes";
+import { applyCountAuthority, type CountAuthority } from "./taskAuthority";
+import { parseTaskCounts } from "./activityParseTask";
+import { parseDagCounts } from "./activityParseDag";
 import { emptyTodoAuthority, unbindTodoAuthority } from "./todoAuthority";
 import { useEntriesPageBuffer } from "./useEntriesPageBuffer";
 import { useStreamingBuffer } from "./useStreamingBuffer";
@@ -175,10 +179,19 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const activityHydrationRef = useRef<{
     readonly token: number;
     readonly buffer: ActivityHydrationBuffer;
+    readonly requestedMs: number;
+    /** Live-admission sequence when this request was registered; a live
+     delivery accepted after it outranks the response. */
+    readonly requestSeq: number;
     readonly touchedDags: Set<string>;
     readonly touchedTasks: Set<string>;
   } | null>(null);
   const activityHydrationTokenRef = useRef(0);
+  // Pane-local count ordering: monotonic per accepted live count delivery.
+  const liveActivitySequenceRef = useRef(0);
+  // The winning live aggregate plus its ordering, retained independently of
+  // the bounded hydration-event buffer.
+  const liveCountAdmissionRef = useRef<LiveCountAdmission | null>(null);
   const noticeIdRef = useRef(0);
   const recoveryRef = useRef<RecoveryState | null>(null);
   // True while a socket generation is open; a close only starts a recovery
@@ -394,6 +407,13 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       const hydration = activityHydrationRef.current;
       if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
     },
+    admitLiveCountAuthority: (counts: CountAuthority) => {
+      // Only scalar-bearing deliveries establish count ordering; an envelope
+      // without scalars carries no aggregate evidence to retain.
+      if (counts.taskRunningCount === undefined && counts.taskTotalCount === undefined
+        && counts.taskAgentRunningCount === undefined && counts.taskAgentTotalCount === undefined) return;
+      liveCountAdmissionRef.current = { counts, seq: ++liveActivitySequenceRef.current };
+    },
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
     externalRecoveryHistoryRef,
@@ -442,23 +462,57 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // Both domains reconcile per ID; touches outlive the bounded progress buffer.
   const beginActivityHydration = (): number => {
     const token = ++activityHydrationTokenRef.current;
-    activityHydrationRef.current = { token, buffer: createActivityHydrationBuffer(), touchedDags: new Set(), touchedTasks: new Set() };
+    activityHydrationRef.current = {
+      token,
+      buffer: createActivityHydrationBuffer(),
+      touchedDags: new Set(),
+      touchedTasks: new Set(),
+      requestedMs: Date.now(),
+      requestSeq: liveActivitySequenceRef.current,
+    };
     return token;
   };
   const cancelActivityHydration = (token: number): void => {
     if (activityHydrationRef.current?.token === token) activityHydrationRef.current = null;
   };
-  const hydrateActivities = (token: number, task: unknown, dag: unknown, taskDigest?: unknown, taskOversized = false): void => {
+  const hydrateActivities = (token: number, task: unknown, dag: unknown, taskDigest?: unknown, taskOversized = false, dagDigest?: unknown): void => {
     const hydration = activityHydrationRef.current;
     if (hydration === null || hydration.token !== token) return;
     activityHydrationRef.current = null;
     let next = activitiesRef.current;
-    next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized);
+    next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized, hydration.requestedMs);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
+    // The DAG digest carries the same exact agent aggregate as the task side;
+    // backfill it when the task digest is absent or predates the agent pair so
+    // hydration never leaves the pane on stale or missing count authority.
+    const dagDigestParsed = parseDagDigest(dagDigest);
+    next = applyCountAuthority(next, {
+      ...(dagDigestParsed?.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigestParsed.agentRunningCount }),
+      ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
+    }, hydration.requestedMs);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
       // would remove REST-only rows or reverse both-unknown legacy ordering.
       if (event.name !== "omo.dag.updated" && event.name !== "omo.task.updated") next = applyActivityEvent(next, event.name, event.data);
+      // Snapshot count authority still applies: a live or replayed frame that
+      // landed while hydration was in flight carries the accepted revision
+      // state, which a slower historical digest must not pin over with stale
+      // zeros.
+      else {
+        const counts = event.name === "omo.task.updated"
+          ? parseTaskCounts(event.data)
+          : parseDagCounts(event.data);
+        if (counts !== null) next = applyCountAuthority(next, counts, Date.now());
+      }
+    }
+    // A live count delivery accepted after this request was registered
+    // outranks the response even when the bounded buffer dropped the snapshot
+    // frame that carried it, or the live frame changed counts without a
+    // retained-row mutation: re-assert the winning aggregate at admission
+    // time so the older snapshot cannot resurrect superseded scalars.
+    const live = liveCountAdmissionRef.current;
+    if (live !== null && live.seq > hydration.requestSeq) {
+      next = applyCountAuthority(next, live.counts, Date.now());
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };

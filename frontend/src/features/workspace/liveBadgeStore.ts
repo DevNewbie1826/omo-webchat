@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { parseDagActivity, parseTaskUpdated } from "../split/activityParse";
+import { parseDagCounts } from "../split/activityParseDag";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
-import type { LiveSessionSummary } from "./useLiveSessionSummaries";
-import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, type TaskAuthority } from "../split/taskAuthority";
-import type { TaskDigest } from "./activityDigest";
+import type { AcceptedAgentAggregate, LiveSessionSummary } from "./useLiveSessionSummaries";
+import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, applyCountAuthority, type CountAuthority, type TaskAuthority } from "../split/taskAuthority";
+import type { TaskDigest, DagDigest } from "./activityDigest";
 import type { LiveSessionInfo } from "./workspace";
 
 /** How long a WS-pushed side or heartbeat-stamp set stays authoritative,
@@ -68,7 +69,11 @@ export function canonicalLiveSessionId(id: string): string {
 
 function getTaskAuthorities(): ReadonlyMap<string, SessionTasks> { return taskAuthorities; }
 
-/** All three task transports enter this reducer before any consumer counts rows. */
+/** All three task transports enter this reducer before any consumer counts rows.
+ * The acceptance sequence (live deliveries) or the captured request sequence
+ * (REST settles) is the admission ordering for the agent-count aggregate, so
+ * a deferred stale REST response can never resurrect counts over newer live
+ * state. */
 export function acceptLiveTaskInfo(
   info: { readonly id: string; readonly task?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean },
   sequence: number,
@@ -82,6 +87,7 @@ export function acceptLiveTaskInfo(
   const touched = new Set([...previous.mutations].filter(([, at]) => requestSequence !== undefined && at > requestSequence).map(([key]) => key));
   const next = reconcileTaskSources(previous, rich, digest, {
     history: requestSequence !== undefined, touched, oversized: info.taskOversized === true,
+    ...(requestSequence === undefined ? { countAdmissionMs: sequence } : { countRequestedMs: requestSequence }),
   });
   if (next === previous) return;
   const mutations = new Map(previous.mutations);
@@ -96,6 +102,45 @@ export function acceptLiveTaskInfo(
   emit();
 }
 
+/** The DAG-side agent aggregate joins the same count authority: the caller
+ * supplies the delivery's admission ordering (acceptance sequence for live
+ * frames, request sequence for poll settles), and row clocks never elect.
+ * Count-only deliveries are first-class. */
+export function acceptLiveDagCounts(
+  info: { readonly id: string; readonly dag?: unknown; readonly dagDigest?: DagDigest },
+  admission: number,
+): void {
+  const id = canonicalLiveSessionId(info.id);
+  const counts = dagCountsOf(info);
+  if (counts === null) return;
+  const previous: SessionTasks = taskAuthorities.get(id) ?? { tasks: new Map(), mutations: new Map() };
+  const next = applyCountAuthority(previous, counts, admission);
+  if (next === previous) return;
+  const all = new Map(taskAuthorities);
+  all.set(id, { ...next, mutations: previous.mutations });
+  while (all.size > 256) all.delete(all.keys().next().value!);
+  taskAuthorities = all;
+  emit();
+}
+
+/** The aggregate rides beside the DAG rows; a digest backs an absent or
+ * oversized payload. No agent scalar means no delivery. Within one envelope
+ * the digest is the server's current computed aggregate: the snapshot
+ * payload's per-side scalar can be a cached older snapshot and only fills
+ * fields the digest does not carry. */
+function dagCountsOf(
+  info: { readonly dag?: unknown; readonly dagDigest?: DagDigest },
+): CountAuthority | null {
+  const payload = parseDagCounts(info.dag);
+  const running = info.dagDigest?.agentRunningCount ?? payload?.taskAgentRunningCount;
+  const total = info.dagDigest?.agentTotalCount ?? payload?.taskAgentTotalCount;
+  if (running === undefined && total === undefined) return null;
+  return {
+    ...(running === undefined ? {} : { taskAgentRunningCount: running }),
+    ...(total === undefined ? {} : { taskAgentTotalCount: total }),
+  };
+}
+
 export function projectLiveTaskInfo<T extends { readonly id: string }>(info: T): T {
   const authority = taskAuthorities.get(canonicalLiveSessionId(info.id));
   if (authority === undefined) return info;
@@ -106,6 +151,21 @@ export function projectLiveTaskInfo<T extends { readonly id: string }>(info: T):
 export function useAcceptedLiveTaskInfos(infos: readonly LiveSessionInfo[]): readonly LiveSessionInfo[] {
   const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
   return useMemo(() => infos.map(projectLiveTaskInfo), [infos, authority]);
+}
+
+/** The accepted agent-count aggregate per canonical session id: the running
+ * authority the shared store elected by admission ordering across task and
+ * DAG deliveries. */
+export function useLiveAgentAggregates(): ReadonlyMap<string, AcceptedAgentAggregate> {
+  const authority = useSyncExternalStore(subscribeOverrides, getTaskAuthorities);
+  return useMemo(() => {
+    const aggregates = new Map<string, AcceptedAgentAggregate>();
+    for (const [id, tasks] of authority) {
+      if (tasks.taskAgentRunningCount === undefined) continue;
+      aggregates.set(id, { running: tasks.taskAgentRunningCount, total: tasks.taskAgentTotalCount });
+    }
+    return aggregates;
+  }, [authority]);
 }
 
 export function retireLiveTaskSessions(ids: readonly string[]): void {
@@ -254,9 +314,11 @@ function remapOverride(next: Map<string, SessionOverride>, fromId: string, toId:
 }
 
 /** Settle attached-socket overrides against a successful REST response. Each
- * side is compared with the sequence captured when the request started. */
+ * side is compared with the sequence captured when the request started; the
+ * response's own scalars enter the shared count authority with that request
+ * ordering on both the task and the DAG side. */
 export function settleLiveBadgePoll(
-  infos: readonly { readonly id: string; readonly task?: unknown; readonly dag?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean }[],
+  infos: readonly { readonly id: string; readonly task?: unknown; readonly dag?: unknown; readonly taskDigest?: TaskDigest; readonly taskOversized?: boolean; readonly dagDigest?: DagDigest }[],
   requestSequence: number,
 ): void {
   const next = new Map(overrides);
@@ -269,6 +331,7 @@ export function settleLiveBadgePoll(
       if (before !== undefined) changed = true;
     }
     acceptLiveTaskInfo(info, nextLiveActivitySequence(), requestSequence);
+    acceptLiveDagCounts(info, requestSequence);
     const entry = next.get(info.id);
     if (entry === undefined) continue;
     const task = entry.task !== undefined && entry.task.sequence > requestSequence ? entry.task : undefined;
@@ -365,7 +428,9 @@ export function ingestExtensionEvent(sessionId: string, frameName: string, data:
     return;
   }
   const previous = overrides.get(id) ?? {};
-  const side = { payload: data ?? null, sequence: nextLiveActivitySequence(), receivedAt: Date.now() };
+  const sequence = nextLiveActivitySequence();
+  if (frameName === DAG_FRAME) acceptLiveDagCounts({ id, dag: data }, sequence);
+  const side = { payload: data ?? null, sequence, receivedAt: Date.now() };
   const next = new Map(overrides);
   next.set(id, frameName === TASK_FRAME
     ? { ...previous, task: side }
@@ -386,17 +451,29 @@ export function useLiveBadgeOverrides(): ReadonlyMap<string, LiveBadgeOverride> 
         entry.dag?.receivedAt ?? 0,
         entry.activity?.receivedAt ?? 0,
       );
+      const aggregate = agentAggregateOf(id);
       summaries.set(id, {
         summary: summarizeLiveSession(
           projectLiveTaskInfo({ id, title: "", task: entry.task?.payload ?? null, dag: entry.dag?.payload ?? null }),
           Date.now(),
-          entry.activity === undefined ? undefined : { heartbeatStamps: entry.activity.stamps },
+          {
+            ...(entry.activity === undefined ? {} : { heartbeatStamps: entry.activity.stamps }),
+            ...(aggregate === undefined ? {} : { agentAggregate: aggregate }),
+          },
         ),
         receivedAt,
       });
     }
     return summaries;
   }, [snapshot, authority]);
+}
+
+/** The session's accepted agent-count aggregate, when the store holds one. */
+function agentAggregateOf(id: string): AcceptedAgentAggregate | undefined {
+  const authority = taskAuthorities.get(canonicalLiveSessionId(id));
+  return authority?.taskAgentRunningCount === undefined
+    ? undefined
+    : { running: authority.taskAgentRunningCount, total: authority.taskAgentTotalCount };
 }
 
 function newerPayload(
@@ -453,12 +530,14 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
         ...(!task.replaced && poll.taskDigest !== undefined ? { taskDigest: poll.taskDigest } : {}),
         ...(!dag.replaced && poll.dagDigest !== undefined ? { dagDigest: poll.dagDigest } : {}),
       } as LiveSessionInfo);
+      const aggregate = agentAggregateOf(poll.id);
       // The poller listing the session is the process-alive signal, so the
       // merged summary never ages out its running tasks; heartbeat stamps
       // keep per-task freshness honest under the replaced payload.
       return summarizeLiveSession(mergedInfo, clockMs, {
         sessionLive: true,
         ...(entry?.activity === undefined ? {} : { heartbeatStamps: entry.activity.stamps }),
+        ...(aggregate === undefined ? {} : { agentAggregate: aggregate }),
       });
     }),
     [pollSummaries, snapshot, authority, clockMs],

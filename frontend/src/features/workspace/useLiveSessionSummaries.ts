@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { parseDagUpdated, parseTaskUpdated } from "../split/activityParse";
-import type { ParsedDagUpdated } from "../split/activityParse";
+import type { ParsedDagUpdated } from "../split/activityParseDag";
+import type { ParsedTaskUpdated } from "../split/activityParseTask";
 import { isRecord } from "../../lib/chatWsParseFields";
 import { lastActivityMs, taskStatusCounts, TERMINAL_DAG_STATUSES } from "../split/activityShelfModel";
 import type { ActivityDagRun, ActivityTask } from "../split/activityTypes";
 import type { DagDigest, TaskDigest, DagDigestRun, TaskDigestEntry } from "./activityDigest";
 import { reconcileTaskSources } from "../split/taskAuthority";
+import { canonicalLiveSessionId, useLiveAgentAggregates } from "./liveBadgeStore";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import type { LiveSessionInfo } from "./workspace";
 
 /** Per-session rollup shown by the sessions overview and the tree badge.
- * Malformed DAG input contributes no invented running work and qualifies
- * the retained count as partial, never as authoritative inactivity. */
+ * Running counts come from the server's pre-truncation scalars whenever the
+ * transports carry them; retained rows only back the legacy fallback. */
 /** Quiet-running cutoff for summaries whose session liveness is not already
  * established by the shared poller (WS-only override summaries); mirrors
  * OVERRIDE_TTL_MS in liveBadgeStore. A session the poller lists keeps its
@@ -39,12 +41,8 @@ export interface LiveSessionSummary {
   /** Most recent live_progress last_assistant_line or activity across tasks;
    * null when no task reports one. */
   readonly lastLine: string | null;
-  /** DAG-side running children not already present in the task list. */
+  /** DAG-side running contribution to runningCount after overlap removal. */
   readonly dagRunning: number;
-  /** Running-count lower bound: task/digest truncation or incomplete rich DAG data. */
-  readonly truncatedTasks: boolean;
-  readonly taskOversized: boolean;
-  readonly dagOversized: boolean;
 }
 
 function lastLineOf(tasks: readonly ActivityTask[]): string | null {
@@ -61,39 +59,6 @@ function lastLineOf(tasks: readonly ActivityTask[]): string | null {
     }
   }
   return bestLine;
-}
-
-/** The shared tolerant parser drops malformed members and defaults missing
- * topology/counts. At this raw summary boundary, those losses must not certify
- * a complete count. Keep this independent of heartbeat/liveness information. */
-function dagCountPartial(data: unknown, parsed: ParsedDagUpdated | null): boolean {
-  if (data == null) return false;
-  if (!isRecord(data) || parsed === null || !Array.isArray(data["runs"])) return true;
-  if (data["partial"] === true || parsed.truncatedRuns === true || data["runs"].length !== parsed.runs.length) return true;
-  const rawRuns = data["runs"];
-  const runIds = new Set<string>();
-  return parsed.runs.some((run, index) => {
-    const raw = rawRuns[index];
-    if (!isRecord(raw) || raw["partial"] === true || run.runId === "" || runIds.has(run.runId)) return true;
-    runIds.add(run.runId);
-    if (!Array.isArray(raw["nodes"]) || run.nodes.length === 0 || raw["nodes"].length !== run.nodes.length) return true;
-    for (const key of ["edges", "waves"] as const) {
-      const members = raw[key];
-      if (members !== undefined && (!Array.isArray(members) || members.length !== run[key].length)) return true;
-    }
-    const nodeIds = new Set(run.nodes.map((node) => node.id));
-    if (nodeIds.has("") || nodeIds.size !== run.nodes.length || run.counts.total !== run.nodes.length) return true;
-    const states = new Map<string, number>();
-    for (const node of run.nodes) {
-      if (!Object.hasOwn(run.counts, node.state) || node.state === "total" || node.dependsOn.some((id) => !nodeIds.has(id))) return true;
-      states.set(node.state, (states.get(node.state) ?? 0) + 1);
-    }
-    for (const [state, count] of Object.entries(run.counts)) {
-      if (!Number.isSafeInteger(count) || count < 0 || (state !== "total" && count !== (states.get(state) ?? 0))) return true;
-    }
-    return run.edges.some((edge) => !nodeIds.has(edge.from) || !nodeIds.has(edge.to))
-      || run.waves.some((wave) => wave.nodeIds.some((id) => !nodeIds.has(id)));
-  });
 }
 
 /** Count only identified running nodes. Aggregate counts cannot be deduplicated
@@ -140,6 +105,18 @@ function digestReceivedMs(receivedAt: string | undefined): number | null {
 export interface SummaryFreshness {
   readonly sessionLive?: boolean;
   readonly heartbeatStamps?: ReadonlyMap<string, string>;
+  /** The shared store's elected agent-work aggregate. Its acceptance ordering
+   * across task and DAG deliveries has already been applied by the shared
+   * count authority, so when present it is the sole running-count authority
+   * and no payload row clock is consulted. */
+  readonly agentAggregate?: AcceptedAgentAggregate;
+}
+
+/** The accepted agent-count aggregate for one session: the exact deduplicated
+ * running/total pair the shared store elected by admission ordering. */
+export interface AcceptedAgentAggregate {
+  readonly running: number;
+  readonly total: number | undefined;
 }
 
 /** Latest known activity of a task: its row stamp, raised by any fresher
@@ -240,7 +217,21 @@ export function summarizeLiveSession(
   );
   const sessionLive = freshness?.sessionLive === true;
   const heartbeatStamps = freshness?.heartbeatStamps;
-  const taskRunning = info.taskOversized !== true
+  // Server pre-truncation scalars are the sole count authority when present;
+  // retained rows below only back the legacy fallback for older servers.
+  const taskScalar = taskDigest?.taskRunningCount ?? parsedTask?.taskRunningCount;
+  const dagScalar = info.dagDigest?.dagRunningCount;
+  const dagEnvelopeComplete = isRecord(info.dag) && Array.isArray(info.dag["runs"])
+    && info.dag["runs"].length === runs.length && info.dag["partial"] !== true;
+  const taskRosterComplete = info.taskOversized !== true
+    ? parsedTask?.truncatedTasks !== true
+    : taskDigest !== undefined && taskDigest.truncated !== true;
+  const dagIdsComplete = info.dagOversized !== true
+    ? parsedDag !== null && parsedDag.truncatedRuns !== true && dagEnvelopeComplete
+    : dagDigest !== undefined && dagDigest.truncated !== true;
+  const taskRunning = taskScalar !== undefined
+    ? taskScalar
+    : info.taskOversized !== true
     ? tasks.filter((task) => {
       if (task.status !== "running") return false;
       // The poller listing the session is the process-alive signal: a quiet
@@ -259,11 +250,22 @@ export function summarizeLiveSession(
         digestReceivedMs(taskDigest.receivedAt),
         freshness,
       );
-  const dagRunning = info.dagOversized !== true
-    ? dagRunningOf(runs, taskIds)
-    : dagDigest === undefined
-      ? 0
-      : countDigestDagRunning(dagDigest.runs, taskIds);
+  // The dag scalar is a node-based sum over all runs, without task-roster
+  // exclusion. Overlap is removed only when both identity sides are provably
+  // complete; otherwise the summed scalars are the authoritative count.
+  const overlap = dagScalar !== undefined && taskRosterComplete && dagIdsComplete
+    ? [...runningDagTaskIds].filter((taskId) => taskIds.has(taskId)).length
+    : null;
+  const dagRunning = dagScalar === undefined
+    ? info.dagOversized !== true
+      ? dagRunningOf(runs, taskIds)
+      : dagDigest === undefined
+        ? 0
+        : countDigestDagRunning(dagDigest.runs, taskIds)
+    : overlap === null ? dagScalar : Math.max(0, dagScalar - overlap);
+  const agentRunning = freshness?.agentAggregate !== undefined
+    ? freshness.agentAggregate.running
+    : orderedAgentAuthority(parsedTask, taskDigest, parsedDag, info.dagDigest)?.running;
   let dagDone = 0;
   let dagTotal = 0;
   for (const run of runs) {
@@ -279,24 +281,51 @@ export function summarizeLiveSession(
     ...(info.dagDigest === undefined ? {} : { dagDigest: info.dagDigest }),
     taskSideOversized: info.taskOversized === true,
     dagSideOversized: info.dagOversized === true,
-    runningCount: taskRunning + dagRunning,
+    // The exact deduplicated agent-work aggregate is the sole running
+    // authority when any transport carries it: raw task+DAG scalars are never
+    // summed and retained rows never repair it.
+    runningCount: agentRunning ?? (taskRunning + dagRunning),
     doneCount: info.taskOversized === true && taskDigest === undefined ? 0 : counts.done,
     dagDone,
     dagTotal,
     lastLine: lastLineOf(tasks),
     dagRunning,
-    truncatedTasks: parsedTask?.truncatedTasks === true
-      || taskDigest?.truncated === true
-      || dagDigest?.truncated === true
-      || (info.dagOversized !== true && dagCountPartial(info.dag, parsedDag)),
-    taskOversized: info.taskOversized === true && taskDigest === undefined,
-    dagOversized: info.dagOversized === true && dagDigest === undefined,
   };
+}
+
+
+/** Within one summary envelope the aggregate is structural, never a clock
+ * comparison: the current server-computed digests are the aggregate
+ * authority while a snapshot payload's scalar can be a cached per-side
+ * snapshot, so both digests outrank both payloads; the DAG side remains the
+ * later completion source within each tier, and ordering across separate
+ * deliveries is decided by the shared store's accepted-delivery admission
+ * clock before this fallback ever runs. */
+function orderedAgentAuthority(
+  parsedTask: ParsedTaskUpdated | null,
+  taskDigest: TaskDigest | undefined,
+  parsedDag: ParsedDagUpdated | null,
+  dagDigest: DagDigest | undefined,
+): { readonly running: number; readonly total: number | undefined } | undefined {
+  if (dagDigest?.agentRunningCount !== undefined) {
+    return { running: dagDigest.agentRunningCount, total: dagDigest.agentTotalCount };
+  }
+  if (taskDigest?.taskAgentRunningCount !== undefined) {
+    return { running: taskDigest.taskAgentRunningCount, total: taskDigest.taskAgentTotalCount };
+  }
+  if (parsedDag?.agentRunningCount !== undefined) {
+    return { running: parsedDag.agentRunningCount, total: parsedDag.agentTotalCount };
+  }
+  if (parsedTask?.taskAgentRunningCount !== undefined) {
+    return { running: parsedTask.taskAgentRunningCount, total: parsedTask.taskAgentTotalCount };
+  }
+  return undefined;
 }
 
 /** Per-session activity rollups for live sessions, from the shared poller. */
 export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionSummary[] {
   const infos = useLiveSessionInfos(enabled);
+  const aggregates = useLiveAgentAggregates();
   const [clockMs, setClockMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -307,7 +336,13 @@ export function useLiveSessionSummaries(enabled: boolean): readonly LiveSessionS
   }, [enabled]);
 
   return useMemo(
-    () => infos.map((info) => summarizeLiveSession(info, clockMs, { sessionLive: true })),
-    [infos, clockMs],
+    () => infos.map((info) => {
+      const agentAggregate = aggregates.get(canonicalLiveSessionId(info.id));
+      return summarizeLiveSession(info, clockMs, {
+        sessionLive: true,
+        ...(agentAggregate === undefined ? {} : { agentAggregate }),
+      });
+    }),
+    [infos, aggregates, clockMs],
   );
 }

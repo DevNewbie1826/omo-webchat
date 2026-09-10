@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("PATCH /api/workspaces/{wsId}/chats/{chatId}", s.handleRenameChat)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats/{chatId}/touch", s.handleTouchChat)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/activity", s.handleGetChatActivity)
+	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/tasks", s.handleGetChatTasks)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/dag-runs", s.handleListChatDagRuns)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/dag-runs/{runId}", s.handleGetChatDagRun)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/goal", s.handleGetChatGoal)

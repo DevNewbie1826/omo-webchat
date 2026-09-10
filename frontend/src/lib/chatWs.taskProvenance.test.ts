@@ -5,7 +5,7 @@ import { parseChatServerFrame } from "./chatWs";
 import { parseServerFrame } from "./contract/types_gen";
 
 function digestFrame(row: unknown) {
-  return { ...corrected, snapshots: [], taskDigest: { tasks: [row], truncated: false } };
+  return { ...corrected, snapshots: [], taskDigest: { tasks: [row], truncated: false, running_count: 0, total_count: 1, agent_running_count: 0, agent_total_count: 1 } };
 }
 
 const rawRow = { task_id: "task-1", status: "completed", updated_at: "2026-09-07T10:01:00Z" };
@@ -49,9 +49,13 @@ describe("task provenance wire boundary", () => {
 
   it("preserves absent, empty and partial task sides", () => {
     const base = { type: "sessions.activity", sessionId: "chat-1", durableSessionId: "child-session-1", snapshots: [], overflow: false };
-    for (const frame of [base, { ...base, taskDigest: { tasks: [], truncated: false } }, { ...base, taskDigest: { tasks: [rawRow], truncated: true } }]) {
+    for (const frame of [
+      base,
+      { ...base, taskDigest: { tasks: [], truncated: false, running_count: 0, total_count: 0, agent_running_count: 0, agent_total_count: 0 } },
+      { ...base, taskDigest: { tasks: [rawRow], truncated: true, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 } },
+    ]) {
       expect(parseChatServerFrame(frame)).toEqual(frame);
     }
-    expect(parseChatServerFrame({ ...base, taskDigest: { tasks: null, truncated: false } })).toBeNull();
+    expect(parseChatServerFrame({ ...base, taskDigest: { tasks: null, truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 } })).toBeNull();
   });
 });

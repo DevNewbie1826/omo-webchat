@@ -12,7 +12,11 @@
   }],
   "taskDigest": {
     "tasks": [{"task_id": "task-1", "status": "completed", "raw_status": "running", "updated_at": "2026-09-07T10:01:00Z"}],
-    "truncated": false
+    "truncated": false,
+    "running_count": 0,
+    "total_count": 1,
+    "agent_running_count": 0,
+    "agent_total_count": 1
   },
   "overflow": false
 }

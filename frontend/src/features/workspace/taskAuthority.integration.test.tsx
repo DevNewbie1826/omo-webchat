@@ -52,13 +52,54 @@ describe("canonical task authority through all sidebar sources", () => {
     act(() => ingestExtensionEvent("s", "omo.task.updated", { tasks: [row("completed", t1, "child-1", { raw_status: "running" })] }));
     counts(0, 1);
   });
-  it("keeps compact correction authority and partial disclosure over stale/equal rich enrichment", async () => {
+  it("takes the server running scalar as the badge authority through the REST authority chain", async () => {
+    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
+      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true, running_count: 3, total_count: 9 } });
+    counts(0, 3);
+    expect(merged[0]).toMatchObject({ runningCount: 3 });
+  });
+  it("takes the agent aggregate as the sole running authority across poll and push", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 50, total_count: 600,
+      agent_running_count: 50, agent_total_count: 600 });
+    counts(0, 50);
+    push({ tasks: [row("running", t3)], agent_running_count: 51, agent_total_count: 601 });
+    counts(0, 51);
+  });
+  it("keeps the exact agent aggregate through the REST digest authority chain", async () => {
+    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
+      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true,
+      running_count: 50, total_count: 600, agent_running_count: 50, agent_total_count: 600 } });
+    counts(0, 50);
+    expect(merged[0]).toMatchObject({ runningCount: 50 });
+  });
+  it("falls back to the DAG frame's aggregate when the task side predates the agent scalars", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 2 });
+    counts(0, 1);
+    act(() => ingestExtensionEvent("s", "omo.dag.updated",
+      { truncated_runs: false, runs: [], running_count: 9, agent_running_count: 4, agent_total_count: 8 }));
+    expect(merged[0]).toMatchObject({ runningCount: 4 });
+  });
+
+  it("elects a later overview-pushed DAG aggregate over the poll task aggregate despite an older run clock", async () => {
+    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 1,
+      agent_running_count: 2, agent_total_count: 2 });
+    counts(0, 2);
+    act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "s", durableSessionId: "s",
+      snapshots: [{ name: "omo.dag.updated", oversized: false, data: {
+        truncated_runs: false, running_count: 1, agent_running_count: 1, agent_total_count: 2,
+        runs: [{ run_id: "r1", run_key: "r1", name: "Graph", status: "running", updated_at: t1,
+          counts: { total: 1, pending: 0, blocked: 0, scheduled: 0, running: 1, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
+          nodes: [{ id: "n1", prompt: "DAG only", depends_on: [], state: "running" }], edges: [], waves: [] }] } }],
+      overflow: false } as ChatServerFrame));
+    counts(0, 1);
+  });
+
+  it("keeps compact correction authority over stale/equal rich enrichment", async () => {
     await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
       { task_id: "child-1", status: "completed", raw_status: "running", updated_at: t2 }], truncated: true } });
     counts(1, 0); push(payload("running", t1)); counts(1, 0);
-    expect(merged[0]?.truncatedTasks).toBe(true);
     push({ tasks: [row("running", t2, "child-1", { name: "Enriched", task_summary: "details" })] });
-    counts(1, 0); expect(merged[0]?.truncatedTasks).toBe(true);
+    counts(1, 0);
     expect(merged[0]?.task).toMatchObject({ tasks: [expect.objectContaining({ name: "Enriched", status: "completed" })] });
     push(payload("running", t3)); counts(0, 1);
   });
@@ -116,12 +157,14 @@ describe("canonical task authority through all sidebar sources", () => {
     push(payload("running", t3)); counts(0, 1);
   });
 
-  it("keeps oversized-without-digest disclosure over a stale rich replay", async () => {
+  it("keeps oversized-without-digest pushes inert over a stale rich replay", async () => {
     await poll(payload("running", t2));
     push(null, "s", { snapshots: [{ name: "omo.task.updated", data: null, oversized: true }] });
-    expect(merged[0]?.truncatedTasks || merged[0]?.taskOversized).toBe(true);
+    counts(0, 0);
     push(payload("running", t1));
-    expect(merged[0]?.truncatedTasks || merged[0]?.taskOversized).toBe(true);
+    counts(0, 0);
+    push(payload("running", t3));
+    counts(0, 1);
   });
 
   it("does not retire canonical task authority when a replaced alias receives its tombstone", async () => {

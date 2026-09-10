@@ -8,6 +8,7 @@ import { lifeSeenThisRunOf, runActivityMsByTaskOf } from "./activityState";
 import { DagSection, type DagNodeMotion } from "./activityShelfDag";
 import { CompleteDagSection } from "./activityCompleteDag";
 import { useCompleteDag, type DagSource } from "./useCompleteDag";
+import { useTaskRoster } from "./useTaskRoster";
 import {
   agentTimeMs,
   dagTimeMs,
@@ -21,7 +22,7 @@ import {
 } from "./activityShelfModel";
 import { AgentSection, TodoSection } from "./activityShelfSections";
 import { workflowNodeTasks } from "./activityWorkflowNodes";
-import type { ActivityState } from "./activityTypes";
+import type { ActivityState, ActivityDagRun, ActivityTask } from "./activityTypes";
 import { useShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ActivityShelfProps {
@@ -66,6 +67,27 @@ function panelElementId(tab: ShelfTab, panelId: string): string {
 
 function clampPanelHeight(px: number): number {
   return Math.min(maxPanelHeight(), Math.max(PANEL_MIN, Math.round(px)));
+}
+
+function mergeRosterTasks(
+  roster: readonly ActivityTask[],
+  live: ReadonlyMap<string, ActivityTask>,
+  dags: readonly ActivityDagRun[],
+): readonly ActivityTask[] {
+  const byId = new Map<string, ActivityTask>();
+  for (const task of roster) {
+    const current = live.get(task.taskId);
+    byId.set(task.taskId, current === undefined ? task : { ...task, ...current });
+  }
+  for (const [id, task] of live) {
+    if (!byId.has(id)) byId.set(id, task);
+  }
+  const workflow = workflowNodeTasks(dags, new Set(byId.keys()));
+  return orderActivities(
+    [...byId.values(), ...workflow.tasks],
+    (task) => TERMINAL_TASK_STATUSES.has(task.status),
+    agentTimeMs,
+  );
 }
 
 function detectPanelHeight(): number | null {
@@ -132,6 +154,14 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   const [nowMs, setNowMs] = useState(Date.now);
   const taskRows = [...activities.tasks.values()];
   const workflow = workflowNodeTasks([...activities.dags.values()], new Set(taskRows.map((task) => task.taskId)));
+  // ActivityState is also the task authority at runtime. Keep this local view
+  // until the shared UI state type exposes the authority scalars directly.
+  const taskCounts = activities as ActivityState & {
+    readonly taskRunningCount?: number;
+    readonly taskTotalCount?: number;
+    readonly taskAgentRunningCount?: number;
+    readonly taskAgentTotalCount?: number;
+  };
   const tasks = orderActivities(
     [...taskRows, ...workflow.tasks],
     (task) => TERMINAL_TASK_STATUSES.has(task.status),
@@ -147,22 +177,25 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
   // moment everything turns terminal. It hides only when there is genuinely
   // nothing to show, including no marker for omitted historical rows.
   const historyPartial = activities.truncatedTasks === true || activities.truncatedDags === true;
-  // Agent rows also include DAG nodes: omitted nodes/runs cannot certify an
-  // exact running count or an empty agents section, even with no retained rows.
-  const agentsPartial = historyPartial || workflow.identityPartial || dags.some(run => run.truncated === true);
-  const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || historyPartial;
+  const hasTaskCount = (taskCounts.taskTotalCount !== undefined && taskCounts.taskTotalCount > 0)
+    || (taskCounts.taskAgentTotalCount !== undefined && taskCounts.taskAgentTotalCount > 0);
+  const hasActivity = dagSource !== undefined || activities.todo !== null || tasks.length > 0 || dags.length > 0 || hasTaskCount || historyPartial;
   const hasLiveActivity = tasks.some((task) => !TERMINAL_TASK_STATUSES.has(task.status))
     || dags.some((run) => !TERMINAL_DAG_STATUSES.has(run.status));
 
   const availability: Readonly<Record<ShelfTab, boolean>> = {
     todo: activities.todo !== null,
-    agents: tasks.length > 0,
+    agents: tasks.length > 0 || hasTaskCount,
     dag: dagSource !== undefined || dags.length > 0,
   };
   const selectedTab: ShelfTab = chosenTab
     ?? (SHELF_TABS.find((tab) => availability[tab]) ?? "todo");
   // Complete data/selection belong to the shelf, not its transient panel DOM.
   const completeDag = useCompleteDag(dagSource, open && selectedTab === "dag", activities);
+  const taskRoster = useTaskRoster(dagSource, open && selectedTab === "agents");
+  const agentTasks = taskRoster.status === "ready"
+    ? mergeRosterTasks(taskRoster.tasks, activities.tasks, [...activities.dags.values()])
+    : tasks;
   const selectTab = (tab: ShelfTab): void => {
     if (selectedTab === "dag" && tab !== "dag") consumeGraphMotion();
     setOpen(true);
@@ -194,20 +227,23 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
       })();
     }
     if (tab === "agents") {
-      // Incomplete history: retained running rows are a confirmed lower
-      // bound only (`N+`), and zero retained running cannot certify an
-      // empty field (`?`). The exact running/total stays reserved for
-      // complete data; the localized explanation lives in the panel and on
-      // the tab's title — the collapsed strip cannot carry the sentence
-      // (it painted past its own button at 390px). Compact markers keep
-      // the count slot inside the tab.
-      if (agentsPartial) {
-        const running = tasks.filter((task) => task.status === "running").length;
-        return running > 0 ? `${running}+` : "?";
+      // The server's exact deduplicated agent-work aggregate is the sole
+      // authority for this slot: raw task+DAG scalars are never summed and
+      // retained workflow rows are never added to a full-roster scalar. The
+      // legacy fallbacks below only serve servers that predate the aggregate.
+      if (taskCounts.taskAgentRunningCount !== undefined && taskCounts.taskAgentTotalCount !== undefined) {
+        return taskCounts.taskAgentTotalCount === 0 ? null : `${taskCounts.taskAgentRunningCount}/${taskCounts.taskAgentTotalCount}`;
       }
-      return tasks.length === 0
-        ? null
-        : `${tasks.filter((task) => task.status === "running").length}/${tasks.length}`;
+      const hasTaskScalars = taskCounts.taskRunningCount !== undefined
+        && taskCounts.taskTotalCount !== undefined;
+      const workflowRunning = workflow.tasks.filter((task) => task.status === "running").length;
+      const running = hasTaskScalars
+        ? taskCounts.taskRunningCount! + workflowRunning
+        : tasks.filter((task) => task.status === "running").length;
+      const total = hasTaskScalars
+        ? taskCounts.taskTotalCount! + workflow.tasks.length
+        : tasks.length;
+      return total === 0 ? null : `${running}/${total}`;
     }
     // Overview totals are not catalog totals. Exact counts live on the full selected run.
     if (dagSource !== undefined || dags.length === 0) return null;
@@ -342,7 +378,6 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
               aria-selected={selectedTab === tab}
               aria-controls={`${panelElementId(tab, panelId)}`}
               tabIndex={selectedTab === tab ? 0 : -1}
-              title={tab === "agents" && agentsPartial ? t("activity.partial") : undefined}
               onClick={() => activateTab(tab)}
               onKeyDown={onTabKeyDown}
             >
@@ -393,24 +428,29 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
                 aria-labelledby={tabIdPrefix(tab, panelId)}
                 hidden={selectedTab !== tab}
                 className={`th-activity-tabpanel th-activity-tabpanel--${tab}`}
+                data-activity-roster-status={tab === "agents" ? taskRoster.status : undefined}
               >
                 {tab === "todo" && (activities.todo !== null
                   ? <TodoSection phases={activities.todo} t={t} />
                   : <p className="th-activity-empty">{t("activity.emptyTodo")}</p>)}
-                {tab === "agents" && (tasks.length > 0
-                  ? <AgentSection
-                      tasks={tasks}
-                      nowMs={nowMs}
-                      freshnessCtx={{
-                        runInFlight: activities.runInFlight === true,
-                        lifeSeenThisRun: lifeSeenThisRunOf(activities),
-                        runActivityMsByTask: runActivityMsByTaskOf(activities),
-                      }}
-                      t={t}
-                    />
-                  : !agentsPartial && <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
-                {tab === "agents" && agentsPartial
-                  && <p className="th-activity-partial">{t("activity.partial")}</p>}
+                {tab === "agents" && (taskRoster.status === "loading"
+                  ? <p className="th-activity-empty" role="status">{t("chat.loading")}</p>
+                  : taskRoster.status === "error"
+                    ? <p className="th-activity-empty" role="alert">
+                        <button type="button" className="th-activity-view-btn" data-activity-roster-retry onClick={taskRoster.retry}>{t("common.retry")}</button>
+                      </p>
+                  : agentTasks.length > 0
+                    ? <AgentSection
+                        tasks={agentTasks}
+                        nowMs={nowMs}
+                        freshnessCtx={{
+                          runInFlight: activities.runInFlight === true,
+                          lifeSeenThisRun: lifeSeenThisRunOf(activities),
+                          runActivityMsByTask: runActivityMsByTaskOf(activities),
+                        }}
+                        t={t}
+                      />
+                    : <p className="th-activity-empty">{t("activity.emptyAgents")}</p>)}
                 {tab === "dag" && (dagSource !== undefined
                   ? <CompleteDagSection data={completeDag} activities={activities} active={selectedTab === "dag"} t={t} view={view} onViewChange={changeView} clipIdPrefix={panelId.replace(/[^A-Za-z0-9_-]/g, "")} nodeHistory={nodeHistory} onMotionEnd={onNodeMotionEnd} />
                   : dags.length > 0 && !activities.truncatedDags && !dags.some(run => run.truncated)

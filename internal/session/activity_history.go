@@ -440,6 +440,56 @@ func (h *activityCandidateHeap) Pop() any {
 	return value
 }
 
+// readCountDirectory walks every eligible record for exact scalar authority.
+// Rich history remains independently bounded by readActivityDirectory.
+func readCountDirectory(ctx context.Context, dir string, visit func(string, os.FileInfo)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(dir)
+	if isAbsentPathError(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for {
+		entries, readErr := f.ReadDir(activityDirectoryBatchSize)
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if filepath.Ext(entry.Name()) != ".json" || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			candidate, infoErr := entry.Info()
+			if infoErr != nil || !candidate.Mode().IsRegular() || candidate.Size() < 0 || candidate.Size() > maxTaskStoreRecordBytes {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			current, statErr := os.Lstat(path)
+			if statErr != nil || current.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate, current) {
+				continue
+			}
+			visit(path, current)
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
 func readActivityDirectory(ctx context.Context, dir string, budget *activityHistoryBudget, visit func(string, os.FileInfo)) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -695,9 +745,25 @@ func boundDagDigest(digest *DagDigest) {
 func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (HistoricalActivity, error) {
 	base := filepath.Join(cwd, ".omo", "senpi-task")
 	_, parentFieldTruncated := truncateActivityField(durableSessionID)
+	countOwnedRuns := make(map[string]bool)
+	var countTasks taskSnapshotCache
+	if err := readCountDirectory(ctx, filepath.Join(base, "tasks"), func(path string, info os.FileInfo) {
+		var task storedTask
+		if !readStableJSON(ctx, path, info, &task) || durableSessionID == "" || task.ParentSessionID != durableSessionID || task.TaskID == "" || task.Status == "" {
+			return
+		}
+		if task.Owner.Kind == "dag" && task.Owner.RunID != "" {
+			countOwnedRuns[task.Owner.RunID] = true
+		}
+		row := map[string]json.RawMessage{"task_id": task.Fields["task_id"], "status": task.Fields["status"], "updated_at": task.Fields["updated_at"]}
+		countTasks.mergeCountAuthority([]map[string]json.RawMessage{row}, false)
+	}); err != nil {
+		return HistoricalActivity{}, err
+	}
+	countTasks.finishCountAuthority()
+	ownedRuns := make(map[string]bool)
 	taskBudget := &activityHistoryBudget{}
 	tasks := make([]historicalTaskRow, 0)
-	ownedRuns := make(map[string]bool)
 	taskFieldsTruncated := false
 	taskBudgetExhausted, err := readActivityDirectory(ctx, filepath.Join(base, "tasks"), taskBudget, func(path string, info os.FileInfo) {
 		var task storedTask
@@ -732,6 +798,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		}
 		return tasks[i].createdAt < tasks[j].createdAt
 	})
+	runningTasks, totalTasks := countTasks.runningCount, countTasks.totalCount
 	truncatedTasks := taskBudgetExhausted || len(tasks) > maxActivityDigestEntries || taskFieldsTruncated || parentFieldTruncated
 	// Compact authority is independent of the rich prefix's byte budget.
 	taskRows := make([]map[string]json.RawMessage, 0, len(tasks))
@@ -764,6 +831,27 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		return HistoricalActivity{}, err
 	}
 
+	var countDags dagSnapshotCache
+	if err := readCountDirectory(ctx, filepath.Join(base, "dag", "runs"), func(path string, info os.FileInfo) {
+		var run storedDagRun
+		if !readStableJSON(ctx, path, info, &run) || durableSessionID == "" || run.RunID == "" || run.Status == "" {
+			return
+		}
+		if run.ParentSessionID != durableSessionID && !(run.ParentSessionID == "" && countOwnedRuns[run.RunID]) {
+			return
+		}
+		nodes := make([]map[string]any, 0, len(run.Nodes))
+		for _, node := range run.Nodes {
+			nodes = append(nodes, map[string]any{"id": node.ID, "task_id": node.TaskID, "state": node.State})
+		}
+		raw, marshalErr := json.Marshal(map[string]any{"run_id": run.RunID, "status": run.Status, "updated_at": run.UpdatedAt, "nodes": nodes})
+		if marshalErr == nil {
+			countDags.mergeCountAuthority([]json.RawMessage{raw}, false)
+		}
+	}); err != nil {
+		return HistoricalActivity{}, err
+	}
+	countDags.finishCountAuthority()
 	runs := make([]historicalDagRow, 0)
 	runBudget := &activityHistoryBudget{}
 	runFieldsTruncated := false
@@ -792,6 +880,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	if err != nil {
 		return HistoricalActivity{}, err
 	}
+	runningDagNodes := countDags.runningCount
 	runs, runRetentionTruncated := newestDagRows(runs)
 	truncatedRuns := runBudgetExhausted || runRetentionTruncated || runFieldsTruncated || uncertainParentlessRuns || parentFieldTruncated
 	dagPayload, dagOversized, err := packDagSnapshot(durableSessionID, runs, truncatedRuns)
@@ -809,6 +898,12 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	dagDigest.ReceivedAt = receivedAt
 	boundTaskDigest(taskDigest)
 	boundDagDigest(dagDigest)
+	// Scalars are computed before every bound above, so they stay exact while
+	// the digest row lists truncate.
+	taskDigest.RunningCount, taskDigest.TotalCount = runningTasks, totalTasks
+	dagDigest.RunningCount = runningDagNodes
+	agentRunning, agentTotal := exactAgentCounts(&countTasks, &countDags)
+	setAgentCounts(taskDigest, dagDigest, agentRunning, agentTotal)
 	return HistoricalActivity{
 		ActivityPair: ActivityPair{Task: taskPayload, Dag: dagPayload},
 		TaskDigest:   taskDigest, DagDigest: dagDigest,

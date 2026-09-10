@@ -13,7 +13,7 @@ import type {
   ActivityState,
   ActivityTask,
 } from "./activityTypes";
-import { applyTaskActivity, reconcileTaskAuthority, reconcileTaskSources, taskRevision } from "./taskAuthority";
+import { applyTaskActivity, reconcileTaskAuthority, reconcileTaskSources, taskRevision, type CountAuthority } from "./taskAuthority";
 import type { TaskDigest } from "../workspace/activityDigest";
 import { parseDagUpdatedAt, type ParsedDagUpdated } from "./activityParseDag";
 import { TERMINAL_DAG_STATUSES, TERMINAL_TASK_STATUSES, lastActivityMs } from "./activityShelfModel";
@@ -62,6 +62,19 @@ export interface ActivityHydrationBuffer {
   taskTouched: boolean;
   /** Whether any buffered event actually carried a DAG-domain mutation. */
   dagTouched: boolean;
+}
+
+/** The pane's newest accepted live count delivery, retained with its own
+   admission ordering independently of the bounded hydration-event buffer.
+   The buffer may drop the snapshot frame that carried the scalars; this
+   record keeps both the ordering and the winning aggregate, so an older
+   hydration response registered before that admission cannot resurrect
+   superseded scalars. */
+export interface LiveCountAdmission {
+  readonly counts: CountAuthority;
+  /** Pane-local admission sequence, assigned when the live delivery was
+     accepted; request registration captures the current value to compare. */
+  readonly seq: number;
 }
 
 export function createActivityHydrationBuffer(): ActivityHydrationBuffer {
@@ -457,9 +470,9 @@ function applyHeartbeat(state: ActivityState, data: unknown): ActivityState {
 /** Complete REST membership removes even terminal rows unless actually touched. */
 export function applyTaskHistorySnapshot(
   state: ActivityState, data: unknown, touched: ReadonlySet<string> = new Set(),
-  digest?: TaskDigest, oversized = false,
+  digest?: TaskDigest, oversized = false, countRequestedMs?: number,
 ): ActivityState {
-  return reconcileTaskSources(state, parseTaskUpdated(data), digest, { history: true, touched, oversized });
+  return reconcileTaskSources(state, parseTaskUpdated(data), digest, { history: true, touched, oversized, ...(countRequestedMs === undefined ? {} : { countRequestedMs }) });
 }
 
 export function applyActivityHistorySnapshot(state: ActivityState, name: string, data: unknown): ActivityState {

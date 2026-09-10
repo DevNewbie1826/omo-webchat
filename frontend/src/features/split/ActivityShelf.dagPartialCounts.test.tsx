@@ -11,7 +11,9 @@ import {
 } from "./ActivityShelf.support";
 import type { ActivityDagRun } from "./activityTypes";
 import { applyActivityEvent, applyActivityHistorySnapshot, emptyActivityState } from "./activityState";
-import { parseDagUpdated } from "./activityParseDag";
+import { parseDagCounts, parseDagUpdated } from "./activityParseDag";
+import { parseTaskCounts } from "./activityParseTask";
+import { applyCountAuthority } from "./taskAuthority";
 import { requireElement } from "./chatPaneTestHarness";
 
 function sourceRun(overrides: Partial<ActivityDagRun> = {}): ActivityDagRun {
@@ -30,18 +32,10 @@ function sourceRun(overrides: Partial<ActivityDagRun> = {}): ActivityDagRun {
   });
 }
 
-/**
- * Collapsed Subagents count-slot contract under incomplete history. The
- * mobile tab strip cannot carry the localized "Partial history shown"
- * sentence in the count slot (it painted past its own button and over the
- * neighboring DAG tab at 390x844), so the slot shows a compact
- * machine-consumed qualifier: a confirmed running lower bound `N+` when at
- * least one retained row is running, otherwise `?` — zero retained running
- * must never read as an exact empty field. Complete data keeps the exact
- * `running/total` format. The localized explanation stays in the panel and
- * on the tab's accessible title.
- */
-describe("ActivityShelf partial DAG-derived Subagents counts", () => {
+/** The Subagents count slot always renders exact running/total numbers.
+ * Server task scalars override retained task-row counts; scalar-less inputs
+ * use the exact local rows, regardless of history truncation markers. */
+describe("ActivityShelf exact DAG-derived Subagents counts", () => {
   let harness: ActivityShelfHarness;
 
   beforeEach(() => {
@@ -70,20 +64,20 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     );
   }
 
-  it("qualifies source running2/retained1/truncatedDags with the confirmed lower bound and restores exact full2", () => {
+  it("uses exact local retained counts through partial-to-full DAG updates", () => {
     const full = sourceRun();
     const partial = sourceRun({ nodes: full.nodes.slice(0, 1), truncated: true });
     renderShelf(harness, activityState({ dags: [partial], truncatedDags: true }));
 
-    expect(count()).toBe("1+");
-    expect(agentsTab().getAttribute("title")).toBe("activity.partial");
+    expect(count()).toBe("1/1");
+    expect(agentsTab().getAttribute("title")).toBeNull();
     expect([...harness.container.querySelectorAll("[data-activity-tab]")].map(tab =>
       tab.getAttribute("data-activity-tab"))).toEqual(["todo", "agents", "dag"]);
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
-    expect(agentsPanel().querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
     click(agentsTab());
-    expect(count()).toBe("1+");
+    expect(count()).toBe("1/1");
 
     renderShelf(harness, activityState({ dags: [full], truncatedDags: false }));
     expect(count()).toBe("2/2");
@@ -93,7 +87,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
   });
 
-  it("scales the confirmed lower bound for larger known running counts", () => {
+  it("scales exact local counts for larger retained rosters", () => {
     const retained = Array.from({ length: 12 }, (_unused, index) => ({
       id: `n${index}`, prompt: `child ${index}`, dependsOn: [], state: "running" as const,
     }));
@@ -104,30 +98,30 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
         truncated: true,
       })],
     }));
-    expect(count()).toBe("12+");
-    expect(agentsTab().getAttribute("title")).toBe("activity.partial");
+    expect(count()).toBe("12/12");
+    expect(agentsTab().getAttribute("title")).toBeNull();
   });
 
-  it("qualifies a run-local truncated marker without the aggregate marker", () => {
+  it("keeps exact local counts with a run-local truncation marker", () => {
     renderShelf(harness, activityState({
       dags: [sourceRun({ nodes: sourceRun().nodes.slice(0, 1), truncated: true })],
     }));
-    expect(count()).toBe("1+");
+    expect(count()).toBe("1/1");
   });
 
   it.each([
     ["omitted runs", activityState({ truncatedDags: true })],
     ["omitted nodes", activityState({ dags: [sourceRun({ nodes: [], truncated: true })] })],
     ["omitted task rows", activityState({ truncatedTasks: true })],
-  ])("does not certify no agents from %s", (_name, activities) => {
+  ])("renders an empty exact local count slot for %s", (_name, activities) => {
     renderShelf(harness, activities);
     click(agentsTab());
-    expect(agentsPanel().querySelector(".th-activity-empty")).toBeNull();
-    expect(count()).toBe("?");
-    expect(agentsPanel().querySelector(".th-activity-partial")?.textContent).toBe("activity.partial");
+    expect(agentsPanel().querySelector(".th-activity-empty")?.textContent).toBe("activity.emptyAgents");
+    expect(count()).toBeNull();
+    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
   });
 
-  it("does not certify zero running from only retained completed nodes", () => {
+  it("renders exact zero running for retained completed nodes", () => {
     renderShelf(harness, activityState({
       dags: [sourceRun({
         truncated: true,
@@ -136,8 +130,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       })],
       truncatedDags: true,
     }));
-    expect(count()).toBe("?");
-    expect(count()).not.toContain("0");
+    expect(count()).toBe("0/1");
   });
 
   it("preserves task status authority and task-ID dedup through partial to full", () => {
@@ -150,13 +143,116 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     click(agentsTab());
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
     expect(agentsPanel().querySelector(".th-activity-agent")?.textContent).toContain(task.name);
-    expect(count()).toBe("?");
+    expect(count()).toBe("0/1");
 
     renderShelf(harness, activityState({ tasks: [task], dags: [full] }));
     expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
     expect(count()).toBe("1/2");
     expect(agentsTab().getAttribute("title")).toBeNull();
     expect(agentsPanel().textContent).not.toContain("retained child");
+  });
+
+  it("renders the server agent aggregate instead of retained rows plus workflow", () => {
+    // Hydrate through the same boundary the pane uses: the digest scalars are
+    // the exact pre-truncation authority, so the retained running task and the
+    // DAG-only workflow row must NOT be added onto it (that would show 4/6).
+    let state = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
+      truncated_tasks: true,
+      running_count: 3,
+      total_count: 5,
+      agent_running_count: 3,
+      agent_total_count: 5,
+      tasks: [{
+        task_id: "task-a", name: "authoritative task", status: "running",
+        updated_at: "2026-09-09T10:00:00Z",
+      }],
+    });
+    state = applyActivityHistorySnapshot(state, "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [{
+        run_id: "scalar-run", run_key: "plan", name: "Scalar graph", status: "running",
+        updated_at: "2026-09-09T10:00:00Z", counts: { total: 2, running: 2 },
+        nodes: [
+          { id: "a", prompt: "task-backed", depends_on: [], state: "running", task_id: "task-a" },
+          { id: "b", prompt: "workflow-only", depends_on: [], state: "running" },
+        ],
+        edges: [], waves: [], truncated_nodes: true,
+      }],
+    });
+
+    renderShelf(harness, state);
+    expect(count()).toBe("3/5");
+    expect(agentsTab().getAttribute("title")).toBeNull();
+    click(agentsTab());
+    expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
+    expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
+  });
+
+  it("takes a live count-only DAG frame as the aggregate while the shelf stays closed", () => {
+    let state = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
+      truncated_tasks: true,
+      tasks: [{
+        task_id: "task-a", name: "authoritative task", status: "running",
+        updated_at: "2026-09-09T10:00:00Z",
+      }],
+    });
+    state = applyActivityHistorySnapshot(state, "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [{
+        run_id: "scalar-run", run_key: "plan", name: "Scalar graph", status: "running",
+        updated_at: "2026-09-09T10:00:00Z", counts: { total: 2, running: 2 },
+        nodes: [
+          { id: "a", prompt: "task-backed", depends_on: [], state: "running", task_id: "task-a" },
+          { id: "b", prompt: "workflow-only", depends_on: [], state: "running" },
+        ],
+        edges: [], waves: [], truncated_nodes: true,
+      }],
+    });
+    // Without scalars the exact local rows are the fallback.
+    renderShelf(harness, state);
+    expect(harness.container.querySelector(".th-activity-shelf")?.getAttribute("data-open")).toBe("false");
+    expect(count()).toBe("2/2");
+
+    // The frame handler composes row reconciliation with count-only authority;
+    // a DAG frame carries the aggregate alone and still updates the closed tab.
+    const dagData = {
+      parent_session_id: "sess", truncated_runs: false, runs: [],
+      running_count: 9, agent_running_count: 5, agent_total_count: 7,
+    };
+    const next = applyCountAuthority(
+      applyActivityEvent(state, "omo.dag.updated", dagData),
+      parseDagCounts(dagData)!,
+    );
+    expect(next).not.toBe(state);
+    renderShelf(harness, next);
+    expect(harness.container.querySelector(".th-activity-shelf")?.getAttribute("data-open")).toBe("false");
+    expect(count()).toBe("5/7");
+  });
+
+  it("keeps rendering while a task frame's count authority arrives beside stale rows", () => {
+    const base = applyActivityHistorySnapshot(emptyActivityState(), "omo.task.updated", {
+      truncated_tasks: false,
+      tasks: [{
+        task_id: "task-a", name: "kept", status: "running",
+        updated_at: "2026-09-09T10:02:00Z",
+      }],
+    });
+    renderShelf(harness, base);
+    expect(count()).toBe("1/1");
+
+    // A stale row beside a newer accepted one is rejected for rows, but the
+    // frame's scalars describe the accepted state and must still land.
+    const frame = {
+      parent_session_id: "sess", truncated_tasks: true,
+      running_count: 4, total_count: 6, agent_running_count: 4, agent_total_count: 6,
+      tasks: [{ task_id: "task-a", status: "completed", updated_at: "2026-09-09T10:01:00Z" }],
+    };
+    const next = applyCountAuthority(
+      applyActivityEvent(base, "omo.task.updated", frame),
+      parseTaskCounts(frame)!,
+    );
+    renderShelf(harness, next);
+    expect(count()).toBe("4/6");
   });
 
   describe.each([
@@ -205,11 +301,11 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
         expect(state.dags.get("raw-run")?.nodes[0]?.taskIdPrefix).toBe(prefix);
         expect(state.tasks.get(taskId)).toBe(task);
         renderShelf(harness, state);
-        expect(count()).toBe(status === "running" ? "1+" : "?");
-        expect(agentsTab().getAttribute("title")).toBe("activity.partial");
+        expect(count()).toBe(exactCount);
+        expect(agentsTab().getAttribute("title")).toBeNull();
         click(agentsTab());
         expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
-        expect(agentsPanel().querySelector(".th-activity-partial")).not.toBeNull();
+        expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
 
         state = apply(state, "omo.dag.updated", snapshot([{
           ...exactRun, updated_at: "2026-09-09T10:02:00Z",
@@ -259,18 +355,18 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
         updated_at: newer, nodes: nodes.map(node => ({ ...node, task_id: prefix, task_id_truncated: true })),
       })]));
       renderShelf(harness, state);
-      expect(count()).toBe("2+");
+      expect(count()).toBe("2/2");
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(2);
     });
 
     it.each([
-      ["duplicate runs", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), wireRun({ nodes: [nodeB], counts: { total: 1, running: 1 } })], "?", 0, true],
-      ["duplicate nodes", [wireRun({ nodes: [nodeA, nodeA] })], "?", 0, false],
-      ["conflicting duplicate nodes", [wireRun({ nodes: [nodeA, { ...nodeA, state: "completed" }, nodeB] })], "1+", 1, false],
-      ["malformed duplicate node", [wireRun({ nodes: [nodeA, { id: "a" }, nodeB] })], "1+", 1, false],
-      ["malformed duplicate run", [wireRun(), { run_id: "raw-run" }], "?", 0, true],
-      ["duplicate runs with different revisions", [wireRun(), wireRun({ updated_at: newer })], "?", 0, true],
+      ["duplicate runs", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), wireRun({ nodes: [nodeB], counts: { total: 1, running: 1 } })], null, 0, true],
+      ["duplicate nodes", [wireRun({ nodes: [nodeA, nodeA] })], null, 0, false],
+      ["conflicting duplicate nodes", [wireRun({ nodes: [nodeA, { ...nodeA, state: "completed" }, nodeB] })], "1/1", 1, false],
+      ["malformed duplicate node", [wireRun({ nodes: [nodeA, { id: "a" }, nodeB] })], "1/1", 1, false],
+      ["malformed duplicate run", [wireRun(), { run_id: "raw-run" }], null, 0, true],
+      ["duplicate runs with different revisions", [wireRun(), wireRun({ updated_at: newer })], null, 0, true],
     ] as const)("quarantines %s through raw parser/reducer/Shelf and recovers exact2", (_case, runs, expected, retained, lostRuns) => {
       const parsed = parseDagUpdated(snapshot(runs));
       let state = apply(emptyActivityState(), "omo.dag.updated", snapshot(runs));
@@ -283,7 +379,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       expect(state.dags.get("raw-run")?.nodes).toHaveLength(retained);
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(retained);
-      expect(agentsPanel().querySelector(".th-activity-partial")).not.toBeNull();
+      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
       const incumbent = state.dags.get("raw-run");
       state = apply(state, "omo.dag.updated", snapshot([wireRun()]));
       expect(state.dags.get("raw-run")).toBe(incumbent);
@@ -308,24 +404,24 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
     });
 
     it.each([
-      ["missing depends_on", [wireRun({ nodes: [nodeA, malformedNode] })], "1+", 1],
-      ["all nodes dropped", [wireRun({ nodes: [malformedNode, null] })], "?", 0],
-      ["missing nodes", [wireRun({ nodes: undefined })], "?", 0],
-      ["advertised total exceeds retention", [wireRun({ nodes: [nodeA] })], "1+", 1],
-      ["advertised running exceeds retention", [wireRun({ nodes: [nodeA], counts: { running: 2 } })], "1+", 1],
-      ["run-local truncation with recomputed counts", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 }, truncated_nodes: true })], "1+", 1],
-      ["zero-retained run-local truncation", [wireRun({ nodes: [], counts: { total: 0, running: 0 }, truncated_nodes: true })], "?", 0],
-      ["dropped sibling run", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), { run_id: "lost" }], "1+", 1],
-      ["all runs dropped", [{ run_id: "lost" }, null], "?", 0],
-    ] as const)("qualifies %s and restores accepted complete2", (_case, runs, expected, retained) => {
+      ["missing depends_on", [wireRun({ nodes: [nodeA, malformedNode] })], "1/1", 1],
+      ["all nodes dropped", [wireRun({ nodes: [malformedNode, null] })], null, 0],
+      ["missing nodes", [wireRun({ nodes: undefined })], null, 0],
+      ["advertised total exceeds retention", [wireRun({ nodes: [nodeA] })], "1/1", 1],
+      ["advertised running exceeds retention", [wireRun({ nodes: [nodeA], counts: { running: 2 } })], "1/1", 1],
+      ["run-local truncation with recomputed counts", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 }, truncated_nodes: true })], "1/1", 1],
+      ["zero-retained run-local truncation", [wireRun({ nodes: [], counts: { total: 0, running: 0 }, truncated_nodes: true })], null, 0],
+      ["dropped sibling run", [wireRun({ nodes: [nodeA], counts: { total: 1, running: 1 } }), { run_id: "lost" }], "1/1", 1],
+      ["all runs dropped", [{ run_id: "lost" }, null], null, 0],
+    ] as const)("renders exact local counts for %s and restores accepted complete2", (_case, runs, expected, retained) => {
       let state = apply(emptyActivityState(), "omo.dag.updated", snapshot(runs));
       renderShelf(harness, state);
       expect(count()).toBe(expected);
       expect(state.truncatedDags).toBe(true);
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(retained);
-      expect(agentsPanel().querySelector(".th-activity-empty")).toBeNull();
-      expect(agentsPanel().querySelector(".th-activity-partial")).not.toBeNull();
+      expect(agentsPanel().querySelector(".th-activity-empty") === null).toBe(retained > 0);
+      expect(agentsPanel().querySelector(".th-activity-partial")).toBeNull();
 
       state = apply(state, "omo.dag.updated", snapshot([wireRun({ updated_at: newer })]));
       renderShelf(harness, state);
@@ -357,7 +453,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
         expect(stale.dags.get("raw-run")).toBe(partial.dags.get("raw-run"));
         expect(stale.truncatedDags).toBe(true);
         renderShelf(harness, stale);
-        expect(count()).toBe("1+");
+        expect(count()).toBe("1/1");
       }
     });
 
@@ -367,7 +463,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       expect(lost.dags.get("raw-run")).toBe(complete.dags.get("raw-run"));
       expect(lost.truncatedDags).toBe(true);
       renderShelf(harness, lost);
-      expect(count()).toBe("2+");
+      expect(count()).toBe("2/2");
     });
 
     it("preserves raw task authority and deduplication through partial to complete", () => {
@@ -378,7 +474,7 @@ describe("ActivityShelf partial DAG-derived Subagents counts", () => {
       const task = state.tasks.get("task-a");
       expect(task?.status).toBe("completed");
       renderShelf(harness, state);
-      expect(count()).toBe("?");
+      expect(count()).toBe("0/1");
       click(agentsTab());
       expect(agentsPanel().querySelectorAll(".th-activity-agent")).toHaveLength(1);
 

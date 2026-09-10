@@ -3,6 +3,7 @@ import { connectChat } from "../../lib/chatWs";
 import type { ChatClient, ChatServerFrame } from "../../lib/chatWs";
 import { parseDagDigest, parseTaskDigest } from "./activityDigest";
 import {
+  acceptLiveDagCounts,
   acceptLiveTaskInfo,
   canonicalLiveSessionId,
   projectLiveTaskInfo,
@@ -222,6 +223,13 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
   settleLiveBadgePush(identity.id, identity.sourceIds, taskUpdated, dagUpdated, arrival);
   acceptLiveTaskInfo({ id: identity.id, task: task?.data,
     ...(taskDigest === null ? {} : { taskDigest }), taskOversized: task?.oversized === true }, arrival);
+  if (dagUpdated) {
+    acceptLiveDagCounts({
+      id: identity.id,
+      ...(dag === undefined ? {} : { dag: dag.data }),
+      ...(dagDigest == null ? {} : { dagDigest }),
+    }, arrival);
+  }
   const info: LiveSessionInfo = {
     id: identity.id,
     title: previous?.title ?? "",

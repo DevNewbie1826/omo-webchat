@@ -1496,7 +1496,7 @@ func (s *Session) ActivitySnapshot() []Frame {
 	out := make([]Frame, 0, len(activitySnapshotOrder))
 	for _, name := range activitySnapshotOrder {
 		if data := s.activitySnapshots[name]; len(data) > 0 {
-			out = append(out, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
+			out = append(out, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, s.activityOversized[name])})
 		}
 	}
 	return out
@@ -1542,7 +1542,7 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 	}
 	for _, name := range activitySnapshotOrder {
 		if data := s.activitySnapshots[name]; len(data) > 0 {
-			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, data, s.activityOversized[name])})
+			initial = append(initial, Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: s.exactActivityFrameDataLocked(name, data, s.activityOversized[name])})
 		}
 	}
 	for _, requestID := range owner.fifo {

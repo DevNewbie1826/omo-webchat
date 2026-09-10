@@ -25,10 +25,13 @@ type taskOutcomeEvidence struct {
 }
 
 type taskSnapshotCache struct {
-	tasks                map[[sha256.Size]byte]taskFreshness
-	outcomes             map[taskOutcomeKey]taskOutcomeEvidence
-	clock, evidenceClock uint64
-	oversized            bool
+	tasks                    map[[sha256.Size]byte]taskFreshness
+	countMembers             map[[sha256.Size]byte]taskCountMember
+	runningCount, totalCount int
+	countAuthorityKnown      bool
+	outcomes                 map[taskOutcomeKey]taskOutcomeEvidence
+	clock, evidenceClock     uint64
+	oversized                bool
 }
 
 type taskSnapshotResult struct {
@@ -79,6 +82,10 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		}
 		return c.incumbent(previous, previousDigest)
 	}
+	// A provider flag of false declares complete membership, so scalars derived
+	// from these rows are exact no matter which rows the digest later drops.
+	// Webchat-side size bounds never change that declaration.
+	fullMembership := !partial
 	partial = partial || len(data) > maxActivitySnapshotBytes || len(incoming) > maxActivityDigestEntries
 	// Structural row loss is incomplete membership. Invalid clocks are not row loss.
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
@@ -86,10 +93,12 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		id, _, ok := taskRowIdentity(row)
 		if !ok {
 			partial = true
+			fullMembership = false
 			continue
 		}
 		present[sha256.Sum256([]byte(id))] = true
 	}
+	c.mergeCountAuthority(incoming, fullMembership)
 	if c.tasks == nil {
 		c.tasks = make(map[[sha256.Size]byte]taskFreshness)
 	}
@@ -205,6 +214,7 @@ func (c *taskSnapshotCache) merge(data, previous json.RawMessage, previousDigest
 		}
 	}
 	doc["tasks"], _ = json.Marshal(rows)
+	digest.RunningCount, digest.TotalCount = c.runningCount, c.totalCount
 	if partial {
 		doc["truncated_tasks"] = json.RawMessage("true")
 	}
@@ -273,6 +283,14 @@ func (c *taskSnapshotCache) observe(accepted []json.RawMessage) {
 			c.evidenceClock++
 			key := taskOutcomeKey{run: runKey, task: sha256.Sum256([]byte(id))}
 			c.outcomes[key] = taskOutcomeEvidence{dagTaskOutcome: outcomes[id], serial: c.evidenceClock}
+			memberKey := sha256.Sum256([]byte(id))
+			if member, ok := c.countMembers[memberKey]; ok && member.present && !terminalTaskStatuses[member.status] && terminalTaskStatuses[outcomes[id].status] {
+				member.status = outcomes[id].status
+				c.countMembers[memberKey] = member
+				if c.countAuthorityKnown {
+					c.finishCountAuthority()
+				}
+			}
 		}
 	}
 }
@@ -296,7 +314,22 @@ func (c *taskSnapshotCache) reconcile(raw json.RawMessage, digest *TaskDigest) (
 		current := c.tasks[key]
 		current.correction, current.terminal = evidence.status, true
 		c.tasks[key] = current
+		if counted, ok := c.countMembers[key]; ok && counted.present && !terminalTaskStatuses[counted.status] {
+			counted.status = evidence.status
+			c.countMembers[key] = counted
+		}
 		changed = true
+	}
+	if changed && c.countAuthorityKnown {
+		c.runningCount, c.totalCount = 0, 0
+		for _, member := range c.countMembers {
+			if member.present {
+				c.totalCount++
+				if member.status == "running" {
+					c.runningCount++
+				}
+			}
+		}
 	}
 	if !changed {
 		return raw, digest, false
@@ -310,6 +343,7 @@ func (c *taskSnapshotCache) reconcile(raw json.RawMessage, digest *TaskDigest) (
 				row.RawStatus, row.Status = row.Status, correction
 			}
 		}
+		digest.RunningCount = c.runningCount
 		boundTaskDigest(digest)
 	}
 	var doc map[string]json.RawMessage
@@ -383,6 +417,8 @@ func (s *Session) reconcileActivityCacheLocked() {
 		}
 	}
 	if len(raw) > 0 {
+		running, total := s.refreshExactCountsLocked()
+		raw = addActivityCounts(raw, name, &s.taskSnapshots, &s.dagSnapshots, running, total)
 		s.publishLocked(Frame{Kind: FrameExtensionEvent, SessionID: s.durableID, Data: extensionFrameData(name, raw, s.activityOversized[name])})
 	}
 	if s.manager != nil {

@@ -1,7 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { parseDagActivity, parseDagHeartbeat, parseDagUpdated } from "./activityParse";
+import { parseDagCounts } from "./activityParseDag";
 
 describe("parseDagUpdated", () => {
+  it("parses the agent aggregate authority alongside the node running sum", () => {
+    const parsed = parseDagUpdated({
+      truncated_runs: false,
+      running_count: 9,
+      agent_running_count: 3,
+      agent_total_count: 7,
+      runs: [],
+    });
+    expect(parsed).toMatchObject({ runs: [], agentRunningCount: 3, agentTotalCount: 7 });
+    const malformed = parseDagUpdated({ runs: [], agent_running_count: "all", agent_total_count: -2 });
+    expect(malformed).toMatchObject({ runs: [] });
+    expect(malformed?.agentRunningCount).toBeUndefined();
+    expect(malformed?.agentTotalCount).toBeUndefined();
+  });
+
+  it("reads count-only authority and never maps the node sum onto a task scalar", () => {
+    expect(parseDagCounts({ running_count: 9, agent_running_count: 3, agent_total_count: 7 })).toEqual({
+      taskAgentRunningCount: 3,
+      taskAgentTotalCount: 7,
+    });
+    expect(parseDagCounts({ runs: [] })).toEqual({});
+    expect(parseDagCounts(42)).toBeNull();
+  });
+
   it("parses nodes, edges, waves, and counts from a snapshot run", () => {
     const parsed = parseDagUpdated({
       parent_session_id: "sess-1",

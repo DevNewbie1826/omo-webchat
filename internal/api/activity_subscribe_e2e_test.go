@@ -228,8 +228,12 @@ func TestActivitySubscribeEngineShapedEndToEnd(t *testing.T) {
 	}
 
 	taskPayload := map[string]any{
-		"parent_session_id": chat.DurableSessionID,
-		"truncated_tasks":   false,
+		"parent_session_id":   chat.DurableSessionID,
+		"truncated_tasks":     false,
+		"running_count":       1,
+		"total_count":         2,
+		"agent_running_count": 1,
+		"agent_total_count":   2,
 		"tasks": []any{
 			map[string]any{
 				"task_id": "st_child_one", "child_session_id": "child-session-1", "status": "running", "task_summary": "Inspect implementation", "name": "inspect", "category": "deep", "execution_mode": "in-process", "model": "test/model", "residency_state": "resident", "depth": 1,
@@ -241,7 +245,11 @@ func TestActivitySubscribeEngineShapedEndToEnd(t *testing.T) {
 		},
 	}
 	dagPayload := map[string]any{
-		"parent_session_id": chat.DurableSessionID, "truncated_runs": false,
+		"parent_session_id":   chat.DurableSessionID,
+		"truncated_runs":      false,
+		"running_count":       1,
+		"agent_running_count": 1,
+		"agent_total_count":   2,
 		"runs": []any{map[string]any{
 			"run_id": "run-activity", "run_key": "phase-c", "name": "Phase C verification", "status": "running", "created_at": "2026-09-03T00:00:00Z", "updated_at": "2026-09-03T00:00:02Z",
 			"counts": map[string]any{"total": 2, "pending": 1, "blocked": 0, "scheduled": 0, "running": 1, "completed": 0, "failed": 0, "cancelled": 0, "skipped": 0},
