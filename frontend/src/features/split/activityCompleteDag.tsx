@@ -1,60 +1,127 @@
-import type { ComponentProps } from "react";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 import { DAG_STATES } from "./activityCompleteParse";
 import { DagSection } from "./activityShelfDag";
-import { statusLabel } from "./activityShelfModel";
+import { statusLabel, type DagView } from "./activityShelfModel";
 import type { ActivityState } from "./activityTypes";
-import type { useCompleteDag } from "./useCompleteDag";
+import { useCompleteDagRun, type CompleteDagRow, type useCompleteDag } from "./useCompleteDag";
 
 type CompleteDagSectionProps = Omit<ComponentProps<typeof DagSection>, "dags"> & {
   readonly data: ReturnType<typeof useCompleteDag>;
   readonly activities: ActivityState;
 };
 
+/** One newest-first list row: header (name, status chip, done/total), its own
+ *  graph/list toggle, and expandable full details. The row owns retrieval for
+ *  its run; graphs paint only from an accepted full original document, never
+ *  from a truncated live summary. */
+function CompleteDagRunRow({ row, index, base, active, connected, activities, facts, retryEpoch,
+  panelActive, view, onViewChange, clipIdPrefix, nodeHistory, onMotionEnd, t }: {
+  readonly row: CompleteDagRow;
+  readonly index: number;
+  readonly base: string;
+  readonly active: boolean;
+  readonly connected: boolean;
+  readonly activities: ActivityState;
+  readonly facts: ReturnType<typeof useCompleteDag>["runScope"]["facts"];
+  readonly retryEpoch: number;
+  readonly panelActive: boolean;
+  readonly view: DagView;
+  readonly onViewChange: (runId: string, view: DagView) => void;
+  readonly clipIdPrefix: string;
+  readonly nodeHistory: ComponentProps<typeof DagSection>["nodeHistory"];
+  readonly onMotionEnd: ComponentProps<typeof DagSection>["onMotionEnd"];
+  readonly t: ComponentProps<typeof DagSection>["t"];
+}) {
+  useCompleteDagRun(base, active, row.entry.runId, connected, activities, facts, retryEpoch);
+  const run = row.run;
+  return (
+    <article className="th-activity-dag-run" data-activity-dag-run={row.entry.runId}
+      data-activity-dag-status={row.status} data-content-token={run === null ? undefined : row.contentToken}>
+      {run === null
+        ? <p className="th-activity-dag-freshness" role={row.error ? "alert" : "status"}>
+            {row.entry.name} - {t(`activity.dagFull.${row.status}`)}
+          </p>
+        : <>
+          <DagSection
+            t={t}
+            dags={[run]}
+            view={view}
+            onViewChange={(next) => onViewChange(row.entry.runId, next)}
+            active={panelActive && row.status === "complete"}
+            // Positional per-row prefix keeps clip/marker ids unique across
+            // rows; run and node ids are free-form and unsafe in url(#…).
+            clipIdPrefix={`${clipIdPrefix}-${index}`}
+            nodeHistory={nodeHistory}
+            onMotionEnd={onMotionEnd}
+          />
+          {row.status !== "complete" && <p className="th-activity-dag-freshness" role={row.error ? "alert" : "status"}>{t(`activity.dagFull.${row.status}`)}</p>}
+          <details className="th-activity-dag-details" data-activity-dag-total={run.counts.total}>
+            <summary>{t("activity.dagDetails", { total: run.counts.total })}</summary>
+            <dl className="th-activity-dag-state-counts">
+              {DAG_STATES.map(state => <div key={state} data-activity-dag-count={state} data-count={run.counts[state]}>
+                <dt>{statusLabel(t, state)}</dt><dd>{run.counts[state]}</dd>
+              </div>)}
+            </dl>
+            {run.nodes.map(node => <details key={node.id} className="th-activity-dag-node-detail" data-activity-dag-node={node.id}>
+              <summary>{node.label ?? node.id} - {statusLabel(t, node.state)}</summary>
+              <dl>
+                <dt>{t("activity.dagNodeId")}</dt><dd>{node.id}</dd>
+                <dt>{t("activity.dagDependencies")}</dt><dd>{node.dependsOn.length === 0 ? t("activity.dagNoDependencies") : node.dependsOn.map((id, index) => <div key={index}>{id}</div>)}</dd>
+                {node.taskId !== undefined && <><dt>{t("activity.dagTaskId")}</dt><dd>{node.taskId}</dd></>}
+                {node.attempt !== undefined && <><dt>{t("activity.dagAttempt")}</dt><dd data-activity-dag-attempt>{node.attempt}</dd></>}
+                {node.startedAt !== undefined && <><dt>{t("activity.dagStarted")}</dt><dd>{node.startedAt}</dd></>}
+                {node.completedAt !== undefined && <><dt>{t("activity.dagCompleted")}</dt><dd>{node.completedAt}</dd></>}
+              </dl>
+              <p className="th-activity-dag-prompt" data-activity-dag-prompt>{node.prompt}</p>
+              {(node.currentTool || node.activity || node.lastAssistantLine) && <p className="th-activity-dag-prompt" data-activity-dag-progress>{[node.activity, node.currentTool, node.lastAssistantLine].filter(Boolean).join("\n")}</p>}
+            </details>)}
+          </details>
+        </>}
+    </article>
+  );
+}
+
 export function CompleteDagSection({ data, activities, ...props }: CompleteDagSectionProps) {
   const { t } = props;
-  const run = data.run;
-  const options = data.catalog.some(entry => entry.runId === data.selected) || data.selected === null
-    ? data.catalog : [{ runId: data.selected, name: activities.dags.get(data.selected)?.name ?? data.selected, contentToken: "" }, ...data.catalog];
+  // The graph/list choice is per run and starts from the shelf's view; once a
+  // run is toggled it keeps its own choice for the rest of the session.
+  const [runViews, setRunViews] = useState<Readonly<Record<string, DagView>>>({});
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const hasMore = data.hasMore;
+  const rowCount = data.rows.length;
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!hasMore || sentinel === null || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) data.loadMore();
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+    // Re-observing after each append lets a still-visible sentinel deliver a
+    // fresh initial entry, continuing the scroll without a pointer gesture.
+  }, [hasMore, rowCount, data.loadMore]);
   return (
-    <section className="th-activity-dag-complete" data-activity-dag-status={data.status} data-content-token={data.contentToken}>
-      <div className="th-activity-dag-picker">
-        <label>
-          <span>{t("activity.dagSelect")}</span>
-          <select data-activity-dag-select value={data.selected ?? ""} onChange={event => data.select(event.target.value)} disabled={options.length === 0}>
-            {options.map(entry => <option key={entry.runId} value={entry.runId}>{entry.name} ({entry.runId})</option>)}
-          </select>
-        </label>
+    <section className="th-activity-dag-complete" data-activity-dag-catalog={data.catalogStatus}>
+      <div className="th-activity-dag-toolbar">
         <button type="button" className="th-activity-view-btn" data-activity-dag-retry onClick={data.retry}>{t("activity.dagRefresh")}</button>
       </div>
-      <p className="th-activity-dag-freshness" role={data.error ? "alert" : "status"}>
-        {data.status === "empty" ? t("activity.emptyDag") : t(`activity.dagFull.${data.status}`)}
-      </p>
-      {data.catalogLoading && <p className="th-activity-dag-freshness" role="status">{t("activity.dagCatalogLoading")}</p>}
-      {data.catalogError && <p className="th-activity-dag-freshness" role="alert">{t("activity.dagCatalogError")}</p>}
-      {run !== null && <>
-        <DagSection {...props} active={props.active && data.status === "complete"} dags={[run]} />
-        <details className="th-activity-dag-details" data-activity-dag-total={run.counts.total}>
-          <summary>{t("activity.dagDetails", { total: run.counts.total })}</summary>
-          <dl className="th-activity-dag-state-counts">
-            {DAG_STATES.map(state => <div key={state} data-activity-dag-count={state} data-count={run.counts[state]}>
-              <dt>{statusLabel(t, state)}</dt><dd>{run.counts[state]}</dd>
-            </div>)}
-          </dl>
-          {run.nodes.map(node => <details key={node.id} className="th-activity-dag-node-detail" data-activity-dag-node={node.id}>
-            <summary>{node.label ?? node.id} - {statusLabel(t, node.state)}</summary>
-            <dl>
-              <dt>{t("activity.dagNodeId")}</dt><dd>{node.id}</dd>
-              <dt>{t("activity.dagDependencies")}</dt><dd>{node.dependsOn.length === 0 ? t("activity.dagNoDependencies") : node.dependsOn.map((id, index) => <div key={index}>{id}</div>)}</dd>
-              {node.taskId !== undefined && <><dt>{t("activity.dagTaskId")}</dt><dd>{node.taskId}</dd></>}
-              {node.attempt !== undefined && <><dt>{t("activity.dagAttempt")}</dt><dd data-activity-dag-attempt>{node.attempt}</dd></>}
-              {node.startedAt !== undefined && <><dt>{t("activity.dagStarted")}</dt><dd>{node.startedAt}</dd></>}
-              {node.completedAt !== undefined && <><dt>{t("activity.dagCompleted")}</dt><dd>{node.completedAt}</dd></>}
-            </dl>
-            <p className="th-activity-dag-prompt" data-activity-dag-prompt>{node.prompt}</p>
-            {(node.currentTool || node.activity || node.lastAssistantLine) && <p className="th-activity-dag-prompt" data-activity-dag-progress>{[node.activity, node.currentTool, node.lastAssistantLine].filter(Boolean).join("\n")}</p>}
-          </details>)}
-        </details>
-      </>}
+      {data.catalogStatus === "loading" && <p className="th-activity-dag-freshness" role="status">{t("activity.dagCatalogLoading")}</p>}
+      {data.catalogStatus === "error" && <p className="th-activity-dag-freshness" role="alert">{t("activity.dagCatalogError")}</p>}
+      {data.catalogStatus === "empty" && <p className="th-activity-empty">{t("activity.emptyDag")}</p>}
+      {data.rows.map((row, index) => (
+        <CompleteDagRunRow key={row.entry.runId} row={row} index={index}
+          base={data.runScope.base} active={data.runScope.active} connected={data.runScope.connected}
+          facts={data.runScope.facts} retryEpoch={data.runScope.retryEpoch}
+          activities={activities} panelActive={props.active}
+          view={runViews[row.entry.runId] ?? props.view}
+          onViewChange={(runId, view) => setRunViews(previous =>
+            previous[runId] === view ? previous : { ...previous, [runId]: view })}
+          clipIdPrefix={props.clipIdPrefix} nodeHistory={props.nodeHistory} onMotionEnd={props.onMotionEnd}
+          t={t}
+        />
+      ))}
+      {data.loadingMore && <p className="th-activity-dag-freshness" role="status">{t("activity.dagCatalogLoading")}</p>}
+      {hasMore && <div ref={sentinelRef} className="th-activity-dag-freshness" data-activity-dag-sentinel />}
     </section>
   );
 }

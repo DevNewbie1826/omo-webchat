@@ -10,6 +10,10 @@ import type { ActivityState } from "./activityTypes";
 const revision = "2026-09-08T10:00:00Z";
 const newer = "2026-09-08T10:01:00Z";
 const base = "/api/workspaces/ws/chats/chat/dag-runs";
+/** The DAG tab restores the vertical run list: the catalog is paged by a
+ *  fixed page size of ten newest-first runs, one page per sentinel reveal. */
+const firstPage = `${base}?limit=10`;
+const pageAfter = (cursor: string) => `${base}?limit=10&cursor=${encodeURIComponent(cursor)}`;
 const states = ["pending", "blocked", "scheduled", "running", "completed", "failed", "cancelled", "skipped"] as const;
 function full(runId = "r1", updatedAt = revision, size = 3) {
   const nodes = Array.from({ length: size }, (_, index) => ({
@@ -47,12 +51,41 @@ function uniform(state: "running" | "completed", updatedAt = revision, token: st
 }
 
 type Request = { readonly url: string; readonly signal: AbortSignal | null | undefined; readonly resolve: (response: Response) => void };
+/** Controllable IntersectionObserver stand-in: the sentinel test decides when
+ *  the browser would report visibility, so no timing enters the assertions. */
+const observers: { readonly callback: IntersectionObserverCallback; readonly targets: Set<Element> }[] = [];
+class IntersectionObserverStub {
+  readonly callback: IntersectionObserverCallback;
+  readonly targets = new Set<Element>();
+  constructor(callback: IntersectionObserverCallback) {
+    this.callback = callback;
+    observers.push(this);
+  }
+  observe(target: Element): void { this.targets.add(target); }
+  unobserve(target: Element): void { this.targets.delete(target); }
+  disconnect(): void {
+    this.targets.clear();
+    const index = observers.indexOf(this);
+    if (index >= 0) observers.splice(index, 1);
+  }
+}
+function revealSentinel(target: Element): void {
+  const entry = { target, isIntersecting: true } as IntersectionObserverEntry;
+  act(() => {
+    for (const observer of [...observers]) {
+      if (observer.targets.has(target)) observer.callback([entry], observer as unknown as IntersectionObserver);
+    }
+  });
+}
+
 describe("complete DAG dashboard", () => {
   let harness: ActivityShelfHarness;
   let requests: Request[];
   beforeEach(() => {
     harness = mountActivityShelf();
     requests = [];
+    observers.length = 0;
+    vi.stubGlobal("IntersectionObserver", IntersectionObserverStub);
     vi.stubGlobal("fetch", (input: string, init?: RequestInit) => new Promise<Response>(resolve => {
       requests.push({ url: input, signal: init?.signal, resolve });
     }));
@@ -77,23 +110,95 @@ describe("complete DAG dashboard", () => {
   }
   async function load() {
     render(); open();
-    await reply(request(base), catalog());
+    await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), full());
   }
-  const nodes = () => [...harness.container.querySelectorAll(".th-activity-gnode")].map(node => node.getAttribute("data-node"));
-  const status = () => harness.container.querySelector("[data-activity-dag-status]")?.getAttribute("data-activity-dag-status");
-  function select(id: string) {
-    const picker = requireElement(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]"), "complete run picker");
-    act(() => { picker.value = id; picker.dispatchEvent(new Event("change", { bubbles: true })); });
-  }
+  const rowOf = (id: string) => requireElement(harness.container.querySelector(`[data-activity-dag-run="${id}"]`), `run row ${id}`);
+  const rowIds = () => [...harness.container.querySelectorAll("[data-activity-dag-run]")].map(row => row.getAttribute("data-activity-dag-run"));
+  const nodes = (scope: ParentNode = harness.container) => [...scope.querySelectorAll(".th-activity-gnode")].map(node => node.getAttribute("data-node"));
+  const status = (id?: string) => (id === undefined
+    ? harness.container.querySelector("[data-activity-dag-status]")
+    : rowOf(id))?.getAttribute("data-activity-dag-status");
+  const catalogStatus = () => harness.container.querySelector(".th-activity-dag-complete")?.getAttribute("data-activity-dag-catalog");
+
+  it("renders the newest ten catalog runs as a vertical list in order with per-run headers", async () => {
+    const ids = Array.from({ length: 10 }, (_unused, index) => `run-${index}`);
+    render(); open();
+    await reply(request(firstPage), catalog(ids, "cursor-2"));
+    for (const id of ids) await reply(request(`${base}/${id}`), full(id));
+    expect(rowIds()).toEqual(ids);
+    for (const id of ids) {
+      const row = rowOf(id);
+      expect(status(id)).toBe("complete");
+      expect(row.querySelector(".th-activity-dag-head .th-activity-dag-name")?.textContent).toBe(id);
+      expect(row.querySelector(".th-activity-chip")?.textContent).toBe("activity.status.running");
+      expect(row.querySelector(".th-activity-dag-counts")).not.toBeNull();
+      expect(row.querySelector("details[data-activity-dag-total]")?.getAttribute("data-activity-dag-total")).toBe("3");
+      expect([...row.querySelectorAll("[data-view]")].map(button => button.getAttribute("data-view"))).toEqual(["list", "graph"]);
+    }
+  });
+
+  it("renders the run list without any run picker", async () => {
+    await load();
+    expect(harness.container.querySelector("[data-activity-dag-select]")).toBeNull();
+    expect(harness.container.querySelector(".th-activity-dag-picker")).toBeNull();
+    expect(harness.container.querySelector("select")).toBeNull();
+    expect(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh").textContent).toBe("activity.dagRefresh");
+  });
+
+  it("loads exactly one more catalog page of ten when the list-end sentinel becomes visible", async () => {
+    const firstTen = Array.from({ length: 10 }, (_unused, index) => `first-${index}`);
+    const secondTen = Array.from({ length: 10 }, (_unused, index) => `second-${index}`);
+    render(); open();
+    expect(catalogStatus()).toBe("loading");
+    expect(harness.container.querySelector(".th-activity-dag-complete > .th-activity-dag-freshness[role='status']")?.textContent).toBe("activity.dagCatalogLoading");
+    await reply(request(firstPage), catalog(firstTen, "cursor-2"));
+    expect(rowIds()).toEqual(firstTen);
+    const sentinel = requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "list-end sentinel");
+    expect(requests.some(item => item.url === pageAfter("cursor-2"))).toBe(false);
+    revealSentinel(sentinel);
+    revealSentinel(sentinel);
+    await reply(request(pageAfter("cursor-2")), catalog(secondTen, "cursor-3"));
+    expect(rowIds()).toEqual([...firstTen, ...secondTen]);
+    expect(requests.filter(item => item.url === pageAfter("cursor-2"))).toHaveLength(1);
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel after append"));
+    await reply(request(pageAfter("cursor-3")), catalog([], null));
+    expect(harness.container.querySelector("[data-activity-dag-sentinel]")).toBeNull();
+    expect(rowIds()).toEqual([...firstTen, ...secondTen]);
+    expect(requests.filter(item => item.url === pageAfter("cursor-3"))).toHaveLength(1);
+  });
+
+  it("surfaces catalog retrieval errors explicitly and recovers through the refresh button", async () => {
+    render(); open();
+    await reply(request(firstPage), { error: "catalog unavailable" }, 500);
+    expect(catalogStatus()).toBe("error");
+    expect(rowIds()).toEqual([]);
+    expect(harness.container.querySelector(".th-activity-dag-complete > .th-activity-dag-freshness[role='alert']")?.textContent).toBe("activity.dagCatalogError");
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await reply(request(firstPage, 1), catalog());
+    await reply(request(`${base}/r1`), full());
+    expect(catalogStatus()).toBe("ready");
+    expect(status()).toBe("complete");
+  });
+
+  it("distinguishes an authoritative empty catalog from loading", async () => {
+    // Given no summary; When the entire authorized catalog returns empty.
+    render(activityState()); open();
+    expect(catalogStatus()).toBe("loading");
+    await reply(request(firstPage), catalog([]));
+    expect(catalogStatus()).toBe("empty");
+    expect(harness.container.querySelector('[data-activity-tabpanel="dag"] .th-activity-empty')?.textContent).toBe("activity.emptyDag");
+    expect(rowIds()).toEqual([]);
+    expect(harness.container.querySelector("[data-activity-dag-sentinel]")).toBeNull();
+  });
 
   it("automatically replaces a same-revision prefix with all original nodes, dependencies and descriptions", async () => {
     // Given a cropped same-revision legacy summary; When the DAG tab opens.
     const document = full("r1", revision, 64);
     render(projected(document, 2)); open();
     expect(nodes()).toEqual([]);
-    expect(status()).toBe("loading");
-    await reply(request(base), catalog());
+    expect(catalogStatus()).toBe("loading");
+    await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), document);
     // Then only the complete authorized topology is current.
     expect(nodes()).toEqual(document.run.nodes.map(node => node.id));
@@ -134,7 +239,7 @@ describe("complete DAG dashboard", () => {
   ])("enriches F1 %s task metadata without losing the complete graph", async (_name, taskId, fragment) => {
     const doc = taskIdentityDocument(taskId);
     render(taskIdentityOverview(doc, fragment, true)); open();
-    await reply(request(base), catalog());
+    await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), doc);
     expect(status()).toBe("complete");
     expect(nodes()).toEqual(doc.run.nodes.map(node => node.id));
@@ -151,7 +256,7 @@ describe("complete DAG dashboard", () => {
   ])("keeps F1 %s task conflicts stale despite matching prefixes and aggregate partial", async (_name, known, incoming) => {
     const doc = taskIdentityDocument(incoming);
     render(taskIdentityOverview(doc, known, false)); open();
-    await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    await reply(request(firstPage), catalog()); await reply(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
 
@@ -165,7 +270,7 @@ describe("complete DAG dashboard", () => {
           : field === "completed_at" ? { completed_at: revision } : {}),
       }) } };
       render(taskIdentityOverview(known, field === "task_id" ? "other".repeat(102) + "xx" : "t".repeat(512), true)); open();
-      await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+      await reply(request(firstPage), catalog()); await reply(request(`${base}/r1`), doc);
       expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
     },
   );
@@ -176,7 +281,7 @@ describe("complete DAG dashboard", () => {
     const exact = applyActivityEvent(summary, "omo.dag.activity", {
       runId: "r1", nodeId: "node-00", at: newer, taskId: "t".repeat(600) + "b",
     });
-    render(exact); open(); await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    render(exact); open(); await reply(request(firstPage), catalog()); await reply(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
 
@@ -192,7 +297,7 @@ describe("complete DAG dashboard", () => {
     const next = apply(initial, "omo.dag.updated", { runs: [{ ...doc.run,
       nodes: [{ ...doc.run.nodes[0]!, task_id: taskId.slice(0, 512), task_id_truncated: true }],
     }] });
-    render(next); open(); await reply(request(base), catalog());
+    render(next); open(); await reply(request(firstPage), catalog());
     await replyF2(request(`${base}/r1`), doc);
     expect(status()).toBe("complete");
     expect(nodes()).toEqual(doc.run.nodes.map(node => node.id));
@@ -226,7 +331,7 @@ describe("complete DAG dashboard", () => {
       nodes: [{ ...doc.run.nodes[0]!, task_id: "t".repeat(512), task_id_truncated: true }],
     }] });
     expect(next.dags.get("r1")).toBe(initial.dags.get("r1"));
-    render(next); open(); await reply(request(base), catalog()); await replyF2(request(`${base}/r1`), doc);
+    render(next); open(); await reply(request(firstPage), catalog()); await replyF2(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
 
@@ -244,25 +349,28 @@ describe("complete DAG dashboard", () => {
       runId: "r1", nodeId: "node-00", at: newer, taskId: "t".repeat(600) + "b",
     });
     expect(next.dags.get("r1")?.nodes[0]?.taskId).toBe("t".repeat(600) + "b");
-    render(next); open(); await reply(request(base), catalog()); await replyF2(request(`${base}/r1`), doc);
+    render(next); open(); await reply(request(firstPage), catalog()); await replyF2(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
 
-  it("discovers every catalog page without relying on retained snapshot membership", async () => {
-    // Given no retained DAG at all; When opening the authorized catalog.
+  it("discovers runs on later catalog pages without relying on retained snapshot membership", async () => {
+    // Given no retained DAG at all; When the authorized catalog pages in.
     render(activityState()); open();
-    await reply(request(base), catalog(["r1"], "opaque cursor"));
-    await reply(request(`${base}?cursor=opaque%20cursor`), catalog(["r2", "r/3"]));
-    const picker = requireElement(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]"), "run picker");
-    expect([...picker.options].map(option => option.value)).toEqual(["r1", "r2", "r/3"]);
-    select("r/3");
+    await reply(request(firstPage), catalog(["r1"], "opaque cursor"));
+    await reply(request(`${base}/r1`), full("r1"));
+    expect(rowIds()).toEqual(["r1"]);
+    expect(requests.some(item => item.url === pageAfter("opaque cursor"))).toBe(false);
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel"));
+    await reply(request(pageAfter("opaque cursor")), catalog(["r2", "r/3"]));
+    await reply(request(`${base}/r2`), full("r2"));
     await reply(request(`${base}/r%2F3`), full("r/3"));
-    expect(status()).toBe("complete");
-    expect(picker.value).toBe("r/3");
+    expect(rowIds()).toEqual(["r1", "r2", "r/3"]);
+    expect(status("r/3")).toBe("complete");
+    expect(nodes(rowOf("r/3"))).toHaveLength(3);
   });
 
   it("rejects equal-revision completed/tokenA to running/tokenB after a prior full response", async () => {
-    render(activityState()); open(); await reply(request(base), catalog());
+    render(activityState()); open(); await reply(request(firstPage), catalog());
     const completed = uniform("completed", revision, "a".repeat(64));
     await reply(request(`${base}/r1`), completed);
     expect(status()).toBe("complete");
@@ -276,12 +384,12 @@ describe("complete DAG dashboard", () => {
 
   // Observe the exact terminal DOM commit before completing the controlled
   // request. The timer is only a failure deadline, never synchronization.
-  async function replyF2(item: Request, body: unknown) {
+  async function replyF2(item: Request, body: unknown, id?: string) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let observer: MutationObserver | undefined;
     const committed = new Promise<void>((resolve, reject) => {
       observer = new MutationObserver(() => {
-        if (["complete", "stale", "error"].includes(status() ?? "")) resolve();
+        if (["complete", "stale", "error"].includes(status(id) ?? "")) resolve();
       });
       observer.observe(harness.container, { subtree: true, attributes: true, attributeFilter: ["data-activity-dag-status"] });
       timer = setTimeout(() => reject(new Error("F2 terminal hook commit deadline")), 2000);
@@ -299,15 +407,12 @@ describe("complete DAG dashboard", () => {
     return { ...doc, run: { ...doc.run, run_id: "a", name: "a" } };
   }
   async function roundTripF2(doc = documentF2("completed")) {
-    // Historical a is entirely absent from overview and dagFreshness.
-    render(activityState()); open(); await reply(request(base), catalog(["a", "b"]));
-    await replyF2(request(`${base}/a`), doc);
-    expect(status()).toBe("complete");
-    select("b"); await replyF2(request(`${base}/b`), full("b"));
-    expect(status()).toBe("complete");
-    select("a");
-    expect(status()).toBe("loading");
-    expect(nodes()).toEqual([]);
+    // Historical a and b both load through the first catalog page.
+    render(activityState()); open(); await reply(request(firstPage), catalog(["a", "b"]));
+    await replyF2(request(`${base}/a`), doc, "a");
+    expect(status("a")).toBe("complete");
+    await replyF2(request(`${base}/b`), full("b"), "b");
+    expect(status("b")).toBe("complete");
   }
 
   it.each(["state", "attempt", "task", "prompt", "older", "missing", "invalid"])(
@@ -319,80 +424,93 @@ describe("complete DAG dashboard", () => {
         ...(kind === "task" ? { task_id: "other-task" } : {}),
         ...(kind === "prompt" ? { prompt: "changed full description" } : {}),
       }));
+      click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
       await replyF2(request(`${base}/a`, 1), { ...doc, run: { ...doc.run,
         updated_at: kind === "missing" ? undefined : kind === "invalid" ? "unknown" : doc.run.updated_at,
-      } });
-      expect(status()).toBe("stale");
-      expect(nodes()).toEqual([]);
-      expect(harness.container.querySelector('[role="alert"]')).not.toBeNull();
+      } }, "a");
+      expect(status("a")).toBe("stale");
+      // The fenced replacement must not replace the accepted document: the
+      // painted graph keeps the accepted facts, not the fenced ones.
+      expect(rowOf("a").querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
+      expect(rowOf("a").querySelector('[data-activity-dag-count="running"]')?.getAttribute("data-count")).toBe("0");
+      expect(rowOf("a").querySelector('[role="alert"]')).not.toBeNull();
+      await replyF2(request(`${base}/b`, 1), full("b"), "b");
+      expect(status("b")).toBe("complete");
     },
   );
 
-  it("accepts F2 equal facts with a different lower token after a picker round trip", async () => {
+  it("accepts F2 equal facts with a different lower token after a refresh", async () => {
     await roundTripF2();
-    await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"));
-    expect(status()).toBe("complete");
-    expect(harness.container.querySelector("[data-content-token]")?.getAttribute("data-content-token")).toBe("a");
-    expect(harness.container.querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"), "a");
+    expect(status("a")).toBe("complete");
+    expect(rowOf("a").getAttribute("data-content-token")).toBe("a");
+    expect(rowOf("a").querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
   });
 
-  it("accepts F2 strictly newer retry and then fences that revision across another round trip", async () => {
+  it("accepts F2 strictly newer retry and then fences that revision across another refresh", async () => {
     await roundTripF2();
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
     const retry = documentF2("running", newer, "a");
     retry.run.nodes = retry.run.nodes.map(node => ({ ...node, attempt: 2 }));
-    await replyF2(request(`${base}/a`, 1), retry);
-    expect(status()).toBe("complete");
-    expect(harness.container.querySelector("[data-activity-dag-attempt]")?.textContent).toBe("2");
-    select("b"); await replyF2(request(`${base}/b`, 1), full("b")); select("a");
-    await replyF2(request(`${base}/a`, 2), documentF2("completed", newer, "z"));
-    expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
+    await replyF2(request(`${base}/a`, 1), retry, "a");
+    expect(status("a")).toBe("complete");
+    expect(rowOf("a").querySelector("[data-activity-dag-attempt]")?.textContent).toBe("2");
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await replyF2(request(`${base}/a`, 2), documentF2("completed", newer, "z"), "a");
+    expect(status("a")).toBe("stale");
+    // The fenced equal-revision replacement keeps the accepted retry facts.
+    expect(rowOf("a").querySelector("[data-activity-dag-attempt]")?.textContent).toBe("2");
+    expect(rowOf("a").querySelector('[data-activity-dag-count="running"]')?.getAttribute("data-count")).toBe("2");
   });
 
   it("does not let an F2 rejection poison the accepted facts on explicit retry", async () => {
     await roundTripF2();
-    await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "a"));
-    expect(status()).toBe("stale");
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
+    await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "a"), "a");
+    expect(status("a")).toBe("stale");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "retry"));
-    await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"));
-    expect(status()).toBe("complete");
+    await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"), "a");
+    expect(status("a")).toBe("complete");
   });
 
   it.each(["fold", "reconnect"])("preserves F2 accepted facts across %s after returning to a", async kind => {
     await roundTripF2();
-    await replyF2(request(`${base}/a`, 1), documentF2("completed", revision, "a"));
     if (kind === "fold") { open(); open(); }
     else { render(activityState(), false); render(activityState(), true); }
-    await replyF2(request(`${base}/a`, 2), documentF2("running", revision, "b"));
-    expect(status()).toBe("stale");
-    expect(harness.container.querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
+    await replyF2(request(`${base}/a`, 1), documentF2("running", revision, "b"), "a");
+    expect(status("a")).toBe("stale");
+    expect(rowOf("a").querySelector('[data-activity-dag-count="completed"]')?.getAttribute("data-count")).toBe("2");
   });
 
-  it("does not let an F2 cancelled newer response poison per-run authority", async () => {
+  it("aborts in-flight per-run reads when the tab closes so late responses cannot poison authority", async () => {
     await roundTripF2();
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
     const cancelled = request(`${base}/a`, 1);
-    select("b"); expect(cancelled.signal?.aborted).toBe(true);
-    await replyF2(request(`${base}/b`, 1), full("b"));
-    await reply(cancelled, documentF2("running", newer, "a"));
-    select("a"); await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"));
-    expect(status()).toBe("complete");
+    open(); open();
+    expect(cancelled.signal?.aborted).toBe(true);
+    await reply(cancelled, documentF2("running", newer, "cancelled"));
+    await replyF2(request(`${base}/a`, 2), documentF2("completed", revision, "b"), "a");
+    expect(status("a")).toBe("complete");
   });
 
   it.each(["chat", "workspace"])("resets F2 equality authority for a new %s binding", async kind => {
     await roundTripF2();
+    click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
     const cancelled = request(`${base}/a`, 1);
     const source = { wsId: kind === "workspace" ? "other" : "ws", chatId: kind === "chat" ? "other" : "chat", connected: true };
     act(() => harness.root.render(<I18nContext.Provider value={i18n}><ActivityShelf activities={activityState()} dagSource={source} /></I18nContext.Provider>));
     expect(cancelled.signal?.aborted).toBe(true); expect(nodes()).toEqual([]);
     const otherBase = `/api/workspaces/${source.wsId}/chats/${source.chatId}/dag-runs`;
-    await reply(request(otherBase), catalog(["a"]));
+    await reply(request(`${otherBase}?limit=10`), catalog(["a"]));
     await reply(cancelled, documentF2("running", newer, "cancelled"));
-    await replyF2(request(`${otherBase}/a`), documentF2("running", revision, "a"));
-    expect(status()).toBe("complete");
-    expect(harness.container.querySelector('[data-activity-dag-count="running"]')?.getAttribute("data-count")).toBe("2");
+    await replyF2(request(`${otherBase}/a`), documentF2("running", revision, "a"), "a");
+    expect(status("a")).toBe("complete");
+    expect(rowOf("a").querySelector('[data-activity-dag-count="running"]')?.getAttribute("data-count")).toBe("2");
   });
 
   it("rejects a same-revision running full response conflicting with known partial completed state", async () => {
-    render(projected(uniform("completed"))); open(); await reply(request(base), catalog());
+    render(projected(uniform("completed"))); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), uniform("running"));
     expect(status()).toBe("stale");
     expect(nodes()).toEqual([]);
@@ -408,7 +526,7 @@ describe("complete DAG dashboard", () => {
   ])("rejects conflicting known partial %s without requiring a run-status change", async (_name, changedNode) => {
     const doc = full();
     const known = { ...doc, run: { ...doc.run, nodes: [changedNode(doc), ...doc.run.nodes.slice(1)] } };
-    render(projected(known)); open(); await reply(request(base), catalog());
+    render(projected(known)); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), doc);
     expect(status()).toBe("stale"); expect(nodes()).toEqual([]);
   });
@@ -426,7 +544,7 @@ describe("complete DAG dashboard", () => {
   });
 
   it("revalidates equal full facts with a different opaque token without ordering token values", async () => {
-    render(activityState()); open(); await reply(request(base), catalog());
+    render(activityState()); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), uniform("completed", revision, "z"));
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
     await reply(request(`${base}/r1`, 1), uniform("completed", revision, "a"));
@@ -436,7 +554,7 @@ describe("complete DAG dashboard", () => {
 
   it("accepts a strictly newer legitimate retry despite completed prior full and partial states", async () => {
     const completed = uniform("completed", revision, "z");
-    render(projected(completed)); open(); await reply(request(base), catalog());
+    render(projected(completed)); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), completed);
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "refresh"));
     const retry = uniform("running", newer, "a");
@@ -458,56 +576,60 @@ describe("complete DAG dashboard", () => {
   it("automatically replaces an absent 512-character implicit default with the exact 601-character catalog ID", async () => {
     const exact = `${"r".repeat(600)}a`, prefix = exact.slice(0, 512);
     render(projected(full(prefix))); open();
-    const invalid = request(`${base}/${prefix}`);
-    await reply(invalid, { error: "DAG run not found" }, 404);
-    await reply(request(base), catalog([exact]));
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe(exact);
+    await reply(request(firstPage), catalog([exact]));
+    // The lossy prefix is never an addressable run: only catalog IDs load.
+    expect(requests.some(item => item.url === `${base}/${encodeURIComponent(prefix)}`)).toBe(false);
     await reply(request(`${base}/${exact}`), full(exact));
     expect(status()).toBe("complete"); expect(nodes()).toHaveLength(3);
   });
 
-  it("waits for catalog completion and keeps two long-prefix collision IDs distinct", async () => {
+  it("keeps two long-prefix collision IDs distinct across catalog pages", async () => {
     const first = `${"r".repeat(600)}a`, second = `${"r".repeat(600)}b`, prefix = first.slice(0, 512);
     render(projected(full(prefix))); open();
-    const invalid = request(`${base}/${prefix}`);
-    await reply(request(base), catalog([first], "last"));
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe(prefix);
-    expect(requests.some(item => item.url === `${base}/${first}`)).toBe(false);
-    await reply(request(`${base}?cursor=last`), catalog([second]));
-    expect(invalid.signal?.aborted).toBe(true);
+    await reply(request(firstPage), catalog([first], "last"));
+    expect(requests.some(item => item.url === `${base}/${encodeURIComponent(prefix)}`)).toBe(false);
     await reply(request(`${base}/${first}`), full(first));
-    await reply(invalid, { error: "DAG run not found" }, 404);
-    expect(status()).toBe("complete");
-    const picker = requireElement(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]"), "run picker");
-    expect([...picker.options].map(option => option.value)).toEqual([first, second]);
-    select(second); await reply(request(`${base}/${second}`), full(second, revision, 4));
-    expect(picker.value).toBe(second); expect(nodes()).toHaveLength(4);
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel"));
+    await reply(request(pageAfter("last")), catalog([second]));
+    await reply(request(`${base}/${second}`), full(second, revision, 4));
+    expect(rowIds()).toEqual([first, second]);
+    expect(status(first)).toBe("complete");
+    expect(status(second)).toBe("complete");
+    expect(nodes(rowOf(second))).toHaveLength(4);
   });
 
-  it("preserves a valid implicit selection discovered on a later catalog page", async () => {
+  it("loads a run discovered on a later catalog page when the sentinel advances", async () => {
     render(projected(full("r2"))); open();
-    await reply(request(base), catalog(["r1"], "last"));
-    await reply(request(`${base}?cursor=last`), catalog(["r2"]));
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe("r2");
-    expect(requests.some(item => item.url === `${base}/r1`)).toBe(false);
-    await reply(request(`${base}/r2`), full("r2")); expect(status()).toBe("complete");
+    await reply(request(firstPage), catalog(["r1"], "last"));
+    await reply(request(`${base}/r1`), full("r1"));
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel"));
+    await reply(request(pageAfter("last")), catalog(["r2"]));
+    await reply(request(`${base}/r2`), full("r2"));
+    expect(status("r2")).toBe("complete"); expect(nodes(rowOf("r2"))).toHaveLength(3);
   });
 
-  it("preserves explicit selection even when absent from a refreshed catalog across close/reopen", async () => {
-    render(); open(); await reply(request(base), catalog(["r1", "r2"]));
-    select("r2"); await reply(request(`${base}/r2`), full("r2"));
+  it("drops rows absent from a refreshed first page and keeps the remaining run's facts across close/reopen", async () => {
+    render(); open(); await reply(request(firstPage), catalog(["r1", "r2"]));
+    await reply(request(`${base}/r1`), full("r1"));
+    await reply(request(`${base}/r2`), full("r2"));
     open(); open();
-    await reply(request(base, 1), catalog(["r1"]));
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe("r2");
-    await reply(request(`${base}/r2`, 1), full("r2")); expect(status()).toBe("complete");
+    await reply(request(firstPage, 1), catalog(["r1"]));
+    await reply(request(`${base}/r1`, 1), full("r1"));
+    expect(rowIds()).toEqual(["r1"]);
+    expect(status("r1")).toBe("complete");
+    expect(harness.container.querySelector('[data-activity-dag-run="r2"]')).toBeNull();
   });
 
-  it("does not replace a newly explicit selection when a pending catalog completes", async () => {
-    render(); open(); await reply(request(base), catalog(["r2"], "last"));
-    select("r1");
-    await reply(request(`${base}?cursor=last`), catalog(["r3"]));
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe("r1");
-    await reply(request(`${base}/r1`), full()); expect(status()).toBe("complete");
+  it("keeps loaded runs stable while a later catalog page arrives", async () => {
+    render(); open(); await reply(request(firstPage), catalog(["r2"], "last"));
+    await reply(request(`${base}/r2`), full("r2"));
+    expect(status("r2")).toBe("complete");
+    revealSentinel(requireElement(harness.container.querySelector("[data-activity-dag-sentinel]"), "sentinel"));
+    await reply(request(pageAfter("last")), catalog(["r3"]));
+    await reply(request(`${base}/r3`), full("r3"));
+    expect(rowIds()).toEqual(["r2", "r3"]);
+    expect(status("r2")).toBe("complete");
+    expect(requests.filter(item => item.url === `${base}/r2`)).toHaveLength(1);
   });
 
   it("preserves the full topology as stale when a newer prefix arrives and rejects stale full data", async () => {
@@ -524,7 +646,7 @@ describe("complete DAG dashboard", () => {
 
   it("coalesces meaningful in-flight invalidations and publishes only a coherent replacement", async () => {
     // Given a full read in flight; When multiple newer snapshots arrive.
-    render(); open(); await reply(request(base), catalog());
+    render(); open(); await reply(request(firstPage), catalog());
     const first = request(`${base}/r1`);
     render(projected(full("r1", newer)));
     const completed = uniform("completed", newer);
@@ -541,7 +663,7 @@ describe("complete DAG dashboard", () => {
 
   it("does not restart full reads for heartbeat or progress-only updates", async () => {
     // Given a full read in flight; When heartbeat/progress clocks advance.
-    const initial = partial(); render(initial); open(); await reply(request(base), catalog());
+    const initial = partial(); render(initial); open(); await reply(request(firstPage), catalog());
     let next: ActivityState = initial;
     for (let seq = 1; seq <= 3; seq++) {
       next = applyActivityEvent(next, "omo.dag.heartbeat", { at: newer, runs: [{ runId: "r1", headSeq: seq }] });
@@ -564,22 +686,11 @@ describe("complete DAG dashboard", () => {
     expect(status()).toBe("complete");
   });
 
-  it("cancels selection generations so late responses cannot replace the selected run", async () => {
-    // Given two catalog runs and an old in-flight read; When selecting the other run.
-    render(); open(); await reply(request(base), catalog(["r1", "r2"]));
-    const old = request(`${base}/r1`); select("r2");
-    expect(old.signal?.aborted).toBe(true);
-    await reply(request(`${base}/r2`), full("r2", revision, 4));
-    await reply(old, full());
-    expect(nodes()).toHaveLength(4);
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe("r2");
-  });
-
   it("cancels chat generations and does not disclose the previous chat's complete graph", async () => {
     // Given a complete run; When the pane binds another chat.
     await load(); render(partial(), true, "other");
     expect(nodes()).toEqual([]);
-    await reply(request("/api/workspaces/ws/chats/other/dag-runs"), catalog());
+    await reply(request("/api/workspaces/ws/chats/other/dag-runs?limit=10"), catalog());
     await reply(request("/api/workspaces/ws/chats/other/dag-runs/r1"), full("r1", newer, 4));
     expect(nodes()).toHaveLength(4);
   });
@@ -595,7 +706,7 @@ describe("complete DAG dashboard", () => {
     ["wrong run", () => full("foreign")],
   ])("rejects %s atomically instead of rendering a cropped current graph", async (_name, malformed) => {
     // Given a partial summary; When the complete HTTP boundary supplies malformed data.
-    render(); open(); await reply(request(base), catalog());
+    render(); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), malformed(full()));
     expect(nodes()).toEqual([]);
     expect(status()).toBe("error");
@@ -604,7 +715,7 @@ describe("complete DAG dashboard", () => {
 
   it("shows retrieval errors without falling back to partial topology and retries explicitly", async () => {
     // Given the default selection; When full retrieval fails and is retried.
-    render(); open(); await reply(request(base), catalog());
+    render(); open(); await reply(request(firstPage), catalog());
     await reply(request(`${base}/r1`), { error: "invalid checkpoint" }, 422);
     expect(nodes()).toEqual([]); expect(status()).toBe("error");
     click(requireElement(harness.container.querySelector("[data-activity-dag-retry]"), "retry"));
@@ -612,19 +723,20 @@ describe("complete DAG dashboard", () => {
     expect(status()).toBe("complete");
   });
 
-  it("retains selection and freshness high-water marks across closing the transient panel", async () => {
-    // Given a historical selection with a newer full revision; When closing and reopening.
-    render(); open(); await reply(request(base), catalog(["r1", "r2"]));
-    select("r2"); await reply(request(`${base}/r2`), full("r2", newer, 4));
+  it("retains accepted documents and freshness high-water marks across closing the transient panel", async () => {
+    // Given a historical run with a newer full revision; When closing and reopening.
+    render(); open(); await reply(request(firstPage), catalog(["r1", "r2"]));
+    await reply(request(`${base}/r1`), full("r1"));
+    await reply(request(`${base}/r2`), full("r2", newer, 4));
     open(); open();
-    expect(harness.container.querySelector<HTMLSelectElement>("[data-activity-dag-select]")?.value).toBe("r2");
+    await reply(request(firstPage, 1), catalog(["r1", "r2"]));
     await reply(request(`${base}/r2`, 1), full("r2", revision));
-    expect(status()).toBe("stale"); expect(nodes()).toHaveLength(4);
+    expect(status("r2")).toBe("stale"); expect(nodes(rowOf("r2"))).toHaveLength(4);
   });
 
   it("preserves valid repeated dependency occurrences from the full source", async () => {
     // Given repeated source dependencies (not duplicate identities); When full data arrives.
-    render(); open(); await reply(request(base), catalog());
+    render(); open(); await reply(request(firstPage), catalog());
     const doc = full();
     const repeated = { ...doc, run: { ...doc.run,
       nodes: doc.run.nodes.map(node => ({ ...node, depends_on: [...node.depends_on, ...node.depends_on] })),
@@ -635,17 +747,11 @@ describe("complete DAG dashboard", () => {
     expect(harness.container.querySelectorAll(".th-activity-gedge")).toHaveLength(4);
   });
 
-  it("distinguishes an authoritative empty catalog from loading", async () => {
-    // Given no summary; When the entire authorized catalog returns empty.
-    render(activityState()); open(); await reply(request(base), catalog([]));
-    expect(status()).toBe("empty"); expect(nodes()).toEqual([]);
-  });
-
   it("preserves live progress overlays without replacing trusted topology or restarting retrieval", async () => {
     // Given full topology with matching attempt identities; When live progress arrives.
     const doc = full();
     const summary = applyActivityEvent(activityState(), "omo.dag.updated", { runs: [doc.run] });
-    render(summary); open(); await reply(request(base), catalog()); await reply(request(`${base}/r1`), doc);
+    render(summary); open(); await reply(request(firstPage), catalog()); await reply(request(`${base}/r1`), doc);
     const progress = { runId: "r1", nodeId: doc.run.nodes[0]?.id, at: newer, currentTool: "tool-live", activity: "working" };
     render(applyActivityEvent(summary, "omo.dag.activity", progress));
     expect(harness.container.querySelector("[data-activity-dag-progress]")?.textContent).toBe(`${progress.activity}\n${progress.currentTool}`);
@@ -656,17 +762,25 @@ describe("complete DAG dashboard", () => {
   it("binds the real primary ChatPane to automatic authorized retrieval", async () => {
     // Given a real chat pane with no replay graph; When opening its DAG tab.
     renderChatPane(harness.root, { id: "chat", wsId: "ws", name: "chat", cwd: "/work", provider: "omo" });
-    open(); await reply(request(base), catalog()); await reply(request(`${base}/r1`), full());
+    open(); await reply(request(firstPage), catalog()); await reply(request(`${base}/r1`), full());
     expect(nodes()).toHaveLength(3); expect(status()).toBe("complete");
   });
 
-  it("retains complete nodes through graph/list round trips", async () => {
-    // Given a loaded full graph; When switching to list and back.
-    await load(); const expected = nodes();
-    click(requireElement(harness.container.querySelector('[data-view="list"]'), "list"));
-    expect(harness.container.querySelectorAll(".th-activity-dnode")).toHaveLength(3);
-    click(requireElement(harness.container.querySelector('[data-view="graph"]'), "graph"));
-    expect(nodes()).toEqual(expected);
+  it("retains complete nodes through per-run graph/list round trips", async () => {
+    // Given loaded full graphs; When switching one run to list and back.
+    render(); open();
+    await reply(request(firstPage), catalog(["r1", "r2"]));
+    await reply(request(`${base}/r1`), full("r1"));
+    await reply(request(`${base}/r2`), full("r2", revision, 4));
+    const expected = nodes(rowOf("r1"));
+    click(requireElement(rowOf("r1").querySelector('[data-view="list"]'), "r1 list toggle"));
+    expect(rowOf("r1").querySelectorAll(".th-activity-dnode")).toHaveLength(3);
+    expect(nodes(rowOf("r1"))).toEqual([]);
+    // The view toggle is per run: r2 keeps its graph while r1 lists.
+    expect(nodes(rowOf("r2"))).toHaveLength(4);
+    click(requireElement(rowOf("r1").querySelector('[data-view="graph"]'), "r1 graph toggle"));
+    expect(nodes(rowOf("r1"))).toEqual(expected);
     expect(requests.filter(item => item.url === `${base}/r1`)).toHaveLength(1);
+    expect(requests.filter(item => item.url === `${base}/r2`)).toHaveLength(1);
   });
 });
