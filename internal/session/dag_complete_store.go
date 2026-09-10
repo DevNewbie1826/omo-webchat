@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 )
 
 var errDagStoreAbsent = errors.New("DAG store does not exist")
@@ -243,6 +244,29 @@ type DagCatalogEntry struct {
 	ContentToken string `json:"content_token"`
 }
 
+// DagCatalogLess reports whether a sorts before b in the catalog's total
+// order. Primary key: updated_at DESC, compared as parsed RFC3339 instants so
+// differing UTC offsets cannot reorder runs; a missing or unparseable
+// updated_at ranks as the oldest instant and sorts last. Tiebreak: run_id
+// DESC, so the whole comparator is uniformly descending and deterministic.
+// Run IDs never imply recency - they only break exact ties. The paginated
+// catalog endpoint in internal/api walks this same total order via its
+// keyset cursor.
+func DagCatalogLess(a, b DagCatalogEntry) bool {
+	at, bt := dagCatalogInstant(a.UpdatedAt), dagCatalogInstant(b.UpdatedAt)
+	if !at.Equal(bt) {
+		return at.After(bt)
+	}
+	return a.RunID > b.RunID
+}
+
+func dagCatalogInstant(updatedAt string) time.Time {
+	if t, err := time.Parse(time.RFC3339, updatedAt); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
 // ReadDagCatalog retains only metadata, but validates each full owned graph so
 // invalid checkpoints cannot masquerade as authoritative exact catalog counts.
 // There is no arbitrary candidate, byte, or selected-run scan cap.
@@ -259,6 +283,8 @@ func ReadDagCatalog(ctx context.Context, cwd, parent string) ([]DagCatalogEntry,
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].RunID < entries[j].RunID })
+	// Newest first: DagCatalogLess orders updated_at DESC with a run_id DESC
+	// tiebreak, and the cursor pagination walks this exact order.
+	sort.Slice(entries, func(i, j int) bool { return DagCatalogLess(entries[i], entries[j]) })
 	return entries, nil
 }
