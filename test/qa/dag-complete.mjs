@@ -125,7 +125,7 @@ export async function run({ evidenceDir }) {
     }, 0), nextIds);
     assert.equal(extraGraphs, 0, 'no partial next-page graphs while full reads are held');
     assert.deepEqual(await page.locator('article[data-activity-dag-run] .th-activity-dag-name')
-      .evaluateAll(nodes => nodes.map(node => node.textContent).slice(0, priorNames.length)), priorNames);
+      .evaluateAll((nodes, prior) => nodes.map(node => node.textContent).slice(0, prior.length), priorNames), priorNames);
     const extra = await releasePage(nextIds, held);
     await doneDOM(page, rendered);
     loadedExpecteds = [...loadedExpecteds, ...extra];
