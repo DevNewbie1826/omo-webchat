@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +33,10 @@ func TestGeneratorsFailClosed(t *testing.T) {
 		for _, generator := range generators {
 			t.Run(tc.name+"/"+generator.name, func(t *testing.T) {
 				if _, err := exec.LookPath(generator.args[0]); err != nil {
-					t.Skipf("generator %q not found in PATH; cannot exercise %s fail-closed checks: %v", generator.args[0], generator.name, err)
+					if errors.Is(err, exec.ErrNotFound) {
+						t.Skipf("generator %q not found in PATH; cannot exercise %s fail-closed checks: %v", generator.args[0], generator.name, err)
+					}
+					t.Fatalf("generator %q lookup failed: %v", generator.args[0], err)
 				}
 				dir := copySchemas(t)
 				path := filepath.Join(dir, "shared-types.json")
