@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sort"
 	"unicode/utf8"
 )
 
@@ -90,6 +91,61 @@ type completeStoredRun struct {
 		Nodes []completeStoredDefinition `json:"nodes"`
 	} `json:"definition"`
 	Nodes []completeStoredNode `json:"nodes"`
+	// Waves stays raw: a malformed optional hint must degrade to the computed
+	// layout in storedDagWaves, never fail the checkpoint decode itself.
+	Waves json.RawMessage `json:"waves"`
+}
+
+type completeStoredWave struct {
+	Index   *int64   `json:"index"`
+	NodeIDs []string `json:"nodeIds"`
+}
+
+// dagWaveMaxSafeIndex is the frontend's Number.isSafeInteger ceiling: a
+// larger lane index would make the browser-side complete-document parser
+// reject the whole response, so such hints are unusable and fall back.
+const dagWaveMaxSafeIndex = int64(9007199254740991)
+
+// Stored waves are the engine's authored layout: the lane assignment and
+// the deliberate order inside each lane. They pass through verbatim only
+// when the hint decodes, every wave carries a present, non-null, distinct
+// index in the frontend-safe range, and the waves cover every node exactly
+// once; anything less trustworthy — including malformed hint shapes, which
+// are decoded independently so they cannot invalidate the checkpoint —
+// falls back to the computed layout instead of painting a broken arrangement.
+func storedDagWaves(raw json.RawMessage, nodes []activityDagNode) []activityDagWave {
+	var stored []completeStoredWave
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &stored) != nil {
+		return dagWaves(nodes)
+	}
+	if len(stored) == 0 {
+		return dagWaves(nodes)
+	}
+	known := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		known[node.ID] = true
+	}
+	indices := make(map[int64]bool, len(stored))
+	covered := make(map[string]bool, len(nodes))
+	waves := make([]activityDagWave, 0, len(stored))
+	for _, wave := range stored {
+		if len(wave.NodeIDs) == 0 || wave.Index == nil || *wave.Index < 0 || *wave.Index > dagWaveMaxSafeIndex || indices[*wave.Index] {
+			return dagWaves(nodes)
+		}
+		indices[*wave.Index] = true
+		for _, id := range wave.NodeIDs {
+			if !known[id] || covered[id] {
+				return dagWaves(nodes)
+			}
+			covered[id] = true
+		}
+		waves = append(waves, activityDagWave{Index: int(*wave.Index), NodeIDs: append([]string(nil), wave.NodeIDs...)})
+	}
+	if len(covered) != len(nodes) {
+		return dagWaves(nodes)
+	}
+	sort.SliceStable(waves, func(i, j int) bool { return waves[i].Index < waves[j].Index })
+	return waves
 }
 
 func parseCompleteDag(data []byte) (CompleteDagDocument, error) {
@@ -160,7 +216,7 @@ func parseCompleteDag(data []byte) (CompleteDagDocument, error) {
 		run.Nodes = append(run.Nodes, FullDagNode{ID: node.ID, Label: label, Prompt: *prompt, DependsOn: depends, State: node.State, TaskID: node.TaskID, Attempt: node.Attempt, StartedAt: node.StartedAt, CompletedAt: node.CompletedAt})
 		waveNodes = append(waveNodes, activityDagNode{ID: node.ID, DependsOn: depends})
 	}
-	run.Waves = dagWaves(waveNodes)
+	run.Waves = storedDagWaves(stored.Waves, waveNodes)
 	sum := sha256.Sum256(data)
 	return CompleteDagDocument{Complete: true, ContentToken: hex.EncodeToString(sum[:]), Run: run}, nil
 }
