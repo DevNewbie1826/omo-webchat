@@ -57,15 +57,22 @@ async function readBody(request) {
  * Seed order determines `latest` when several tarballs have the same name.
  * close() is idempotent and joins connections and in-flight archive readers.
  */
-export async function createRegistry({ tarballs = [], failPublishAt } = {}) {
+export async function createRegistry({ tarballs = [], failPublishAt, hidePublishedGets = 0 } = {}) {
   if (failPublishAt !== undefined && (!Number.isSafeInteger(failPublishAt.number) || failPublishAt.number < 1 ||
       !['reject', 'disconnect-after-store'].includes(failPublishAt.mode))) {
     throw new TypeError('failPublishAt must be {number: positive integer, mode: reject|disconnect-after-store}');
+  }
+  if (!Number.isSafeInteger(hidePublishedGets) || hidePublishedGets < 0) {
+    throw new TypeError('hidePublishedGets must be a non-negative integer');
   }
   const requests = [];
   const packages = new Map();
   const events = new EventEmitter();
   const archives = new Map();
+  // Simulated registry propagation delay: freshly stored versions stay
+  // absent from the packument until it has been read hidePublishedGets
+  // times, mirroring the real registry's eventual consistency.
+  const concealed = new Map();
   const pending = new Set();
   let url;
   let publishNumber = 0;
@@ -92,6 +99,13 @@ export async function createRegistry({ tarballs = [], failPublishAt } = {}) {
     Object.assign(document['dist-tags'], tags);
     packages.set(name, document);
     archives.set(tarballPath, bytes);
+    if (hidePublishedGets > 0) {
+      delete document.versions[version];
+      for (const tag of Object.keys(tags)) delete document['dist-tags'][tag];
+      const entries = concealed.get(name) ?? [];
+      entries.push({ version, metadata, tags, getsRemaining: hidePublishedGets });
+      concealed.set(name, entries);
+    }
   }
 
   function reply(response, record, status, body) {
@@ -110,6 +124,18 @@ export async function createRegistry({ tarballs = [], failPublishAt } = {}) {
       if (archive) return reply(response, record, 200, archive);
       const parts = route.slice(1).split('/');
       const name = parts.splice(0, route.startsWith('/@') ? 2 : 1).join('/');
+      if (parts.length === 0 && concealed.has(name)) {
+        const document = packages.get(name);
+        for (const entry of concealed.get(name)) {
+          if (entry.getsRemaining > 0) entry.getsRemaining -= 1;
+          if (entry.getsRemaining === 0 && document) {
+            document.versions[entry.version] = entry.metadata;
+            Object.assign(document['dist-tags'], entry.tags);
+            concealed.set(name, concealed.get(name).filter((other) => other !== entry));
+          }
+        }
+        if (concealed.get(name).length === 0) concealed.delete(name);
+      }
       const document = packages.get(name);
       let body = document;
       if (parts.length === 1 && document) {

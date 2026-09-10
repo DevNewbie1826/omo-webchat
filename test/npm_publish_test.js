@@ -305,3 +305,13 @@ test('stable release uses actual npm publish --tag latest', options, async (t) =
   ok(await publish(ctx, 'latest'));
   for (const doc of registry.packages.values()) assert.deepEqual(doc['dist-tags'], { latest: '1.2.3' });
 });
+
+test('publication confirmation polls through delayed registry visibility', options, async (t) => {
+  const ctx = await setup(t, { hidePublishedGets: 2 });
+  const { ok } = await helpers;
+  ctx.env.NPM_CONFIRM_POLL_MS = '25';
+  ok(await publish(ctx));
+  assert.deepEqual(ctx.events.map((e) => e.name), ctx.m.packages.map((p) => p.name));
+  const packumentReads = ctx.registry.requests.filter((r) => r.method === 'GET' && !r.path.includes('/-/')).length;
+  assert.ok(packumentReads >= ctx.m.packages.length + 2, `expected extra confirmation reads, got ${packumentReads}`);
+});
