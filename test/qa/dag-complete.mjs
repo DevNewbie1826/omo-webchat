@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { observeSockets } from './heartbeat-liveness.mjs';
-import { assertComplete, bounded, catalogPageSize, expectedRun, isCatalogPath, isDetailPath, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
+import { assertComplete, bounded, catalogPageSize, detailPath, expectedRun, isCatalogPath, isDetailPath, longRunIDs, parseArgs } from './dag-complete-controls.mjs';
 import { chromePath, loadDriver, root, save, startCompleteFixture, transcript } from './dag-complete-fixture.mjs';
 import { httpAudit } from './dag-complete-http.mjs';
 import { r5Proof } from './dag-complete-r5.mjs';
@@ -134,21 +134,178 @@ export async function run({ evidenceDir }) {
     const details = dagRunReceipts(http, marked).filter(row => isDetailPath(row.path));
     assert.equal(catalogs.length, 1, 'one scroll reads exactly one more catalog page');
     assert.equal(details.length, catalogPageSize, 'one scroll reads exactly ten more full originals');
-    const totals = dagRunReceipts(http).reduce((sum, row) => sum + (isCatalogPath(row.path) ? { catalog: sum.catalog + 1, details: sum.details } : { catalog: sum.catalog, details: sum.details + 1 }), { catalog: 0, details: 0 });
+    const totals = dagRunReceipts(http).reduce((sum, row) => ({
+      catalog: sum.catalog + (isCatalogPath(row.path) ? 1 : 0),
+      details: sum.details + (isDetailPath(row.path) ? 1 : 0),
+    }), { catalog: 0, details: 0 });
     assert.equal(totals.catalog, 2, 'exactly two catalog pages after one more-page scroll');
     assert.equal(totals.details, catalogPageSize * 2, 'exactly twenty full-run reads after one more-page scroll');
     assert.equal(listed.names.length, catalogPageSize * 2);
     record('scroll-end-next-page', { ids: nextIds, catalogRequests: catalogs.length, details: details.length, rendered: listed.names.length });
     return listed;
   }
+  /** Native-layout lifecycle proof. Everything below is observed through the
+   * real browser: the shipped sentinel element, its real tabpanel scrollport
+   * and a native IntersectionObserver installed in the page. No layout is
+   * mocked, no observer callback is forced, and no fixed sleep synchronizes
+   * anything (DOM signals and gate captures own synchronization; the only
+   * timer is a bounded two-frame quiet window proving request ABSENCE after
+   * a native intersection, which any mis-wired fetch would have preceded). */
+  async function installSentinelRecorder(label) {
+    const installed = await page.evaluate(label => {
+      const sentinel = document.querySelector('[data-activity-dag-sentinel]');
+      if (!sentinel) return false;
+      let root = null;
+      for (let node = sentinel.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY) || /(auto|scroll)/.test(style.overflow)) { root = node; break; }
+      }
+      const lifecycle = window.__dagLifecycle = window.__dagLifecycle ?? { phases: {}, observers: [] };
+      const phase = lifecycle.phases[label] = { entries: [], rootPanel: root?.getAttribute('data-activity-tabpanel') ?? null };
+      const observer = new IntersectionObserver(records => {
+        for (const entry of records) phase.entries.push({ isIntersecting: entry.isIntersecting, ratio: entry.intersectionRatio });
+      }, { root });
+      observer.observe(sentinel);
+      lifecycle.observers.push(observer);
+      return true;
+    }, label);
+    assert.equal(installed, true, `sentinel mounted for native observation (${label})`);
+  }
+  async function recorderPhase(label) {
+    const signal = await armDOM(page, name => (window.__dagLifecycle?.phases?.[name]?.entries.length ?? 0) > 0, label);
+    await doneDOM(page, signal);
+    return page.evaluate(name => window.__dagLifecycle.phases[name], label);
+  }
+  async function nativeLifecycleProof() {
+    // (2) Settled-end +10, natively: a real scroll to the settled list end
+    // lets the shipped observer intersect the sentinel inside the real
+    // scrollport and read exactly the third catalog page.
+    const thirdPageMark = http.length;
+    const thirdIds = pageIds(catalogPageSize * 2);
+    const thirdCatalog = gate.arm('catalog');
+    await installSentinelRecorder('settled-end');
+    await scrollDagListEnd(page);
+    const thirdBody = JSON.parse((await thirdCatalog.captured).body);
+    assert.deepEqual(thirdBody.runs.map(run => run.run_id), thirdIds, 'native settled-end intersection reads exactly the third catalog page');
+    const settledPhase = await recorderPhase('settled-end');
+    assert.equal(settledPhase.rootPanel, 'dag', 'the native observer root is the DAG tabpanel scrollport');
+    assert.ok(settledPhase.entries.some(entry => entry.isIntersecting && entry.ratio > 0),
+      'the shipped sentinel natively intersects the scrollport at the settled end');
+    // (1)/(3) Held originals: the appended page mounts as placeholders, the
+    // sentinel keeps a real non-zero layout box and natively intersects the
+    // scrollport, yet the unsettled list consumes no further catalog page.
+    const thirdHeld = thirdIds.map(id => gate.arm(id));
+    thirdCatalog.release();
+    await Promise.all(thirdHeld.map(item => item.captured));
+    const placeholders = await armDOM(page, ({ ids, total }) => {
+      const articles = [...document.querySelectorAll('article[data-activity-dag-run]')];
+      return articles.length === total
+        && ids.every(id => articles.some(article => article.getAttribute('data-activity-dag-run') === id
+          && article.getAttribute('data-activity-dag-status') === 'loading'
+          && article.querySelectorAll('.th-activity-gnode').length === 0));
+    }, { ids: thirdIds, total: catalogPageSize * 3 });
+    await doneDOM(page, placeholders);
+    const geometry = await page.evaluate(() => {
+      const rect = document.querySelector('[data-activity-dag-sentinel]').getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    assert.ok(geometry.height >= 1 && geometry.width >= 1, 'the shipped sentinel keeps a non-zero native layout box over held placeholders');
+    await installSentinelRecorder('held-placeholders');
+    await scrollDagListEnd(page);
+    const heldPhase = await recorderPhase('held-placeholders');
+    assert.ok(heldPhase.entries.some(entry => entry.isIntersecting && entry.ratio > 0),
+      'the placeholder sentinel natively intersects the scrollport at the held end');
+    await bounded(page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))),
+      'native placeholder quiet window');
+    const thirdReceipts = dagRunReceipts(http, thirdPageMark);
+    assert.equal(thirdReceipts.filter(row => isCatalogPath(row.path)).length, 1, 'native intersections over held placeholders consume no catalog page');
+    assert.equal(thirdReceipts.filter(row => isDetailPath(row.path)).length, catalogPageSize, 'exactly the third-page originals are in flight');
+    const third = await releasePage(thirdIds, thirdHeld);
+    loadedExpecteds = [...loadedExpecteds, ...third];
+    const thirty = await assertList(page, loadedExpecteds);
+    assert.equal(thirty.names.length, catalogPageSize * 3);
+    record('native-settled-end-third-page-held-placeholders-consume-none', { ids: thirdIds, rendered: thirty.names.length,
+      settledIntersections: settledPhase.entries, placeholderIntersections: heldPhase.entries, sentinel: geometry });
+    await capture(page, evidenceDir, 'C2-lifecycle-thirty', await assertSurface(page, expected, 'graph'));
+    // (4) Multi-page close/reopen with the newest-ten fence: all three
+    // retained pages stay mounted with their accepted identities and read
+    // zero originals while the reopening catalog is held; the new opening
+    // then admits exactly the newest-ten originals and nothing deeper.
+    const reopenMark = http.length;
+    const retained = await page.evaluate(() => [...document.querySelectorAll('article[data-activity-dag-run]')].map(article => ({
+      runId: article.getAttribute('data-activity-dag-run'),
+      token: article.getAttribute('data-content-token'),
+      graphs: article.querySelectorAll('.th-activity-gnode').length,
+    })));
+    assert.equal(retained.length, catalogPageSize * 3, 'three settled pages are mounted before close/reopen');
+    // Park the list at its top before closing: the reopened opening then
+    // settles with the sentinel below the fold, so it reads exactly its
+    // newest-ten page without a scroll-gesture continuation.
+    await actionDOM(page, () => {
+      const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+      return panel !== null && panel.scrollTop === 0;
+    }, () => page.evaluate(() => {
+      const panel = document.querySelector('[data-activity-tabpanel="dag"]');
+      const chain = [];
+      for (let node = panel; node && node !== document.documentElement; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) chain.push(node);
+      }
+      for (const node of chain) node.scrollTo({ top: 0, behavior: 'instant' });
+    }));
+    await actionDOM(page, () => document.querySelector('[data-activity-tab="agents"]')?.getAttribute('aria-selected') === 'true'
+      && document.querySelector('[data-activity-tab="dag"]')?.getAttribute('aria-selected') !== 'true',
+      () => page.locator('[data-activity-tab="agents"]').click());
+    const reopenCatalog = gate.arm('catalog');
+    const reopening = await armDOM(page, catalogIs, 'loading');
+    assert.equal(await openDagTab(page), true);
+    const reopenBody = JSON.parse((await reopenCatalog.captured).body);
+    await doneDOM(page, reopening);
+    const fenced = await page.evaluate(() => [...document.querySelectorAll('article[data-activity-dag-run]')].map(article => ({
+      runId: article.getAttribute('data-activity-dag-run'),
+      token: article.getAttribute('data-content-token'),
+      status: article.getAttribute('data-activity-dag-status'),
+      graphs: article.querySelectorAll('.th-activity-gnode').length,
+    })));
+    assert.deepEqual(fenced.map(row => row.runId), retained.map(row => row.runId), 'all three retained pages stay mounted through close/reopen');
+    assert.deepEqual(fenced.map(row => row.token), retained.map(row => row.token), 'retained rows keep their accepted identities while fenced');
+    assert.ok(fenced.every(row => row.status === 'complete' && row.graphs > 0), 'retained rows keep their complete graphs while fenced');
+    assert.deepEqual(dagRunReceipts(http, reopenMark).filter(row => isDetailPath(row.path)), [],
+      'fenced retained rows read zero originals while the reopening catalog is held');
+    const reopenIds = reopenBody.runs.map(run => run.run_id);
+    assert.deepEqual(reopenIds, pageIds(0), 'reopening restarts at the newest-ten page');
+    const reopenHeld = reopenIds.map(id => gate.arm(id));
+    reopenCatalog.release();
+    await Promise.all(reopenHeld.map(item => item.captured));
+    const reopenDetails = dagRunReceipts(http, reopenMark).filter(row => isDetailPath(row.path));
+    assert.equal(reopenDetails.length, catalogPageSize, 'reopen admits exactly the newest ten originals');
+    assert.deepEqual(reopenDetails.map(row => row.path).sort(), reopenIds.map(id => detailPath(id)).sort(),
+      'only the newest ten originals are read; deeper retained pages are never refetched');
+    loadedExpecteds = await releasePage(reopenIds, reopenHeld);
+    await assertList(page, loadedExpecteds);
+    await bounded(page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))),
+      'reopen quiet window');
+    assert.equal(dagRunReceipts(http, reopenMark).filter(row => isCatalogPath(row.path)).length, 1,
+      'reopen reads exactly one catalog page: the settled newest-ten list does not continue without a scroll');
+    record('multi-page-close-reopen-newest-ten-fence', { retained: retained.length, reopened: reopenIds, detailReads: reopenDetails.length });
+    await capture(page, evidenceDir, 'C2-lifecycle-reopen', await assertSurface(page, expected, 'graph'));
+    await page.evaluate(() => { for (const observer of window.__dagLifecycle?.observers ?? []) observer.disconnect(); });
+  }
   async function visit(reload = false, navigate = false) {
     const marked = http.length;
     const entries = observed.wait(row => row.direction === 'received' && row.frame?.type === 'entries' && row.frame.final && row.frame.sessionId === 'qa-chat', { label: '100-message native transcript' });
+    const activity = page.waitForResponse(response => new URL(response.url()).pathname === '/api/workspaces/qa-dag/chats/qa-chat/activity', { timeout: 15000 });
     if (reload && !navigate) await page.reload({ waitUntil: 'domcontentloaded' }); else await page.goto(fixture.url, { waitUntil: 'domcontentloaded' });
     const history = (await entries).frame.entries;
     assert.ok(history.length >= 100);
     assert.deepEqual(history.slice(0, 100), transcript(), 'all original 100 message IDs, links, roles and text survive');
     await waitForTranscript(page, history);
+    // Activity hydration must settle before any later DAG-tab opening: a
+    // retained-snapshot membership change mid-open legitimately restarts the
+    // catalog walk, so an opening raced against hydration reads two first
+    // pages. Wait for the real response AND its applied count authority.
+    assert.equal((await activity).status(), 200);
+    await doneDOM(page, await armDOM(page, () => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count') !== null));
     if (!reload) {
       const original = await fixture.expected(longRunIDs[0]);
       await deliver({ type: 'extensionEvent', name: 'omo.dag.updated', data: { parent_session_id: 'qa-chat', truncated_runs: true,
@@ -221,6 +378,7 @@ export async function run({ evidenceDir }) {
     record('implicit-truncated-summary-and-distinct-exact-long-identities', { prefixBytes: 512, exactIDs: longRunIDs, rendered: loadedExpecteds.map(item => item.run_id) });
     await loadMore();
     await capture(page, evidenceDir, 'C2-load-more', await assertSurface(page, expected, 'graph'));
+    await nativeLifecycleProof();
 
     // Forced catalog states, each observed as its own section-level state.
     const restoreRuns = await fixture.isolateEmptyCatalog();

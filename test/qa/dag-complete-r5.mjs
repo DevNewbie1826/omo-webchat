@@ -123,22 +123,33 @@ export async function r5Proof({ page, observed, fixture, gate, deliver, record, 
     () => page.locator('[data-activity-tab="agents"]').click());
   /** The exact agent aggregate this scenario's real REST hydration carried:
    * the count authority stays exact through every later loss shape while
-   * only the retained rows change. */
+   * only the retained rows change. This fixture's 539-run history is
+   * truncated by design, so the digest row prefix IS truncated; exactness
+   * comes from the scalars being pre-truncation authority, proven here by
+   * two independently computed digests (task and DAG) agreeing exactly. */
   function aggregateOf(delivered) {
     const digest = delivered.dag_digest ?? {};
-    assert.equal(digest.truncated, false, 'exact aggregate must not be truncated');
     assert.ok(Number.isInteger(digest.agent_running_count) && Number.isInteger(digest.agent_total_count),
       'the real activity response carries the exact agent aggregate');
     const task = delivered.task_digest ?? {};
     assert.equal(task.agent_running_count, digest.agent_running_count, 'task and DAG digests agree on the running aggregate');
     assert.equal(task.agent_total_count, digest.agent_total_count, 'task and DAG digests agree on the total aggregate');
+    assert.ok(digest.agent_total_count > (digest.runs ?? []).length,
+      'the aggregate is exact pre-truncation authority, never a retained-row lower bound');
     return { running: digest.agent_running_count, total: digest.agent_total_count };
   }
   async function counts(options, aggregate) {
     assert.ok(aggregate, 'the scenario aggregate must be captured from the real response');
     const count = `${aggregate.running}/${aggregate.total}`;
-    await doneDOM(page, await armDOM(page, count => document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === count, count));
-    return assertSubagents(page, { count, rows: options.partial ? options.retained : 2 });
+    const rows = options.partial ? options.retained : 2;
+    // Synchronize on the full asserted surface: the scalar count authority
+    // and the retained row list settle in separate render passes, so waiting
+    // for the count alone can snapshot the panel before its rows arrive.
+    await doneDOM(page, await armDOM(page, ({ count, rows }) =>
+      document.querySelector('[data-activity-tab="agents"] .th-activity-tab-count')?.textContent === count
+      && document.querySelectorAll('[data-activity-tabpanel="agents"] .th-activity-agent-name').length === rows,
+      { count, rows }));
+    return assertSubagents(page, { count, rows });
   }
   async function fresh(viewport, raw, task, beforeFulfill = async () => {}, digest) {
     await resetScenarioViewport(page, fixture.url, viewport);

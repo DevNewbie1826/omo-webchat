@@ -48,7 +48,12 @@ export function mixedTaskCase({ taskState, truncated, sequence }) {
   // authoritative task means an exact 1/1 or 0/1 at every stage.
   const running = taskState === 'running' ? 1 : 0;
   const aggregate = { agent_running_count: running, agent_total_count: 1 };
-  const digest = { tasks: [], truncated: false, running_count: running, total_count: 1, ...aggregate };
+  // Digest rows are the REST membership authority, so the retained list must
+  // mirror the rich payload's stage: an empty list with truncated:false would
+  // contradict the one authoritative task and discard it at hydration.
+  const digestFor = payload => ({ tasks: payload.tasks.map(row => ({ task_id: row.task_id, status: row.status, updated_at: row.updated_at })),
+    truncated: false, running_count: running, total_count: 1, ...aggregate });
+  const digest = digestFor(task);
   const envelope = value => ({ parent_session_id: 'qa-chat', truncated_runs: false, ...aggregate, runs: [value] });
   const lossy = structuredClone(run);
   lossy.updated_at = revision(1); lossy.truncated_nodes = truncated;
@@ -58,7 +63,7 @@ export function mixedTaskCase({ taskState, truncated, sequence }) {
   baselineTask.tasks[0].name += '-baseline'; baselineTask.tasks[0].updated_at = revision(0);
   const liveTask = { ...structuredClone(task), ...aggregate };
   const liveBaselineTask = { ...structuredClone(baselineTask), ...aggregate };
-  return { task, baselineTask, liveTask, liveBaselineTask, digest, aggregate, exact: envelope(run), lossy: envelope(lossy), recovered: envelope(recovered),
+  return { task, baselineTask, liveTask, liveBaselineTask, digest, digestFor, aggregate, exact: envelope(run), lossy: envelope(lossy), recovered: envelope(recovered),
     exactCount: taskState === 'running' ? '1/1' : '0/1',
     // The marker-free surface counts the authoritative row exactly at every
     // stage: the lossy child's truncated task identity can never add a second
@@ -111,7 +116,7 @@ export async function r7Proof({ page, observed, fixture, deliver, record, eviden
           const initial = surface === 'live' ? { ...exact, name: input.baselineTask.tasks[0].name } : transition ? exact : lossy;
           const initialRaw = surface === 'live' ? { parent_session_id: 'qa-chat', truncated_runs: false, ...input.aggregate, runs: [] } : transition ? input.exact : input.lossy;
           const initialTask = surface === 'live' ? input.liveBaselineTask : input.task;
-          await fresh(viewport, initialRaw, initialTask, async () => { initialSignal = await armDOM(page, mixedStateIs, initial); }, input.digest);
+          await fresh(viewport, initialRaw, initialTask, async () => { initialSignal = await armDOM(page, mixedStateIs, initial); }, input.digestFor(initialTask));
           await doneDOM(page, initialSignal);
           await assertMixedSubagents(page, initial);
           async function send(raw, stage, expected) {

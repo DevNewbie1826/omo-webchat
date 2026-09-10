@@ -18,7 +18,12 @@ test('F4 mixed wire uses one full task identity and only the same DAG child lose
     // The exact aggregate rides both surfaces and both digests agree with it.
     const running = taskState === 'running' ? 1 : 0;
     assert.deepEqual(input.aggregate, { agent_running_count: running, agent_total_count: 1 });
-    assert.deepEqual(input.digest, { tasks: [], truncated: false, running_count: running, total_count: 1, ...input.aggregate });
+    // Digest membership mirrors the rich payload stage exactly: a retained
+    // row per rich task, never an empty list contradicting total_count.
+    const digestRows = payload => payload.tasks.map(row => ({ task_id: row.task_id, status: row.status, updated_at: row.updated_at }));
+    assert.deepEqual(input.digest, { tasks: digestRows(input.task), truncated: false, running_count: running, total_count: 1, ...input.aggregate });
+    assert.deepEqual(input.digestFor(input.baselineTask), { tasks: digestRows(input.baselineTask), truncated: false, running_count: running, total_count: 1, ...input.aggregate });
+    assert.deepEqual(input.digestFor(input.liveBaselineTask), input.digestFor(input.baselineTask));
     assert.deepEqual(input.liveTask, { ...input.task, ...input.aggregate });
     assert.deepEqual(input.liveBaselineTask, { ...input.baselineTask, ...input.aggregate });
     for (const snapshot of [input.exact, input.lossy, input.recovered]) {
