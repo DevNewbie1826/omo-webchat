@@ -1,0 +1,3 @@
+# These JSON fixtures are compared byte-for-byte with generated wire output.
+internal/session/testdata/receiver-*.json text eol=lf
+frontend/test/fixtures/task-compact-boundary/*.json text eol=lf

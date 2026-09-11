@@ -12,14 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lxzan/gws"
-
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
+	"github.com/lxzan/gws"
 )
 
 // TestGoalWatchPushesOnChange drives a bound socket against a goal document
@@ -209,7 +209,7 @@ func TestGoalWatchStampDetectsEqualSizeMtimeReplacement(t *testing.T) {
 		if err := os.Chtimes(path, fixed, fixed); err != nil {
 			t.Fatal(err)
 		}
-		info, err := os.Lstat(path)
+		info, err := fileid.Lstat(path)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -224,7 +224,7 @@ func TestGoalWatchStampDetectsEqualSizeMtimeReplacement(t *testing.T) {
 	if err := os.Rename(replacement, path); err != nil {
 		t.Fatal(err)
 	}
-	newInfo, err := os.Lstat(path)
+	newInfo, err := fileid.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestGoalWatchStampDetectsEqualSizeMtimeReplacement(t *testing.T) {
 	if oldStamp.size != newStamp.size || oldStamp.mod != newStamp.mod {
 		t.Fatalf("fixture stamps differ by size/mtime: old=%+v new=%+v", oldStamp, newStamp)
 	}
-	if oldStamp.device == newStamp.device && oldStamp.inode == newStamp.inode {
+	if os.SameFile(oldStamp.info, newStamp.info) {
 		t.Fatal("fixture replacement reused file identity")
 	}
 	if !state.needsRead(newStamp, true) {

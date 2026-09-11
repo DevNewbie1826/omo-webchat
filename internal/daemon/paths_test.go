@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -40,6 +41,10 @@ func TestDaemonPathsHonorsExplicitDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", "")
 	defaultDir := filepath.Join(home, ".local", "state", "omo-webchat")
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+		defaultDir = filepath.Join(os.Getenv("APPDATA"), "omo-webchat")
+	}
 
 	// Then — without an explicit dir, paths resolve under the store default
 	pidPath, logPath, lockPath, err := daemonPaths("")

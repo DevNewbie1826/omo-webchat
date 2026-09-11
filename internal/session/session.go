@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -152,7 +153,7 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	// Remember even native file identity before the first queue inspection.
 	// An initially absent native path is different from later disappearance.
-	s.queueFileIdentity, s.queueFileErr = os.Lstat(s.sessionFile)
+	s.queueFileIdentity, s.queueFileErr = fileid.Lstat(s.sessionFile)
 	s.broadcast.onDetach = m.cfg.OnDetach
 	s.hydrateActivityLocked(data.State)
 	// A recovery query closes the gap between open's snapshot and route
@@ -1957,7 +1958,7 @@ func (s *Session) verifySessionFileIdentity(sessionPath, observedLeaf string) er
 	if !s.inPlace || s.sessionFileIdentity == nil {
 		return nil
 	}
-	current, err := os.Lstat(sessionPath)
+	current, err := fileid.Lstat(sessionPath)
 	if err != nil {
 		drift := externalIdentityReadError(err)
 		drift.ObservedLeaf = observedLeaf
@@ -1968,6 +1969,23 @@ func (s *Session) verifySessionFileIdentity(sessionPath, observedLeaf string) er
 	}
 	if current.Mode().Perm()&0o444 == 0 {
 		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file is not readable", cause: os.ErrPermission}
+	}
+	// Windows mode bits do not express ACL read permissions. Opening also
+	// verifies that the readable object still matches the captured identity.
+	f, err := os.Open(sessionPath)
+	if err != nil {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file is not readable", cause: err}
+	}
+	opened, statErr := f.Stat()
+	closeErr := f.Close()
+	if statErr != nil {
+		return externalIdentityReadError(statErr)
+	}
+	if closeErr != nil {
+		return externalIdentityReadError(closeErr)
+	}
+	if !os.SameFile(current, opened) {
+		return &ExternalWriteError{ObservedLeaf: observedLeaf, Reason: "session file identity changed"}
 	}
 	return nil
 }

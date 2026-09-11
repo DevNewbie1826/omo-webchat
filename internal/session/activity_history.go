@@ -11,6 +11,9 @@ import (
 	"sort"
 	"time"
 	"unicode/utf8"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 )
 
 const (
@@ -182,11 +185,11 @@ func readStableJSON(ctx context.Context, path string, expected os.FileInfo, targ
 		if ctx.Err() != nil {
 			return false
 		}
-		before, err := os.Lstat(path)
+		before, err := fileid.Lstat(path)
 		if err != nil || before.Mode()&os.ModeSymlink != 0 || !sameFileState(expected, before) {
 			return false
 		}
-		f, err := os.Open(path)
+		f, err := fileio.Open(path)
 		if err != nil {
 			return false
 		}
@@ -194,7 +197,7 @@ func readStableJSON(ctx context.Context, path string, expected os.FileInfo, targ
 		data, readErr := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, maxTaskStoreRecordBytes+1))
 		afterOpen, afterOpenErr := f.Stat()
 		closeErr := f.Close()
-		afterPath, pathErr := os.Lstat(path)
+		afterPath, pathErr := fileid.Lstat(path)
 		stable := statErr == nil && afterOpenErr == nil && pathErr == nil && afterPath.Mode()&os.ModeSymlink == 0 &&
 			sameFileState(before, opened) && sameFileState(opened, afterOpen) && sameFileState(afterOpen, afterPath)
 		if readErr == nil && closeErr == nil && stable && len(data) <= maxTaskStoreRecordBytes {
@@ -446,7 +449,7 @@ func readCountDirectory(ctx context.Context, dir string, visit func(string, os.F
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	info, err := os.Lstat(dir)
+	info, err := fileid.Lstat(dir)
 	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
 		return nil
 	}
@@ -475,7 +478,7 @@ func readCountDirectory(ctx context.Context, dir string, visit func(string, os.F
 				continue
 			}
 			path := filepath.Join(dir, entry.Name())
-			current, statErr := os.Lstat(path)
+			current, statErr := fileid.Lstat(path)
 			if statErr != nil || current.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate, current) {
 				continue
 			}
@@ -494,7 +497,7 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	info, err := os.Lstat(dir)
+	info, err := fileid.Lstat(dir)
 	if isAbsentPathError(err) || (err == nil && !info.IsDir()) {
 		return false, nil
 	}
@@ -558,7 +561,7 @@ func readActivityDirectory(ctx context.Context, dir string, budget *activityHist
 			return false, err
 		}
 		path := filepath.Join(dir, candidate.name)
-		info, err := os.Lstat(path)
+		info, err := fileid.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 || !sameFileState(candidate.info, info) {
 			continue
 		}

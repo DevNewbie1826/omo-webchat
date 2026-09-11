@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 const header = `{"type":"session","id":"durable-session-1","version":3,"timestamp":"2026-09-02T00:00:00Z","cwd":"/tmp/work"}`
@@ -287,9 +289,7 @@ func TestAdoptRejectsSymlinkedDestinationDirectory(t *testing.T) {
 	stateDir := t.TempDir()
 	outside := t.TempDir()
 	destination := filepath.Join(stateDir, "adopted")
-	if err := os.Symlink(outside, destination); err != nil {
-		t.Fatal(err)
-	}
+	testfs.Symlink(t, outside, destination)
 
 	_, err := Adopt(context.Background(), source, destination, "durable-session-1")
 	assertTypedError(t, err, KindIO, ErrIO)

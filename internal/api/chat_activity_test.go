@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 func TestChatActivityEndpointIsProtectedCatalogScopedAndStageEightShaped(t *testing.T) {
@@ -197,9 +199,7 @@ func TestChatActivityRejectsUnconfinedCatalogPaths(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(cwd, ".omo"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(external, filepath.Join(cwd, ".omo", "senpi-task")); err != nil {
-			t.Fatal(err)
-		}
+		testfs.Symlink(t, external, filepath.Join(cwd, ".omo", "senpi-task"))
 		chat := cursorstore.Chat{ID: "symlink-store", WorkspaceID: ws.ID, CWD: cwd, DurableSessionID: "parent", Name: "symlink"}
 		if err := store.SaveChat(chat); err != nil {
 			t.Fatal(err)
@@ -212,7 +212,11 @@ func TestChatActivityRejectsUnconfinedCatalogPaths(t *testing.T) {
 
 func TestChatActivityTreatsGlobMetacharactersLiterally(t *testing.T) {
 	server, store, ws := newChatCreateTestServer(t)
-	cwd := filepath.Join(ws.Path, "literal[abc]*?")
+	name := "literal[abc]*?"
+	if runtime.GOOS == "windows" {
+		name = "literal[abc]" // Brackets are glob syntax and legal Windows names.
+	}
+	cwd := filepath.Join(ws.Path, name)
 	taskDir := filepath.Join(cwd, ".omo", "senpi-task", "tasks")
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
 		t.Fatal(err)

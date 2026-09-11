@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 // canonicalTempDir returns a symlink-resolved temp dir, mirroring how
@@ -86,9 +87,7 @@ func TestResolveUnder(t *testing.T) {
 			t.Fatal(err)
 		}
 		link := filepath.Join(cwd, "linkdir")
-		if err := os.Symlink(target, link); err != nil {
-			t.Fatal(err)
-		}
+		testfs.Symlink(t, target, link)
 		got, err := resolveUnder(root, cwd, "linkdir")
 		if err != nil {
 			t.Fatalf("unexpected err %v", err)

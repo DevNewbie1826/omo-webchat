@@ -13,6 +13,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 func queueEntry(id, parent, role, text string) string {
@@ -104,8 +105,7 @@ func TestDurableHistoryRejectsDiskDrift(t *testing.T) {
 							err = os.WriteFile(path, original, 0o600)
 						}
 					case "permission":
-						err = os.Chmod(path, 0)
-						t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+						testfs.MakeUnreadable(t, path)
 					case "header-id":
 						body = strings.Replace(body, "queue-durable", "wrong-durable", 1)
 					case "malformed":

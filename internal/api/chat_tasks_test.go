@@ -12,6 +12,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 type taskHTTPFixture struct {
@@ -278,9 +279,7 @@ func TestChatTasksStoreBoundaries(t *testing.T) {
 					t.Fatal(err)
 				}
 				if kind == "symlink" {
-					if err := os.Symlink(t.TempDir(), f.dir); err != nil {
-						t.Fatal(err)
-					}
+					testfs.Symlink(t, t.TempDir(), f.dir)
 				} else if err := os.WriteFile(f.dir, []byte("not a directory"), 0600); err != nil {
 					t.Fatal(err)
 				}

@@ -23,7 +23,16 @@ func staleCloseFixture(t *testing.T, chatID string) (*Manager, *Session, string,
 		_ = os.RemoveAll(root)
 		t.Fatalf("start old daemon: %v", err)
 	}
-	client := dial(t, oldDaemon)
+	// These tests require a replacement daemon to become available. The generic
+	// death fixture's two 1ms retries can expire during Windows secret rotation;
+	// use the production reconnect budget while preserving epoch/route checks.
+	client, err := omorpc.DialWithConfig(t.Context(), oldDaemon.SocketPath(), omorpc.Config{EventBuffer: 256})
+	if err != nil {
+		oldDaemon.Stop()
+		_ = os.RemoveAll(root)
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
 	mgr := NewManager(Config{Client: client, Store: newMemStore(), QueueSize: 16})
 	events := newRecorder(4)
 	s, _, detach := acquire(t, mgr, testChat{id: chatID, cwd: t.TempDir()}, events)
@@ -64,6 +73,7 @@ func TestExecuteCloseStaleEpochRefusesOwnedRoute(t *testing.T) {
 	}
 	defer replacement.Stop()
 	defer cleanup()
+	awaitCloseReplacement(t, mgr)
 
 	owner, _, ownerDetach := acquire(t, mgr, testChat{id: "colliding-owner", cwd: t.TempDir()}, nil)
 	defer ownerDetach()
@@ -93,6 +103,7 @@ func TestExecuteCloseStaleEpochRefusesSameChatReplacement(t *testing.T) {
 	}
 	defer replacementDaemon.Stop()
 	defer cleanup()
+	awaitCloseReplacement(t, mgr)
 
 	resp, epoch, err := mgr.cfg.Client.CallInEpoch(context.Background(), omorpc.OpenSession{CWD: t.TempDir()})
 	if err != nil {
@@ -126,7 +137,7 @@ func TestExecuteCloseStaleEpochRefusesSameChatReplacement(t *testing.T) {
 // replacement connection. The replacement has reset route IDs but has no live
 // route, so unknown_session definitively settles the stale cleanup.
 func TestExecuteCloseStaleEpochFallsBackOnceWhenUnowned(t *testing.T) {
-	_, stale, root, cleanup := staleCloseFixture(t, "stale-unowned")
+	mgr, stale, root, cleanup := staleCloseFixture(t, "stale-unowned")
 	replacement := omorpctest.New(root)
 	if err := replacement.Start(); err != nil {
 		cleanup()
@@ -134,6 +145,7 @@ func TestExecuteCloseStaleEpochFallsBackOnceWhenUnowned(t *testing.T) {
 	}
 	defer replacement.Stop()
 	defer cleanup()
+	awaitCloseReplacement(t, mgr)
 
 	before := replacement.RequestCount(omorpc.CmdCloseSession)
 	if err := stale.Close(); err != nil {
@@ -157,6 +169,7 @@ func TestFallbackCleanupMarkerSurvivesCallerTimeout(t *testing.T) {
 	}
 	defer replacementDaemon.Stop()
 	defer cleanup()
+	awaitCloseReplacement(t, mgr)
 
 	releaseClose := replacementDaemon.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
@@ -196,6 +209,7 @@ func TestFallbackCleanupRejectsCollidingOpenUntilMarkerClears(t *testing.T) {
 	}
 	defer replacement.Stop()
 	defer cleanup()
+	awaitCloseReplacement(t, mgr)
 
 	releaseClose := replacement.BlockHandler(omorpc.CmdCloseSession)
 	defer releaseClose()
@@ -256,5 +270,16 @@ func TestFallbackCleanupRejectsCollidingOpenUntilMarkerClears(t *testing.T) {
 	mgr.mu.Unlock()
 	if routed != retry {
 		t.Fatal("retry route was not published after cleanup marker cleared")
+	}
+}
+
+// Establish the replacement epoch before starting a close timeout. These tests
+// measure written close responses and route ownership, not daemon boot latency.
+func awaitCloseReplacement(t *testing.T, mgr *Manager) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+	defer cancel()
+	if _, err := mgr.cfg.Client.Call(ctx, omorpc.GetProtocolInfo{}); err != nil {
+		t.Fatalf("replacement connection: %v", err)
 	}
 }

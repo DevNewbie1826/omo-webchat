@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
@@ -23,6 +24,14 @@ func TestChatDagRunStable(t *testing.T) {
 		fired := false
 		ctx := &dagReadBarrierContext{Context: t.Context(), onRead: func() {
 			fired = true
+			if runtime.GOOS == "windows" {
+				// MoveFileEx cannot replace an open destination even with delete
+				// sharing. Retire its path first; the reader must still use the
+				// original pinned bytes after the new checkpoint is published.
+				if err := os.Rename(path, path+".old"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := os.Rename(replacement, path); err != nil {
 				t.Fatal(err)
 			}

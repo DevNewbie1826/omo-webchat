@@ -70,7 +70,7 @@ func resolveUnder(root, base, rel string) (string, error) {
 	switch {
 	case cleaned == "" || cleaned == ".":
 		start = base
-	case filepath.IsAbs(cleaned):
+	case strings.HasPrefix(rel, "/") || strings.HasPrefix(cleaned, string(filepath.Separator)):
 		// A leading `/` is workspace-root-relative, NOT filesystem-absolute.
 		start = filepath.Join(root, cleaned)
 	default:

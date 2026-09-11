@@ -20,12 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lxzan/gws"
-
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
+	"github.com/lxzan/gws"
 )
 
 const historyE2ETestBudget = 30 * time.Second
@@ -696,7 +695,11 @@ func writeDelayedHistory(t *testing.T, dir string) (string, string) {
 	leaf := "disk-leaf"
 	sum := sha256.Sum256([]byte(path))
 	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
-	contents := `{"type":"session","version":3,"id":"` + durableID + `","cwd":"` + dir + `"}` + "\n" +
+	header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": durableID, "cwd": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(header) + "\n" +
 		`{"type":"message","id":"` + leaf + `","parentId":null,"message":{"role":"user","content":"hello"}}` + "\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
@@ -709,7 +712,11 @@ func writeHeaderOnlyHistory(t *testing.T, dir string) string {
 	path := filepath.Join(dir, "header-only-history.jsonl")
 	sum := sha256.Sum256([]byte(path))
 	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
-	contents := `{"type":"session","version":3,"id":"` + durableID + `","cwd":"` + dir + `"}` + "\n"
+	header, err := json.Marshal(map[string]any{"type": "session", "version": 3, "id": durableID, "cwd": dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(header) + "\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}

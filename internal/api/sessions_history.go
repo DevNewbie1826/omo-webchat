@@ -127,13 +127,22 @@ func listDiskSessions(cwd string) ([]diskSession, bool) {
 		return nil, false
 	}
 	dir := filepath.Join(agentDir, "sessions", sessionDirNameForCwd(cwd))
-	entries, err := os.ReadDir(dir)
+	// Windows ReadDir can report ErrNotExist for an existing regular file.
+	// Only an absent directory is a successful empty scan.
+	f, err := os.Open(dir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, true
-		}
+		return nil, errors.Is(err, os.ErrNotExist)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.IsDir() {
 		return nil, false
 	}
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, false
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	out := make([]diskSession, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {

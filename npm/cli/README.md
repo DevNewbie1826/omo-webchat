@@ -73,6 +73,15 @@ collision), the shim would pick it up at step 2. Set `CHAT_PI_BINARY` to the
 absolute path of the official omo CLI to override every other resolution
 step explicitly.
 
+On Windows, both Bun's `omo.exe` and the standard `omo.cmd` created by
+`npm install -g omo-ai@beta` are supported. The server resolves the official
+npm shim to its `omo-ai/bin/omo.js` entry and launches Node directly with an
+argument array, without a command shell. A sibling `node.exe` takes precedence
+over Node on PATH, matching npm. Node must satisfy the installed omo-ai
+package's engine requirement (Node 24+ for current beta releases).
+`CHAT_PI_BINARY` can also point directly to that `omo.js` file. Unrecognized
+batch wrappers are rejected; point the variable at the intended entry instead.
+
 To override everything, point the variable at any agent binary:
 
 ```sh

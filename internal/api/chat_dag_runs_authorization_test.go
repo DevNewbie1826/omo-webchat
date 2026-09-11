@@ -11,6 +11,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 func TestChatDagRunAuthorization(t *testing.T) {
@@ -116,9 +117,7 @@ func TestChatDagRunAuthorization(t *testing.T) {
 				} else {
 					writeDagFixture(t, outside, source)
 				}
-				if err := os.Symlink(outside, target); err != nil {
-					t.Fatal(err)
-				}
+				testfs.Symlink(t, outside, target)
 				rec := f.get(t, "/secret")
 				if rec.Code != 404 || strings.Contains(rec.Body.String(), external) {
 					t.Fatalf("symlink response %d %s", rec.Code, rec.Body.String())

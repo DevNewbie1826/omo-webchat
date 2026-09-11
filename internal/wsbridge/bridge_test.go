@@ -17,14 +17,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lxzan/gws"
-
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
+	"github.com/lxzan/gws"
 )
 
 type signalLogHandler struct{ records chan struct{} }
@@ -1350,6 +1349,7 @@ func TestDetachedInRunSendResumesAndRetriesWithOriginalAdmission(t *testing.T) {
 			conn, frames := h.connect(t)
 			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": chatID})
 			frames.next(t, "ready")
+			awaitCommandFence(t, conn, frames)
 			h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 			frames.next(t, "run.started")
 
@@ -1711,6 +1711,7 @@ func TestSuccessfulSteerAndIdenticalFollowUpEmitCompletedAcks(t *testing.T) {
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-completed"})
 	frames.next(t, "ready")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
@@ -1751,6 +1752,7 @@ func TestFullSendLedgerReplayActivatesNewWebSocketSubscriber(t *testing.T) {
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-full-ledger"})
 	frames.next(t, "ready")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
@@ -1777,6 +1779,7 @@ func TestChatSendRequestIDReplaysAndDeduplicatesAfterReconnect(t *testing.T) {
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-deduplicate"})
 	frames.next(t, "ready")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
@@ -1815,6 +1818,7 @@ func TestChatSendCompletionErrorReplaysAfterDisconnect(t *testing.T) {
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-error-replay"})
 	frames.next(t, "ready")
+	awaitCommandFence(t, conn, frames)
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")
 
@@ -1856,6 +1860,7 @@ func TestChatSendDetachedMutationBackpressure(t *testing.T) {
 	conn, frames := h.connect(t)
 	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "send-backpressure"})
 	frames.next(t, "ready")
+	awaitCommandFence(t, conn, frames)
 
 	h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 	frames.next(t, "run.started")

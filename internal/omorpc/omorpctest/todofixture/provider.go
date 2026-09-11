@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 )
 
 // fakeRPC delegates the observed protocol to the shared daemon. Only canonical
@@ -26,7 +28,7 @@ type fakeRPC struct {
 }
 
 func startProvider(path string, d *omorpctest.Daemon, j *journal) (*fakeRPC, error) {
-	ln, err := net.Listen("unix", path)
+	ln, err := transport.Listen(path)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +58,7 @@ func startProvider(path string, d *omorpctest.Daemon, j *journal) (*fakeRPC, err
 func (p *fakeRPC) serve(client net.Conn) {
 	defer p.wg.Done()
 	defer func() { client.Close(); p.mu.Lock(); delete(p.conns, client); p.mu.Unlock() }()
-	upstream, err := net.Dial("unix", p.daemon.SocketPath())
+	upstream, err := transport.Dial(context.Background(), p.daemon.SocketPath())
 	if err != nil {
 		slog.Error("fixture upstream dial", "error", err)
 		return

@@ -5,9 +5,27 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 const goalSessionID = "01a05dff-ce50-7e6e-afd8-584465582016"
+
+func TestSessionDirNameMatchesEngineEncoding(t *testing.T) {
+	for _, tc := range []struct{ cwd, want string }{
+		{"/tmp/work", "--tmp-work--"},
+		{`C:\Users\alice\repo`, "--C--Users-alice-repo--"},
+		{`C:\`, "--C----"},
+		{`\\server\share\repo`, "---server-share-repo--"},
+		{"/", "----"},
+	} {
+		t.Run(tc.cwd, func(t *testing.T) {
+			if got := SessionDirNameForCwd(tc.cwd); got != tc.want {
+				t.Fatalf("got %q, want engine name %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func writeGoalDoc(t *testing.T, agentDir, cwd, sessionID, body string) string {
 	t.Helper()
@@ -139,9 +157,7 @@ func TestReadGoalStateCorruptOversizedSymlinkMiskeyedYieldNil(t *testing.T) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(external, filepath.Join(dir, goalSessionID+".json")); err != nil {
-			t.Fatal(err)
-		}
+		testfs.Symlink(t, external, filepath.Join(dir, goalSessionID+".json"))
 		goal, err := ReadGoalState(t.Context(), agentDir, symCwd, goalSessionID)
 		if err != nil || goal != nil {
 			t.Fatalf("symlinked goal = (%+v, %v)", goal, err)
@@ -232,20 +248,20 @@ func TestReadGoalStateHonorsContextCancellation(t *testing.T) {
 }
 
 func TestGoalStatePathRejectsUnsafeSessionIDs(t *testing.T) {
-	cwd := "/tmp/work"
+	cwd, agentDir := t.TempDir(), t.TempDir()
 	for _, bad := range []string{"", "..", ".", "a/b", "./x", "sub/dir"} {
-		if _, ok := GoalStatePath("/tmp/agent", cwd, bad); ok {
+		if _, ok := GoalStatePath(agentDir, cwd, bad); ok {
 			t.Fatalf("unsafe session id %q accepted", bad)
 		}
 	}
 	if _, ok := GoalStatePath("", cwd, goalSessionID); ok {
 		t.Fatal("empty agent dir accepted")
 	}
-	if _, ok := GoalStatePath("/tmp/agent", "relative", goalSessionID); ok {
+	if _, ok := GoalStatePath(agentDir, "relative", goalSessionID); ok {
 		t.Fatal("relative cwd accepted")
 	}
-	got, ok := GoalStatePath("/tmp/agent", cwd, goalSessionID)
-	if !ok || got != filepath.Join("/tmp/agent", "sessions", "--tmp-work--", "extensions", "goal", goalSessionID+".json") {
+	got, ok := GoalStatePath(agentDir, cwd, goalSessionID)
+	if !ok || got != filepath.Join(agentDir, "sessions", SessionDirNameForCwd(cwd), "extensions", "goal", goalSessionID+".json") {
 		t.Fatalf("path = %q ok = %v", got, ok)
 	}
 }

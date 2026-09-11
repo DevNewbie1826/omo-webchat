@@ -19,10 +19,13 @@ import (
 const goalWatchInterval = 2 * time.Second
 
 type goalFileStamp struct {
-	device uint64
-	inode  uint64
-	size   int64
-	mod    time.Time
+	info os.FileInfo
+	size int64
+	mod  time.Time
+}
+
+func (s goalFileStamp) equal(other goalFileStamp) bool {
+	return s.size == other.size && s.mod.Equal(other.mod) && os.SameFile(s.info, other.info)
 }
 
 type goalWatchState struct {
@@ -33,7 +36,7 @@ type goalWatchState struct {
 }
 
 func (s *goalWatchState) needsRead(stamp goalFileStamp, present bool) bool {
-	return !s.acknowledged || present != s.hadStamp || (present && stamp != s.lastStamp)
+	return !s.acknowledged || present != s.hadStamp || (present && !stamp.equal(s.lastStamp))
 }
 
 func (s *goalWatchState) accept(goal *session.GoalState, info os.FileInfo) bool {
@@ -127,7 +130,7 @@ func goalStamp(ctx context.Context, agentDir, cwd, durableSessionID string) (goa
 	if !ok {
 		return goalFileStamp{}, false, nil
 	}
-	info, err := os.Lstat(path)
+	info, err := fileid.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return goalFileStamp{}, false, nil
 	}
@@ -140,23 +143,16 @@ func goalStamp(ctx context.Context, agentDir, cwd, durableSessionID string) (goa
 
 var errGoalStampTransient = errors.New("goal file identity unavailable")
 
-// goalStampFromInfo takes the kernel device/inode pair where the platform
-// exposes it (unix st_dev/st_ino). Windows FileInfo.Sys() carries no file
-// index, so the stamp there keeps size+mtime, which still distinguishes
-// content edits from unchanged ticks.
+// goalStampFromInfo retains the exact file identity captured by fileid.Lstat
+// or the stable reader's f.Stat, including the Windows volume/file index.
 func goalStampFromInfo(info os.FileInfo) (goalFileStamp, bool) {
 	if info == nil {
 		return goalFileStamp{}, false
 	}
-	identity, hasIdentity := fileid.FromInfo(info)
-	if !hasIdentity {
-		return goalFileStamp{size: info.Size(), mod: info.ModTime()}, true
-	}
 	return goalFileStamp{
-		device: identity.Device,
-		inode:  identity.Inode,
-		size:   info.Size(),
-		mod:    info.ModTime(),
+		info: info,
+		size: info.Size(),
+		mod:  info.ModTime(),
 	}, true
 }
 

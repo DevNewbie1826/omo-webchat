@@ -513,7 +513,10 @@ func TestClassifiedRejectionCompletionStaysRetryable(t *testing.T) {
 }
 
 func TestSuccessfulProviderCompletionMarksSendOperationTerminalForReplay(t *testing.T) {
-	s := &Session{durableID: "durable-success", queueSize: 1, readyPublished: true}
+	// This ledger-only fixture has no manager. Keep its idle callback from
+	// running while completion is published before a subscriber attaches.
+	s := &Session{durableID: "durable-success", queueSize: 1, readyPublished: true, idleAfter: time.Hour}
+	t.Cleanup(func() { s.lifecycleMu.Lock(); s.cancelIdleLocked(); s.lifecycleMu.Unlock() })
 	if err, stop := s.beginSendOperation("successful-send"); err != nil || stop {
 		t.Fatalf("begin operation = (%v, %v)", err, stop)
 	}
