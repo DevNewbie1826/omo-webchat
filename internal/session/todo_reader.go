@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -56,7 +58,7 @@ func (s *Session) ReadTodoProjection(ctx context.Context) (TodoProjection, error
 	if resident && !s.client.EpochCurrent(epoch) {
 		return TodoProjection{}, omorpc.ErrEpochMismatch
 	}
-	before, err := os.Lstat(path)
+	before, err := fileid.Lstat(path)
 	var source io.ReadSeeker
 	var file *os.File
 	if errors.Is(err, os.ErrNotExist) && absentAllowed {
@@ -74,7 +76,7 @@ func (s *Session) ReadTodoProjection(ctx context.Context) (TodoProjection, error
 				return TodoProjection{}, err
 			}
 		}
-		file, err = os.Open(path)
+		file, err = fileio.Open(path)
 		if err != nil {
 			return TodoProjection{}, err
 		}
@@ -90,7 +92,7 @@ func (s *Session) ReadTodoProjection(ctx context.Context) (TodoProjection, error
 		if file != nil {
 			return checkQueueSnapshot(path, file, before)
 		}
-		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		if _, err := fileid.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			if err != nil {
 				return err
 			}

@@ -194,6 +194,31 @@ jobs:
             probe-reconnect-node.txt
             probe-reconnect-bun.txt
 
+  npm-omo-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.7"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+      - name: Install omo through npm into a prefix with spaces
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'npm prefix & spaces'
+          npm install --global --prefix "$prefix" omo-ai@5.0.0-0.beta.43
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prefix | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: npm launcher resolution, argv and native executable contracts
+        shell: pwsh
+        run: go test ./internal/omorpc -run 'Test(ResolveOmo|Npm|SupervisorExec)' -count=1 -v
+      - name: Real npm daemon startup, reuse, sessions and owned teardown
+        shell: pwsh
+        run: go test -tags=realomo ./internal/omorpc -run '^TestWindowsNpmOmoLifecycle$' -count=1 -v -timeout=3m
+
   smoke-windows:
     runs-on: windows-latest
     timeout-minutes: 20
@@ -211,17 +236,9 @@ jobs:
       - name: Build embedded frontend
         run: cd frontend && npm ci && npm run build
 
-      - name: Windows procexec tests
+      - name: Complete Windows Go suite
         shell: pwsh
-        run: go test ./internal/procexec/ -count=1
-
-      - name: Windows omorpc tests
-        shell: pwsh
-        run: go test ./internal/omorpc/ -count=1 -timeout=2m
-
-      - name: Server smoke
-        shell: pwsh
-        run: go test ./test/smoke/ -count=1 -v
+        run: go test ./... -count=1 -timeout=3m
 
       - name: Installer contracts (Windows PowerShell 5.1)
         shell: powershell

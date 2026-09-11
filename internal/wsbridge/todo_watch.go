@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
@@ -104,8 +105,12 @@ type todoStamp struct {
 	present bool
 }
 
+func (s todoStamp) equal(other todoStamp) bool {
+	return s.present == other.present && (!s.present || s.file.equal(other.file))
+}
+
 func statTodo(path string) (todoStamp, error) {
-	info, err := os.Lstat(path)
+	info, err := fileid.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return todoStamp{}, nil
 	}
@@ -160,7 +165,7 @@ func (w *todoWatch) run() {
 			observed, statErr := statTodo(claim.session.SessionFile())
 			run := claim.session.RunSnapshot()
 			w.conn.stateMu.Lock()
-			if w.claim != claim || !w.conn.queryCurrentLocked(claim) || (!initial && (!tick || (!w.dirty && acknowledged && statErr == nil && observed == stamp && !run.Streaming && !run.Compacting))) {
+			if w.claim != claim || !w.conn.queryCurrentLocked(claim) || (!initial && (!tick || (!w.dirty && acknowledged && statErr == nil && observed.equal(stamp) && !run.Streaming && !run.Compacting))) {
 				w.conn.stateMu.Unlock()
 				return
 			}

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -1057,7 +1058,7 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 	}
 	var sessionFileIdentity os.FileInfo
 	if resumed && cur.InPlace {
-		sessionFileIdentity, err = os.Lstat(cur.SessionFile)
+		sessionFileIdentity, err = fileid.Lstat(cur.SessionFile)
 		if err != nil {
 			return nil, false, nil, externalIdentityReadError(err)
 		}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
+	"github.com/DevNewbie1826/omo-webchat/internal/testfs"
 )
 
 func TestInPlaceMutationFenceQuarantinesDirectFileDrift(t *testing.T) {
@@ -34,12 +35,9 @@ func TestInPlaceMutationFenceQuarantinesDirectFileDrift(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{name: "chmod-000", wantCause: os.ErrPermission, wantReason: "session file is not readable", mutate: func(t *testing.T, path string) {
+		{name: "unreadable", wantCause: os.ErrPermission, wantReason: "session file is not readable", mutate: func(t *testing.T, path string) {
 			t.Helper()
-			t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-			if err := os.Chmod(path, 0); err != nil {
-				t.Fatal(err)
-			}
+			testfs.MakeUnreadable(t, path)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,6 +263,12 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 		t.Fatal(err)
 	}
 	defer detachReplay()
+	// Release the fixture before detach waits for the delivery goroutine,
+	// including when an assertion exits the test before the normal releases.
+	releaseHistory := sync.OnceFunc(func() { close(blocked.release) })
+	releaseTransition := sync.OnceFunc(func() { close(blocked.transitionRelease) })
+	defer releaseHistory()
+	defer releaseTransition()
 
 	hydrated := make(chan struct{})
 	go func() {
@@ -287,7 +291,7 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 	if active, pending := replayState(target); !active || pending != 1 {
 		t.Fatalf("quarantine transition was not buffered during replay: active=%v pending=%d", active, pending)
 	}
-	close(blocked.release)
+	releaseHistory()
 	select {
 	case <-blocked.transitionEntered:
 	case <-time.After(testTimeout):
@@ -297,7 +301,7 @@ func TestHydrationLosingQuarantineRaceEndsReplayWithoutDuplicateTransition(t *te
 	sess.lifecycleMu.Lock()
 	sess.publishLocked(activity)
 	sess.lifecycleMu.Unlock()
-	close(blocked.transitionRelease)
+	releaseTransition()
 	select {
 	case <-hydrated:
 	case <-time.After(testTimeout):

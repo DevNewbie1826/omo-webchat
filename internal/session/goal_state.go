@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 )
 
 const (
@@ -66,13 +69,16 @@ func CodingAgentDir() string {
 }
 
 // SessionDirNameForCwd encodes an absolute working directory the way omo
-// names per-cwd folders under <agentDir>/sessions/: strip surrounding slashes,
-// replace every remaining "/" with "-", then wrap with "--" on both ends.
+// names per-cwd folders under <agentDir>/sessions/: remove one leading slash,
+// replace slashes, backslashes and colons with "-", then wrap with "--".
 // Example: /Volumes/storage/workspace/omo-webchat becomes
 // --Volumes-storage-workspace-omo-webchat--.
 func SessionDirNameForCwd(cwd string) string {
-	trimmed := strings.Trim(filepath.Clean(cwd), "/")
-	return "--" + strings.ReplaceAll(trimmed, "/", "-") + "--"
+	cleaned := filepath.Clean(cwd)
+	if len(cleaned) > 0 && (cleaned[0] == '/' || cleaned[0] == '\\') {
+		cleaned = cleaned[1:]
+	}
+	return "--" + strings.NewReplacer("/", "-", `\`, "-", ":", "-").Replace(cleaned) + "--"
 }
 
 // GoalStatePath returns the live goal file for one session under agentDir.
@@ -120,7 +126,7 @@ func ReadGoalStateSnapshot(ctx context.Context, agentDir, cwd, sessionID string)
 	if !ok {
 		return nil, nil, nil
 	}
-	info, err := os.Lstat(path)
+	info, err := fileid.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil, nil
 	}
@@ -159,7 +165,7 @@ func readStableJSONWithLimit(ctx context.Context, path string, expected os.FileI
 		if ctx.Err() != nil {
 			return nil, false
 		}
-		before, err := os.Lstat(path)
+		before, err := fileid.Lstat(path)
 		if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() > limit {
 			return nil, false
 		}
@@ -167,7 +173,7 @@ func readStableJSONWithLimit(ctx context.Context, path string, expected os.FileI
 			expected = before
 			continue
 		}
-		f, err := os.Open(path)
+		f, err := fileio.Open(path)
 		if err != nil {
 			return nil, false
 		}
@@ -175,13 +181,15 @@ func readStableJSONWithLimit(ctx context.Context, path string, expected os.FileI
 		data, readErr := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, r: f}, limit+1))
 		afterOpen, afterOpenErr := f.Stat()
 		closeErr := f.Close()
-		afterPath, pathErr := os.Lstat(path)
+		afterPath, pathErr := fileid.Lstat(path)
 		stable := statErr == nil && afterOpenErr == nil && pathErr == nil && afterPath.Mode()&os.ModeSymlink == 0 &&
 			afterPath.Mode().IsRegular() && afterPath.Size() <= limit && sameFileState(before, opened) &&
 			sameFileState(opened, afterOpen) && sameFileState(afterOpen, afterPath)
 		if readErr == nil && closeErr == nil && stable && len(data) <= int(limit) {
 			if json.Unmarshal(data, target) == nil {
-				return afterPath, true
+				// f.Stat captures Windows file identity while the handle is open;
+				// an Lstat result can otherwise resolve identity lazily after replacement.
+				return afterOpen, true
 			}
 			return nil, false
 		}

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 )
 
 var errDagStoreAbsent = errors.New("DAG store does not exist")
@@ -58,7 +60,7 @@ func readCompleteSource(ctx context.Context, root *os.Root, name string) ([]byte
 	if !before.Mode().IsRegular() {
 		return nil, ErrDagNotFound
 	}
-	f, err := root.Open(name)
+	f, err := fileio.OpenRoot(root, name)
 	if err != nil {
 		return nil, ErrDagInvalidSource
 	}

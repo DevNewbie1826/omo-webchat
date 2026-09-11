@@ -1,14 +1,15 @@
 package wsbridge
 
 import (
+	"sync"
+	"testing"
+	"time"
+
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest"
 	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
-	"sync"
-	"testing"
-	"time"
 )
 
 func TestCanonicalCompletedAckMapping(t *testing.T) {
@@ -39,6 +40,9 @@ func TestCanonicalCompletedAckLiveAndReplay(t *testing.T) {
 			conn, frames := h.connect(t)
 			writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "canonical-ack"})
 			frames.next(t, "ready")
+			// Ready precedes replay completion. Inject live events only after
+			// create has completed and the live subscription is installed.
+			awaitCommandFence(t, conn, frames)
 			if kind != "prompt" {
 				h.daemon.EmitSession(h.path, map[string]any{"type": omorpctest.EventAgentStart})
 				frames.next(t, "run.started")

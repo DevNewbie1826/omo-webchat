@@ -304,13 +304,16 @@ func EnsureDaemon(ctx context.Context, cfg EnsureConfig) (*EnsuredDaemon, error)
 }
 
 func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, args, env []string, attempt string, appendLog bool) (*EnsuredDaemon, error, bool) {
+	cmd, err := supervisorExecCommand(command, args)
+	if err != nil {
+		return nil, err, false
+	}
 	logPath := filepath.Join(cfg.StateDir, "daemon-spawn.log")
 	stderr, finishLog, err := openSpawnAttemptLog(logPath, attempt, appendLog)
 	if err != nil {
 		return nil, fmt.Errorf("omorpc: open daemon spawn log: %w", err), false
 	}
 	provenance := newEndpointProvenance(cfg.SocketPath)
-	cmd := exec.Command(command, args...)
 	cmd.Dir = cfg.WorkingDir
 	cmd.Env = EnsureExtensionEventsCapability(env)
 	cmd.Stdin = nil

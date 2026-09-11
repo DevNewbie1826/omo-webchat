@@ -11,6 +11,25 @@ import (
 // sufficient for GetFileInformationByHandle without GENERIC_READ.
 const fileReadAttributes = 0x00000080
 
+// Lstat captures metadata and identity from one handle without following a
+// reparse point. os.SameFile can then compare the snapshot after replacement.
+func Lstat(path string) (os.FileInfo, error) {
+	ptr, err := syscall.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := syscall.CreateFile(ptr, fileReadAttributes,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
+		nil, syscall.OPEN_EXISTING,
+		syscall.FILE_FLAG_BACKUP_SEMANTICS|syscall.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "lstat", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(h), path)
+	defer f.Close()
+	return f.Stat()
+}
+
 // FromPath opens path with FILE_READ_ATTRIBUTES and reads identity from
 // GetFileInformationByHandle (VolumeSerialNumber, nFileIndex).
 // FILE_FLAG_BACKUP_SEMANTICS lets directories open; FILE_FLAG_OPEN_REPARSE_POINT

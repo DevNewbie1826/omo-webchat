@@ -7,6 +7,8 @@ import (
 	"syscall"
 )
 
+func Lstat(path string) (os.FileInfo, error) { return os.Lstat(path) }
+
 // FromPath Lstats path and requires a unix-domain socket (S_IFSOCK /
 // os.ModeSocket). Identity is st_dev/st_ino from Stat_t. Missing paths,
 // non-sockets, and a Sys() that is not *Stat_t return ok=false.

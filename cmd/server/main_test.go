@@ -4,12 +4,16 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestCommandLineExitCodes(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "omo-webchat")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build server executable: %v\n%s", err, output)

@@ -15,8 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"unsafe"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 )
 
 const (
@@ -110,7 +111,7 @@ func Stream(ctx context.Context, sessionPath string, options Options, emit func(
 		return Metadata{}, err
 	}
 
-	f, err := os.Open(sessionPath)
+	f, err := fileio.Open(sessionPath)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("coldhistory: open %q: %w", sessionPath, err)
 	}

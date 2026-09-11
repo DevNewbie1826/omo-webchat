@@ -1,15 +1,16 @@
 package omorpctest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport"
 )
 
 func TestRPC46FailOpenPath(t *testing.T) {
@@ -41,7 +42,9 @@ func TestRPC46FailOpenPath(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(d.Stop)
-			conn, err := net.DialTimeout("unix", d.SocketPath(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			conn, err := transport.Dial(ctx, d.SocketPath())
 			if err != nil {
 				t.Fatal(err)
 			}

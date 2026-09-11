@@ -16,3 +16,7 @@ func resolveOmoBinary(cfgPath string) (string, error) {
 	}
 	return binary, nil
 }
+
+func supervisorExecCommand(command string, args []string) (*exec.Cmd, error) {
+	return exec.Command(command, args...), nil
+}

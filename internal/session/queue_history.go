@@ -10,6 +10,8 @@ import (
 	"os"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/coldhistory"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
+	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
@@ -41,7 +43,7 @@ func (s *Session) inspectQueueHistory(ctx context.Context, match func(json.RawMe
 		return omorpc.ErrEpochMismatch
 	}
 
-	before, err := os.Lstat(path)
+	before, err := fileid.Lstat(path)
 	var file *os.File
 	var order *coldhistory.FileOrder
 	if errors.Is(err, os.ErrNotExist) && absentAllowed {
@@ -59,7 +61,7 @@ func (s *Session) inspectQueueHistory(ctx context.Context, match func(json.RawMe
 		if err = queueFileIdentityError(acquiredIdentity, before); err != nil {
 			return fail(err)
 		}
-		file, err = os.Open(path)
+		file, err = fileio.Open(path)
 		if err != nil {
 			return fail(err)
 		}
@@ -129,7 +131,7 @@ func (s *Session) inspectQueueHistory(ctx context.Context, match func(json.RawMe
 		if err := checkQueueSnapshot(path, file, before); err != nil {
 			return fail(err)
 		}
-	} else if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+	} else if _, err := fileid.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		if err == nil {
 			err = fmt.Errorf("%w: native session file appeared during inspection", errIncompleteHistory)
 		}
@@ -170,7 +172,7 @@ func queueFileIdentityError(identity, current os.FileInfo) error {
 }
 
 func checkQueueSnapshot(path string, file *os.File, before os.FileInfo) error {
-	for _, stat := range []func() (os.FileInfo, error){file.Stat, func() (os.FileInfo, error) { return os.Lstat(path) }} {
+	for _, stat := range []func() (os.FileInfo, error){file.Stat, func() (os.FileInfo, error) { return fileid.Lstat(path) }} {
 		now, err := stat()
 		if err != nil {
 			return err

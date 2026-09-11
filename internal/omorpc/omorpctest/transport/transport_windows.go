@@ -15,8 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sys/windows"
 )
 
 func address(path string, secret []byte) string {
@@ -31,7 +33,7 @@ func Listen(path string) (net.Listener, error) {
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path+".secret", secret, 0600); err != nil {
+	if err := writeSecret(path+".secret", secret); err != nil {
 		return nil, err
 	}
 	ln, err := winio.ListenPipe(address(path, secret), nil)
@@ -39,6 +41,20 @@ func Listen(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return &listener{Listener: ln, secret: secret}, nil
+}
+
+// The production secret reader deliberately denies concurrent writes while it
+// validates a snapshot. A reconnecting client can still be reading the old
+// secret when this fixture rotates it for a new listener lifetime.
+func writeSecret(path string, secret []byte) error {
+	deadline := time.Now().Add(time.Second)
+	for {
+		err := os.WriteFile(path, secret, 0600)
+		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func Dial(ctx context.Context, path string) (net.Conn, error) {
