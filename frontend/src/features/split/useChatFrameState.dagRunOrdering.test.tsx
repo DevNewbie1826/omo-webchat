@@ -209,6 +209,43 @@ describe("useChatFrameState DAG run scalar ordering", () => {
     expectNoPair();
   });
 
+  describe.each(["live", "history"] as const)("%s unresolved membership", source => {
+    function snapshot(runs: ReturnType<typeof run>[]) {
+      const frame = dagSnapshotFrame({ runs });
+      if (source === "live") deliver(frame);
+      else {
+        const token = captured!.beginActivityHydration();
+        act(() => captured!.hydrateActivities(token, null, frame.data));
+      }
+    }
+
+    it("does not restore counting after rich-row deletion and a below-fence advance", () => {
+      snapshot([run("r", "02"), run("other", "05")]);
+      expectDagTabPair("2/2");
+      snapshot([run("r", "03")]);
+      expectNoPair();
+      expect(captured!.activities.dags.has("other")).toBe(false);
+      snapshot([run("r", "04")]);
+      expectNoPair();
+      snapshot([run("r", "06"), run("other", "05")]);
+      expectDagTabPair("2/2");
+    });
+
+    it("does not resolve an equal-subset omission by matching retained rows", () => {
+      snapshot([run("r", "02"), run("other", "05")]);
+      expectDagTabPair("2/2");
+      snapshot([run("r", "02")]);
+      expectNoPair();
+      expect(captured!.activities.dags.has("other")).toBe(true);
+      snapshot([run("r", "03"), run("other", "05")]);
+      expectNoPair();
+      snapshot([run("r", "06"), run("other", "05")]);
+      expectDagTabPair("2/2");
+      snapshot([run("r", "01")]);
+      expectDagTabPair("2/2");
+    });
+  });
+
   it.each([false, true])("raw-only history withdraws authority in an established=%s pane", established => {
     if (established) { deliver(exact()); expectDagTabPair("1/2"); }
     const token = captured!.beginActivityHydration();

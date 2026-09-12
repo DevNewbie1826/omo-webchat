@@ -376,9 +376,11 @@ function reconcileDagSnapshot(
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined && !dagFreshness.has(id)) dagFreshness.set(id, revision);
   }
-  const previousHighWater = Math.max(-Infinity, ...dagFreshness.values());
+  const membership = state.dagMembership;
+  const acceptedIds = membership?.ids ?? new Set(state.dags.keys());
+  const previousHighWater = membership?.highWater ?? Math.max(-Infinity, ...dagFreshness.values());
   const incomingHighWater = Math.max(-Infinity, ...parsed.runs.map(run => parseDagUpdatedAt(run.updatedAt) ?? -Infinity));
-  const membershipChanged = present.size !== state.dags.size || [...present].some(id => !state.dags.has(id));
+  const membershipChanged = present.size !== acceptedIds.size || [...present].some(id => !acceptedIds.has(id));
   for (const incoming of parsed.runs) {
     const revision = parseDagUpdatedAt(incoming.updatedAt);
     const currentRevision = dagFreshness.get(incoming.runId);
@@ -392,8 +394,22 @@ function reconcileDagSnapshot(
     }));
     if (revision !== undefined) dagFreshness.set(incoming.runId, revision);
   }
-  const membershipAccepted = !staleDelivery && (state.truncatedDagRuns === undefined
-    || (rowAccepted && (!membershipChanged || incomingHighWater > previousHighWater)));
+  const membershipAccepted = !parsed.truncatedRuns && !staleDelivery && (state.truncatedDagRuns === undefined
+    || (rowAccepted && ((!membershipChanged && !membership?.unresolved) || incomingHighWater > previousHighWater)));
+  const unresolved = staleDelivery && !rowAccepted
+    ? membership?.unresolved ?? state.truncatedDagRuns ?? true
+    : parsed.truncatedRuns === true || (staleDelivery && rowAccepted)
+      ? true
+      : membershipAccepted
+        ? false
+        : membershipChanged || (membership?.unresolved ?? state.truncatedDagRuns ?? true);
+  // An accepted inventory can reintroduce an equal-revision row removed by
+  // an earlier unaccepted omission; freshness alone cannot restore it.
+  if (membershipAccepted) {
+    for (const run of parsed.runs) {
+      if (!dags.has(run.runId)) dags.set(run.runId, run);
+    }
+  }
   // Rich-row replacement preserves legacy arrival ordering and empty-list
   // clearing. Neither certifies exact count membership without the authority
   // above; an equal-row subset cannot even authorize row omission.
@@ -406,16 +422,16 @@ function reconcileDagSnapshot(
     ...state,
     dags,
     dagFreshness,
+    dagMembership: {
+      ids: membershipAccepted ? present : acceptedIds,
+      highWater: membershipAccepted || membership === undefined
+        ? Math.max(previousHighWater, incomingHighWater) : previousHighWater,
+      unresolved,
+    },
     truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
     // Membership completeness is tracked on its own signal: per-run graph/
     // node loss (run.truncated) must never read as missing run membership.
-    truncatedDagRuns: staleDelivery && !rowAccepted
-      ? state.truncatedDagRuns ?? true
-      : parsed.truncatedRuns === true || (staleDelivery && rowAccepted)
-        ? true
-        : membershipAccepted
-          ? false
-          : membershipChanged ? true : state.truncatedDagRuns ?? true,
+    truncatedDagRuns: unresolved,
   };
 }
 

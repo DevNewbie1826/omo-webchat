@@ -117,6 +117,13 @@ export interface ActivityState {
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
   /** Known per-ID high-water marks survive membership removal, without retaining graphs. */
   readonly dagFreshness?: ReadonlyMap<string, number>;
+  /** Membership authority, not rich rows: accepted identities and their fence
+   *  survive row removal; unresolved inventories require newer evidence. */
+  readonly dagMembership?: {
+    readonly ids: ReadonlySet<string>;
+    readonly highWater: number;
+    readonly unresolved: boolean;
+  };
   readonly taskFreshness?: ReadonlyMap<string, number>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
