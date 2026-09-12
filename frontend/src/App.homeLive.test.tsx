@@ -314,11 +314,13 @@ describe("App home running sessions", () => {
       { ...home.discovered, id: "disk-3", name: "Idle older", recencyMs: 2000 },
     ];
     // Payload order is deliberately neither working-first nor recency order.
+    // The idle rows have no task and no DAG at all, matching the harness
+    // fixture for attached-but-idle sessions.
     home.livePayload = {
       sessions: [
-        liveSessionEntry("disk-3", "Idle older", { taskStatus: "completed", active: false }),
+        liveSessionEntry("disk-3", "Idle older", { active: false }),
         liveSessionEntry("disk-1", "Working session", { taskStatus: "running" }),
-        liveSessionEntry("disk-2", "Idle recent", { taskStatus: "completed", active: false }),
+        liveSessionEntry("disk-2", "Idle recent", { active: false }),
       ],
     };
     await renderApp(".th-home-live");
@@ -329,12 +331,20 @@ describe("App home running sessions", () => {
     expect(cards).toHaveLength(3);
     expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent))
       .toEqual(["Working session", "Idle recent", "Idle older"]);
-    // The count badge still totals agent work only.
-    expect(block!.querySelector(".th-home-live-count")?.textContent).toBe("1");
-    // Idle cards keep the last-output line; only the working card carries the badge.
-    expect(cards[1]!.querySelector(".th-overview-card-line")?.textContent).toBe("ls");
+    // The count badge still totals agent work only, and its accessible name
+    // says what it counts.
+    const count = block!.querySelector(".th-home-live-count");
+    expect(count?.textContent).toBe("1");
+    expect(count?.getAttribute("aria-label")).toBe("1 agent(s) running");
+    // Only the working card carries the badge and a meta line; idle cards
+    // with no work render title only - no meaningless "Done 0".
     expect(cards[1]!.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[0]!.querySelector(".th-overview-card-running")).not.toBeNull();
+    expect(cards[0]!.querySelector(".th-overview-card-meta")).not.toBeNull();
+    expect(cards[1]!.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(cards[2]!.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(cards[1]!.textContent).not.toContain("Done");
+    expect(cards[2]!.textContent).not.toContain("Done");
   });
 
   it("lists a session whose only activity is the main agent (active flag, no agent tasks)", async () => {
@@ -346,6 +356,9 @@ describe("App home running sessions", () => {
     expect(card!.querySelector(".th-overview-card-name")?.textContent).toBe("Main only");
     // Main-running marker, not a numeric agent badge.
     expect(card!.querySelector(".th-overview-card-running")).not.toBeNull();
+    // Zero child agents: no count next to the label, and no meta line on the card.
+    expect(container.querySelector(".th-home-live-count")).toBeNull();
+    expect(card!.querySelector(".th-overview-card-meta")).toBeNull();
   });
 
   it("hands the block to the split layout's empty panes on wide screens", async () => {

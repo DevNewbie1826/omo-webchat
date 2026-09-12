@@ -84,23 +84,25 @@ const thirdDiscoveredRow: WorkspaceSession = {
   resumeIdentity: "/s/disk-3.jsonl",
 };
 
-/** One working session plus two idle live sessions in the same poll. */
+/** One working session plus two idle live sessions in the same poll. The
+ * idle rows mirror the harness fixture: attached (active: false) with no
+ * task and no DAG at all. */
 const MIXED_LIVE_RESPONSE = {
   sessions: [
     liveEntry("disk-1", "Working session", "running"),
-    liveEntry("disk-2", "Idle older", "completed", 1000, false),
-    liveEntry("disk-3", "Idle recent", "completed", 1000, false),
+    liveEntry("disk-2", "Idle older", null, 1000, false),
+    liveEntry("disk-3", "Idle recent", null, 1000, false),
   ],
 };
 
-function liveEntry(id: string, title: string, status: "running" | "completed", updatedAgoMs = 1000, active?: boolean): unknown {
+function liveEntry(id: string, title: string, status: "running" | "completed" | null, updatedAgoMs = 1000, active?: boolean): unknown {
   return {
     id,
     title,
     // The server flags attached sessions with an explicit active boolean;
     // rows without it are finished history, not live sessions.
     ...(active === undefined ? {} : { active }),
-    task: {
+    task: status === null ? null : {
       parent_session_id: id,
       tasks: [
         {
@@ -257,12 +259,22 @@ describe("Sidebar pinned running sessions", () => {
     const cards = Array.from(pinned?.querySelectorAll<HTMLElement>(".th-overview-card") ?? []);
     expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent))
       .toEqual(["Working session", "Idle recent", "Idle older"]);
-    // The count still means "how many are working": one running agent.
-    expect(pinned?.querySelector(".th-sidebar-live-count")?.textContent).toBe("1");
+    // The count still means "how many are working": one running agent, and
+    // its accessible name says so.
+    const count = pinned?.querySelector(".th-sidebar-live-count");
+    expect(count?.textContent).toBe("1");
+    expect(count?.getAttribute("aria-label")).toBe("overview.runningAria");
     // Idle rows carry no running badge.
     expect(cards[1]?.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[2]?.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[0]?.querySelector(".th-overview-card-running")).not.toBeNull();
+    // The working row keeps its meta line; idle rows with no task and no DAG
+    // render no meta line at all (no meaningless "Done 0").
+    expect(cards[0]?.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done");
+    expect(cards[1]?.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(cards[2]?.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(cards[1]?.textContent).not.toContain("overview.done");
+    expect(cards[2]?.textContent).not.toContain("overview.done");
   });
 
   it("refreshes recency for workspaces with live sessions on a 15s interval and clears it on unmount", async () => {
@@ -319,11 +331,12 @@ describe("Sidebar pinned running sessions", () => {
     });
 
     // Poll lands: the attached session is live but runs no agents. It is
-    // listed like every live session, with no running badge and a count of 0.
+    // listed like every live session, with no running badge, and the
+    // running-agent count hides entirely rather than showing a zero.
     await act(async () => {});
     const pinned = container.querySelector(".th-sidebar-live");
     expect(pinned).not.toBeNull();
-    expect(pinned?.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
+    expect(pinned?.querySelector(".th-sidebar-live-count")).toBeNull();
     const cards = pinned?.querySelectorAll<HTMLElement>(".th-overview-card");
     expect(cards).toHaveLength(1);
     expect(cards?.[0]?.textContent).toContain("Idle attached session");

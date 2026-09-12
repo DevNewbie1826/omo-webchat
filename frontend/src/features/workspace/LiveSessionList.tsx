@@ -81,6 +81,9 @@ export function LiveSessionList({
         const opening = attempt === "opening";
         const activeElsewhere = attempt === "session-active";
         const failed = attempt === "failed";
+        // A row with no work at all (no running agents, nothing done, no DAG)
+        // renders title only: "Done 0" is noise, not information.
+        const hasWork = summary.runningCount > 0 || summary.doneCount > 0 || summary.dagTotal > 0;
         return (
           <div
             key={summary.id}
@@ -107,12 +110,14 @@ export function LiveSessionList({
                   </span>
                 )}
               </span>
-              <span className="th-overview-card-meta">
-                <span className="th-overview-card-stat">{t("overview.done")} {summary.doneCount}</span>
-                {summary.dagTotal > 0 && (
-                  <span className="th-overview-card-stat">{t("overview.dag")} {summary.dagDone}/{summary.dagTotal}</span>
-                )}
-              </span>
+              {hasWork && (
+                <span className="th-overview-card-meta">
+                  <span className="th-overview-card-stat">{t("overview.done")} {summary.doneCount}</span>
+                  {summary.dagTotal > 0 && (
+                    <span className="th-overview-card-stat">{t("overview.dag")} {summary.dagDone}/{summary.dagTotal}</span>
+                  )}
+                </span>
+              )}
               {showLastLine && summary.lastLine !== null && <span className="th-overview-card-line">{summary.lastLine}</span>}
             </button>
             {(opening || activeElsewhere || failed) && (

@@ -347,7 +347,9 @@ export function Sidebar({
             <div className="th-sidebar-live">
               <div className="th-sidebar-live-label">
                 {t("sidebar.sessions")}
-                <span className="th-sidebar-live-count" aria-label={t("overview.runningAria", { n: totalRunningCount })}>{totalRunningCount}</span>
+                {totalRunningCount > 0 && (
+                  <span className="th-sidebar-live-count" aria-label={t("overview.runningAria", { n: totalRunningCount })}>{totalRunningCount}</span>
+                )}
               </div>
               <LiveSessionList
                 summaries={liveSummaries}

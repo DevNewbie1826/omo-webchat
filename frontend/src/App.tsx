@@ -258,7 +258,9 @@ export function App() {
     <div className="th-home-live">
       <div className="th-home-live-label">
         {t("sidebar.sessions")}
-        <span className="th-home-live-count">{homeRunningCount}</span>
+        {homeRunningCount > 0 && (
+          <span className="th-home-live-count" aria-label={t("overview.runningAria", { n: homeRunningCount })}>{homeRunningCount}</span>
+        )}
       </div>
       <LiveSessionList
         summaries={homeOrderedSummaries}
