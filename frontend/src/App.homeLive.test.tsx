@@ -359,10 +359,13 @@ describe("App home running sessions", () => {
       { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
     ]);
     expect(home.assignSession).not.toHaveBeenCalled();
-    const state = card!.querySelector(".th-overview-card-state");
-    expect(state?.textContent).toContain("Open failed");
+    // Structural, prose-independent checks: the card exposes a live status
+    // region and an enabled retry control, regardless of translated labels.
+    const state = card!.querySelector('.th-overview-card-state[role="status"]');
+    expect(state).not.toBeNull();
     const retry = state!.querySelector<HTMLButtonElement>(".th-overview-retry-open");
-    expect(retry?.textContent).toBe("Retry");
+    expect(retry).not.toBeNull();
+    expect(retry!.disabled).toBe(false);
 
     // Second transition: the retry re-issues the same discovered open body,
     // still without force, and only the success places the returned chat.
@@ -371,8 +374,9 @@ describe("App home running sessions", () => {
     await act(async () => {
       retry!.click();
     });
+    let placedArgs: unknown[] | undefined;
     await act(async () => {
-      await placed;
+      placedArgs = await placed;
     });
 
     expect(home.openBodies).toEqual([
@@ -380,6 +384,8 @@ describe("App home running sessions", () => {
       { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
     ]);
     expect(home.assignSession).toHaveBeenCalledTimes(1);
+    expect(placedArgs).toEqual(["pane-1", home.openedChat.id, false]);
+    expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
     expect(container.querySelector(".th-home-live .th-overview-card-state")).toBeNull();
   });
 });
