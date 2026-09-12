@@ -259,6 +259,9 @@ func NewManager(cfg Config) *Manager {
 	if cfg.CloseTimeout == 0 {
 		cfg.CloseTimeout = DefaultCloseTimeout
 	}
+	if cfg.ConnectionWait == 0 {
+		cfg.ConnectionWait = DefaultConnectionWait
+	}
 	if cfg.OpenRecoveryAfter == 0 {
 		cfg.OpenRecoveryAfter = DefaultOpenRecoveryAfter
 	}
@@ -792,9 +795,10 @@ func discardHydrationAttempt(sub Subscriber) {
 }
 
 // WaitForConnection waits for the shared RPC transport to become live, bounded
-// by the manager's close timeout so callers cannot hang behind a dead engine.
+// by ConnectionWait so callers ride out an engine replacement without hanging
+// behind a dead engine. A caller deadline shorter than the budget still wins.
 func (m *Manager) WaitForConnection(ctx context.Context) error {
-	waitCtx, cancel := context.WithTimeout(ctx, m.cfg.CloseTimeout)
+	waitCtx, cancel := context.WithTimeout(ctx, m.cfg.ConnectionWait)
 	defer cancel()
 	return m.cfg.Client.EnsureConnected(waitCtx)
 }

@@ -9,7 +9,17 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
-func TestManagerWaitForConnectionUsesCloseTimeoutBudget(t *testing.T) {
+// A zero budget would make every wait expire immediately, so an open could
+// never ride out an engine replacement. Pin that an unset value defaults.
+func TestManagerDefaultsConnectionWait(t *testing.T) {
+	mgr := NewManager(Config{Store: newMemStore()})
+	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+	if mgr.cfg.ConnectionWait != DefaultConnectionWait {
+		t.Fatalf("ConnectionWait = %v, want %v", mgr.cfg.ConnectionWait, DefaultConnectionWait)
+	}
+}
+
+func TestManagerWaitForConnectionHonorsItsBudget(t *testing.T) {
 	d := newDaemon(t)
 	client, err := omorpc.DialWithConfig(t.Context(), d.SocketPath(), omorpc.Config{
 		ReconnectInitial:     time.Second,
@@ -20,7 +30,7 @@ func TestManagerWaitForConnectionUsesCloseTimeoutBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
-	mgr := NewManager(Config{Client: client, Store: newMemStore(), CloseTimeout: 25 * time.Millisecond})
+	mgr := NewManager(Config{Client: client, Store: newMemStore(), ConnectionWait: 25 * time.Millisecond})
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 
 	_, events := client.CurrentEpoch()
