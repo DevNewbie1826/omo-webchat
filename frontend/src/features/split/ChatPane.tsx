@@ -21,6 +21,7 @@ import type { SplitDir } from "./paneTree";
 import { mergeTranscriptItems } from "./useChatFrameState";
 import { sendErrorDetail } from "./useChatFrameHandler";
 import { useChatSession } from "./useChatSession";
+import { useUpdateDialog } from "./useUpdateDialog";
 
 /** Every thinking level; an authoritative unknown value is still listed. */
 const THINKING_LEVELS: readonly string[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -70,6 +71,7 @@ export function ChatPane({
   const originalTitleId = useId();
   const [inspectedOriginal, setInspectedOriginal] = useState<{ text: string; trigger: HTMLButtonElement } | null>(null);
   const chat = useChatSession(chatSession, connect, onChatName);
+  const update = useUpdateDialog(chat.commands, chat.submit);
   // Notices replay before history, so keep them gated until the monotonic
   // history lifecycle either completes or proves that history is unavailable.
   // Send-path command failures surface in the persistent banner below, so
@@ -333,7 +335,7 @@ export function ChatPane({
           isCompacting={chat.isCompacting}
           disabled={chat.externalWriteDetected}
           retryDraft={chat.retryDraft}
-          onSubmit={chat.submit}
+          onSubmit={update.submit}
           onSteer={chat.steer}
           onStop={chat.stop}
           provider={chatSession.provider}
@@ -353,6 +355,7 @@ export function ChatPane({
         />
       )}
       {chat.pendingApproval && <ApprovalModal request={chat.pendingApproval} onRespond={chat.respondApproval} />}
+      {update.dialog}
       {inspectedOriginal && (
         <ModalDialog open labelledBy={originalTitleId} closeLabel={t("common.close")}
           onClose={() => {

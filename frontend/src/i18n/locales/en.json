@@ -1,4 +1,11 @@
 {
+  "chat.updateDescription": "Update omo and its bundled senpi engine",
+  "chat.updateTitle": "Update omo and senpi",
+  "chat.updateConfirm": "Install the latest omo beta and its matching senpi engine together. Existing sessions will not be restarted. After installation, restart the omo daemon and omo-webchat when your work is saved to use the new version.",
+  "chat.updateAction": "Update both",
+  "chat.updateRunning": "Installing omo and its bundled senpi engine. Closing this dialog does not cancel the update. Submit /update again to return to its status.",
+  "chat.updateSuccess": "Installation complete. Running sessions still use the previous engine. Save your work, then restart the omo daemon and omo-webchat to activate the new version.",
+  "chat.updateFailed": "The update did not complete. Check the error before trying again.",
   "chat.send.inspect": "View original",
   "chat.send.original": "Original request",
   "chat.send.sending": "Sending",

@@ -86,7 +86,7 @@ describe("ChatPane commands", () => {
 		let options = Array.from(
 			container.querySelectorAll<HTMLElement>('[role="option"]'),
 		);
-		expect(options).toHaveLength(2);
+		expect(options).toHaveLength(3);
 		const firstOption = requireElement(options[0], "missing first option");
 		const secondOption = requireElement(options[1], "missing second option");
 		expect(firstOption.getAttribute("aria-selected")).toBe("true");
@@ -170,7 +170,7 @@ describe("ChatPane commands", () => {
 		const options = Array.from(
 			container.querySelectorAll<HTMLElement>('[role="option"]'),
 		);
-		expect(options).toHaveLength(13);
+		expect(options).toHaveLength(14);
 		// The curated compact action rides behind the provider list: every
 		// get_commands entry keeps its slot, and /compact appears exactly once.
 		const compactOptions = options.filter((option) =>
