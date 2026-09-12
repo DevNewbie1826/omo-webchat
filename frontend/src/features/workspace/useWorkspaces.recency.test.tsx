@@ -241,36 +241,6 @@ it("reconciles a newly created row to authoritative use time when the client clo
   expect(rows()?.[0]).toEqual(["created", 900]);
 });
 
-it("refreshSessions re-fetches the first page of a ready workspace through the scheduled path", async () => {
-  // Given: a ready first page from the harness setup.
-  expect(pages).toHaveLength(1);
-  // When
-  act(() => current.refreshSessions("ws"));
-  // Then: exactly one scheduled refetch is in flight, no timer advance needed.
-  expect(pages).toHaveLength(2);
-  await act(async () => pages[1]?.resolve({ items: [{ ...web, recencyMs: 500 }], nextCursor: "" }));
-  expect(rows()).toEqual([["web", 500], ["disk", 100]]);
-});
-
-it("refreshSessions queues behind an in-flight page instead of doubling the request", async () => {
-  // Given: a continuation load in flight.
-  act(() => { void current.loadMoreSessions("ws"); });
-  expect(pages).toHaveLength(2);
-  // When
-  act(() => current.refreshSessions("ws"));
-  // Then: deferred, not dropped and not parallel.
-  expect(pages).toHaveLength(2);
-  await act(async () => pages[1]?.resolve({ items: [], nextCursor: "" }));
-  expect(pages).toHaveLength(3);
-  await act(async () => pages[2]?.resolve({ items: [disk, web], nextCursor: "" }));
-  expect(rows()).toEqual([["disk", 100], ["web", 80]]);
-});
-
-it("refreshSessions leaves a workspace without a ready page alone", () => {
-  act(() => current.refreshSessions("ws-unknown"));
-  expect(pages).toHaveLength(1);
-});
-
 it("keeps the recency cadence firing while the live inputs keep changing", async () => {
   // Given: the live owner is registered with the catalog scheduler.
   act(() => current.setRecencyTargets(["ws"]));
@@ -319,6 +289,34 @@ it("refreshes only the workspaces that own live sessions", async () => {
   // Then: the cadence is disarmed - zero further requests for any workspace.
   expect(paths.filter(path => path === "GET /api/workspaces/ws-a/sessions")).toHaveLength(2);
   expect(paths.filter(path => path === "GET /api/workspaces/ws-b/sessions")).toHaveLength(1);
+});
+
+it("keeps the armed cadence for a stable owner while other owners join and leave", async () => {
+  // Given: two ready workspaces; ws-1 owns a live session throughout while
+  // ws-2's session alternates in and out of the live responses every 4s.
+  const wsA: Workspace = { id: "ws-1", name: "A", path: "/a", chats: [] };
+  const wsB: Workspace = { id: "ws-2", name: "B", path: "/b", chats: [] };
+  liveWorkspaces = [wsA, wsB];
+  await act(async () => current.load());
+  act(() => { current.ensureSessionsLoaded("ws-1"); current.ensureSessionsLoaded("ws-2"); });
+  await act(async () => pages[1]?.resolve({ items: [], nextCursor: "" }));
+  await act(async () => pages[2]?.resolve({ items: [], nextCursor: "" }));
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-1/sessions")).toHaveLength(1);
+  act(() => current.setRecencyTargets(["ws-1"]));
+  // When: 60s elapse with ws-2 joining and leaving the target set between
+  // deadlines - the stable owner's armed cadence must survive the churn.
+  let resolved = 3;
+  for (let tick = 1; tick <= 15; tick++) {
+    await act(async () => vi.advanceTimersByTime(4000));
+    act(() => current.setRecencyTargets(tick % 2 === 1 ? ["ws-1", "ws-2"] : ["ws-1"]));
+    while (resolved < pages.length) {
+      const page = pages[resolved]; resolved++;
+      await act(async () => page?.resolve({ items: [], nextCursor: "" }));
+    }
+  }
+  // Then: ws-1 was refreshed on EVERY 15s deadline - exactly 4 scheduled
+  // requests on top of the first page, none starved by owner churn.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-1/sessions")).toHaveLength(5);
 });
 
 it("disarms the recency cadence on unmount", async () => {

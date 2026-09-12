@@ -51,10 +51,6 @@ export interface UseWorkspacesResult {
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
-  /** Re-fetches the first session page of a ready workspace through the
-   * existing scheduled path, so recency stays fresh without a new fetch
-   * channel. In-flight loads queue the refresh instead of doubling up. */
-  readonly refreshSessions: (wsId: string) => void;
   /** Declares the workspaces that currently own live sessions. The hook's
    * catalog scheduler owns the single periodic recency cadence and refreshes
    * exactly these workspaces through the scheduled fetch path. Passing equal
@@ -327,20 +323,21 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // equal targets leaves the armed interval running on its original cadence.
   const setRecencyTargets = useCallback(
     (wsIds: readonly string[]): void => {
-      const previous = recencyTargetsRef.current;
       const next: ReadonlySet<string> = new Set(wsIds);
       recencyTargetsRef.current = next;
       if (next.size === 0) {
         disarmRecencyRefresh();
         return;
       }
-      const unchanged = next.size === previous.size && [...next].every((id) => previous.has(id));
-      if (unchanged && recencyTimerRef.current !== undefined) return;
-      disarmRecencyRefresh();
+      // Arm once per nonempty run: membership changes (including another
+      // owner joining or leaving) only update the set the armed interval
+      // reads - they never reset its deadline, so a continuously live
+      // workspace is refreshed on every cadence.
+      if (recencyTimerRef.current !== undefined) return;
       recencyTimerRef.current = window.setInterval(() => {
         for (const wsId of recencyTargetsRef.current) {
-          // Same guards as refreshSessions: unready workspaces have no
-          // recency to refresh; in-flight pages queue via the scheduled path.
+          // Unready workspaces have no recency to refresh; in-flight pages
+          // queue via the scheduled path.
           if (!sessionPagesRef.current.get(wsId)?.ready) continue;
           void fetchSessionPage(wsId, "", false, true);
         }
@@ -439,18 +436,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
       const paging = sessionPagesRef.current.get(wsId);
       if (paging?.ready || paging?.loading) return;
       void fetchSessionPage(wsId, "", false);
-    },
-    [fetchSessionPage],
-  );
-
-  // Consumers of catalog recency (e.g. the live-session list) re-arm the
-  // same scheduled refresh the catalog uses; unready workspaces have no
-  // recency to refresh, and in-flight pages queue via the scheduled path.
-  const refreshSessions = useCallback(
-    (wsId: string): void => {
-      const paging = sessionPagesRef.current.get(wsId);
-      if (!paging?.ready) return;
-      void fetchSessionPage(wsId, "", false, true);
     },
     [fetchSessionPage],
   );
@@ -664,7 +649,6 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     addCreatedSession,
     loadMoreSessions,
     ensureSessionsLoaded,
-    refreshSessions,
     setRecencyTargets,
     markSessionUsed,
     toggleExpanded,
