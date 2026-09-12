@@ -55,10 +55,9 @@ vi.mock("./lib/useMediaQuery", async () => {
   const { useMediaQueryMock } = await import("./App.testHarness");
   return useMediaQueryMock;
 });
-vi.mock("./features/split/paneTree", () => ({ findLeaf: vi.fn(() => null) }));
-vi.mock("./features/split/SplitView", async () => {
-  const { splitViewMock } = await import("./App.testHarness");
-  return splitViewMock;
+vi.mock("./features/split/paneTree", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./features/split/paneTree")>();
+  return { ...actual, findLeaf: vi.fn(() => null) };
 });
 vi.mock("./features/split/ChatPane", () => ({ ChatPane: () => <div data-testid="chat-pane" /> }));
 vi.mock("./components/Sidebar", () => ({
@@ -238,13 +237,29 @@ describe("App home running sessions", () => {
     home.livePayload = livePayloadWith("running", "Refactor auth");
     await renderApp();
 
-    const splitView = container.querySelector("[data-testid='split-view']");
-    expect(splitView).not.toBeNull();
-    // The wide layout owns the empty state: the cards ride into SplitView as
-    // the runningSessions prop, and the narrow empty state never renders.
-    expect(splitView!.querySelector(".th-home-live")).not.toBeNull();
-    expect(splitView!.querySelector(".th-home-live .th-overview-card")).not.toBeNull();
+    // The REAL SplitView renders the empty leaf pane: the running-session cards
+    // ride in as the runningSessions prop above the pane's session picker, and
+    // the narrow empty state never renders.
+    const pane = container.querySelector(".th-pane-wrap");
+    expect(pane).not.toBeNull();
+    const block = pane!.querySelector(".th-home-live");
+    expect(block).not.toBeNull();
+    const card = block!.querySelector<HTMLElement>(".th-overview-card");
+    expect(card?.querySelector(".th-overview-card-name")?.textContent).toBe("Refactor auth");
+    const picker = pane!.querySelector(".th-picker-pane");
+    expect(picker).not.toBeNull();
+    expect(block!.compareDocumentPosition(picker!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(container.querySelector(".th-empty")).toBeNull();
+
+    // Activation through the wide-layout card uses the same discovered open path.
+    act(() => {
+      card!.querySelector<HTMLButtonElement>(".th-overview-card-open")!.click();
+    });
+    expect(home.openBodies).toEqual([
+      { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
+    ]);
+    await act(async () => {});
+    expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
   });
 
   it("keeps the session-active force and retry states on the card", async () => {

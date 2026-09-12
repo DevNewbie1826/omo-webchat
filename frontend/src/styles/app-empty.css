@@ -138,3 +138,12 @@
   min-width: 0;
   overflow: visible;
 }
+
+/* Same non-shrinking contract as the picker's: the running-sessions block
+   keeps its natural height (capped by home-live.css) while .th-empty scrolls
+   its own overflow, so a long picker history can never squeeze the live
+   cards to zero height on narrow screens. Mirrors the desktop-only
+   .th-pane-wrap > .th-home-live rule in split-view.css. */
+.th-empty > .th-home-live {
+  flex: none;
+}

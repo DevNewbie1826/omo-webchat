@@ -73,12 +73,10 @@ export const useLayoutMock = {
 };
 
 export const splitViewMock = {
-  SplitView: ({ actions, runningSessions }: {
+  SplitView: ({ actions }: {
     actions: { onCreateTerminal: (paneId: string, wsId: string) => void };
-    runningSessions?: ReactElement;
   }) => (
     <div data-testid="split-view">
-      {runningSessions}
       <button type="button" onClick={() => actions.onCreateTerminal("pane-2", "ws-2")}>
         Add split chat
       </button>

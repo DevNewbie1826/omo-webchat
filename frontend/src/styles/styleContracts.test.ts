@@ -902,6 +902,32 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(picker, "width")).toBe("100%");
     expect(declarationValue(picker, "overflow")).toBe("visible");
   });
+
+  it("keeps the block non-shrinking in BOTH empty-state columns so it survives picker overflow", () => {
+    // Regression for the 390x844 collapse: with one running session and a
+    // picker loaded with history pages, the mobile .th-empty column shrank
+    // .th-home-live to height 0 (flex-shrink: 1) while the picker sibling
+    // was explicitly flex: none. The desktop-only .th-pane-wrap > .th-home-live
+    // rule never applies inside .th-empty, so the non-shrinking contract must
+    // be stated for both empty-state containers, and each container must
+    // scroll its own overflow so the picker stays reachable underneath.
+    const mobileBlock = ruleBody(appEmpty, ".th-empty > .th-home-live");
+    expect(mobileBlock, "non-shrinking rule for .th-empty > .th-home-live").not.toBe("");
+    const mobileFlex = declarationValue(mobileBlock, "flex");
+    const mobileShrink = declarationValue(mobileBlock, "flex-shrink");
+    expect(
+      mobileFlex === "none" || mobileShrink === "0",
+      "the block must not shrink inside .th-empty (flex: none or flex-shrink: 0)",
+    ).toBe(true);
+    const desktopBlock = ruleBody(split, ".th-pane-wrap > .th-home-live");
+    expect(declarationValue(desktopBlock, "flex")).toBe("none");
+    // Both containers scroll their own overflow, so a capped live block plus
+    // an overflowing picker never push the picker out of reach.
+    const emptyCol = ruleBody(appEmpty, ".th-empty");
+    expect(declarationValue(emptyCol, "overflow-y")).toBe("auto");
+    const wrap = ruleBody(split, ".th-pane-wrap:has(> .th-home-live)");
+    expect(declarationValue(wrap, "overflow-y")).toBe("auto");
+  });
 });
 
 describe("pinned live-session section contracts", () => {
