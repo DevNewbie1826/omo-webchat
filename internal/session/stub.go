@@ -37,6 +37,14 @@ const (
 	DefaultRetryAttempt = 3
 	DefaultRetryBackoff = 500 * time.Millisecond
 	DefaultCloseTimeout = 5 * time.Second
+	// DefaultConnectionWait bounds how long a caller waits for the shared
+	// transport to come back while the engine process is being replaced. A
+	// full replacement - terminate the process group, confirm it is gone,
+	// spawn the successor, negotiate - was measured at roughly four seconds,
+	// and the daemon readiness budget alone is ten, so this leaves headroom
+	// for a cold start while staying bounded: a genuinely dead engine still
+	// fails instead of wedging the connection.
+	DefaultConnectionWait = 20 * time.Second
 	// DefaultOpenRecoveryAfter bounds how long a cancelled-but-unanswered
 	// open_session keeps its per-chat fence after the cleanup timeout
 	// (CloseTimeout) already expired. Tens of seconds: far beyond any
@@ -107,6 +115,9 @@ type Config struct {
 	RetryAttempts int
 	RetryBackoff  time.Duration
 	CloseTimeout  time.Duration
+	// ConnectionWait bounds WaitForConnection, the budget a caller spends
+	// waiting out an engine replacement before giving up.
+	ConnectionWait time.Duration
 	// OpenRecoveryAfter bounds recovery of a detached open_session that
 	// stayed unanswered past its cleanup timeout (CloseTimeout) while the
 	// RPC connection kept living. After this budget the manager releases

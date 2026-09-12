@@ -623,7 +623,12 @@ func newInPlaceBridgeHarnessWithHistory(t *testing.T, chatID string, entries int
 	}); err != nil {
 		t.Fatal(err)
 	}
-	manager := session.NewManager(session.Config{Client: client, Store: (*CursorStore)(store), RetryBackoff: time.Millisecond})
+	// A short connection budget keeps the replacement-window tests fast; the
+	// shipped default is sized for a real engine spawn instead.
+	manager := session.NewManager(session.Config{
+		Client: client, Store: (*CursorStore)(store),
+		RetryBackoff: time.Millisecond, ConnectionWait: 2 * time.Second,
+	})
 	harness := &inPlaceBridgeHarness{daemon: d, store: store, manager: manager, path: path}
 	bridge := New(Config{
 		Manager: manager, Store: store,

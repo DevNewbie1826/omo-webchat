@@ -42,3 +42,8 @@
   letter-spacing: var(--th-type-secondary-tracking);
   color: var(--th-error);
 }
+
+/* Status/alert blocks stack under the message with the same rhythm. */
+.th-confirm .th-alert {
+  margin-top: var(--th-space-3);
+}

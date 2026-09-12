@@ -1,0 +1,40 @@
+Base HEAD: 9dd3930ee0e3fc0041fe801bc0d08454994413c6
+Restored run.go SHA256: e98b9aed6e1c3c0c9591b2b9ac782c3ec50f2fa6c2aabd09f6ab77e0051df0ac
+
+MUTATION: bypass ensure admission
+$ go test -race -count=1 -timeout=60s ./internal/api/ -run ^TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone$
+--- FAIL: TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone (10.23s)
+    run_test.go:670: production recovery did not contend on held retirement admission
+FAIL
+FAIL	github.com/DevNewbie1826/omo-webchat/internal/api	10.875s
+FAIL
+EXIT STATUS: 1 (expected nonzero)
+
+MUTATION: bypass stopCurrent admission
+$ go test -race -count=1 -timeout=60s ./internal/api/ -run ^TestEngineRestartJoinsRecoveryAndRefusesItsForeignPublication$
+--- FAIL: TestEngineRestartJoinsRecoveryAndRefusesItsForeignPublication (10.21s)
+    run_test.go:910: restart did not contend on held publication admission
+FAIL
+FAIL	github.com/DevNewbie1826/omo-webchat/internal/api	10.769s
+FAIL
+EXIT STATUS: 1 (expected nonzero)
+
+MUTATION: bypass retain admission
+$ go test -race -count=1 -timeout=60s ./internal/api/ -run ^TestRecoveryRetainCannotPublishAcrossRestartSnapshotBoundary$
+--- FAIL: TestRecoveryRetainCannotPublishAcrossRestartSnapshotBoundary (10.00s)
+    run_test.go:950: retain did not contend on held snapshot admission
+FAIL
+FAIL	github.com/DevNewbie1826/omo-webchat/internal/api	10.548s
+FAIL
+EXIT STATUS: 1 (expected nonzero)
+
+MUTATION: bypass unconfirmed retirement latch
+$ go test -race -count=1 -timeout=60s ./internal/api/ -run ^TestRecoverySpawnRejectedAfterUnconfirmedRetirement$
+--- FAIL: TestRecoverySpawnRejectedAfterUnconfirmedRetirement (0.00s)
+    run_test.go:860: recovery admission error = <nil>, want preserved retirement error
+FAIL
+FAIL	github.com/DevNewbie1826/omo-webchat/internal/api	0.562s
+FAIL
+EXIT STATUS: 1 (expected nonzero)
+
+Production file restored byte-for-byte: True

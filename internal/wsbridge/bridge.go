@@ -94,8 +94,11 @@ type Config struct {
 	Store         *cursorstore.Store
 	SendQueue     *sendqueue.Store
 	ServerVersion string
-	Logger        *slog.Logger
-	WriteTimeout  time.Duration
+	// ServerVersionFunc supplies the live engine version for each hello frame.
+	// When nil, ServerVersion is sent as a constant.
+	ServerVersionFunc func() string
+	Logger            *slog.Logger
+	WriteTimeout      time.Duration
 	// HistoryTimeout is independent of the 15-second interactive command budget.
 	HistoryTimeout time.Duration
 	// PrepareChat validates workspace/chat metadata immediately before attach.
@@ -198,6 +201,13 @@ func originAllowed(r *http.Request) bool {
 	return strings.EqualFold(o.Host, r.Host)
 }
 
+func (h *Handler) serverVersion() string {
+	if h.cfg.ServerVersionFunc != nil {
+		return h.cfg.ServerVersionFunc()
+	}
+	return h.cfg.ServerVersion
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h.cfg.Manager == nil || h.cfg.Store == nil {
 		http.Error(w, "v2 websocket bridge is not configured", http.StatusServiceUnavailable)
@@ -227,7 +237,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	go c.run()
 	go c.runQueuePublications()
-	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.cfg.ServerVersion}); err != nil {
+	if err := c.write(wscontract.HelloFrame{Type: "hello", Version: ContractVersion, ServerVersion: h.serverVersion()}); err != nil {
 		c.shutdown()
 		return
 	}
@@ -1109,19 +1119,31 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 		return commitBinding(acquired, stagedStarted, stagedDetach)
 	}
-	if !guarded {
-		initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
-			_ = commitBinding(acquired, started, acquiredDetach)
-		}
-		if recovery {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+	acquire := func() {
+		stagedSession, stagedStarted, stagedDetach = nil, false, nil
+		if !guarded {
+			initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
+				_ = commitBinding(acquired, started, acquiredDetach)
+			}
+			if recovery {
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+			} else {
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
+			}
+		} else if recovery {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
 		} else {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
 		}
-	} else if recovery {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
-	} else {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
+	}
+	acquire()
+	if errors.Is(err, omorpc.ErrDisconnected) {
+		c.unbind()
+		if waitErr := c.bridge.cfg.Manager.WaitForConnection(ctx); waitErr == nil {
+			sub = newSubscriber(c)
+			c.sub = sub
+			acquire()
+		}
 	}
 	if err != nil {
 		c.unbind()

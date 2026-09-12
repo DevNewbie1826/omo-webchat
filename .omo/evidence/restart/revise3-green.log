@@ -1,0 +1,23 @@
+Base HEAD: 9dd3930ee0e3fc0041fe801bc0d08454994413c6
+e98b9aed6e1c3c0c9591b2b9ac782c3ec50f2fa6c2aabd09f6ab77e0051df0ac  internal/api/run.go
+0fe5443cfed1f9b59446606ca27fcd05905d56ef0ace10f89b4f834ab0da8f91  internal/api/run_test.go
+
+$ go build ./...
+EXIT STATUS: 0
+
+$ go vet ./...
+EXIT STATUS: 0
+
+$ go test -race -count=1 ./internal/api/
+ok  	github.com/DevNewbie1826/omo-webchat/internal/api	34.249s
+EXIT STATUS: 0
+
+$ go test -race -count=1 ./internal/api/
+ok  	github.com/DevNewbie1826/omo-webchat/internal/api	33.155s
+EXIT STATUS: 0
+
+$ go test -race -count=1 ./internal/omorpc/ ./internal/session/ ./internal/wsbridge/
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc	27.049s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/session	80.509s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wsbridge	135.473s
+EXIT STATUS: 0
