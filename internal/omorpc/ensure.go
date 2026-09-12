@@ -172,15 +172,16 @@ type ownedProcessSocket struct {
 }
 
 type launcherBrandProfile struct {
-	Name           string              `json:"name"`
-	Command        string              `json:"command"`
-	DisplayVersion string              `json:"displayVersion"`
-	ConfigDir      string              `json:"configDir"`
-	FlatLayout     bool                `json:"flatLayout"`
-	EnvPrefix      string              `json:"envPrefix"`
-	UserAgent      string              `json:"userAgent"`
-	Originator     string              `json:"originator"`
-	Update         launcherBrandUpdate `json:"update"`
+	Name           string                  `json:"name"`
+	Command        string                  `json:"command"`
+	DisplayVersion string                  `json:"displayVersion"`
+	ConfigDir      string                  `json:"configDir"`
+	FlatLayout     bool                    `json:"flatLayout"`
+	EnvPrefix      string                  `json:"envPrefix"`
+	UserAgent      string                  `json:"userAgent"`
+	Originator     string                  `json:"originator"`
+	Update         launcherBrandUpdate     `json:"update"`
+	Changelog      *launcherBrandChangelog `json:"changelog,omitempty"`
 }
 
 type launcherBrandUpdate struct {
@@ -188,6 +189,11 @@ type launcherBrandUpdate struct {
 	DistTag      string `json:"distTag"`
 	Command      string `json:"command"`
 	ChangelogURL string `json:"changelogUrl"`
+}
+
+type launcherBrandChangelog struct {
+	Path    string `json:"path"`
+	Version string `json:"version,omitempty"`
 }
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
@@ -838,6 +844,8 @@ type launcherInstallation struct {
 // resolveLauncherInstallation selects one authoritative entry before any
 // installation artifacts are derived. Command markers and resolved npm-style
 // symlinks outrank ambient paths, which are only compatibility fallbacks.
+// Unmarked commands named omo must match the known npm forwarder before those
+// fallbacks apply.
 func resolveLauncherInstallation(command string, env []string) (launcherInstallation, bool, error) {
 	recognized := filepath.Base(command) == "omo"
 	entry := ""
@@ -860,6 +868,9 @@ func resolveLauncherInstallation(command string, env []string) (launcherInstalla
 		return launcherInstallation{}, false, nil
 	}
 	if entry == "" {
+		if err := launcherForwarderIdentity(command); err != nil {
+			return launcherInstallation{}, true, err
+		}
 		for _, key := range []string{"OMO_AGENT_TOOLKIT_BIN", "OMO_BIN"} {
 			if value, ok := lookupEnv(env, key); ok && value != "" {
 				entry = value
@@ -880,10 +891,10 @@ func resolveLauncherInstallation(command string, env []string) (launcherInstalla
 	return launcherInstallation{entry: entry, root: filepath.Dir(filepath.Dir(entry))}, true, nil
 }
 
-// nodeSiblingLauncherEntry supports the unmarked npm forwarder without running
-// it. Match its shell body conservatively: an arbitrary executable named omo
-// must not borrow the installation beside an unrelated PATH-selected Node.
-func nodeSiblingLauncherEntry(command string, env []string) (string, error) {
+// launcherForwarderIdentity matches the unmarked npm forwarder's shell body
+// conservatively: an arbitrary executable named omo must not borrow an ambient
+// installation or the Node sibling beside an unrelated PATH-selected Node.
+func launcherForwarderIdentity(command string) error {
 	const body = `node_path=$(command -v node 2>/dev/null) || {
 echo "omo: Node.js is not available; install Node.js 24+ and omo-ai@beta" >&2
 exit 127
@@ -897,7 +908,7 @@ fi
 exec "$native_omo" "$@"`
 	data, err := os.ReadFile(command)
 	if err != nil {
-		return "", fmt.Errorf("read launcher forwarder: %w", err)
+		return fmt.Errorf("read launcher forwarder: %w", err)
 	}
 	lines := make([]string, 0)
 	for _, line := range strings.Split(string(data), "\n") {
@@ -907,8 +918,14 @@ exec "$native_omo" "$@"`
 		}
 	}
 	if !strings.HasPrefix(string(data), "#!/bin/sh\n") || strings.Join(lines, "\n") != body {
-		return "", errors.New("launcher entry is unavailable")
+		return errors.New("launcher entry is unavailable")
 	}
+	return nil
+}
+
+// nodeSiblingLauncherEntry supports the unmarked npm forwarder without running
+// it, resolving the launcher through the first Node on PATH.
+func nodeSiblingLauncherEntry(command string, env []string) (string, error) {
 	path, _ := lookupEnv(env, "PATH")
 	for _, dir := range filepath.SplitList(path) {
 		// A relative PATH depends on the child's working directory, not ours.
@@ -1014,6 +1031,24 @@ func launcherNativeContextFromRoot(root string) (string, string, error) {
 			ChangelogURL: "https://github.com/code-yeongyu/oh-my-openagent/releases",
 		},
 	}
+	// The launcher contract: changelog metadata is derived only from the
+	// plugin manifest. When that manifest is absent, unreadable, does not
+	// parse, or parses to JSON null, no changelog is emitted at all; any
+	// other parsed shape emits a path-only changelog, and only an object
+	// carrying a case-sensitive non-empty string "version" entry adds the
+	// version.
+	changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
+	if info, err := os.Stat(changelogPath); err == nil && info.Mode().IsRegular() {
+		var decoded any
+		if data, err := os.ReadFile(filepath.Join(root, "plugin", "package.json")); err == nil &&
+			json.Unmarshal(data, &decoded) == nil && decoded != nil {
+			version := ""
+			if manifest, ok := decoded.(map[string]any); ok {
+				version, _ = manifest["version"].(string)
+			}
+			profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: version}
+		}
+	}
 	encoded, err := json.Marshal(profile)
 	if err != nil {
 		return "", "", err
@@ -1036,6 +1071,9 @@ func validateLauncherBrandProfile(encoded string) error {
 		profile.EnvPrefix, profile.UserAgent, profile.Originator,
 		profile.Update.PackageName, profile.Update.DistTag,
 		profile.Update.Command, profile.Update.ChangelogURL,
+	}
+	if profile.Changelog != nil {
+		values = append(values, profile.Changelog.Path)
 	}
 	if slices.Contains(values, "") {
 		return errors.New("brand profile is incomplete")

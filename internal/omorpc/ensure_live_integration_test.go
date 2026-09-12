@@ -37,7 +37,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 		agentDir = filepath.Join(home, ".omo", "agent")
 	}
 	workDir := t.TempDir()
-	env := setEnv(os.Environ(), "OMO_RUNTIME", "node")
+	env := setEnv(isolatedChildEnviron(), "OMO_RUNTIME", "node")
 	env = setEnv(env, "OMO_CODING_AGENT_DIR", agentDir)
 	env = setEnv(env, "SENPI_CODING_AGENT_DIR", agentDir)
 	env = setEnv(env, "OMO_RPC_CLIENT_CAPABILITIES", "custom_only")
@@ -118,7 +118,7 @@ exec "$OMORPC_ENSURE_TEST_BINARY" -test.run='^TestEnsureHelperProcess$'
 	cfg, err := normalizeEnsureConfig(EnsureConfig{
 		AgentDir: dir, SocketPath: socket, BinaryPath: binary, StateDir: dir,
 		ReadyTimeout: 15 * time.Second, ProbeTimeout: time.Second,
-		Env: append(os.Environ(),
+		Env: append(isolatedChildEnviron(),
 			ensureHelperModeEnv+"=supervised-drop",
 			"OMORPC_ENSURE_TEST_BINARY="+os.Args[0],
 		),
@@ -144,6 +144,49 @@ exec "$OMORPC_ENSURE_TEST_BINARY" -test.run='^TestEnsureHelperProcess$'
 	if _, exists := currentSocketIdentity(socket); exists {
 		t.Fatal("failed real supervisor left its acknowledged socket behind")
 	}
+}
+
+func TestWithoutInheritedRPCHostControlOmitsSenpiAndOmoKeys(t *testing.T) {
+	got := withoutInheritedRPCHostControl([]string{
+		"PATH=/usr/bin",
+		"SENPI_RPC_HOST_WATCH_FD=3",
+		"OMO_RPC_HOST_WATCH_FD=9",
+		"SENPI_RPC_HOST_WATCH_PPID=1",
+		"OMO_RPC_HOST_WATCH_PPID=2",
+		"SENPI_RPC_HOST_PUBLIC_SOCKET=/tmp/parent.sock",
+		"OMO_RPC_HOST_PUBLIC_SOCKET=/tmp/omo.sock",
+		"SENPI_RPC_HOST_SCRATCH_DIR=/tmp/scratch",
+		"OMO_RPC_HOST_SCRATCH_DIR=/tmp/omo-scratch",
+		"SENPI_RPC_HOST_CLEANUP_PATHS=/tmp/cleanup",
+		"OMO_RPC_HOST_CLEANUP_PATHS=/tmp/omo-cleanup",
+		"SENPI_RPC_HOST_COLD_START=transient",
+		"OMO_RPC_HOST_COLD_START=transient",
+		"SENPI_RPC_HOST_IDLE_EXIT_MS=1",
+		"OMO_RPC_HOST_IDLE_EXIT_MS=1",
+		"SENPI_RPC_HOST_EMPTY_EXIT_MS=1",
+		"OMO_RPC_HOST_EMPTY_EXIT_MS=1",
+		"OMO_RUNTIME=node",
+	})
+	want := []string{"PATH=/usr/bin", "OMO_RUNTIME=node"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("withoutInheritedRPCHostControl = %v, want %v", got, want)
+	}
+}
+
+func isolatedChildEnviron() []string {
+	return withoutInheritedRPCHostControl(os.Environ())
+}
+
+func withoutInheritedRPCHostControl(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.HasPrefix(name, "SENPI_RPC_HOST_") || strings.HasPrefix(name, "OMO_RPC_HOST_")) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func startLauncherHost(t *testing.T, binary, socket, workDir string, env []string) (*Client, int, string) {
