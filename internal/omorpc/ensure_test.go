@@ -582,6 +582,24 @@ func TestLauncherSymlinkRootOverridesAmbientInstallations(t *testing.T) {
 	}
 }
 
+func TestLauncherUnrelatedOmoDoesNotBorrowAmbientInstallation(t *testing.T) {
+	command := filepath.Join(t.TempDir(), "omo")
+	if err := os.WriteFile(command, []byte("#!/usr/bin/env node\nprocess.exit(1)\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, foreignRoot, _ := writeRecognizedLauncherInstall(t, "99.0.0")
+	env := []string{
+		"OMO_AGENT_TOOLKIT_BIN=" + filepath.Join(foreignRoot, "bin", "omo-agent-toolkit.js"),
+		"OMO_BIN=" + filepath.Join(foreignRoot, "bin", "omo.js"),
+	}
+
+	got, recognized, err := resolveLauncherInstallation(command, env)
+
+	if err == nil || !recognized || got != (launcherInstallation{}) {
+		t.Fatalf("unrelated omo borrowed ambient installation: got=%+v recognized=%v err=%v", got, recognized, err)
+	}
+}
+
 func TestLauncherNativeContextIgnoresAmbientBrand(t *testing.T) {
 	for _, ambient := range []string{
 		foreignLauncherBrandProfileJSON(),

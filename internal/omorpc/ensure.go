@@ -844,6 +844,8 @@ type launcherInstallation struct {
 // resolveLauncherInstallation selects one authoritative entry before any
 // installation artifacts are derived. Command markers and resolved npm-style
 // symlinks outrank ambient paths, which are only compatibility fallbacks.
+// Unmarked commands named omo must match the known npm forwarder before those
+// fallbacks apply.
 func resolveLauncherInstallation(command string, env []string) (launcherInstallation, bool, error) {
 	recognized := filepath.Base(command) == "omo"
 	entry := ""
@@ -866,6 +868,9 @@ func resolveLauncherInstallation(command string, env []string) (launcherInstalla
 		return launcherInstallation{}, false, nil
 	}
 	if entry == "" {
+		if err := launcherForwarderIdentity(command); err != nil {
+			return launcherInstallation{}, true, err
+		}
 		for _, key := range []string{"OMO_AGENT_TOOLKIT_BIN", "OMO_BIN"} {
 			if value, ok := lookupEnv(env, key); ok && value != "" {
 				entry = value
@@ -886,10 +891,10 @@ func resolveLauncherInstallation(command string, env []string) (launcherInstalla
 	return launcherInstallation{entry: entry, root: filepath.Dir(filepath.Dir(entry))}, true, nil
 }
 
-// nodeSiblingLauncherEntry supports the unmarked npm forwarder without running
-// it. Match its shell body conservatively: an arbitrary executable named omo
-// must not borrow the installation beside an unrelated PATH-selected Node.
-func nodeSiblingLauncherEntry(command string, env []string) (string, error) {
+// launcherForwarderIdentity matches the unmarked npm forwarder's shell body
+// conservatively: an arbitrary executable named omo must not borrow an ambient
+// installation or the Node sibling beside an unrelated PATH-selected Node.
+func launcherForwarderIdentity(command string) error {
 	const body = `node_path=$(command -v node 2>/dev/null) || {
 echo "omo: Node.js is not available; install Node.js 24+ and omo-ai@beta" >&2
 exit 127
@@ -903,7 +908,7 @@ fi
 exec "$native_omo" "$@"`
 	data, err := os.ReadFile(command)
 	if err != nil {
-		return "", fmt.Errorf("read launcher forwarder: %w", err)
+		return fmt.Errorf("read launcher forwarder: %w", err)
 	}
 	lines := make([]string, 0)
 	for _, line := range strings.Split(string(data), "\n") {
@@ -913,8 +918,14 @@ exec "$native_omo" "$@"`
 		}
 	}
 	if !strings.HasPrefix(string(data), "#!/bin/sh\n") || strings.Join(lines, "\n") != body {
-		return "", errors.New("launcher entry is unavailable")
+		return errors.New("launcher entry is unavailable")
 	}
+	return nil
+}
+
+// nodeSiblingLauncherEntry supports the unmarked npm forwarder without running
+// it, resolving the launcher through the first Node on PATH.
+func nodeSiblingLauncherEntry(command string, env []string) (string, error) {
 	path, _ := lookupEnv(env, "PATH")
 	for _, dir := range filepath.SplitList(path) {
 		// A relative PATH depends on the child's working directory, not ours.
