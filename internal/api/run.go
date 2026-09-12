@@ -37,6 +37,10 @@ type recoveryDaemonLifecycle struct {
 	barrier sync.Mutex
 	mu      sync.Mutex
 
+	// admissionContended is a test observer, installed before lifecycle use.
+	// It reports a failed TryLock, never merely arrival before admission.
+	admissionContended func(operation string)
+
 	current       *omorpc.EnsuredDaemon
 	generation    []*omorpc.EnsuredDaemon
 	owned         []*omorpc.EnsuredDaemon
@@ -54,8 +58,18 @@ func (l *recoveryDaemonLifecycle) initialize(daemon *omorpc.EnsuredDaemon) {
 	l.mu.Unlock()
 }
 
-func (l *recoveryDaemonLifecycle) ensure(ctx context.Context, fn func(context.Context) (*omorpc.EnsuredDaemon, error)) error {
+func (l *recoveryDaemonLifecycle) lockAdmission(operation string) {
+	if l.admissionContended != nil {
+		if l.barrier.TryLock() {
+			return
+		}
+		l.admissionContended(operation)
+	}
 	l.barrier.Lock()
+}
+
+func (l *recoveryDaemonLifecycle) ensure(ctx context.Context, fn func(context.Context) (*omorpc.EnsuredDaemon, error)) error {
+	l.lockAdmission("ensure")
 	defer l.barrier.Unlock()
 	l.mu.Lock()
 	retirementErr := l.retirementErr
@@ -75,7 +89,7 @@ func (l *recoveryDaemonLifecycle) ensure(ctx context.Context, fn func(context.Co
 }
 
 func (l *recoveryDaemonLifecycle) retain(daemon *omorpc.EnsuredDaemon) {
-	l.barrier.Lock()
+	l.lockAdmission("retain")
 	defer l.barrier.Unlock()
 	l.retainLocked(daemon)
 }
@@ -120,7 +134,7 @@ func (l *recoveryDaemonLifecycle) stop() {
 // all retiring groups, endpoint cleanup, runtime-cache invalidation, and the
 // exact transport fence have completed.
 func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorpc.Client) (omorpc.EpochToken, error) {
-	l.barrier.Lock()
+	l.lockAdmission("stopCurrent")
 	defer l.barrier.Unlock()
 
 	l.mu.Lock()

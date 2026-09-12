@@ -457,42 +457,114 @@ func awaitRestartSignal(t *testing.T, signal <-chan struct{}, message string) {
 	}
 }
 
+// restartSchedule owns cancellation and joins before t.Cleanup tears down
+// daemons or restores package-wide seams. Gates also honor their caller context.
+type restartSchedule struct {
+	t       *testing.T
+	ctx     context.Context
+	cancel  context.CancelFunc
+	workers []<-chan struct{}
+	clients []*omorpc.Client
+}
+
+func newRestartSchedule(t *testing.T) *restartSchedule {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	return &restartSchedule{t: t, ctx: ctx, cancel: cancel}
+}
+
+func (s *restartSchedule) start(fn func()) {
+	done := make(chan struct{})
+	s.workers = append(s.workers, done)
+	go func() { defer close(done); fn() }()
+}
+
+func (s *restartSchedule) gate(ctx context.Context, release <-chan struct{}) error {
+	select {
+	case <-release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
+}
+
+func (s *restartSchedule) close() {
+	s.cancel() // Release every held hook before draining clients and workers.
+	for _, client := range s.clients {
+		s.start(func() { _ = client.Close() })
+	}
+	for _, done := range s.workers {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			s.t.Error("lifecycle worker/client did not join after gate cancellation")
+		}
+	}
+}
+
+func observeAdmission(l *recoveryDaemonLifecycle, operation string) <-chan struct{} {
+	contended := make(chan struct{})
+	var once sync.Once
+	l.admissionContended = func(got string) {
+		if got == operation {
+			once.Do(func() { close(contended) })
+		}
+	}
+	return contended
+}
+
+func awaitRestartResult(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("lifecycle operation did not finish")
+		return nil
+	}
+}
+
 func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testing.T) {
 	recoveryCfg, pidPath := ownedRecoveryEnsureConfig(t)
 	recoveryCfg.Env = append(recoveryCfg.Env, "OMO_API_RUN_DESCENDANT=1")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lifecycle := recoveryDaemonLifecycle{logger: logger}
-	recoveryAttempted := make(chan struct{})
+	schedule := newRestartSchedule(t)
+	defer schedule.close()
+	recoveryContended := observeAdmission(&lifecycle, "ensure")
 	spawnBoundary := make(chan error, 1)
 	releaseStartup := make(chan struct{})
 	var releaseStartupOnce sync.Once
-	t.Cleanup(func() { releaseStartupOnce.Do(func() { close(releaseStartup) }) })
 	var ensureCalls atomic.Int32
 	recoveryCfg.OnDialNotExist = func(ctx context.Context) error {
-		select {
-		case <-recoveryAttempted:
-		default:
-			close(recoveryAttempted)
-		}
 		return lifecycle.ensure(ctx, func(ctx context.Context) (*omorpc.EnsuredDaemon, error) {
 			ensureCalls.Add(1)
+			var boundaryErr error
 			pidBytes, err := os.ReadFile(pidPath)
 			if err != nil {
-				spawnBoundary <- fmt.Errorf("read retiring pid: %w", err)
+				boundaryErr = fmt.Errorf("read retiring pid: %w", err)
 			} else {
 				var pid int
 				_, scanErr := fmt.Sscanf(string(pidBytes), "%d", &pid)
 				if scanErr != nil {
-					spawnBoundary <- fmt.Errorf("parse retiring pid: %w", scanErr)
+					boundaryErr = fmt.Errorf("parse retiring pid: %w", scanErr)
 				} else if err := syscall.Kill(-pid, syscall.Signal(0)); !errors.Is(err, syscall.ESRCH) {
-					spawnBoundary <- fmt.Errorf("successor ensure reached while retiring group %d is alive: %v", pid, err)
+					boundaryErr = fmt.Errorf("successor ensure reached while retiring group %d is alive: %v", pid, err)
 				} else if _, err := os.Lstat(recoveryCfg.SocketPath); !errors.Is(err, os.ErrNotExist) {
-					spawnBoundary <- fmt.Errorf("successor ensure reached before endpoint cleanup: %v", err)
-				} else {
-					spawnBoundary <- nil
+					boundaryErr = fmt.Errorf("successor ensure reached before endpoint cleanup: %v", err)
 				}
 			}
-			<-releaseStartup
+			select {
+			case spawnBoundary <- boundaryErr:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-schedule.ctx.Done():
+				return nil, schedule.ctx.Err()
+			}
+			if err := schedule.gate(ctx, releaseStartup); err != nil {
+				return nil, err
+			}
 			return omorpc.EnsureDaemon(ctx, recoveryCfg)
 		})
 	}
@@ -523,6 +595,7 @@ func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testi
 		t.Fatalf("subscribe chat before restart: %v", err)
 	}
 	defer detach()
+	schedule.clients = append(schedule.clients, initial.Client)
 	oldEpoch, oldEvents := initial.Client.CurrentEpoch()
 
 	oldStop := stopSupervisorDaemon
@@ -530,10 +603,14 @@ func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testi
 	releaseRetirement := make(chan struct{})
 	var retirementOnce sync.Once
 	stopSupervisorDaemon = func(daemon *omorpc.EnsuredDaemon, ctx context.Context) error {
+		var gateErr error
 		retirementOnce.Do(func() {
 			close(retirementEntered)
-			<-releaseRetirement
+			gateErr = schedule.gate(ctx, releaseRetirement)
 		})
+		if gateErr != nil {
+			return gateErr
+		}
 		return oldStop(daemon, ctx)
 	}
 	t.Cleanup(func() {
@@ -550,13 +627,10 @@ func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testi
 		err           error
 	}
 	done := make(chan restartResult, 1)
-	restartAttempted := make(chan struct{})
-	go func() {
-		close(restartAttempted)
-		before, after, err := engineRestarter(&lifecycle, initial.Client)(t.Context())
+	schedule.start(func() {
+		before, after, err := engineRestarter(&lifecycle, initial.Client)(schedule.ctx)
 		done <- restartResult{before: before, after: after, err: err}
-	}()
-	awaitRestartSignal(t, restartAttempted, "restart did not attempt retirement")
+	})
 	awaitRestartSignal(t, retirementEntered, "restart did not enter supervisor retirement")
 
 	pidBytes, err := os.ReadFile(pidPath)
@@ -593,7 +667,7 @@ func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testi
 	case <-time.After(5 * time.Second):
 		t.Fatal("shared client did not acknowledge retiring socket close")
 	}
-	awaitRestartSignal(t, recoveryAttempted, "production recovery did not compete with held retirement")
+	awaitRestartSignal(t, recoveryContended, "production recovery did not contend on held retirement admission")
 	close(releaseRetirement)
 
 	select {
@@ -627,30 +701,49 @@ func TestEngineRestartSerializesProductionRecoveryUntilOwnedGroupIsGone(t *testi
 	if got := ensureCalls.Load(); got != 1 {
 		t.Fatalf("successor ensure calls = %d, want exactly 1", got)
 	}
+	lifecycle.mu.Lock()
+	generationCount := len(lifecycle.generation)
+	lifecycle.mu.Unlock()
+	if generationCount != 1 {
+		t.Fatalf("successor generation length = %d, want 1", generationCount)
+	}
+	if _, err := initial.Client.Call(schedule.ctx, omorpc.ListSessions{}); err != nil {
+		t.Fatalf("shared client RPC after replacement: %v", err)
+	}
 }
 
 func TestEngineRestartSupersedesRecoveryFlightThatPublishedRetiredDaemon(t *testing.T) {
 	recoveryCfg, _ := ownedRecoveryEnsureConfig(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lifecycle := recoveryDaemonLifecycle{logger: logger}
-	published := make(chan struct{})
+	schedule := newRestartSchedule(t)
+	defer schedule.close()
+	published := make(chan error, 1)
 	freshSpawn := make(chan struct{})
 	releaseFreshSpawn := make(chan struct{})
-	var releaseFreshOnce sync.Once
-	t.Cleanup(func() { releaseFreshOnce.Do(func() { close(releaseFreshSpawn) }) })
+	var releaseFreshOnce, freshSpawnOnce sync.Once
 	var hookCalls atomic.Int32
 	recoveryCfg.OnDialNotExist = func(ctx context.Context) error {
 		call := hookCalls.Add(1)
 		err := lifecycle.ensure(ctx, func(ctx context.Context) (*omorpc.EnsuredDaemon, error) {
 			if call > 1 {
-				close(freshSpawn)
-				<-releaseFreshSpawn
+				freshSpawnOnce.Do(func() { close(freshSpawn) })
+				if err := schedule.gate(ctx, releaseFreshSpawn); err != nil {
+					return nil, err
+				}
 			}
-			return omorpc.EnsureDaemon(ctx, recoveryCfg)
+			daemon, err := omorpc.EnsureDaemon(ctx, recoveryCfg)
+			if err == nil && !daemon.Owned {
+				_ = daemon.Close()
+				return nil, errors.New("recovery publication was not owned")
+			}
+			return daemon, err
 		})
 		if call == 1 {
-			close(published)
-			<-ctx.Done()
+			published <- err
+			if err == nil {
+				return schedule.gate(ctx, nil)
+			}
 		}
 		return err
 	}
@@ -663,20 +756,36 @@ func TestEngineRestartSupersedesRecoveryFlightThatPublishedRetiredDaemon(t *test
 		lifecycle.stop()
 		_ = initial.StopBounded(daemonStopTimeout)
 	})
-	if err := initial.StopSupervisor(t.Context()); err != nil {
+	schedule.clients = append(schedule.clients, initial.Client)
+	oldEpoch, oldEvents := initial.Client.CurrentEpoch()
+	if err := initial.StopSupervisor(schedule.ctx); err != nil {
 		t.Fatalf("prepare missing endpoint: %v", err)
 	}
+	initial.Client.FenceEpoch(oldEpoch)
+	select {
+	case _, ok := <-oldEvents:
+		if ok {
+			t.Fatal("retired shared client stream did not close")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared client invalidation was not acknowledged")
+	}
 	recoveryDone := make(chan error, 1)
-	go func() { recoveryDone <- initial.Client.EnsureConnected(t.Context()) }()
-	awaitRestartSignal(t, published, "reconnect flight did not publish its owned recovery daemon")
+	schedule.start(func() { recoveryDone <- initial.Client.EnsureConnected(schedule.ctx) })
+	if err := awaitRestartResult(t, published); err != nil {
+		t.Fatalf("first owned recovery publication: %v", err)
+	}
+	if !lifecycle.currentOwned() {
+		t.Fatal("first successful publication did not retain ownership")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() {
+	schedule.start(func() {
 		_, _, err := engineRestarter(&lifecycle, initial.Client)(ctx)
 		done <- err
-	}()
+	})
 	awaitRestartSignal(t, freshSpawn, "retirement did not create a fresh reconnect spawn opportunity")
 	select {
 	case err := <-done:
@@ -705,13 +814,18 @@ func TestEngineRestartSupersedesRecoveryFlightThatPublishedRetiredDaemon(t *test
 func TestRecoverySpawnRejectedAfterUnconfirmedRetirement(t *testing.T) {
 	lifecycle := recoveryDaemonLifecycle{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	lifecycle.initialize(&omorpc.EnsuredDaemon{Owned: true})
+	schedule := newRestartSchedule(t)
+	defer schedule.close()
+	ensureContended := observeAdmission(&lifecycle, "ensure")
 	stopEntered := make(chan struct{})
 	releaseStop := make(chan struct{})
 	wantErr := errors.New("retirement unconfirmed")
 	oldStop := stopSupervisorDaemon
-	stopSupervisorDaemon = func(*omorpc.EnsuredDaemon, context.Context) error {
+	stopSupervisorDaemon = func(_ *omorpc.EnsuredDaemon, ctx context.Context) error {
 		close(stopEntered)
-		<-releaseStop
+		if err := schedule.gate(ctx, releaseStop); err != nil {
+			return err
+		}
 		return wantErr
 	}
 	t.Cleanup(func() {
@@ -724,27 +838,25 @@ func TestRecoverySpawnRejectedAfterUnconfirmedRetirement(t *testing.T) {
 	})
 
 	restartDone := make(chan error, 1)
-	go func() {
-		_, err := lifecycle.stopCurrent(t.Context(), nil)
+	schedule.start(func() {
+		_, err := lifecycle.stopCurrent(schedule.ctx, nil)
 		restartDone <- err
-	}()
+	})
 	awaitRestartSignal(t, stopEntered, "retirement did not reach the failure gate")
-	ensureAttempted := make(chan struct{})
 	spawnEntered := make(chan struct{})
 	ensureDone := make(chan error, 1)
-	go func() {
-		close(ensureAttempted)
-		ensureDone <- lifecycle.ensure(t.Context(), func(context.Context) (*omorpc.EnsuredDaemon, error) {
+	schedule.start(func() {
+		ensureDone <- lifecycle.ensure(schedule.ctx, func(context.Context) (*omorpc.EnsuredDaemon, error) {
 			close(spawnEntered)
 			return nil, nil
 		})
-	}()
-	awaitRestartSignal(t, ensureAttempted, "queued recovery did not attempt admission")
+	})
+	awaitRestartSignal(t, ensureContended, "queued recovery did not contend on retirement admission")
 	close(releaseStop)
-	if err := <-restartDone; !errors.Is(err, wantErr) {
+	if err := awaitRestartResult(t, restartDone); !errors.Is(err, wantErr) {
 		t.Fatalf("retirement error = %v, want %v", err, wantErr)
 	}
-	if err := <-ensureDone; !errors.Is(err, wantErr) {
+	if err := awaitRestartResult(t, ensureDone); !errors.Is(err, wantErr) {
 		t.Fatalf("recovery admission error = %v, want preserved retirement error", err)
 	}
 	select {
@@ -763,34 +875,39 @@ func TestEngineRestartJoinsRecoveryAndRefusesItsForeignPublication(t *testing.T)
 	foreignDaemon := newRunTestDaemon(t)
 	lifecycle := recoveryDaemonLifecycle{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	lifecycle.initialize(owned)
+	schedule := newRestartSchedule(t)
+	defer schedule.close()
+	schedule.clients = append(schedule.clients, owned.Client)
+	restartContended := observeAdmission(&lifecycle, "stopCurrent")
 	t.Cleanup(func() { _ = owned.StopBounded(daemonStopTimeout) })
 	ensureEntered := make(chan struct{})
 	releaseEnsure := make(chan struct{})
 	ensureDone := make(chan error, 1)
-	go func() {
-		ensureDone <- lifecycle.ensure(t.Context(), func(context.Context) (*omorpc.EnsuredDaemon, error) {
+	schedule.start(func() {
+		ensureDone <- lifecycle.ensure(schedule.ctx, func(ctx context.Context) (*omorpc.EnsuredDaemon, error) {
 			close(ensureEntered)
-			<-releaseEnsure
-			foreign, err := omorpc.Dial(t.Context(), foreignDaemon.SocketPath())
+			if err := schedule.gate(ctx, releaseEnsure); err != nil {
+				return nil, err
+			}
+			foreign, err := omorpc.Dial(ctx, foreignDaemon.SocketPath())
 			return &omorpc.EnsuredDaemon{Client: foreign}, err
 		})
-	}()
+	})
 	awaitRestartSignal(t, ensureEntered, "recovery ensure did not enter")
 	oldStop := stopSupervisorDaemon
-	originalStopEntered := make(chan struct{}, 1)
+	originalStopEntered := make(chan struct{})
+	var originalStopOnce sync.Once
 	stopSupervisorDaemon = func(daemon *omorpc.EnsuredDaemon, ctx context.Context) error {
-		originalStopEntered <- struct{}{}
+		originalStopOnce.Do(func() { close(originalStopEntered) })
 		return oldStop(daemon, ctx)
 	}
 	t.Cleanup(func() { stopSupervisorDaemon = oldStop })
-	restartAttempted := make(chan struct{})
 	restarted := make(chan error, 1)
-	go func() {
-		close(restartAttempted)
-		_, _, err := engineRestarter(&lifecycle, owned.Client)(t.Context())
+	schedule.start(func() {
+		_, _, err := engineRestarter(&lifecycle, owned.Client)(schedule.ctx)
 		restarted <- err
-	}()
-	awaitRestartSignal(t, restartAttempted, "restart did not attempt the held lifecycle barrier")
+	})
+	awaitRestartSignal(t, restartContended, "restart did not contend on held publication admission")
 	close(releaseEnsure)
 	select {
 	case err := <-ensureDone:
@@ -818,26 +935,28 @@ func TestEngineRestartJoinsRecoveryAndRefusesItsForeignPublication(t *testing.T)
 func TestRecoveryRetainCannotPublishAcrossRestartSnapshotBoundary(t *testing.T) {
 	lifecycle := recoveryDaemonLifecycle{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	lifecycle.initialize(&omorpc.EnsuredDaemon{Owned: true})
+	schedule := newRestartSchedule(t)
+	defer schedule.close()
+	retainContended := observeAdmission(&lifecycle, "retain")
 	lifecycle.barrier.Lock()
-	retainAttempted := make(chan struct{})
+	var unlockOnce sync.Once
+	unlock := func() { unlockOnce.Do(lifecycle.barrier.Unlock) }
+	defer unlock() // Runs before the worker join, including on failed assertions.
 	published := make(chan struct{})
-	go func() {
-		close(retainAttempted)
+	schedule.start(func() {
 		lifecycle.retain(&omorpc.EnsuredDaemon{})
 		close(published)
-	}()
-	awaitRestartSignal(t, retainAttempted, "retain did not attempt the held lifecycle barrier")
+	})
+	awaitRestartSignal(t, retainContended, "retain did not contend on held snapshot admission")
 	select {
 	case <-published:
 		t.Fatal("retain crossed a held restart snapshot boundary")
 	default:
 	}
-	lifecycle.mu.Lock()
-	if lifecycle.current == nil || !lifecycle.current.Owned {
+	if !lifecycle.currentOwned() {
 		t.Fatal("blocked retain changed current ownership")
 	}
-	lifecycle.mu.Unlock()
-	lifecycle.barrier.Unlock()
+	unlock()
 	select {
 	case <-published:
 	case <-time.After(5 * time.Second):
