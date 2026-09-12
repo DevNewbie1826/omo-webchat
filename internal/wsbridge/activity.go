@@ -312,7 +312,11 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 		for i, run := range digest.Runs {
 			runs[i] = wscontract.RunDigestEntry{RunID: run.RunID, Status: run.Status, RunningTaskIds: append([]string(nil), run.RunningTaskIDs...)}
 		}
+		// Run membership rides beside the node sum: the browser reads these
+		// exact scalars while every row list stays bounded.
+		runRunning, runTotal := int64(digest.RunRunningCount), int64(digest.RunTotalCount)
 		frame.DagDigest = &wscontract.DagDigest{Runs: runs, Truncated: digest.Truncated, RunningCount: int64(digest.RunningCount),
+			RunRunningCount: &runRunning, RunTotalCount: &runTotal,
 			AgentRunningCount: int64(digest.AgentRunningCount), AgentTotalCount: int64(digest.AgentTotalCount)}
 		if digest.ReceivedAt != "" {
 			frame.DagDigest.ReceivedAt = &digest.ReceivedAt

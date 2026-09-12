@@ -214,11 +214,13 @@ func assertExactCountDigest(t *testing.T, label, kind string, value any, wantRun
 		t.Fatal(err)
 	}
 	var typed struct {
-		RunningCount *int  `json:"running_count"`
-		TotalCount   *int  `json:"total_count"`
-		Truncated    bool  `json:"truncated"`
-		Tasks        []any `json:"tasks"`
-		Runs         []any `json:"runs"`
+		RunningCount    *int  `json:"running_count"`
+		TotalCount      *int  `json:"total_count"`
+		RunRunningCount *int  `json:"run_running_count"`
+		RunTotalCount   *int  `json:"run_total_count"`
+		Truncated       bool  `json:"truncated"`
+		Tasks           []any `json:"tasks"`
+		Runs            []any `json:"runs"`
 	}
 	if err := json.Unmarshal(raw, &typed); err != nil {
 		t.Fatal(err)
@@ -243,5 +245,16 @@ func assertExactCountDigest(t *testing.T, label, kind string, value any, wantRun
 	}
 	if len(typed.Runs) != 2 {
 		t.Fatalf("%s runs = %s", label, raw)
+	}
+	// The DAG side also reports run membership, not just node work: both
+	// emitted runs are non-terminal, so the exact pair is 2 running of 2.
+	if typed.RunRunningCount == nil || typed.RunTotalCount == nil {
+		t.Fatalf("%s run count scalars absent: %s", label, raw)
+	}
+	if got := *typed.RunRunningCount; got != 2 {
+		t.Fatalf("%s run_running_count = %d, want 2", label, got)
+	}
+	if got := *typed.RunTotalCount; got != 2 {
+		t.Fatalf("%s run_total_count = %d, want 2", label, got)
 	}
 }
