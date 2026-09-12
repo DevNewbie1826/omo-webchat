@@ -215,6 +215,12 @@ describe("Sidebar pinned running sessions", () => {
     // The modal trigger is gone: the pinned section is the only overview
     // surface, and no dialog exists anywhere in the tree.
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+    // Structural header-action set: exactly the add-workspace and collapse
+    // controls, in that order. Without an I18n provider the titles are the
+    // keys themselves, so this pins no translated prose - but any restored
+    // overview trigger adds a third action and fails here.
+    const headerActions = [...container.querySelectorAll<HTMLButtonElement>(".th-sidebar-nav-actions button")];
+    expect(headerActions.map((button) => button.title)).toEqual(["sidebar.addWorkspace", "sidebar.collapse"]);
     // Poll result has not landed yet; nothing is pinned while nothing runs.
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
 

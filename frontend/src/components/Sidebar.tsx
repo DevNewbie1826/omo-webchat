@@ -259,11 +259,14 @@ export function Sidebar({
     if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
   }, []);
 
-  // Workspaces that own at least one currently live session.
+  // Workspaces that own at least one currently live session. Scoped by the
+  // same membership predicate both live lists use: a legacy poll row that
+  // isLiveSessionListed rejects (no active flag, no running work) is history,
+  // not a live session, and must not register its workspace as an owner.
   const liveOwnerWsIds = useMemo(() => {
     const owners = new Set<string>();
-    if (summaries.length === 0) return owners;
-    const liveIds = new Set(summaries.map((summary) => summary.id));
+    const liveIds = new Set(summaries.filter(isLiveSessionListed).map((summary) => summary.id));
+    if (liveIds.size === 0) return owners;
     for (const workspace of workspaces) {
       const owns = workspace.chats.some((chat) => liveIds.has(chat.id))
         || (sessionLists.get(workspace.id) ?? []).some((row) => liveIds.has(row.id))
