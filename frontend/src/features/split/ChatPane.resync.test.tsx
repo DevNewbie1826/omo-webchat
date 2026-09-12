@@ -294,7 +294,6 @@ describe("ChatPane resync", () => {
 		"unsupported_provider",
 		"adoption_required",
 		"bad_create",
-		"session-active",
 	] as const)("treats chat.create error %s as a resync terminal", (code) => {
 		const { deliver } = renderChatPane(root);
 		settleInitial(deliver);
@@ -311,6 +310,25 @@ describe("ChatPane resync", () => {
 		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
 		const error = requireElement(container.querySelector(".th-chat-error"), "surfaced create failure");
 		expect(error.textContent).toBe(`${code} failure`);
+	});
+
+	it("treats chat.create error session-active as a resync terminal with a force-open banner", () => {
+		const { deliver } = renderChatPane(root);
+		settleInitial(deliver);
+		act(() => resyncButton({ container }).click());
+
+		act(() => deliver({
+			type: "error",
+			sessionId: "chat-1",
+			code: "session-active",
+			message: "session is active in another process",
+		}));
+
+		expect(resyncButton({ container }).disabled).toBe(false);
+		expect(resyncButton({ container }).getAttribute("aria-busy")).not.toBe("true");
+		requireElement(container.querySelector(".th-session-active-banner"), "surfaced session-active banner");
+		// The pane error surface stays clear; the banner carries the message.
+		expect(container.querySelector(".th-chat-error")).toBeNull();
 	});
 
 	it("treats chat.create error start_failed as a resync terminal with localized copy", () => {

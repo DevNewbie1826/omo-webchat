@@ -11,6 +11,7 @@ import { ApprovalModal } from "./ApprovalModal";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
+import { SessionActiveBanner } from "./SessionActiveBanner";
 import { GoalBar } from "./GoalBar";
 import { MissingOriginalBanner } from "./MissingOriginalBanner";
 import { SendErrorBanner } from "./SendErrorBanner";
@@ -204,6 +205,7 @@ export function ChatPane({
         <div className="th-chat-main-content">
         {chat.missingOriginal && <MissingOriginalBanner candidates={chat.missingOriginal.candidates} />}
         {chat.externalWriteDetected && <ExternalWriteBanner onReload={chat.reloadExternalWrite} />}
+        {chat.sessionActive && <SessionActiveBanner onForceOpen={chat.forceOpen} />}
         {chat.sendError && (
           <SendErrorBanner
             detail={sendErrorDetail(chat.sendError)}

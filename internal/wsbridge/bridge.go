@@ -1075,6 +1075,12 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
+	// A second-device attach rejected by the in-place activity gate can be
+	// retried explicitly: force authorizes the next CursorForOpen for this
+	// chat exactly like the REST open path does.
+	if f.Force != nil && *f.Force && cursorstore.IsInPlaceSession(rec) {
+		AuthorizeInPlaceOpen(c.bridge.cfg.Store, rec.ID, true, nil)
+	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
 	commitBinding := func(acquired *session.Session, started bool, acquiredDetach func()) error {
 		wrappedDetach := sub.wrapDetach(acquiredDetach)

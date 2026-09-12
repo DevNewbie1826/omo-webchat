@@ -225,6 +225,8 @@
   "chat.externalWriteTitle": "External write detected",
   "chat.externalWriteDetail": "This session changed outside webchat. Reload it before continuing.",
   "chat.externalWriteReload": "Reload",
+  "chat.sessionActiveTitle": "Session in use elsewhere",
+  "chat.sessionActiveDetail": "Another process (such as a terminal) is writing to this session's file. Opening anyway attaches this pane to it.",
   "chat.goal.title": "Goal",
   "chat.goal.statusActive": "Active",
   "chat.goal.statusComplete": "Complete",

@@ -589,6 +589,8 @@ type ChatCompactFrame struct {
 
 type ChatCreateFrame struct {
 	ChatID string `json:"chatId"`
+	// Explicitly authorizes opening an in-place session whose source file shows concurrent write activity (session-active retry)
+	Force *bool `json:"force,omitempty"`
 	// Explicitly authorizes replacement of a quarantined in-place provider route
 	Recovery *bool  `json:"recovery,omitempty"`
 	Type     string `json:"type"`
@@ -1800,7 +1802,7 @@ func (v *ChatCreateFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"chatId", "recovery", "type", "wsId"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"chatId", "force", "recovery", "type", "wsId"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2660,7 +2662,7 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 				return nil, err
 			}
 		case "chat.create":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"chatId": validationSchema{Type: "string"}, "recovery": validationSchema{Type: "boolean"}, "type": validationSchema{Const: "chat.create"}, "wsId": validationSchema{Type: "string"}}, Required: []string{"type", "wsId", "chatId"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"chatId": validationSchema{Type: "string"}, "force": validationSchema{Type: "boolean"}, "recovery": validationSchema{Type: "boolean"}, "type": validationSchema{Const: "chat.create"}, "wsId": validationSchema{Type: "string"}}, Required: []string{"type", "wsId", "chatId"}}); err != nil {
 				return nil, err
 			}
 		case "chat.send":

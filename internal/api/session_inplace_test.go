@@ -106,6 +106,50 @@ func TestOpenWorkspaceSessionRefreshesNativeIdentityWithoutInPlaceFencing(t *tes
 	}
 }
 
+func TestOpenWorkspaceSessionBoundChatReopenSkipsActivityGate(t *testing.T) {
+	server, store, ws := newChatCreateTestServer(t)
+	agentDir := t.TempDir()
+	t.Setenv("OMO_CODING_AGENT_DIR", agentDir)
+	source := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-bound-active", "Bound active")
+	chat := cursorstore.Chat{ID: "chat-bound-active", WorkspaceID: ws.ID, CWD: ws.Path, SessionFile: source, DurableSessionID: "durable-bound-active", SessionProvenance: cursorstore.SessionProvenanceInPlace, Name: "Bound active", NameSource: cursorstore.NameSourceAuto}
+	if err := store.SaveChat(chat); err != nil {
+		t.Fatal(err)
+	}
+	var checks atomic.Int32
+	server.activityCheck = func(context.Context, string, time.Duration) (sessionActivity, error) {
+		checks.Add(1)
+		return sessionActivity{SizeDelta: 5, MtimeDeltaNano: 7}, nil
+	}
+
+	// A second device reopening an already-bound in-place chat is an attach,
+	// not an adoption: concurrent file activity must not conflict it out.
+	response := openWorkspaceSession(t, server, ws.ID, map[string]any{"id": "durable-bound-active", "resumeIdentity": source})
+	if response.Code != http.StatusOK {
+		t.Fatalf("reopen status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var projected chatResponse
+	if err := json.NewDecoder(response.Body).Decode(&projected); err != nil {
+		t.Fatal(err)
+	}
+	if projected.ID != "chat-bound-active" {
+		t.Fatalf("reopen returned chat %q, want chat-bound-active", projected.ID)
+	}
+	if checks.Load() != 0 {
+		t.Fatalf("bound reopen ran %d activity checks, want 0", checks.Load())
+	}
+
+	// The gate still protects genuinely ambiguous binds: the same request
+	// without a bound chat must conflict out while the file is active.
+	ambiguous := writeAdoptableDiskSession(t, agentDir, ws.Path, "durable-ambiguous", "Ambiguous")
+	conflict := openWorkspaceSession(t, server, ws.ID, map[string]any{"id": "durable-ambiguous", "resumeIdentity": ambiguous})
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("unbound active open status = %d, body = %s", conflict.Code, conflict.Body.String())
+	}
+	if checks.Load() != 1 {
+		t.Fatalf("unbound open skipped the activity gate: checks = %d, want 1", checks.Load())
+	}
+}
+
 func TestOpenWorkspaceSessionWriterStartingAfterRegistrationIsGatedAtProviderAcquisition(t *testing.T) {
 	server, store, ws := newChatCreateTestServer(t)
 	agentDir := t.TempDir()

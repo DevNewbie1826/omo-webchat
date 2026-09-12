@@ -217,6 +217,28 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "session does not belong to workspace catalog")
 		return
 	}
+
+	// A chat already bound to this exact in-place source is a reopen, not an
+	// adoption. Resolve it before the activity gate: another client or the
+	// provider itself legitimately writing to the file must not dead-end a
+	// second device opening the same session. The provider open later still
+	// runs through CursorForOpen, which re-checks activity under the per-chat
+	// flight unless this call authorized a force.
+	s.adoptionMu.Lock()
+	defer s.adoptionMu.Unlock()
+	var existing *cursorstore.Chat
+	for _, candidate := range s.cursors.ListChats(ws.ID) {
+		candidate := candidate
+		if cursorstore.IsInPlaceSession(candidate) && candidate.SessionFile == source.Path && candidate.DurableSessionID == source.ID {
+			s.authorizeInPlaceOpen(candidate.ID, req.Force)
+			writeJSON(w, http.StatusOK, projectChat(candidate))
+			return
+		}
+		if existing == nil && sessionMatchesChat(source, candidate) {
+			existing = &candidate
+		}
+	}
+
 	if !req.Force {
 		activity, activityErr := s.activityCheck(r.Context(), source.Path, takeoverActivityWindow)
 		if activityErr != nil {
@@ -233,20 +255,6 @@ func (s *Server) handleOpenWorkspaceSession(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.adoptionMu.Lock()
-	defer s.adoptionMu.Unlock()
-	var existing *cursorstore.Chat
-	for _, candidate := range s.cursors.ListChats(ws.ID) {
-		candidate := candidate
-		if cursorstore.IsInPlaceSession(candidate) && candidate.SessionFile == source.Path && candidate.DurableSessionID == source.ID {
-			s.authorizeInPlaceOpen(candidate.ID, req.Force)
-			writeJSON(w, http.StatusOK, projectChat(candidate))
-			return
-		}
-		if existing == nil && sessionMatchesChat(source, candidate) {
-			existing = &candidate
-		}
-	}
 	if existing != nil {
 		chat, transitionErr := s.openExistingChat(r.Context(), *existing, source, req.Force)
 		if transitionErr != nil {

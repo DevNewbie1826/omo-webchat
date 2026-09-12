@@ -62,6 +62,7 @@ interface ChatFrameHandlerBindings {
   readonly setError: StateSetter<string>;
   readonly setMissingOriginal: StateSetter<MissingOriginal | null>;
   readonly setExternalWriteDetected: StateSetter<boolean>;
+  readonly setSessionActive: StateSetter<boolean>;
   readonly setContextUsage: StateSetter<ContextUsage | null>;
   readonly setCacheHitRate: StateSetter<number | null>;
   readonly setIsCompacting: StateSetter<boolean>;
@@ -183,6 +184,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
       case "ready": {
         bindings.todoAuthorityRef.current = bindTodoAuthority(bindings.todoAuthorityRef.current, frame);
         const generation = bindings.claimReadyGeneration(connectionGeneration);
+        // A successful attach supersedes any earlier session-active rejection
+        // on this socket (e.g. a force-open retry).
+        bindings.setSessionActive(false);
         if (bindings.externalRecoveryPendingRef.current) {
           bindings.externalRecoveryReadyRef.current = true;
         }
@@ -349,6 +353,20 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
           bindings.endResync(generation, true);
           bindings.setExternalWriteDetected(true);
+          bindings.setError("");
+          return;
+        }
+        if (frame.code === "session-active") {
+          const generation = bindings.claimHistoryGeneration(connectionGeneration, true);
+          if (bindings.resyncGenerationRef.current !== null
+            && bindings.resyncGenerationRef.current !== generation) return;
+          bindings.externalRecoveryPendingRef.current = false;
+          bindings.pageBuffer.reset();
+          bindings.setHistoryStatus((current) => current === "loading" ? "failed" : current);
+          bindings.endResync(generation, true);
+          // The pane-level banner owns the user-facing retry: the sidebar's
+          // open-attempt UI never sees this rejection for stored chats.
+          bindings.setSessionActive(true);
           bindings.setError("");
           return;
         }

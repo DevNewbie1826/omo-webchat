@@ -761,6 +761,32 @@
   align-self: center;
 }
 
+/* The session-active banner stacks its copy against one force-open action,
+   mirroring the external-write banner layout. */
+.th-session-active-banner {
+  gap: var(--th-space-3);
+}
+
+.th-session-active-banner-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
+}
+
+.th-session-active-banner-title {
+  font-weight: var(--th-weight-announce);
+}
+
+.th-session-active-banner-detail {
+  color: var(--th-text-dim);
+}
+
+.th-session-active-banner-actions {
+  flex: none;
+  align-self: center;
+}
+
 .th-notice-body {
   display: flex;
   flex-direction: column;

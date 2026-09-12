@@ -219,6 +219,28 @@ export function useChatSession(
     }
   };
 
+  // Explicit retry for an in-place session rejected as session-active: the
+  // user authorizes the activity gate bypass for this one attach, the same
+  // choice the sidebar's discovered-row force-open makes through REST.
+  const forceOpen = (): boolean => {
+    frameState.beginExternalWriteRecovery();
+    frameState.setSessionActive(false);
+    const client = clientRef.current;
+    try {
+      const sent = client !== null
+        && client.send({ type: "chat.create", wsId: session.wsId, chatId: session.id, force: true });
+      if (!sent) {
+        frameState.failExternalWriteRecovery();
+        frameState.setSessionActive(true);
+      }
+      return sent;
+    } catch {
+      frameState.failExternalWriteRecovery();
+      frameState.setSessionActive(true);
+      return false;
+    }
+  };
+
   // Manual history refresh for a session advanced by another client: close
   // and immediately re-create the same binding so the server replays its
   // attach-time history hydration. Never mid-run — the rebind would tear
@@ -324,6 +346,7 @@ export function useChatSession(
     error: frameState.error,
     missingOriginal: frameState.missingOriginal,
     externalWriteDetected: frameState.externalWriteDetected,
+    sessionActive: frameState.sessionActive,
     contextUsage: frameState.contextUsage,
     cacheHitRate: frameState.cacheHitRate,
     isCompacting: frameState.isCompacting,
@@ -359,6 +382,7 @@ export function useChatSession(
     stop,
     disconnect,
     reloadExternalWrite,
+    forceOpen,
     resync,
     resyncBusy: frameState.resyncBusy,
     resyncDisabled: frameState.resyncDisabled,

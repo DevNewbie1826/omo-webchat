@@ -1946,6 +1946,27 @@ func TestChatCreateSessionActiveConflictsUseContractCode(t *testing.T) {
 			t.Fatalf("provider path-in-use attempts = %d, want 3", got)
 		}
 	})
+
+	t.Run("force flag bypasses activity gate", func(t *testing.T) {
+		h := newInPlaceBridgeHarness(t, "gate-force")
+		conn, frames := h.connect(t)
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "gate-force", "force": true})
+		frames.next(t, "ready")
+	})
+
+	t.Run("force flag retries after activity rejection", func(t *testing.T) {
+		h := newInPlaceBridgeHarness(t, "gate-force-retry")
+		AuthorizeInPlaceOpen(h.store, "gate-force-retry", false, func(context.Context, string, time.Duration) (SessionActivity, error) {
+			return SessionActivity{SizeDelta: 1}, nil
+		})
+		conn, frames := h.connect(t)
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "gate-force-retry"})
+		if got := frames.next(t, "error"); got["code"] != "session-active" {
+			t.Fatalf("activity gate error = %#v", got)
+		}
+		writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "gate-force-retry", "force": true})
+		frames.next(t, "ready")
+	})
 }
 
 func TestChatCreateExternalWriteRequiresExplicitRecoveryLegacyEmptyUnknownHistoryResponse(t *testing.T) {
