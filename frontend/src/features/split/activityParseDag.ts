@@ -10,6 +10,10 @@ export interface ParsedDagUpdated {
    * the sole count authority for sidebar, overview, and Subagents slots. */
   readonly agentRunningCount?: number;
   readonly agentTotalCount?: number;
+  /** Exact run-membership scalars over the full pre-truncation membership;
+   *  the sole count authority for the collapsed DAG tab. */
+  readonly dagRunRunningCount?: number;
+  readonly dagRunTotalCount?: number;
   readonly runs: readonly ActivityDagRun[];
 }
 
@@ -178,11 +182,15 @@ export function parseDagUpdated(data: unknown): ParsedDagUpdated | null {
   const lostRuns = duplicateRuns.size > 0 || (Array.isArray(rawRuns) && runs.length < rawRuns.length);
   const agentRunningCount = optCount(data["agent_running_count"]);
   const agentTotalCount = optCount(data["agent_total_count"]);
+  const dagRunRunningCount = optCount(data["run_running_count"]);
+  const dagRunTotalCount = optCount(data["run_total_count"]);
   return {
     runs,
     ...(parentSessionId !== undefined ? { parentSessionId } : {}),
     ...(agentRunningCount !== undefined ? { agentRunningCount } : {}),
     ...(agentTotalCount !== undefined ? { agentTotalCount } : {}),
+    ...(dagRunRunningCount !== undefined ? { dagRunRunningCount } : {}),
+    ...(dagRunTotalCount !== undefined ? { dagRunTotalCount } : {}),
     ...(lostRuns ? { truncatedRuns: true } : truncatedRuns !== undefined ? { truncatedRuns } : {}),
   };
 }
@@ -197,9 +205,13 @@ export function parseDagCounts(data: unknown): CountAuthority | null {
   if (!isRecord(data)) return null;
   const taskAgentRunningCount = optCount(data["agent_running_count"]);
   const taskAgentTotalCount = optCount(data["agent_total_count"]);
+  const dagRunRunningCount = optCount(data["run_running_count"]);
+  const dagRunTotalCount = optCount(data["run_total_count"]);
   return {
     ...(taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount }),
     ...(taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount }),
+    ...(dagRunRunningCount === undefined ? {} : { dagRunRunningCount }),
+    ...(dagRunTotalCount === undefined ? {} : { dagRunTotalCount }),
   };
 }
 

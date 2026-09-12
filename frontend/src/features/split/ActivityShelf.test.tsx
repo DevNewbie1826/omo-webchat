@@ -54,19 +54,19 @@ describe("ActivityShelf", () => {
 
     expect(harness.container.querySelector(".th-activity-agent-name")?.textContent).toContain("Retained prefix task");
     expect(harness.container.querySelector(".th-activity-dag-name")?.textContent).toContain("Retained prefix DAG");
-    // Exact scalars are the only count authority: the DAG tab renders
-    // exactly its label plus the exact retained done/total scalar — no
-    // partial-history marker can appear on a tab or in the DAG contents.
-    // The removed key is assembled, never spelled out, so repo-wide marker
-    // greps stay literally empty.
+    // Exact scalars are the only count authority: with a truncated run
+    // history and no server run-count scalars the DAG tab renders exactly
+    // its label and no count slot — no partial-history marker can appear
+    // on a tab or in the DAG contents. The removed key is assembled, never
+    // spelled out, so repo-wide marker greps stay literally empty.
     const removedKey = ["activity", "partial"].join(".");
     const dagTab = requireElement(
       harness.container.querySelector<HTMLButtonElement>('[data-activity-tab="dag"]'),
       "dag tab",
     );
-    expect([...dagTab.querySelectorAll("span")].map(span => span.textContent)).toEqual(["activity.dag", "2/3"]);
+    expect([...dagTab.querySelectorAll("span")].map(span => span.textContent)).toEqual(["activity.dag"]);
     expect(harness.container.textContent).not.toContain(removedKey);
-    expect(dagTab.querySelector(".th-activity-tab-count")?.textContent).toBe("2/3");
+    expect(dagTab.querySelector(".th-activity-tab-count")).toBeNull();
   });
 
   it("keeps the DAG content marker-free even when no retained rows fit", () => {
@@ -107,7 +107,7 @@ describe("ActivityShelf", () => {
     const counts = [...harness.container.querySelectorAll("[data-activity-tab]")].map(
       (tab) => tab.querySelector(".th-activity-tab-count")?.textContent,
     );
-    expect(counts).toEqual(["1/1", "2/4", "2/3"]);
+    expect(counts).toEqual(["1/1", "2/4", "1/1"]);
   });
 
   it("opens and closes through the tabs, exposing open and expanded state on the root", () => {

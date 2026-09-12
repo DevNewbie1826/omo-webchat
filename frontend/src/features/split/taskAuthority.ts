@@ -27,6 +27,10 @@ export interface TaskAuthority {
    * the sole count authority for sidebar, overview, and Subagents slots. */
   readonly taskAgentRunningCount?: number;
   readonly taskAgentTotalCount?: number;
+  /** Exact DAG-run membership scalars over the full pre-truncation
+   *  membership; the sole count authority for the collapsed DAG tab. */
+  readonly dagRunRunningCount?: number;
+  readonly dagRunTotalCount?: number;
   /** Oversized input without even a compact authority side is unknown. */
   readonly taskUnavailable?: boolean;
 }
@@ -39,6 +43,8 @@ export interface CountAuthority {
   readonly taskTotalCount?: number;
   readonly taskAgentRunningCount?: number;
   readonly taskAgentTotalCount?: number;
+  readonly dagRunRunningCount?: number;
+  readonly dagRunTotalCount?: number;
 }
 
 /** Merge count-only authority into a state that rows were already reconciled
@@ -49,12 +55,16 @@ export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: C
   const taskTotalCount = counts.taskTotalCount ?? state.taskTotalCount;
   const taskAgentRunningCount = counts.taskAgentRunningCount ?? state.taskAgentRunningCount;
   const taskAgentTotalCount = counts.taskAgentTotalCount ?? state.taskAgentTotalCount;
+  const dagRunRunningCount = counts.dagRunRunningCount ?? state.dagRunRunningCount;
+  const dagRunTotalCount = counts.dagRunTotalCount ?? state.dagRunTotalCount;
   const agentCountsAdmissionMs = atMs === undefined && state.agentCountsAdmissionMs === undefined
     ? state.agentCountsAdmissionMs
     : Math.max(state.agentCountsAdmissionMs ?? -Infinity, atMs ?? -Infinity);
   if (taskRunningCount === state.taskRunningCount && taskTotalCount === state.taskTotalCount
     && taskAgentRunningCount === state.taskAgentRunningCount
     && taskAgentTotalCount === state.taskAgentTotalCount
+    && dagRunRunningCount === state.dagRunRunningCount
+    && dagRunTotalCount === state.dagRunTotalCount
     && agentCountsAdmissionMs === state.agentCountsAdmissionMs) return state;
   return {
     ...state,
@@ -62,6 +72,8 @@ export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: C
     ...(taskTotalCount === state.taskTotalCount ? {} : { taskTotalCount }),
     ...(taskAgentRunningCount === state.taskAgentRunningCount ? {} : { taskAgentRunningCount }),
     ...(taskAgentTotalCount === state.taskAgentTotalCount ? {} : { taskAgentTotalCount }),
+    ...(dagRunRunningCount === state.dagRunRunningCount ? {} : { dagRunRunningCount }),
+    ...(dagRunTotalCount === state.dagRunTotalCount ? {} : { dagRunTotalCount }),
     ...(agentCountsAdmissionMs === state.agentCountsAdmissionMs ? {} : { agentCountsAdmissionMs }),
   };
 }
@@ -249,6 +261,8 @@ export function mergeTaskAuthorities(first: TaskAuthority, second: TaskAuthority
     ...(elected.taskTotalCount === undefined ? {} : { taskTotalCount: elected.taskTotalCount }),
     ...(elected.taskAgentRunningCount === undefined ? {} : { taskAgentRunningCount: elected.taskAgentRunningCount }),
     ...(elected.taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount: elected.taskAgentTotalCount }),
+    ...(elected.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: elected.dagRunRunningCount }),
+    ...(elected.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: elected.dagRunTotalCount }),
     ...(Number.isFinite(agentCountsAdmissionMs) ? { agentCountsAdmissionMs } : {}) };
   return reconcileTaskAuthority(merged, [], { mergeOnly: true, truncated: merged.truncatedTasks });
 }

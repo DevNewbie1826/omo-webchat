@@ -489,6 +489,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     next = applyCountAuthority(next, {
       ...(dagDigestParsed?.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigestParsed.agentRunningCount }),
       ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
+      ...(dagDigestParsed?.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: dagDigestParsed.dagRunRunningCount }),
+      ...(dagDigestParsed?.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: dagDigestParsed.dagRunTotalCount }),
     }, hydration.requestedMs);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
