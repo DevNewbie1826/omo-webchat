@@ -17,7 +17,7 @@ export interface LiveSessionListProps {
   readonly onActivated?: () => void;
 }
 
-interface DiscoveredTarget {
+interface SessionTarget {
   readonly workspace: Workspace;
   readonly session: WorkspaceSession;
 }
@@ -39,10 +39,13 @@ export function LiveSessionList({
 }: LiveSessionListProps) {
   const { t } = useT();
 
-  const discoveredTarget = (sessionId: string): DiscoveredTarget | null => {
+  // Any already-loaded union row - stored or discovered - is a valid open target,
+  // matching the session picker's activation path. Sessions present in
+  // workspace.chats never reach this resolver; they take the onSelect path below.
+  const sessionTarget = (sessionId: string): SessionTarget | null => {
     for (const workspace of workspaces) {
       const session = (sessionLists.get(workspace.id) ?? []).find(
-        (item) => item.id === sessionId && item.source === "discovered",
+        (item) => item.id === sessionId,
       );
       if (session !== undefined) return { workspace, session };
     }
@@ -57,7 +60,7 @@ export function LiveSessionList({
       onActivated?.();
       return;
     }
-    const target = discoveredTarget(summary.id);
+    const target = sessionTarget(summary.id);
     if (target === null) return;
     const result = await onOpen(target.workspace, target.session, force);
     if (result === "opened") onActivated?.();
@@ -71,7 +74,7 @@ export function LiveSessionList({
     <div className={`th-overview-list${listClassName !== undefined ? ` ${listClassName}` : ""}`}>
       {orderedSummaries.map((summary) => {
         const title = summary.title.length > 0 ? summary.title : summary.id;
-        const target = discoveredTarget(summary.id);
+        const target = sessionTarget(summary.id);
         const attempt = target === null
           ? undefined
           : openAttempts.get(sessionOpenAttemptKey(target.workspace.id, target.session.id));

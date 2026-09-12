@@ -91,6 +91,8 @@ describe("LiveSessionList", () => {
   function renderList(
     props: Partial<{
       summaries: readonly LiveSessionSummary[];
+      workspaces: readonly Workspace[];
+      sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
       focusedSessionId: string | null;
       showLastLine: boolean;
       listClassName: string;
@@ -102,8 +104,8 @@ describe("LiveSessionList", () => {
         <I18nContext.Provider value={i18n}>
           <LiveSessionList
             summaries={props.summaries ?? summaries}
-            workspaces={[workspace]}
-            sessionLists={new Map([["ws-1", discoveredSessions]])}
+            workspaces={props.workspaces ?? [workspace]}
+            sessionLists={props.sessionLists ?? new Map([["ws-1", discoveredSessions]])}
             onSelect={handlers.onSelect ?? (() => undefined)}
             onOpen={handlers.onOpen ?? (async () => undefined)}
             {...(handlers.openAttempts ? { openAttempts: handlers.openAttempts } : {})}
@@ -174,6 +176,34 @@ describe("LiveSessionList", () => {
 
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[0]);
+    expect(onActivated).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a stored session that exists only in the loaded session list", async () => {
+    // Regression: the session is absent from workspace.chats, so the chats-mapped
+    // select path cannot see it; the card must open it through the stored union row,
+    // exactly as the session picker does.
+    const storedOnlyWorkspace: Workspace = { ...workspace, chats: [] };
+    const storedEntry: WorkspaceSession = { id: "chat-1", name: "Stored session", source: "stored", recencyMs: 2 };
+    const storedSummary: LiveSessionSummary = { ...summaries[0]!, id: "chat-1" };
+    const onSelect = vi.fn();
+    const onActivated = vi.fn();
+    let resolve!: (result: "opened") => void;
+    const pending = new Promise<"opened">((done) => { resolve = done; });
+    const onOpen = vi.fn(() => pending);
+    renderList(
+      { summaries: [storedSummary], workspaces: [storedOnlyWorkspace], sessionLists: new Map([["ws-1", [storedEntry]]]) },
+      { onSelect, onOpen, onActivated },
+    );
+
+    act(() => {
+      card(0).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
+    });
+
+    expect(onOpen).toHaveBeenCalledWith(storedOnlyWorkspace, storedEntry, false);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onActivated).not.toHaveBeenCalled();
+    await act(async () => { resolve("opened"); await pending; });
     expect(onActivated).toHaveBeenCalledTimes(1);
   });
 
