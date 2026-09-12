@@ -102,6 +102,10 @@ type EnsuredDaemon struct {
 	stopOnce sync.Once
 	stopDone chan struct{}
 	stopErr  error
+
+	supervisorStopOnce sync.Once
+	supervisorStopDone chan struct{}
+	supervisorStopErr  error
 }
 
 // Close closes the client connection. It deliberately does not terminate an
@@ -141,7 +145,7 @@ func (d *EnsuredDaemon) Stop(ctx context.Context) error {
 				d.stopErr = d.Client.Close()
 			}
 			if d.Owned && d.supervisor != nil {
-				if err := stopOwnedSupervisor(context.Background(), d.supervisor, d.waitCh); err != nil && d.stopErr == nil {
+				if err := d.stopSupervisor(context.Background()); err != nil && d.stopErr == nil {
 					d.stopErr = err
 				}
 			}
