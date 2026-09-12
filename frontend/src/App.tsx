@@ -320,6 +320,7 @@ export function App() {
                 onSplit={() => undefined}
                 onClose={() => activeSession && layout.unplaceSession(activeSession.id)}
                 onOpenSidebar={() => setSidebarCollapsed(false)}
+                onNewChat={() => requestNewChat({ paneId: layout.focusedPaneId, wsId: activeSession.wsId })}
                 connect={connectChat}
                 notify={notify}
                 onChatName={(name) => handleChatName(activeSession.wsId, activeSession.id, name)}

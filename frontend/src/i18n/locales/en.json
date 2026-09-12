@@ -240,6 +240,7 @@
   "chat.browseCapped": "Showing the first 50 entries",
   "chat.provider": "Agent",
   "chat.compactDescription": "Compact the conversation to free up context",
+  "chat.newDescription": "Start a separate chat in this workspace (keeps this chat)",
   "notice.system": "System",
   "newChat.title": "New chat",
   "newChat.description": "Omo must be available to create a new chat.",

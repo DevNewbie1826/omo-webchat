@@ -34,6 +34,7 @@ export interface ChatPaneProps {
   readonly onSplit: (dir: SplitDir) => void;
   readonly onClose: () => void;
   readonly onOpenSidebar: () => void;
+  readonly onNewChat?: () => void;
   readonly connect: ChatConnector;
   readonly notify: (msg: string, kind?: ToastKind) => void;
   readonly onChatName?: (name: string, origin: "auto" | "user" | "provider") => void;
@@ -48,6 +49,7 @@ export function ChatPane({
   onSplit,
   onClose,
   onOpenSidebar,
+  onNewChat,
   connect,
   notify,
   onChatName,
@@ -336,6 +338,7 @@ export function ChatPane({
           onSubmit={chat.submit}
           onSteer={chat.steer}
           onStop={chat.stop}
+          {...(onNewChat ? { onNewChat } : {})}
           provider={chatSession.provider}
           cwd={chatSession.cwd}
           imageSupported={imageSupported}

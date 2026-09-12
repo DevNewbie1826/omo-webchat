@@ -240,6 +240,7 @@
   "chat.browseCapped": "처음 50개만 표시합니다",
   "chat.provider": "에이전트",
   "chat.compactDescription": "대화를 압축해 컨텍스트를 확보합니다",
+  "chat.newDescription": "현재 워크스페이스에서 새 채팅 시작 (기존 채팅 유지)",
   "notice.system": "시스템",
   "newChat.title": "새 채팅",
   "newChat.description": "새 채팅을 만들려면 Omo를 사용할 수 있어야 합니다.",

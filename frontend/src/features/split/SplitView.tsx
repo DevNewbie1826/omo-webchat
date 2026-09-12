@@ -104,6 +104,7 @@ function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEn
         onSplit={(dir) => actions.onSplit(node.id, dir)}
         onClose={() => actions.onClosePane(node.id)}
         onOpenSidebar={actions.onOpenSidebar}
+        onNewChat={() => actions.onCreateTerminal(node.id, session.wsId)}
         connect={connectChat}
         notify={actions.notify}
         {...(onChatName ? { onChatName: (name: string) => onChatName(session.wsId, session.id, name) } : {})}
