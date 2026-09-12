@@ -51,6 +51,10 @@ export interface UseWorkspacesResult {
   readonly loadMoreSessions: (wsId: string) => Promise<void>;
   /** Kicks off the first session page for a workspace unless it is ready or already in flight. */
   readonly ensureSessionsLoaded: (wsId: string) => void;
+  /** Re-fetches the first session page of a ready workspace through the
+   * existing scheduled path, so recency stays fresh without a new fetch
+   * channel. In-flight loads queue the refresh instead of doubling up. */
+  readonly refreshSessions: (wsId: string) => void;
   /** Records explicit activation, optimistically reorders, then applies server-owned recency. */
   readonly markSessionUsed: (wsId: string, id: string) => void;
   readonly toggleExpanded: (wsId: string) => void;
@@ -385,6 +389,18 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     [fetchSessionPage],
   );
 
+  // Consumers of catalog recency (e.g. the live-session list) re-arm the
+  // same scheduled refresh the catalog uses; unready workspaces have no
+  // recency to refresh, and in-flight pages queue via the scheduled path.
+  const refreshSessions = useCallback(
+    (wsId: string): void => {
+      const paging = sessionPagesRef.current.get(wsId);
+      if (!paging?.ready) return;
+      void fetchSessionPage(wsId, "", false, true);
+    },
+    [fetchSessionPage],
+  );
+
   // This boundary is called only by explicit App activation, never by WS lifecycle.
   const markSessionUsed = useCallback((wsId: string, id: string): void => {
     const listed = sessionListsRef.current.get(wsId) ?? [];
@@ -594,6 +610,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     addCreatedSession,
     loadMoreSessions,
     ensureSessionsLoaded,
+    refreshSessions,
     markSessionUsed,
     toggleExpanded,
     handleDeleteWorkspace,

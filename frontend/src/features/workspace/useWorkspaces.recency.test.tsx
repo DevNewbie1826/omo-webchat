@@ -237,6 +237,36 @@ it("reconciles a newly created row to authoritative use time when the client clo
   expect(rows()?.[0]).toEqual(["created", 900]);
 });
 
+it("refreshSessions re-fetches the first page of a ready workspace through the scheduled path", async () => {
+  // Given: a ready first page from the harness setup.
+  expect(pages).toHaveLength(1);
+  // When
+  act(() => current.refreshSessions("ws"));
+  // Then: exactly one scheduled refetch is in flight, no timer advance needed.
+  expect(pages).toHaveLength(2);
+  await act(async () => pages[1]?.resolve({ items: [{ ...web, recencyMs: 500 }], nextCursor: "" }));
+  expect(rows()).toEqual([["web", 500], ["disk", 100]]);
+});
+
+it("refreshSessions queues behind an in-flight page instead of doubling the request", async () => {
+  // Given: a continuation load in flight.
+  act(() => { void current.loadMoreSessions("ws"); });
+  expect(pages).toHaveLength(2);
+  // When
+  act(() => current.refreshSessions("ws"));
+  // Then: deferred, not dropped and not parallel.
+  expect(pages).toHaveLength(2);
+  await act(async () => pages[1]?.resolve({ items: [], nextCursor: "" }));
+  expect(pages).toHaveLength(3);
+  await act(async () => pages[2]?.resolve({ items: [disk, web], nextCursor: "" }));
+  expect(rows()).toEqual([["disk", 100], ["web", 80]]);
+});
+
+it("refreshSessions leaves a workspace without a ready page alone", () => {
+  act(() => current.refreshSessions("ws-unknown"));
+  expect(pages).toHaveLength(1);
+});
+
 it("preserves logical file recency when adding its stored wrapper without activation", () => {
   // Given: file activity predates the client clock used for new metadata wrappers.
   const chat = workspace.chats[0]; if (!chat) throw new Error("fixture missing chat");
