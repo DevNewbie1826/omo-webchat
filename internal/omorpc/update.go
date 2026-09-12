@@ -77,7 +77,7 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 		executable = filepath.Join(binDir, "bun")
 		args = []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
 		cwd = root
-		env = setEnv(setEnv(env, "BUN_INSTALL", prefix), "BUN_INSTALL_GLOBAL_DIR", global)
+		env = setEnv(setEnv(setEnv(env, "BUN_INSTALL", prefix), "BUN_INSTALL_GLOBAL_DIR", global), "BUN_INSTALL_BIN", binDir)
 	case strings.HasSuffix(filepath.ToSlash(root), "/lib/node_modules/omo-ai"):
 		prefix := filepath.Dir(filepath.Dir(filepath.Dir(root)))
 		binDir = filepath.Join(prefix, "bin")

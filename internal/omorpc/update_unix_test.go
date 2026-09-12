@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -33,7 +34,18 @@ func TestUpdatePackageManagerProcess(t *testing.T) {
 	if err != nil {
 		os.Exit(91)
 	}
-	report := updateProcessReport{Args: os.Args[3:], Cwd: cwd, Path: os.Getenv("PATH"), BunInstall: os.Getenv("BUN_INSTALL"), BunGlobal: os.Getenv("BUN_INSTALL_GLOBAL_DIR")}
+	role := os.Getenv("WEBCHAT_UPDATE_TEST_ROLE")
+	if role == "" {
+		role = "leader"
+	}
+	var args []string
+	if len(os.Args) > 3 {
+		args = os.Args[3:]
+	}
+	report := updateProcessReport{
+		Role: role, Pid: os.Getpid(), Args: args, Cwd: cwd, Path: os.Getenv("PATH"),
+		BunInstall: os.Getenv("BUN_INSTALL"), BunGlobal: os.Getenv("BUN_INSTALL_GLOBAL_DIR"), BunBin: os.Getenv("BUN_INSTALL_BIN"),
+	}
 	stdin, err := io.ReadAll(os.Stdin)
 	if err != nil || len(stdin) != 0 {
 		os.Exit(94)
@@ -51,17 +63,35 @@ func TestUpdatePackageManagerProcess(t *testing.T) {
 	if err := json.NewDecoder(conn).Decode(&action); err != nil {
 		os.Exit(93)
 	}
+	if role == "descendant" {
+		os.Exit(0)
+	}
 	if action == "fail" {
 		fmt.Fprint(os.Stderr, strings.Repeat("x", 32768)+"\nEUPDATE fixture failure\n")
 		os.Exit(23)
+	}
+	if action == "spawn-descendant" {
+		exe, err := os.Executable()
+		if err != nil {
+			os.Exit(95)
+		}
+		child := exec.Command(exe, "-test.run=^TestUpdatePackageManagerProcess$", "--")
+		child.Env = setEnv(os.Environ(), "WEBCHAT_UPDATE_TEST_ROLE", "descendant")
+		if err := child.Start(); err != nil {
+			os.Exit(96)
+		}
+		if err := json.NewDecoder(conn).Decode(&action); err != nil {
+			os.Exit(97)
+		}
 	}
 	os.Exit(0)
 }
 
 type updateProcessReport struct {
-	Args                             []string
-	Markers                          []string
-	Cwd, Path, BunInstall, BunGlobal string
+	Role                                     string
+	Pid                                      int
+	Args, Markers                            []string
+	Cwd, Path, BunInstall, BunGlobal, BunBin string
 }
 
 type updateProcessEvent struct {
@@ -79,17 +109,21 @@ func updateProcessListener(t *testing.T) <-chan updateProcessEvent {
 	t.Cleanup(func() { ln.Close() })
 	t.Setenv("WEBCHAT_UPDATE_TEST_HELPER", "1")
 	t.Setenv("WEBCHAT_UPDATE_TEST_ADDRESS", ln.Addr().String())
-	events := make(chan updateProcessEvent, 1)
+	events := make(chan updateProcessEvent, 2)
 	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			events <- updateProcessEvent{err: err}
-			return
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				if !errors.Is(err, net.ErrClosed) {
+					events <- updateProcessEvent{err: err}
+				}
+				return
+			}
+			_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+			var report updateProcessReport
+			err = json.NewDecoder(conn).Decode(&report)
+			events <- updateProcessEvent{report: report, conn: conn, err: err}
 		}
-		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-		var report updateProcessReport
-		err = json.NewDecoder(conn).Decode(&report)
-		events <- updateProcessEvent{report: report, conn: conn, err: err}
 	}()
 	return events
 }
@@ -117,6 +151,33 @@ func awaitUpdateResult(t *testing.T, result <-chan error) error {
 	case <-time.After(10 * time.Second):
 		t.Fatal("update did not finish")
 		return nil
+	}
+}
+
+type updateProcessTermination struct {
+	n   int
+	err error
+}
+
+func subscribeUpdateTermination(conn net.Conn) <-chan updateProcessTermination {
+	terminated := make(chan updateProcessTermination, 1)
+	go func() {
+		var data [1]byte
+		n, err := conn.Read(data[:])
+		terminated <- updateProcessTermination{n: n, err: err}
+	}()
+	return terminated
+}
+
+func awaitUpdateTermination(t *testing.T, role string, terminated <-chan updateProcessTermination) {
+	t.Helper()
+	result := <-terminated
+	var netErr net.Error
+	if errors.As(result.err, &netErr) && netErr.Timeout() {
+		t.Fatalf("%s remained alive until the socket deadline: %v", role, result.err)
+	}
+	if result.n != 0 || !errors.Is(result.err, io.EOF) {
+		t.Fatalf("%s did not close its connection on termination: n=%d err=%v", role, result.n, result.err)
 	}
 }
 
@@ -174,6 +235,8 @@ func updateInstallFixture(t *testing.T, manager string) (launcher, root, prefix 
 	t.Setenv("OMO_AGENT_TOOLKIT_BIN", filepath.Join(poison, "omo-agent-toolkit.js"))
 	t.Setenv("BUN_INSTALL", poison)
 	t.Setenv("BUN_INSTALL_GLOBAL_DIR", poison)
+	t.Setenv("BUN_INSTALL_BIN", poison)
+	t.Setenv("BUN_INSTALL_GLOBAL_BIN_DIR", poison)
 	t.Setenv("OMO_SENPI_PATCH_ROOT", poison)
 	t.Setenv("SENPI_BRAND", "unrelated-engine")
 	t.Setenv("NODE_OPTIONS", "--require=unrelated-preload")
@@ -199,7 +262,7 @@ func TestUpdateInstallationPackageManagerArgv(t *testing.T) {
 				want = []string{filepath.Join(prefix, "lib", "node_modules", "npm", "bin", "npm-cli.js"), "i", "-g", "--prefix", prefix, "omo-ai@beta"}
 			} else {
 				want = []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
-				if event.report.BunInstall != prefix || event.report.BunGlobal != filepath.Join(prefix, "install", "global") {
+				if event.report.BunInstall != prefix || event.report.BunGlobal != filepath.Join(prefix, "install", "global") || event.report.BunBin != filepath.Join(prefix, "bin") {
 					t.Errorf("wrong Bun target: %+v", event.report)
 				}
 			}
@@ -240,20 +303,45 @@ func TestUpdateInstallationFailureOutput(t *testing.T) {
 }
 
 func TestUpdateInstallationCancellation(t *testing.T) {
-	launcher, _, _ := updateInstallFixture(t, "npm")
-	events := updateProcessListener(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- UpdateInstallation(ctx, launcher) }()
-	event := awaitUpdateEvent(t, events)
-	cancel()
-	if err := awaitUpdateResult(t, done); !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation = %v", err)
-	}
-	var data [1]byte
-	if n, err := event.conn.Read(data[:]); n != 0 || err == nil {
-		t.Fatalf("child connection survived cancellation: n=%d err=%v", n, err)
+	for _, mode := range []string{"cancel-live-tree", "leader-exits-first"} {
+		t.Run(mode, func(t *testing.T) {
+			launcher, _, _ := updateInstallFixture(t, "npm")
+			events := updateProcessListener(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- UpdateInstallation(ctx, launcher) }()
+
+			leader := awaitUpdateEvent(t, events)
+			if leader.report.Role != "leader" {
+				t.Fatalf("first process role = %q, want leader", leader.report.Role)
+			}
+			if err := json.NewEncoder(leader.conn).Encode("spawn-descendant"); err != nil {
+				t.Fatal(err)
+			}
+			descendant := awaitUpdateEvent(t, events)
+			if descendant.report.Role != "descendant" || descendant.report.Pid == leader.report.Pid {
+				t.Fatalf("descendant did not acknowledge liveness: leader=%+v descendant=%+v", leader.report, descendant.report)
+			}
+
+			leaderTerminated := subscribeUpdateTermination(leader.conn)
+			descendantTerminated := subscribeUpdateTermination(descendant.conn)
+			if mode == "cancel-live-tree" {
+				cancel()
+				if err := awaitUpdateResult(t, done); !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancellation = %v", err)
+				}
+			} else {
+				if err := json.NewEncoder(leader.conn).Encode("exit"); err != nil {
+					t.Fatal(err)
+				}
+				if err := awaitUpdateResult(t, done); err != nil {
+					t.Fatalf("update after leader exit = %v", err)
+				}
+			}
+			awaitUpdateTermination(t, "leader", leaderTerminated)
+			awaitUpdateTermination(t, "descendant", descendantTerminated)
+		})
 	}
 }
 
