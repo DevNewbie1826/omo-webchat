@@ -18,6 +18,7 @@ import type { Terminal, Workspace, WorkspaceSession } from "../features/workspac
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
 import { useMediaQuery } from "../lib/useMediaQuery";
 import { SystemStatsModal } from "../features/system/SystemStatsModal";
+import { EngineRestartDialog } from "../features/system/EngineRestartDialog";
 
 export interface SidebarProps {
   readonly collapsed: boolean;
@@ -74,6 +75,7 @@ export function Sidebar({
   const showTreeActions = useMediaQuery("(hover: none)");
   const [statsOpen, setStatsOpen] = useState(false);
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
+  const [engineRestartOpen, setEngineRestartOpen] = useState(false);
   const sessionOpen = useSessionOpenAttempts(onOpenSession);
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the pinned
@@ -324,7 +326,7 @@ export function Sidebar({
           </div>
 
           <div className="th-sidebar-footer">
-            <SettingsMenu onOpenStats={() => setStatsOpen(true)} />
+            <SettingsMenu onOpenStats={() => setStatsOpen(true)} onOpenEngineRestart={() => setEngineRestartOpen(true)} />
             <div className="th-sidebar-footer-spacer" />
             <button
               type="button"
@@ -352,6 +354,11 @@ export function Sidebar({
         )}
       </aside>
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
+      <EngineRestartDialog
+        open={engineRestartOpen}
+        onClose={() => setEngineRestartOpen(false)}
+        runningChats={runningCounts.size}
+      />
     </>
   );
 }

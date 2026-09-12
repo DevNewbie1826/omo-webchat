@@ -17,7 +17,7 @@ describe("SettingsMenu theme row", () => {
     const value = useAppConfig();
     return (
       <I18nContext.Provider value={value}>
-        <SettingsMenu onOpenStats={() => undefined} />
+        <SettingsMenu onOpenStats={() => undefined} onOpenEngineRestart={() => undefined} />
       </I18nContext.Provider>
     );
   }

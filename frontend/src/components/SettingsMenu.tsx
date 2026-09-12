@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { useTheme } from "../app-config";
-import { IconActivity, IconSettings } from "./icons";
+import { IconActivity, IconPower, IconSettings } from "./icons";
 import { FONT_PRESETS, FONT_SIZE_MAX, FONT_SIZE_MIN } from "../lib/font";
 import { THEME_OPTIONS } from "../lib/theme";
 
 export interface SettingsMenuProps {
   readonly onOpenStats: () => void;
+  readonly onOpenEngineRestart: () => void;
 }
 
-export function SettingsMenu({ onOpenStats }: SettingsMenuProps) {
+export function SettingsMenu({ onOpenStats, onOpenEngineRestart }: SettingsMenuProps) {
   const { t, lang, setLang, font, setFont, fontSize, setFontSize } = useT();
   const { theme, setTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -140,6 +141,17 @@ export function SettingsMenu({ onOpenStats }: SettingsMenuProps) {
           >
             <IconActivity size={14} />
             <span>{t("settings.systemStats")}</span>
+          </button>
+          <button
+            type="button"
+            className="th-settings-item"
+            onClick={() => {
+              setSettingsOpen(false);
+              onOpenEngineRestart();
+            }}
+          >
+            <IconPower size={14} />
+            <span>{t("settings.engineRestart")}</span>
           </button>
         </div>
       )}
