@@ -317,6 +317,9 @@ func activityFrame(summary session.Summary, overflow bool) wscontract.SessionsAc
 		frame.DagDigest = &wscontract.DagDigest{Runs: runs, Truncated: digest.Truncated, RunningCount: int64(digest.RunningCount),
 			RunRunningCount: digest.RunRunningCount, RunTotalCount: digest.RunTotalCount,
 			AgentRunningCount: int64(digest.AgentRunningCount), AgentTotalCount: int64(digest.AgentTotalCount)}
+		if digest.RunCountsUnavailable {
+			frame.DagDigest.RunCountsUnavailable = &digest.RunCountsUnavailable
+		}
 		if digest.ReceivedAt != "" {
 			frame.DagDigest.ReceivedAt = &digest.ReceivedAt
 		}

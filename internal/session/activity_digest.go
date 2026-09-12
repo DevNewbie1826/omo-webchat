@@ -56,14 +56,15 @@ func (r RunDigestEntry) MarshalJSON() ([]byte, error) {
 }
 
 type DagDigest struct {
-	Runs              []RunDigestEntry `json:"runs"`
-	Truncated         bool             `json:"truncated"`
-	RunningCount      int              `json:"running_count"`
-	RunRunningCount   *int64           `json:"run_running_count,omitempty"`
-	RunTotalCount     *int64           `json:"run_total_count,omitempty"`
-	AgentRunningCount int              `json:"agent_running_count"`
-	AgentTotalCount   int              `json:"agent_total_count"`
-	ReceivedAt        string           `json:"received_at,omitempty"`
+	Runs                 []RunDigestEntry `json:"runs"`
+	Truncated            bool             `json:"truncated"`
+	RunningCount         int              `json:"running_count"`
+	RunRunningCount      *int64           `json:"run_running_count,omitempty"`
+	RunTotalCount        *int64           `json:"run_total_count,omitempty"`
+	RunCountsUnavailable bool             `json:"run_counts_unavailable,omitempty"`
+	AgentRunningCount    int              `json:"agent_running_count"`
+	AgentTotalCount      int              `json:"agent_total_count"`
+	ReceivedAt           string           `json:"received_at,omitempty"`
 }
 
 func (d DagDigest) MarshalJSON() ([]byte, error) {
@@ -73,7 +74,7 @@ func (d DagDigest) MarshalJSON() ([]byte, error) {
 	}
 	type wire DagDigest
 	return json.Marshal(wire{Runs: runs, Truncated: d.Truncated, RunningCount: d.RunningCount,
-		RunRunningCount: d.RunRunningCount, RunTotalCount: d.RunTotalCount,
+		RunRunningCount: d.RunRunningCount, RunTotalCount: d.RunTotalCount, RunCountsUnavailable: d.RunCountsUnavailable,
 		AgentRunningCount: d.AgentRunningCount, AgentTotalCount: d.AgentTotalCount, ReceivedAt: d.ReceivedAt})
 }
 
@@ -169,6 +170,10 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 	if !ok {
 		return nil, false
 	}
+	unavailable, ok := parseOptionalBool(doc, "run_counts_unavailable")
+	if !ok {
+		return nil, false
+	}
 	var rows []json.RawMessage
 	if raw, exists := doc["runs"]; !exists || json.Unmarshal(raw, &rows) != nil || rows == nil {
 		return nil, false
@@ -220,7 +225,7 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 		}
 		runs = append(runs, RunDigestEntry{RunID: id, Status: status, RunningTaskIDs: ids})
 	}
-	return &DagDigest{Runs: runs, Truncated: truncated, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
+	return &DagDigest{Runs: runs, Truncated: truncated, RunCountsUnavailable: unavailable, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
 }
 
 type dagTaskOutcome struct {

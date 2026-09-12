@@ -455,7 +455,11 @@
         },
         "run_total_count": {
           "type": "integer",
-          "description": "Exact count of all DAG runs in the full pre-truncation membership; independent of the truncated runs list."
+          "description": "Exact session-cumulative count of all DAG runs; independent of the truncated runs list."
+        },
+        "run_counts_unavailable": {
+          "type": "boolean",
+          "description": "True when a run-count-capable producer cannot establish exact run membership; neither run scalar is emitted in that case. Absence of all three fields identifies a legacy producer."
         },
         "agent_running_count": {
           "type": "integer",

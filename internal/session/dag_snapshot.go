@@ -25,6 +25,9 @@ type dagSnapshotCache struct {
 	runTotalCount        int
 	countAuthorityKnown  bool
 	runMembershipUnknown bool // Independent of existing node/agent count authority.
+	runMembership        map[[sha256.Size]byte]bool
+	runRevision          int64
+	runRevisionKnown     bool
 	clock                uint64
 	oversized            bool
 }
@@ -98,7 +101,11 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	truncated := incomingTruncated
 	// Provider-declared complete membership is the only basis for exact scalars;
 	// webchat-side bounds never change it.
-	fullMembership := !incomingTruncated
+	unavailable, _ := parseOptionalBool(doc, "run_counts_unavailable")
+	fullMembership := !incomingTruncated && !unavailable
+	if unavailable {
+		c.runMembershipUnknown = true
+	}
 	c.mergeCountAuthority(incoming, fullMembership)
 	if c.runs == nil {
 		c.runs = make(map[[sha256.Size]byte]dagFreshness)
@@ -191,6 +198,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	if truncated || len(missing) > 0 {
 		doc["truncated_runs"] = json.RawMessage("true")
 	}
+	setDagRunAvailability(doc, c)
 	live, err := json.Marshal(doc)
 	if err != nil {
 		return dagSnapshotResult{}, err
@@ -234,6 +242,14 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 
 func (c *dagSnapshotCache) incumbent(raw json.RawMessage, digest *DagDigest) dagSnapshotResult {
 	publishDagRunCountAuthority(digest, c)
+	if len(raw) > 0 {
+		var doc map[string]json.RawMessage
+		if json.Unmarshal(raw, &doc) == nil && doc != nil {
+			setDagRunAvailability(doc, c)
+			// RawMessage values came from valid JSON, so marshaling cannot fail.
+			raw, _ = json.Marshal(doc)
+		}
+	}
 	live := raw
 	if len(live) == 0 {
 		live = json.RawMessage(`{"runs":[],"truncated_runs":true}`)

@@ -136,8 +136,10 @@ func TestDagRunCountsRevisionRunningOmission(t *testing.T) {
 				snapshot map[string]any
 				running  int
 			}{
-				{dagOrderingSnapshot(dagOrderingRun("first", "running", dagCurrent)), 1},
-				{dagOrderingSnapshot(), 0},
+				// A removal needs a newer surviving revision; an empty delivery
+				// cannot establish ordering. Completion proves the zero instead.
+				{dagOrderingSnapshot(dagOrderingRun("first", "running", dagNewer)), 1},
+				{dagOrderingSnapshot(dagOrderingRun("first", "completed", "2026-09-07T10:04:00.000Z")), 0},
 			} {
 				h.emit(t, activitySnapshotOrder[1], step.snapshot)
 				assertDagRunCounts(t, h.summary().DagDigest, step.running, 2, "omitted digest")
@@ -161,7 +163,7 @@ func TestDagRunCountsRevisionMembershipOrdering(t *testing.T) {
 				unknown                   bool
 			}{
 				{"stale_omission", dagNewer, dagCurrent, 1, false},
-				{"newer_removal_unchanged_survivor", dagOlder, dagOlder, 0, false},
+				{"ambiguous_removal_unchanged_survivor", dagOlder, dagOlder, 0, true},
 				{"unknown_incoming", dagOlder, "", 0, true},
 				{"unknown_incumbent", "", dagOlder, 0, true},
 				{"both_unknown", "", "", 0, true},
