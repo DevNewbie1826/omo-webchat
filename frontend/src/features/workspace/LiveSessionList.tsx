@@ -22,9 +22,8 @@ interface DiscoveredTarget {
   readonly session: WorkspaceSession;
 }
 
-/** Live-session card list shared by the overview modal and the sidebar pin:
- * one read-only live card per live session. Activation shares the sidebar's
- * open-attempt state, so takeover conflicts and failures remain visible here
+/** The sidebar's pinned running-sessions section renders one read-only live card per running session.
+ * Activation shares the sidebar's open-attempt state, so takeover conflicts and failures remain visible here
  * until the user retries or explicitly forces takeover. */
 export function LiveSessionList({
   summaries,
