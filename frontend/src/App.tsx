@@ -255,8 +255,22 @@ export function App() {
   // crawl, catalog rows and chat lists), and the catalog scheduler in
   // useWorkspaces owns the single periodic cadence for exactly those
   // workspaces. Until the first publication arrives there is nothing to arm.
+  // Tracks whether this effect has registered recency targets, so the
+  // authentication-ended branch below clears exactly what it registered.
+  const recencyRegisteredRef = useRef(false);
   useEffect(() => {
-    if (authed !== true || liveShare === null) return;
+    if (authed !== true) {
+      // Authentication ended (logout or the unauthorized handler): the hook
+      // stays mounted on the login page, so explicitly clear the registered
+      // targets - an empty list disarms the scheduler's cadence.
+      if (recencyRegisteredRef.current) {
+        recencyRegisteredRef.current = false;
+        setRecencyTargets([]);
+      }
+      return;
+    }
+    if (liveShare === null) return;
+    recencyRegisteredRef.current = true;
     setRecencyTargets([...liveShare.ownerWsIds]);
   }, [authed, liveShare, setRecencyTargets]);
 

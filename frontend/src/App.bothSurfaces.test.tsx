@@ -21,6 +21,13 @@ const workspace = {
   chats: [{ id: "chat-a", name: "A visible", provider: "omo" as const }],
 };
 
+const workspaceTwo = {
+  id: "ws-2",
+  name: "Workspace Two",
+  path: "/work-two",
+  chats: [{ id: "chat-b", name: "B visible", provider: "omo" as const }],
+};
+
 /** First catalog page: only the already-loaded picker row. */
 const PAGE_ONE = {
   items: [{ id: "chat-a", name: "A visible", source: "stored", recencyMs: 10 }],
@@ -102,11 +109,23 @@ describe("App + Sidebar both-surfaces live ordering", () => {
   let container: HTMLDivElement;
   let root: Root;
   let livePayload: unknown;
+  let workspaceList: readonly unknown[];
+  let sessionPagesByWs: Readonly<Record<string, (cursor: string) => unknown>>;
 
-  const catalogCalls = (): string[] =>
+  const catalogCalls = (wsId = "ws-1"): string[] =>
     vi.mocked(apiJson).mock.calls
       .map(([path]) => path)
-      .filter((path) => path.startsWith("/api/workspaces/ws-1/sessions"));
+      .filter((path) => path.startsWith(`/api/workspaces/${wsId}/sessions`));
+
+  /** First-page requests issued without an abort signal: the catalog
+   * scheduler's cadence and the expand-effect load. The membership crawl
+   * always carries a signal, so it never pollutes this count. */
+  const scheduledFirstPageCalls = (wsId: string): number =>
+    vi.mocked(apiJson).mock.calls
+      .filter(([path, options]) =>
+        path === `/api/workspaces/${wsId}/sessions?limit=5`
+        && !(options as { readonly signal?: unknown } | undefined)?.signal)
+      .length;
 
   const cardNames = (selector: string): string[] =>
     [...container.querySelectorAll<HTMLElement>(`${selector} .th-overview-card`)]
@@ -119,11 +138,19 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     window.localStorage.clear();
     window.localStorage.setItem("th-lang", "en");
     livePayload = PHASE_WORKING;
+    vi.mocked(apiJson).mockClear();
+    workspaceList = [workspace];
+    sessionPagesByWs = {
+      "ws-1": (cursor) => (cursor === "p2" ? PAGE_TWO : PAGE_ONE),
+    };
     vi.mocked(apiJson).mockImplementation(async (path: string) => {
       if (path === "/api/sessions/live") return livePayload;
-      if (path === "/api/workspaces") return [workspace];
-      if (path.startsWith("/api/workspaces/ws-1/sessions")) {
-        return path.includes("cursor=p2") ? PAGE_TWO : PAGE_ONE;
+      if (path === "/api/workspaces") return workspaceList;
+      const sessionsMatch = /^\/api\/workspaces\/([^/]+)\/sessions/.exec(path);
+      if (sessionsMatch) {
+        const cursor = /[?&]cursor=([^&]*)/.exec(path)?.[1] ?? "";
+        const pages = sessionPagesByWs[sessionsMatch[1]!];
+        if (pages) return pages(cursor);
       }
       return [];
     });
@@ -191,5 +218,95 @@ describe("App + Sidebar both-surfaces live ordering", () => {
     // surface has no timestamp for z-hidden and orders it last.
     expect(cardNames(".th-sidebar-live")).toEqual(["Z hidden", "A visible"]);
     expect(cardNames(".th-home-live")).toEqual(["Z hidden", "A visible"]);
+  });
+
+  it("keeps exactly the 15s cadence for a stable owner while a second owner joins and leaves", async () => {
+    // Two ready workspaces: both expanded, both first pages loaded. ws-1 owns
+    // chat-a (live throughout); ws-2 owns chat-b, which alternates in and out
+    // of the live feed on every 4s poll. Owner churn must never reset ws-1's
+    // armed cadence: exactly four scheduled ws-1 refreshes in 60 seconds.
+    workspaceList = [workspace, workspaceTwo];
+    sessionPagesByWs = {
+      "ws-1": (cursor) => (cursor === "p2" ? PAGE_TWO : PAGE_ONE),
+      "ws-2": () => ({
+        items: [{ id: "chat-b", name: "B visible", source: "stored", recencyMs: 20 }],
+        nextCursor: "",
+      }),
+    };
+    window.localStorage.setItem("th-ws-expanded", JSON.stringify(["ws-1", "ws-2"]));
+    const entryA = liveEntry("chat-a", "A visible", true);
+    const entryB = liveEntry("chat-b", "B visible", true);
+    livePayload = { sessions: [entryA] };
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {});
+
+    // Both owners' first pages are ready; ws-1 is the sole initial owner.
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    const baseline = scheduledFirstPageCalls("ws-1");
+    expect(baseline).toBe(1);
+
+    for (let tick = 1; tick <= 15; tick += 1) {
+      // ws-2 joins on odd polls and leaves on even ones.
+      livePayload = { sessions: tick % 2 === 1 ? [entryA, entryB] : [entryA] };
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
+    }
+
+    // 60 simulated seconds: the armed interval fired at 15/30/45/60s for the
+    // continuously live ws-1, regardless of ws-2's churn.
+    expect(scheduledFirstPageCalls("ws-1")).toBe(baseline + 4);
+  });
+
+  it("schedules zero periodic requests when the feed's only rows are excluded from the live list", async () => {
+    // A legacy row: no active flag, no running work. isLiveSessionListed
+    // rejects it, so neither surface lists it and no workspace may be
+    // registered as a live owner - even though chat-a is attributable to
+    // ws-1 through the chat list.
+    livePayload = { sessions: [{ id: "chat-a", title: "Legacy row", task: null, dag: null }] };
+    window.localStorage.setItem("th-ws-expanded", JSON.stringify(["ws-1"]));
+
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {});
+
+    // Excluded from both live surfaces.
+    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-home-live")).toBeNull();
+
+    // Three full cadences: not a single further catalog request.
+    const baseline = catalogCalls().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+    expect(catalogCalls().length).toBe(baseline);
+  });
+
+  it("clears the registered periodic targets when logging out through the real control", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => {});
+
+    // ws-1 is a live owner; the cadence is armed.
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    const logoutButton = container.querySelector<HTMLButtonElement>('.th-sidebar-footer button[title="Log out"]');
+    expect(logoutButton).not.toBeNull();
+
+    await act(async () => {
+      logoutButton!.click();
+    });
+    await act(async () => {});
+
+    // Three full cadences after logout: zero further catalog requests.
+    const baseline = catalogCalls().length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(45_000);
+    });
+    expect(catalogCalls().length).toBe(baseline);
   });
 });

@@ -4,6 +4,7 @@ import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { emptyState, useMediaQueryMock } from "./App.testHarness";
+import { translate } from "./i18n";
 
 /** Shared mock state for the App home live-session surface. The live-session
  * data rides the real shared poller and badge store; only the transport
@@ -23,7 +24,6 @@ const home = vi.hoisted(() => ({
   openedChat: { id: "chat-opened", name: "Disk session", provider: "omo" as const },
   livePayload: { sessions: [] as readonly unknown[] },
   catalogSessions: [] as unknown[],
-  refreshSessions: vi.fn(),
   openBodies: [] as unknown[],
   openOutcomes: [] as ("open" | "active" | "fail")[],
 }));
@@ -114,7 +114,6 @@ vi.mock("./features/workspace/useWorkspaces", () => ({
       addCreatedSession: () => undefined,
       loadMoreSessions: async () => undefined,
       ensureSessionsLoaded: () => undefined,
-      refreshSessions: home.refreshSessions,
       markSessionUsed: () => undefined,
       toggleExpanded: () => undefined,
       handleDeleteWorkspace: async () => undefined,
@@ -338,9 +337,9 @@ describe("App home running sessions", () => {
     // says what it counts.
     const count = block!.querySelector(".th-home-live-count");
     expect(count?.textContent).toBe("1");
-    // Parameter sentinel: the accessible name carries the exact count,
-    // whatever the shipped phrasing is.
-    expect(count?.getAttribute("aria-label")).toContain("1");
+    // Shipped-copy equality with the exact numeric parameter: any other
+    // count (10, 11, 21, ...) fails, whatever the shipped phrasing is.
+    expect(count?.getAttribute("aria-label")).toBe(translate("en", "overview.runningAria", { n: 1 }));
     // Only the working card carries the badge and a meta line; idle cards
     // with no work render title only - no meaningless "Done 0".
     expect(cards[1]!.querySelector(".th-overview-card-running")).toBeNull();

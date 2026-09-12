@@ -97,7 +97,6 @@ vi.mock("./features/workspace/useWorkspaces", () => ({
     addCreatedSession: () => undefined,
     loadMoreSessions: () => undefined,
     ensureSessionsLoaded: () => undefined,
-    refreshSessions: () => undefined,
     markSessionUsed: () => undefined,
     toggleExpanded: () => undefined,
     handleDeleteWorkspace: async () => undefined,
