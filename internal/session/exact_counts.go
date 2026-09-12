@@ -143,34 +143,47 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 		c.countRuns = make(map[[sha256.Size]byte]dagCountRun)
 	}
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
-	var deliveryMillis int64
-	deliveryKnown := false
+	// Membership is ordered against each delivered run's own accepted revision,
+	// never against another run's clock. Equal revisions permit a complete
+	// inventory to remove an omitted run; any older row rejects that inventory.
+	stale, unordered := false, false
 	for _, raw := range incoming {
 		id, next := dagCountRevision(raw)
-		if next.known && (!deliveryKnown || next.millis > deliveryMillis) {
-			deliveryMillis, deliveryKnown = next.millis, true
-		}
 		key := sha256.Sum256([]byte(id))
 		present[key] = true
 		current, exists := c.countRuns[key]
+		if exists {
+			if !current.known || !next.known {
+				unordered = true
+			} else if next.millis < current.millis {
+				stale = true
+			}
+		}
 		if exists && current.known && (!next.known || next.millis <= current.millis) {
 			c.countRuns[key] = current
 			continue
 		}
 		c.countRuns[key] = next
 	}
+	if unordered && !stale {
+		c.runMembershipUnknown = true
+	}
 	if complete {
+		membershipAccepted := !stale && !unordered
+		if membershipAccepted {
+			c.runMembershipUnknown = false
+		} else if !c.countAuthorityKnown {
+			c.runMembershipUnknown = true
+		}
 		for key, current := range c.countRuns {
-			if !present[key] {
-				// Empty complete membership explicitly clears observability.
-				// Otherwise unknown/older delivery clocks cannot demote a
-				// member whose accepted revision is known to be newer.
-				if len(incoming) == 0 || !current.known || (deliveryKnown && current.millis <= deliveryMillis) {
-					current.observable = false
-				}
-				current.present = false
-				c.countRuns[key] = current
+			if membershipAccepted {
+				// Empty complete membership explicitly clears observability too.
+				current.observable = present[key]
 			}
+			if !present[key] {
+				current.present = false
+			}
+			c.countRuns[key] = current
 		}
 		c.countAuthorityKnown = true
 	}
@@ -235,10 +248,18 @@ func addActivityCounts(raw json.RawMessage, name string, task *taskSnapshotCache
 		doc["running_count"], _ = json.Marshal(task.runningCount)
 		doc["total_count"], _ = json.Marshal(task.totalCount)
 	}
-	if name == activitySnapshotOrder[1] && dag != nil && dag.countAuthorityKnown {
-		doc["running_count"], _ = json.Marshal(dag.runningCount)
-		doc["run_running_count"], _ = json.Marshal(dag.runRunningCount)
-		doc["run_total_count"], _ = json.Marshal(dag.runTotalCount)
+	if name == activitySnapshotOrder[1] && dag != nil {
+		delete(doc, "run_running_count")
+		delete(doc, "run_total_count")
+		if dag.countAuthorityKnown {
+			doc["running_count"], _ = json.Marshal(dag.runningCount)
+		}
+		var authority DagDigest
+		publishDagRunCountAuthority(&authority, dag)
+		if authority.RunRunningCount != nil {
+			doc["run_running_count"], _ = json.Marshal(authority.RunRunningCount)
+			doc["run_total_count"], _ = json.Marshal(authority.RunTotalCount)
+		}
 	}
 	doc["agent_running_count"], _ = json.Marshal(running)
 	doc["agent_total_count"], _ = json.Marshal(total)
@@ -256,7 +277,7 @@ func publishDagRunCountAuthority(digest *DagDigest, dag *dagSnapshotCache) {
 		return
 	}
 	digest.RunRunningCount, digest.RunTotalCount = nil, nil
-	if dag.countAuthorityKnown {
+	if dag.countAuthorityKnown && !dag.runMembershipUnknown {
 		running, total := int64(dag.runRunningCount), int64(dag.runTotalCount)
 		digest.RunRunningCount, digest.RunTotalCount = &running, &total
 	}

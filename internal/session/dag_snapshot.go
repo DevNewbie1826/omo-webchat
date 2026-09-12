@@ -18,14 +18,15 @@ type dagFreshness struct {
 }
 
 type dagSnapshotCache struct {
-	runs                map[[sha256.Size]byte]dagFreshness
-	countRuns           map[[sha256.Size]byte]dagCountRun
-	runningCount        int
-	runRunningCount     int
-	runTotalCount       int
-	countAuthorityKnown bool
-	clock               uint64
-	oversized           bool
+	runs                 map[[sha256.Size]byte]dagFreshness
+	countRuns            map[[sha256.Size]byte]dagCountRun
+	runningCount         int
+	runRunningCount      int
+	runTotalCount        int
+	countAuthorityKnown  bool
+	runMembershipUnknown bool // Independent of existing node/agent count authority.
+	clock                uint64
+	oversized            bool
 }
 
 type dagSnapshotResult struct {

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 )
 
@@ -146,6 +147,88 @@ func TestDagRunCountsRevisionRunningOmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Historical inventory and live deliveries must use the same membership rule
+// once admitted, regardless of which run carries the newest row revision.
+func TestDagRunCountsRevisionMembershipOrdering(t *testing.T) {
+	for _, source := range []string{"live", "historical"} {
+		for _, mode := range []string{"bound", "unbound", "transfer"} {
+			for _, scenario := range []struct {
+				name, accepted, delivered string
+				wantRunning               int
+				unknown                   bool
+			}{
+				{"stale_omission", dagNewer, dagCurrent, 1, false},
+				{"newer_removal_unchanged_survivor", dagOlder, dagOlder, 0, false},
+				{"unknown_incoming", dagOlder, "", 0, true},
+				{"unknown_incumbent", "", dagOlder, 0, true},
+				{"both_unknown", "", "", 0, true},
+			} {
+				t.Run(source+"/"+mode+"/"+scenario.name, func(t *testing.T) {
+					h := newDAGOrderingHarness(t, mode)
+					initial := dagOrderingSnapshot(
+						dagOrderingRun("done", "completed", scenario.accepted),
+						dagOrderingRun("live", "running", dagCurrent),
+					)
+					if source == "historical" {
+						cwd := t.TempDir()
+						for _, row := range initial["runs"].([]map[string]any) {
+							id := row["run_id"].(string)
+							writeActivityStoreJSON(t, filepath.Join(cwd, ".omo", "senpi-task", "dag", "runs", id+".json"), map[string]any{
+								"schemaVersion": 1, "runId": id, "runKey": id, "name": id,
+								"parentSessionId": h.s.durableID, "status": row["status"],
+								"createdAt": dagOlder, "updatedAt": row["updated_at"],
+								"nodes": []any{map[string]any{"id": "node", "state": row["status"]}},
+							})
+						}
+						activity, err := ReadHistoricalActivity(t.Context(), cwd, h.s.durableID)
+						if err != nil {
+							t.Fatal(err)
+						}
+						assertDagRunCounts(t, activity.DagDigest, 1, 2, "historical inventory")
+						if err := json.Unmarshal(activity.ActivityPair.Dag, &initial); err != nil {
+							t.Fatal(err)
+						}
+					}
+					h.emit(t, activitySnapshotOrder[1], initial)
+					assertDagRunCounts(t, h.summary().DagDigest, 1, 2, "initial digest")
+					recorder := newRecorder(8)
+					detach := h.s.Attach(recorder)
+					defer detach()
+					if mode == "bound" {
+						recorder.await(t, FrameExtensionEvent)
+					}
+					h.emit(t, activitySnapshotOrder[1], dagOrderingSnapshot(dagOrderingRun("done", "completed", scenario.delivered)))
+					if mode == "transfer" {
+						h.bind()
+					}
+					summary := h.summary()
+					// Check both surfaces even when one fails, so RED records agreement.
+					t.Run("digest", func(t *testing.T) {
+						if scenario.unknown {
+							assertDagRunCountsAbsent(t, summary.DagDigest)
+						} else {
+							assertDagRunCounts(t, summary.DagDigest, scenario.wantRunning, 2, "ordered digest")
+						}
+					})
+					if mode != "unbound" {
+						_, frame := recorder.await(t, FrameExtensionEvent)
+						t.Run("frame", func(t *testing.T) {
+							data := frame.Data.(map[string]any)["data"]
+							if scenario.unknown {
+								assertDagRunCountsAbsent(t, data)
+							} else {
+								assertDagRunCounts(t, data, scenario.wantRunning, 2, "ordered live")
+								running, total := decodeDagRunCounts(t, summary.DagDigest)
+								assertDagRunCounts(t, data, running, total, "frame/digest agreement")
+							}
+						})
+					}
+				})
+			}
+		}
 	}
 }
 
