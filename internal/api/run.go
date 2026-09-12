@@ -28,32 +28,66 @@ var ensureDaemon = omorpc.EnsureDaemon
 const daemonStopTimeout = 5 * time.Second
 
 type recoveryDaemonLifecycle struct {
-	mu       sync.Mutex
-	owned    []*omorpc.EnsuredDaemon
-	stopping bool
-	logger   *slog.Logger
+	// barrier covers the complete ensure/publication operation and the complete
+	// retiring-generation stop/fence operation. State mu remains separate so
+	// shutdown can mark itself while an ensure is in flight.
+	barrier sync.Mutex
+	mu      sync.Mutex
+
+	current    *omorpc.EnsuredDaemon
+	generation []*omorpc.EnsuredDaemon
+	owned      []*omorpc.EnsuredDaemon
+	stopping   bool
+	logger     *slog.Logger
+}
+
+func (l *recoveryDaemonLifecycle) initialize(daemon *omorpc.EnsuredDaemon) {
+	l.mu.Lock()
+	l.current = daemon
+	if daemon != nil && daemon.Owned {
+		l.generation = append(l.generation, daemon)
+	}
+	l.mu.Unlock()
+}
+
+func (l *recoveryDaemonLifecycle) ensure(ctx context.Context, fn func(context.Context) (*omorpc.EnsuredDaemon, error)) error {
+	l.barrier.Lock()
+	defer l.barrier.Unlock()
+	daemon, err := fn(ctx)
+	if err != nil {
+		return err
+	}
+	l.retainLocked(daemon)
+	return nil
 }
 
 func (l *recoveryDaemonLifecycle) retain(daemon *omorpc.EnsuredDaemon) {
+	l.barrier.Lock()
+	defer l.barrier.Unlock()
+	l.retainLocked(daemon)
+}
+
+func (l *recoveryDaemonLifecycle) retainLocked(daemon *omorpc.EnsuredDaemon) {
 	if daemon == nil {
 		return
 	}
-	if !daemon.Owned {
-		_ = daemon.Close()
-		return
-	}
-
-	// The ensure client is only a readiness probe. Retain the ownership handle
-	// after closing it so teardown can still stop the process it spawned.
+	// This client only proved readiness. The shared client remains open while
+	// the ownership handle is retained for replacement and final teardown.
 	_ = daemon.Close()
 	l.mu.Lock()
 	if !l.stopping {
-		l.owned = append(l.owned, daemon)
+		l.current = daemon
+		if daemon.Owned {
+			l.generation = append(l.generation, daemon)
+			l.owned = append(l.owned, daemon)
+		}
 		l.mu.Unlock()
 		return
 	}
 	l.mu.Unlock()
-	l.stopDaemon(daemon)
+	if daemon.Owned {
+		l.stopDaemon(daemon)
+	}
 }
 
 func (l *recoveryDaemonLifecycle) stop() {
@@ -68,18 +102,69 @@ func (l *recoveryDaemonLifecycle) stop() {
 	}
 }
 
-// supervisors snapshots every retained ownership handle so a restart can
-// stop each spawned supervisor exactly once without racing a concurrent
-// retain from the client's reconnect hook.
-func (l *recoveryDaemonLifecycle) supervisors() []*omorpc.EnsuredDaemon {
+// stopCurrent joins any recovery already holding barrier, validates ownership
+// of the current ensured endpoint, and keeps further spawning excluded until
+// all retiring groups, endpoint cleanup, runtime-cache invalidation, and the
+// exact transport fence have completed.
+func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorpc.Client) (omorpc.EpochToken, error) {
+	l.barrier.Lock()
+	defer l.barrier.Unlock()
+
+	l.mu.Lock()
+	current := l.current
+	generation := slices.Clone(l.generation)
+	l.mu.Unlock()
+	if current == nil || !current.Owned {
+		return omorpc.EpochToken{}, omorpc.ErrDaemonNotOwned
+	}
+
+	var stopErr error
+	for _, daemon := range generation {
+		if err := daemon.StopSupervisor(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+		}
+	}
+	if stopErr != nil {
+		return omorpc.EpochToken{}, stopErr
+	}
+	retired, _ := client.CurrentEpoch()
+	client.FenceEpoch(retired)
+	l.mu.Lock()
+	l.current = nil
+	l.generation = nil
+	l.mu.Unlock()
+	return retired, nil
+}
+
+func (l *recoveryDaemonLifecycle) currentOwned() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return slices.Clone(l.owned)
+	return l.current != nil && l.current.Owned
 }
 
 func (l *recoveryDaemonLifecycle) stopDaemon(daemon *omorpc.EnsuredDaemon) {
 	if err := daemon.StopBounded(daemonStopTimeout); err != nil {
 		l.logger.Error("stopping recovery daemon", "err", err)
+	}
+}
+
+func engineRestarter(lifecycle *recoveryDaemonLifecycle, client *omorpc.Client) func(context.Context) (string, string, error) {
+	return func(ctx context.Context) (string, string, error) {
+		before := client.ServerVersion()
+		retired, err := lifecycle.stopCurrent(ctx, client)
+		if err != nil {
+			return before, "", err
+		}
+		// stopCurrent releases the spawn barrier before this wait. A reconnect
+		// flight may therefore run its own ensure hook without deadlocking behind
+		// the restart that is waiting for it.
+		if err := client.EnsureConnectedAfter(ctx, retired); err != nil {
+			return before, "", err
+		}
+		if !lifecycle.currentOwned() {
+			return before, "", omorpc.ErrDaemonNotOwned
+		}
+		return before, client.ServerVersion(), nil
 	}
 }
 
@@ -107,17 +192,15 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	// missing socket path, so a vanished socket file recovers without a
 	// server restart.
 	ensureCfg.OnDialNotExist = func(ctx context.Context) error {
-		again, err := ensureDaemon(ctx, ensureCfg)
-		if err != nil {
-			return err
-		}
-		recoveryDaemons.retain(again)
-		return nil
+		return recoveryDaemons.ensure(ctx, func(ctx context.Context) (*omorpc.EnsuredDaemon, error) {
+			return ensureDaemon(ctx, ensureCfg)
+		})
 	}
 	ensured, err := ensureDaemon(ctx, ensureCfg)
 	if err != nil {
 		return fmt.Errorf("starting required omo daemon: %w", err)
 	}
+	recoveryDaemons.initialize(ensured)
 	var stopDaemonOnce sync.Once
 	stopDaemon := func() {
 		stopDaemonOnce.Do(func() {
@@ -155,21 +238,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	// handle is checked first: a foreign engine must be refused before any
 	// signal is sent, and every stop confirms its process group is gone
 	// before a successor may spawn.
-	apiServer.restartEngine = func(ctx context.Context) (string, string, error) {
-		before := ensured.Client.ServerVersion()
-		if err := ensured.StopSupervisor(ctx); err != nil {
-			return before, "", err
-		}
-		for _, daemon := range recoveryDaemons.supervisors() {
-			if err := daemon.StopSupervisor(ctx); err != nil {
-				return before, "", err
-			}
-		}
-		if err := ensured.Client.EnsureConnected(ctx); err != nil {
-			return before, "", err
-		}
-		return before, ensured.Client.ServerVersion(), nil
-	}
+	apiServer.restartEngine = engineRestarter(&recoveryDaemons, ensured.Client)
 
 	var cleanup sync.Once
 	cleanupAll := func() {

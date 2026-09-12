@@ -16,6 +16,15 @@ func (d *EnsuredDaemon) StopSupervisor(ctx context.Context) error {
 		return ErrDaemonNotOwned
 	}
 	err := d.stopSupervisor(ctx)
+	if err != nil {
+		// The stop operation owns its bounded process-group teardown after it
+		// starts. Join it even when the caller's budget expires so a lifecycle
+		// barrier can never admit a successor while descendants still live or
+		// endpoint cleanup is pending.
+		if joinErr := d.stopSupervisor(context.Background()); joinErr != nil {
+			err = errors.Join(err, joinErr)
+		}
+	}
 	ForgetRuntimeWinner(d.command)
 	return err
 }
