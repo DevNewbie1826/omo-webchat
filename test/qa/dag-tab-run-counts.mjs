@@ -57,6 +57,16 @@ const caseGroups = [
     { name: 'legacy-complete-node-truncated', expected: '1/2', data: legacy(['running', 'completed'], false, true) },
     { name: 'legacy-incomplete-membership', expected: null, data: legacy(['running'], true) },
   ] },
+  { name: 'withdrawal', cases: [
+    { name: 'exact-then-unavailable', expected: null, deliveries: [
+      { expected: '1/2', data: rich(['running', 'completed'], 1, 2) },
+      { expected: null, data: { ...rich(['completed'], 0, 0), run_counts_unavailable: true } },
+    ] },
+  ] },
+  { name: 'withdrawal', cases: [
+    { name: 'unavailable-first-with-retained-running', expected: null,
+      data: { ...rich(['running'], 1, 1), run_counts_unavailable: true } },
+  ] },
 ];
 export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/browser-r2') } = {}) {
   assert.ok(globalThis.Bun, 'Run with Bun');
@@ -108,17 +118,22 @@ export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/bro
         record({ viewport: name, action: 'loaded-real-transcript-and-collapsed-shelf', dom: await page.evaluate(readDOM) });
         for (const input of group.cases) {
           try {
-          const frame = { type: 'extensionEvent', name: 'omo.dag.updated', data: input.data };
-          const signal = await armDOM(page, expected => (document.querySelector('[data-activity-tab="dag"] .th-activity-tab-count')?.textContent ?? null) === expected, input.expected);
-          const after = observed.mark();
-          const received = observed.wait(row => row.direction === 'received' && row.frame?.type === frame.type
-            && row.frame.name === frame.name && row.frame.data?.run_total_count === input.data.run_total_count, { after, label: input.name });
-          record({ viewport: name, action: 'inject-native-wire', case: input.name, expected: input.expected, frame });
-          fixture.deliver(chat, frame);
-          await received; await doneDOM(page, signal); await settleCapture(page);
-          const dom = await page.evaluate(readDOM);
-          record({ viewport: name, action: 'observed-tab', case: input.name, expected: input.expected, dom });
-          assert.equal(dom.count, input.expected); assert.deepEqual(dom.forbidden, []);
+          const deliveries = input.deliveries ?? [{ expected: input.expected, data: input.data }];
+          let dom;
+          for (const delivery of deliveries) {
+            const frame = { type: 'extensionEvent', name: 'omo.dag.updated', data: delivery.data };
+            const signal = await armDOM(page, expected => (document.querySelector('[data-activity-tab="dag"] .th-activity-tab-count')?.textContent ?? null) === expected, delivery.expected);
+            const after = observed.mark();
+            const received = observed.wait(row => row.direction === 'received' && row.frame?.type === frame.type
+              && row.frame.name === frame.name && row.frame.data?.run_counts_unavailable === delivery.data.run_counts_unavailable
+              && row.frame.data?.run_total_count === delivery.data.run_total_count, { after, label: input.name });
+            record({ viewport: name, action: 'inject-native-wire', case: input.name, expected: delivery.expected, frame });
+            fixture.deliver(chat, frame);
+            await received; await doneDOM(page, signal); await settleCapture(page);
+            dom = await page.evaluate(readDOM);
+            record({ viewport: name, action: 'observed-tab', case: input.name, expected: delivery.expected, dom });
+            assert.equal(dom.count, delivery.expected); assert.deepEqual(dom.forbidden, []);
+          }
           assert.equal(dom.open, 'false'); assert.equal(dom.expanded, 'false');
           assert.ok(dom.visible && dom.hit && dom.box.width > 0 && dom.box.height > 0);
           assert.ok(dom.box.x >= 0 && dom.box.y >= 0 && dom.box.right <= viewport.width && dom.box.bottom <= viewport.height);
