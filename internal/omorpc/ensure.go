@@ -172,15 +172,16 @@ type ownedProcessSocket struct {
 }
 
 type launcherBrandProfile struct {
-	Name           string              `json:"name"`
-	Command        string              `json:"command"`
-	DisplayVersion string              `json:"displayVersion"`
-	ConfigDir      string              `json:"configDir"`
-	FlatLayout     bool                `json:"flatLayout"`
-	EnvPrefix      string              `json:"envPrefix"`
-	UserAgent      string              `json:"userAgent"`
-	Originator     string              `json:"originator"`
-	Update         launcherBrandUpdate `json:"update"`
+	Name           string                  `json:"name"`
+	Command        string                  `json:"command"`
+	DisplayVersion string                  `json:"displayVersion"`
+	ConfigDir      string                  `json:"configDir"`
+	FlatLayout     bool                    `json:"flatLayout"`
+	EnvPrefix      string                  `json:"envPrefix"`
+	UserAgent      string                  `json:"userAgent"`
+	Originator     string                  `json:"originator"`
+	Update         launcherBrandUpdate     `json:"update"`
+	Changelog      *launcherBrandChangelog `json:"changelog,omitempty"`
 }
 
 type launcherBrandUpdate struct {
@@ -188,6 +189,11 @@ type launcherBrandUpdate struct {
 	DistTag      string `json:"distTag"`
 	Command      string `json:"command"`
 	ChangelogURL string `json:"changelogUrl"`
+}
+
+type launcherBrandChangelog struct {
+	Path    string `json:"path"`
+	Version string `json:"version"`
 }
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
@@ -1014,6 +1020,19 @@ func launcherNativeContextFromRoot(root string) (string, string, error) {
 			ChangelogURL: "https://github.com/code-yeongyu/oh-my-openagent/releases",
 		},
 	}
+	changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
+	if info, err := os.Stat(changelogPath); err == nil && info.Mode().IsRegular() {
+		version := manifest.Version // fallback when plugin/package.json is missing or has no version
+		var pluginManifest struct {
+			Version string `json:"version"`
+		}
+		if data, err := os.ReadFile(filepath.Join(root, "plugin", "package.json")); err == nil {
+			if json.Unmarshal(data, &pluginManifest) == nil && pluginManifest.Version != "" {
+				version = pluginManifest.Version
+			}
+		}
+		profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: version}
+	}
 	encoded, err := json.Marshal(profile)
 	if err != nil {
 		return "", "", err
@@ -1036,6 +1055,9 @@ func validateLauncherBrandProfile(encoded string) error {
 		profile.EnvPrefix, profile.UserAgent, profile.Originator,
 		profile.Update.PackageName, profile.Update.DistTag,
 		profile.Update.Command, profile.Update.ChangelogURL,
+	}
+	if profile.Changelog != nil {
+		values = append(values, profile.Changelog.Path, profile.Changelog.Version)
 	}
 	if slices.Contains(values, "") {
 		return errors.New("brand profile is incomplete")

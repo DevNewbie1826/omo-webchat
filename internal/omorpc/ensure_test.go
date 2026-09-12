@@ -442,6 +442,85 @@ func TestLauncherBrandProfileValidation(t *testing.T) {
 	}
 }
 
+func TestLauncherNativeContextDerivesChangelogWhenPluginChangelogExists(t *testing.T) {
+	_, root, _ := writeRecognizedLauncherInstall(t, "5.0.0-0.beta.56")
+	changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
+	if err := os.WriteFile(changelogPath, []byte("# changelog\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pluginVersion := "5.0.0-beta.56"
+	if err := os.WriteFile(filepath.Join(root, "plugin", "package.json"), []byte(fmt.Sprintf(`{"version":%q}`, pluginVersion)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	profile, _, err := launcherNativeContextFromRoot(root)
+	if err != nil {
+		t.Fatalf("launcherNativeContextFromRoot: %v", err)
+	}
+	var decoded struct {
+		DisplayVersion string `json:"displayVersion"`
+		Changelog      *struct {
+			Path    string `json:"path"`
+			Version string `json:"version"`
+		} `json:"changelog"`
+	}
+	if err := json.Unmarshal([]byte(profile), &decoded); err != nil {
+		t.Fatalf("decode derived profile: %v", err)
+	}
+	if decoded.DisplayVersion != "5.0.0-0.beta.56" {
+		t.Fatalf("displayVersion = %q, want root manifest version", decoded.DisplayVersion)
+	}
+	if decoded.Changelog == nil {
+		t.Fatal("derived profile omitted changelog")
+	}
+	if decoded.Changelog.Path != changelogPath {
+		t.Fatalf("changelog.path = %q, want %q", decoded.Changelog.Path, changelogPath)
+	}
+	if decoded.Changelog.Version != pluginVersion {
+		t.Fatalf("changelog.version = %q, want %q", decoded.Changelog.Version, pluginVersion)
+	}
+}
+
+func TestLauncherNativeContextOmitsChangelogWhenPluginChangelogAbsent(t *testing.T) {
+	_, root, _ := writeRecognizedLauncherInstall(t, "1.2.3")
+	profile, _, err := launcherNativeContextFromRoot(root)
+	if err != nil {
+		t.Fatalf("launcherNativeContextFromRoot: %v", err)
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(profile), &decoded); err != nil {
+		t.Fatalf("decode derived profile: %v", err)
+	}
+	if raw, present := decoded["changelog"]; present {
+		t.Fatalf("derived profile included changelog key: %s", raw)
+	}
+	if err := validateLauncherBrandProfile(profile); err != nil {
+		t.Fatalf("validateLauncherBrandProfile: %v", err)
+	}
+}
+
+func TestLauncherBrandProfileValidationRejectsEmptyChangelogFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "empty path",
+			body: `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"},"changelog":{"path":"","version":"1"}}`,
+		},
+		{
+			name: "empty version",
+			body: `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"},"changelog":{"path":"/tmp/CHANGELOG.md","version":""}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateLauncherBrandProfile(tc.body); err == nil {
+				t.Fatalf("profile %s accepted", tc.body)
+			}
+		})
+	}
+}
+
 func TestLauncherUpdateCommandMatchesInstallShape(t *testing.T) {
 	bunRoot := filepath.Join(t.TempDir(), ".bun", "install", "global", "node_modules", "omo-ai")
 	if got, want := launcherUpdateCommand(bunRoot), "bun add --cwd "+shellQuote(bunRoot)+" -g omo-ai@beta"; got != want {
