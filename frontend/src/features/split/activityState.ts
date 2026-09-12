@@ -389,6 +389,9 @@ function reconcileDagSnapshot(
     dags,
     dagFreshness,
     truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
+    // Membership completeness is tracked on its own signal: per-run graph/
+    // node loss (run.truncated) must never read as missing run membership.
+    truncatedDagRuns: parsed.truncatedRuns === true,
   };
 }
 

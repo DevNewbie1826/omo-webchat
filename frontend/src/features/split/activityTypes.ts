@@ -123,6 +123,10 @@ export interface ActivityState {
   /** The retained task/DAG rows are a bounded prefix of a larger history. */
   readonly truncatedTasks?: boolean;
   readonly truncatedDags?: boolean;
+  /** Run-MEMBERSHIP completeness only: the snapshot's run list itself was
+   *  truncated. Kept separate from truncatedDags, which also reports graph/
+   *  node loss — node truncation never implies missing run membership. */
+  readonly truncatedDagRuns?: boolean;
   /** True between chat run.started and run.done; gates shelf staleness. */
   readonly runInFlight?: boolean;
 }

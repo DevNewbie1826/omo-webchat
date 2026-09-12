@@ -254,7 +254,13 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     if (taskCounts.dagRunRunningCount !== undefined && taskCounts.dagRunTotalCount !== undefined) {
       return taskCounts.dagRunTotalCount === 0 ? null : `${taskCounts.dagRunRunningCount}/${taskCounts.dagRunTotalCount}`;
     }
-    if (activities.truncatedDags === true || dags.length === 0) return null;
+    // The fallback gate is RUN-MEMBERSHIP completeness, never graph/node
+    // completeness: a node-truncated run still carries its exact identity
+    // and status, so it counts. States assembled before the dedicated
+    // membership signal existed carry only the combined marker, which then
+    // stays conservative; the reconciler always emits the dedicated flag.
+    const membershipIncomplete = activities.truncatedDagRuns ?? activities.truncatedDags === true;
+    if (membershipIncomplete || dags.length === 0) return null;
     const runningRuns = dags.filter((run) => !TERMINAL_DAG_STATUSES.has(run.status)).length;
     return `${runningRuns}/${dags.length}`;
   };
