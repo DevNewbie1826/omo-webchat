@@ -58,6 +58,19 @@
   }
 }
 
+/* The hamburger above is absolutely positioned, so it reserves no flow
+   space. When a long picker history overflows this safely-centered column,
+   centering falls back to the top and the non-shrinking .th-home-live would
+   begin at the top padding edge — directly under the button, which then
+   paints its icon over the running-sessions heading. Whenever the button
+   exists (mobile empty state), grow the top padding past the button's full
+   band: --th-space-11 is exactly the menu rule's 44px target below, and the
+   base --th-space-6 (24px) more than covers its 10px offset, so the total
+   68px always clears the 54px band. Tokens only, per the spacing contract. */
+.th-empty:has(> .th-empty-menu) {
+  padding-top: calc(var(--th-space-6) + var(--th-space-11));
+}
+
 /* Descendant selector (0,2,0) beats .th-btn-icon's 28px (0,1,0) regardless
    of import order, keeping the 44px touch target on mobile. */
 .th-empty .th-empty-menu {

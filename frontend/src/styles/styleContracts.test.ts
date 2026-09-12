@@ -112,6 +112,10 @@ const SPACING_COMPONENT_ALLOWANCES = [
     reason: "Safe-area insets are physical dimensions supplied by the browser environment.",
     pattern: /^env\(\s*safe-area-inset-(?:top|right|bottom|left)\s*\)(?=\s|$)/,
   },
+  {
+    reason: "A calc() sum of spacing tokens stays on the scale (e.g. the empty column reserving its floating menu's band).",
+    pattern: /^calc\(\s*var\(\s*--th-space-[\w-]+\s*\)(?:\s*\+\s*var\(\s*--th-space-[\w-]+\s*\))+\s*\)(?=\s|$)/,
+  },
 ] as const;
 
 const hasOnlyAllowedSpacingComponents = (value: string): boolean => {
@@ -583,6 +587,31 @@ describe("visual accessibility contracts", () => {
     expect(appEmpty).toMatch(/\.th-empty\s*\{[^}]*position:\s*relative/);
     expect(appEmpty).toMatch(/\.th-empty \.th-empty-menu\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/);
     expect(appEmpty).not.toMatch(/(?:^|\})\s*\.th-empty-menu\s*\{[^}]*width:\s*44px/);
+  });
+
+  it("reserves the floating menu's band in the empty column's top padding", () => {
+    // The hamburger is absolutely positioned at (10,10) with a 44x44px target,
+    // so it reserves no flow space. When a long picker history overflows the
+    // safely-centered column, centering falls back to the top and the
+    // non-shrinking .th-home-live begins at the top padding edge — under the
+    // button, which then paints its icon over the running-sessions heading.
+    // Whenever the button exists (mobile empty state), the column must pad its
+    // top by at least the button's 10px offset plus its 44px height (54px),
+    // so the running block can never start inside the menu's band.
+    const reserved = ruleBody(appEmpty, ".th-empty:has(> .th-empty-menu)");
+    expect(reserved).toMatch(/padding-top:/);
+    const menu = ruleBody(appEmpty, ".th-empty .th-empty-menu");
+    const menuTop = Number.parseFloat(declarationValue(menu, "top"));
+    const menuHeight = Number.parseFloat(declarationValue(menu, "height"));
+    const paddingTop = declarationValue(reserved, "padding-top");
+    // Accept a token, a literal, or a calc() summing the parts; evaluate the
+    // numeric total so the band always covers offset + target.
+    const terms = paddingTop.match(/\d+(?:\.\d+)?px|var\(\s*--th-space-[\w-]+\s*\)/g) ?? [];
+    const total = terms.reduce((sum, term) => {
+      const token = wholeVarToken(term);
+      return sum + Number.parseFloat((token ? tokenValue(token) : term).replace("px", ""));
+    }, 0);
+    expect(total).toBeGreaterThanOrEqual(menuTop + menuHeight);
   });
 });
 
