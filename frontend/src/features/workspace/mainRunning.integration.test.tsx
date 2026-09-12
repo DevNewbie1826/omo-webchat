@@ -112,7 +112,11 @@ describe("main running transport and sidebar", () => {
   it("pins main-only work, settles it, and never adds the main to exact child counts", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response([{ ...base, active: false }])));
     await mount(true);
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    // Idle live sessions stay listed (working-first order); only the running
+    // indicators disappear.
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
+    expect(container.querySelector(".th-overview-card-running")).toBeNull();
     push({ active: true });
     expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
     expect(container.querySelector(".th-tree-children .th-tree-running")).not.toBeNull();
@@ -131,11 +135,13 @@ describe("main running transport and sidebar", () => {
     expect(summaries[0]).toMatchObject({ active: false, runningCount: 7 });
     expect(container.querySelector(".th-overview-card-running")?.textContent).toBe("7");
     push({ snapshots: [{ name: "omo.task.updated", data: { tasks: [], agent_running_count: 0 }, oversized: false }] });
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelector(".th-overview-card-running")).toBeNull();
     expect(container.querySelector(".th-tree-children .th-tree-running")).toBeNull();
     push({ active: true });
     push({ active: false });
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
     expect(container.querySelector(".th-tree-live")).not.toBeNull();
   });
 
@@ -210,8 +216,11 @@ describe("main running transport and sidebar", () => {
       expect(container.querySelector(".th-tree-running--workspace")).not.toBeNull();
       expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
     } else {
-      expect(container.querySelector(".th-sidebar-live")).toBeNull();
-      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(0);
+      // Idle sessions remain listed; they just carry no running badge.
+      expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
+      expect(container.querySelector(".th-overview-card-running")).toBeNull();
+      expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
     }
   });
 

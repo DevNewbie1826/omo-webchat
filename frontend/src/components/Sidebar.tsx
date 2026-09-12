@@ -12,7 +12,10 @@ import "../styles/sidebar-live.css";
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
 export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
+/** Recency refresh cadence while the pinned section lists live sessions. */
+export const LIVE_RECENCY_REFRESH_INTERVAL_MS = 15_000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
+import { compareLiveSessions, isLiveSessionListed } from "../features/workspace/liveSessionOrder";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
 import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 import type { WorkspaceSessionPaging } from "../features/workspace/useWorkspaces";
@@ -42,6 +45,9 @@ export interface SidebarProps {
   readonly onRenameTerminal: (ws: Workspace, tm: Terminal, name: string) => Promise<void>;
   readonly onLogout: () => void;
   readonly notify: (msg: string, kind?: ToastKind) => void;
+  /** Re-fetches a workspace's first session page through the scheduled path,
+   * keeping catalog recency fresh while live sessions are pinned. */
+  readonly onRefreshSessions?: (wsId: string) => void;
 }
 
 /** Viewport width below which the sidebar becomes a drawer. Keep in sync with the CSS @media queries. */
@@ -69,6 +75,7 @@ export function Sidebar({
   onRenameTerminal,
   onLogout,
   notify,
+  onRefreshSessions,
 }: SidebarProps) {
   const { t } = useT();
   const isMobile = useMediaQuery(MOBILE_QUERY);
@@ -103,13 +110,35 @@ export function Sidebar({
     () => summaries.filter((summary) => summary.active === true || summary.runningCount > 0),
     [summaries],
   );
+  // The count next to the label means "how many are working": the exact
+  // running-agent total across the working sessions, idle rows excluded.
   const totalRunningCount = useMemo(
     () => runningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
     [runningSummaries],
   );
-  // View live only names the row to focus and sort first; membership stays
-  // strictly running-only, so a highlight never adds an idle session and a
-  // pinned row leaves the list when both main and child work settle.
+  // Last-activity ms per session id: catalog rows from the loaded session
+  // pages, raised by whatever the membership crawl observed.
+  const [crawlRecency, setCrawlRecency] = useState<ReadonlyMap<string, number>>(new Map());
+  const lastActivityMs = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const rows of sessionLists.values()) {
+      for (const row of rows) map.set(row.id, Math.max(map.get(row.id) ?? 0, row.recencyMs));
+    }
+    for (const [id, recencyMs] of crawlRecency) {
+      map.set(id, Math.max(map.get(id) ?? 0, recencyMs));
+    }
+    return map;
+  }, [sessionLists, crawlRecency]);
+  // The pinned section lists every live session, idle included: working
+  // sessions first, then most recent activity.
+  const liveSummaries = useMemo(
+    () => summaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, lastActivityMs)),
+    [summaries, lastActivityMs],
+  );
+  // View live only names the row to focus and sort first. The tree offers it
+  // strictly for running sessions, so a highlight never fabricates a row; an
+  // idle pinned row stays listed (every live session is listed) but loses its
+  // running badge and highlight when both main and child work settle.
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
@@ -175,8 +204,15 @@ export function Sidebar({
     const crawl = { fingerprint: membershipFingerprint, controller };
     activeMembershipCrawl.current = crawl;
     void resolveWorkspaceSessionMembership(workspaces, unresolvedRunningIds, controller.signal)
-      .then(({ memberships: resolved, hadFailures }) => {
+      .then(({ memberships: resolved, recency, hadFailures }) => {
         if (activeMembershipCrawl.current !== crawl || controller.signal.aborted) return;
+        setCrawlRecency((previous) => {
+          const next = new Map(previous);
+          for (const [id, recencyMs] of recency) {
+            next.set(id, Math.max(next.get(id) ?? 0, recencyMs));
+          }
+          return next;
+        });
         setResolvedRunningMembership((previous) => {
           const next = new Map(previous);
           for (const [wsId, ids] of resolved) {
@@ -214,6 +250,44 @@ export function Sidebar({
     activeMembershipCrawl.current = undefined;
     if (membershipRetryTimer.current !== undefined) window.clearTimeout(membershipRetryTimer.current);
   }, []);
+
+  // Workspaces that own at least one currently live session.
+  const liveOwnerWsIds = useMemo(() => {
+    const owners = new Set<string>();
+    if (summaries.length === 0) return owners;
+    const liveIds = new Set(summaries.map((summary) => summary.id));
+    for (const workspace of workspaces) {
+      const owns = workspace.chats.some((chat) => liveIds.has(chat.id))
+        || (sessionLists.get(workspace.id) ?? []).some((row) => liveIds.has(row.id))
+        || [...(resolvedRunningMembership.get(workspace.id) ?? [])].some((id) => liveIds.has(id));
+      if (owns) owners.add(workspace.id);
+    }
+    return owners;
+  }, [summaries, workspaces, sessionLists, resolvedRunningMembership]);
+  const liveOwnerWsIdsRef = useRef(liveOwnerWsIds);
+  useEffect(() => {
+    liveOwnerWsIdsRef.current = liveOwnerWsIds;
+  }, [liveOwnerWsIds]);
+  // Keep catalog recency fresh while any live session is pinned. The interval
+  // keys off the boolean only so the 4s live poll cannot starve it; the ref
+  // always holds the current owner set. Cleared on unmount.
+  const hasLiveSessions = summaries.length > 0;
+  useEffect(() => {
+    if (onRefreshSessions === undefined || !hasLiveSessions) return;
+    const timer = window.setInterval(() => {
+      for (const wsId of liveOwnerWsIdsRef.current) onRefreshSessions(wsId);
+    }, LIVE_RECENCY_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [onRefreshSessions, hasLiveSessions]);
+
+  // The highlight names a running row; when that session's work settles the
+  // row stays listed (idle rows are listed too) but the highlight clears.
+  useEffect(() => {
+    if (highlightedSessionId === null) return;
+    const stillWorking = summaries.some((summary) => summary.id === highlightedSessionId
+      && (summary.active === true || summary.runningCount > 0));
+    if (!stillWorking) setHighlightedSessionId(null);
+  }, [highlightedSessionId, summaries]);
 
   const hiddenMobileDrawer = isMobile && collapsed;
   return (
@@ -269,14 +343,14 @@ export function Sidebar({
             </div>
           </div>
 
-          {runningSummaries.length > 0 && (
+          {liveSummaries.length > 0 && (
             <div className="th-sidebar-live">
               <div className="th-sidebar-live-label">
-                {t("sidebar.overview")}
+                {t("sidebar.sessions")}
                 <span className="th-sidebar-live-count" aria-label={t("overview.runningAria", { n: totalRunningCount })}>{totalRunningCount}</span>
               </div>
               <LiveSessionList
-                summaries={runningSummaries}
+                summaries={liveSummaries}
                 workspaces={workspaces}
                 sessionLists={sessionLists}
                 onSelect={onSelectTerminal}
