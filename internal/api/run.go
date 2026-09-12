@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -65,6 +66,15 @@ func (l *recoveryDaemonLifecycle) stop() {
 	for _, daemon := range owned {
 		l.stopDaemon(daemon)
 	}
+}
+
+// supervisors snapshots every retained ownership handle so a restart can
+// stop each spawned supervisor exactly once without racing a concurrent
+// retain from the client's reconnect hook.
+func (l *recoveryDaemonLifecycle) supervisors() []*omorpc.EnsuredDaemon {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.owned)
 }
 
 func (l *recoveryDaemonLifecycle) stopDaemon(daemon *omorpc.EnsuredDaemon) {
@@ -138,6 +148,28 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	sessions := auth.NewSessionStore(ctx, cfg.Password, logger)
 	apiServer = New(ctx, cfg, cursors, sessions, manager, bridge, logger)
 	apiServer.queue = queue
+	// The restart sequence never calls Stop: closing the shared client is
+	// terminal for every chat. StopSupervisor only terminates the owned
+	// supervisor process groups, so the reconnect hook can spawn a successor
+	// engine and re-establish the transport on the same client. The ensured
+	// handle is checked first: a foreign engine must be refused before any
+	// signal is sent, and every stop confirms its process group is gone
+	// before a successor may spawn.
+	apiServer.restartEngine = func(ctx context.Context) (string, string, error) {
+		before := ensured.Client.ServerVersion()
+		if err := ensured.StopSupervisor(ctx); err != nil {
+			return before, "", err
+		}
+		for _, daemon := range recoveryDaemons.supervisors() {
+			if err := daemon.StopSupervisor(ctx); err != nil {
+				return before, "", err
+			}
+		}
+		if err := ensured.Client.EnsureConnected(ctx); err != nil {
+			return before, "", err
+		}
+		return before, ensured.Client.ServerVersion(), nil
+	}
 
 	var cleanup sync.Once
 	cleanupAll := func() {

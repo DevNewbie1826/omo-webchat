@@ -41,8 +41,14 @@ type Server struct {
 	logger   *slog.Logger
 	ctx      context.Context
 
+	// Installation updates and engine restarts replace the same binary, so
+	// both endpoints single-flight on one mutex and never overlap.
 	updateMu           sync.Mutex
 	updateInstallation func(context.Context) error
+	// restartEngine stops every owned supervisor, re-establishes the shared
+	// client transport so the reconnect hook spawns a successor engine, and
+	// reports the negotiated engine version before and after the swap.
+	restartEngine func(ctx context.Context) (before, after string, err error)
 
 	chatLifecycleMu             sync.Mutex
 	adoptionMu                  sync.Mutex
@@ -98,6 +104,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("PUT /api/layout", s.handleSetLayout)
 	protected.HandleFunc("GET /api/system/stats", s.handleSystemStats)
 	protected.HandleFunc("POST /api/system/update", s.handleSystemUpdate)
+	protected.HandleFunc("POST /api/system/engine/restart", s.handleSystemEngineRestart)
 
 	mux.Handle("/api/", s.sessions.Middleware(protected))
 	mux.Handle("/", s.staticHandler())
