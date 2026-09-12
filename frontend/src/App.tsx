@@ -6,6 +6,7 @@ import { checkAuth, logout } from "./features/auth/auth";
 import { setUnauthorizedHandler } from "./lib/api";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MOBILE_QUERY, Sidebar } from "./components/Sidebar";
+import type { LiveRecencyShare } from "./components/Sidebar";
 import type { ToastKind } from "./components/SessionTree";
 import { WorkspaceWizard } from "./features/workspace/WorkspaceWizard";
 import { ChatPane } from "./features/split/ChatPane";
@@ -40,8 +41,18 @@ import "./styles/home-live.css";
 const SPLIT_QUERY = "(min-width: 1024px)";
 
 const TOAST_DISMISS_MS = 2600;
-/** Cadence for re-fetching catalog recency of workspaces owning live sessions. */
-const HOME_RECENCY_REFRESH_MS = 15_000;
+
+function sameRecencyMap(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, ms] of a) if (b.get(id) !== ms) return false;
+  return true;
+}
+
+function sameOwnerSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
 
 interface Toast {
   readonly id: number;
@@ -88,7 +99,7 @@ export function App() {
   const {
     workspaces, setWorkspaces, expanded, setExpanded, sessions,
     sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
-    ensureSessionsLoaded, refreshSessions, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
+    ensureSessionsLoaded, setRecencyTargets, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
   } = useWorkspaces({ notify, t, layout, confirm });
@@ -205,7 +216,18 @@ export function App() {
   // select/open path the picker uses.
   const homePollSummaries = useLiveSessionSummaries(authed === true);
   const homeLiveSummaries = useMergedLiveSummaries(homePollSummaries);
-  // Recency comes from the already-loaded catalog rows; no extra fetch.
+  // Recency comes from the already-loaded catalog rows, raised by whatever
+  // the sidebar's membership crawl learned and published; no extra fetch.
+  const [liveShare, setLiveShare] = useState<LiveRecencyShare | null>(null);
+  const liveShareRef = useRef<LiveRecencyShare | null>(null);
+  const handleLiveRecencyChange = useCallback((share: LiveRecencyShare): void => {
+    const previous = liveShareRef.current;
+    if (previous !== null
+      && sameRecencyMap(previous.recencyMs, share.recencyMs)
+      && sameOwnerSet(previous.ownerWsIds, share.ownerWsIds)) return;
+    liveShareRef.current = share;
+    setLiveShare(share);
+  }, []);
   const homeRecencyMs = useMemo(() => {
     const recency = new Map<string, number>();
     for (const listed of sessionLists.values()) {
@@ -213,8 +235,11 @@ export function App() {
         recency.set(session.id, Math.max(recency.get(session.id) ?? 0, session.recencyMs));
       }
     }
+    for (const [id, recencyMs] of liveShare?.recencyMs ?? []) {
+      recency.set(id, Math.max(recency.get(id) ?? 0, recencyMs));
+    }
     return recency;
-  }, [sessionLists]);
+  }, [sessionLists, liveShare]);
   const homeOrderedSummaries = useMemo(
     () => homeLiveSummaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
     [homeLiveSummaries, homeRecencyMs],
@@ -225,30 +250,15 @@ export function App() {
   );
   const homeSessionOpen = useSessionOpenAttempts(openSession);
 
-  // Recency freshness: App owns the single 15s refresh timer for workspaces
-  // owning live sessions. The sidebar owns no such timer (its membership
-  // crawl is reactive, driven by sessionLists replacement), so there is no
-  // second timer to deduplicate against. refreshSessions is guard-safe: it
-  // no-ops on unready workspaces and queues behind in-flight pages.
+  // Recency freshness: neither surface owns a timer. The sidebar publishes
+  // the workspaces that own live sessions (resolved through its membership
+  // crawl, catalog rows and chat lists), and the catalog scheduler in
+  // useWorkspaces owns the single periodic cadence for exactly those
+  // workspaces. Until the first publication arrives there is nothing to arm.
   useEffect(() => {
-    if (authed !== true || homeLiveSummaries.length === 0) return;
-    const timer = window.setInterval(() => {
-      const ownerIds = new Set<string>();
-      let unresolved = false;
-      for (const summary of homeLiveSummaries) {
-        const owner = workspaces.find((workspace) =>
-          workspace.chats.some((chat) => chat.id === summary.id)
-          || (sessionLists.get(workspace.id) ?? []).some((session) => session.id === summary.id));
-        if (owner === undefined) unresolved = true;
-        else ownerIds.add(owner.id);
-      }
-      // A live session not yet attributed to a workspace still needs fresh
-      // recency; refresh every workspace rather than guessing.
-      if (unresolved) for (const workspace of workspaces) ownerIds.add(workspace.id);
-      for (const wsId of ownerIds) refreshSessions(wsId);
-    }, HOME_RECENCY_REFRESH_MS);
-    return () => window.clearInterval(timer);
-  }, [authed, homeLiveSummaries, workspaces, sessionLists, refreshSessions]);
+    if (authed !== true || liveShare === null) return;
+    setRecencyTargets([...liveShare.ownerWsIds]);
+  }, [authed, liveShare, setRecencyTargets]);
 
   // The same live-session block the mobile empty state shows, offered to
   // SplitView so wide-layout empty panes render it above their session
@@ -373,6 +383,7 @@ export function App() {
             onRenameTerminal={handleRenameTerminal}
             onLogout={() => void handleLogout()}
             notify={notify}
+            onLiveRecencyChange={handleLiveRecencyChange}
           />
           <main className="th-main">
             {toast && (
