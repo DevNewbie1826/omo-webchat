@@ -1,11 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { MOBILE_QUERY } from "../../components/Sidebar";
 import type { CommandEntry } from "../../lib/chatWs";
 import { useT } from "../../i18n";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { ChatComposerAttachment, ChatComposerAttachmentPreview } from "./chatComposerAttachment";
 import { ChatComposerEditor } from "./chatComposerEditor";
-import { handleChatComposerKeyDown } from "./chatComposerKeyboard";
+import { TOUCH_QUERY, handleChatComposerKeyDown } from "./chatComposerKeyboard";
 import { ChatComposerPalettes } from "./chatComposerPalettes";
 import { commandPrefix, detectCommandTrigger, matchCommands } from "./commandMatch";
 import { mergeCommands } from "./curatedCommands";
@@ -40,7 +39,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
   const paletteId = useId();
   const paletteListboxId = `${paletteId}-command-listbox`, paletteOptionIdPrefix = `${paletteId}-command-option`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const isMobile = useMediaQuery(MOBILE_QUERY);
+  const isTouch = useMediaQuery(TOUCH_QUERY);
   const { clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers } = useImageAttachment(pendingImage, setPendingImage);
   const [caret, setCaret] = useState(0);
   const fileId = useId();
@@ -251,7 +250,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
               setActiveIndex, setHidden: setPaletteHidden,
             },
             run: { running, onSteer: steer, onStop, onSubmit: submit },
-            isMobile,
+            isTouch,
           })}
           onStop={onStop}
         />

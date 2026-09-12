@@ -279,6 +279,23 @@ describe("ModelPicker", () => {
     expect(selected).toEqual(["openai/gpt-4o"]);
   });
 
+  it("selects a subsequence-only match through the rendered picker", () => {
+    const catalog: readonly ModelOption[] = [
+      { provider: "anthropic", modelId: "claude-sonnet-4", name: "Claude Sonnet 4" },
+      { provider: "openai", modelId: "gpt-5", name: "GPT-5" },
+    ];
+    act(() => root.render(<ModelPicker models={catalog} currentModelKey="openai/gpt-5"
+      placeholder="Model" searchPlaceholder="Search" onSelect={(value) => selected.push(value)} />));
+    act(() => container.querySelector<HTMLButtonElement>(".th-model-picker-btn")!.click());
+    const search = container.querySelector<HTMLInputElement>(".th-model-picker-search")!;
+    act(() => setInputValue(search, "snt4"));
+    const options = container.querySelectorAll('[role="option"]');
+    expect(options).toHaveLength(1);
+    expect(options[0]!.textContent).toContain("Claude Sonnet 4");
+    act(() => pressKey(search, "Enter"));
+    expect(selected).toEqual(["anthropic/claude-sonnet-4"]);
+  });
+
   it("closes on Tab without selecting or blocking native focus traversal", () => {
     act(() => {
       root.render(

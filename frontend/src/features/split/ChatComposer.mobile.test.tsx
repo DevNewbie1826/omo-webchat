@@ -6,9 +6,12 @@ import { I18nContext } from "../../i18n";
 import { ChatComposer } from "./ChatComposer";
 import { i18n, setTextareaValue } from "./chatPaneTestHarness";
 
-function mockMatchMedia(mobile: boolean): void {
+const NARROW_QUERY = "(max-width: 768px)";
+const TOUCH_QUERY = "(hover: none) and (pointer: coarse)";
+
+function mockMatchMedia(matching: readonly string[]): void {
 	vi.stubGlobal("matchMedia", (query: string) => ({
-		matches: mobile ? query === "(max-width: 768px)" : false,
+		matches: matching.includes(query),
 		media: query,
 		onchange: null,
 		addEventListener: () => undefined,
@@ -63,8 +66,8 @@ describe("ChatComposer mobile Enter behavior", () => {
 		});
 	}
 
-	it("does not submit on Enter on mobile (Enter becomes a newline)", () => {
-		mockMatchMedia(true);
+	it("does not submit on Enter on a touch device (Enter becomes a newline)", () => {
+		mockMatchMedia([NARROW_QUERY, TOUCH_QUERY]);
 		render();
 		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
 		if (!textarea) throw new Error("missing textarea");
@@ -73,8 +76,18 @@ describe("ChatComposer mobile Enter behavior", () => {
 		expect(submitted).toBe(0);
 	});
 
+	it("submits on Enter in a narrow desktop window (viewport width is not a keyboard signal)", () => {
+		mockMatchMedia([NARROW_QUERY]);
+		render();
+		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+		if (!textarea) throw new Error("missing textarea");
+		act(() => setTextareaValue(textarea, "line one"));
+		act(() => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+		expect(submitted).toBe(1);
+	});
+
 	it("submits on Enter on desktop", () => {
-		mockMatchMedia(false);
+		mockMatchMedia([]);
 		render();
 		const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
 		if (!textarea) throw new Error("missing textarea");
