@@ -29,8 +29,14 @@ interface ChatComposerKeyboardContext {
   readonly file: FileKeyboardState;
   readonly command: CommandKeyboardState;
   readonly run: RunKeyboardState;
-  readonly isMobile: boolean;
+  /** True on touch-first devices (soft keyboard), where Enter inserts a
+   *  newline instead of sending. Not tied to viewport width: a narrow desktop
+   *  window still has a physical keyboard. */
+  readonly isTouch: boolean;
 }
+
+/** Touch-first device: no hover and a coarse primary pointer. */
+export const TOUCH_QUERY = "(hover: none) and (pointer: coarse)";
 
 export function handleChatComposerKeyDown(
   event: KeyboardEvent<HTMLTextAreaElement>,
@@ -108,7 +114,7 @@ export function handleChatComposerKeyDown(
   }
   if (
     event.key === "Enter"
-    && !context.isMobile
+    && !context.isTouch
     && !event.shiftKey
     && !event.metaKey
     && !event.ctrlKey
