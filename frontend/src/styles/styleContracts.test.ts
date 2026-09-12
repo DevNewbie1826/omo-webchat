@@ -20,7 +20,7 @@ const fileEditor = readStyle("file-editor");
 const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
-const allStyles = ["app-empty", "chat-transcript", "login", "sidebar", "sidebar-live"]
+const allStyles = ["app-empty", "chat-transcript", "home-live", "login", "sidebar", "sidebar-live"]
   .map(readStyle)
   .join("\n");
 // Vite's glob supplies only the complete stylesheet inventory. Contract
@@ -824,6 +824,83 @@ describe("activity shelf DAG contracts", () => {
     const rule = activityShelf.match(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{[^}]*\}/);
     expect(rule, "scoped refresh-toolbar spacing rule").not.toBeNull();
     expect(rule?.[0]).toContain("margin-bottom: var(--th-space-3)");
+  });
+});
+
+describe("main-screen running-sessions contracts", () => {
+  // With no chat selected, .th-empty renders the running-sessions block above
+  // the session picker: the same overview card markup as the sidebar's pinned
+  // section, but the cards keep their last-output line. The block fills the
+  // picker column up to a fixed cap and owns a bounded internal scrollport,
+  // so any number of running sessions can never push the picker off-screen.
+  const homeLive = readStyle("home-live");
+
+  it("bounds the block inside the picker column with its own scrollport", () => {
+    const block = ruleBody(homeLive, ".th-home-live");
+    expect(declarationValue(block, "display")).toBe("flex");
+    expect(declarationValue(block, "flex-direction")).toBe("column");
+    expect(declarationValue(block, "gap")).toBe("var(--th-space-2)");
+    expect(declarationValue(block, "width")).toBe("100%");
+    expect(declarationValue(block, "max-width")).toBe("420px");
+    expect(declarationValue(block, "max-height")).toBe("min(38vh, 320px)");
+    expect(declarationValue(block, "overflow-y")).toBe("auto");
+    expect(declarationValue(block, "overflow-x")).toBe("hidden");
+  });
+
+  it("styles the header as an uppercase micro label with the count at the far edge", () => {
+    const label = ruleBody(homeLive, ".th-home-live-label");
+    expect(declarationValue(label, "display")).toBe("flex");
+    expect(declarationValue(label, "align-items")).toBe("center");
+    expect(declarationValue(label, "font-size")).toBe("var(--th-type-micro-size)");
+    expect(declarationValue(label, "font-weight")).toBe("var(--th-weight-emphasize)");
+    expect(declarationValue(label, "line-height")).toBe("var(--th-type-micro-line)");
+    expect(declarationValue(label, "letter-spacing")).toBe("var(--th-type-micro-tracking)");
+    expect(declarationValue(label, "text-transform")).toBe("uppercase");
+    expect(declarationValue(label, "color")).toBe("var(--th-faint)");
+    const count = ruleBody(homeLive, ".th-home-live-count");
+    expect(declarationValue(count, "margin-left")).toBe("auto");
+    expect(declarationValue(count, "color")).toBe("var(--th-muted)");
+  });
+
+  it("clamps card name, metadata, and last-output line to one ellipsized line each", () => {
+    const rows =
+      homeLive.match(
+        /\.th-home-live-list \.th-overview-card-name,\s*\.th-home-live-list \.th-overview-card-meta\s*\{([^}]*)\}/,
+      )?.[1] ?? "";
+    expect(rows, "shared clamp rule for home live card name and metadata").not.toBe("");
+    expect(declarationValue(rows, "min-width")).toBe("0");
+    expect(declarationValue(rows, "overflow")).toBe("hidden");
+    expect(declarationValue(rows, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(rows, "white-space")).toBe("nowrap");
+    const name = ruleBody(homeLive, ".th-home-live-list .th-overview-card-name");
+    expect(declarationValue(name, "font-size")).toBe("var(--th-type-label-size)");
+    const meta = ruleBody(homeLive, ".th-home-live-list .th-overview-card-meta");
+    expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
+    // Unlike the sidebar variant, the main-screen cards show their last
+    // output line; it clamps to one ellipsized line like the name and meta.
+    const line = ruleBody(homeLive, ".th-home-live-list .th-overview-card-line");
+    expect(declarationValue(line, "min-width")).toBe("0");
+    expect(declarationValue(line, "overflow")).toBe("hidden");
+    expect(declarationValue(line, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(line, "white-space")).toBe("nowrap");
+  });
+
+  it("stacks the block above the picker in wide-layout empty panes", () => {
+    // SplitView renders the block as a sibling above .th-picker-pane inside
+    // .th-pane-wrap; the wrap becomes a centered column that owns scrolling,
+    // and the picker sizes to content instead of filling the pane.
+    const wrap = ruleBody(split, ".th-pane-wrap:has(> .th-home-live)");
+    expect(wrap, "empty-pane column rule").not.toBe("");
+    expect(declarationValue(wrap, "flex-direction")).toBe("column");
+    expect(declarationValue(wrap, "align-items")).toBe("center");
+    expect(declarationValue(wrap, "overflow-y")).toBe("auto");
+    const block = ruleBody(split, ".th-pane-wrap > .th-home-live");
+    expect(declarationValue(block, "flex")).toBe("none");
+    const picker = ruleBody(split, ".th-pane-wrap:has(> .th-home-live) > .th-picker-pane");
+    expect(picker, "stacked picker override").not.toBe("");
+    expect(declarationValue(picker, "flex")).toBe("none");
+    expect(declarationValue(picker, "width")).toBe("100%");
+    expect(declarationValue(picker, "overflow")).toBe("visible");
   });
 });
 
