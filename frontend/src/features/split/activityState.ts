@@ -372,7 +372,13 @@ function reconcileDagSnapshot(
   // authority: a delivery whose rows are all rejected as stale (and which
   // removes nothing) says nothing about membership, so the incumbent
   // completeness signal stands — it must never flip on a rejected envelope.
+  // The two directions are asymmetric. Claiming COMPLETE membership is an
+  // upgrade and needs accepted authority. Claiming INCOMPLETE membership is
+  // a downgrade that only has to be current, not newer: a delivery carrying
+  // the already-accepted revision still reports that its own run list is
+  // truncated, and only a strictly older delivery may be ignored.
   let membershipAccepted = false;
+  let staleDelivery = false;
   for (const [id, run] of state.dags) {
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined && !dagFreshness.has(id)) dagFreshness.set(id, revision);
@@ -386,6 +392,7 @@ function reconcileDagSnapshot(
     const currentRevision = dagFreshness.get(incoming.runId);
     // Equal known revisions keep the incumbent as a complete unit. Unknown
     // pairs remain arrival-ordered for legacy payloads, never terminal-latched.
+    if (currentRevision !== undefined && revision !== undefined && revision < currentRevision) staleDelivery = true;
     if (currentRevision !== undefined && (revision === undefined || revision <= currentRevision)) continue;
     membershipAccepted = true;
     dags.set(incoming.runId, mergeDagRun(dags.get(incoming.runId), {
@@ -400,9 +407,11 @@ function reconcileDagSnapshot(
     truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
     // Membership completeness is tracked on its own signal: per-run graph/
     // node loss (run.truncated) must never read as missing run membership.
-    truncatedDagRuns: membershipAccepted || state.truncatedDagRuns === undefined
-      ? parsed.truncatedRuns === true
-      : state.truncatedDagRuns,
+    truncatedDagRuns: parsed.truncatedRuns === true
+      ? (staleDelivery ? state.truncatedDagRuns ?? true : true)
+      : membershipAccepted || state.truncatedDagRuns === undefined
+        ? false
+        : state.truncatedDagRuns,
   };
 }
 

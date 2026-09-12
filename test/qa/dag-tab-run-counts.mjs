@@ -33,21 +33,30 @@ function rich(statuses, running, total, truncated = false) {
   return { parent_session_id: chat, truncated_runs: truncated, run_running_count: running, run_total_count: total,
     runs: statuses.map((status, i) => ({ ...dagRow(status, '01'), run_id: `qa-run-${i}`, name: `QA run ${i}` })) };
 }
-function legacy(statuses, truncated = false) {
+function legacy(statuses, truncated = false, nodeTruncated = false) {
   const data = rich(statuses, 0, 0, truncated);
   delete data.run_running_count;
   delete data.run_total_count;
+  if (nodeTruncated && data.runs.length > 0) data.runs[0] = { ...data.runs[0], truncated_nodes: true };
   return data;
 }
-// This case must be the first DAG delivery on this freshly loaded page: no rich
-// delivery has populated retained state before the empty truncated payload.
-const cases = [
-  { name: 'compact-no-retained-runs', expected: '6/23', data: rich([], 6, 23, true) },
-  { name: 'rich-all-terminal-spellings', expected: '2/6', data: rich(['running', 'pending', 'completed', 'failed', 'cancelled', 'canceled'], 2, 6) },
-  { name: 'truncated-membership', expected: '3/17', data: rich(['running'], 3, 17, true) },
-  { name: 'legacy-complete-node-truncated', expected: '1/2', data: legacy(['running', 'completed'], false) },
-  { name: 'legacy-incomplete-membership', expected: null, data: legacy(['running'], true) },
-  { name: 'zero-total', expected: null, data: rich([], 0, 0) },
+// Cases are grouped by the authority state their first delivery requires, and
+// every group runs against its own fixture, browser profile and page load. The
+// scalar group's leading case must see an empty retained map, and the legacy
+// group must never inherit an exact pair an earlier delivery established -
+// retaining that pair is correct behaviour, so a shared page would hide the
+// scalar-less fallback entirely.
+const caseGroups = [
+  { name: 'scalars', cases: [
+    { name: 'compact-no-retained-runs', expected: '6/23', data: rich([], 6, 23, true) },
+    { name: 'rich-all-terminal-spellings', expected: '2/6', data: rich(['running', 'pending', 'completed', 'failed', 'cancelled', 'canceled'], 2, 6) },
+    { name: 'truncated-membership', expected: '3/17', data: rich(['running'], 3, 17, true) },
+    { name: 'zero-total', expected: null, data: rich([], 0, 0) },
+  ] },
+  { name: 'legacy', cases: [
+    { name: 'legacy-complete-node-truncated', expected: '1/2', data: legacy(['running', 'completed'], false, true) },
+    { name: 'legacy-incomplete-membership', expected: null, data: legacy(['running'], true) },
+  ] },
 ];
 export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/browser-r2') } = {}) {
   assert.ok(globalThis.Bun, 'Run with Bun');
@@ -65,7 +74,8 @@ export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/bro
     await save(evidenceDir, 'asset-hashes.json', assets);
     const { chromium } = await import(pathToFileURL(process.env.QA_PLAYWRIGHT ?? '/private/tmp/omo-asar/node_modules/playwright-core/index.mjs').href);
     for (const viewport of viewports) {
-      const name = `${viewport.width}x${viewport.height}`, receipt = { name, errors: [] };
+      for (const group of caseGroups) {
+      const name = `${viewport.width}x${viewport.height}`, receipt = { name, group: group.name, errors: [] };
       cleanup.cases.push(receipt);
       let fixture, context, page, profile, gate, observed;
       try {
@@ -96,7 +106,7 @@ export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/bro
           await page.locator('.th-activity-tabs [aria-selected="true"]').click(); await doneDOM(page, collapsed);
         }
         record({ viewport: name, action: 'loaded-real-transcript-and-collapsed-shelf', dom: await page.evaluate(readDOM) });
-        for (const input of cases) {
+        for (const input of group.cases) {
           try {
           const frame = { type: 'extensionEvent', name: 'omo.dag.updated', data: input.data };
           const signal = await armDOM(page, expected => (document.querySelector('[data-activity-tab="dag"] .th-activity-tab-count')?.textContent ?? null) === expected, input.expected);
@@ -130,8 +140,8 @@ export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/bro
         assert.equal(fixture.base.frames.filter(f => f.type === 'chat.send').length, 0);
       } catch (error) {
         if (page && !page.isClosed()) await clean(receipt, 'failureCapture', async () => {
-          await save(evidenceDir, `${name}-failure.json`, await page.evaluate(readDOM));
-          await page.screenshot({ path: join(evidenceDir, `${name}-failure.png`) });
+          await save(evidenceDir, `${name}-${group.name}-failure.json`, await page.evaluate(readDOM));
+          await page.screenshot({ path: join(evidenceDir, `${name}-${group.name}-failure.png`) });
         });
         throw error;
       } finally {
@@ -151,7 +161,8 @@ export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/bro
           });
           await clean(receipt, 'profileRemoved', async () => { await rm(profile, { recursive: true, force: true }); await assert.rejects(access(profile), { code: 'ENOENT' }); return true; });
         }
-        cleanup.errors.push(...receipt.errors.map(error => ({ name, ...error })));
+        cleanup.errors.push(...receipt.errors.map(error => ({ name, group: group.name, ...error })));
+      }
       }
     }
     assert.deepEqual(report.errors, []); assert.deepEqual(cleanup.errors, []); report.passed = true;

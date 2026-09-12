@@ -201,4 +201,31 @@ describe("ActivityShelf DAG tab run-membership fallback", () => {
     expect(count()).toBe("1/1");
     exactDagSurface("1/1");
   });
+
+  it.each([
+    ["live", applyActivityEvent],
+    ["REST", applyActivityHistorySnapshot],
+  ] as const)("%s: a current truncated delivery suppresses the count even when its rows are not newer", (_source, apply) => {
+    let state = apply(emptyActivityState(), "omo.dag.updated", {
+      truncated_runs: false,
+      runs: [
+        wireRun("run-live", "running", { updated_at: "2026-09-09T10:02:00Z" }),
+        wireRun("run-done", "completed", { updated_at: "2026-09-09T10:02:00Z", nodes: [], counts: { total: 0, running: 0, completed: 0 } }),
+      ],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBe("1/2");
+
+    // Truncation is a property of THIS delivery, not of row freshness: the
+    // row carries the accepted revision, so the delivery is current and its
+    // claim that the run list is incomplete stands. Membership becomes
+    // unknown and the exactness ladder renders nothing.
+    state = apply(state, "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [wireRun("run-live", "running", { updated_at: "2026-09-09T10:02:00Z" })],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBeNull();
+    exactDagSurface(null);
+  });
 });
