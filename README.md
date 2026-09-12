@@ -139,9 +139,25 @@ macOS·Linux의 npm 전역 prefix와 Bun 전역 설치를 지원합니다. Windo
 Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미널에서 설치에 사용한
 패키지 매니저로 업데이트하세요.
 
-설치 완료가 실행 중인 엔진의 교체를 뜻하지는 않습니다. 작업을 저장한 뒤 omo
-데몬과 omo-webchat을 재시작해야 새 버전이 적용됩니다. 기존 세션을 강제로
-재시작하지 않습니다.
+설치 완료가 실행 중인 엔진의 교체를 뜻하지는 않습니다. 설치 후 설정 메뉴의
+**omo 엔진 다시 시작**으로 엔진만 재시작해 새 버전을 적용할 수 있습니다. 기존
+세션을 강제로 재시작하지 않습니다.
+
+### omo 엔진 다시 시작하기
+
+설정 메뉴의 **omo 엔진 다시 시작**을 누르면 서버가 실행 중인 omo 엔진
+프로세스만 새 프로세스로 교체합니다. omo-webchat 자체는 웹 UI에서 재시작되지
+않고 로그인 상태도 유지됩니다.
+
+열린 채팅은 새 엔진 연결에서 자동으로 다시 열리지만, 교체 순간 스트리밍 중이던
+답변은 중단됩니다. 실행 중인 채팅이 있으면 확인 창이 미리 경고합니다.
+로그인한 사용자만 실행할 수 있고, 설치 업데이트와 엔진 재시작은 동시에
+실행되지 않습니다. 한쪽이 진행 중이면 다른 요청은 거부합니다.
+
+이 서버가 시작한 엔진만 재시작할 수 있습니다. 다른 프로세스가 시작한 엔진에
+연결된 경우에는 소유하지 않은 프로세스를 안전하게 종료할 방법이 없어 요청을
+거부합니다. 업데이트 없이도, 엔진을 오래 켜 둔 뒤 새로 시작하고 싶을 때
+단독으로 사용할 수 있습니다.
 
 ### 주요 플래그
 
@@ -278,9 +294,26 @@ Windows in-place updates are rejected because loaded native-module locks can
 leave a partial installation. On Windows, stop every omo/senpi process and
 webchat first, then update with the installation's package manager in a terminal.
 
-Installation does not replace the running engine. Save your work, then restart
-the omo daemon and omo-webchat to activate the new version. Existing sessions are
-never forcibly restarted by this action.
+Installation does not replace the running engine. After an install, choose
+**Restart omo engine** in the settings menu to restart just the engine and
+activate the new version. Existing sessions are never forcibly restarted by this
+action.
+
+### Restart the omo engine
+
+Choose **Restart omo engine** in the settings menu, and the server replaces only
+the running omo engine process with a fresh one. omo-webchat itself is never
+restarted from the web UI, and you stay signed in.
+
+Open chats reopen automatically on the new engine connection, but an answer that
+is streaming at that moment is interrupted. The confirmation dialog warns when
+chats are running. The action requires login, and installation updates and engine
+restarts never run at the same time; a second request while one runs is refused.
+
+Only an engine started by this server can be restarted. When the server attached
+to an engine someone else started, the request is refused because there is no safe
+way to stop a process this server does not own. A restart is also useful on its
+own, without an update, when the engine has been running for a long time.
 
 ### Flags
 
