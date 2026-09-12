@@ -49,6 +49,7 @@ export type DagDigest = {
    *  membership; the sole count authority for the collapsed DAG tab. */
   readonly dagRunRunningCount?: number;
   readonly dagRunTotalCount?: number;
+  readonly dagRunCountsUnavailable?: boolean;
 };
 
 function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry | null {
@@ -141,5 +142,6 @@ export function parseDagDigest(value: unknown): DagDigest | null {
     ...(agentTotalCount === undefined ? {} : { agentTotalCount }),
     ...(dagRunRunningCount === undefined ? {} : { dagRunRunningCount }),
     ...(dagRunTotalCount === undefined ? {} : { dagRunTotalCount }),
+    ...(typeof value["run_counts_unavailable"] === "boolean" ? { dagRunCountsUnavailable: value["run_counts_unavailable"] } : {}),
   };
 }

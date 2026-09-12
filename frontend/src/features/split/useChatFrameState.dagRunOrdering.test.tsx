@@ -50,7 +50,7 @@ function deliver(frame: unknown): void {
   });
 }
 
-function dagSnapshotFrame(scalars: Record<string, unknown>): Record<string, unknown> {
+function dagSnapshotFrame(scalars: Record<string, unknown>) {
   return {
     type: "extensionEvent",
     sessionId: "chat-1",
@@ -137,6 +137,89 @@ describe("useChatFrameState DAG run scalar ordering", () => {
     });
     container.remove();
     vi.unstubAllGlobals();
+  });
+
+  function run(id: string, minute: string, status = "running") {
+    return { run_id: id, run_key: id, name: id, status,
+      updated_at: `2026-09-09T10:${minute}:00Z`, nodes: [], edges: [], waves: [], truncated_nodes: true };
+  }
+
+  function expectNoPair() {
+    expect([...dagTab().querySelectorAll("span")].map(span => span.textContent)).toEqual(["activity.dag"]);
+  }
+
+  const exact = () => dagSnapshotFrame({
+    runs: [run("done", "01", "completed"), run("live", "02")],
+    run_running_count: 1, run_total_count: 2,
+  });
+  // Observed engine behavior/contract: the unknown-clock inventory retains
+  // the last accepted rich row, while withdrawing its exact count authority.
+  const withdrawal = () => dagSnapshotFrame({
+    runs: [run("done", "01", "completed")], run_counts_unavailable: true,
+  });
+  const withdrawalDigest = {
+    runs: [{ run_id: "done", status: "completed", running_task_ids: [] }],
+    truncated: false, run_counts_unavailable: true,
+  };
+
+  it.each(["live", "history"])("%s omission cannot certify a stale complete inventory", source => {
+    deliver(dagSnapshotFrame({ truncated_runs: true, runs: [run("r", "02"), run("other", "02")] }));
+    const frame = dagSnapshotFrame({ runs: [run("r", "01", "completed")] });
+    if (source === "live") deliver(frame);
+    else {
+      const token = captured!.beginActivityHydration();
+      act(() => captured!.hydrateActivities(token, null, frame.data));
+    }
+    expectNoPair();
+  });
+
+  it.each(["live", "history"])("%s mixed row acceptance cannot certify complete membership", source => {
+    deliver(dagSnapshotFrame({ truncated_runs: true, runs: [run("r", "02"), run("other", "02")] }));
+    const frame = dagSnapshotFrame({ runs: [run("r", "01", "completed"), run("other", "03", "completed")] });
+    if (source === "live") deliver(frame);
+    else {
+      const token = captured!.beginActivityHydration();
+      act(() => captured!.hydrateActivities(token, null, frame.data));
+    }
+    expectNoPair();
+  });
+
+  it.each([false, true])("withdraws exact authority in an established=%s pane", established => {
+    if (established) { deliver(exact()); expectDagTabPair("1/2"); }
+    deliver(withdrawal());
+    expectNoPair();
+    deliver(taskCountFrame());
+    deliver(dagSnapshotFrame({ runs: [run("done", "03", "completed")] }));
+    expectNoPair();
+  });
+
+  it.each([false, true])("live withdrawal defeats an older hydration with buffer eviction=%s", evict => {
+    deliver(exact());
+    const token = captured!.beginActivityHydration();
+    deliver(withdrawal());
+    if (evict) evictBufferedDagSnapshot();
+    deliver(taskCountFrame());
+    act(() => captured!.hydrateActivities(token, null, null, undefined, false, STALE_DAG_DIGEST));
+    expectNoPair();
+  });
+
+  it("a current hydrated withdrawal clears the pair and a later exact delivery restores it", () => {
+    deliver(exact());
+    const token = captured!.beginActivityHydration();
+    act(() => captured!.hydrateActivities(token, null, withdrawal().data, undefined, false, withdrawalDigest));
+    expectNoPair();
+    deliver(exact());
+    expectDagTabPair("1/2");
+  });
+
+  it("an older hydrated withdrawal loses to newer exact authority after buffer eviction", () => {
+    deliver(withdrawal());
+    expectNoPair();
+    const token = captured!.beginActivityHydration();
+    deliver(exact());
+    evictBufferedDagSnapshot();
+    act(() => captured!.hydrateActivities(token, null, withdrawal().data, undefined, false, withdrawalDigest));
+    expectDagTabPair("1/2");
   });
 
   it("keeps the live DAG pair when an ordinary task frame and buffer eviction precede the older hydration response", () => {

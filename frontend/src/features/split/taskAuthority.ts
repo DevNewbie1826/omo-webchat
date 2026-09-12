@@ -31,6 +31,7 @@ export interface TaskAuthority {
    *  membership; the sole count authority for the collapsed DAG tab. */
   readonly dagRunRunningCount?: number;
   readonly dagRunTotalCount?: number;
+  readonly dagRunCountsUnavailable?: boolean;
   /** Oversized input without even a compact authority side is unknown. */
   readonly taskUnavailable?: boolean;
 }
@@ -45,6 +46,7 @@ export interface CountAuthority {
   readonly taskAgentTotalCount?: number;
   readonly dagRunRunningCount?: number;
   readonly dagRunTotalCount?: number;
+  readonly dagRunCountsUnavailable?: boolean;
 }
 
 /** Merge count-only authority into a state that rows were already reconciled
@@ -55,8 +57,13 @@ export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: C
   const taskTotalCount = counts.taskTotalCount ?? state.taskTotalCount;
   const taskAgentRunningCount = counts.taskAgentRunningCount ?? state.taskAgentRunningCount;
   const taskAgentTotalCount = counts.taskAgentTotalCount ?? state.taskAgentTotalCount;
-  const dagRunRunningCount = counts.dagRunRunningCount ?? state.dagRunRunningCount;
-  const dagRunTotalCount = counts.dagRunTotalCount ?? state.dagRunTotalCount;
+  // Absence is legacy retention; an explicit withdrawal clears both scalars.
+  // A newly supplied exact pair restores authority even when false is omitted.
+  const dagRunCountsUnavailable = counts.dagRunCountsUnavailable
+    ?? (counts.dagRunRunningCount !== undefined && counts.dagRunTotalCount !== undefined
+      ? false : state.dagRunCountsUnavailable);
+  const dagRunRunningCount = dagRunCountsUnavailable === true ? undefined : counts.dagRunRunningCount ?? state.dagRunRunningCount;
+  const dagRunTotalCount = dagRunCountsUnavailable === true ? undefined : counts.dagRunTotalCount ?? state.dagRunTotalCount;
   const agentCountsAdmissionMs = atMs === undefined && state.agentCountsAdmissionMs === undefined
     ? state.agentCountsAdmissionMs
     : Math.max(state.agentCountsAdmissionMs ?? -Infinity, atMs ?? -Infinity);
@@ -65,6 +72,7 @@ export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: C
     && taskAgentTotalCount === state.taskAgentTotalCount
     && dagRunRunningCount === state.dagRunRunningCount
     && dagRunTotalCount === state.dagRunTotalCount
+    && dagRunCountsUnavailable === state.dagRunCountsUnavailable
     && agentCountsAdmissionMs === state.agentCountsAdmissionMs) return state;
   return {
     ...state,
@@ -74,6 +82,7 @@ export function applyCountAuthority<T extends TaskAuthority>(state: T, counts: C
     ...(taskAgentTotalCount === state.taskAgentTotalCount ? {} : { taskAgentTotalCount }),
     ...(dagRunRunningCount === state.dagRunRunningCount ? {} : { dagRunRunningCount }),
     ...(dagRunTotalCount === state.dagRunTotalCount ? {} : { dagRunTotalCount }),
+    ...(dagRunCountsUnavailable === state.dagRunCountsUnavailable ? {} : { dagRunCountsUnavailable }),
     ...(agentCountsAdmissionMs === state.agentCountsAdmissionMs ? {} : { agentCountsAdmissionMs }),
   };
 }

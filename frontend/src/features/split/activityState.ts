@@ -368,37 +368,33 @@ function reconcileDagSnapshot(
   const present = new Set(parsed.runs.map(run => run.runId));
   const dags = new Map(state.dags);
   const dagFreshness = new Map(state.dagFreshness);
-  // Run-membership completeness moves only with ACCEPTED membership
-  // authority: a delivery whose rows are all rejected as stale (and which
-  // removes nothing) says nothing about membership, so the incumbent
-  // completeness signal stands — it must never flip on a rejected envelope.
-  // The two directions are asymmetric. Claiming COMPLETE membership is an
-  // upgrade and needs accepted authority. Claiming INCOMPLETE membership is
-  // a downgrade that only has to be current, not newer: a delivery carrying
-  // the already-accepted revision still reports that its own run list is
-  // truncated, and only a strictly older delivery may be ignored.
+  // Row updates and membership authority are separate decisions. Omission
+  // cannot prove acceptance, and accepting one row cannot certify an envelope
+  // containing rejected rows. Current partial envelopes may still downgrade
+  // completeness at equal revisions; strictly stale envelopes cannot.
   let membershipAccepted = false;
   let staleDelivery = false;
   for (const [id, run] of state.dags) {
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined && !dagFreshness.has(id)) dagFreshness.set(id, revision);
-    if (!present.has(id) && !parsed.truncatedRuns && !keepOmitted(run)) {
-      dags.delete(id);
-      membershipAccepted = true;
-    }
   }
   for (const incoming of parsed.runs) {
     const revision = parseDagUpdatedAt(incoming.updatedAt);
     const currentRevision = dagFreshness.get(incoming.runId);
     // Equal known revisions keep the incumbent as a complete unit. Unknown
     // pairs remain arrival-ordered for legacy payloads, never terminal-latched.
-    if (currentRevision !== undefined && revision !== undefined && revision < currentRevision) staleDelivery = true;
+    if (currentRevision !== undefined && (revision === undefined || revision < currentRevision)) staleDelivery = true;
     if (currentRevision !== undefined && (revision === undefined || revision <= currentRevision)) continue;
     membershipAccepted = true;
     dags.set(incoming.runId, mergeDagRun(dags.get(incoming.runId), {
       ...incoming, truncated: incoming.truncated === true || parsed.truncatedRuns === true,
     }));
     if (revision !== undefined) dagFreshness.set(incoming.runId, revision);
+  }
+  if (!staleDelivery && !parsed.truncatedRuns) {
+    for (const [id, run] of state.dags) {
+      if (!present.has(id) && !keepOmitted(run)) dags.delete(id);
+    }
   }
   return {
     ...state,
@@ -409,9 +405,11 @@ function reconcileDagSnapshot(
     // node loss (run.truncated) must never read as missing run membership.
     truncatedDagRuns: parsed.truncatedRuns === true
       ? (staleDelivery ? state.truncatedDagRuns ?? true : true)
-      : membershipAccepted || state.truncatedDagRuns === undefined
-        ? false
-        : state.truncatedDagRuns,
+      : staleDelivery
+        ? (membershipAccepted ? true : state.truncatedDagRuns ?? true)
+        : membershipAccepted || state.truncatedDagRuns === undefined
+          ? false
+          : state.truncatedDagRuns,
   };
 }
 

@@ -415,7 +415,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     admitLiveCountAuthority: (counts: CountAuthority) => {
       const hasTaskGroupCounts = counts.taskRunningCount !== undefined || counts.taskTotalCount !== undefined
         || counts.taskAgentRunningCount !== undefined || counts.taskAgentTotalCount !== undefined;
-      const hasDagRunCounts = counts.dagRunRunningCount !== undefined || counts.dagRunTotalCount !== undefined;
+      const hasDagRunCounts = counts.dagRunRunningCount !== undefined || counts.dagRunTotalCount !== undefined
+        || counts.dagRunCountsUnavailable !== undefined;
       if (!hasTaskGroupCounts && !hasDagRunCounts) return;
       const seq = ++liveActivitySequenceRef.current;
       // A run-only delivery carries no task/agent aggregate but does carry
@@ -426,6 +427,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
           counts: {
             ...(counts.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: counts.dagRunRunningCount }),
             ...(counts.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: counts.dagRunTotalCount }),
+            ...(counts.dagRunCountsUnavailable === undefined ? {} : { dagRunCountsUnavailable: counts.dagRunCountsUnavailable }),
           },
           seq,
         };
@@ -512,6 +514,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
       ...(dagDigestParsed?.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: dagDigestParsed.dagRunRunningCount }),
       ...(dagDigestParsed?.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: dagDigestParsed.dagRunTotalCount }),
+      ...(dagDigestParsed?.dagRunCountsUnavailable === undefined ? {} : { dagRunCountsUnavailable: dagDigestParsed.dagRunCountsUnavailable }),
     }, hydration.requestedMs);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again

@@ -163,6 +163,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     readonly taskAgentTotalCount?: number;
     readonly dagRunRunningCount?: number;
     readonly dagRunTotalCount?: number;
+    readonly dagRunCountsUnavailable?: boolean;
   };
   const tasks = orderActivities(
     [...taskRows, ...workflow.tasks],
@@ -251,6 +252,7 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     // server's pre-truncation membership scalars first, then the complete
     // retained run list, and no count slot at all when neither is exact.
     // Approximate markers never appear on a tab.
+    if (taskCounts.dagRunCountsUnavailable === true) return null;
     if (taskCounts.dagRunRunningCount !== undefined && taskCounts.dagRunTotalCount !== undefined) {
       return taskCounts.dagRunTotalCount === 0 ? null : `${taskCounts.dagRunRunningCount}/${taskCounts.dagRunTotalCount}`;
     }

@@ -14,6 +14,7 @@ export interface ParsedDagUpdated {
    *  the sole count authority for the collapsed DAG tab. */
   readonly dagRunRunningCount?: number;
   readonly dagRunTotalCount?: number;
+  readonly dagRunCountsUnavailable?: boolean;
   readonly runs: readonly ActivityDagRun[];
 }
 
@@ -191,6 +192,7 @@ export function parseDagUpdated(data: unknown): ParsedDagUpdated | null {
     ...(agentTotalCount !== undefined ? { agentTotalCount } : {}),
     ...(dagRunRunningCount !== undefined ? { dagRunRunningCount } : {}),
     ...(dagRunTotalCount !== undefined ? { dagRunTotalCount } : {}),
+    ...(typeof data["run_counts_unavailable"] === "boolean" ? { dagRunCountsUnavailable: data["run_counts_unavailable"] } : {}),
     ...(lostRuns ? { truncatedRuns: true } : truncatedRuns !== undefined ? { truncatedRuns } : {}),
   };
 }
@@ -212,6 +214,7 @@ export function parseDagCounts(data: unknown): CountAuthority | null {
     ...(taskAgentTotalCount === undefined ? {} : { taskAgentTotalCount }),
     ...(dagRunRunningCount === undefined ? {} : { dagRunRunningCount }),
     ...(dagRunTotalCount === undefined ? {} : { dagRunTotalCount }),
+    ...(typeof data["run_counts_unavailable"] === "boolean" ? { dagRunCountsUnavailable: data["run_counts_unavailable"] } : {}),
   };
 }
 
