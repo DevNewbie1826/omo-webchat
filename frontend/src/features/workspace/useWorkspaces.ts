@@ -55,6 +55,12 @@ export interface UseWorkspacesResult {
    * existing scheduled path, so recency stays fresh without a new fetch
    * channel. In-flight loads queue the refresh instead of doubling up. */
   readonly refreshSessions: (wsId: string) => void;
+  /** Declares the workspaces that currently own live sessions. The hook's
+   * catalog scheduler owns the single periodic recency cadence and refreshes
+   * exactly these workspaces through the scheduled fetch path. Passing equal
+   * membership (even with a fresh array identity) leaves the armed timer
+   * untouched; an empty list disarms it. */
+  readonly setRecencyTargets: (wsIds: readonly string[]) => void;
   /** Records explicit activation, optimistically reorders, then applies server-owned recency. */
   readonly markSessionUsed: (wsId: string, id: string) => void;
   readonly toggleExpanded: (wsId: string) => void;
@@ -85,6 +91,12 @@ export function applyChatNameToWorkspaces(
 // the scheduled refresh never re-arms itself, so the picker never turns into
 // a polling loop.
 export const CATALOG_REFRESH_DELAY_MS = 120_000;
+
+// Cadence of the periodic recency refresh for workspaces that own live
+// sessions. Owned here, by the catalog scheduler: consumers only declare
+// which workspaces are live owners via setRecencyTargets, so live-tick
+// render churn can never clear, postpone, or duplicate the timer.
+export const RECENCY_REFRESH_INTERVAL_MS = 15_000;
 
 const WORKSPACE_EXPANDED_STORAGE_KEY = "th-ws-expanded";
 
@@ -160,6 +172,12 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
   // A stale refresh whose timer fired while another page was loading is
   // deferred here (never dropped) and rerun once that load settles.
   const pendingStaleRefreshRef = useRef<Set<string>>(new Set());
+
+  // Live-session recency ownership: the consumer declares target workspace
+  // ids; the single interval below is the only periodic recency timer and is
+  // never recreated by live-tick data changes.
+  const recencyTargetsRef = useRef<ReadonlySet<string>>(new Set());
+  const recencyTimerRef = useRef<number | undefined>(undefined);
 
   const disarmCatalogRefresh = useCallback((wsId: string): void => {
     const timer = catalogRefreshTimersRef.current.get(wsId);
@@ -297,13 +315,49 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     [disarmCatalogRefresh, patchSessionPaging, replaceSessionLists],
   );
 
+  const disarmRecencyRefresh = useCallback((): void => {
+    if (recencyTimerRef.current !== undefined) {
+      window.clearInterval(recencyTimerRef.current);
+      recencyTimerRef.current = undefined;
+    }
+  }, []);
+
+  // Sole owner of the periodic recency cadence. The timer's identity depends
+  // only on target membership changes, never on live-tick data: re-publishing
+  // equal targets leaves the armed interval running on its original cadence.
+  const setRecencyTargets = useCallback(
+    (wsIds: readonly string[]): void => {
+      const previous = recencyTargetsRef.current;
+      const next: ReadonlySet<string> = new Set(wsIds);
+      recencyTargetsRef.current = next;
+      if (next.size === 0) {
+        disarmRecencyRefresh();
+        return;
+      }
+      const unchanged = next.size === previous.size && [...next].every((id) => previous.has(id));
+      if (unchanged && recencyTimerRef.current !== undefined) return;
+      disarmRecencyRefresh();
+      recencyTimerRef.current = window.setInterval(() => {
+        for (const wsId of recencyTargetsRef.current) {
+          // Same guards as refreshSessions: unready workspaces have no
+          // recency to refresh; in-flight pages queue via the scheduled path.
+          if (!sessionPagesRef.current.get(wsId)?.ready) continue;
+          void fetchSessionPage(wsId, "", false, true);
+        }
+      }, RECENCY_REFRESH_INTERVAL_MS);
+    },
+    [disarmRecencyRefresh, fetchSessionPage],
+  );
+
   // Pending eventual refreshes die with the hook.
   useEffect(() => () => {
     disarmAllCatalogRefreshes();
+    disarmRecencyRefresh();
+    recencyTargetsRef.current = new Set();
     pageRequestsRef.current.clear();
     recenciesRef.current.clear();
     loadGenerationRef.current++;
-  }, [disarmAllCatalogRefreshes]);
+  }, [disarmAllCatalogRefreshes, disarmRecencyRefresh]);
 
   const load = useCallback(async (): Promise<void> => {
     const generation = ++loadGenerationRef.current;
@@ -611,6 +665,7 @@ export function useWorkspaces({ notify, t, layout, confirm }: UseWorkspacesOptio
     loadMoreSessions,
     ensureSessionsLoaded,
     refreshSessions,
+    setRecencyTargets,
     markSessionUsed,
     toggleExpanded,
     handleDeleteWorkspace,
