@@ -193,7 +193,7 @@ type launcherBrandUpdate struct {
 
 type launcherBrandChangelog struct {
 	Path    string `json:"path"`
-	Version string `json:"version"`
+	Version string `json:"version,omitempty"`
 }
 
 // EnsureDaemon reuses a compatible daemon at cfg.SocketPath. If no daemon is
@@ -1031,18 +1031,19 @@ func launcherNativeContextFromRoot(root string) (string, string, error) {
 			ChangelogURL: "https://github.com/code-yeongyu/oh-my-openagent/releases",
 		},
 	}
+	// The launcher contract: changelog metadata is derived only from the
+	// plugin manifest. When that manifest is absent, unreadable, or does not
+	// parse, no changelog is emitted at all; when it parses without a
+	// version, the changelog is path-only.
 	changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
 	if info, err := os.Stat(changelogPath); err == nil && info.Mode().IsRegular() {
-		version := manifest.Version // fallback when plugin/package.json is missing or has no version
 		var pluginManifest struct {
 			Version string `json:"version"`
 		}
-		if data, err := os.ReadFile(filepath.Join(root, "plugin", "package.json")); err == nil {
-			if json.Unmarshal(data, &pluginManifest) == nil && pluginManifest.Version != "" {
-				version = pluginManifest.Version
-			}
+		if data, err := os.ReadFile(filepath.Join(root, "plugin", "package.json")); err == nil &&
+			json.Unmarshal(data, &pluginManifest) == nil {
+			profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: pluginManifest.Version}
 		}
-		profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: version}
 	}
 	encoded, err := json.Marshal(profile)
 	if err != nil {
@@ -1068,7 +1069,7 @@ func validateLauncherBrandProfile(encoded string) error {
 		profile.Update.Command, profile.Update.ChangelogURL,
 	}
 	if profile.Changelog != nil {
-		values = append(values, profile.Changelog.Path, profile.Changelog.Version)
+		values = append(values, profile.Changelog.Path)
 	}
 	if slices.Contains(values, "") {
 		return errors.New("brand profile is incomplete")

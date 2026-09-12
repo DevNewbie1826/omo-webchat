@@ -431,9 +431,16 @@ func TestEnsureExtensionEventsCapabilityNormalizesValues(t *testing.T) {
 }
 
 func TestLauncherBrandProfileValidation(t *testing.T) {
-	valid := `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"}}`
-	if err := validateLauncherBrandProfile(valid); err != nil {
-		t.Fatalf("valid profile: %v", err)
+	validProfiles := []string{
+		`{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"}}`,
+		// Observed launcher behavior: a changelog without a version is the
+		// path-only form and must be accepted.
+		`{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"},"changelog":{"path":"/tmp/CHANGELOG.md"}}`,
+	}
+	for _, valid := range validProfiles {
+		if err := validateLauncherBrandProfile(valid); err != nil {
+			t.Fatalf("valid profile: %v", err)
+		}
 	}
 	for _, invalid := range []string{"null", `{}`, `{"name":"OmO"}`, `[]`} {
 		if err := validateLauncherBrandProfile(invalid); err == nil {
@@ -499,6 +506,132 @@ func TestLauncherNativeContextOmitsChangelogWhenPluginChangelogAbsent(t *testing
 	}
 }
 
+func TestLauncherNativeContextChangelogDerivationMatchesLauncherContract(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		changelog     bool
+		manifest      string // plugin package.json body; empty means absent
+		manifestMode  os.FileMode
+		skipAsRoot    bool
+		wantChangelog bool
+		wantVersion   string // empty asserts the version key is absent
+	}{
+		{
+			name:          "no changelog file",
+			wantChangelog: false,
+		},
+		{
+			name:          "changelog without plugin manifest",
+			changelog:     true,
+			wantChangelog: false,
+		},
+		{
+			name:          "changelog with malformed plugin manifest",
+			changelog:     true,
+			manifest:      "{",
+			manifestMode:  0o600,
+			wantChangelog: false,
+		},
+		{
+			name:          "changelog with unreadable plugin manifest",
+			changelog:     true,
+			manifest:      `{"version":"9.9.9"}`,
+			manifestMode:  0o000,
+			skipAsRoot:    true,
+			wantChangelog: false,
+		},
+		{
+			name:          "changelog with empty plugin manifest",
+			changelog:     true,
+			manifest:      "{}",
+			manifestMode:  0o600,
+			wantChangelog: true,
+		},
+		{
+			name:          "changelog with blank plugin manifest version",
+			changelog:     true,
+			manifest:      `{"version":""}`,
+			manifestMode:  0o600,
+			wantChangelog: true,
+		},
+		{
+			name:          "changelog with plugin manifest version",
+			changelog:     true,
+			manifest:      `{"version":"5.0.0-beta.56"}`,
+			manifestMode:  0o600,
+			wantChangelog: true,
+			wantVersion:   "5.0.0-beta.56",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skipAsRoot && os.Geteuid() == 0 {
+				t.Skip("permissions do not restrict the root user")
+			}
+			_, root, _ := writeRecognizedLauncherInstall(t, "5.0.0-0.beta.56")
+			changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
+			if tc.changelog {
+				if err := os.WriteFile(changelogPath, []byte("# changelog\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.manifest != "" {
+				manifestPath := filepath.Join(root, "plugin", "package.json")
+				if err := os.WriteFile(manifestPath, []byte(tc.manifest), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(manifestPath, tc.manifestMode); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			profile, _, err := launcherNativeContextFromRoot(root)
+			if err != nil {
+				t.Fatalf("launcherNativeContextFromRoot: %v", err)
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(profile), &decoded); err != nil {
+				t.Fatalf("decode derived profile: %v", err)
+			}
+			raw, present := decoded["changelog"]
+			if !tc.wantChangelog {
+				if present {
+					t.Fatalf("derived profile included changelog key: %s", raw)
+				}
+				return
+			}
+			if !present {
+				t.Fatal("derived profile omitted changelog key")
+			}
+			var changelog map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &changelog); err != nil {
+				t.Fatalf("decode derived changelog %s: %v", raw, err)
+			}
+			pathRaw, pathPresent := changelog["path"]
+			if !pathPresent {
+				t.Fatalf("derived changelog omitted path key: %s", raw)
+			}
+			var gotPath string
+			if err := json.Unmarshal(pathRaw, &gotPath); err != nil || gotPath != changelogPath {
+				t.Fatalf("changelog.path = %s, want %q", pathRaw, changelogPath)
+			}
+			versionRaw, versionPresent := changelog["version"]
+			if tc.wantVersion == "" {
+				if versionPresent {
+					t.Fatalf("derived changelog emitted version key: %s", versionRaw)
+				}
+				return
+			}
+			if !versionPresent {
+				t.Fatalf("derived changelog omitted version key: %s", raw)
+			}
+			var gotVersion string
+			if err := json.Unmarshal(versionRaw, &gotVersion); err != nil || gotVersion != tc.wantVersion {
+				t.Fatalf("changelog.version = %s, want %q", versionRaw, tc.wantVersion)
+			}
+		})
+	}
+}
+
 func TestLauncherBrandProfileValidationRejectsEmptyChangelogFields(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -507,10 +640,6 @@ func TestLauncherBrandProfileValidationRejectsEmptyChangelogFields(t *testing.T)
 		{
 			name: "empty path",
 			body: `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"},"changelog":{"path":"","version":"1"}}`,
-		},
-		{
-			name: "empty version",
-			body: `{"name":"OmO","command":"omo","displayVersion":"1","configDir":".omo","flatLayout":false,"envPrefix":"OMO","userAgent":"omo","originator":"omo","update":{"packageName":"omo-ai","distTag":"beta","command":"npm i -g omo-ai@beta","changelogUrl":"https://example.test/releases"},"changelog":{"path":"/tmp/CHANGELOG.md","version":""}}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
