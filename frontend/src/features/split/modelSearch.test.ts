@@ -28,6 +28,21 @@ describe("fuzzyScore", () => {
     expect(tight).toBeGreaterThan(0);
     expect(tight).toBeLessThan(wide);
   });
+
+  it("scores the smallest window, not the first greedy subsequence", () => {
+    // "ab" spans a…b over seven characters from the first 'a' but skips just
+    // one character inside the tightest window "a4b".
+    expect(fuzzyScore("a123a4b", "ab")).toBe(2);
+    expect(fuzzyScore("a12b", "ab")).toBe(3);
+  });
+
+  it("matches whole Unicode characters, never surrogates stitched across two characters", () => {
+    // "\u{1F516}" (D83D DD16) must not assemble itself out of the D83D of
+    // "\u{1F600}" and the DD16 of "\u{1F916}": neither character occurs.
+    expect(fuzzyScore("\u{1F600}\u{1F916}", "\u{1F516}")).toBeNull();
+    // A token whose characters really occur in the haystack still matches.
+    expect(fuzzyScore("\u{1F600}\u{1F916}", "\u{1F916}")).toBe(0);
+  });
 });
 
 describe("matchModels", () => {
@@ -56,5 +71,20 @@ describe("matchModels", () => {
     // "pro" sits inside "gemini-2.5-pro"; it only spans p…r…o across "opus … anthropic".
     expect(ids(matchModels(models, "pro"))).toEqual(["gemini-2.5-pro", "claude-opus-4"]);
     expect(ids(matchModels(models, "claude"))).toEqual(["claude-sonnet-4", "claude-opus-4"]);
+  });
+
+  it("ranks the tighter window ahead of the wider one", () => {
+    // "ab" matches "a123a4b" as "a4b" (score 2) and "a12b" as "a12b" (score 3).
+    expect(
+      ids(matchModels([{ provider: "x", modelId: "a123a4b" }, { provider: "x", modelId: "a12b" }], "ab")),
+    ).toEqual(["a123a4b", "a12b"]);
+  });
+
+  it("matches whole Unicode characters in the haystack, not lone surrogates", () => {
+    const emoji: readonly ModelOption[] = [
+      { provider: "x", modelId: "custom", name: "\u{1F600}\u{1F916}" },
+    ];
+    expect(ids(matchModels(emoji, "\u{1F516}"))).toEqual([]);
+    expect(ids(matchModels(emoji, "\u{1F916}"))).toEqual(["custom"]);
   });
 });

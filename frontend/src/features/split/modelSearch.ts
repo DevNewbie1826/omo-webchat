@@ -1,21 +1,41 @@
 import type { ModelOption } from "./ModelPicker";
 
 /** Score for one query token against one (lower-cased) haystack. Lower ranks
- *  earlier; `null` means the token does not match. A contiguous substring
- *  scores 0 wherever it sits, so equally good matches keep their input order;
- *  a scattered subsequence scores 1 plus the number of skipped characters, so
- *  tighter spans rank ahead of wider ones. */
+ *  earlier; `null` means the token does not match. Characters are whole Unicode
+ *  code points: the token is spread into code points and each one is matched
+ *  atomically against a single haystack code point, so a supplementary
+ *  character can never be split into lone surrogates or stitched together from
+ *  the halves of two different characters. A contiguous substring scores 0
+ *  wherever it sits, so equally good matches keep their input order; a
+ *  scattered subsequence scores 1 plus the number of characters skipped inside
+ *  the smallest window that contains the token in order, so tighter spans rank
+ *  ahead of wider ones. */
 export function fuzzyScore(haystack: string, token: string): number | null {
-  if (token.length === 0 || haystack.includes(token)) return 0;
-  let first = -1;
-  let cursor = 0;
-  for (const char of token) {
-    const at = haystack.indexOf(char, cursor);
-    if (at < 0) return null;
-    if (first < 0) first = at;
-    cursor = at + 1;
+  const hay = [...haystack];
+  const need = [...token];
+  if (need.length === 0) return 0;
+  let best = -1;
+  for (let start = 0; start < hay.length; start++) {
+    if (hay[start] !== need[0]) continue;
+    // Greedily taking each next token character as early as possible yields
+    // the smallest window with this start, so trying every start and keeping
+    // the shortest completion finds the tightest window overall.
+    let cursor = start + 1;
+    let matched = 1;
+    while (matched < need.length) {
+      const at = hay.indexOf(need[matched]!, cursor);
+      if (at < 0) break;
+      cursor = at + 1;
+      matched++;
+    }
+    if (matched === need.length) {
+      const length = cursor - start;
+      if (best < 0 || length < best) best = length;
+    }
   }
-  return 1 + (cursor - first - token.length);
+  if (best < 0) return null;
+  const skipped = best - need.length;
+  return skipped === 0 ? 0 : 1 + skipped;
 }
 
 const haystackOf = (model: ModelOption): string => {
