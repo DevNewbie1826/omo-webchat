@@ -135,11 +135,13 @@ describe("LiveSessionList", () => {
     expect(first.querySelector(".th-overview-card-open")?.tagName).toBe("BUTTON");
 
     const second = card(1);
-    // No running agents, no dag, no line: the card degrades to title + done only,
-    // and an empty title falls back to the session id.
+    // No running agents, nothing done, no dag, no line: the card degrades to
+    // title only ("Done 0" would be noise), and an empty title falls back to
+    // the session id.
     expect(second.querySelector(".th-overview-card-name")?.textContent).toBe("disk-9");
     expect(second.querySelector(".th-overview-card-running")).toBeNull();
-    expect(second.querySelector(".th-overview-card-meta")?.textContent).not.toContain("overview.dag");
+    expect(second.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(second.textContent).not.toContain("overview.done");
     expect(second.querySelector(".th-overview-card-line")).toBeNull();
   });
 

@@ -112,13 +112,19 @@ describe("main running transport and sidebar", () => {
   it("pins main-only work, settles it, and never adds the main to exact child counts", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response([{ ...base, active: false }])));
     await mount(true);
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    // Idle live sessions stay listed (working-first order); only the running
+    // indicators disappear.
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
+    expect(container.querySelector(".th-overview-card-running")).toBeNull();
     push({ active: true });
     expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
     expect(container.querySelector(".th-tree-children .th-tree-running")).not.toBeNull();
     expect(container.querySelector(".th-tree-running--workspace")).not.toBeNull();
     expect(container.querySelector(".th-overview-card-running")).not.toBeNull();
-    expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
+    // Main-only work runs zero child agents: the count hides rather than
+    // showing a misleading zero next to the sessions label.
+    expect(container.querySelector(".th-sidebar-live-count")).toBeNull();
     expect(summaries[0]).toMatchObject({ active: true, runningCount: 0 });
     expect(container.querySelector(".th-tree-live")).not.toBeNull();
     expect(container.querySelector(".th-tree-placed--on")).not.toBeNull();
@@ -127,15 +133,19 @@ describe("main running transport and sidebar", () => {
     for (const selector of [".th-sidebar-live-count", ".th-overview-card-running", ".th-tree-children .th-tree-running", ".th-tree-running--workspace"]) {
       expect(container.querySelector(selector)?.textContent).toBe("7");
     }
+    // The visible count carries an accessible name saying what it counts.
+    expect(container.querySelector(".th-sidebar-live-count")?.getAttribute("aria-label")).toBe("overview.runningAria");
     push({ active: false });
     expect(summaries[0]).toMatchObject({ active: false, runningCount: 7 });
     expect(container.querySelector(".th-overview-card-running")?.textContent).toBe("7");
     push({ snapshots: [{ name: "omo.task.updated", data: { tasks: [], agent_running_count: 0 }, oversized: false }] });
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelector(".th-overview-card-running")).toBeNull();
     expect(container.querySelector(".th-tree-children .th-tree-running")).toBeNull();
     push({ active: true });
     push({ active: false });
-    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+    expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
     expect(container.querySelector(".th-tree-live")).not.toBeNull();
   });
 
@@ -208,10 +218,14 @@ describe("main running transport and sidebar", () => {
       expect(container.querySelector(".th-overview-card-running")).not.toBeNull();
       expect(container.querySelector(".th-tree-children .th-tree-running")).not.toBeNull();
       expect(container.querySelector(".th-tree-running--workspace")).not.toBeNull();
-      expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
+      expect(container.querySelector(".th-sidebar-live-count")).toBeNull();
     } else {
-      expect(container.querySelector(".th-sidebar-live")).toBeNull();
-      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(0);
+      // Idle sessions remain listed; they just carry no running badge, and a
+      // zero running-agent count is not rendered at all.
+      expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
+      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
+      expect(container.querySelector(".th-overview-card-running")).toBeNull();
+      expect(container.querySelector(".th-sidebar-live-count")).toBeNull();
     }
   });
 

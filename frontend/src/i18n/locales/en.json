@@ -48,7 +48,7 @@
   "sidebar.tm.liveProcess": "Provider process running",
   "sidebar.tm.runningAgents": "{n} running",
   "sidebar.tm.mainRunning": "Main running",
-  "sidebar.overview": "Running sessions",
+  "sidebar.sessions": "Sessions",
   "sidebar.tm.discoveredHint": "Open discovered Omo session “{name}”",
   "sidebar.tm.opening": "Opening…",
   "sidebar.tm.sessionActive": "In use elsewhere",
