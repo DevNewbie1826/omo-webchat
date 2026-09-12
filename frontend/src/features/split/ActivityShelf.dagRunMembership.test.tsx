@@ -128,4 +128,77 @@ describe("ActivityShelf DAG tab run-membership fallback", () => {
     expect(count()).toBe("1/2");
     exactDagSurface("1/2");
   });
+
+  it.each([
+    ["live", applyActivityEvent],
+    ["REST", applyActivityHistorySnapshot],
+  ] as const)("%s: a stale complete snapshot after a newer partial one keeps the slot empty", (_source, apply) => {
+    // Partial membership, run r running at 10:02: exactness cannot be
+    // established, so nothing renders.
+    let state = apply(emptyActivityState(), "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [wireRun("run-live", "running", { updated_at: "2026-09-09T10:02:00Z" })],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBeNull();
+    exactDagSurface(null);
+
+    // A nominally complete snapshot whose only row is OLDER (10:01) is
+    // rejected as stale: the retained row stays at 10:02 and the latest
+    // ACCEPTED membership is still the partial one, so no count may appear.
+    state = apply(state, "omo.dag.updated", {
+      truncated_runs: false,
+      runs: [wireRun("run-live", "completed", { updated_at: "2026-09-09T10:01:00Z" })],
+    });
+    expect(state.dags.get("run-live")?.status).toBe("running");
+    expect(state.dags.get("run-live")?.updatedAt).toBe("2026-09-09T10:02:00Z");
+    renderShelf(harness, state);
+    expect(count()).toBeNull();
+    exactDagSurface(null);
+  });
+
+  it.each([
+    ["live", applyActivityEvent],
+    ["REST", applyActivityHistorySnapshot],
+  ] as const)("%s: a genuinely newer complete membership starts counting", (_source, apply) => {
+    let state = apply(emptyActivityState(), "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [wireRun("run-live", "running", { updated_at: "2026-09-09T10:02:00Z" })],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBeNull();
+
+    // The complete snapshot's row is NEWER (10:03), so the delivery is
+    // accepted and its complete membership becomes the authority.
+    state = apply(state, "omo.dag.updated", {
+      truncated_runs: false,
+      runs: [wireRun("run-live", "completed", { updated_at: "2026-09-09T10:03:00Z", nodes: [], counts: { total: 0, running: 0, completed: 0 } })],
+    });
+    expect(state.dags.get("run-live")?.status).toBe("completed");
+    renderShelf(harness, state);
+    expect(count()).toBe("0/1");
+    exactDagSurface("0/1");
+  });
+
+  it.each([
+    ["live", applyActivityEvent],
+    ["REST", applyActivityHistorySnapshot],
+  ] as const)("%s: a rejected stale partial snapshot never revokes accepted complete membership", (_source, apply) => {
+    let state = apply(emptyActivityState(), "omo.dag.updated", {
+      truncated_runs: false,
+      runs: [wireRun("run-live", "running", { updated_at: "2026-09-09T10:02:00Z" })],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBe("1/1");
+
+    // Completeness only moves with accepted membership authority: a stale
+    // truncated delivery must not flip the slot back to unknown either.
+    state = apply(state, "omo.dag.updated", {
+      truncated_runs: true,
+      runs: [wireRun("run-live", "running", { updated_at: "2026-09-09T10:01:00Z" })],
+    });
+    renderShelf(harness, state);
+    expect(count()).toBe("1/1");
+    exactDagSurface("1/1");
+  });
 });

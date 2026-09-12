@@ -368,10 +368,18 @@ function reconcileDagSnapshot(
   const present = new Set(parsed.runs.map(run => run.runId));
   const dags = new Map(state.dags);
   const dagFreshness = new Map(state.dagFreshness);
+  // Run-membership completeness moves only with ACCEPTED membership
+  // authority: a delivery whose rows are all rejected as stale (and which
+  // removes nothing) says nothing about membership, so the incumbent
+  // completeness signal stands — it must never flip on a rejected envelope.
+  let membershipAccepted = false;
   for (const [id, run] of state.dags) {
     const revision = parseDagUpdatedAt(run.updatedAt);
     if (revision !== undefined && !dagFreshness.has(id)) dagFreshness.set(id, revision);
-    if (!present.has(id) && !parsed.truncatedRuns && !keepOmitted(run)) dags.delete(id);
+    if (!present.has(id) && !parsed.truncatedRuns && !keepOmitted(run)) {
+      dags.delete(id);
+      membershipAccepted = true;
+    }
   }
   for (const incoming of parsed.runs) {
     const revision = parseDagUpdatedAt(incoming.updatedAt);
@@ -379,6 +387,7 @@ function reconcileDagSnapshot(
     // Equal known revisions keep the incumbent as a complete unit. Unknown
     // pairs remain arrival-ordered for legacy payloads, never terminal-latched.
     if (currentRevision !== undefined && (revision === undefined || revision <= currentRevision)) continue;
+    membershipAccepted = true;
     dags.set(incoming.runId, mergeDagRun(dags.get(incoming.runId), {
       ...incoming, truncated: incoming.truncated === true || parsed.truncatedRuns === true,
     }));
@@ -391,7 +400,9 @@ function reconcileDagSnapshot(
     truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
     // Membership completeness is tracked on its own signal: per-run graph/
     // node loss (run.truncated) must never read as missing run membership.
-    truncatedDagRuns: parsed.truncatedRuns === true,
+    truncatedDagRuns: membershipAccepted || state.truncatedDagRuns === undefined
+      ? parsed.truncatedRuns === true
+      : state.truncatedDagRuns,
   };
 }
 
