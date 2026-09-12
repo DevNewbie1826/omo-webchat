@@ -4,6 +4,7 @@ import type { KeyboardEvent } from "react";
 import { useT } from "../../i18n";
 import { IconCheck, IconChevron, IconSettings, IconX } from "../../components/icons";
 import { MODAL_FOCUSABLE } from "../../components/modalStack";
+import { matchModels } from "./modelSearch";
 
 export interface ModelOption {
   readonly provider: string;
@@ -104,13 +105,7 @@ export function ModelPicker({ compact = false, models, currentModelKey, placehol
       window.removeEventListener("resize", measure);
     };
   }, [compact, open, panel, dense, models, thinkingLevels]);
-  const matches = useMemo(() => {
-    if (query === "") return models;
-    const needle = query.toLowerCase();
-    return models.filter(
-      (model) => labelOf(model).toLowerCase().includes(needle) || model.provider.toLowerCase().includes(needle),
-    );
-  }, [models, query]);
+  const matches = useMemo(() => matchModels(models, query), [models, query]);
 
   const activeIndex = matches.length === 0 ? -1 : Math.max(0, matches.findIndex((model) => keyOf(model) === activeKey));
   const activeModel = matches[activeIndex];
