@@ -187,19 +187,58 @@ describe("App home running sessions", () => {
     vi.unstubAllGlobals();
   });
 
-  async function renderApp(): Promise<void> {
+  /** Rejects when the signal does not fire within `ms`, so a missing
+   * transition fails loudly instead of stalling the suite. */
+  function bounded<T>(signal: Promise<T>, ms: number): Promise<T> {
+    const guard = new Promise<never>((_resolve, reject) => {
+      AbortSignal.timeout(ms).addEventListener("abort", () => {
+        reject(new Error(`transition signal did not fire within ${ms}ms`));
+      });
+    });
+    return Promise.race([signal, guard]);
+  }
+
+  /** Resolves when an element matching `selector` exists inside the mounted
+   * container. Subscribes via MutationObserver BEFORE the triggering action,
+   * so the await observes the exact render transition - no polling. */
+  function whenRendered(selector: string): Promise<Element> {
+    const existing = container.querySelector(selector);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      const observer = new MutationObserver(() => {
+        const el = container.querySelector(selector);
+        if (el) {
+          observer.disconnect();
+          resolve(el);
+        }
+      });
+      observer.observe(container, { childList: true, subtree: true });
+    });
+  }
+
+  /** Resolves with the args of the next placement call on the layout seam. */
+  function whenPlaced(): Promise<unknown[]> {
+    return new Promise((resolve) => {
+      home.assignSession.mockImplementationOnce((...args: unknown[]) => {
+        resolve(args);
+      });
+    });
+  }
+
+  async function renderApp(readySelector: string): Promise<void> {
+    // Subscribe to the first meaningful render before mounting.
+    const ready = bounded(whenRendered(readySelector), 1000);
     await act(async () => {
       root.render(<App />);
     });
-    // Settle checkAuth, the first shared live-session poll, and the summaries.
-    for (let i = 0; i < 3; i += 1) {
-      await act(async () => {});
-    }
+    await act(async () => {
+      await ready;
+    });
   }
 
   it("pins the running session above the picker and opens it through the discovered-session path", async () => {
     home.livePayload = livePayloadWith("running", "Refactor auth");
-    await renderApp();
+    await renderApp(".th-home-live");
 
     const block = container.querySelector(".th-home-live");
     expect(block).not.toBeNull();
@@ -229,7 +268,7 @@ describe("App home running sessions", () => {
 
   it("omits the block when no live session has running agents", async () => {
     home.livePayload = livePayloadWith("completed", "Idle session");
-    await renderApp();
+    await renderApp(".th-picker-pane");
 
     expect(container.querySelector(".th-picker-pane")).not.toBeNull();
     expect(container.querySelector(".th-home-live")).toBeNull();
@@ -239,7 +278,7 @@ describe("App home running sessions", () => {
     emptyState.splitEnabled = true;
     expect(useMediaQueryMock.useMediaQuery("(min-width: 1024px)")).toBe(true);
     home.livePayload = livePayloadWith("running", "Refactor auth");
-    await renderApp();
+    await renderApp(".th-home-live");
 
     // The REAL SplitView renders the empty leaf pane: the running-session cards
     // ride in as the runningSessions prop above the pane's session picker, and
@@ -269,7 +308,7 @@ describe("App home running sessions", () => {
   it("keeps the session-active force and retry states on the card", async () => {
     home.livePayload = livePayloadWith("running", "Refactor auth");
     home.openOutcomes = ["active", "open"];
-    await renderApp();
+    await renderApp(".th-home-live");
 
     const card = container.querySelector<HTMLElement>(".th-home-live .th-overview-card");
     expect(card).not.toBeNull();
@@ -298,20 +337,20 @@ describe("App home running sessions", () => {
   it("surfaces a failed discovered open on the card and retries it without force", async () => {
     home.livePayload = livePayloadWith("running", "Refactor auth");
     home.openOutcomes = ["fail", "open"];
-    await renderApp();
+    await renderApp(".th-home-live");
 
     const card = container.querySelector<HTMLElement>(".th-home-live .th-overview-card");
     expect(card).not.toBeNull();
 
     // First transition: an ordinary discovered open whose POST rejects with a
-    // non-409 failure. Subscribe to the failed-state render before asserting.
+    // non-409 failure. Subscribe to the retry-control render BEFORE clicking,
+    // then await that exact signal with a bounded, rejecting timeout.
+    const retryRendered = bounded(whenRendered(".th-overview-retry-open"), 1000);
     await act(async () => {
       card!.querySelector<HTMLButtonElement>(".th-overview-card-open")!.click();
     });
     await act(async () => {
-      await vi.waitFor(() => {
-        expect(card!.querySelector(".th-overview-retry-open")).not.toBeNull();
-      }, { timeout: 1000, interval: 10 });
+      await retryRendered;
     });
 
     // The hook recorded the failure through the real App-to-LiveSessionList
@@ -327,13 +366,13 @@ describe("App home running sessions", () => {
 
     // Second transition: the retry re-issues the same discovered open body,
     // still without force, and only the success places the returned chat.
+    // Subscribe to the placement seam itself BEFORE clicking Retry.
+    const placed = bounded(whenPlaced(), 1000);
     await act(async () => {
       retry!.click();
     });
     await act(async () => {
-      await vi.waitFor(() => {
-        expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
-      }, { timeout: 1000, interval: 10 });
+      await placed;
     });
 
     expect(home.openBodies).toEqual([
