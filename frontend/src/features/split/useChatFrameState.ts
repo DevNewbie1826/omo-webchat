@@ -505,6 +505,11 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     let next = activitiesRef.current;
     next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized, hydration.requestedMs);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
+    // Raw-only history is supported. Admit its count/availability group at
+    // the request's position, before the optional digest overrides it and
+    // newer live admissions are reasserted below.
+    const dagCounts = parseDagCounts(dag);
+    if (dagCounts !== null) next = applyCountAuthority(next, dagCounts, hydration.requestedMs);
     // The DAG digest carries the same exact agent aggregate as the task side;
     // backfill it when the task digest is absent or predates the agent pair so
     // hydration never leaves the pane on stale or missing count authority.

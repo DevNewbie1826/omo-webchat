@@ -184,6 +184,59 @@ describe("useChatFrameState DAG run scalar ordering", () => {
     expectNoPair();
   });
 
+  it.each(["live", "history"])("%s equal-row subset withdraws scalar-less membership authority", source => {
+    deliver(dagSnapshotFrame({ runs: [run("r", "02"), run("other", "02")] }));
+    expectDagTabPair("2/2");
+    const frame = dagSnapshotFrame({ runs: [run("r", "02")] });
+    if (source === "live") deliver(frame);
+    else {
+      const token = captured!.beginActivityHydration();
+      act(() => captured!.hydrateActivities(token, null, frame.data));
+    }
+    expectNoPair();
+  });
+
+  it.each(["live", "history"])("%s partially accepted truncated inventory withdraws completeness", source => {
+    deliver(dagSnapshotFrame({ runs: [run("r", "02"), run("other", "02")] }));
+    expectDagTabPair("2/2");
+    const frame = dagSnapshotFrame({ truncated_runs: true,
+      runs: [run("r", "01", "completed"), run("other", "03", "completed")] });
+    if (source === "live") deliver(frame);
+    else {
+      const token = captured!.beginActivityHydration();
+      act(() => captured!.hydrateActivities(token, null, frame.data));
+    }
+    expectNoPair();
+  });
+
+  it.each([false, true])("raw-only history withdraws authority in an established=%s pane", established => {
+    if (established) { deliver(exact()); expectDagTabPair("1/2"); }
+    const token = captured!.beginActivityHydration();
+    act(() => captured!.hydrateActivities(token, null, withdrawal().data));
+    expectNoPair();
+  });
+
+  it("raw-only history admits exact scalars before a later older withdrawal loses to live authority", () => {
+    const initial = captured!.beginActivityHydration();
+    act(() => captured!.hydrateActivities(initial, null, dagSnapshotFrame({
+      runs: [run("done", "01", "completed")], run_running_count: 1, run_total_count: 2,
+    }).data));
+    expectDagTabPair("1/2");
+    const token = captured!.beginActivityHydration();
+    deliver(dagSnapshotFrame({ run_running_count: 4, run_total_count: 9 }));
+    evictBufferedDagSnapshot();
+    act(() => captured!.hydrateActivities(token, null, withdrawal().data));
+    expectDagTabPair("4/9");
+  });
+
+  it("a supplied exact digest supersedes a rich withdrawal", () => {
+    const token = captured!.beginActivityHydration();
+    act(() => captured!.hydrateActivities(token, null, withdrawal().data, undefined, false, {
+      runs: [], truncated: true, run_running_count: 4, run_total_count: 9,
+    }));
+    expectDagTabPair("4/9");
+  });
+
   it.each([false, true])("withdraws exact authority in an established=%s pane", established => {
     if (established) { deliver(exact()); expectDagTabPair("1/2"); }
     deliver(withdrawal());
