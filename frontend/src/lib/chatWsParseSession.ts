@@ -135,6 +135,7 @@ export function parseSessionFrame(
         sessionId,
         durableSessionId,
         ...(replacesSessionId === undefined ? {} : { replacesSessionId }),
+        ...(typeof msg["active"] === "boolean" ? { active: msg["active"] } : {}),
         snapshots: snapshots as import("./contract/types_gen").ActivitySnapshot[],
         overflow,
         ...(taskDigest === undefined ? {} : { taskDigest }),

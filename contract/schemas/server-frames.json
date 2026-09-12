@@ -498,6 +498,9 @@
         "dagDigest": {
           "$ref": "#/$defs/DagDigest"
         },
+        "active": {
+          "type": "boolean"
+        },
         "overflow": {
           "type": "boolean"
         }

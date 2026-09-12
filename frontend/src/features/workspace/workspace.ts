@@ -43,6 +43,8 @@ export interface Workspace {
 export interface LiveSessionInfo {
   readonly id: string;
   readonly title: string;
+  /** Main-session work, independent of process liveness and child counts. */
+  readonly active?: boolean;
   readonly task: unknown;
   readonly dag: unknown;
   readonly taskOversized?: boolean;
@@ -71,6 +73,7 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
   return {
     id,
     title: typeof title === "string" ? title : "",
+    ...(typeof record["active"] === "boolean" ? { active: record["active"] } : {}),
     task: record["task"] ?? null,
     dag: record["dag"] ?? null,
     ...(record["task_oversized"] === true ? { taskOversized: true } : {}),

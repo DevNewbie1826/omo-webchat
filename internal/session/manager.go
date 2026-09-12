@@ -596,7 +596,7 @@ func (m *Manager) detachEpoch(token omorpc.EpochToken) []*Session {
 		}
 	}
 	for _, s := range all {
-		delete(m.overviewCurrent, s.chatID)
+		m.removeOverviewLocked(s.chatID)
 	}
 	return all
 }
@@ -745,7 +745,7 @@ func (m *Manager) retireChatIdentityLocked(chatID string) {
 func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 	if m.byChat[s.chatID] == s {
 		delete(m.byChat, s.chatID)
-		delete(m.overviewCurrent, s.chatID)
+		m.removeOverviewLocked(s.chatID)
 		if bumpGeneration {
 			m.bumpSlotGenerationLocked(s.chatID)
 		}
@@ -1229,9 +1229,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			delete(m.overviewCurrent, chatID)
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
+		deliverOverview(overviewSubscribers, overviewSnapshot)
 		m.mu.Unlock()
 		s.lifecycleMu.Unlock()
-		deliverOverview(overviewSubscribers, overviewSnapshot)
 		if !valid || !epochLive || cleanupInFlight || retiredRoute {
 			detach()
 			if (cleanupInFlight || retiredRoute) && valid {
@@ -1304,9 +1304,9 @@ func (m *Manager) acquire(ctx context.Context, chat ChatRef, sub Subscriber, ini
 			overviewSnapshot, overviewSubscribers = m.mergeOverviewIntoSessionLocked(s)
 		}
 	}
+	deliverOverview(overviewSubscribers, overviewSnapshot)
 	m.mu.Unlock()
 	s.lifecycleMu.Unlock()
-	deliverOverview(overviewSubscribers, overviewSnapshot)
 	if !valid {
 		m.discardRouting(chatID, data.SessionID, epoch)
 		return nil, false, nil, ErrManagerClosed
