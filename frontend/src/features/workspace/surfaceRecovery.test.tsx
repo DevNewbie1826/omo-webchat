@@ -178,16 +178,13 @@ describe("C002 surface recovery", () => {
   const sessionBadges = (): HTMLElement[] =>
     Array.from(container.querySelectorAll<HTMLElement>(".th-tree-children .th-tree-running"));
 
-  function openOverview(): void {
-    const trigger = container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]');
-    expect(trigger).not.toBeNull();
-    act(() => {
-      trigger?.click();
-    });
-  }
+  const liveCards = (): HTMLElement[] =>
+    Array.from(
+      container.querySelector(".th-sidebar-live")?.querySelectorAll<HTMLElement>(".th-overview-card") ?? [],
+    );
 
   describe("empty state", () => {
-    it("renders sidebar and overview empty states with no workspaces and no sessions", async () => {
+    it("renders the sidebar empty state and no pinned live section with no workspaces and no sessions", async () => {
       vi.stubGlobal("fetch", installLivePollQueue([okJson({ sessions: [] })]));
       await act(async () => {
         root.render(<Sidebar {...sidebarProps([], [])} />);
@@ -196,8 +193,9 @@ describe("C002 surface recovery", () => {
 
       expect(container.querySelector(".th-sidebar-empty")).not.toBeNull();
       expect(container.querySelector(".th-tree")).toBeNull();
-      openOverview();
-      expect(document.body.querySelector(".th-overview-empty")).not.toBeNull();
+      // Nothing running: the pinned section renders nothing at all, so the
+      // workspace tree keeps the full height.
+      expect(container.querySelector(".th-sidebar-live")).toBeNull();
       expect(document.body.querySelectorAll(".th-overview-card")).toHaveLength(0);
     });
 
@@ -210,8 +208,7 @@ describe("C002 surface recovery", () => {
 
       expect(container.querySelector(".th-tree")).not.toBeNull();
       expect(container.querySelectorAll(".th-tree-children > .th-tree-node")).toHaveLength(0);
-      openOverview();
-      expect(document.body.querySelector(".th-overview-empty")).not.toBeNull();
+      expect(container.querySelector(".th-sidebar-live")).toBeNull();
     });
   });
 
@@ -226,19 +223,19 @@ describe("C002 surface recovery", () => {
       });
       await settle();
 
-      openOverview();
-      expect(document.body.querySelector(".th-overview-empty")).not.toBeNull();
+      // Failed polls surface nothing: no pinned section, no tree badges.
+      expect(container.querySelector(".th-sidebar-live")).toBeNull();
       expect(document.body.querySelectorAll(".th-overview-card")).toHaveLength(0);
       expect(sessionBadges()).toHaveLength(0);
 
-      // Next 4s poll succeeds: card and tree badge appear from the poll alone.
+      // Next 4s poll succeeds: the pinned card and tree badge appear from the poll alone.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4000);
       });
       await settle();
-      const cards = document.body.querySelectorAll<HTMLElement>(".th-overview-card");
+      const cards = container.querySelector(".th-sidebar-live")?.querySelectorAll<HTMLElement>(".th-overview-card");
       expect(cards).toHaveLength(1);
-      expect(cards[0]?.textContent).toContain("Enriched One");
+      expect(cards?.[0]?.textContent).toContain("Enriched One");
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["1"]);
     });
 
@@ -253,20 +250,25 @@ describe("C002 surface recovery", () => {
       });
       await settle();
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["1"]);
+      expect(liveCards()).toHaveLength(1);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4000);
       });
       await settle();
-      // Transient failure keeps the last known-good snapshot in every surface.
+      // Transient failure keeps the last known-good snapshot in every surface,
+      // pinned section included.
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["1"]);
-      expect(document.body.querySelectorAll(".th-overview-card")).toHaveLength(0); // panel never opened
+      expect(liveCards()).toHaveLength(1);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4000);
       });
       await settle();
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["2"]);
+      expect(
+        container.querySelector(".th-sidebar-live .th-overview-card-running")?.textContent,
+      ).toBe("2");
     });
   });
 

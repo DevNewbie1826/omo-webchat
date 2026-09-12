@@ -1,0 +1,70 @@
+/* Pinned running-sessions section, inserted between .th-sidebar-nav and the
+   workspace tree (.th-sidebar-body). It never flexes and caps its own height,
+   scrolling internally, so a long list of live sessions can never push the
+   tree out of reach; a hairline separates it from the tree below. */
+
+.th-sidebar-live {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  max-height: min(30vh, 216px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--th-space-2);
+  border-bottom: 1px solid var(--th-border);
+}
+
+/* Header row: the same uppercase Micro treatment as .th-sidebar-section-label,
+   laid out as a flex row with the live count pinned to its far edge. */
+.th-sidebar-live-label {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--th-faint);
+  white-space: nowrap;
+}
+
+.th-sidebar-live-count {
+  margin-left: auto;
+  color: var(--th-muted);
+}
+
+.th-sidebar-live-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-height: 0;
+}
+
+/* Compact density for the overview card markup inside the 264px shell: tighter
+   activation padding, and name/metadata rows that stay on one ellipsized line
+   (name at Label, metadata demoted to Micro). */
+.th-sidebar-live-list .th-overview-card-open {
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+.th-sidebar-live-list .th-overview-card-name {
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-sidebar-live-list .th-overview-card-meta {
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-sidebar-live-list .th-overview-card-name,
+.th-sidebar-live-list .th-overview-card-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

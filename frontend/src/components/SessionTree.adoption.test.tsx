@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { Terminal, WorkspaceSession } from "../features/workspace/workspace";
+import { SessionTree } from "./SessionTree";
+import { sessionOpenAttemptKey } from "../features/workspace/useSessionOpenAttempts";
+import type { Terminal, Workspace, WorkspaceSession } from "../features/workspace/workspace";
 
 const appMocks = vi.hoisted(() => ({
   assignSession: vi.fn(),
@@ -185,7 +187,9 @@ describe("discovered-session in-place open wiring", () => {
     const viewLive = container.querySelector<HTMLButtonElement>(".th-tree-view-live");
     expect(viewLive?.textContent).toBe("View live");
     act(() => viewLive?.click());
-    expect(document.body.querySelector(".th-overview")).not.toBeNull();
+    // No modal any more: view-live only highlights the session in the
+    // sidebar's pinned list, which stays hidden here because nothing is running.
+    expect(document.body.querySelector(".th-overview")).toBeNull();
     const forceButton = container.querySelector<HTMLButtonElement>(".th-tree-force-open");
     expect(forceButton?.textContent).toBe("Open anyway");
     act(() => forceButton?.click());
@@ -219,6 +223,42 @@ describe("discovered-session in-place open wiring", () => {
     expect(container.querySelector(".th-tree-session-active")?.textContent).toContain("Open failed");
     act(() => container.querySelector<HTMLButtonElement>(".th-tree-retry-open")?.click());
     expect(openCalls()).toHaveLength(2);
+  });
+
+  it("forwards the session id through onViewLive from the tree's view-live button", () => {
+    const treeWorkspace: Workspace = { ...workspace, chats: [] };
+    const onViewLive = vi.fn();
+    act(() => {
+      root.render(
+        <SessionTree
+          workspaces={[treeWorkspace]}
+          activeTerminalId={null}
+          placedSessions={new Set<string>()}
+          liveSessions={new Set<string>()}
+          expanded={new Set(["ws-1"])}
+          sessionLists={new Map([["ws-1", [discovered]]])}
+          sessionPages={new Map()}
+          onToggle={() => undefined}
+          onLoadMoreSessions={() => undefined}
+          onSelect={() => undefined}
+          onOpen={async () => undefined}
+          openAttempts={new Map([[sessionOpenAttemptKey("ws-1", discovered.id), "session-active"]])}
+          onViewLive={onViewLive}
+          onAddTerminal={() => undefined}
+          onDeleteWorkspace={() => undefined}
+          onDeleteTerminal={() => undefined}
+          onRenameWorkspace={async () => undefined}
+          onRenameTerminal={async () => undefined}
+          notify={() => undefined}
+        />,
+      );
+    });
+
+    const viewLive = container.querySelector<HTMLButtonElement>(".th-tree-view-live");
+    expect(viewLive).not.toBeNull();
+    act(() => viewLive?.click());
+    expect(onViewLive).toHaveBeenCalledTimes(1);
+    expect(onViewLive).toHaveBeenCalledWith(discovered.id);
   });
 
   it("issues only one request while an open is pending", async () => {

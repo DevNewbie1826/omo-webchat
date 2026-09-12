@@ -2,11 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useT } from "../i18n";
 import { SessionTree } from "./SessionTree";
 import type { ToastKind } from "./SessionTree";
-import { IconChevron, IconActivity, IconLogOut, IconPlus, IconX } from "./icons";
+import { IconChevron, IconLogOut, IconPlus, IconX } from "./icons";
 import { SettingsMenu } from "./SettingsMenu";
-import { OverviewPanel } from "../features/workspace/OverviewPanel";
+import { LiveSessionList } from "../features/workspace/LiveSessionList";
 import { useMergedLiveSummaries } from "../features/workspace/liveBadgeStore";
 import { useSessionOpenAttempts } from "../features/workspace/useSessionOpenAttempts";
+import "../styles/sidebar-live.css";
 
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
@@ -72,8 +73,7 @@ export function Sidebar({
   const isMobile = useMediaQuery(MOBILE_QUERY);
   const showTreeActions = useMediaQuery("(hover: none)");
   const [statsOpen, setStatsOpen] = useState(false);
-  const [overviewOpen, setOverviewOpen] = useState(false);
-  const [overviewSessionId, setOverviewSessionId] = useState<string | null>(null);
+  const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const sessionOpen = useSessionOpenAttempts(onOpenSession);
   // The overview poller is shared with App's live-session poll; the sidebar
   // derives running-agent counts for the tree badges and the overview panel.
@@ -90,6 +90,24 @@ export function Sidebar({
     ),
     [summaries],
   );
+  // The pinned running-sessions section lists only sessions with running
+  // agents; its header count sums their exact server-side running totals.
+  const runningSummaries = useMemo(
+    () => summaries.filter((summary) => summary.runningCount > 0),
+    [summaries],
+  );
+  const totalRunningCount = useMemo(
+    () => runningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
+    [runningSummaries],
+  );
+  // "View live" can name a live session with zero running agents (idle but
+  // attached elsewhere): it joins the pinned list so the affordance never dies.
+  const pinnedSummaries = useMemo(() => {
+    if (highlightedSessionId === null) return runningSummaries;
+    if (runningSummaries.some((summary) => summary.id === highlightedSessionId)) return runningSummaries;
+    const highlighted = summaries.find((summary) => summary.id === highlightedSessionId);
+    return highlighted === undefined ? runningSummaries : [...runningSummaries, highlighted];
+  }, [highlightedSessionId, runningSummaries, summaries]);
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
@@ -221,15 +239,6 @@ export function Sidebar({
               <button
                 type="button"
                 className="th-btn-icon"
-                title={t("sidebar.overview")}
-                aria-label={t("sidebar.overview")}
-                onClick={() => setOverviewOpen(true)}
-              >
-                <IconActivity size={15} />
-              </button>
-              <button
-                type="button"
-                className="th-btn-icon"
                 title={t("sidebar.addWorkspace")}
                 onClick={onAddWorkspace}
               >
@@ -257,6 +266,27 @@ export function Sidebar({
               )}
             </div>
           </div>
+
+          {pinnedSummaries.length > 0 && (
+            <div className="th-sidebar-live">
+              <div className="th-sidebar-live-label">
+                {t("sidebar.overview")}
+                <span className="th-sidebar-live-count">{totalRunningCount}</span>
+              </div>
+              <LiveSessionList
+                summaries={pinnedSummaries}
+                workspaces={workspaces}
+                sessionLists={sessionLists}
+                onSelect={onSelectTerminal}
+                onOpen={sessionOpen.open}
+                openAttempts={sessionOpen.attempts}
+                focusedSessionId={highlightedSessionId}
+                showLastLine={false}
+                listClassName="th-sidebar-live-list"
+                onActivated={() => setHighlightedSessionId(null)}
+              />
+            </div>
+          )}
 
           <div className="th-sidebar-body">
             <div className="th-sidebar-section-label">{t("sidebar.title")}</div>
@@ -286,10 +316,7 @@ export function Sidebar({
                 onSelect={onSelectTerminal}
                 onOpen={sessionOpen.open}
                 openAttempts={sessionOpen.attempts}
-                onViewLive={(sessionId) => {
-                  setOverviewSessionId(sessionId);
-                  setOverviewOpen(true);
-                }}
+                onViewLive={(sessionId) => setHighlightedSessionId(sessionId)}
                 onAddTerminal={onAddTerminal}
                 onDeleteWorkspace={onDeleteWorkspace}
                 onDeleteTerminal={onDeleteTerminal}
@@ -329,20 +356,6 @@ export function Sidebar({
         )}
       </aside>
       <SystemStatsModal open={statsOpen} onClose={() => setStatsOpen(false)} />
-      <OverviewPanel
-        open={overviewOpen}
-        onClose={() => {
-          setOverviewOpen(false);
-          setOverviewSessionId(null);
-        }}
-        focusedSessionId={overviewSessionId}
-        summaries={summaries}
-        workspaces={workspaces}
-        sessionLists={sessionLists}
-        onSelect={onSelectTerminal}
-        onOpen={sessionOpen.open}
-        openAttempts={sessionOpen.attempts}
-      />
     </>
   );
 }

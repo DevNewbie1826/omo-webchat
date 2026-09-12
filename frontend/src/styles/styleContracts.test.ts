@@ -20,7 +20,7 @@ const fileEditor = readStyle("file-editor");
 const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
-const allStyles = ["app-empty", "chat-transcript", "login", "sidebar"]
+const allStyles = ["app-empty", "chat-transcript", "login", "sidebar", "sidebar-live"]
   .map(readStyle)
   .join("\n");
 // Vite's glob supplies only the complete stylesheet inventory. Contract
@@ -824,5 +824,37 @@ describe("activity shelf DAG contracts", () => {
     const rule = activityShelf.match(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{[^}]*\}/);
     expect(rule, "scoped refresh-toolbar spacing rule").not.toBeNull();
     expect(rule?.[0]).toContain("margin-bottom: var(--th-space-3)");
+  });
+});
+
+describe("pinned live-session section contracts", () => {
+  // The running-sessions block sits between .th-sidebar-nav and the flex:1
+  // workspace tree: it never flexes, caps its height at min(30vh, 216px), and
+  // scrolls internally, so live sessions can never push the tree out of
+  // reach. Its rows reuse the overview card markup at compact density inside
+  // the 264px shell, so name and metadata stay on one ellipsized line each.
+  const sidebarLive = readStyle("sidebar-live");
+
+  it("pins the section with flex none and a bounded internal scrollport", () => {
+    const section = ruleBody(sidebarLive, ".th-sidebar-live");
+    expect(declarationValue(section, "flex")).toBe("none");
+    expect(declarationValue(section, "max-height")).toBe("min(30vh, 216px)");
+    expect(declarationValue(section, "overflow-y")).toBe("auto");
+  });
+
+  it("clamps every compact live row to one ellipsized line at label and micro tiers", () => {
+    const rows =
+      sidebarLive.match(
+        /\.th-sidebar-live-list \.th-overview-card-name,\s*\.th-sidebar-live-list \.th-overview-card-meta\s*\{([^}]*)\}/,
+      )?.[1] ?? "";
+    expect(rows, "shared clamp rule for live row name and metadata").not.toBe("");
+    expect(declarationValue(rows, "min-width")).toBe("0");
+    expect(declarationValue(rows, "overflow")).toBe("hidden");
+    expect(declarationValue(rows, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(rows, "white-space")).toBe("nowrap");
+    const name = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-name");
+    expect(declarationValue(name, "font-size")).toBe("var(--th-type-label-size)");
+    const meta = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-meta");
+    expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
   });
 });
