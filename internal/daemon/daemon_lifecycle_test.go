@@ -3,14 +3,14 @@
 package daemon
 
 import (
-	"strconv"
 	"errors"
-	"io/fs"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -22,8 +22,8 @@ import (
 const (
 	daemonHelperScenarioEnv = "TH_TEST_DAEMON_SCENARIO"
 	daemonHelperStateEnv    = "TH_TEST_DAEMON_STATE"
-	daemonHelperPIDFile  = "helper.pid"
-	daemonProcessTimeout = 15 * time.Second
+	daemonHelperPIDFile     = "helper.pid"
+	daemonProcessTimeout    = 15 * time.Second
 )
 
 // TestDaemonLifecycleHelper is re-executed as the daemon child. Keeping the
