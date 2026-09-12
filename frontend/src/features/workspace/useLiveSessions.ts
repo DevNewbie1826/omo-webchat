@@ -27,9 +27,10 @@ interface PushedSession {
   readonly membershipArrival: number;
   readonly taskArrival?: number;
   readonly dagArrival?: number;
+  readonly activeArrival?: number;
 }
 
-// One module-level source owns session membership and the existing DAG-side
+// One module-level source owns session membership and independent activity
 // arrival fences. Every task input is admitted to the shared per-ID store;
 // retained transport payloads below never elect task status or raw revision.
 const listeners = new Set<() => void>();
@@ -65,6 +66,9 @@ function publishMerged(): void {
   }));
   for (const [id, pushed] of pushedSessions) {
     const polled = merged.get(id);
+    // A cleared activity fence cannot create process membership by itself.
+    if (pushed.membershipArrival < 0 && polled === undefined) continue;
+    const active = pushed.activeArrival !== undefined ? pushed.info.active : polled?.active;
     const taskPushed = pushed.taskArrival !== undefined;
     const dagPushed = pushed.dagArrival !== undefined;
     const taskDigest = taskPushed ? pushed.info.taskDigest : polled?.taskDigest;
@@ -72,6 +76,7 @@ function publishMerged(): void {
     merged.set(id, {
       id,
       title: polled?.title ?? pushed.info.title,
+      ...(active === undefined ? {} : { active }),
       task: taskPushed ? pushed.info.task : polled?.task ?? null,
       dag: dagPushed ? pushed.info.dag : polled?.dag ?? null,
       ...(taskPushed
@@ -93,6 +98,8 @@ function publishMerged(): void {
 function mergePushedSessions(id: string, first: PushedSession, second: PushedSession): PushedSession {
   const taskSource = (first.taskArrival ?? -1) >= (second.taskArrival ?? -1) ? first : second;
   const dagSource = (first.dagArrival ?? -1) >= (second.dagArrival ?? -1) ? first : second;
+  const activeSource = (first.activeArrival ?? -1) >= (second.activeArrival ?? -1) ? first : second;
+  const activeArrival = Math.max(first.activeArrival ?? -1, second.activeArrival ?? -1);
   const newest = first.membershipArrival >= second.membershipArrival ? first : second;
   const taskArrival = Math.max(first.taskArrival ?? -1, second.taskArrival ?? -1);
   const dagArrival = Math.max(first.dagArrival ?? -1, second.dagArrival ?? -1);
@@ -100,6 +107,7 @@ function mergePushedSessions(id: string, first: PushedSession, second: PushedSes
     info: {
       id,
       title: newest.info.title,
+      ...(activeSource.info.active === undefined ? {} : { active: activeSource.info.active }),
       task: taskSource.info.task,
       dag: dagSource.info.dag,
       ...(taskSource.info.taskOversized === true ? { taskOversized: true } : {}),
@@ -110,6 +118,7 @@ function mergePushedSessions(id: string, first: PushedSession, second: PushedSes
     membershipArrival: newest.membershipArrival,
     ...(taskArrival < 0 ? {} : { taskArrival }),
     ...(dagArrival < 0 ? {} : { dagArrival }),
+    ...(activeArrival < 0 ? {} : { activeArrival }),
   };
 }
 
@@ -130,7 +139,11 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
   }
   sessionAliases = nextAliases;
   const previousIds = polledSessions.map(info => info.id);
-  polledSessions = next;
+  polledSessions = next.map(info => {
+    const previous = polledSessions.find(previous => canonicalLiveSessionId(previous.id) === info.id);
+    return info.active === undefined && previous?.active !== undefined ? { ...info, active: previous.active } : info;
+  });
+  const polledActiveIds = new Set(next.filter(info => info.active !== undefined).map(info => canonicalLiveSessionId(info.id)));
   const liveIds = new Set(next.map((info) => canonicalLiveSessionId(info.id)));
   for (const [id, pushed] of pushedSessions) {
     const taskArrival = pushed.taskArrival !== undefined && pushed.taskArrival > requestSequence
@@ -139,8 +152,12 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
     const dagArrival = pushed.dagArrival !== undefined && pushed.dagArrival > requestSequence
       ? pushed.dagArrival
       : undefined;
+    const activeArrival = pushed.activeArrival !== undefined
+      && (pushed.activeArrival > requestSequence || !polledActiveIds.has(id))
+      ? pushed.activeArrival
+      : undefined;
     if (liveIds.has(id)) {
-      if (taskArrival === undefined && dagArrival === undefined) {
+      if (taskArrival === undefined && dagArrival === undefined && activeArrival === undefined) {
         pushedSessions.delete(id);
       } else {
         pushedSessions.set(id, {
@@ -148,6 +165,7 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
           membershipArrival: pushed.membershipArrival,
           ...(taskArrival === undefined ? {} : { taskArrival }),
           ...(dagArrival === undefined ? {} : { dagArrival }),
+          ...(activeArrival === undefined ? {} : { activeArrival }),
         });
       }
       continue;
@@ -157,6 +175,20 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
   }
   retireLiveTaskSessions(previousIds.filter(id => !liveIds.has(id) && !pushedSessions.has(id) && !sessionAliases.has(id)));
   publishMerged();
+}
+
+/** Clear main work without changing the established process-membership rule.
+ * The negative membership arrival retains only a false activity fence, so an
+ * in-flight poll cannot restore activity after a tombstone or socket close. */
+function clearMainActivity(id: string, arrival: number): void {
+  const previous = pushedSessions.get(id)?.info ?? polledSessions.find(info => canonicalLiveSessionId(info.id) === id);
+  if (previous === undefined) return;
+  pushedSessions.set(id, {
+    info: { ...previous, id, active: false },
+    membershipArrival: -1,
+    activeArrival: arrival,
+  });
+  polledSessions = polledSessions.map(info => canonicalLiveSessionId(info.id) === id ? { ...info, active: false } : info);
 }
 
 function requestFallbackRefresh(): void {
@@ -195,7 +227,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
   if (identity.tombstone) {
     const removedIds = identity.sourceIds.length > 0 ? identity.sourceIds : [identity.id];
     for (const removedId of removedIds) {
-      pushedSessions.delete(removedId);
+      clearMainActivity(removedId, arrival);
       if (canonicalLiveSessionId(removedId) === removedId) retireLiveTaskSessions([removedId]);
       settleLiveBadgePush(removedId, [], true, true, arrival);
     }
@@ -220,6 +252,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
   const dagDigest = parseDagDigest(frame.dagDigest);
   const taskUpdated = task !== undefined || taskDigest !== null;
   const dagUpdated = dag !== undefined || dagDigest !== null;
+  const activeUpdated = frame.active !== undefined;
   settleLiveBadgePush(identity.id, identity.sourceIds, taskUpdated, dagUpdated, arrival);
   acceptLiveTaskInfo({ id: identity.id, task: task?.data,
     ...(taskDigest === null ? {} : { taskDigest }), taskOversized: task?.oversized === true }, arrival);
@@ -233,6 +266,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
   const info: LiveSessionInfo = {
     id: identity.id,
     title: previous?.title ?? "",
+    ...(activeUpdated ? { active: frame.active } : previous?.active === undefined ? {} : { active: previous.active }),
     task: task === undefined
       ? previous?.task ?? null
       : task.data ?? (task.oversized ? previous?.task ?? null : null),
@@ -258,6 +292,7 @@ function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "se
     membershipArrival: arrival,
     ...(taskUpdated ? { taskArrival: arrival } : pushed?.taskArrival === undefined ? {} : { taskArrival: pushed.taskArrival }),
     ...(dagUpdated ? { dagArrival: arrival } : pushed?.dagArrival === undefined ? {} : { dagArrival: pushed.dagArrival }),
+    ...(activeUpdated ? { activeArrival: arrival } : pushed?.activeArrival === undefined ? {} : { activeArrival: pushed.activeArrival }),
   });
   while (pushedSessions.size > MAX_PUSHED_SESSIONS) {
     const oldest = pushedSessions.keys().next().value as string | undefined;
@@ -286,7 +321,10 @@ function startPush(): void {
       },
       onClose: () => {
         pushOpen = false;
-        pushedSessions = new Map();
+        const arrival = nextLiveActivitySequence();
+        for (const id of new Set([...polledSessions.map(info => canonicalLiveSessionId(info.id)), ...pushedSessions.keys()])) {
+          clearMainActivity(id, arrival);
+        }
         publishMerged();
       },
     });
