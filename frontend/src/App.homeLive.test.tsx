@@ -23,7 +23,7 @@ const home = vi.hoisted(() => ({
   openedChat: { id: "chat-opened", name: "Disk session", provider: "omo" as const },
   livePayload: { sessions: [] as readonly unknown[] },
   openBodies: [] as unknown[],
-  openOutcomes: [] as ("open" | "active")[],
+  openOutcomes: [] as ("open" | "active" | "fail")[],
 }));
 
 vi.mock("./features/auth/auth", () => ({
@@ -39,8 +39,12 @@ vi.mock("./lib/api", async (importOriginal) => {
       if (path === "/api/sessions/live") return home.livePayload;
       if (path === "/api/workspaces/ws-1/sessions/open" && options?.method === "POST") {
         home.openBodies.push(options.body);
-        if (home.openOutcomes.shift() === "active") {
+        const outcome = home.openOutcomes.shift();
+        if (outcome === "active") {
           throw new actual.ApiError(409, "session active", { state: "session-active" });
+        }
+        if (outcome === "fail") {
+          throw new actual.ApiError(500, "open exploded");
         }
         return home.openedChat;
       }
@@ -288,6 +292,55 @@ describe("App home running sessions", () => {
       { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity, force: true },
     ]);
     expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
+    expect(container.querySelector(".th-home-live .th-overview-card-state")).toBeNull();
+  });
+
+  it("surfaces a failed discovered open on the card and retries it without force", async () => {
+    home.livePayload = livePayloadWith("running", "Refactor auth");
+    home.openOutcomes = ["fail", "open"];
+    await renderApp();
+
+    const card = container.querySelector<HTMLElement>(".th-home-live .th-overview-card");
+    expect(card).not.toBeNull();
+
+    // First transition: an ordinary discovered open whose POST rejects with a
+    // non-409 failure. Subscribe to the failed-state render before asserting.
+    await act(async () => {
+      card!.querySelector<HTMLButtonElement>(".th-overview-card-open")!.click();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(card!.querySelector(".th-overview-retry-open")).not.toBeNull();
+      }, { timeout: 1000, interval: 10 });
+    });
+
+    // The hook recorded the failure through the real App-to-LiveSessionList
+    // attempt map: no placement happened, and the retry control is offered.
+    expect(home.openBodies).toEqual([
+      { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
+    ]);
+    expect(home.assignSession).not.toHaveBeenCalled();
+    const state = card!.querySelector(".th-overview-card-state");
+    expect(state?.textContent).toContain("Open failed");
+    const retry = state!.querySelector<HTMLButtonElement>(".th-overview-retry-open");
+    expect(retry?.textContent).toBe("Retry");
+
+    // Second transition: the retry re-issues the same discovered open body,
+    // still without force, and only the success places the returned chat.
+    await act(async () => {
+      retry!.click();
+    });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
+      }, { timeout: 1000, interval: 10 });
+    });
+
+    expect(home.openBodies).toEqual([
+      { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
+      { id: home.discovered.id, resumeIdentity: home.discovered.resumeIdentity },
+    ]);
+    expect(home.assignSession).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".th-home-live .th-overview-card-state")).toBeNull();
   });
 });
