@@ -7,7 +7,7 @@
   "chat.updateSuccess": "설치가 완료되었습니다. 실행 중인 세션은 아직 이전 엔진을 사용합니다. 지금 적용을 누르면 omo-webchat을 떠나지 않고 새 엔진 버전을 활성화합니다.",
   "chat.updateFailed": "업데이트가 완료되지 않았습니다. 오류를 확인한 뒤 다시 시도하세요.",
   "chat.updateApplyAction": "지금 적용",
-  "chat.updateApplying": "새 엔진 버전을 적용하고 있습니다. 이 창을 닫아도 적용은 계속됩니다. /update를 다시내면 진행 상태로 돌아옵니다.",
+  "chat.updateApplying": "새 엔진 버전을 적용하고 있습니다. 이 창을 닫아도 적용은 계속됩니다. /update를 다시 보내면 진행 상태로 돌아옵니다.",
   "chat.updateApplied": "새 엔진이 활성화되었습니다: {before} → {after}. 채팅이 자동으로 다시 열리고 omo-webchat은 계속 실행됩니다.",
   "chat.updateApplyFailed": "새 엔진 버전을 적용하지 못했습니다. 오류를 확인한 뒤 다시 시도하세요.",
   "chat.updateApplyRetry": "다시 시도",

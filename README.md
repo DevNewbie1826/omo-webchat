@@ -139,9 +139,10 @@ macOS·Linux의 npm 전역 prefix와 Bun 전역 설치를 지원합니다. Windo
 Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미널에서 설치에 사용한
 패키지 매니저로 업데이트하세요.
 
-설치 완료가 실행 중인 엔진의 교체를 뜻하지는 않습니다. 설치 후 설정 메뉴의
-**omo 엔진 다시 시작**으로 엔진만 재시작해 새 버전을 적용할 수 있습니다. 기존
-세션을 강제로 재시작하지 않습니다.
+설치 완료가 실행 중인 엔진의 교체를 뜻하지는 않습니다. 설치가 끝나면 같은
+대화상자의 **지금 적용**을 누르세요. 웹챗을 떠나지 않고 엔진만 새 프로세스로
+교체해 새 버전을 활성화합니다. 나중에 적용하려면 설정 메뉴의 **omo 엔진 다시
+시작**을 눌러도 같은 동작이 실행됩니다. 기존 세션을 강제로 재시작하지 않습니다.
 
 ### omo 엔진 다시 시작하기
 
@@ -294,10 +295,11 @@ Windows in-place updates are rejected because loaded native-module locks can
 leave a partial installation. On Windows, stop every omo/senpi process and
 webchat first, then update with the installation's package manager in a terminal.
 
-Installation does not replace the running engine. After an install, choose
-**Restart omo engine** in the settings menu to restart just the engine and
-activate the new version. Existing sessions are never forcibly restarted by this
-action.
+Installation does not replace the running engine. When the install finishes,
+choose **Apply now** in the same dialog: it replaces just the engine process with
+a fresh one and activates the new version without leaving omo-webchat. To apply
+it later instead, **Restart omo engine** in the settings menu does the same
+thing. Existing sessions are never forcibly restarted by this action.
 
 ### Restart the omo engine
 
