@@ -20,7 +20,7 @@ const fileEditor = readStyle("file-editor");
 const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
-const allStyles = ["app-empty", "chat-transcript", "login", "sidebar", "sidebar-live"]
+const allStyles = ["app-empty", "chat-transcript", "home-live", "login", "sidebar", "sidebar-live"]
   .map(readStyle)
   .join("\n");
 // Vite's glob supplies only the complete stylesheet inventory. Contract
@@ -111,6 +111,10 @@ const SPACING_COMPONENT_ALLOWANCES = [
   {
     reason: "Safe-area insets are physical dimensions supplied by the browser environment.",
     pattern: /^env\(\s*safe-area-inset-(?:top|right|bottom|left)\s*\)(?=\s|$)/,
+  },
+  {
+    reason: "A calc() sum of spacing tokens stays on the scale (e.g. the empty column reserving its floating menu's band).",
+    pattern: /^calc\(\s*var\(\s*--th-space-[\w-]+\s*\)(?:\s*\+\s*var\(\s*--th-space-[\w-]+\s*\))+\s*\)(?=\s|$)/,
   },
 ] as const;
 
@@ -584,6 +588,31 @@ describe("visual accessibility contracts", () => {
     expect(appEmpty).toMatch(/\.th-empty \.th-empty-menu\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/);
     expect(appEmpty).not.toMatch(/(?:^|\})\s*\.th-empty-menu\s*\{[^}]*width:\s*44px/);
   });
+
+  it("reserves the floating menu's band in the empty column's top padding", () => {
+    // The hamburger is absolutely positioned at (10,10) with a 44x44px target,
+    // so it reserves no flow space. When a long picker history overflows the
+    // safely-centered column, centering falls back to the top and the
+    // non-shrinking .th-home-live begins at the top padding edge — under the
+    // button, which then paints its icon over the running-sessions heading.
+    // Whenever the button exists (mobile empty state), the column must pad its
+    // top by at least the button's 10px offset plus its 44px height (54px),
+    // so the running block can never start inside the menu's band.
+    const reserved = ruleBody(appEmpty, ".th-empty:has(> .th-empty-menu)");
+    expect(reserved).toMatch(/padding-top:/);
+    const menu = ruleBody(appEmpty, ".th-empty .th-empty-menu");
+    const menuTop = Number.parseFloat(declarationValue(menu, "top"));
+    const menuHeight = Number.parseFloat(declarationValue(menu, "height"));
+    const paddingTop = declarationValue(reserved, "padding-top");
+    // Accept a token, a literal, or a calc() summing the parts; evaluate the
+    // numeric total so the band always covers offset + target.
+    const terms = paddingTop.match(/\d+(?:\.\d+)?px|var\(\s*--th-space-[\w-]+\s*\)/g) ?? [];
+    const total = terms.reduce((sum, term) => {
+      const token = wholeVarToken(term);
+      return sum + Number.parseFloat((token ? tokenValue(token) : term).replace("px", ""));
+    }, 0);
+    expect(total).toBeGreaterThanOrEqual(menuTop + menuHeight);
+  });
 });
 
 describe("chat reading rhythm and tool width contracts", () => {
@@ -824,6 +853,109 @@ describe("activity shelf DAG contracts", () => {
     const rule = activityShelf.match(/\.th-activity-dag-complete\s*>\s*\.th-activity-dag-toolbar\s*\{[^}]*\}/);
     expect(rule, "scoped refresh-toolbar spacing rule").not.toBeNull();
     expect(rule?.[0]).toContain("margin-bottom: var(--th-space-3)");
+  });
+});
+
+describe("main-screen running-sessions contracts", () => {
+  // With no chat selected, .th-empty renders the running-sessions block above
+  // the session picker: the same overview card markup as the sidebar's pinned
+  // section, but the cards keep their last-output line. The block fills the
+  // picker column up to a fixed cap and owns a bounded internal scrollport,
+  // so any number of running sessions can never push the picker off-screen.
+  const homeLive = readStyle("home-live");
+
+  it("bounds the block inside the picker column with its own scrollport", () => {
+    const block = ruleBody(homeLive, ".th-home-live");
+    expect(declarationValue(block, "display")).toBe("flex");
+    expect(declarationValue(block, "flex-direction")).toBe("column");
+    expect(declarationValue(block, "gap")).toBe("var(--th-space-2)");
+    expect(declarationValue(block, "width")).toBe("100%");
+    expect(declarationValue(block, "max-width")).toBe("420px");
+    expect(declarationValue(block, "max-height")).toBe("min(38vh, 320px)");
+    expect(declarationValue(block, "overflow-y")).toBe("auto");
+    expect(declarationValue(block, "overflow-x")).toBe("hidden");
+  });
+
+  it("styles the header as an uppercase micro label with the count at the far edge", () => {
+    const label = ruleBody(homeLive, ".th-home-live-label");
+    expect(declarationValue(label, "display")).toBe("flex");
+    expect(declarationValue(label, "align-items")).toBe("center");
+    expect(declarationValue(label, "font-size")).toBe("var(--th-type-micro-size)");
+    expect(declarationValue(label, "font-weight")).toBe("var(--th-weight-emphasize)");
+    expect(declarationValue(label, "line-height")).toBe("var(--th-type-micro-line)");
+    expect(declarationValue(label, "letter-spacing")).toBe("var(--th-type-micro-tracking)");
+    expect(declarationValue(label, "text-transform")).toBe("uppercase");
+    expect(declarationValue(label, "color")).toBe("var(--th-faint)");
+    const count = ruleBody(homeLive, ".th-home-live-count");
+    expect(declarationValue(count, "margin-left")).toBe("auto");
+    expect(declarationValue(count, "color")).toBe("var(--th-muted)");
+  });
+
+  it("clamps card name, metadata, and last-output line to one ellipsized line each", () => {
+    const rows =
+      homeLive.match(
+        /\.th-home-live-list \.th-overview-card-name,\s*\.th-home-live-list \.th-overview-card-meta\s*\{([^}]*)\}/,
+      )?.[1] ?? "";
+    expect(rows, "shared clamp rule for home live card name and metadata").not.toBe("");
+    expect(declarationValue(rows, "min-width")).toBe("0");
+    expect(declarationValue(rows, "overflow")).toBe("hidden");
+    expect(declarationValue(rows, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(rows, "white-space")).toBe("nowrap");
+    const name = ruleBody(homeLive, ".th-home-live-list .th-overview-card-name");
+    expect(declarationValue(name, "font-size")).toBe("var(--th-type-label-size)");
+    const meta = ruleBody(homeLive, ".th-home-live-list .th-overview-card-meta");
+    expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
+    // Unlike the sidebar variant, the main-screen cards show their last
+    // output line; it clamps to one ellipsized line like the name and meta.
+    const line = ruleBody(homeLive, ".th-home-live-list .th-overview-card-line");
+    expect(declarationValue(line, "min-width")).toBe("0");
+    expect(declarationValue(line, "overflow")).toBe("hidden");
+    expect(declarationValue(line, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(line, "white-space")).toBe("nowrap");
+  });
+
+  it("stacks the block above the picker in wide-layout empty panes", () => {
+    // SplitView renders the block as a sibling above .th-picker-pane inside
+    // .th-pane-wrap; the wrap becomes a centered column that owns scrolling,
+    // and the picker sizes to content instead of filling the pane.
+    const wrap = ruleBody(split, ".th-pane-wrap:has(> .th-home-live)");
+    expect(wrap, "empty-pane column rule").not.toBe("");
+    expect(declarationValue(wrap, "flex-direction")).toBe("column");
+    expect(declarationValue(wrap, "align-items")).toBe("center");
+    expect(declarationValue(wrap, "overflow-y")).toBe("auto");
+    const block = ruleBody(split, ".th-pane-wrap > .th-home-live");
+    expect(declarationValue(block, "flex")).toBe("none");
+    const picker = ruleBody(split, ".th-pane-wrap:has(> .th-home-live) > .th-picker-pane");
+    expect(picker, "stacked picker override").not.toBe("");
+    expect(declarationValue(picker, "flex")).toBe("none");
+    expect(declarationValue(picker, "width")).toBe("100%");
+    expect(declarationValue(picker, "overflow")).toBe("visible");
+  });
+
+  it("keeps the block non-shrinking in BOTH empty-state columns so it survives picker overflow", () => {
+    // Regression for the 390x844 collapse: with one running session and a
+    // picker loaded with history pages, the mobile .th-empty column shrank
+    // .th-home-live to height 0 (flex-shrink: 1) while the picker sibling
+    // was explicitly flex: none. The desktop-only .th-pane-wrap > .th-home-live
+    // rule never applies inside .th-empty, so the non-shrinking contract must
+    // be stated for both empty-state containers, and each container must
+    // scroll its own overflow so the picker stays reachable underneath.
+    const mobileBlock = ruleBody(appEmpty, ".th-empty > .th-home-live");
+    expect(mobileBlock, "non-shrinking rule for .th-empty > .th-home-live").not.toBe("");
+    const mobileFlex = declarationValue(mobileBlock, "flex");
+    const mobileShrink = declarationValue(mobileBlock, "flex-shrink");
+    expect(
+      mobileFlex === "none" || mobileShrink === "0",
+      "the block must not shrink inside .th-empty (flex: none or flex-shrink: 0)",
+    ).toBe(true);
+    const desktopBlock = ruleBody(split, ".th-pane-wrap > .th-home-live");
+    expect(declarationValue(desktopBlock, "flex")).toBe("none");
+    // Both containers scroll their own overflow, so a capped live block plus
+    // an overflowing picker never push the picker out of reach.
+    const emptyCol = ruleBody(appEmpty, ".th-empty");
+    expect(declarationValue(emptyCol, "overflow-y")).toBe("auto");
+    const wrap = ruleBody(split, ".th-pane-wrap:has(> .th-home-live)");
+    expect(declarationValue(wrap, "overflow-y")).toBe("auto");
   });
 });
 

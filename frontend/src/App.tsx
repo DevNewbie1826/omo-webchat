@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { I18nContext } from "./i18n";
 import { useAppConfig } from "./app-config";
 import { useMediaQuery } from "./lib/useMediaQuery";
@@ -24,13 +24,17 @@ import type {
 } from "./features/workspace/workspace";
 import { useLiveSessions } from "./features/workspace/useLiveSessions";
 import { useWorkspaces } from "./features/workspace/useWorkspaces";
-import { sessionOpenAttemptKey } from "./features/workspace/useSessionOpenAttempts";
+import { sessionOpenAttemptKey, useSessionOpenAttempts } from "./features/workspace/useSessionOpenAttempts";
 import { useProviderDiscovery } from "./features/workspace/useProviderDiscovery";
 import { useConfirm } from "./components/ConfirmDialog";
 import { NewChatDialog } from "./components/NewChatDialog";
 import { SessionPicker } from "./features/split/SessionPicker";
 import { ChatEmptyState } from "./components/ChatEmptyState";
 import { SessionDraftProvider } from "./features/split/sessionDraft";
+import { LiveSessionList } from "./features/workspace/LiveSessionList";
+import { useLiveSessionSummaries } from "./features/workspace/useLiveSessionSummaries";
+import { useMergedLiveSummaries } from "./features/workspace/liveBadgeStore";
+import "./styles/home-live.css";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
 
@@ -191,6 +195,44 @@ export function App() {
     }
   };
 
+  // The home empty state pins the same running-session cards the sidebar
+  // shows, derived from the same shared poller and WS-override store, so this
+  // consumer adds no network traffic. Only sessions with running agents pin;
+  // cards activate through the same select/open path the picker uses.
+  const homePollSummaries = useLiveSessionSummaries(authed === true);
+  const homeLiveSummaries = useMergedLiveSummaries(homePollSummaries);
+  const homeRunningSummaries = useMemo(
+    () => homeLiveSummaries.filter((summary) => summary.runningCount > 0),
+    [homeLiveSummaries],
+  );
+  const homeRunningCount = useMemo(
+    () => homeRunningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
+    [homeRunningSummaries],
+  );
+  const homeSessionOpen = useSessionOpenAttempts(openSession);
+
+  // The same running-session block the mobile empty state shows, offered to
+  // SplitView so wide-layout empty panes render it above their session
+  // picker instead of dropping the cards.
+  const homeRunningSessions = homeRunningSummaries.length > 0 ? (
+    <div className="th-home-live">
+      <div className="th-home-live-label">
+        {t("sidebar.overview")}
+        <span className="th-home-live-count">{homeRunningCount}</span>
+      </div>
+      <LiveSessionList
+        summaries={homeRunningSummaries}
+        workspaces={workspaces}
+        sessionLists={sessionLists}
+        onSelect={selectTerminal}
+        onOpen={homeSessionOpen.open}
+        openAttempts={homeSessionOpen.attempts}
+        showLastLine
+        listClassName="th-home-live-list"
+      />
+    </div>
+  ) : undefined;
+
   const createOmoChat = useCallback(async (target: NewChatTarget): Promise<void> => {
     if (createChatInFlightRef.current) return;
     createChatInFlightRef.current = true;
@@ -309,6 +351,7 @@ export function App() {
                 splitEnabled={splitEnabled}
                 actions={splitActions}
                 onChatName={handleChatName}
+                runningSessions={homeRunningSessions}
               />
             ) : activeSession ? (
               <ChatPane
@@ -332,6 +375,7 @@ export function App() {
                 onOpenSidebar={() => setSidebarCollapsed(false)}
                 onNewWorkspace={() => setWizardOpen(true)}
                 onNewChat={openNewChat}
+                runningSessions={homeRunningSessions}
                 sessionPicker={workspaces.length > 0 ? (
                   <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
                     onEnsureSessions={ensureSessionsLoaded} onLoadMoreSessions={loadMoreSessions}

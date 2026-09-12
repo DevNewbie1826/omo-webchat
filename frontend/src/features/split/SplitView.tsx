@@ -1,5 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { useT } from "../../i18n";
 import { ChatPane } from "./ChatPane";
 import { PaneResizeControl, PaneResizeSurface, PaneSizeOverlay, usePaneResize } from "./PaneResize";
@@ -38,6 +38,8 @@ export interface SplitViewProps {
   readonly splitEnabled: boolean;
   readonly actions: SplitActions;
   readonly onChatName?: (wsId: string, chatId: string, name: string) => void;
+  /** Running-session cards rendered above the session picker in empty panes. */
+  readonly runningSessions?: ReactNode;
 }
 
 type LeafData = Extract<PaneNode, { readonly kind: "leaf" }>;
@@ -61,7 +63,7 @@ function clampRatio(ratio: number, bounds: { readonly min: number; readonly max:
   return Math.min(bounds.max, Math.max(bounds.min, ratio));
 }
 
-function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName, boundaries }: TreeProps & { readonly node: LeafData }) {
+function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEnsureSessions, focusedPaneId, splitEnabled, actions, onChatName, runningSessions, boundaries }: TreeProps & { readonly node: LeafData }) {
   const { t } = useT();
   const [pane, setPane] = useState<HTMLDivElement | null>(null);
   const resizeControl = <PaneResizeControl boundaries={boundaries} />;
@@ -84,10 +86,13 @@ function LeafView({ node, workspaces, sessions, sessionLists, sessionPages, onEn
             <IconX size={14} />
           </button>
         )}
-        <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
-          onEnsureSessions={onEnsureSessions} onLoadMoreSessions={actions.onLoadMoreSessions}
-          onOpenSession={(ws, entry, force) => actions.onOpenSession(node.id, ws, entry, force)}
-          onNewChat={wsId => actions.onCreateTerminal(node.id, wsId)} />
+        <Fragment>
+          {runningSessions}
+          <SessionPicker workspaces={workspaces} sessionLists={sessionLists} sessionPages={sessionPages}
+            onEnsureSessions={onEnsureSessions} onLoadMoreSessions={actions.onLoadMoreSessions}
+            onOpenSession={(ws, entry, force) => actions.onOpenSession(node.id, ws, entry, force)}
+            onNewChat={wsId => actions.onCreateTerminal(node.id, wsId)} />
+        </Fragment>
       </div>
     );
   }

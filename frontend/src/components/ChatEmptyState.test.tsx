@@ -78,6 +78,37 @@ describe("ChatEmptyState", () => {
     expect(onNewChat).not.toHaveBeenCalled();
   });
 
+  it("renders running sessions above the session picker inside .th-empty", () => {
+    renderState({
+      runningSessions: <div data-testid="running-sessions">running</div>,
+      sessionPicker: <div data-testid="session-picker">picker</div>,
+    });
+
+    const empty = container.querySelector(".th-empty");
+    const running = container.querySelector('[data-testid="running-sessions"]');
+    const picker = container.querySelector('[data-testid="session-picker"]');
+
+    expect(empty).not.toBeNull();
+    expect(running).not.toBeNull();
+    expect(picker).not.toBeNull();
+    expect(empty?.contains(running as Node)).toBe(true);
+    expect(empty?.contains(picker as Node)).toBe(true);
+    expect(
+      (running as Node).compareDocumentPosition(picker as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders nothing extra when runningSessions is undefined", () => {
+    renderState({
+      mobile: false,
+      sessionPicker: <div data-testid="session-picker">picker</div>,
+    });
+
+    const empty = container.querySelector(".th-empty");
+    expect(empty?.childElementCount).toBe(1);
+    expect(empty?.firstElementChild?.getAttribute("data-testid")).toBe("session-picker");
+  });
+
   it("switches the primary action to New chat when workspaces exist", () => {
     const onOpenSidebar = vi.fn();
     const onNewWorkspace = vi.fn();
