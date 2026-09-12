@@ -1,0 +1,81 @@
+/* Main-screen running-sessions block, rendered above the session picker in
+   .th-empty when no chat is selected. It reuses the shared overview card
+   markup (the sidebar's pinned equivalent lives in sidebar-live.css), fills
+   the picker column up to a fixed cap, and owns a bounded internal
+   scrollport, so any number of live sessions can never push the picker
+   off-screen. Unlike the sidebar variant, the cards keep their last-output
+   line visible, clamped to one line. */
+
+.th-home-live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  width: 100%;
+  max-width: 420px;
+  max-height: min(38vh, 320px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Header row: the same uppercase Micro treatment as the empty state's
+   .th-picker-pane-title, laid out as a flex row with the live count pinned
+   to its far edge. */
+.th-home-live-label {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  font-size: var(--th-type-micro-size);
+  font-weight: var(--th-weight-emphasize);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--th-faint);
+  white-space: nowrap;
+}
+
+.th-home-live-count {
+  margin-left: auto;
+  color: var(--th-muted);
+}
+
+.th-home-live-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-height: 0;
+}
+
+/* Picker-column density for the overview card markup: tighter activation
+   padding, the name at Label and metadata demoted to Micro, and every row
+   held to one ellipsized line - including the last-output line the sidebar
+   variant does not show. */
+.th-home-live-list .th-overview-card-open {
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+.th-home-live-list .th-overview-card-name {
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+}
+
+.th-home-live-list .th-overview-card-meta {
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-home-live-list .th-overview-card-name,
+.th-home-live-list .th-overview-card-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-home-live-list .th-overview-card-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
