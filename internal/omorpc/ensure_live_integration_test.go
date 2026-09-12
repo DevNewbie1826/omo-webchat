@@ -159,6 +159,12 @@ func TestWithoutInheritedRPCHostControlOmitsSenpiAndOmoKeys(t *testing.T) {
 		"OMO_RPC_HOST_SCRATCH_DIR=/tmp/omo-scratch",
 		"SENPI_RPC_HOST_CLEANUP_PATHS=/tmp/cleanup",
 		"OMO_RPC_HOST_CLEANUP_PATHS=/tmp/omo-cleanup",
+		"SENPI_RPC_HOST_COLD_START=transient",
+		"OMO_RPC_HOST_COLD_START=transient",
+		"SENPI_RPC_HOST_IDLE_EXIT_MS=1",
+		"OMO_RPC_HOST_IDLE_EXIT_MS=1",
+		"SENPI_RPC_HOST_EMPTY_EXIT_MS=1",
+		"OMO_RPC_HOST_EMPTY_EXIT_MS=1",
 		"OMO_RUNTIME=node",
 	})
 	want := []string{"PATH=/usr/bin", "OMO_RUNTIME=node"}
@@ -172,25 +178,11 @@ func isolatedChildEnviron() []string {
 }
 
 func withoutInheritedRPCHostControl(env []string) []string {
-	drop := make(map[string]struct{}, 10)
-	for _, prefix := range [...]string{"SENPI_", "OMO_"} {
-		for _, key := range [...]string{
-			"RPC_HOST_WATCH_FD",
-			"RPC_HOST_WATCH_PPID",
-			"RPC_HOST_PUBLIC_SOCKET",
-			"RPC_HOST_SCRATCH_DIR",
-			"RPC_HOST_CLEANUP_PATHS",
-		} {
-			drop[prefix+key] = struct{}{}
-		}
-	}
 	out := make([]string, 0, len(env))
 	for _, entry := range env {
 		name, _, ok := strings.Cut(entry, "=")
-		if ok {
-			if _, skip := drop[name]; skip {
-				continue
-			}
+		if ok && (strings.HasPrefix(name, "SENPI_RPC_HOST_") || strings.HasPrefix(name, "OMO_RPC_HOST_")) {
+			continue
 		}
 		out = append(out, entry)
 	}
