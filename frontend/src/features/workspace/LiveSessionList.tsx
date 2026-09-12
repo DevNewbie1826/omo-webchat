@@ -1,0 +1,134 @@
+import { useT } from "../../i18n";
+import type { Terminal, Workspace, WorkspaceSession } from "./workspace";
+import type { LiveSessionSummary } from "./useLiveSessionSummaries";
+import { sessionOpenAttemptKey, type SessionOpenAttemptResult, type SessionOpenAttemptStatus } from "./useSessionOpenAttempts";
+import "../../styles/overview.css";
+
+export interface LiveSessionListProps {
+  readonly summaries: readonly LiveSessionSummary[];
+  readonly workspaces: readonly Workspace[];
+  readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
+  readonly onSelect: (ws: Workspace, tm: Terminal) => void;
+  readonly onOpen: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<SessionOpenAttemptResult>;
+  readonly openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
+  readonly focusedSessionId?: string | null;
+  readonly showLastLine?: boolean;
+  readonly listClassName?: string;
+  readonly onActivated?: () => void;
+}
+
+interface DiscoveredTarget {
+  readonly workspace: Workspace;
+  readonly session: WorkspaceSession;
+}
+
+/** Live-session card list shared by the overview modal and the sidebar pin:
+ * one read-only live card per live session. Activation shares the sidebar's
+ * open-attempt state, so takeover conflicts and failures remain visible here
+ * until the user retries or explicitly forces takeover. */
+export function LiveSessionList({
+  summaries,
+  workspaces,
+  sessionLists,
+  onSelect,
+  onOpen,
+  openAttempts = new Map(),
+  focusedSessionId = null,
+  showLastLine = true,
+  listClassName,
+  onActivated,
+}: LiveSessionListProps) {
+  const { t } = useT();
+
+  const discoveredTarget = (sessionId: string): DiscoveredTarget | null => {
+    for (const workspace of workspaces) {
+      const session = (sessionLists.get(workspace.id) ?? []).find(
+        (item) => item.id === sessionId && item.source === "discovered",
+      );
+      if (session !== undefined) return { workspace, session };
+    }
+    return null;
+  };
+
+  const openSession = async (summary: LiveSessionSummary, force = false): Promise<void> => {
+    const ws = workspaces.find((workspace) => workspace.chats.some((chat) => chat.id === summary.id));
+    const tm = ws?.chats.find((chat) => chat.id === summary.id);
+    if (ws !== undefined && tm !== undefined) {
+      onSelect(ws, tm);
+      onActivated?.();
+      return;
+    }
+    const target = discoveredTarget(summary.id);
+    if (target === null) return;
+    const result = await onOpen(target.workspace, target.session, force);
+    if (result === "opened") onActivated?.();
+  };
+
+  const orderedSummaries = focusedSessionId === null
+    ? summaries
+    : [...summaries].sort((a, b) => Number(b.id === focusedSessionId) - Number(a.id === focusedSessionId));
+
+  return (
+    <div className={`th-overview-list${listClassName !== undefined ? ` ${listClassName}` : ""}`}>
+      {orderedSummaries.map((summary) => {
+        const title = summary.title.length > 0 ? summary.title : summary.id;
+        const target = discoveredTarget(summary.id);
+        const attempt = target === null
+          ? undefined
+          : openAttempts.get(sessionOpenAttemptKey(target.workspace.id, target.session.id));
+        const opening = attempt === "opening";
+        const activeElsewhere = attempt === "session-active";
+        const failed = attempt === "failed";
+        return (
+          <div
+            key={summary.id}
+            className={`th-overview-card${summary.id === focusedSessionId ? " th-overview-card--focused" : ""}`}
+          >
+            <button
+              type="button"
+              className="th-overview-card-open"
+              disabled={opening || activeElsewhere}
+              aria-busy={opening || undefined}
+              onClick={() => void openSession(summary)}
+            >
+              <span className="th-overview-card-head">
+                <span className="th-overview-card-name">{title}</span>
+                {summary.runningCount > 0 && (
+                  <span
+                    className="th-overview-card-running"
+                    role="img"
+                    aria-label={t("overview.runningAria", { n: summary.runningCount })}
+                  >
+                    <span className="th-overview-card-running-dot" aria-hidden="true" />
+                    {summary.runningCount}
+                  </span>
+                )}
+              </span>
+              <span className="th-overview-card-meta">
+                <span className="th-overview-card-stat">{t("overview.done")} {summary.doneCount}</span>
+                {summary.dagTotal > 0 && (
+                  <span className="th-overview-card-stat">{t("overview.dag")} {summary.dagDone}/{summary.dagTotal}</span>
+                )}
+              </span>
+              {showLastLine && summary.lastLine !== null && <span className="th-overview-card-line">{summary.lastLine}</span>}
+            </button>
+            {(opening || activeElsewhere || failed) && (
+              <div className="th-overview-card-state" role="status">
+                <span>{t(opening ? "sidebar.tm.opening" : activeElsewhere ? "overview.readOnlyLive" : "sidebar.tm.openFailed")}</span>
+                {(activeElsewhere || failed) && (
+                  <button
+                    type="button"
+                    className={`th-btn th-btn--ghost ${activeElsewhere ? "th-overview-force-open" : "th-overview-retry-open"}`}
+                    onClick={() => void openSession(summary, activeElsewhere)}
+                  >
+                    {t(activeElsewhere ? "sidebar.tm.forceOpen" : "sidebar.tm.retryOpen")}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
