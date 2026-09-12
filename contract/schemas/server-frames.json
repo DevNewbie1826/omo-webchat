@@ -449,6 +449,14 @@
           "type": "integer",
           "description": "Exact running nodes summed over all non-terminal runs of the full pre-truncation graph; independent of the truncated runs list."
         },
+        "run_running_count": {
+          "type": "integer",
+          "description": "Exact count of DAG runs whose status is not terminal over the full pre-truncation membership; terminal statuses are completed, failed, cancelled, canceled."
+        },
+        "run_total_count": {
+          "type": "integer",
+          "description": "Exact count of all DAG runs in the full pre-truncation membership; independent of the truncated runs list."
+        },
         "agent_running_count": {
           "type": "integer",
           "description": "Exact running agent work after full-membership task/DAG overlap removal; task status is authoritative for overlap."
