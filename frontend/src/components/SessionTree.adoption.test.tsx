@@ -184,11 +184,9 @@ describe("discovered-session in-place open wiring", () => {
     });
 
     expect(container.querySelector(".th-tree-session-active")?.textContent).toContain("In use elsewhere");
-    const viewLive = container.querySelector<HTMLButtonElement>(".th-tree-view-live");
-    expect(viewLive?.textContent).toBe("View live");
-    act(() => viewLive?.click());
-    // No modal any more: view-live only highlights the session in the
-    // sidebar's pinned list, which stays hidden here because nothing is running.
+    // Nothing is running in this fixture, so no pinned target exists: the
+    // tree does not offer a dead View live action, and no overview opens.
+    expect(container.querySelector(".th-tree-view-live")).toBeNull();
     expect(document.body.querySelector(".th-overview")).toBeNull();
     const forceButton = container.querySelector<HTMLButtonElement>(".th-tree-force-open");
     expect(forceButton?.textContent).toBe("Open anyway");
@@ -235,6 +233,7 @@ describe("discovered-session in-place open wiring", () => {
           activeTerminalId={null}
           placedSessions={new Set<string>()}
           liveSessions={new Set<string>()}
+          runningCounts={new Map([[discovered.id, 2]])}
           expanded={new Set(["ws-1"])}
           sessionLists={new Map([["ws-1", [discovered]]])}
           sessionPages={new Map()}
@@ -259,6 +258,66 @@ describe("discovered-session in-place open wiring", () => {
     act(() => viewLive?.click());
     expect(onViewLive).toHaveBeenCalledTimes(1);
     expect(onViewLive).toHaveBeenCalledWith(discovered.id);
+  });
+
+  it("offers View live only for a session-active row whose running count is positive", () => {
+    const idleRow: WorkspaceSession = { ...discovered, id: "disk-idle", name: "Idle elsewhere" };
+    const busyRow: WorkspaceSession = { ...discovered, id: "disk-busy", name: "Busy elsewhere" };
+    const failedRow: WorkspaceSession = { ...discovered, id: "disk-failed", name: "Failed open" };
+    const treeWorkspace: Workspace = { ...workspace, chats: [] };
+    act(() => {
+      root.render(
+        <SessionTree
+          workspaces={[treeWorkspace]}
+          activeTerminalId={null}
+          placedSessions={new Set<string>()}
+          liveSessions={new Set<string>()}
+          runningCounts={new Map([[busyRow.id, 2]])}
+          expanded={new Set(["ws-1"])}
+          sessionLists={new Map([["ws-1", [idleRow, busyRow, failedRow]]])}
+          sessionPages={new Map()}
+          onToggle={() => undefined}
+          onLoadMoreSessions={() => undefined}
+          onSelect={() => undefined}
+          onOpen={async () => undefined}
+          openAttempts={new Map([
+            [sessionOpenAttemptKey("ws-1", idleRow.id), "session-active"],
+            [sessionOpenAttemptKey("ws-1", busyRow.id), "session-active"],
+            [sessionOpenAttemptKey("ws-1", failedRow.id), "failed"],
+          ])}
+          onViewLive={() => undefined}
+          onAddTerminal={() => undefined}
+          onDeleteWorkspace={() => undefined}
+          onDeleteTerminal={() => undefined}
+          onRenameWorkspace={async () => undefined}
+          onRenameTerminal={async () => undefined}
+          notify={() => undefined}
+        />,
+      );
+    });
+
+    const rowOf = (name: string): HTMLElement => {
+      const activation = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-tree-activation"))
+        .find((button) => button.textContent?.includes(name));
+      const row = activation?.closest<HTMLElement>(".th-tree-node");
+      expect(row).not.toBeNull();
+      return row!;
+    };
+
+    // Idle session-active row: no pinned target, so no View live; force-open stays.
+    const idle = rowOf("Idle elsewhere");
+    expect(idle.querySelector(".th-tree-view-live")).toBeNull();
+    expect(idle.querySelector(".th-tree-force-open")).not.toBeNull();
+
+    // Running session-active row: View live renders beside force-open.
+    const busy = rowOf("Busy elsewhere");
+    expect(busy.querySelector(".th-tree-view-live")).not.toBeNull();
+    expect(busy.querySelector(".th-tree-force-open")).not.toBeNull();
+
+    // Failed rows keep retry and never offer View live.
+    const failed = rowOf("Failed open");
+    expect(failed.querySelector(".th-tree-retry-open")).not.toBeNull();
+    expect(failed.querySelector(".th-tree-view-live")).toBeNull();
   });
 
   it("issues only one request while an open is pending", async () => {

@@ -67,6 +67,51 @@ const discoveredRow: WorkspaceSession = {
   resumeIdentity: "/s/disk-1.jsonl",
 };
 
+const secondDiscoveredRow: WorkspaceSession = {
+  id: "disk-2",
+  name: "Second disk session",
+  source: "discovered",
+  recencyMs: 2,
+  resumeIdentity: "/s/disk-2.jsonl",
+};
+
+function liveEntry(id: string, title: string, status: "running" | "completed", updatedAgoMs = 1000): unknown {
+  return {
+    id,
+    title,
+    task: {
+      parent_session_id: id,
+      tasks: [
+        {
+          task_id: "t1",
+          name: "Worker",
+          status,
+          updated_at: new Date(Date.now() - updatedAgoMs).toISOString(),
+        },
+      ],
+    },
+    dag: null,
+  };
+}
+
+/** Both discovered sessions attached, each with one running agent. */
+const BUSY_LIVE_RESPONSE = {
+  sessions: [
+    liveEntry("disk-1", "First busy", "running"),
+    liveEntry("disk-2", "Second busy", "running"),
+  ],
+};
+
+/** Same attachments on the next poll, but disk-2's agent has finished. The
+ * completed row carries a newer updated_at: a same-revision replay cannot
+ * change a task's status. */
+const SECOND_IDLE_LIVE_RESPONSE = {
+  sessions: [
+    liveEntry("disk-1", "First busy", "running"),
+    liveEntry("disk-2", "Second busy", "completed", 0),
+  ],
+};
+
 function okResponse(body: unknown): Response {
   return {
     ok: true,
@@ -170,7 +215,7 @@ describe("Sidebar pinned running sessions", () => {
     expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
   });
 
-  it("pins a highlighted live session with zero running agents once the tree names it", async () => {
+  it("never pins an idle live session, before or after the tree names it active elsewhere", async () => {
     const fetchMock = vi.fn(async () => okResponse(IDLE_LIVE_RESPONSE));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -180,28 +225,84 @@ describe("Sidebar pinned running sessions", () => {
       onOpenSession: async () => "session-active",
     });
 
-    // Poll lands: the attached session is live but runs no agents, so nothing is pinned.
+    // Poll lands: the attached session is live but runs no agents, and only
+    // sessions with running agents are ever pinned.
     await act(async () => {});
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
 
-    // The open attempt reports the session as active elsewhere: the tree offers View live.
+    // The open attempt reports the session as active elsewhere. With no
+    // pinned target for an idle session the tree offers no dead View live
+    // action; the separate force-open control stays.
     act(() => {
       container.querySelector<HTMLButtonElement>(".th-tree-children .th-tree-activation")?.click();
     });
     await act(async () => {});
-    const viewLive = container.querySelector<HTMLButtonElement>(".th-tree-view-live");
-    expect(viewLive).not.toBeNull();
+    expect(container.querySelector(".th-tree-view-live")).toBeNull();
+    expect(container.querySelector(".th-tree-force-open")).not.toBeNull();
 
-    act(() => viewLive?.click());
+    // The old gesture cannot conjure the section either.
+    act(() => container.querySelector<HTMLButtonElement>(".th-tree-view-live")?.click());
+    expect(container.querySelector(".th-sidebar-live")).toBeNull();
+  });
 
-    // The named session joins the pinned list despite zero running agents:
-    // focused first, and no running badge on its card.
-    const pinned = container.querySelector(".th-sidebar-live");
-    expect(pinned).not.toBeNull();
-    const cards = pinned?.querySelectorAll<HTMLElement>(".th-overview-card");
-    expect(cards).toHaveLength(1);
-    expect(cards?.[0]?.textContent).toContain("Idle attached session");
-    expect(cards?.[0]?.className).toContain("th-overview-card--focused");
-    expect(cards?.[0]?.querySelector(".th-overview-card-running")).toBeNull();
+  it("highlights the running session the tree names, sorts it first, and drops it when its count reaches zero", async () => {
+    vi.useFakeTimers();
+    try {
+      let pollBody: unknown = BUSY_LIVE_RESPONSE;
+      const fetchMock = vi.fn(async () => okResponse(pollBody));
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderSidebar(() => undefined, {
+        chats: [],
+        sessions: [discoveredRow, secondDiscoveredRow],
+        onOpenSession: async () => "session-active",
+      });
+
+      const treeActivation = (name: string): HTMLButtonElement => {
+        const activation = Array.from(container.querySelectorAll<HTMLButtonElement>(".th-tree-children .th-tree-activation"))
+          .find((button) => button.textContent?.includes(name));
+        expect(activation).toBeDefined();
+        return activation!;
+      };
+
+      // Poll lands: both sessions run one agent each and pin in poll order.
+      await act(async () => {});
+      const pinned = container.querySelector(".th-sidebar-live");
+      expect(pinned).not.toBeNull();
+      expect(pinned?.querySelector(".th-sidebar-live-count")?.textContent).toBe("2");
+      let cards = Array.from(pinned?.querySelectorAll<HTMLElement>(".th-overview-card") ?? []);
+      expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent))
+        .toEqual(["First busy", "Second busy"]);
+
+      // The tree names disk-2 active elsewhere; its running count is positive,
+      // so View live renders and highlights the matching pinned card.
+      act(() => treeActivation("Second disk session").click());
+      await act(async () => {});
+      const row = treeActivation("Second disk session").closest(".th-tree-node");
+      const viewLive = row?.querySelector<HTMLButtonElement>(".th-tree-view-live");
+      expect(viewLive).not.toBeNull();
+      act(() => viewLive?.click());
+
+      cards = Array.from(container.querySelectorAll<HTMLElement>(".th-sidebar-live .th-overview-card"));
+      expect(cards).toHaveLength(2);
+      expect(cards[0]?.className).toContain("th-overview-card--focused");
+      expect(cards[0]?.textContent).toContain("Second busy");
+      expect(cards[1]?.className).not.toContain("th-overview-card--focused");
+
+      // Next poll: disk-2's agent finished. A zero running count drops the
+      // highlighted row; the highlight id never resurrects an idle card.
+      pollBody = SECOND_IDLE_LIVE_RESPONSE;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4000);
+      });
+      await act(async () => {});
+      cards = Array.from(container.querySelectorAll<HTMLElement>(".th-sidebar-live .th-overview-card"));
+      expect(cards).toHaveLength(1);
+      expect(cards[0]?.textContent).toContain("First busy");
+      expect(container.querySelector(".th-sidebar-live .th-overview-card--focused")).toBeNull();
+      expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

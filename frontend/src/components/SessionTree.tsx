@@ -21,7 +21,8 @@ export interface SessionTreeProps {
   readonly placedSessions: ReadonlySet<string>;
   readonly liveSessions: ReadonlySet<string>;
   /** Live session id -> exact running agent count from server scalars; rows
-   * show a badge while > 0. Zero running renders no badge. */
+   * show a badge while > 0. Zero running renders no badge and no View live
+   * action. */
   readonly runningCounts?: ReadonlyMap<string, number> | undefined;
   readonly aggregateSessionIds?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly expanded: ReadonlySet<string>;
@@ -265,7 +266,7 @@ export function SessionTree({
                     {(activeElsewhere || openFailed) && (
                       <span className="th-tree-session-active" role="status">
                         {t(activeElsewhere ? "sidebar.tm.sessionActive" : "sidebar.tm.openFailed")}
-                        {activeElsewhere && onViewLive && (
+                        {activeElsewhere && onViewLive && running > 0 && (
                           <button
                             type="button"
                             className="th-btn th-btn--ghost th-tree-view-live"

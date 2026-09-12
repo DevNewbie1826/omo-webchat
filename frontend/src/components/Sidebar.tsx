@@ -76,7 +76,8 @@ export function Sidebar({
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null);
   const sessionOpen = useSessionOpenAttempts(onOpenSession);
   // The overview poller is shared with App's live-session poll; the sidebar
-  // derives running-agent counts for the tree badges and the overview panel.
+  // derives running-agent counts for the tree badges and the pinned
+  // running-sessions section.
   // WS frames from the attached chat pane override the poll snapshot when they
   // are fresher (see liveBadgeStore); background sessions stay poll-fed.
   const pollSummaries = useLiveSessionSummaries(true);
@@ -100,14 +101,9 @@ export function Sidebar({
     () => runningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
     [runningSummaries],
   );
-  // "View live" can name a live session with zero running agents (idle but
-  // attached elsewhere): it joins the pinned list so the affordance never dies.
-  const pinnedSummaries = useMemo(() => {
-    if (highlightedSessionId === null) return runningSummaries;
-    if (runningSummaries.some((summary) => summary.id === highlightedSessionId)) return runningSummaries;
-    const highlighted = summaries.find((summary) => summary.id === highlightedSessionId);
-    return highlighted === undefined ? runningSummaries : [...runningSummaries, highlighted];
-  }, [highlightedSessionId, runningSummaries, summaries]);
+  // View live only names the row to focus and sort first; membership stays
+  // strictly running-only, so a highlight never adds an idle session and a
+  // pinned row leaves the list when its running count reaches zero.
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
@@ -267,14 +263,14 @@ export function Sidebar({
             </div>
           </div>
 
-          {pinnedSummaries.length > 0 && (
+          {runningSummaries.length > 0 && (
             <div className="th-sidebar-live">
               <div className="th-sidebar-live-label">
                 {t("sidebar.overview")}
                 <span className="th-sidebar-live-count">{totalRunningCount}</span>
               </div>
               <LiveSessionList
-                summaries={pinnedSummaries}
+                summaries={runningSummaries}
                 workspaces={workspaces}
                 sessionLists={sessionLists}
                 onSelect={onSelectTerminal}
