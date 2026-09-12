@@ -161,6 +161,9 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
     readonly taskTotalCount?: number;
     readonly taskAgentRunningCount?: number;
     readonly taskAgentTotalCount?: number;
+    readonly dagRunRunningCount?: number;
+    readonly dagRunTotalCount?: number;
+    readonly dagRunCountsUnavailable?: boolean;
   };
   const tasks = orderActivities(
     [...taskRows, ...workflow.tasks],
@@ -245,12 +248,23 @@ export function ActivityShelf({ activities, dagSource }: ActivityShelfProps) {
         : tasks.length;
       return total === 0 ? null : `${running}/${total}`;
     }
-    // Overview totals are not catalog totals. Exact counts live on the full
-    // runs loaded in the DAG tab; retained-row sums serve legacy servers.
-    if (dagSource !== undefined || dags.length === 0) return null;
-    const done = dags.reduce((sum, run) => sum + run.counts.completed, 0);
-    const total = dags.reduce((sum, run) => sum + run.counts.total, 0);
-    return `${done}/${total}`;
+    // DAG tab: exact running/total DAG-RUN counts at every level — the
+    // server's pre-truncation membership scalars first, then the complete
+    // retained run list, and no count slot at all when neither is exact.
+    // Approximate markers never appear on a tab.
+    if (taskCounts.dagRunCountsUnavailable === true) return null;
+    if (taskCounts.dagRunRunningCount !== undefined && taskCounts.dagRunTotalCount !== undefined) {
+      return taskCounts.dagRunTotalCount === 0 ? null : `${taskCounts.dagRunRunningCount}/${taskCounts.dagRunTotalCount}`;
+    }
+    // The fallback gate is RUN-MEMBERSHIP completeness, never graph/node
+    // completeness: a node-truncated run still carries its exact identity
+    // and status, so it counts. States assembled before the dedicated
+    // membership signal existed carry only the combined marker, which then
+    // stays conservative; the reconciler always emits the dedicated flag.
+    const membershipIncomplete = activities.truncatedDagRuns ?? activities.truncatedDags === true;
+    if (membershipIncomplete || dags.length === 0) return null;
+    const runningRuns = dags.filter((run) => !TERMINAL_DAG_STATUSES.has(run.status)).length;
+    return `${runningRuns}/${dags.length}`;
   };
 
   useEffect(() => {

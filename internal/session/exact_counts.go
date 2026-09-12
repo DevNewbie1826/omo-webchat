@@ -23,9 +23,10 @@ type dagCountWork struct {
 }
 
 type dagCountRun struct {
-	millis         int64
-	known, present bool
-	works          []dagCountWork
+	millis                   int64
+	known, present, terminal bool
+	observable               bool // Revision-fenced run membership, separate from node/agent presence.
+	works                    []dagCountWork
 }
 
 func taskCountRevision(row map[string]json.RawMessage) (string, taskCountMember, bool) {
@@ -97,8 +98,8 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 	}
 	_ = json.Unmarshal(raw, &row)
 	millis, known := dagTimestamp(row.UpdatedAt)
-	run := dagCountRun{millis: millis, known: known, present: true, works: make([]dagCountWork, 0, len(row.Nodes))}
 	terminal := terminalDagStatuses[row.Status]
+	run := dagCountRun{millis: millis, known: known, present: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
 	for i, node := range row.Nodes {
 		work := dagCountWork{running: !terminal && node.State == "running"}
 		if node.TaskID != "" {
@@ -118,7 +119,14 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 func (c *dagSnapshotCache) finishCountAuthority() {
 	c.countAuthorityKnown = true
 	c.runningCount = 0
+	c.runRunningCount, c.runTotalCount = 0, 0
 	for _, run := range c.countRuns {
+		// Total membership is session-cumulative; running membership requires
+		// an observable nonterminal run. Node/agent presence is independent.
+		c.runTotalCount++
+		if run.observable && !run.terminal {
+			c.runRunningCount++
+		}
 		if !run.present {
 			continue
 		}
@@ -135,25 +143,90 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 		c.countRuns = make(map[[sha256.Size]byte]dagCountRun)
 	}
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
+	observations := make(map[[sha256.Size]byte]bool)
+	// Row freshness rejects provably stale deliveries. Membership additionally
+	// needs session-level evidence: a new high-water revision, or an identical
+	// steady-state inventory. Ambiguity cannot be cleared by an equal replay.
+	stale, unordered := false, false
+	var newest int64
+	newestKnown := false
 	for _, raw := range incoming {
 		id, next := dagCountRevision(raw)
 		key := sha256.Sum256([]byte(id))
 		present[key] = true
+		if next.known && (!newestKnown || next.millis > newest) {
+			newest, newestKnown = next.millis, true
+		}
 		current, exists := c.countRuns[key]
+		if exists {
+			if !current.known || !next.known {
+				unordered = true
+			} else if next.millis < current.millis {
+				stale = true
+			}
+		}
+		// Row/status admission cannot change accepted membership. Partial
+		// re-observations must also postdate the session membership fence,
+		// not just this run's last row (which may predate its omission).
+		next.observable = current.observable
+		if !complete && !current.observable {
+			if !exists || (next.known && c.runRevisionKnown && next.millis > c.runRevision) {
+				observations[key] = true
+			} else if !current.known || !next.known || next.millis >= current.millis {
+				unordered = true
+			}
+		}
 		if exists && current.known && (!next.known || next.millis <= current.millis) {
 			c.countRuns[key] = current
 			continue
 		}
 		c.countRuns[key] = next
 	}
+	if unordered && !stale {
+		c.runMembershipUnknown = true
+	}
+	// A stale sibling rejects a complete inventory, but cannot veto an
+	// independently admitted partial observation. Wholly stale replays queue
+	// no observations; ambiguous re-observations remain fenced above.
+	if !complete && !unordered {
+		for key := range observations {
+			current := c.countRuns[key]
+			current.observable = true
+			c.countRuns[key] = current
+		}
+	}
 	if complete {
+		sameMembership := len(present) == len(c.runMembership)
+		for key := range present {
+			sameMembership = sameMembership && c.runMembership[key]
+		}
+		newer := newestKnown && (!c.runRevisionKnown || newest > c.runRevision)
+		steady := !c.runMembershipUnknown && sameMembership &&
+			((newestKnown && c.runRevisionKnown && newest == c.runRevision) || (!newestKnown && len(c.countRuns) == 0))
+		initialCompletion := !c.countAuthorityKnown && !c.runMembershipUnknown && newestKnown &&
+			len(present) == len(c.countRuns) && (!c.runRevisionKnown || newest >= c.runRevision)
+		membershipAccepted := !stale && !unordered && (newer || steady || initialCompletion)
+		if membershipAccepted {
+			c.runMembershipUnknown = false
+			c.runMembership = present
+		} else if !stale || !c.countAuthorityKnown {
+			// A strictly stale row proves a replay and leaves prior authority
+			// intact; unchanged survivors or empty inventories prove nothing.
+			c.runMembershipUnknown = true
+		}
 		for key, current := range c.countRuns {
-			if current.present && !present[key] {
-				current.present = false
-				c.countRuns[key] = current
+			if membershipAccepted {
+				current.observable = present[key]
 			}
+			if !present[key] {
+				current.present = false
+			}
+			c.countRuns[key] = current
 		}
 		c.countAuthorityKnown = true
+	}
+	if newestKnown && (!c.runRevisionKnown || newest > c.runRevision) {
+		c.runRevision, c.runRevisionKnown = newest, true
 	}
 	if c.countAuthorityKnown {
 		c.finishCountAuthority()
@@ -216,8 +289,17 @@ func addActivityCounts(raw json.RawMessage, name string, task *taskSnapshotCache
 		doc["running_count"], _ = json.Marshal(task.runningCount)
 		doc["total_count"], _ = json.Marshal(task.totalCount)
 	}
-	if name == activitySnapshotOrder[1] && dag != nil && dag.countAuthorityKnown {
-		doc["running_count"], _ = json.Marshal(dag.runningCount)
+	if name == activitySnapshotOrder[1] && dag != nil {
+		setDagRunAvailability(doc, dag)
+		if dag.countAuthorityKnown {
+			doc["running_count"], _ = json.Marshal(dag.runningCount)
+		}
+		var authority DagDigest
+		publishDagRunCountAuthority(&authority, dag)
+		if authority.RunRunningCount != nil {
+			doc["run_running_count"], _ = json.Marshal(authority.RunRunningCount)
+			doc["run_total_count"], _ = json.Marshal(authority.RunTotalCount)
+		}
 	}
 	doc["agent_running_count"], _ = json.Marshal(running)
 	doc["agent_total_count"], _ = json.Marshal(total)
@@ -226,6 +308,36 @@ func addActivityCounts(raw json.RawMessage, name string, task *taskSnapshotCache
 		return raw
 	}
 	return out
+}
+
+// Publish run authority even when no rich row changed. Nil distinguishes
+// unknown membership from an authoritative empty session.
+func publishDagRunCountAuthority(digest *DagDigest, dag *dagSnapshotCache) {
+	if digest == nil {
+		return
+	}
+	digest.RunRunningCount, digest.RunTotalCount = nil, nil
+	digest.RunCountsUnavailable = !dag.countAuthorityKnown || dag.runMembershipUnknown
+	if !digest.RunCountsUnavailable {
+		running, total := int64(dag.runRunningCount), int64(dag.runTotalCount)
+		digest.RunRunningCount, digest.RunTotalCount = &running, &total
+	}
+}
+
+// Keep withdrawal in retained replay as well as enriched outgoing frames.
+func setDagRunAvailability(doc map[string]json.RawMessage, dag *dagSnapshotCache) {
+	_, hadRunning := doc["run_running_count"]
+	_, hadTotal := doc["run_total_count"]
+	delete(doc, "run_counts_unavailable")
+	if !dag.countAuthorityKnown || dag.runMembershipUnknown {
+		delete(doc, "run_running_count")
+		delete(doc, "run_total_count")
+		doc["run_counts_unavailable"] = json.RawMessage("true")
+	} else if hadRunning || hadTotal {
+		// Preserve enriched replay shape, but never carry stale input scalars.
+		doc["run_running_count"], _ = json.Marshal(dag.runRunningCount)
+		doc["run_total_count"], _ = json.Marshal(dag.runTotalCount)
+	}
 }
 
 func (s *Session) exactActivityFrameDataLocked(name string, raw json.RawMessage, oversized bool) map[string]any {

@@ -905,6 +905,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	// the digest row lists truncate.
 	taskDigest.RunningCount, taskDigest.TotalCount = runningTasks, totalTasks
 	dagDigest.RunningCount = runningDagNodes
+	publishDagRunCountAuthority(dagDigest, &countDags)
 	agentRunning, agentTotal := exactAgentCounts(&countTasks, &countDags)
 	setAgentCounts(taskDigest, dagDigest, agentRunning, agentTotal)
 	return HistoricalActivity{

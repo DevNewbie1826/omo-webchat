@@ -192,6 +192,11 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // The winning live aggregate plus its ordering, retained independently of
   // the bounded hydration-event buffer.
   const liveCountAdmissionRef = useRef<LiveCountAdmission | null>(null);
+  // The DAG-run scalar group keeps its own accepted ordering and values,
+  // retained independently of the task/agent aggregate record: an unrelated
+  // task-count delivery must not replace it, and a later-arriving older
+  // hydration response can never lower it.
+  const dagRunCountAdmissionRef = useRef<LiveCountAdmission | null>(null);
   const noticeIdRef = useRef(0);
   const recoveryRef = useRef<RecoveryState | null>(null);
   // True while a socket generation is open; a close only starts a recovery
@@ -408,11 +413,29 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       if (hydration !== null) bufferActivityHydrationEvent(hydration.buffer, event);
     },
     admitLiveCountAuthority: (counts: CountAuthority) => {
-      // Only scalar-bearing deliveries establish count ordering; an envelope
-      // without scalars carries no aggregate evidence to retain.
-      if (counts.taskRunningCount === undefined && counts.taskTotalCount === undefined
-        && counts.taskAgentRunningCount === undefined && counts.taskAgentTotalCount === undefined) return;
-      liveCountAdmissionRef.current = { counts, seq: ++liveActivitySequenceRef.current };
+      const hasTaskGroupCounts = counts.taskRunningCount !== undefined || counts.taskTotalCount !== undefined
+        || counts.taskAgentRunningCount !== undefined || counts.taskAgentTotalCount !== undefined;
+      const hasDagRunCounts = counts.dagRunRunningCount !== undefined || counts.dagRunTotalCount !== undefined
+        || counts.dagRunCountsUnavailable !== undefined;
+      if (!hasTaskGroupCounts && !hasDagRunCounts) return;
+      const seq = ++liveActivitySequenceRef.current;
+      // A run-only delivery carries no task/agent aggregate but does carry
+      // the exact DAG-run pair; that group is retained per group, so a
+      // task/agent-only delivery replaces only its own record.
+      if (hasDagRunCounts) {
+        dagRunCountAdmissionRef.current = {
+          counts: {
+            ...(counts.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: counts.dagRunRunningCount }),
+            ...(counts.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: counts.dagRunTotalCount }),
+            ...(counts.dagRunCountsUnavailable === undefined ? {} : { dagRunCountsUnavailable: counts.dagRunCountsUnavailable }),
+          },
+          seq,
+        };
+      }
+      // Only task/agent scalar-bearing deliveries establish that group's
+      // count ordering; an envelope without them carries no aggregate
+      // evidence to retain there.
+      if (hasTaskGroupCounts) liveCountAdmissionRef.current = { counts, seq };
     },
     externalRecoveryPendingRef,
     externalRecoveryReadyRef,
@@ -482,6 +505,11 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     let next = activitiesRef.current;
     next = applyTaskHistorySnapshot(next, task, hydration.touchedTasks, parseTaskDigest(taskDigest) ?? undefined, taskOversized, hydration.requestedMs);
     next = applyDagHistorySnapshot(next, dag, hydration.touchedDags);
+    // Raw-only history is supported. Admit its count/availability group at
+    // the request's position, before the optional digest overrides it and
+    // newer live admissions are reasserted below.
+    const dagCounts = parseDagCounts(dag);
+    if (dagCounts !== null) next = applyCountAuthority(next, dagCounts, hydration.requestedMs);
     // The DAG digest carries the same exact agent aggregate as the task side;
     // backfill it when the task digest is absent or predates the agent pair so
     // hydration never leaves the pane on stale or missing count authority.
@@ -489,6 +517,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     next = applyCountAuthority(next, {
       ...(dagDigestParsed?.agentRunningCount === undefined ? {} : { taskAgentRunningCount: dagDigestParsed.agentRunningCount }),
       ...(dagDigestParsed?.agentTotalCount === undefined ? {} : { taskAgentTotalCount: dagDigestParsed.agentTotalCount }),
+      ...(dagDigestParsed?.dagRunRunningCount === undefined ? {} : { dagRunRunningCount: dagDigestParsed.dagRunRunningCount }),
+      ...(dagDigestParsed?.dagRunTotalCount === undefined ? {} : { dagRunTotalCount: dagDigestParsed.dagRunTotalCount }),
+      ...(dagDigestParsed?.dagRunCountsUnavailable === undefined ? {} : { dagRunCountsUnavailable: dagDigestParsed.dagRunCountsUnavailable }),
     }, hydration.requestedMs);
     for (const event of hydration.buffer.events) {
       // Accepted DAG snapshots already exist in current state. Replacing again
@@ -513,6 +544,13 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     const live = liveCountAdmissionRef.current;
     if (live !== null && live.seq > hydration.requestSeq) {
       next = applyCountAuthority(next, live.counts, Date.now());
+    }
+    // Re-assert the DAG-run group last: its accepted ordering survives
+    // unrelated deliveries and buffer eviction, so this older response can
+    // never leave the newer accepted pair lowered.
+    const liveDagRun = dagRunCountAdmissionRef.current;
+    if (liveDagRun !== null && liveDagRun.seq > hydration.requestSeq) {
+      next = applyCountAuthority(next, liveDagRun.counts, Date.now());
     }
     if (next !== activitiesRef.current) applyActivities(next);
   };
