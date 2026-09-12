@@ -99,7 +99,7 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 	_ = json.Unmarshal(raw, &row)
 	millis, known := dagTimestamp(row.UpdatedAt)
 	terminal := terminalDagStatuses[row.Status]
-	run := dagCountRun{millis: millis, known: known, present: true, observable: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
+	run := dagCountRun{millis: millis, known: known, present: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
 	for i, node := range row.Nodes {
 		work := dagCountWork{running: !terminal && node.State == "running"}
 		if node.TaskID != "" {
@@ -143,6 +143,7 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 		c.countRuns = make(map[[sha256.Size]byte]dagCountRun)
 	}
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
+	observations := make(map[[sha256.Size]byte]bool)
 	// Row freshness rejects provably stale deliveries. Membership additionally
 	// needs session-level evidence: a new high-water revision, or an identical
 	// steady-state inventory. Ambiguity cannot be cleared by an equal replay.
@@ -164,6 +165,17 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 				stale = true
 			}
 		}
+		// Row/status admission cannot change accepted membership. Partial
+		// re-observations must also postdate the session membership fence,
+		// not just this run's last row (which may predate its omission).
+		next.observable = current.observable
+		if !complete && !current.observable {
+			if !exists || (next.known && c.runRevisionKnown && next.millis > c.runRevision) {
+				observations[key] = true
+			} else if !current.known || !next.known || next.millis >= current.millis {
+				unordered = true
+			}
+		}
 		if exists && current.known && (!next.known || next.millis <= current.millis) {
 			c.countRuns[key] = current
 			continue
@@ -172,6 +184,13 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 	}
 	if unordered && !stale {
 		c.runMembershipUnknown = true
+	}
+	if !complete && !stale && !unordered {
+		for key := range observations {
+			current := c.countRuns[key]
+			current.observable = true
+			c.countRuns[key] = current
+		}
 	}
 	if complete {
 		sameMembership := len(present) == len(c.runMembership)
