@@ -141,6 +141,19 @@ describe("LiveSessionList", () => {
     expect(second.querySelector(".th-overview-card-line")).toBeNull();
   });
 
+  it("renders a large running count with an interpolated aria-label and no tooltip", () => {
+    const largeSummary: LiveSessionSummary = {
+      ...summaries[0]!,
+      runningCount: 50,
+    };
+    renderList({ summaries: [largeSummary] });
+
+    const badge = card(0).querySelector(".th-overview-card-running");
+    expect(badge?.textContent).toBe("50");
+    expect(badge?.getAttribute("aria-label")).toBe(i18n.t("overview.runningAria", { n: 50 }));
+    expect(badge?.getAttribute("title")).toBeNull();
+  });
+
   it("orders the focused session first and marks its card", () => {
     renderList({ focusedSessionId: "disk-9" });
 
