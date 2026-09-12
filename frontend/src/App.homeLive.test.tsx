@@ -22,6 +22,8 @@ const home = vi.hoisted(() => ({
   },
   openedChat: { id: "chat-opened", name: "Disk session", provider: "omo" as const },
   livePayload: { sessions: [] as readonly unknown[] },
+  catalogSessions: [] as unknown[],
+  refreshSessions: vi.fn(),
   openBodies: [] as unknown[],
   openOutcomes: [] as ("open" | "active" | "fail")[],
 }));
@@ -106,12 +108,13 @@ vi.mock("./features/workspace/useWorkspaces", () => ({
       expanded,
       setExpanded,
       sessions: new Map(),
-      sessionLists: new Map([["ws-1", [home.discovered]]]),
+      sessionLists: new Map([["ws-1", home.catalogSessions]]),
       sessionPages: new Map([["ws-1", { ready: true, loading: false, hasMore: false, nextCursor: "" }]]),
       load: () => undefined,
       addCreatedSession: () => undefined,
       loadMoreSessions: async () => undefined,
       ensureSessionsLoaded: () => undefined,
+      refreshSessions: home.refreshSessions,
       markSessionUsed: () => undefined,
       toggleExpanded: () => undefined,
       handleDeleteWorkspace: async () => undefined,
@@ -161,6 +164,35 @@ function livePayloadWith(taskStatus: string, title: string): { sessions: readonl
   };
 }
 
+/** One live-session payload entry: a running/idle agent task, no task at
+ * all, and/or the main-session active flag. */
+function liveSessionEntry(
+  id: string,
+  title: string,
+  opts: { readonly taskStatus?: string; readonly active?: boolean } = {},
+): unknown {
+  return {
+    id,
+    title,
+    ...(opts.active === undefined ? {} : { active: opts.active }),
+    task: opts.taskStatus === undefined
+      ? null
+      : {
+        parent_session_id: id,
+        tasks: [
+          {
+            task_id: "t1",
+            name: "Agent",
+            status: opts.taskStatus,
+            updated_at: new Date(Date.now() - 1000).toISOString(),
+            live_progress: { activity: "thinking", last_assistant_line: "ls" },
+          },
+        ],
+      },
+    dag: null,
+  };
+}
+
 describe("App home running sessions", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -173,6 +205,7 @@ describe("App home running sessions", () => {
     window.localStorage.setItem("th-lang", "en");
     home.checkAuth.mockResolvedValue(true);
     home.livePayload = { sessions: [] };
+    home.catalogSessions = [home.discovered];
     home.openBodies = [];
     home.openOutcomes = [];
     container = document.createElement("div");
@@ -242,7 +275,7 @@ describe("App home running sessions", () => {
 
     const block = container.querySelector(".th-home-live");
     expect(block).not.toBeNull();
-    expect(block!.querySelector(".th-home-live-label")?.textContent).toContain("Running sessions");
+    expect(block!.querySelector(".th-home-live-label")?.textContent).toContain("Sessions");
     expect(block!.querySelector(".th-home-live-count")?.textContent).toBe("1");
     const cards = block!.querySelectorAll<HTMLElement>(".th-overview-card");
     expect(cards).toHaveLength(1);
@@ -266,12 +299,53 @@ describe("App home running sessions", () => {
     expect(home.assignSession).toHaveBeenCalledWith("pane-1", home.openedChat.id, false);
   });
 
-  it("omits the block when no live session has running agents", async () => {
-    home.livePayload = livePayloadWith("completed", "Idle session");
+  it("omits the block when there are no live sessions at all", async () => {
+    home.livePayload = { sessions: [] };
     await renderApp(".th-picker-pane");
 
     expect(container.querySelector(".th-picker-pane")).not.toBeNull();
     expect(container.querySelector(".th-home-live")).toBeNull();
+  });
+
+  it("lists every live session, working first then most recent, idle included", async () => {
+    home.catalogSessions = [
+      { ...home.discovered, id: "disk-1", recencyMs: 10 },
+      { ...home.discovered, id: "disk-2", name: "Idle recent", recencyMs: 3000 },
+      { ...home.discovered, id: "disk-3", name: "Idle older", recencyMs: 2000 },
+    ];
+    // Payload order is deliberately neither working-first nor recency order.
+    home.livePayload = {
+      sessions: [
+        liveSessionEntry("disk-3", "Idle older", { taskStatus: "completed", active: false }),
+        liveSessionEntry("disk-1", "Working session", { taskStatus: "running" }),
+        liveSessionEntry("disk-2", "Idle recent", { taskStatus: "completed", active: false }),
+      ],
+    };
+    await renderApp(".th-home-live");
+
+    const block = container.querySelector(".th-home-live");
+    expect(block).not.toBeNull();
+    const cards = [...block!.querySelectorAll<HTMLElement>(".th-overview-card")];
+    expect(cards).toHaveLength(3);
+    expect(cards.map((card) => card.querySelector(".th-overview-card-name")?.textContent))
+      .toEqual(["Working session", "Idle recent", "Idle older"]);
+    // The count badge still totals agent work only.
+    expect(block!.querySelector(".th-home-live-count")?.textContent).toBe("1");
+    // Idle cards keep the last-output line; only the working card carries the badge.
+    expect(cards[1]!.querySelector(".th-overview-card-line")?.textContent).toBe("ls");
+    expect(cards[1]!.querySelector(".th-overview-card-running")).toBeNull();
+    expect(cards[0]!.querySelector(".th-overview-card-running")).not.toBeNull();
+  });
+
+  it("lists a session whose only activity is the main agent (active flag, no agent tasks)", async () => {
+    home.livePayload = { sessions: [liveSessionEntry("disk-1", "Main only", { active: true })] };
+    await renderApp(".th-home-live");
+
+    const card = container.querySelector<HTMLElement>(".th-home-live .th-overview-card");
+    expect(card).not.toBeNull();
+    expect(card!.querySelector(".th-overview-card-name")?.textContent).toBe("Main only");
+    // Main-running marker, not a numeric agent badge.
+    expect(card!.querySelector(".th-overview-card-running")).not.toBeNull();
   });
 
   it("hands the block to the split layout's empty panes on wide screens", async () => {

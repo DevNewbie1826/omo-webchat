@@ -34,11 +34,14 @@ import { SessionDraftProvider } from "./features/split/sessionDraft";
 import { LiveSessionList } from "./features/workspace/LiveSessionList";
 import { useLiveSessionSummaries } from "./features/workspace/useLiveSessionSummaries";
 import { useMergedLiveSummaries } from "./features/workspace/liveBadgeStore";
+import { compareLiveSessions, isLiveSessionListed } from "./features/workspace/liveSessionOrder";
 import "./styles/home-live.css";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
 
 const TOAST_DISMISS_MS = 2600;
+/** Cadence for re-fetching catalog recency of workspaces owning live sessions. */
+const HOME_RECENCY_REFRESH_MS = 15_000;
 
 interface Toast {
   readonly id: number;
@@ -85,7 +88,7 @@ export function App() {
   const {
     workspaces, setWorkspaces, expanded, setExpanded, sessions,
     sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
-    ensureSessionsLoaded, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
+    ensureSessionsLoaded, refreshSessions, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
   } = useWorkspaces({ notify, t, layout, confirm });
@@ -195,33 +198,70 @@ export function App() {
     }
   };
 
-  // The home empty state pins the same running-session cards the sidebar
-  // shows, derived from the same shared poller and WS-override store, so this
-  // consumer adds no network traffic. Only sessions with running agents pin;
-  // cards activate through the same select/open path the picker uses.
+  // The home empty state lists every live session - idle ones included, so
+  // main-only work (active flag) appears here exactly as in the sidebar -
+  // derived from the same shared poller and WS-override store, so this
+  // consumer adds no network traffic. Cards activate through the same
+  // select/open path the picker uses.
   const homePollSummaries = useLiveSessionSummaries(authed === true);
   const homeLiveSummaries = useMergedLiveSummaries(homePollSummaries);
-  const homeRunningSummaries = useMemo(
-    () => homeLiveSummaries.filter((summary) => summary.runningCount > 0),
-    [homeLiveSummaries],
+  // Recency comes from the already-loaded catalog rows; no extra fetch.
+  const homeRecencyMs = useMemo(() => {
+    const recency = new Map<string, number>();
+    for (const listed of sessionLists.values()) {
+      for (const session of listed) {
+        recency.set(session.id, Math.max(recency.get(session.id) ?? 0, session.recencyMs));
+      }
+    }
+    return recency;
+  }, [sessionLists]);
+  const homeOrderedSummaries = useMemo(
+    () => homeLiveSummaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
+    [homeLiveSummaries, homeRecencyMs],
   );
   const homeRunningCount = useMemo(
-    () => homeRunningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
-    [homeRunningSummaries],
+    () => homeOrderedSummaries.reduce((total, summary) => total + summary.runningCount, 0),
+    [homeOrderedSummaries],
   );
   const homeSessionOpen = useSessionOpenAttempts(openSession);
 
-  // The same running-session block the mobile empty state shows, offered to
+  // Recency freshness: App owns the single 15s refresh timer for workspaces
+  // owning live sessions. The sidebar owns no such timer (its membership
+  // crawl is reactive, driven by sessionLists replacement), so there is no
+  // second timer to deduplicate against. refreshSessions is guard-safe: it
+  // no-ops on unready workspaces and queues behind in-flight pages.
+  useEffect(() => {
+    if (authed !== true || homeLiveSummaries.length === 0) return;
+    const timer = window.setInterval(() => {
+      const ownerIds = new Set<string>();
+      let unresolved = false;
+      for (const summary of homeLiveSummaries) {
+        const owner = workspaces.find((workspace) =>
+          workspace.chats.some((chat) => chat.id === summary.id)
+          || (sessionLists.get(workspace.id) ?? []).some((session) => session.id === summary.id));
+        if (owner === undefined) unresolved = true;
+        else ownerIds.add(owner.id);
+      }
+      // A live session not yet attributed to a workspace still needs fresh
+      // recency; refresh every workspace rather than guessing.
+      if (unresolved) for (const workspace of workspaces) ownerIds.add(workspace.id);
+      for (const wsId of ownerIds) refreshSessions(wsId);
+    }, HOME_RECENCY_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [authed, homeLiveSummaries, workspaces, sessionLists, refreshSessions]);
+
+  // The same live-session block the mobile empty state shows, offered to
   // SplitView so wide-layout empty panes render it above their session
-  // picker instead of dropping the cards.
-  const homeRunningSessions = homeRunningSummaries.length > 0 ? (
+  // picker instead of dropping the cards. Nothing renders when no session
+  // is live.
+  const homeRunningSessions = homeOrderedSummaries.length > 0 ? (
     <div className="th-home-live">
       <div className="th-home-live-label">
-        {t("sidebar.overview")}
+        {t("sidebar.sessions")}
         <span className="th-home-live-count">{homeRunningCount}</span>
       </div>
       <LiveSessionList
-        summaries={homeRunningSummaries}
+        summaries={homeOrderedSummaries}
         workspaces={workspaces}
         sessionLists={sessionLists}
         onSelect={selectTerminal}
