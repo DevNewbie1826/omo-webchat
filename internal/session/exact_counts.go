@@ -25,6 +25,7 @@ type dagCountWork struct {
 type dagCountRun struct {
 	millis                   int64
 	known, present, terminal bool
+	observable               bool // Revision-fenced run membership, separate from node/agent presence.
 	works                    []dagCountWork
 }
 
@@ -98,7 +99,7 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 	_ = json.Unmarshal(raw, &row)
 	millis, known := dagTimestamp(row.UpdatedAt)
 	terminal := terminalDagStatuses[row.Status]
-	run := dagCountRun{millis: millis, known: known, present: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
+	run := dagCountRun{millis: millis, known: known, present: true, observable: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
 	for i, node := range row.Nodes {
 		work := dagCountWork{running: !terminal && node.State == "running"}
 		if node.TaskID != "" {
@@ -120,12 +121,14 @@ func (c *dagSnapshotCache) finishCountAuthority() {
 	c.runningCount = 0
 	c.runRunningCount, c.runTotalCount = 0, 0
 	for _, run := range c.countRuns {
+		// Total membership is session-cumulative; running membership requires
+		// an observable nonterminal run. Node/agent presence is independent.
+		c.runTotalCount++
+		if run.observable && !run.terminal {
+			c.runRunningCount++
+		}
 		if !run.present {
 			continue
-		}
-		c.runTotalCount++
-		if !run.terminal {
-			c.runRunningCount++
 		}
 		for _, work := range run.works {
 			if work.running {
@@ -140,8 +143,13 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 		c.countRuns = make(map[[sha256.Size]byte]dagCountRun)
 	}
 	present := make(map[[sha256.Size]byte]bool, len(incoming))
+	var deliveryMillis int64
+	deliveryKnown := false
 	for _, raw := range incoming {
 		id, next := dagCountRevision(raw)
+		if next.known && (!deliveryKnown || next.millis > deliveryMillis) {
+			deliveryMillis, deliveryKnown = next.millis, true
+		}
 		key := sha256.Sum256([]byte(id))
 		present[key] = true
 		current, exists := c.countRuns[key]
@@ -153,7 +161,13 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 	}
 	if complete {
 		for key, current := range c.countRuns {
-			if current.present && !present[key] {
+			if !present[key] {
+				// Empty complete membership explicitly clears observability.
+				// Otherwise unknown/older delivery clocks cannot demote a
+				// member whose accepted revision is known to be newer.
+				if len(incoming) == 0 || !current.known || (deliveryKnown && current.millis <= deliveryMillis) {
+					current.observable = false
+				}
 				current.present = false
 				c.countRuns[key] = current
 			}
@@ -233,6 +247,19 @@ func addActivityCounts(raw json.RawMessage, name string, task *taskSnapshotCache
 		return raw
 	}
 	return out
+}
+
+// Publish run authority even when no rich row changed. Nil distinguishes
+// unknown membership from an authoritative empty session.
+func publishDagRunCountAuthority(digest *DagDigest, dag *dagSnapshotCache) {
+	if digest == nil {
+		return
+	}
+	digest.RunRunningCount, digest.RunTotalCount = nil, nil
+	if dag.countAuthorityKnown {
+		running, total := int64(dag.runRunningCount), int64(dag.runTotalCount)
+		digest.RunRunningCount, digest.RunTotalCount = &running, &total
+	}
 }
 
 func (s *Session) exactActivityFrameDataLocked(name string, raw json.RawMessage, oversized bool) map[string]any {

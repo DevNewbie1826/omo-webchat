@@ -884,7 +884,6 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 		return HistoricalActivity{}, err
 	}
 	runningDagNodes := countDags.runningCount
-	runningDagRuns, totalDagRuns := countDags.runRunningCount, countDags.runTotalCount
 	runs, runRetentionTruncated := newestDagRows(runs)
 	truncatedRuns := runBudgetExhausted || runRetentionTruncated || runFieldsTruncated || uncertainParentlessRuns || parentFieldTruncated
 	dagPayload, dagOversized, err := packDagSnapshot(durableSessionID, runs, truncatedRuns)
@@ -906,7 +905,7 @@ func ReadHistoricalActivity(ctx context.Context, cwd, durableSessionID string) (
 	// the digest row lists truncate.
 	taskDigest.RunningCount, taskDigest.TotalCount = runningTasks, totalTasks
 	dagDigest.RunningCount = runningDagNodes
-	dagDigest.RunRunningCount, dagDigest.RunTotalCount = runningDagRuns, totalDagRuns
+	publishDagRunCountAuthority(dagDigest, &countDags)
 	agentRunning, agentTotal := exactAgentCounts(&countTasks, &countDags)
 	setAgentCounts(taskDigest, dagDigest, agentRunning, agentTotal)
 	return HistoricalActivity{

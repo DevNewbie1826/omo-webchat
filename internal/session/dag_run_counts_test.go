@@ -9,7 +9,7 @@ import (
 
 // Run-level DAG scalars ride the same authority as the existing exact DAG
 // counts: the full pre-truncation membership. A run counts as running when
-// its status is not terminal; total counts every present run. Both scalars
+// its status is not terminal; total counts every accepted run. Both scalars
 // must stay exact under any digest row truncation.
 
 func decodeDagRunCounts(t *testing.T, value any) (runRunning, runTotal int) {
@@ -19,13 +19,16 @@ func decodeDagRunCounts(t *testing.T, value any) (runRunning, runTotal int) {
 		t.Fatal(err)
 	}
 	var fields struct {
-		RunRunningCount int `json:"run_running_count"`
-		RunTotalCount   int `json:"run_total_count"`
+		RunRunningCount *int `json:"run_running_count"`
+		RunTotalCount   *int `json:"run_total_count"`
 	}
 	if err := json.Unmarshal(payload, &fields); err != nil {
 		t.Fatal(err)
 	}
-	return fields.RunRunningCount, fields.RunTotalCount
+	if fields.RunRunningCount == nil || fields.RunTotalCount == nil {
+		t.Fatalf("missing exact run scalars: %s", payload)
+	}
+	return *fields.RunRunningCount, *fields.RunTotalCount
 }
 
 func assertDagRunCounts(t *testing.T, value any, wantRunning, wantTotal int, stage string) {

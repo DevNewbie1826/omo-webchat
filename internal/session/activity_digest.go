@@ -59,8 +59,8 @@ type DagDigest struct {
 	Runs              []RunDigestEntry `json:"runs"`
 	Truncated         bool             `json:"truncated"`
 	RunningCount      int              `json:"running_count"`
-	RunRunningCount   int              `json:"run_running_count"`
-	RunTotalCount     int              `json:"run_total_count"`
+	RunRunningCount   *int64           `json:"run_running_count,omitempty"`
+	RunTotalCount     *int64           `json:"run_total_count,omitempty"`
 	AgentRunningCount int              `json:"agent_running_count"`
 	AgentTotalCount   int              `json:"agent_total_count"`
 	ReceivedAt        string           `json:"received_at,omitempty"`

@@ -196,7 +196,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	}
 	digest, _ := parseDagDigest(live)
 	digest.RunningCount = c.runningCount
-	digest.RunRunningCount, digest.RunTotalCount = c.runRunningCount, c.runTotalCount
+	publishDagRunCountAuthority(digest, c)
 	if previousDigest != nil {
 		for _, row := range previousDigest.Runs {
 			if missing[sha256.Sum256([]byte(row.RunID))] {
@@ -232,6 +232,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 }
 
 func (c *dagSnapshotCache) incumbent(raw json.RawMessage, digest *DagDigest) dagSnapshotResult {
+	publishDagRunCountAuthority(digest, c)
 	live := raw
 	if len(live) == 0 {
 		live = json.RawMessage(`{"runs":[],"truncated_runs":true}`)
