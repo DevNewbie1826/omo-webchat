@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useT } from "../../i18n";
 import type { CommandEntry } from "../../lib/chatWs";
 import { commandPrefix } from "./commandMatch";
-import { COMPACT_DESCRIPTION_I18N_KEY, isCuratedCompact, UPDATE_COMMAND } from "./curatedCommands";
+import { COMPACT_DESCRIPTION_I18N_KEY, isCuratedCompact, NEW_COMMAND, UPDATE_COMMAND } from "./curatedCommands";
 
 interface CommandPaletteProps {
   readonly id: string;
@@ -35,10 +35,11 @@ export function CommandPalette({
         // Only the client-owned curated entry is localized; provider
         // descriptions render verbatim.
         const description = isCuratedCompact(command) ? t(COMPACT_DESCRIPTION_I18N_KEY)
+          : command === NEW_COMMAND ? t("chat.newDescription")
           : command === UPDATE_COMMAND ? t("chat.updateDescription") : command.description;
         return (
           <button
-            key={command.name}
+            key={`${commandPrefix(command)}${command.name}`}
             ref={(element) => { optionRefs.current[index] = element; }}
             id={`${optionIdPrefix}-${index}`}
             type="button"

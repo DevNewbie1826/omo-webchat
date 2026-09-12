@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandEntry } from "../../lib/chatWs";
-import { COMPACT_COMMAND, isCuratedCompact, mergeCommands, UPDATE_COMMAND } from "./curatedCommands";
+import { COMPACT_COMMAND, isCuratedCompact, mergeCommands, NEW_COMMAND, UPDATE_COMMAND } from "./curatedCommands";
 
 describe("mergeCommands", () => {
   it("appends the curated compact action after the provider-discovered commands", () => {
@@ -24,6 +24,19 @@ describe("mergeCommands", () => {
 
   it("offers the curated compact action when nothing was discovered", () => {
     expect(mergeCommands([])).toEqual([COMPACT_COMMAND, UPDATE_COMMAND]);
+  });
+
+  it("offers local new-chat navigation only when the composer can create chats", () => {
+    expect(mergeCommands([], true)).toEqual([NEW_COMMAND, COMPACT_COMMAND, UPDATE_COMMAND]);
+  });
+
+  it("reserves /new without hijacking $new or provider compact", () => {
+    const slashNew: CommandEntry = { name: "new", source: "extension" };
+    const dollarNew: CommandEntry = { name: "new", source: "skill", syntax: "dollar" };
+    const compact: CommandEntry = { name: "compact", source: "extension" };
+    const discovered = [slashNew, dollarNew, compact];
+    expect(mergeCommands(discovered, true)).toEqual([dollarNew, compact, NEW_COMMAND, UPDATE_COMMAND]);
+    expect(discovered).toEqual([slashNew, dollarNew, compact]);
   });
 });
 

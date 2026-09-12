@@ -25,12 +25,13 @@ interface ChatComposerProps {
   readonly onSubmit: (draft: ChatDraft) => boolean;
   readonly onSteer: (text: string) => boolean;
   readonly onStop: () => void;
+  readonly onNewChat?: () => void;
   readonly provider: string;
   readonly cwd: string;
   readonly imageSupported?: boolean;
 }
 
-export function ChatComposer({ session, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, provider, cwd, imageSupported = true }: ChatComposerProps) {
+export function ChatComposer({ session, commands, running, disabled = false, retryDraft, onSubmit, onSteer, onStop, onNewChat, provider, cwd, imageSupported = true }: ChatComposerProps) {
   const { t } = useT();
   const { input, setInput, draftCommand, setDraftCommand, pendingImage, setPendingImage, restoreDraft } = useSessionDraft(session);
   const [paletteHidden, setPaletteHidden] = useState(false);
@@ -44,7 +45,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
   const fileId = useId();
   const fileListboxId = `${fileId}-file-listbox`, fileOptionIdPrefix = `${fileId}-file-option`;
   const fileMention = useFileMention(cwd, input, caret);
-  const allCommands = useMemo(() => mergeCommands(commands), [commands]);
+  const allCommands = useMemo(() => mergeCommands(commands, onNewChat !== undefined), [commands, onNewChat]);
   const commandTrigger = useMemo(() => detectCommandTrigger(input, caret), [input, caret]);
   const matches = useMemo(() => {
     if (!commandTrigger) return [];
@@ -153,6 +154,13 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
 
   const submit = (): void => {
     if (disabled || (!input.trim() && !pendingImage)) return;
+    // Only the exact invocation is local. Arguments and embedded mentions keep
+    // their existing provider semantics; never send the local action as a prompt.
+    if (input.trim() === "/new") {
+      onNewChat?.();
+      if (onNewChat) resetInput();
+      return;
+    }
     const draft: ChatDraft = {
       text: input,
       image: pendingImage,
@@ -165,6 +173,10 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
   const steer = (): void => {
     const text = input.trim();
     if (!text || disabled) return;
+    if (text === "/new") {
+      submit();
+      return;
+    }
     if (!onSteer(input)) return;
     setInput("");
     setDraftCommand(null);

@@ -1,4 +1,7 @@
 import type { CommandEntry } from "../../lib/chatWs";
+import { commandPrefix } from "./commandMatch";
+
+export const NEW_COMMAND: CommandEntry = { name: "new", source: "builtin", syntax: "slash" };
 
 /**
  * Locale key for the curated compact description. The palette resolves it
@@ -30,10 +33,15 @@ export const UPDATE_COMMAND: CommandEntry = {
 const CURATED: readonly CommandEntry[] = [COMPACT_COMMAND, UPDATE_COMMAND];
 
 /** Merge curated entries behind the discovered list, skipping discovered names. */
-export function mergeCommands(discovered: readonly CommandEntry[]): readonly CommandEntry[] {
-  const present = new Set(discovered.map((command) => command.name));
+export function mergeCommands(discovered: readonly CommandEntry[], includeNewChat = false): readonly CommandEntry[] {
+  // Exact /new is a web navigation action, not the provider's in-place reset.
+  // Reserve its slash row only; a provider's $new remains a separate command.
+  const commands = includeNewChat
+    ? [...discovered.filter(command => command.name !== NEW_COMMAND.name || commandPrefix(command) !== "/"), NEW_COMMAND]
+    : discovered;
+  const present = new Set(commands.map((command) => command.name));
   const additions = CURATED.filter((command) => !present.has(command.name));
-  return additions.length === 0 ? discovered : [...discovered, ...additions];
+  return additions.length === 0 ? commands : [...commands, ...additions];
 }
 
 /**
