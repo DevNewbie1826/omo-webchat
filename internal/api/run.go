@@ -140,7 +140,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	}
 	manager := session.NewManager(session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
 	var apiServer *Server
-	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, SendQueue: queue, ServerVersion: ensured.Client.ServerVersion(), Logger: logger,
+	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, SendQueue: queue, ServerVersionFunc: ensured.Client.ServerVersion, Logger: logger,
 		PrepareChatVersion: func(c context.Context, wsID, chatID string) (uint64, error) {
 			return apiServer.prepareChatVersion(c, wsID, chatID)
 		},

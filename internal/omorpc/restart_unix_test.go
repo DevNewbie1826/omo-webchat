@@ -115,3 +115,32 @@ func TestRestartStopSupervisorStopsOwnedGroupWithoutClosingClient(t *testing.T) 
 		t.Fatalf("shared client call after fresh dial: response=%+v err=%v", response, err)
 	}
 }
+
+func TestStopSupervisorDropsRuntimeWinnerCache(t *testing.T) {
+	dir := shortEnsureTempDir(t)
+	socket := filepath.Join(dir, "rpc", "rpc.sock")
+	cfg := helperEnsureConfig(dir, socket, helperSupervisorScript(t), "serve")
+	command, _, err := supervisorCommand(cfg)
+	if err != nil {
+		t.Fatalf("supervisorCommand: %v", err)
+	}
+	t.Cleanup(func() { runtimeWinnerCache.Delete(command) })
+
+	ensured, err := EnsureDaemon(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("EnsureDaemon: %v", err)
+	}
+	t.Cleanup(func() { _ = ensured.StopBounded(6 * time.Second) })
+	if _, ok := runtimeWinnerCache.Load(command); !ok {
+		t.Fatalf("runtime winner cache missing %q after spawn", command)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	if err := ensured.StopSupervisor(ctx); err != nil {
+		t.Fatalf("StopSupervisor: %v", err)
+	}
+	if winner, ok := runtimeWinnerCache.Load(command); ok {
+		t.Fatalf("runtime winner cache still holds %q after StopSupervisor: %v", command, winner)
+	}
+}

@@ -98,6 +98,7 @@ type EnsuredDaemon struct {
 	supervisor   *supervisorHandle
 	waitCh       <-chan error
 	childWrapper string
+	command      string
 
 	stopOnce sync.Once
 	stopDone chan struct{}
@@ -169,6 +170,12 @@ var (
 	runtimeWinnerCache  sync.Map // resolved supervisor path -> "automatic" or "node"
 	ownedProcessSockets sync.Map // supervisor pid -> ownedProcessSocket
 )
+
+// ForgetRuntimeWinner drops the cached launcher runtime decision for command
+// so the next spawn re-selects automatic versus node.
+func ForgetRuntimeWinner(command string) {
+	runtimeWinnerCache.Delete(command)
+}
 
 type ownedProcessSocket struct {
 	cfg        EnsureConfig
@@ -374,6 +381,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 					}
 					return nil, checkErr, true
 				}
+				result.command = command
 				if !owned {
 					if stopErr := stopOwnedSupervisor(context.Background(), supervisor, waitCh); stopErr != nil {
 						_ = client.Close()

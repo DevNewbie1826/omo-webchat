@@ -15,7 +15,9 @@ func (d *EnsuredDaemon) StopSupervisor(ctx context.Context) error {
 	if d == nil || !d.Owned || d.supervisor == nil {
 		return ErrDaemonNotOwned
 	}
-	return d.stopSupervisor(ctx)
+	err := d.stopSupervisor(ctx)
+	ForgetRuntimeWinner(d.command)
+	return err
 }
 
 func (d *EnsuredDaemon) stopSupervisor(ctx context.Context) error {
