@@ -166,7 +166,6 @@ describe("Sidebar pinned running sessions", () => {
     readonly chats?: readonly Terminal[];
     readonly sessions?: readonly WorkspaceSession[];
     readonly onOpenSession?: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | void>;
-    readonly onRefreshSessions?: (wsId: string) => void;
   }
 
   function renderSidebar(
@@ -201,7 +200,6 @@ describe("Sidebar pinned running sessions", () => {
           onRenameTerminal={async () => undefined}
           onLogout={() => undefined}
           notify={() => undefined}
-          {...(options.onRefreshSessions === undefined ? {} : { onRefreshSessions: options.onRefreshSessions })}
         />,
       );
     });
@@ -214,8 +212,9 @@ describe("Sidebar pinned running sessions", () => {
 
     renderSidebar(onSelect);
 
-    // The modal trigger is gone: the pinned section is the only overview surface.
-    expect(container.querySelector('button[title="sidebar.overview"]')).toBeNull();
+    // The modal trigger is gone: the pinned section is the only overview
+    // surface, and no dialog exists anywhere in the tree.
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
     // Poll result has not landed yet; nothing is pinned while nothing runs.
     expect(container.querySelector(".th-sidebar-live")).toBeNull();
 
@@ -275,49 +274,6 @@ describe("Sidebar pinned running sessions", () => {
     expect(cards[2]?.querySelector(".th-overview-card-meta")).toBeNull();
     expect(cards[1]?.textContent).not.toContain("overview.done");
     expect(cards[2]?.textContent).not.toContain("overview.done");
-  });
-
-  it("refreshes recency for workspaces with live sessions on a 15s interval and clears it on unmount", async () => {
-    vi.useFakeTimers();
-    try {
-      const fetchMock = vi.fn(async () => okResponse(BUSY_LIVE_RESPONSE));
-      vi.stubGlobal("fetch", fetchMock);
-      const onRefreshSessions = vi.fn();
-
-      renderSidebar(() => undefined, {
-        chats: [],
-        sessions: [discoveredRow, secondDiscoveredRow],
-        onRefreshSessions,
-      });
-
-      await act(async () => {});
-      expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
-      expect(onRefreshSessions).not.toHaveBeenCalled();
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(15000);
-      });
-      expect(onRefreshSessions).toHaveBeenCalledWith("ws-1");
-      const callsAfterFirstTick = onRefreshSessions.mock.calls.length;
-      expect(callsAfterFirstTick).toBeGreaterThanOrEqual(1);
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(15000);
-      });
-      expect(onRefreshSessions.mock.calls.length).toBeGreaterThan(callsAfterFirstTick);
-
-      const callsBeforeUnmount = onRefreshSessions.mock.calls.length;
-      act(() => root.unmount());
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(60000);
-      });
-      expect(onRefreshSessions.mock.calls.length).toBe(callsBeforeUnmount);
-
-      // Re-mount a fresh tree for afterEach's unmount.
-      root = createRoot(container);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("lists an idle live session without a running badge, and the tree never offers View live for it", async () => {

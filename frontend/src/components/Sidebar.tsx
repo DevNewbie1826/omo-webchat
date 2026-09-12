@@ -12,8 +12,6 @@ import "../styles/sidebar-live.css";
 /** Bounded retry cadence for union-membership crawls whose workspaces failed. */
 export const MEMBERSHIP_MAX_RETRIES = 5;
 export const MEMBERSHIP_RETRY_DELAY_MS = 2000;
-/** Recency refresh cadence while the pinned section lists live sessions. */
-export const LIVE_RECENCY_REFRESH_INTERVAL_MS = 15_000;
 import { useLiveSessionSummaries } from "../features/workspace/useLiveSessionSummaries";
 import { compareLiveSessions, isLiveSessionListed } from "../features/workspace/liveSessionOrder";
 import { resolveWorkspaceSessionMembership } from "../features/workspace/workspace";
@@ -45,9 +43,19 @@ export interface SidebarProps {
   readonly onRenameTerminal: (ws: Workspace, tm: Terminal, name: string) => Promise<void>;
   readonly onLogout: () => void;
   readonly notify: (msg: string, kind?: ToastKind) => void;
-  /** Re-fetches a workspace's first session page through the scheduled path,
-   * keeping catalog recency fresh while live sessions are pinned. */
-  readonly onRefreshSessions?: (wsId: string) => void;
+  /** Publishes the membership crawl's learned recency and live-owner
+   * attribution to the shared owner (App), so every live surface orders from
+   * the same source and the catalog scheduler refreshes the owning
+   * workspaces. Fires whenever either map's content changes. */
+  readonly onLiveRecencyChange?: (share: LiveRecencyShare) => void;
+}
+
+/** What the sidebar's membership crawl learned beyond the loaded pages:
+ * last-activity ms per crawled session id, and the workspaces that own at
+ * least one currently live session. */
+export interface LiveRecencyShare {
+  readonly recencyMs: ReadonlyMap<string, number>;
+  readonly ownerWsIds: ReadonlySet<string>;
 }
 
 /** Viewport width below which the sidebar becomes a drawer. Keep in sync with the CSS @media queries. */
@@ -75,7 +83,7 @@ export function Sidebar({
   onRenameTerminal,
   onLogout,
   notify,
-  onRefreshSessions,
+  onLiveRecencyChange,
 }: SidebarProps) {
   const { t } = useT();
   const isMobile = useMediaQuery(MOBILE_QUERY);
@@ -264,21 +272,13 @@ export function Sidebar({
     }
     return owners;
   }, [summaries, workspaces, sessionLists, resolvedRunningMembership]);
-  const liveOwnerWsIdsRef = useRef(liveOwnerWsIds);
+  // Share the crawl-learned recency and the live-owner attribution with the
+  // app's other live surface and the catalog scheduler. The sidebar owns no
+  // refresh timer: useWorkspaces' scheduler owns the single recency cadence,
+  // fed by these owner ids through setRecencyTargets.
   useEffect(() => {
-    liveOwnerWsIdsRef.current = liveOwnerWsIds;
-  }, [liveOwnerWsIds]);
-  // Keep catalog recency fresh while any live session is pinned. The interval
-  // keys off the boolean only so the 4s live poll cannot starve it; the ref
-  // always holds the current owner set. Cleared on unmount.
-  const hasLiveSessions = summaries.length > 0;
-  useEffect(() => {
-    if (onRefreshSessions === undefined || !hasLiveSessions) return;
-    const timer = window.setInterval(() => {
-      for (const wsId of liveOwnerWsIdsRef.current) onRefreshSessions(wsId);
-    }, LIVE_RECENCY_REFRESH_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [onRefreshSessions, hasLiveSessions]);
+    onLiveRecencyChange?.({ recencyMs: crawlRecency, ownerWsIds: liveOwnerWsIds });
+  }, [onLiveRecencyChange, crawlRecency, liveOwnerWsIds]);
 
   // The highlight names a running row; when that session's work settles the
   // row stays listed (idle rows are listed too) but the highlight clears.
