@@ -699,6 +699,15 @@ invocation.
   input row, inside the capsule; drag-and-drop and queued drafts keep working
   unchanged.
 
+## 통합 업데이트 대화상자
+
+- `/update`는 기존 명령 팔레트의 선택 후 전송 규칙을 따르고, 제공자 명령의 우선권을 유지합니다.
+- 업데이트 확인, 설치 중, 오류, 설치 완료 상태는 기존 `ModalDialog`와 확인창 스타일을 재사용합니다.
+- 확인 전에는 설치하지 않고, 설치 중에는 중복 실행을 막습니다. 창을 닫는 동작은 설치 취소와 구분하며 같은 채팅에서 결과를 다시 열 수 있습니다.
+- 설치 완료 안내는 실행 중인 엔진이 아직 교체되지 않았음을 명시하고, 작업 저장 후 데몬과 웹챗을 재시작하도록 안내합니다.
+- 상태는 `role="status"`, 오류는 `role="alert"`로 전달하고 기존 모달의 포커스 복원과 Escape 닫기를 유지합니다.
+- 설치 오류 로그는 Secondary 크기의 고정폭 글꼴과 오류 토큰을 사용합니다. 출력은 `min(240px, 30dvh)` 안에서 스크롤하고, 짧은 화면에서는 대화상자 내용도 스크롤하여 재시도 버튼을 유지합니다.
+
 ## New chat and Omo availability
 
 - When Omo is available, clicking New Chat creates the session immediately

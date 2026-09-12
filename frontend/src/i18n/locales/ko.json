@@ -1,4 +1,11 @@
 {
+  "chat.updateDescription": "omo와 내장 senpi 엔진을 함께 업데이트합니다",
+  "chat.updateTitle": "omo와 senpi 업데이트",
+  "chat.updateConfirm": "최신 omo 베타와 호환되는 senpi 엔진을 함께 설치합니다. 기존 세션은 재시작하지 않습니다. 설치 후 작업을 저장하고 omo 데몬과 omo-webchat을 재시작하면 새 버전이 적용됩니다.",
+  "chat.updateAction": "함께 업데이트",
+  "chat.updateRunning": "omo와 내장 senpi 엔진을 설치하고 있습니다. 이 창을 닫아도 업데이트는 계속됩니다. /update를 다시 보내면 진행 상태로 돌아옵니다.",
+  "chat.updateSuccess": "설치가 완료되었습니다. 실행 중인 세션은 아직 이전 엔진을 사용합니다. 작업을 저장한 뒤 omo 데몬과 omo-webchat을 재시작하면 새 버전이 적용됩니다.",
+  "chat.updateFailed": "업데이트가 완료되지 않았습니다. 오류를 확인한 뒤 다시 시도하세요.",
   "chat.send.inspect": "원본 보기",
   "chat.send.original": "요청 원본",
   "chat.send.sending": "전송 중",

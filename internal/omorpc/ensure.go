@@ -1043,9 +1043,12 @@ func validateLauncherBrandProfile(encoded string) error {
 	return nil
 }
 
+func isBunLauncherInstallation(root string) bool {
+	return strings.HasSuffix(filepath.ToSlash(filepath.Clean(root)), "/install/global/node_modules/omo-ai")
+}
+
 func launcherUpdateCommand(root string) string {
-	normalized := filepath.ToSlash(filepath.Clean(root))
-	if strings.HasSuffix(normalized, "/install/global/node_modules/omo-ai") {
+	if isBunLauncherInstallation(root) {
 		return fmt.Sprintf("bun add --cwd %s -g omo-ai@beta", shellQuote(root))
 	}
 	return "npm i -g omo-ai@beta"
