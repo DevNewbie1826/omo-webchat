@@ -23,7 +23,10 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/wsbridge"
 )
 
-var ensureDaemon = omorpc.EnsureDaemon
+var (
+	ensureDaemon         = omorpc.EnsureDaemon
+	stopSupervisorDaemon = (*omorpc.EnsuredDaemon).StopSupervisor
+)
 
 const daemonStopTimeout = 5 * time.Second
 
@@ -34,11 +37,12 @@ type recoveryDaemonLifecycle struct {
 	barrier sync.Mutex
 	mu      sync.Mutex
 
-	current    *omorpc.EnsuredDaemon
-	generation []*omorpc.EnsuredDaemon
-	owned      []*omorpc.EnsuredDaemon
-	stopping   bool
-	logger     *slog.Logger
+	current       *omorpc.EnsuredDaemon
+	generation    []*omorpc.EnsuredDaemon
+	owned         []*omorpc.EnsuredDaemon
+	stopping      bool
+	retirementErr error
+	logger        *slog.Logger
 }
 
 func (l *recoveryDaemonLifecycle) initialize(daemon *omorpc.EnsuredDaemon) {
@@ -53,6 +57,15 @@ func (l *recoveryDaemonLifecycle) initialize(daemon *omorpc.EnsuredDaemon) {
 func (l *recoveryDaemonLifecycle) ensure(ctx context.Context, fn func(context.Context) (*omorpc.EnsuredDaemon, error)) error {
 	l.barrier.Lock()
 	defer l.barrier.Unlock()
+	l.mu.Lock()
+	retirementErr := l.retirementErr
+	l.mu.Unlock()
+	if retirementErr != nil {
+		return retirementErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	daemon, err := fn(ctx)
 	if err != nil {
 		return err
@@ -119,21 +132,28 @@ func (l *recoveryDaemonLifecycle) stopCurrent(ctx context.Context, client *omorp
 	}
 
 	var stopErr error
+	var unresolved error
 	for _, daemon := range generation {
-		if err := daemon.StopSupervisor(ctx); err != nil {
+		if err := stopSupervisorDaemon(daemon, ctx); err != nil {
 			stopErr = errors.Join(stopErr, err)
+			if !omorpc.RetirementConfirmed(err) {
+				unresolved = errors.Join(unresolved, err)
+			}
 		}
 	}
-	if stopErr != nil {
+	if unresolved != nil {
+		l.mu.Lock()
+		l.retirementErr = unresolved
+		l.mu.Unlock()
 		return omorpc.EpochToken{}, stopErr
 	}
-	retired, _ := client.CurrentEpoch()
-	client.FenceEpoch(retired)
+	retired := client.FenceConnectionGeneration()
 	l.mu.Lock()
 	l.current = nil
 	l.generation = nil
+	l.retirementErr = nil
 	l.mu.Unlock()
-	return retired, nil
+	return retired, stopErr
 }
 
 func (l *recoveryDaemonLifecycle) currentOwned() bool {

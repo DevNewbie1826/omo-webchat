@@ -98,9 +98,11 @@ type connectionEpoch struct {
 }
 
 type connectFlight struct {
-	done  chan struct{}
-	epoch *connectionEpoch
-	err   error
+	done   chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	epoch  *connectionEpoch
+	err    error
 }
 
 // eventStream is a hard-bounded queue. When full, enqueue drops the oldest
@@ -193,7 +195,7 @@ func DialWithConfig(ctx context.Context, socketPath string, cfg Config) (*Client
 		epochChange: cfg.OnEpochChange,
 	}
 	c.writeGate <- struct{}{}
-	ep, err := c.establish(ctx)
+	ep, err := c.establish(ctx, nil)
 	if err != nil {
 		_ = c.Close()
 		return nil, err
@@ -247,14 +249,14 @@ func normalizeConfig(cfg Config) Config {
 	return cfg
 }
 
-func (c *Client) establish(ctx context.Context) (*connectionEpoch, error) {
+func (c *Client) establish(ctx context.Context, flight *connectFlight) (*connectionEpoch, error) {
 	conn, err := dialEndpoint(ctx, c.socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: dial %s: %w", ErrDisconnected, c.socketPath, err)
 	}
 
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || (flight != nil && c.connecting != flight) {
 		c.mu.Unlock()
 		_ = conn.Close()
 		return nil, ErrDisconnected
@@ -408,6 +410,43 @@ func (c *Client) FenceEpoch(token EpochToken) {
 	}
 }
 
+// FenceConnectionGeneration retires the current transport and supersedes any
+// reconnect flight that began before retirement completed. The detached flight
+// cannot publish a later dial, so EnsureConnectedAfter starts a fresh bounded
+// flight with an unused endpoint-restore hook.
+func (c *Client) FenceConnectionGeneration() EpochToken {
+	cause := errors.New("connection generation fenced for engine replacement")
+	c.mu.Lock()
+	flight := c.connecting
+	if flight != nil {
+		c.connecting = nil
+		flight.cancel()
+	}
+	ep := c.current
+	var pending map[string]pendingRequest
+	if ep != nil {
+		c.current = nil
+		c.info = nil
+		c.epoch++
+		pending = c.pending
+		c.pending = make(map[string]pendingRequest)
+	}
+	c.mu.Unlock()
+
+	if ep == nil {
+		return EpochToken{}
+	}
+	_ = ep.conn.Close()
+	ep.events.close()
+	err := disconnectedError(ep, cause)
+	for _, request := range pending {
+		request.result <- callResult{err: err}
+	}
+	token := EpochToken{epoch: ep}
+	c.notifyEpochChange(token, EpochToken{})
+	return token
+}
+
 // EnsureConnectedAfter requires a live negotiated epoch other than retired.
 // Reconnection remains bounded by the client's configured retry budget and
 // the caller's context.
@@ -460,7 +499,8 @@ func (c *Client) connection(ctx context.Context) (*connectionEpoch, error) {
 		c.mu.Unlock()
 		return ep, nil
 	}
-	flight := &connectFlight{done: make(chan struct{})}
+	flightCtx, cancelFlight := context.WithCancel(c.lifecycle)
+	flight := &connectFlight{done: make(chan struct{}), ctx: flightCtx, cancel: cancelFlight}
 	c.connecting = flight
 	c.wg.Add(1)
 	c.mu.Unlock()
@@ -478,7 +518,8 @@ func (c *Client) connection(ctx context.Context) (*connectionEpoch, error) {
 }
 
 func (c *Client) finishReconnect(flight *connectFlight) {
-	flight.epoch, flight.err = c.reconnect(c.lifecycle)
+	defer flight.cancel()
+	flight.epoch, flight.err = c.reconnect(flight.ctx, flight)
 	c.mu.Lock()
 	if c.connecting == flight {
 		c.connecting = nil
@@ -487,7 +528,7 @@ func (c *Client) finishReconnect(flight *connectFlight) {
 	c.mu.Unlock()
 }
 
-func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
+func (c *Client) reconnect(ctx context.Context, flight *connectFlight) (*connectionEpoch, error) {
 	backoff := c.cfg.ReconnectInitial
 	var lastErr error
 	hookRan := false
@@ -511,7 +552,7 @@ func (c *Client) reconnect(ctx context.Context) (*connectionEpoch, error) {
 		if closed {
 			return nil, ErrDisconnected
 		}
-		ep, err := c.establish(ctx)
+		ep, err := c.establish(ctx, flight)
 		if err == nil {
 			err = c.negotiate(ctx, ep)
 		}
