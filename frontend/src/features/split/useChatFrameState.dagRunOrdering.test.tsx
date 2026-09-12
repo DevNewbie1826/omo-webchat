@@ -210,14 +210,38 @@ describe("useChatFrameState DAG run scalar ordering", () => {
   });
 
   describe.each(["live", "history"] as const)("%s unresolved membership", source => {
-    function snapshot(runs: ReturnType<typeof run>[]) {
-      const frame = dagSnapshotFrame({ runs });
+    function snapshot(runs: ReturnType<typeof run>[], truncatedRuns = false) {
+      const frame = dagSnapshotFrame({ runs, truncated_runs: truncatedRuns });
       if (source === "live") deliver(frame);
       else {
         const token = captured!.beginActivityHydration();
         act(() => captured!.hydrateActivities(token, null, frame.data));
       }
     }
+
+    describe.each(["partial", "mixed-complete"] as const)("%s admitted observation", delivery => {
+      it.each(["other", "new"])("keeps %s's newer revision as a barrier until a 10:11 recovery", id => {
+        snapshot([run("r", "02"), run("other", "05")]);
+        expectDagTabPair("2/2");
+        snapshot(delivery === "partial"
+          ? [run(id, "10")]
+          : [run("r", "01"), run(id, "10")], delivery === "partial");
+        expectNoPair();
+        expect(captured!.activities.dags.get(id)?.updatedAt).toBe("2026-09-09T10:10:00Z");
+        expect([...captured!.activities.dagMembership!.ids]).toEqual(["r", "other"]);
+
+        snapshot([run("r", "06")]);
+        // Soft assertions also execute the recovery control on the red run.
+        expect.soft([...dagTab().querySelectorAll("span")].map(span => span.textContent))
+          .toEqual(["activity.dag"]);
+        expect.soft(captured!.activities.dagMembership?.unresolved).toBe(true);
+        expect(captured!.activities.dagFreshness?.get(id)).toBe(Date.parse("2026-09-09T10:10:00Z"));
+
+        snapshot([run("r", "11")]);
+        expectDagTabPair("1/1");
+        expect(captured!.activities.dagMembership?.unresolved).toBe(false);
+      });
+    });
 
     it("does not restore counting after rich-row deletion and a below-fence advance", () => {
       snapshot([run("r", "02"), run("other", "05")]);

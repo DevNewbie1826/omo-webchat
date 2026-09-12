@@ -378,7 +378,7 @@ function reconcileDagSnapshot(
   }
   const membership = state.dagMembership;
   const acceptedIds = membership?.ids ?? new Set(state.dags.keys());
-  const previousHighWater = membership?.highWater ?? Math.max(-Infinity, ...dagFreshness.values());
+  const previousHighWater = Math.max(membership?.highWater ?? -Infinity, ...dagFreshness.values());
   const incomingHighWater = Math.max(-Infinity, ...parsed.runs.map(run => parseDagUpdatedAt(run.updatedAt) ?? -Infinity));
   const membershipChanged = present.size !== acceptedIds.size || [...present].some(id => !acceptedIds.has(id));
   for (const incoming of parsed.runs) {
@@ -424,8 +424,9 @@ function reconcileDagSnapshot(
     dagFreshness,
     dagMembership: {
       ids: membershipAccepted ? present : acceptedIds,
-      highWater: membershipAccepted || membership === undefined
-        ? Math.max(previousHighWater, incomingHighWater) : previousHighWater,
+      // Admitted observations fence later omissions even when this delivery
+      // cannot establish membership. Rejected rows never advance freshness.
+      highWater: Math.max(previousHighWater, ...dagFreshness.values()),
       unresolved,
     },
     truncatedDags: parsed.truncatedRuns === true || [...dags.values()].some(run => run.truncated === true),
