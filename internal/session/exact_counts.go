@@ -185,7 +185,10 @@ func (c *dagSnapshotCache) mergeCountAuthority(incoming []json.RawMessage, compl
 	if unordered && !stale {
 		c.runMembershipUnknown = true
 	}
-	if !complete && !stale && !unordered {
+	// A stale sibling rejects a complete inventory, but cannot veto an
+	// independently admitted partial observation. Wholly stale replays queue
+	// no observations; ambiguous re-observations remain fenced above.
+	if !complete && !unordered {
 		for key := range observations {
 			current := c.countRuns[key]
 			current.observable = true
