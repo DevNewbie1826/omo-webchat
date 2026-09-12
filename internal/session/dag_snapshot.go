@@ -21,6 +21,8 @@ type dagSnapshotCache struct {
 	runs                map[[sha256.Size]byte]dagFreshness
 	countRuns           map[[sha256.Size]byte]dagCountRun
 	runningCount        int
+	runRunningCount     int
+	runTotalCount       int
 	countAuthorityKnown bool
 	clock               uint64
 	oversized           bool
@@ -194,6 +196,7 @@ func (c *dagSnapshotCache) merge(data, previous json.RawMessage, previousDigest 
 	}
 	digest, _ := parseDagDigest(live)
 	digest.RunningCount = c.runningCount
+	digest.RunRunningCount, digest.RunTotalCount = c.runRunningCount, c.runTotalCount
 	if previousDigest != nil {
 		for _, row := range previousDigest.Runs {
 			if missing[sha256.Sum256([]byte(row.RunID))] {

@@ -23,9 +23,9 @@ type dagCountWork struct {
 }
 
 type dagCountRun struct {
-	millis         int64
-	known, present bool
-	works          []dagCountWork
+	millis                   int64
+	known, present, terminal bool
+	works                    []dagCountWork
 }
 
 func taskCountRevision(row map[string]json.RawMessage) (string, taskCountMember, bool) {
@@ -97,8 +97,8 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 	}
 	_ = json.Unmarshal(raw, &row)
 	millis, known := dagTimestamp(row.UpdatedAt)
-	run := dagCountRun{millis: millis, known: known, present: true, works: make([]dagCountWork, 0, len(row.Nodes))}
 	terminal := terminalDagStatuses[row.Status]
+	run := dagCountRun{millis: millis, known: known, present: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
 	for i, node := range row.Nodes {
 		work := dagCountWork{running: !terminal && node.State == "running"}
 		if node.TaskID != "" {
@@ -118,9 +118,14 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 func (c *dagSnapshotCache) finishCountAuthority() {
 	c.countAuthorityKnown = true
 	c.runningCount = 0
+	c.runRunningCount, c.runTotalCount = 0, 0
 	for _, run := range c.countRuns {
 		if !run.present {
 			continue
+		}
+		c.runTotalCount++
+		if !run.terminal {
+			c.runRunningCount++
 		}
 		for _, work := range run.works {
 			if work.running {
@@ -218,6 +223,8 @@ func addActivityCounts(raw json.RawMessage, name string, task *taskSnapshotCache
 	}
 	if name == activitySnapshotOrder[1] && dag != nil && dag.countAuthorityKnown {
 		doc["running_count"], _ = json.Marshal(dag.runningCount)
+		doc["run_running_count"], _ = json.Marshal(dag.runRunningCount)
+		doc["run_total_count"], _ = json.Marshal(dag.runTotalCount)
 	}
 	doc["agent_running_count"], _ = json.Marshal(running)
 	doc["agent_total_count"], _ = json.Marshal(total)

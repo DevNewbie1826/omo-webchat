@@ -59,6 +59,8 @@ type DagDigest struct {
 	Runs              []RunDigestEntry `json:"runs"`
 	Truncated         bool             `json:"truncated"`
 	RunningCount      int              `json:"running_count"`
+	RunRunningCount   int              `json:"run_running_count"`
+	RunTotalCount     int              `json:"run_total_count"`
 	AgentRunningCount int              `json:"agent_running_count"`
 	AgentTotalCount   int              `json:"agent_total_count"`
 	ReceivedAt        string           `json:"received_at,omitempty"`
@@ -71,6 +73,7 @@ func (d DagDigest) MarshalJSON() ([]byte, error) {
 	}
 	type wire DagDigest
 	return json.Marshal(wire{Runs: runs, Truncated: d.Truncated, RunningCount: d.RunningCount,
+		RunRunningCount: d.RunRunningCount, RunTotalCount: d.RunTotalCount,
 		AgentRunningCount: d.AgentRunningCount, AgentTotalCount: d.AgentTotalCount, ReceivedAt: d.ReceivedAt})
 }
 
