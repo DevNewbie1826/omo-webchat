@@ -96,9 +96,52 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 	go conn.ReadLoop()
 	collector.next(t, "hello")
 	writeActivityE2EFrame(t, conn, map[string]any{"type": "hello", "version": 2})
-	writeActivityE2EFrame(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{"child-counts"}})
+	writeActivityE2EFrame(t, conn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{"child-counts", "child-unknown"}})
 	if ack := collector.next(t, "ack"); ack["command"] != "sessions.subscribe" {
 		t.Fatalf("subscription ack = %v", ack)
+	}
+
+	// A first partial delivery has visible rows, but no exact run authority.
+	// Exercise the subscription serializer and REST before completing the same revision.
+	partial := map[string]any{
+		"truncated_runs": true,
+		"runs":           []any{map[string]any{"run_id": "partial-run", "status": "running", "updated_at": "2026-09-05T12:00:00Z"}},
+	}
+	for _, complete := range []bool{false, true} {
+		partial["truncated_runs"] = !complete
+		daemon.Emit(map[string]any{"type": "extension_event", "sessionId": "child-unknown", "name": "omo.dag.updated", "data": partial})
+		pushed := collector.next(t, "sessions.activity")
+		if pushed["sessionId"] != "child-unknown" {
+			t.Fatalf("unexpected partial activity: %v", pushed)
+		}
+		assertOptionalDagRunPair(t, pushed["dagDigest"], complete)
+		req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/sessions/live", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rest struct {
+			Sessions []map[string]any `json:"sessions"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&rest)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("partial REST status=%d err=%v", resp.StatusCode, err)
+		}
+		found := false
+		for _, row := range rest.Sessions {
+			if row["id"] == "child-unknown" {
+				found = true
+				assertOptionalDagRunPair(t, row["dag_digest"], complete)
+			}
+		}
+		if !found {
+			t.Fatalf("partial session missing from REST: %v", rest.Sessions)
+		}
 	}
 
 	// >digest-entry-cap roster: 520 tasks, 50 running with the oldest clocks
@@ -189,6 +232,20 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 	}
 	assertExactCountDigest(t, "live row task_digest", "task", row["task_digest"], 50, 520)
 	assertExactCountDigest(t, "live row dag_digest", "dag", row["dag_digest"], 3, -1)
+}
+
+func assertOptionalDagRunPair(t *testing.T, value any, known bool) {
+	t.Helper()
+	digest, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("missing DAG digest: %v", value)
+	}
+	for _, key := range []string{"run_running_count", "run_total_count"} {
+		count, present := digest[key]
+		if present != known || (known && count != float64(1)) {
+			t.Fatalf("DAG %s = %v (present=%v), want known=%v and 1: %v", key, count, present, known, digest)
+		}
+	}
 }
 
 func assertExactCountFrame(t *testing.T, name string, frame map[string]any) {
