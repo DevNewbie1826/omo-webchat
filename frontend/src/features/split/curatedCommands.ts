@@ -11,7 +11,7 @@ export const NEW_COMMAND: CommandEntry = { name: "new", source: "builtin", synta
 export const COMPACT_DESCRIPTION_I18N_KEY = "chat.compactDescription";
 
 /**
- * Client-curated palette entries that dispatch dedicated RPC frames instead of
+ * Client-curated palette entries that dispatch dedicated actions instead of
  * becoming model prompts. They are appended behind the provider-discovered
  * list and deduplicated by name, so a provider-advertised command always
  * stays authoritative and the palette never shows a duplicate row. The
@@ -24,7 +24,13 @@ export const COMPACT_COMMAND: CommandEntry = {
   syntax: "slash",
 };
 
-const CURATED: readonly CommandEntry[] = [COMPACT_COMMAND];
+export const UPDATE_COMMAND: CommandEntry = {
+  name: "update",
+  source: "builtin",
+  syntax: "slash",
+};
+
+const CURATED: readonly CommandEntry[] = [COMPACT_COMMAND, UPDATE_COMMAND];
 
 /** Merge curated entries behind the discovered list, skipping discovered names. */
 export function mergeCommands(discovered: readonly CommandEntry[], includeNewChat = false): readonly CommandEntry[] {

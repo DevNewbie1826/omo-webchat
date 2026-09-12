@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/DevNewbie1826/omo-webchat/internal/auth"
 	"github.com/DevNewbie1826/omo-webchat/internal/config"
 	"github.com/DevNewbie1826/omo-webchat/internal/cursorstore"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 	"github.com/DevNewbie1826/omo-webchat/internal/sendqueue"
 	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
@@ -39,6 +41,9 @@ type Server struct {
 	logger   *slog.Logger
 	ctx      context.Context
 
+	updateMu           sync.Mutex
+	updateInstallation func(context.Context) error
+
 	chatLifecycleMu             sync.Mutex
 	adoptionMu                  sync.Mutex
 	activityCheck               sessionActivityCheck
@@ -49,7 +54,10 @@ type Server struct {
 
 // New creates the API server around the required v2 stack.
 func New(ctx context.Context, cfg *config.Config, cursors *cursorstore.Store, sessions *auth.SessionStore, manager *session.Manager, bridge http.Handler, logger *slog.Logger) *Server {
-	return &Server{ctx: ctx, cfg: cfg, cursors: cursors, sessions: sessions, manager: manager, bridge: bridge, logger: logger, activityCheck: observeSessionActivity, chatDeleting: make(map[string]bool)}
+	binary := os.Getenv("CHAT_PI_BINARY")
+	return &Server{ctx: ctx, cfg: cfg, cursors: cursors, sessions: sessions, manager: manager, bridge: bridge, logger: logger, activityCheck: observeSessionActivity, chatDeleting: make(map[string]bool),
+		updateInstallation: func(ctx context.Context) error { return omorpc.UpdateInstallation(ctx, binary) },
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -89,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/layout", s.handleGetLayout)
 	protected.HandleFunc("PUT /api/layout", s.handleSetLayout)
 	protected.HandleFunc("GET /api/system/stats", s.handleSystemStats)
+	protected.HandleFunc("POST /api/system/update", s.handleSystemUpdate)
 
 	mux.Handle("/api/", s.sessions.Middleware(protected))
 	mux.Handle("/", s.staticHandler())

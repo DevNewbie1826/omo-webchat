@@ -121,6 +121,28 @@ omo-webchat --stop                         # 중지
 - `/` 슬래시 명령, `$` 스킬 팔레트, 모델 선택, 이미지 첨부
 - 가로/세로 분할 뷰, 한국어/English, 폰트·글자 크기 설정, 모바일 대응
 
+### omo와 senpi 함께 업데이트하기
+
+채팅에서 `/update`를 선택하거나 입력한 뒤 전송하고 **함께 업데이트**를 누르세요.
+서버가 현재 사용하는 omo 설치의 패키지 매니저로 `omo-ai@beta`와 그 버전에
+고정된 senpi 엔진을 함께 설치합니다. 별도로 설치된 전역 senpi나 omo-webchat
+자체를 업데이트하는 기능은 아닙니다. 제공자가 자체 `/update` 명령을 등록했다면
+그 명령이 우선합니다.
+
+로그인한 사용자만 실행할 수 있고, 동시에 들어온 업데이트 요청은 거부합니다.
+설치 실패는 대화상자에 표시하며 자동으로 재시도하지 않습니다. 창을 닫아도
+설치는 계속되고, 같은 채팅에서 `/update`를 다시 보내면 결과를 확인할 수 있습니다.
+인식할 수 없는 사용자 정의 설치는 다른 설치를 대신 갱신하지 않고 오류를 반환합니다.
+
+macOS·Linux의 npm 전역 prefix와 Bun 전역 설치를 지원합니다. Windows는 실행 중인
+네이티브 모듈의 파일 잠금으로 설치가 손상될 수 있어 웹 업데이트를 거부합니다.
+Windows에서는 모든 omo/senpi 프로세스와 웹챗을 종료한 뒤 터미널에서 설치에 사용한
+패키지 매니저로 업데이트하세요.
+
+설치 완료가 실행 중인 엔진의 교체를 뜻하지는 않습니다. 작업을 저장한 뒤 omo
+데몬과 omo-webchat을 재시작해야 새 버전이 적용됩니다. 기존 세션을 강제로
+재시작하지 않습니다.
+
 ### 주요 플래그
 
 | 플래그 | 환경 변수 | 기본값 | 역할 |
@@ -237,6 +259,28 @@ omo-webchat --stop                         # stop
 - Workspaces, file browser (upload / edit / download), `@` file mentions
 - `/` slash commands, `$` skill palette, model picker, image attachments
 - Horizontal/vertical split panes, Korean/English UI, font settings, mobile support
+
+### Update omo and senpi together
+
+Select or type `/update`, submit it, then choose **Update both**. The server
+updates its configured omo installation to `omo-ai@beta` using that installation's
+package manager, including the matching pinned senpi engine. It does not update
+a separately installed global senpi or omo-webchat itself. A provider-advertised
+`/update` command retains precedence.
+
+The action requires login and rejects concurrent update requests. Installation
+failures remain visible without automatic retries. Closing the dialog does not
+cancel installation; submit `/update` again in the same chat to see its result.
+Unrecognized custom installations fail instead of updating a different installation.
+
+Global npm-prefix and Bun installations are supported on macOS and Linux.
+Windows in-place updates are rejected because loaded native-module locks can
+leave a partial installation. On Windows, stop every omo/senpi process and
+webchat first, then update with the installation's package manager in a terminal.
+
+Installation does not replace the running engine. Save your work, then restart
+the omo daemon and omo-webchat to activate the new version. Existing sessions are
+never forcibly restarted by this action.
 
 ### Flags
 
