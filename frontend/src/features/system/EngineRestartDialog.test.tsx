@@ -41,11 +41,11 @@ describe("EngineRestartDialog", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  async function renderDialog(runningChats: number): Promise<void> {
+  async function renderDialog(runningChats: number, open = true): Promise<void> {
     await act(async () => {
       root.render(
         <I18nContext.Provider value={i18n}>
-          <EngineRestartDialog open onClose={() => undefined} runningChats={runningChats} />
+          <EngineRestartDialog open={open} onClose={() => undefined} runningChats={runningChats} />
         </I18nContext.Provider>,
       );
     });
@@ -119,6 +119,39 @@ describe("EngineRestartDialog", () => {
     expect(status!.getAttribute("aria-live")).toBe("polite");
     expect(status!.textContent).toContain("0.14.0");
     expect(status!.textContent).toContain("0.14.1");
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  // Closing the dialog never cancels the request, so reopening must show the
+  // work still running instead of a confirmation the in-flight guard ignores.
+  it("keeps an in-flight restart visible when the dialog is closed and reopened", async () => {
+    const pending = deferred<EngineRestartResult>();
+    const restart = vi.mocked(restartEngine);
+    restart.mockReturnValue(pending.promise);
+
+    await renderDialog(0);
+    act(() => {
+      buttonByText("Restart").click();
+    });
+    expect(restart).toHaveBeenCalledTimes(1);
+
+    await renderDialog(0, false);
+    await renderDialog(0, true);
+
+    const reopened = statusRegion();
+    expect(reopened, "status after reopening").not.toBeNull();
+    expect(reopened!.textContent).toContain("Restarting");
+    expect(
+      Array.from(panel().querySelectorAll<HTMLButtonElement>("button")).some(
+        (btn) => btn.textContent === "Restart" && !btn.disabled,
+      ),
+      "an enabled confirm control while the restart is still running",
+    ).toBe(false);
+
+    await act(async () => {
+      pending.resolve(restarted);
+    });
+    expect(statusRegion()!.textContent).toContain("0.14.1");
     expect(restart).toHaveBeenCalledTimes(1);
   });
 

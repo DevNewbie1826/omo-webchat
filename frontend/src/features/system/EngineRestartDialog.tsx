@@ -24,8 +24,10 @@ export function EngineRestartDialog({ open, onClose, runningChats }: EngineResta
   // frame, before the disabled confirm button can reach the DOM.
   const inFlightRef = useRef(false);
 
+  // Closing never cancels the request, so a reopen during one must show the
+  // work in progress; only an idle dialog starts a fresh confirmation.
   useEffect(() => {
-    if (open) setPhase({ kind: "confirm" });
+    if (open && !inFlightRef.current) setPhase({ kind: "confirm" });
   }, [open]);
 
   const start = (): void => {
