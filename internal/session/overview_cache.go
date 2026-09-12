@@ -122,7 +122,7 @@ func (s *overviewSubscriber) matches(snapshot Summary) bool {
 }
 
 // updateOverviewLocked stores immutable current state and evaluates filters.
-// Callers enqueue the returned hand-offs only after releasing Manager.mu.
+// Delivery only enqueues bounded hand-offs; subscriber callbacks run separately.
 func (m *Manager) updateOverviewLocked(snapshot Summary) []*overviewSubscriber {
 	if snapshot.ChatID == "" {
 		return nil
@@ -161,8 +161,16 @@ func deliverOverview(subscribers []*overviewSubscriber, snapshot Summary) {
 }
 
 func (m *Manager) notifySessionOverviewLocked(s *Session) {
-	snapshot := cloneSummary(s.summaryLocked())
+	m.notifySessionOverviewUpdateLocked(s, false)
+}
+
+func (m *Manager) notifySessionActivityLocked(s *Session) {
+	m.notifySessionOverviewUpdateLocked(s, true)
+}
+
+func (m *Manager) notifySessionOverviewUpdateLocked(s *Session, activityOnly bool) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	// Route removal is the epoch invalidation barrier. Because the caller holds
 	// lifecycleMu, this check and publication preserve the global lock order and
 	// cannot race a completed detach back into overviewCurrent.
@@ -170,14 +178,26 @@ func (m *Manager) notifySessionOverviewLocked(s *Session) {
 	if _, dead := m.invalidatedEpochs[s.epoch]; dead {
 		registered = false
 	}
-	var subscribers []*overviewSubscriber
-	if registered {
-		subscribers = m.updateOverviewLocked(snapshot)
+	if !registered {
+		return
 	}
-	m.mu.Unlock()
-	if registered {
-		deliverOverview(subscribers, snapshot)
+	if previous := m.overviewCurrent[s.chatID]; activityOnly && previous.Active == s.activeLocked() {
+		return
 	}
+	snapshot := cloneSummary(s.summaryLocked())
+	// Keep enqueueing inside the route barrier: a delayed active hand-off must
+	// never follow the inactive hand-off from epoch/session retirement.
+	deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+}
+
+// removeOverviewLocked clears the running indicator before retiring its row.
+// Manager.mu serializes this bounded enqueue with replacement publication.
+func (m *Manager) removeOverviewLocked(chatID string) {
+	if snapshot, ok := m.overviewCurrent[chatID]; ok && snapshot.Active {
+		snapshot.Active = false
+		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
+	}
+	delete(m.overviewCurrent, chatID)
 }
 
 func cloneSummary(snapshot Summary) Summary {
@@ -239,7 +259,11 @@ func (m *Manager) ingestEpochEvent(epoch omorpc.EpochToken, ev *omorpc.Event) (*
 		}
 	}
 	snapshot, subscribers := m.ingestUnboundOverviewLocked(epoch, ev)
-	return nil, snapshot, subscribers
+	// Acquisition publishes the replacement under this same mutex. Enqueue
+	// the provisional snapshot before releasing it, not in the event loop's
+	// later hand-off, which may resume after an active replacement is sent.
+	deliverOverview(subscribers, snapshot)
+	return nil, snapshot, nil
 }
 
 // ingestUnboundOverviewLocked records one unbound task/dag snapshot. The
@@ -349,6 +373,10 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 
 	entry := m.overviewCache[s.durableID]
 	if entry == nil {
+		if s.activeLocked() {
+			snapshot := cloneSummary(s.summaryLocked())
+			return snapshot, m.updateOverviewLocked(snapshot)
+		}
 		return Summary{}, nil
 	}
 	delete(m.overviewCache, s.durableID)

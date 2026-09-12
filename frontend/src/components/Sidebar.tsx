@@ -84,7 +84,12 @@ export function Sidebar({
   // are fresher (see liveBadgeStore); background sessions stay poll-fed.
   const pollSummaries = useLiveSessionSummaries(true);
   const summaries = useMergedLiveSummaries(pollSummaries);
-  // Server scalars make every running count exact; only positive counts badge.
+  // Main work is independent of the exact child-agent counts.
+  const activeSessions = useMemo(
+    () => new Set(summaries.filter((summary) => summary.active === true).map((summary) => summary.id)),
+    [summaries],
+  );
+  // Server scalars make every child running count exact.
   const runningCounts = useMemo(
     () => new Map(
       summaries
@@ -93,10 +98,9 @@ export function Sidebar({
     ),
     [summaries],
   );
-  // The pinned running-sessions section lists only sessions with running
-  // agents; its header count sums their exact server-side running totals.
+  // Pin main-only work too, without adding parents to child-agent totals.
   const runningSummaries = useMemo(
-    () => summaries.filter((summary) => summary.runningCount > 0),
+    () => summaries.filter((summary) => summary.active === true || summary.runningCount > 0),
     [summaries],
   );
   const totalRunningCount = useMemo(
@@ -105,7 +109,7 @@ export function Sidebar({
   );
   // View live only names the row to focus and sort first; membership stays
   // strictly running-only, so a highlight never adds an idle session and a
-  // pinned row leaves the list when its running count reaches zero.
+  // pinned row leaves the list when both main and child work settle.
   const [resolvedRunningMembership, setResolvedRunningMembership] =
     useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [membershipGeneration, setMembershipGeneration] = useState(0);
@@ -138,14 +142,14 @@ export function Sidebar({
   }, [sessionLists]);
 
   const unresolvedRunningIds = useMemo(() => {
-    const ids = new Set(runningCounts.keys());
+    const ids = new Set([...runningCounts.keys(), ...activeSessions]);
     for (const workspace of workspaces) {
       for (const chat of workspace.chats) ids.delete(chat.id);
       for (const session of sessionLists.get(workspace.id) ?? []) ids.delete(session.id);
       for (const id of resolvedRunningMembership.get(workspace.id) ?? []) ids.delete(id);
     }
     return ids;
-  }, [resolvedRunningMembership, runningCounts, sessionLists, workspaces]);
+  }, [resolvedRunningMembership, runningCounts, activeSessions, sessionLists, workspaces]);
   const membershipFingerprint = JSON.stringify([
     membershipGeneration,
     membershipRetry,
@@ -154,9 +158,9 @@ export function Sidebar({
   ]);  const aggregateSessionIds = useMemo(
     () => new Map([...resolvedRunningMembership].map(([wsId, ids]) => [
       wsId,
-      new Set([...ids].filter((id) => runningCounts.has(id))),
+      new Set([...ids].filter((id) => runningCounts.has(id) || activeSessions.has(id))),
     ])),
-    [resolvedRunningMembership, runningCounts],
+    [resolvedRunningMembership, runningCounts, activeSessions],
   );
 
   useEffect(() => {
@@ -269,7 +273,7 @@ export function Sidebar({
             <div className="th-sidebar-live">
               <div className="th-sidebar-live-label">
                 {t("sidebar.overview")}
-                <span className="th-sidebar-live-count">{totalRunningCount}</span>
+                <span className="th-sidebar-live-count" aria-label={t("overview.runningAria", { n: totalRunningCount })}>{totalRunningCount}</span>
               </div>
               <LiveSessionList
                 summaries={runningSummaries}
@@ -305,6 +309,7 @@ export function Sidebar({
                 placedSessions={placedSessions}
                 liveSessions={liveSessions}
                 runningCounts={runningCounts}
+                activeSessions={activeSessions}
                 aggregateSessionIds={aggregateSessionIds}
                 expanded={expanded}
                 sessionLists={sessionLists}

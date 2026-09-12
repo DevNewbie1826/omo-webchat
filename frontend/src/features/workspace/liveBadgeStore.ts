@@ -523,6 +523,7 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
       const mergedInfo = projectLiveTaskInfo({
         id: poll.id,
         title: poll.title,
+        ...(poll.active === undefined ? {} : { active: poll.active }),
         task: task.payload,
         dag: dag.payload,
         taskOversized: task.replaced ? false : poll.taskSideOversized,

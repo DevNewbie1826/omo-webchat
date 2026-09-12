@@ -95,14 +95,15 @@ export function LiveSessionList({
             >
               <span className="th-overview-card-head">
                 <span className="th-overview-card-name">{title}</span>
-                {summary.runningCount > 0 && (
+                {(summary.runningCount > 0 || summary.active === true) && (
                   <span
                     className="th-overview-card-running"
                     role="img"
-                    aria-label={t("overview.runningAria", { n: summary.runningCount })}
+                    aria-label={summary.runningCount > 0 ? t("overview.runningAria", { n: summary.runningCount }) : t("sidebar.tm.mainRunning")}
+                    title={summary.active === true ? t("sidebar.tm.mainRunning") : undefined}
                   >
                     <span className="th-overview-card-running-dot" aria-hidden="true" />
-                    {summary.runningCount}
+                    {summary.runningCount > 0 ? summary.runningCount : t("sidebar.tm.mainRunning")}
                   </span>
                 )}
               </span>
