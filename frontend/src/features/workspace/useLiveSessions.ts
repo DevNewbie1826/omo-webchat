@@ -140,7 +140,7 @@ function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): v
   sessionAliases = nextAliases;
   const previousIds = polledSessions.map(info => info.id);
   polledSessions = next.map(info => {
-    const previous = polledSessions.find(previous => canonicalLiveSessionId(previous.id) === info.id);
+    const previous = polledSessions.find(previous => canonicalLiveSessionId(previous.id) === canonicalLiveSessionId(info.id));
     return info.active === undefined && previous?.active !== undefined ? { ...info, active: previous.active } : info;
   });
   const polledActiveIds = new Set(next.filter(info => info.active !== undefined).map(info => canonicalLiveSessionId(info.id)));

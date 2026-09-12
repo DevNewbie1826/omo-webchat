@@ -16,6 +16,9 @@ vi.mock("../../lib/useMediaQuery", () => ({ useMediaQuery: () => false }));
 function response(sessions: unknown[]): Response {
   return new Response(JSON.stringify({ sessions }), { headers: { "Content-Type": "application/json" } });
 }
+function jsonBody(body: unknown): Response {
+  return new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } });
+}
 function deferred<T>() {
   let complete: ((value: T) => void) | undefined;
   const promise = new Promise<T>((done) => { complete = done; });
@@ -167,5 +170,116 @@ describe("main running transport and sidebar", () => {
     expect(active()).toBe(false);
     await act(async () => { stale.resolve(response([{ ...base, active: true }])); await stale.promise; });
     expect(active()).toBe(false);
+  });
+
+  // Regression (round 2): applyPoll matched a canonicalized previous id against
+  // a raw incoming id, so once a durable->chat remap was established a poll row
+  // still keyed by the durable id could not match its own previous row and an
+  // omitting `active` field discarded the previously known boolean.
+  it.each([true, false])("carries known active=%s across a poll row still keyed by the durable id", async (value) => {
+    vi.useFakeTimers();
+    const next = deferred<Response>();
+    const pollResponses: readonly (Response | Promise<Response>)[] = [
+      response([{ ...base, id: "durable", active: value }]), next.promise,
+    ];
+    let liveCalls = 0;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL): Promise<Response> | Response => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      // The sidebar's membership crawl uses the per-workspace catalog endpoint,
+      // not the shared live-sessions poll queue.
+      if (!url.includes("/api/sessions/live")) return jsonBody({ items: [], nextCursor: "" });
+      const responded = pollResponses[liveCalls];
+      liveCalls += 1;
+      if (responded === undefined) throw new Error("Unexpected /api/sessions/live fetch");
+      return responded;
+    }));
+    await mount(true);
+    expect(infos).toMatchObject([{ id: "durable", active: value }]);
+    push({ sessionId: "s1", durableSessionId: "durable" });
+    expect(infos).toMatchObject([{ id: "s1", active: value }]);
+    // Trigger the poller's scheduled request, then settle it deterministically.
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(liveCalls).toBe(2);
+    await act(async () => { next.resolve(response([{ ...base, id: "durable" }])); await next.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: value }]);
+    expect(summaries[0]).toMatchObject({ id: "s1", active: value, runningCount: 0 });
+    if (value) {
+      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(1);
+      expect(container.querySelector(".th-overview-card-running")).not.toBeNull();
+      expect(container.querySelector(".th-tree-children .th-tree-running")).not.toBeNull();
+      expect(container.querySelector(".th-tree-running--workspace")).not.toBeNull();
+      expect(container.querySelector(".th-sidebar-live-count")?.textContent).toBe("0");
+    } else {
+      expect(container.querySelector(".th-sidebar-live")).toBeNull();
+      expect(container.querySelectorAll(".th-overview-card")).toHaveLength(0);
+    }
+  });
+
+  it.each([true, false])("carries known active=%s across a poll row keyed by the canonical chat id", async (value) => {
+    vi.useFakeTimers();
+    const next = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response([{ ...base, id: "durable", active: value }]))
+      .mockReturnValueOnce(next.promise)
+      .mockResolvedValue(response([{ ...base }]));
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    expect(infos).toMatchObject([{ id: "durable", active: value }]);
+    push({ sessionId: "s1", durableSessionId: "durable" });
+    expect(infos).toMatchObject([{ id: "s1", active: value }]);
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => { next.resolve(response([{ ...base }])); await next.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: value }]);
+  });
+
+  it("lets a newer explicit poll value replace the retained main activity", async () => {
+    vi.useFakeTimers();
+    const second = deferred<Response>();
+    const third = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response([{ ...base, id: "durable", active: true }]))
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    push({ sessionId: "s1", durableSessionId: "durable" });
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => { second.resolve(response([{ ...base, id: "durable" }])); await second.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: true }]);
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await act(async () => { third.resolve(response([{ ...base, id: "durable", active: false }])); await third.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: false }]);
+  });
+
+  it("lets a newer pushed activity frame replace the retained main activity", async () => {
+    vi.useFakeTimers();
+    const next = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response([{ ...base, id: "durable", active: true }]))
+      .mockReturnValueOnce(next.promise);
+    vi.stubGlobal("fetch", fetchMock);
+    await mount();
+    push({ sessionId: "s1", durableSessionId: "durable" });
+    expect(infos).toMatchObject([{ id: "s1", active: true }]);
+    push({ active: false });
+    expect(infos).toMatchObject([{ id: "s1", active: false }]);
+    await act(async () => { await vi.advanceTimersToNextTimerAsync(); });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => { next.resolve(response([{ ...base, id: "durable" }])); await next.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: false }]);
+  });
+
+  it("keeps a newer pushed activity value over an older in-flight poll result", async () => {
+    const poll = deferred<Response>();
+    vi.stubGlobal("fetch", vi.fn(() => poll.promise));
+    await mount();
+    push({ sessionId: "s1", durableSessionId: "durable", active: true });
+    expect(infos).toMatchObject([{ id: "s1", active: true }]);
+    await act(async () => { poll.resolve(response([{ ...base, id: "durable", active: false }])); await poll.promise; });
+    expect(infos).toMatchObject([{ id: "s1", active: true }]);
+    expect(summaries[0]).toMatchObject({ id: "s1", active: true });
   });
 });
