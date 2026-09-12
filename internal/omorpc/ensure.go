@@ -1032,17 +1032,21 @@ func launcherNativeContextFromRoot(root string) (string, string, error) {
 		},
 	}
 	// The launcher contract: changelog metadata is derived only from the
-	// plugin manifest. When that manifest is absent, unreadable, or does not
-	// parse, no changelog is emitted at all; when it parses without a
-	// version, the changelog is path-only.
+	// plugin manifest. When that manifest is absent, unreadable, does not
+	// parse, or parses to JSON null, no changelog is emitted at all; any
+	// other parsed shape emits a path-only changelog, and only an object
+	// carrying a case-sensitive non-empty string "version" entry adds the
+	// version.
 	changelogPath := filepath.Join(root, "plugin", "CHANGELOG.md")
 	if info, err := os.Stat(changelogPath); err == nil && info.Mode().IsRegular() {
-		var pluginManifest struct {
-			Version string `json:"version"`
-		}
+		var decoded any
 		if data, err := os.ReadFile(filepath.Join(root, "plugin", "package.json")); err == nil &&
-			json.Unmarshal(data, &pluginManifest) == nil {
-			profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: pluginManifest.Version}
+			json.Unmarshal(data, &decoded) == nil && decoded != nil {
+			version := ""
+			if manifest, ok := decoded.(map[string]any); ok {
+				version, _ = manifest["version"].(string)
+			}
+			profile.Changelog = &launcherBrandChangelog{Path: changelogPath, Version: version}
 		}
 	}
 	encoded, err := json.Marshal(profile)
