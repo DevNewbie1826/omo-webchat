@@ -33,13 +33,22 @@ function rich(statuses, running, total, truncated = false) {
   return { parent_session_id: chat, truncated_runs: truncated, run_running_count: running, run_total_count: total,
     runs: statuses.map((status, i) => ({ ...dagRow(status, '01'), run_id: `qa-run-${i}`, name: `QA run ${i}` })) };
 }
+function legacy(statuses) {
+  const data = rich(statuses, 0, 0);
+  delete data.run_running_count;
+  delete data.run_total_count;
+  return data;
+}
+// This case must be the first DAG delivery on this freshly loaded page: no rich
+// delivery has populated retained state before the empty truncated payload.
 const cases = [
+  { name: 'compact-no-retained-runs', expected: '6/23', data: rich([], 6, 23, true) },
   { name: 'rich-all-terminal-spellings', expected: '2/6', data: rich(['running', 'pending', 'completed', 'failed', 'cancelled', 'canceled'], 2, 6) },
   { name: 'truncated-membership', expected: '3/17', data: rich(['running'], 3, 17, true) },
-  { name: 'compact-no-retained-runs', expected: '6/23', data: rich([], 6, 23, true) },
+  { name: 'legacy-scalar-less-boundary', expected: '3/17', data: legacy(['running', 'completed']) },
   { name: 'zero-total', expected: null, data: rich([], 0, 0) },
 ];
-export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/browser') } = {}) {
+export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/browser-r2') } = {}) {
   assert.ok(globalThis.Bun, 'Run with Bun');
   await mkdir(evidenceDir, { recursive: true });
   const report = { passed: false, surface: 'real built SPA / real Chrome / synthetic native wire frames', actions: [], errors: [] };
