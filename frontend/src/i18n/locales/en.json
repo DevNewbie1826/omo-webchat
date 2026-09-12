@@ -142,8 +142,6 @@
   "settings.fontSizeDecrease": "Decrease font size",
   "settings.systemStats": "System status",
   "stats.title": "System status",
-  "overview.title": "Running sessions",
-  "overview.empty": "No running sessions right now.",
   "overview.done": "Done",
   "overview.dag": "DAG",
   "overview.runningAria": "{n} agent(s) running",
