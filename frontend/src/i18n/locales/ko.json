@@ -149,8 +149,6 @@
   "settings.fontSizeDecrease": "폰트 크기 감소",
   "settings.systemStats": "시스템 상태",
   "stats.title": "시스템 상태",
-  "overview.title": "실행 중인 세션",
-  "overview.empty": "지금 실행 중인 세션이 없습니다.",
   "overview.done": "완료",
   "overview.dag": "DAG",
   "overview.runningAria": "에이전트 {n}개 실행 중",

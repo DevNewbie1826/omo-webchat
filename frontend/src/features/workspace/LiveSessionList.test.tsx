@@ -4,7 +4,7 @@ import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext } from "../../i18n";
 import type { I18nValue } from "../../i18n";
-import { OverviewPanel } from "./OverviewPanel";
+import { LiveSessionList } from "./LiveSessionList";
 import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 import type { Terminal, Workspace, WorkspaceSession } from "./workspace";
 import { sessionOpenAttemptKey, type SessionOpenAttemptStatus } from "./useSessionOpenAttempts";
@@ -58,13 +58,7 @@ const summaries: readonly LiveSessionSummary[] = [
   },
 ];
 
-function card(index: number): HTMLElement {
-  const cards = document.body.querySelectorAll<HTMLElement>(".th-overview-card");
-  expect(cards.length).toBeGreaterThan(index);
-  return cards[index]!;
-}
-
-describe("OverviewPanel", () => {
+describe("LiveSessionList", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -81,37 +75,50 @@ describe("OverviewPanel", () => {
     vi.unstubAllGlobals();
   });
 
-  interface PanelHandlers {
-    onClose?: () => void;
+  function card(index: number): HTMLElement {
+    const cards = container.querySelectorAll<HTMLElement>(".th-overview-card");
+    expect(cards.length).toBeGreaterThan(index);
+    return cards[index]!;
+  }
+
+  interface ListHandlers {
     onSelect?: (ws: Workspace, tm: Terminal) => void;
     onOpen?: (ws: Workspace, session: WorkspaceSession, force?: boolean) => Promise<"opened" | "session-active" | "failed" | void>;
+    onActivated?: () => void;
     openAttempts?: ReadonlyMap<string, SessionOpenAttemptStatus>;
   }
 
-  function renderPanel(
-    props: Partial<{ summaries: readonly LiveSessionSummary[]; open: boolean }> = {},
-    handlers: PanelHandlers = {},
+  function renderList(
+    props: Partial<{
+      summaries: readonly LiveSessionSummary[];
+      focusedSessionId: string | null;
+      showLastLine: boolean;
+      listClassName: string;
+    }> = {},
+    handlers: ListHandlers = {},
   ): void {
     act(() => {
       root.render(
         <I18nContext.Provider value={i18n}>
-          <OverviewPanel
-            open={props.open ?? true}
-            onClose={handlers.onClose ?? (() => undefined)}
+          <LiveSessionList
             summaries={props.summaries ?? summaries}
             workspaces={[workspace]}
             sessionLists={new Map([["ws-1", discoveredSessions]])}
             onSelect={handlers.onSelect ?? (() => undefined)}
             onOpen={handlers.onOpen ?? (async () => undefined)}
             {...(handlers.openAttempts ? { openAttempts: handlers.openAttempts } : {})}
+            {...(handlers.onActivated ? { onActivated: handlers.onActivated } : {})}
+            {...(props.focusedSessionId !== undefined ? { focusedSessionId: props.focusedSessionId } : {})}
+            {...(props.showLastLine !== undefined ? { showLastLine: props.showLastLine } : {})}
+            {...(props.listClassName !== undefined ? { listClassName: props.listClassName } : {})}
           />
         </I18nContext.Provider>,
       );
     });
   }
 
-  it("renders one alive card per live session with counts, dag progress, and last line", () => {
-    renderPanel();
+  it("renders one card per summary with counts, dag progress, and last line", () => {
+    renderList();
 
     const first = card(0);
     expect(first.querySelector(".th-overview-card-name")?.textContent).toBe("Refactor auth");
@@ -119,18 +126,6 @@ describe("OverviewPanel", () => {
     expect(running?.textContent).toBe("2");
     expect(running?.getAttribute("aria-label")).toBe("overview.runningAria 2");
     expect(running?.querySelector(".th-overview-card-running-dot")).not.toBeNull();
-
-    const largeSummary: LiveSessionSummary = {
-      ...summaries[0]!,
-      runningCount: 50,
-    };
-    renderPanel({ summaries: [largeSummary] });
-    const largeRunning = card(0).querySelector(".th-overview-card-running");
-    expect(largeRunning?.textContent).toBe("50");
-    expect(largeRunning?.getAttribute("aria-label")).toBe("overview.runningAria 50");
-    expect(largeRunning?.getAttribute("title")).toBeNull();
-
-    renderPanel();
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done 1");
     expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.dag 2/3");
     expect(first.querySelector(".th-overview-card-line")?.textContent).toBe("ls -la /work");
@@ -146,10 +141,32 @@ describe("OverviewPanel", () => {
     expect(second.querySelector(".th-overview-card-line")).toBeNull();
   });
 
-  it("opens a stored session's chat through the sidebar select flow", () => {
-    const onClose = vi.fn();
+  it("renders a large running count with an interpolated aria-label and no tooltip", () => {
+    const largeSummary: LiveSessionSummary = {
+      ...summaries[0]!,
+      runningCount: 50,
+    };
+    renderList({ summaries: [largeSummary] });
+
+    const badge = card(0).querySelector(".th-overview-card-running");
+    expect(badge?.textContent).toBe("50");
+    expect(badge?.getAttribute("aria-label")).toBe(i18n.t("overview.runningAria", { n: 50 }));
+    expect(badge?.getAttribute("title")).toBeNull();
+  });
+
+  it("orders the focused session first and marks its card", () => {
+    renderList({ focusedSessionId: "disk-9" });
+
+    const first = card(0);
+    expect(first.querySelector(".th-overview-card-name")?.textContent).toBe("disk-9");
+    expect(first.className).toContain("th-overview-card--focused");
+    expect(card(1).className).not.toContain("th-overview-card--focused");
+  });
+
+  it("selects a stored session and reports activation", () => {
     const onSelect = vi.fn();
-    renderPanel({}, { onClose, onSelect });
+    const onActivated = vi.fn();
+    renderList({}, { onSelect, onActivated });
 
     act(() => {
       card(0).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
@@ -157,16 +174,16 @@ describe("OverviewPanel", () => {
 
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(workspace, workspace.chats[0]);
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onActivated).toHaveBeenCalledTimes(1);
   });
 
-  it("awaits a discovered open before closing", async () => {
-    const onClose = vi.fn();
+  it("awaits a discovered open before reporting activation", async () => {
     const onSelect = vi.fn();
+    const onActivated = vi.fn();
     let resolve!: (result: "opened") => void;
     const pending = new Promise<"opened">((done) => { resolve = done; });
     const onOpen = vi.fn(() => pending);
-    renderPanel({}, { onClose, onSelect, onOpen });
+    renderList({}, { onSelect, onOpen, onActivated });
 
     act(() => {
       card(1).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
@@ -174,32 +191,67 @@ describe("OverviewPanel", () => {
 
     expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSessions[1], false);
     expect(onSelect).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+    expect(onActivated).not.toHaveBeenCalled();
     await act(async () => { resolve("opened"); await pending; });
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onActivated).toHaveBeenCalledTimes(1);
   });
 
-  it("renders read-only active and failure retry states with a force path", () => {
+  it("does not report activation when a discovered open does not open", async () => {
+    const onOpen = vi.fn(async () => "session-active" as const);
+    const onActivated = vi.fn();
+    renderList({}, { onOpen, onActivated });
+
+    act(() => {
+      card(1).querySelector<HTMLButtonElement>(".th-overview-card-open")?.click();
+    });
+    // Flush the openSession continuation; the click itself is synchronous.
+    await act(async () => { await Promise.resolve(); });
+
+    expect(onOpen).toHaveBeenCalledWith(workspace, discoveredSessions[1], false);
+    expect(onActivated).not.toHaveBeenCalled();
+  });
+
+  it("renders the read-only active state with a force path", () => {
     const onOpen = vi.fn(async () => "opened" as const);
     const key = sessionOpenAttemptKey(workspace.id, discoveredSessions[1]!.id);
-    renderPanel({}, { onOpen, openAttempts: new Map([[key, "session-active"]]) });
+    renderList({}, { onOpen, openAttempts: new Map([[key, "session-active"]]) });
 
     const active = card(1);
     expect(active.textContent).toContain("overview.readOnlyLive");
+    expect(active.querySelector<HTMLButtonElement>(".th-overview-card-open")?.disabled).toBe(true);
     act(() => active.querySelector<HTMLButtonElement>(".th-overview-force-open")?.click());
     expect(onOpen).toHaveBeenLastCalledWith(workspace, discoveredSessions[1], true);
+  });
 
-    renderPanel({}, { onOpen, openAttempts: new Map([[key, "failed"]]) });
+  it("renders the failed state with a retry path", () => {
+    const onOpen = vi.fn(async () => "opened" as const);
+    const key = sessionOpenAttemptKey(workspace.id, discoveredSessions[1]!.id);
+    renderList({}, { onOpen, openAttempts: new Map([[key, "failed"]]) });
+
     const failed = card(1);
     expect(failed.textContent).toContain("sidebar.tm.openFailed");
     act(() => failed.querySelector<HTMLButtonElement>(".th-overview-retry-open")?.click());
     expect(onOpen).toHaveBeenLastCalledWith(workspace, discoveredSessions[1], false);
   });
 
-  it("shows the empty state when nothing is running", () => {
-    renderPanel({ summaries: [] });
+  it("renders an empty list container when there are no summaries", () => {
+    renderList({ summaries: [] });
 
-    expect(document.body.querySelector(".th-overview-empty")?.textContent).toBe("overview.empty");
-    expect(document.body.querySelectorAll(".th-overview-card")).toHaveLength(0);
+    expect(container.querySelector(".th-overview-list")).not.toBeNull();
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(0);
+  });
+
+  it("renders no last line when showLastLine is false", () => {
+    renderList({ showLastLine: false });
+
+    expect(container.querySelectorAll(".th-overview-card")).toHaveLength(2);
+    expect(container.querySelectorAll(".th-overview-card-line")).toHaveLength(0);
+  });
+
+  it("appends listClassName to the list container", () => {
+    renderList({ listClassName: "th-sidebar-live" });
+
+    const list = container.querySelector(".th-overview-list");
+    expect(list?.className).toBe("th-overview-list th-sidebar-live");
   });
 });

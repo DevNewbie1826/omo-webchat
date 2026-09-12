@@ -1,32 +1,6 @@
-/* Sessions overview panel — modal content on Overlay elevation, mirroring the
-   .th-stats content block geometry inside .th-modal. */
-
-.th-overview {
-  display: flex;
-  flex-direction: column;
-  gap: var(--th-space-3);
-  padding: var(--th-space-4) var(--th-space-5) var(--th-space-5);
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.th-overview-title {
-  margin: 0;
-  font-size: var(--th-type-title-size);
-  font-weight: var(--th-weight-announce);
-  line-height: var(--th-type-title-line);
-  letter-spacing: var(--th-type-title-tracking);
-  color: var(--th-text);
-}
-
-.th-overview-empty {
-  padding: var(--th-space-4) 0;
-  text-align: center;
-  font-size: var(--th-type-body-size);
-  line-height: var(--th-type-body-line);
-  letter-spacing: var(--th-type-body-tracking);
-  color: var(--th-muted);
-}
+/* Shared live-session card list, rendered by LiveSessionList: pinned in the
+   sidebar's running-sessions section (compact-density overrides live in
+   sidebar-live.css). */
 
 .th-overview-list {
   display: flex;

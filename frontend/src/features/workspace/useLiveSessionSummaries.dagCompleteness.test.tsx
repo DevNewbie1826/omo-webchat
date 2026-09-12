@@ -253,11 +253,10 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
 
   it.each(["cancelled", "canceled"])("clears %s retained-running badges and recovers a newer active snapshot", (status) => {
     render({ runs: [{ ...fullRun, status, updated_at: "2026-09-08T09:59:00Z" }], truncated_runs: false });
-    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      document.body.querySelector(".th-overview-card-running"),
+      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
     expect(badges()).toEqual([null, null, null]);
 
@@ -272,11 +271,10 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     const dagDigest = parseDagDigest({ runs: [{ run_id: "r1", status: "running", running_task_ids: [] }], truncated: true });
     if (dagDigest === null) throw new Error("Invalid compact DAG fixture");
     render(emptyTaskIds, { dagOversized: true, dagDigest });
-    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      document.body.querySelector(".th-overview-card-running"),
+      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
     expect(badges()).toEqual([null, null, null]);
     render(emptyTaskIds, { dagOversized: false, dagDigest });
@@ -294,11 +292,10 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     });
     if (digest === null) throw new Error("Invalid compact task fixture");
     render(null, { taskOversized: true, taskDigest: digest });
-    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      document.body.querySelector(".th-overview-card-running"),
+      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
     expect(badges()).toEqual([null, null, null]);
   });
@@ -311,11 +308,10 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     });
     if (digest === null) throw new Error("Invalid compact task fixture");
     render(null, { taskOversized: true, taskDigest: digest });
-    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
-      document.body.querySelector(".th-overview-card-running"),
+      container.querySelector(".th-sidebar-live .th-overview-card-running"),
     ];
     expect(badges().map((badge) => badge?.textContent)).toEqual(["50", "50", "50"]);
     expect(badges().map((badge) => badge?.getAttribute("aria-label"))).toEqual([
@@ -330,10 +326,9 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     { name: "malformed0", dag: { runs: [{}] }, expected: null },
   ])("shows exact retained $name on session, workspace and overview then exact2 after full data", ({ dag, expected }) => {
     render(dag);
-    act(() => container.querySelector<HTMLButtonElement>('button[title="sidebar.overview"]')?.click());
     const row = () => container.querySelector(".th-tree-children .th-tree-running");
     const aggregate = () => container.querySelector(".th-tree-running--workspace");
-    const overview = () => document.body.querySelector(".th-overview-card-running");
+    const overview = () => container.querySelector(".th-sidebar-live .th-overview-card-running");
     expect.soft(row()?.textContent ?? null).toBe(expected);
     expect.soft(aggregate()?.textContent ?? null).toBe(expected);
     expect.soft(overview()?.textContent ?? null).toBe(expected);
