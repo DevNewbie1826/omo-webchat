@@ -791,6 +791,14 @@ func discardHydrationAttempt(sub Subscriber) {
 	}
 }
 
+// WaitForConnection waits for the shared RPC transport to become live, bounded
+// by the manager's close timeout so callers cannot hang behind a dead engine.
+func (m *Manager) WaitForConnection(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, m.cfg.CloseTimeout)
+	defer cancel()
+	return m.cfg.Client.EnsureConnected(waitCtx)
+}
+
 func (m *Manager) Acquire(ctx context.Context, chat ChatRef, sub Subscriber) (*Session, bool, func(), error) {
 	return m.acquire(ctx, chat, sub, nil, nil, nil, nil, false, false, false)
 }

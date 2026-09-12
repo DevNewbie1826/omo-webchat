@@ -1119,19 +1119,31 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		}
 		return commitBinding(acquired, stagedStarted, stagedDetach)
 	}
-	if !guarded {
-		initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
-			_ = commitBinding(acquired, started, acquiredDetach)
-		}
-		if recovery {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+	acquire := func() {
+		stagedSession, stagedStarted, stagedDetach = nil, false, nil
+		if !guarded {
+			initialize := func(acquired *session.Session, started bool, acquiredDetach func()) {
+				_ = commitBinding(acquired, started, acquiredDetach)
+			}
+			if recovery {
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedWithRecovery(ctx, ref, sub, initialize)
+			} else {
+				sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
+			}
+		} else if recovery {
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
 		} else {
-			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, initialize, nil, nil)
+			sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
 		}
-	} else if recovery {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedWithRecoveryAndRun(ctx, ref, sub, stage, validate, commit)
-	} else {
-		sess, _, detach, err = c.bridge.cfg.Manager.AcquireInitializedCheckedAndRunRecovering(ctx, ref, sub, stage, validate, commit)
+	}
+	acquire()
+	if errors.Is(err, omorpc.ErrDisconnected) {
+		c.unbind()
+		if waitErr := c.bridge.cfg.Manager.WaitForConnection(ctx); waitErr == nil {
+			sub = newSubscriber(c)
+			c.sub = sub
+			acquire()
+		}
 	}
 	if err != nil {
 		c.unbind()
