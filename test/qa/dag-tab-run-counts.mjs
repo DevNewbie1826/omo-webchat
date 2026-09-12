@@ -33,8 +33,8 @@ function rich(statuses, running, total, truncated = false) {
   return { parent_session_id: chat, truncated_runs: truncated, run_running_count: running, run_total_count: total,
     runs: statuses.map((status, i) => ({ ...dagRow(status, '01'), run_id: `qa-run-${i}`, name: `QA run ${i}` })) };
 }
-function legacy(statuses) {
-  const data = rich(statuses, 0, 0);
+function legacy(statuses, truncated = false) {
+  const data = rich(statuses, 0, 0, truncated);
   delete data.run_running_count;
   delete data.run_total_count;
   return data;
@@ -45,7 +45,8 @@ const cases = [
   { name: 'compact-no-retained-runs', expected: '6/23', data: rich([], 6, 23, true) },
   { name: 'rich-all-terminal-spellings', expected: '2/6', data: rich(['running', 'pending', 'completed', 'failed', 'cancelled', 'canceled'], 2, 6) },
   { name: 'truncated-membership', expected: '3/17', data: rich(['running'], 3, 17, true) },
-  { name: 'legacy-scalar-less-boundary', expected: '3/17', data: legacy(['running', 'completed']) },
+  { name: 'legacy-complete-node-truncated', expected: '1/2', data: legacy(['running', 'completed'], false) },
+  { name: 'legacy-incomplete-membership', expected: null, data: legacy(['running'], true) },
   { name: 'zero-total', expected: null, data: rich([], 0, 0) },
 ];
 export async function run({ evidenceDir = join(root, '.omo/evidence/dagcount/browser-r2') } = {}) {
