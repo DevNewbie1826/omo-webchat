@@ -303,8 +303,16 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.command === "chat.send" && frame.requestId) {
           if (frame.phase === "completed") bindings.sends.complete(frame.requestId);
           else bindings.sends.admit(frame.requestId);
-        } else if (frame.requestId) {
-          bindings.controls.ledger.commit(frame.requestId);
+        } else {
+          // An approval answer on any client dismisses the dialog everywhere;
+          // the ack's id is the provider-native request id, not the
+          // responding client's control id.
+          if (frame.command === "extension_ui_response" && frame.id) {
+            bindings.setPendingApproval((current) => current !== null && current.id === frame.id ? null : current);
+          }
+          if (frame.requestId) {
+            bindings.controls.ledger.commit(frame.requestId);
+          }
         }
         return;
       case "control.result":
