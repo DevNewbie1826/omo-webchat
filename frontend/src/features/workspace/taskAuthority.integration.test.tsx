@@ -1,188 +1,152 @@
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
+import type { Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { connectChat, type ChatHandlers, type ChatServerFrame } from "../../lib/chatWs";
-import { useLiveSessionSummaries, type LiveSessionSummary } from "./useLiveSessionSummaries";
+import { connectChat, parseChatServerFrame } from "../../lib/chatWs";
+import type { ChatHandlers } from "../../lib/chatWs";
+import { useLiveSessionSummaries } from "./useLiveSessionSummaries";
+import type { LiveSessionSummary } from "./useLiveSessionSummaries";
 import { __resetLiveBadgeStoreForTests, ingestExtensionEvent, useMergedLiveSummaries } from "./liveBadgeStore";
-vi.mock("../../lib/chatWs", async importOriginal => ({ ...await importOriginal<object>(), connectChat: vi.fn() }));
-const t1 = "2026-09-07T10:01:00Z", t2 = "2026-09-07T10:02:00Z", t3 = "2026-09-07T10:03:00Z";
-const row = (status: string, updated_at: string, task_id = "child-1", extra = {}) => ({ task_id, name: task_id, status, updated_at, ...extra });
-const payload = (status: string, at: string) => ({ tasks: [row(status, at)] });
 
-describe("canonical task authority through all sidebar sources", () => {
-  let root: Root, container: HTMLDivElement, handlers: ChatHandlers;
+vi.mock("../../lib/chatWs", async original => ({ ...await original<object>(), connectChat: vi.fn() }));
+const completed = { last_activity_ms: 200, running: { agents: 0, tasks: 0, dag: 0 }, done: 2, dag_done: 1, dag_total: 1 };
+const running = { last_activity_ms: 100, running: { agents: 3, tasks: 2, dag: 2 }, done: 0, dag_done: 0, dag_total: 1 };
+
+describe("lean revision authority through both sidebar sources", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+  let handlers: ChatHandlers;
   let requests: ((response: Response) => void)[];
-  let overview: readonly LiveSessionSummary[], merged: readonly LiveSessionSummary[];
-  function Host() { overview = useLiveSessionSummaries(true); merged = useMergedLiveSummaries(overview); return null; }
+  let overview: readonly LiveSessionSummary[];
+  let merged: readonly LiveSessionSummary[];
+  function Host(): null {
+    overview = useLiveSessionSummaries(true);
+    merged = useMergedLiveSummaries(overview);
+    return null;
+  }
   beforeEach(() => {
-    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-09-07T10:03:00Z"));
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); __resetLiveBadgeStoreForTests(); requests = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    __resetLiveBadgeStoreForTests();
+    requests = [];
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(resolve => requests.push(resolve))));
-    vi.mocked(connectChat).mockImplementation(h => { handlers = h; return { send: () => true, close: () => undefined }; });
-    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+    vi.mocked(connectChat).mockImplementation(h => {
+      handlers = h;
+      return { send: () => true, close: () => undefined };
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
     act(() => root.render(<Host />));
   });
-  afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
-  async function poll(task: unknown, id = "s", extra = {}) {
-    const resolve = requests.shift(); expect(resolve).toBeTypeOf("function");
-    await act(async () => resolve!(new Response(JSON.stringify({ sessions: [{ id, title: id, task, dag: null, ...extra }] }))));
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    __resetLiveBadgeStoreForTests();
+  });
+  async function poll(fields: object, id = "s"): Promise<void> {
+    const resolve = requests.shift();
+    if (resolve === undefined) throw new TypeError("No pending live request");
+    await act(async () => resolve(new Response(JSON.stringify({ sessions: [{ id, title: id, ...fields }] }))));
   }
-  function push(task: unknown, id = "s", extra = {}) {
-    act(() => handlers.onFrame({ type: "sessions.activity", sessionId: id, durableSessionId: id,
-      snapshots: [{ name: "omo.task.updated", data: task, oversized: false }], overflow: false, ...extra } as ChatServerFrame));
+  function push(fields: object, id = "s"): void {
+    const parsed = parseChatServerFrame({ type: "sessions.activity", sessionId: id, durableSessionId: id,
+      overflow: false, ...fields });
+    if (parsed === null) throw new TypeError("Invalid lean fixture");
+    act(() => handlers.onFrame(parsed));
   }
-  function counts(done: number, running: number) {
-    expect(overview[0]).toMatchObject({ doneCount: done, runningCount: running });
-    expect(merged[0]).toMatchObject({ doneCount: done, runningCount: running });
+  function counts(done: number, agents: number): void {
+    expect(overview[0]).toMatchObject({ doneCount: done, runningCount: agents });
+    expect(merged[0]).toMatchObject({ doneCount: done, runningCount: agents });
   }
-  it.each(["REST first", "WS first"])("rejects stale input in both source orders: %s, including close and TTL", async order => {
-    if (order === "REST first") { await poll(payload("completed", t2)); push(payload("running", t1)); }
-    else { push(payload("completed", t2)); await poll(payload("running", t1)); }
-    counts(1, 0);
-    act(() => ingestExtensionEvent("s", "omo.task.updated", payload("running", t1)));
-    counts(1, 0);
-    act(() => handlers.onClose?.(1006)); counts(1, 0);
-    await act(async () => vi.advanceTimersByTimeAsync(106_000)); counts(1, 0);
-  });
-  it("shares attached correction and revival with overview rather than electing a whole side", async () => {
-    await poll(payload("running", t1));
-    act(() => ingestExtensionEvent("s", "omo.task.updated", { tasks: [row("completed", t1, "child-1", { raw_status: "running" })] }));
-    counts(1, 0); push(payload("running", t1)); counts(1, 0);
-    push(payload("running", t2)); counts(0, 1);
-    act(() => ingestExtensionEvent("s", "omo.task.updated", { tasks: [row("completed", t1, "child-1", { raw_status: "running" })] }));
-    counts(0, 1);
-  });
-  it("takes the server running scalar as the badge authority through the REST authority chain", async () => {
-    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
-      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true, running_count: 3, total_count: 9 } });
-    counts(0, 3);
-    expect(merged[0]).toMatchObject({ runningCount: 3 });
-  });
-  it("takes the agent aggregate as the sole running authority across poll and push", async () => {
-    await poll({ tasks: [row("running", t3)], running_count: 50, total_count: 600,
-      agent_running_count: 50, agent_total_count: 600 });
-    counts(0, 50);
-    push({ tasks: [row("running", t3)], agent_running_count: 51, agent_total_count: 601 });
-    counts(0, 51);
-  });
-  it("keeps the exact agent aggregate through the REST digest authority chain", async () => {
-    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
-      { task_id: "child-1", status: "running", updated_at: t3 }], truncated: true,
-      running_count: 50, total_count: 600, agent_running_count: 50, agent_total_count: 600 } });
-    counts(0, 50);
-    expect(merged[0]).toMatchObject({ runningCount: 50 });
-  });
-  it("falls back to the DAG frame's aggregate when the task side predates the agent scalars", async () => {
-    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 2 });
-    counts(0, 1);
-    act(() => ingestExtensionEvent("s", "omo.dag.updated",
-      { truncated_runs: false, runs: [], running_count: 9, agent_running_count: 4, agent_total_count: 8 }));
-    expect(merged[0]).toMatchObject({ runningCount: 4 });
-  });
 
-  it("elects a later overview-pushed DAG aggregate over the poll task aggregate despite an older run clock", async () => {
-    await poll({ tasks: [row("running", t3)], running_count: 1, total_count: 1,
-      agent_running_count: 2, agent_total_count: 2 });
-    counts(0, 2);
-    act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "s", durableSessionId: "s",
-      snapshots: [{ name: "omo.dag.updated", oversized: false, data: {
-        truncated_runs: false, running_count: 1, agent_running_count: 1, agent_total_count: 2,
-        runs: [{ run_id: "r1", run_key: "r1", name: "Graph", status: "running", updated_at: t1,
-          counts: { total: 1, pending: 0, blocked: 0, scheduled: 0, running: 1, completed: 0, failed: 0, cancelled: 0, skipped: 0 },
-          nodes: [{ id: "n1", prompt: "DAG only", depends_on: [], state: "running" }], edges: [], waves: [] }] } }],
-      overflow: false } as ChatServerFrame));
-    counts(0, 1);
-  });
-
-  it("keeps compact correction authority over stale/equal rich enrichment", async () => {
-    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [
-      { task_id: "child-1", status: "completed", raw_status: "running", updated_at: t2 }], truncated: true } });
-    counts(1, 0); push(payload("running", t1)); counts(1, 0);
-    push({ tasks: [row("running", t2, "child-1", { name: "Enriched", task_summary: "details" })] });
-    counts(1, 0);
-    expect(merged[0]?.task).toMatchObject({ tasks: [expect.objectContaining({ name: "Enriched", status: "completed" })] });
-    push(payload("running", t3)); counts(0, 1);
-  });
-  it("merges alias chains and conflicting rows per ID, retaining old aliases", async () => {
-    await poll(null, "route");
-    act(() => ingestExtensionEvent("durable", "omo.task.updated", { tasks: [row("completed", t2), row("running", t1, "other")] }));
-    act(() => ingestExtensionEvent("route", "omo.task.updated", { tasks: [row("running", t1), row("completed", t2, "other")] }));
-    push({ tasks: [], truncated_tasks: true }, "route", { durableSessionId: "durable", replacesSessionId: "durable" });
+  it.each(["REST first", "WS first"])("rejects stale revisions when source order is %s", async order => {
+    // Given completed server work; when an older transport delivery arrives.
+    if (order === "REST first") { await poll(completed); push(running); }
+    else { push(completed); await poll(running); }
+    // Then neither consumer resurrects running work.
     counts(2, 0);
-    push({ tasks: [], truncated_tasks: true }, "new-route", { durableSessionId: "route", replacesSessionId: "route" });
-    act(() => ingestExtensionEvent("durable", "omo.task.updated", { tasks: [row("running", t3)], truncated_tasks: true }));
-    const summary = merged.find(item => item.id === "new-route");
-    expect(summary).toMatchObject({ doneCount: 1, runningCount: 1 });
   });
-  it("keeps exact activity touches through a complete REST omission", async () => {
-    await poll({ tasks: [row("running", t1, "active"), row("completed", t2, "untouched")] });
-    await act(async () => vi.advanceTimersByTimeAsync(4000));
-    act(() => ingestExtensionEvent("s", "omo.dag.activity", { runId: "r", nodeId: "n", taskId: "active", at: t3, activity: "work" }));
-    await poll({ tasks: [] });
-    counts(0, 1);
+  it.each(["omo.task.updated", "omo.dag.updated"])("keeps lean completion when attached %s conflicts", async name => {
+    // Given authoritative completion on the live surface.
+    await poll(completed);
+    // When the attached surface supplies conflicting task/DAG aggregates.
+    act(() => ingestExtensionEvent("s", name, { tasks: [], runs: [], agent_running_count: 99 }));
+    // Then attached topology cannot recount live work.
+    counts(2, 0);
   });
-
-  it("retains omission watermarks across alias migration and admits only newer reappearance", async () => {
-    await poll(payload("running", t2), "route");
-    await act(async () => vi.advanceTimersByTimeAsync(4000));
-    await poll({ tasks: [] }, "route"); counts(0, 0);
-    act(() => ingestExtensionEvent("durable", "omo.task.updated", payload("completed", t1)));
-    push({ tasks: [], truncated_tasks: true }, "route", { durableSessionId: "durable", replacesSessionId: "durable" });
-    counts(0, 0);
-    push(payload("running", t2), "durable"); counts(0, 0);
-    push(payload("running", t3), "durable"); counts(0, 1);
+  it.each([3, 50])("retains exact count %s when topology is truncated", async agents => {
+    // Given a poll with server-side deduplication and no retained topology.
+    // When the lean scalar and qualification are delivered together.
+    await poll({ ...running, running: { agents, tasks: 80, dag: 70 }, truncated: { task: true, dag: true } });
+    // Then counts stay exact and qualification remains separate.
+    counts(0, agents);
+    expect(merged[0]).toMatchObject({ taskSideOversized: true, dagSideOversized: true });
   });
-
-  it("routes overview pushes through old multi-hop aliases without duplicating session membership", async () => {
-    await poll(null, "route");
-    push(payload("completed", t2), "route", { durableSessionId: "durable", replacesSessionId: "durable" });
-    push({ tasks: [], truncated_tasks: true }, "new-route", { durableSessionId: "route", replacesSessionId: "route" });
-    push(payload("running", t3), "durable");
+  it("accepts completion when its server revision is newer than a running poll", async () => {
+    // Given running work accepted from REST.
+    await poll(running);
+    // When a later complete revision arrives over WS.
+    push(completed);
+    // Then explicit zeros and completion totals win.
+    counts(2, 0);
+    expect(merged[0]).toMatchObject({ dagDone: 1, dagTotal: 1 });
+  });
+  it("admits new work when its revision postdates completion", async () => {
+    // Given a completed revision.
+    await poll(completed);
+    // When a genuinely newer server revision starts new work.
+    push({ ...running, last_activity_ms: 300 });
+    // Then the completion fence is not a permanent terminal latch.
+    counts(0, 3);
+  });
+  it("routes old multi-hop aliases when a newer lean revision arrives", async () => {
+    // Given canonical membership remapped twice.
+    await poll(completed, "route");
+    push({ ...completed, durableSessionId: "durable" }, "route");
+    push({ ...completed, durableSessionId: "route" }, "new-route");
+    // When the old durable identity publishes newer work.
+    push({ ...running, last_activity_ms: 300 }, "durable");
+    // Then a single canonical row advances, without duplicate membership.
     expect(overview.map(item => item.id)).toEqual(["new-route"]);
-    counts(0, 1);
+    counts(0, 3);
   });
-
-  it.each([null, 42, {}, [], false, "2026-02-30T00:00:00Z"].map(updated_at => ({ updated_at })))("keeps complete poll membership with malformed raw clock $updated_at", async ({ updated_at }) => {
-    await poll(payload("completed", t2));
-    await act(async () => vi.advanceTimersByTimeAsync(4000));
-    await poll({ tasks: [{ ...row("running", t1), updated_at }] }); counts(1, 0);
+  it.each([null, 42, {}, [], false, "invalid"])("ignores removed raw clocks when updated_at=%j", async updated_at => {
+    // Given irrelevant legacy keys beside a valid lean revision.
+    // When the REST boundary parses the delivery.
+    await poll({ ...completed, task: { tasks: [{ task_id: "t", status: "running", updated_at }] } });
+    // Then unknown topology cannot corrupt exact counts or membership.
+    counts(2, 0);
   });
-
-  it("uses complete compact membership even when the rich projection cannot fit", async () => {
-    await poll(payload("running", t2));
-    await act(async () => vi.advanceTimersByTimeAsync(4000));
-    await poll(null, "s", { task_oversized: true, task_digest: { tasks: [], truncated: false } });
+  it("retains count authority when a replaced alias receives a tombstone", async () => {
+    // Given active canonical membership and a known durable alias.
+    await poll({ ...running, active: true }, "route");
+    push({ ...running, active: true, durableSessionId: "durable" }, "route");
+    // When an internal tombstone retires only the replaced identity.
+    act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "durable", durableSessionId: "durable",
+      overflow: false, ...{ tombstone: true } }));
+    // Then canonical work is untouched.
+    counts(0, 3);
+    expect(overview[0]?.active).toBe(true);
+  });
+  it("keeps counts after disconnect when only main activity is fenced", async () => {
+    // Given completed server counts and active main work.
+    await poll({ ...completed, active: true });
+    // When the socket disconnects.
+    act(() => handlers.onClose?.(1006));
+    // Then main activity clears without erasing exact child totals.
+    counts(2, 0);
+    expect(merged[0]?.active).toBe(false);
+  });
+  it("keeps unknown counts empty when an attached delivery offers a fallback", async () => {
+    // Given membership without server agent scalars.
+    await poll({ running: { tasks: 5, dag: 4 }, truncated: { task: true } });
+    // When attached topology offers a conflicting aggregate.
+    act(() => ingestExtensionEvent("s", "omo.task.updated", { tasks: [], agent_running_count: 99 }));
+    // Then neither summation nor attached reconstruction invents agents.
     counts(0, 0);
-    push(payload("running", t2)); counts(0, 0);
-    push(payload("running", t3)); counts(0, 1);
+    expect(merged[0]).toMatchObject({ dagRunning: 4, taskSideOversized: true });
   });
-
-  it("keeps oversized-without-digest pushes inert over a stale rich replay", async () => {
-    await poll(payload("running", t2));
-    push(null, "s", { snapshots: [{ name: "omo.task.updated", data: null, oversized: true }] });
-    counts(0, 0);
-    push(payload("running", t1));
-    counts(0, 0);
-    push(payload("running", t3));
-    counts(0, 1);
-  });
-
-  it("does not retire canonical task authority when a replaced alias receives its tombstone", async () => {
-    await poll(payload("completed", t2), "route");
-    push(payload("completed", t2), "route", { durableSessionId: "durable", replacesSessionId: "durable" });
-    act(() => ingestExtensionEvent("route", "omo.task.updated", payload("running", t3)));
-    counts(0, 1);
-    push(null, "durable", { snapshots: [], tombstone: true });
-    counts(0, 1);
-  });
-
-  it.each(["completed", "failed"])("keeps canonical %s correction over an equal-raw conflicting alias correction", async status => {
-    const correction = (effective: string, name: string) => ({ tasks: [row(effective, t2, "child-1", { name, raw_status: "running" })] });
-    await poll(correction(status, "Canonical"), "route");
-    act(() => ingestExtensionEvent("durable", "omo.task.updated", correction(status === "completed" ? "failed" : "completed", "Alias")));
-    push({ tasks: [], truncated_tasks: true }, "route", { durableSessionId: "durable", replacesSessionId: "durable" });
-    expect(overview[0]?.task).toMatchObject({ tasks: [expect.objectContaining({ status, name: "Canonical", raw_status: "running", updated_at: t2 })] });
-    expect(merged[0]?.task).toMatchObject({ tasks: [expect.objectContaining({ status, name: "Canonical", raw_status: "running", updated_at: t2 })] });
-  });
-
 });

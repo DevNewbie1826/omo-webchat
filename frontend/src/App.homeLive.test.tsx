@@ -145,19 +145,9 @@ function livePayloadWith(taskStatus: string, title: string): { sessions: readonl
       {
         id: "disk-1",
         title,
-        task: {
-          parent_session_id: "disk-1",
-          tasks: [
-            {
-              task_id: "t1",
-              name: "Agent",
-              status: taskStatus,
-              updated_at: new Date(Date.now() - 1000).toISOString(),
-              live_progress: { activity: "thinking", last_assistant_line: "ls" },
-            },
-          ],
-        },
-        dag: null,
+        running: { agents: taskStatus === "running" ? 1 : 0 },
+        done: taskStatus === "completed" ? 1 : 0,
+        last_line: "ls",
       },
     ],
   };
@@ -174,21 +164,9 @@ function liveSessionEntry(
     id,
     title,
     ...(opts.active === undefined ? {} : { active: opts.active }),
-    task: opts.taskStatus === undefined
-      ? null
-      : {
-        parent_session_id: id,
-        tasks: [
-          {
-            task_id: "t1",
-            name: "Agent",
-            status: opts.taskStatus,
-            updated_at: new Date(Date.now() - 1000).toISOString(),
-            live_progress: { activity: "thinking", last_assistant_line: "ls" },
-          },
-        ],
-      },
-    dag: null,
+    running: { agents: opts.taskStatus === "running" ? 1 : 0 },
+    done: opts.taskStatus === "completed" ? 1 : 0,
+    ...(opts.taskStatus === undefined ? {} : { last_line: "ls" }),
   };
 }
 

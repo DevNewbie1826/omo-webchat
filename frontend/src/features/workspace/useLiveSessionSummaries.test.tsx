@@ -1056,10 +1056,11 @@ describe("live polling hooks", () => {
   };
 
   function push(frame: ChatServerFrame | ActivityFrameInput): void {
-    act(() => handlers?.onFrame(frame as ChatServerFrame));
+    act(() => handlers?.onFrame(frame.type === "sessions.activity"
+      ? { ...frame, durableSessionId: frame.durableSessionId ?? frame.sessionId } : frame));
   }
 
-  it("updates overview rows from pushed child-session snapshots", async () => {
+  it("updates overview rows from pushed lean session scalars", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => okResponse({ sessions: [] })));
     await act(async () => root.render(<Host enabled={true} />));
     openPush();
@@ -1067,10 +1068,7 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "child-1",
-      snapshots: [
-        { name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD },
-        { name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD },
-      ],
+      running: { agents: 2, tasks: 1, dag: 1 }, done: 3, dag_done: 2, dag_total: 3, last_line: "ls",
       overflow: false,
     });
 
@@ -1113,7 +1111,7 @@ describe("live polling hooks", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okResponse({ sessions: [] }))
       .mockResolvedValueOnce(okResponse({
-        sessions: [{ id: "overflow-child", title: "Recovered", task: { tasks: [] }, dag: null }],
+        sessions: [{ id: "overflow-child", title: "Recovered", last_activity_ms: 2, running: { agents: 0 } }],
       }));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(<Host enabled={true} />));
@@ -1122,7 +1120,7 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "overflow-child",
-      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      last_activity_ms: 1, running: { agents: 1 },
       overflow: true,
     });
     expect(captured.summaries[0]).toMatchObject({ id: "overflow-child", runningCount: 1 });
@@ -1137,7 +1135,7 @@ describe("live polling hooks", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(okResponse({ sessions: [] }))
       .mockResolvedValueOnce(okResponse({
-        sessions: [{ id: "same-id", title: "REST", task: { tasks: [] }, dag: null }],
+        sessions: [{ id: "same-id", title: "REST", last_activity_ms: 2, running: { agents: 0 } }],
       }));
     vi.stubGlobal("fetch", fetchMock);
     await act(async () => root.render(<Host enabled={true} />));
@@ -1145,7 +1143,7 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "same-id",
-      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      last_activity_ms: 1, running: { agents: 1 },
       overflow: false,
     });
     expect(captured.summaries[0]?.runningCount).toBe(1);
@@ -1155,7 +1153,7 @@ describe("live polling hooks", () => {
     expect(captured.summaries[0]).toMatchObject({ id: "same-id", title: "REST", runningCount: 0 });
   });
 
-  it("settles task and DAG independently when one side races a poll", async () => {
+  it("retains the newer complete lean revision when a stale poll races a push", async () => {
     vi.useFakeTimers();
     let resolvePoll: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn()
@@ -1167,31 +1165,31 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "split-order",
-      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      last_activity_ms: 1, running: { agents: 1 },
       overflow: false,
     });
 
     await act(async () => vi.advanceTimersByTimeAsync(4000));
     push({
       type: "sessions.activity",
-      sessionId: "split-order",
-      snapshots: [{ name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD }],
+      sessionId: "split-order", title: "Newest",
+      last_activity_ms: 3, running: { agents: 1, dag: 1 },
       overflow: false,
     });
     await act(async () => resolvePoll?.(okResponse({
-      sessions: [{ id: "split-order", title: "REST", task: { tasks: [] }, dag: null }],
+      sessions: [{ id: "split-order", title: "REST", last_activity_ms: 2, running: { agents: 0, dag: 0 } }],
     })));
 
     expect(captured.summaries[0]).toMatchObject({
       id: "split-order",
-      title: "REST",
+      title: "Newest",
       lastLine: null,
       runningCount: 1,
       dagRunning: 1,
     });
   });
 
-  it("remaps an unbound frame that races the attach poll onto the chat id", async () => {
+  it("remaps an unbound lean frame through explicit identity while an attach poll is pending", async () => {
     vi.useFakeTimers();
     let resolveAttach: ((response: Response) => void) | undefined;
     const fetchMock = vi.fn()
@@ -1204,20 +1202,16 @@ describe("live polling hooks", () => {
 
     push({
       type: "sessions.activity",
-      sessionId: "durable-child",
-      snapshots: [{
-        name: "omo.task.updated",
-        oversized: false,
-        data: { ...TASK_PAYLOAD, parent_session_id: "durable-child" },
-      }],
+      sessionId: "durable-child", last_activity_ms: 2, running: { agents: 1 },
       overflow: false,
     });
+    push({ type: "sessions.activity", sessionId: "attached-chat", durableSessionId: "durable-child",
+      title: "Attached", last_activity_ms: 3, running: { agents: 1 }, overflow: false });
     await act(async () => resolveAttach?.(okResponse({
       sessions: [{
         id: "attached-chat",
         title: "Attached",
-        task: { parent_session_id: "durable-child", tasks: [] },
-        dag: null,
+        last_activity_ms: 1, running: { agents: 0 },
       }],
     })));
 
@@ -1233,7 +1227,7 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "durable-child",
-      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      running: { agents: 1 }, last_line: "ls",
       overflow: false,
     });
     push({
@@ -1241,9 +1235,9 @@ describe("live polling hooks", () => {
       sessionId: "attached-chat",
       durableSessionId: "durable-child",
       replacesSessionId: "durable-child",
-      snapshots: [{ name: "omo.dag.updated", oversized: false, data: DAG_PAYLOAD }],
+      running: { agents: 2, dag: 1 }, last_line: "ls",
       overflow: false,
-    } as ChatServerFrame);
+    });
 
     expect(captured.summaries).toHaveLength(1);
     expect(captured.summaries[0]).toMatchObject({
@@ -1263,14 +1257,13 @@ describe("live polling hooks", () => {
     push({
       type: "sessions.activity",
       sessionId: "durable-child",
-      snapshots: [{ name: "omo.task.updated", oversized: false, data: TASK_PAYLOAD }],
+      running: { agents: 1 },
       overflow: false,
     });
     push({
       type: "sessions.activity",
       sessionId: "durable-child",
       tombstone: true,
-      snapshots: [],
       overflow: false,
     });
 
@@ -1289,7 +1282,7 @@ describe("live polling hooks", () => {
           type: "sessions.activity",
           sessionId: `push-${index}`,
           durableSessionId: `push-${index}`,
-          snapshots: [{ name: "omo.task.updated", oversized: false, data: null }],
+          running: { agents: 0 },
           overflow: false,
         });
       }
@@ -1304,7 +1297,7 @@ describe("live polling hooks", () => {
     const fetchMock = vi.fn(async () =>
       okResponse({
         sessions: [
-          { id: "s1", title: "Refactor auth", task: TASK_PAYLOAD, dag: DAG_PAYLOAD },
+          { id: "s1", title: "Refactor auth", running: { agents: 2, dag: 1 }, done: 3, dag_done: 2, dag_total: 3, last_line: "ls" },
           { id: "s2", title: "Bare", task: null, dag: null },
           "legacy",
         ],
@@ -1333,10 +1326,10 @@ describe("live polling hooks", () => {
     expect(Array.from(captured.ids)).toEqual(["s1", "s2", "legacy"]);
   });
 
-  it("surfaces task_side_oversized and dag_side_oversized from the live payload", async () => {
+  it("surfaces independent task and DAG truncation from the lean payload", async () => {
     const fetchMock = vi.fn(async () =>
       okResponse({
-        sessions: [{ id: "s1", title: "Huge", task: null, dag: null, task_oversized: true, dag_oversized: true }],
+        sessions: [{ id: "s1", title: "Huge", truncated: { task: true, dag: true } }],
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -1361,17 +1354,7 @@ describe("live polling hooks", () => {
         {
           id: "quiet",
           title: "Quiet agent",
-          task: {
-            tasks: [
-              {
-                task_id: "t1",
-                name: "Quiet",
-                status: "running",
-                updated_at: "2026-08-19T09:59:59.000Z",
-              },
-            ],
-          },
-          dag: null,
+          last_activity_ms: 1, running: { agents: 1 },
         },
       ],
     });
@@ -1398,17 +1381,7 @@ describe("live polling hooks", () => {
           {
             id: "zombie",
             title: "Died mid-run",
-            task: {
-              tasks: [
-                {
-                  task_id: "t1",
-                  name: "Quiet",
-                  status: "running",
-                  updated_at: "2026-08-19T09:58:00.000Z",
-                },
-              ],
-            },
-            dag: null,
+            last_activity_ms: 1, running: { agents: 1 },
           },
         ],
       }))

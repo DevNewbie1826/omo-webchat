@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../App";
 import { Sidebar } from "../../components/Sidebar";
 import type { SidebarProps } from "../../components/Sidebar";
-import { __resetLiveBadgeStoreForTests, ingestExtensionEvent } from "./liveBadgeStore";
+import { __resetLiveBadgeStoreForTests } from "./liveBadgeStore";
+import { connectChat } from "../../lib/chatWs";
+import type { ChatHandlers } from "../../lib/chatWs";
 import { checkAuth } from "../auth/auth";
 import type { Workspace, WorkspaceSession } from "./workspace";
 
@@ -70,22 +72,9 @@ function okJson(body: unknown): Response {
   });
 }
 
-function taskPayload(running: number, prefix: string): unknown {
-  return {
-    parent_session_id: "tm-1",
-    tasks: Array.from({ length: running }, (_, i) => ({
-      task_id: `${prefix}-t${i + 1}`,
-      name: `Task ${i + 1}`,
-      status: "running",
-      updated_at: new Date(Date.now() - 1000).toISOString(),
-      live_progress: { activity: "thinking", last_assistant_line: `line ${i + 1}` },
-    })),
-  };
-}
-
-/** Enriched live-summary rows: id + title + raw task/dag payloads. */
-function liveBody(title: string, running: number, prefix: string): unknown {
-  return { sessions: [{ id: "tm-1", title, task: taskPayload(running, prefix), dag: null }] };
+/** Server-computed live-summary scalars, without retained topology. */
+function liveBody(title: string, agents: number): unknown {
+  return { sessions: [{ id: "tm-1", title, running: { agents }, last_activity_ms: agents }] };
 }
 
 /** Installs a fetch mock that serves /api/sessions/live from a fixed queue;
@@ -145,11 +134,16 @@ function sidebarProps(workspaces: readonly Workspace[], rows: readonly Workspace
 describe("C002 surface recovery", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let handlers: ChatHandlers;
 
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.useFakeTimers();
     __resetLiveBadgeStoreForTests();
+    vi.mocked(connectChat).mockImplementation(h => {
+      handlers = h;
+      return { send: () => true, close: () => undefined };
+    });
     window.localStorage.setItem("th-lang", "en");
     vi.mocked(checkAuth).mockResolvedValue(true);
     layoutMocks.focusedSessionId = null;
@@ -216,7 +210,7 @@ describe("C002 surface recovery", () => {
     it("keeps the empty surface while polls fail and recovers on the next successful poll", async () => {
       vi.stubGlobal("fetch", installLivePollQueue([
         new Error("network down"),
-        okJson(liveBody("Enriched One", 1, "p1")),
+        okJson(liveBody("Enriched One", 1)),
       ]));
       await act(async () => {
         root.render(<Sidebar {...sidebarProps([WORKSPACE], [SESSION_ROW])} />);
@@ -241,9 +235,9 @@ describe("C002 surface recovery", () => {
 
     it("keeps the last known-good card across a failed poll and converges on the next success", async () => {
       vi.stubGlobal("fetch", installLivePollQueue([
-        okJson(liveBody("Enriched One", 1, "p1")),
+        okJson(liveBody("Enriched One", 1)),
         new Error("network down"),
-        okJson(liveBody("Enriched One", 2, "p2")),
+        okJson(liveBody("Enriched One", 2)),
       ]));
       await act(async () => {
         root.render(<Sidebar {...sidebarProps([WORKSPACE], [SESSION_ROW])} />);
@@ -275,8 +269,8 @@ describe("C002 surface recovery", () => {
   describe("reconnect convergence", () => {
     it("converges the overview badge from the poll after a WS drop and lets a rebound frame win again", async () => {
       vi.stubGlobal("fetch", installLivePollQueue([
-        okJson(liveBody("Enriched One", 1, "p1")),
-        okJson(liveBody("Enriched One", 3, "p3")),
+        okJson(liveBody("Enriched One", 1)),
+        okJson(liveBody("Enriched One", 3)),
       ]));
       await act(async () => {
         root.render(<Sidebar {...sidebarProps([WORKSPACE], [SESSION_ROW])} />);
@@ -284,12 +278,12 @@ describe("C002 surface recovery", () => {
       await settle();
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["1"]);
 
-      // Attached chat pushes a fresher WS frame.
-      act(() => {
-        ingestExtensionEvent("tm-1", "omo.task.updated", taskPayload(2, "ws2"));
-      });
+      // The overview subscription pushes a fresher lean revision.
+      act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "tm-1", durableSessionId: "tm-1",
+        overflow: false, last_activity_ms: 2, running: { agents: 2 } }));
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["2"]);
 
+      act(() => handlers.onClose?.(1006));
       // WS drops: no more frames. The next poll payload (changed content) must
       // reconverge the badge from REST, not from the stale WS override.
       await act(async () => {
@@ -299,9 +293,8 @@ describe("C002 surface recovery", () => {
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["3"]);
 
       // Rebind: a fresh frame after the drop is fresher than the poll again.
-      act(() => {
-        ingestExtensionEvent("tm-1", "omo.task.updated", taskPayload(4, "ws4"));
-      });
+      act(() => handlers.onFrame({ type: "sessions.activity", sessionId: "tm-1", durableSessionId: "tm-1",
+        overflow: false, last_activity_ms: 4, running: { agents: 4 } }));
       expect(sessionBadges().map((badge) => badge.textContent)).toEqual(["4"]);
     });
   });

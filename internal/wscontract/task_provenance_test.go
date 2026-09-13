@@ -1,6 +1,7 @@
 package wscontract
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,7 +10,7 @@ import (
 
 func TestTaskProvenanceTypedBoundaryRoundtrip(t *testing.T) {
 	// Given a webchat-derived correction of an unchanged raw task revision.
-	const name = "server-sessions.activity-task-correction.json"
+	const name = "server-extensionEvent-task-correction.json"
 	data, err := os.ReadFile(filepath.Join(fixturesDir(t), name))
 	if err != nil {
 		t.Fatal(err)
@@ -20,14 +21,21 @@ func TestTaskProvenanceTypedBoundaryRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	activity, ok := frame.(*SessionsActivityFrame)
-	if !ok || activity.TaskDigest == nil || len(activity.TaskDigest.Tasks) != 1 {
-		t.Fatalf("missing task membership: %#v", frame)
+	activity, ok := frame.(*ExtensionEventFrame)
+	if !ok {
+		t.Fatalf("unexpected retained activity frame: %#v", frame)
+	}
+	var digest TaskDigest
+	if err := json.Unmarshal(activity.Data, &digest); err != nil {
+		t.Fatal(err)
+	}
+	if len(digest.Tasks) != 1 {
+		t.Fatalf("missing task membership: %#v", digest)
 	}
 
 	// Then provenance is a typed optional field, not merely opaque extras.
 	// Reflection keeps RED executable against the pre-addition DTO.
-	row := activity.TaskDigest.Tasks[0]
+	row := digest.Tasks[0]
 	raw := reflect.ValueOf(row).FieldByName("RawStatus")
 	if !raw.IsValid() || raw.Kind() != reflect.Pointer || raw.IsNil() || raw.Elem().Kind() != reflect.String || raw.Elem().String() != "running" {
 		t.Fatalf("typed raw_status lost at decode boundary: %+v", row)

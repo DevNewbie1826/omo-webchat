@@ -822,7 +822,7 @@ describe("Sidebar badge over WS overrides", () => {
     });
   }
 
-  it("shows the running badge from an ingested frame without advancing the poller", async () => {
+  it("does not fabricate a live badge when only attached topology supplies a count", async () => {
     // One idle poll snapshot lands; the next poll is scheduled 4s out and the
     // test never advances that far.
     const fetchMock = vi.fn(async () =>
@@ -841,7 +841,7 @@ describe("Sidebar badge over WS overrides", () => {
     });
 
     const badge = container.querySelector(".th-tree-running");
-    expect(badge?.textContent).toContain("3");
+    expect(badge).toBeNull();
     expect(fetchMock.mock.calls.length).toBe(pollsBeforeIngest);
   });
 });

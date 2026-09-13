@@ -1,31 +1,21 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/session"
 )
 
 type liveSessionResponse struct {
-	ID            string          `json:"id"`
-	Title         string          `json:"title"`
-	Active        bool            `json:"active"`
-	Task          json.RawMessage `json:"task"`
-	Dag           json.RawMessage `json:"dag"`
-	TaskOversized bool            `json:"task_oversized"`
-	DagOversized  bool            `json:"dag_oversized"`
-	TaskDigest    any             `json:"task_digest,omitempty"`
-	DagDigest     any             `json:"dag_digest,omitempty"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Active bool   `json:"active"`
+	session.LiveValues
 }
 type liveSessionsResponse struct {
 	Sessions []liveSessionResponse `json:"sessions"`
 }
 
-func rawOrNull(data json.RawMessage) json.RawMessage {
-	if len(data) == 0 {
-		return nil
-	}
-	return data
-}
 func (s *Server) liveChatTitles() map[string]string {
 	out := map[string]string{}
 	for _, ws := range s.cursors.ListWorkspaces() {
@@ -48,14 +38,7 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 		if title == "" {
 			title = x.Title
 		}
-		row := liveSessionResponse{ID: x.ChatID, Title: title, Active: x.Active, Task: rawOrNull(x.ActivityPair.Task), Dag: rawOrNull(x.ActivityPair.Dag), TaskOversized: x.TaskOversized, DagOversized: x.DagOversized}
-		if x.TaskDigest != nil {
-			row.TaskDigest = x.TaskDigest
-		}
-		if x.DagDigest != nil {
-			row.DagDigest = x.DagDigest
-		}
-		rows = append(rows, row)
+		rows = append(rows, liveSessionResponse{ID: x.ChatID, Title: title, Active: x.Active, LiveValues: x.LiveValues()})
 	}
 	writeJSON(w, http.StatusOK, liveSessionsResponse{Sessions: rows})
 }
