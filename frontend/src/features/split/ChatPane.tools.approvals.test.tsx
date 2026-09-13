@@ -116,6 +116,55 @@ describe("ChatPane tool cards and approvals", () => {
 		expect(document.querySelector('[role="dialog"]')).toBeNull();
 	});
 
+	it("dismisses the approval modal when another client answers the request", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({
+				type: "approval",
+				sessionId: "chat-1",
+				id: "approve-1",
+				method: "select",
+				title: "Allow bash?",
+				options: ["Allow", "Block"],
+			});
+		});
+		expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+		// The ack carries the provider-native request id, not the answering
+		// client's control requestId.
+		act(() => {
+			deliver({
+				type: "ack",
+				sessionId: "chat-1",
+				command: "extension_ui_response",
+				id: "approve-1",
+			});
+		});
+		expect(document.querySelector('[role="dialog"]')).toBeNull();
+	});
+
+	it("keeps the approval modal open for an ack of a different request", () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({
+				type: "approval",
+				sessionId: "chat-1",
+				id: "approve-1",
+				method: "confirm",
+				title: "Continue?",
+			});
+		});
+		act(() => {
+			deliver({
+				type: "ack",
+				sessionId: "chat-1",
+				command: "extension_ui_response",
+				id: "approve-2",
+			});
+		});
+		expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+	});
+
 	it("restores history from an entries frame without duplicating on later messages", () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
