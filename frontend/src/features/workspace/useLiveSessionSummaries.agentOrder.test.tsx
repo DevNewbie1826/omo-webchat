@@ -10,7 +10,19 @@ function infoWith(overrides: Partial<LiveSessionInfo>): LiveSessionInfo {
   } as LiveSessionInfo;
 }
 
-describe("ordered agent aggregate authority (review r2 F3)", () => {
+describe("legacy fallback ordered agent aggregate authority (review r2 F3)", () => {
+  it("uses lean scalars instead of conflicting legacy aggregate clocks", () => {
+    // Given conflicting digests and an already elected legacy store aggregate.
+    const info = { ...infoWith({
+      taskDigest: { tasks: [], truncated: true, taskAgentRunningCount: 50 },
+      dagDigest: { runs: [], truncated: true, agentRunningCount: 40 },
+    }), lean: { running: { agents: 3, tasks: 2, dag: 2 }, done: 7, dag_done: 8, dag_total: 9 } };
+    // When the summary is projected.
+    const summary = summarizeLiveSession(info, NOW, { agentAggregate: { running: 99, total: 100 } });
+    // Then no client recount or legacy store election degrades exact server deduplication.
+    expect(summary).toMatchObject({ runningCount: 3, doneCount: 7, dagDone: 8, dagTotal: 9 });
+  });
+
   it("a newer DAG aggregate supersedes an older task aggregate", () => {
     const summary = summarizeLiveSession(infoWith({
       taskDigest: {

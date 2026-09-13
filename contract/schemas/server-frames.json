@@ -481,10 +481,9 @@
         "type",
         "sessionId",
         "durableSessionId",
-        "snapshots",
         "overflow"
       ],
-      "description": "Latest overview activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.",
+      "description": "Lean rendered activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. overflow reports that this socket dropped older activity frames. Rich snapshots and per-object digests are available only on attached chat activity surfaces.",
       "properties": {
         "type": {
           "const": "sessions.activity"
@@ -498,20 +497,56 @@
         "replacesSessionId": {
           "type": "string"
         },
-        "snapshots": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ActivitySnapshot"
-          }
+        "id": {
+          "type": "string"
         },
-        "taskDigest": {
-          "$ref": "#/$defs/TaskDigest"
-        },
-        "dagDigest": {
-          "$ref": "#/$defs/DagDigest"
+        "title": {
+          "type": "string"
         },
         "active": {
           "type": "boolean"
+        },
+        "last_activity_ms": {
+          "type": "integer"
+        },
+        "running": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agents": {
+              "type": "integer"
+            },
+            "tasks": {
+              "type": "integer"
+            },
+            "dag": {
+              "type": "integer"
+            }
+          }
+        },
+        "done": {
+          "type": "integer"
+        },
+        "dag_done": {
+          "type": "integer"
+        },
+        "dag_total": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "task": {
+              "type": "boolean"
+            },
+            "dag": {
+              "type": "boolean"
+            }
+          }
+        },
+        "last_line": {
+          "type": "string"
         },
         "overflow": {
           "type": "boolean"

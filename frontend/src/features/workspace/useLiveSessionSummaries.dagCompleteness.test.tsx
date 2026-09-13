@@ -7,7 +7,8 @@ import { useLiveSessionInfos } from "./useLiveSessions";
 import { __resetLiveBadgeStoreForTests } from "./liveBadgeStore";
 import { summarizeLiveSession } from "./useLiveSessionSummaries";
 import { parseDagDigest, parseTaskDigest } from "./activityDigest";
-import type { LiveSessionInfo, Workspace } from "./workspace";
+import type { Workspace } from "./workspace";
+import type { LiveSessionInfo } from "./useLiveSessionsLean";
 
 vi.mock("./useLiveSessions", async (importOriginal) => ({
   ...await importOriginal<typeof import("./useLiveSessions")>(),
@@ -57,7 +58,7 @@ const incompleteCases = [
   { name: "empty topology does not count unidentified tasks", dag: { runs: [{ ...fullRun, nodes: [] }] }, count: 0 },
 ];
 
-describe("DAG summary completeness", () => {
+describe("legacy fallback DAG summary completeness (unknown topology never fabricates counts)", () => {
   it.each(incompleteCases)("counts $name without inventing missing task counts", ({ dag, count }) => {
     const summary = summarizeLiveSession(info(dag), NOW);
     expect(summary.runningCount).toBe(count);
@@ -284,14 +285,11 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     ]);
   });
 
-  it("shows no badge when a truncated digest carries server running_count zero", () => {
-    const digest = parseTaskDigest({
-      tasks: [{ task_id: "t9", status: "completed", updated_at: "2026-09-08T09:00:00Z" }],
-      truncated: true,
-      running_count: 0,
-    });
-    if (digest === null) throw new Error("Invalid compact task fixture");
-    render(null, { taskOversized: true, taskDigest: digest });
+  it("shows no badge when a truncated lean row carries exact running zero", () => {
+    // Given an empty topology; when the server supplies exact zero with truncation.
+    render(null, { lean: { running: { agents: 0, tasks: 0, dag: 0 }, done: 1,
+      dag_done: 0, dag_total: 0, truncated: { task: true, dag: true } } });
+    // Then no running badge is fabricated.
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),
@@ -300,14 +298,11 @@ describe("Sidebar and overview consume real DAG summary qualification", () => {
     expect(badges()).toEqual([null, null, null]);
   });
 
-  it("renders server running_count 50 exactly, without a plus suffix", () => {
-    const digest = parseTaskDigest({
-      tasks: [{ task_id: "t9", status: "running", updated_at: "2026-09-08T10:00:00Z" }],
-      truncated: true,
-      running_count: 50,
-    });
-    if (digest === null) throw new Error("Invalid compact task fixture");
-    render(null, { taskOversized: true, taskDigest: digest });
+  it("renders lean running agents 50 exactly, without question or plus markers", () => {
+    // Given no retained identities; when exact pre-truncation scalars arrive.
+    render(null, { lean: { running: { agents: 50, tasks: 40, dag: 20 }, done: 9,
+      dag_done: 2, dag_total: 8, truncated: { task: true, dag: true } } });
+    // Then all three real UI surfaces display the server's deduplicated count.
     const badges = () => [
       container.querySelector(".th-tree-children .th-tree-running"),
       container.querySelector(".th-tree-running--workspace"),

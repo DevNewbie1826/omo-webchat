@@ -47,6 +47,42 @@ function parseQueueEngine(value: unknown): QueueEngine | null {
   return { pendingMessageCount, ordered };
 }
 
+function parseLeanCounts(
+  value: unknown,
+): { readonly agents?: number; readonly tasks?: number; readonly dag?: number } | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const agents = optLeanInteger(value, "agents");
+  const tasks = optLeanInteger(value, "tasks");
+  const dag = optLeanInteger(value, "dag");
+  if (agents === null || tasks === null || dag === null) return null;
+  return {
+    ...(agents !== undefined ? { agents } : {}),
+    ...(tasks !== undefined ? { tasks } : {}),
+    ...(dag !== undefined ? { dag } : {}),
+  };
+}
+
+function parseLeanTruncation(
+  value: unknown,
+): { readonly task?: boolean; readonly dag?: boolean } | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const task = optBoolean(value, "task");
+  const dag = optBoolean(value, "dag");
+  if (task === null || dag === null) return null;
+  return {
+    ...(task !== undefined ? { task } : {}),
+    ...(dag !== undefined ? { dag } : {}),
+  };
+}
+
+function optLeanInteger(msg: Record<string, unknown>, key: string): number | null | undefined {
+  const value = optNumber(msg, key);
+  if (value === null || value === undefined) return value;
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 /**
  * Session-surface frames, built field-by-field into the generated contract
  * members. entries now enforces the v2 wire contract: `entries` must be an
@@ -110,36 +146,50 @@ export function parseSessionFrame(
       return { type: "extensionEvent", sessionId, name, ...(data !== undefined ? { data: sanitizeJson(data) } : {}) };
     }
     case "sessions.activity": {
-      if (sessionId === null || !Array.isArray(msg["snapshots"])) return null;
+      if (sessionId === null) return null;
       const overflow = reqBoolean(msg, "overflow");
       if (overflow === null) return null;
-      const snapshots = msg["snapshots"].map((value) => {
-        if (!isRecord(value)) return null;
-        const name = value["name"];
-        const oversized = reqBoolean(value, "oversized");
-        if ((name !== "omo.task.updated" && name !== "omo.dag.updated") || oversized === null) return null;
-        return {
-          name,
-          oversized,
-          ...(value["data"] === undefined ? {} : { data: sanitizeJson(value["data"]) }),
-        };
-      });
-      if (snapshots.some((snapshot) => snapshot === null)) return null;
       const durableSessionId = reqString(msg, "durableSessionId");
       const replacesSessionId = optString(msg, "replacesSessionId");
       if (durableSessionId === null || replacesSessionId === null) return null;
-      const taskDigest = msg["taskDigest"] as import("./contract/types_gen").TaskDigest | undefined;
-      const dagDigest = msg["dagDigest"] as import("./contract/types_gen").DagDigest | undefined;
+      const id = optString(msg, "id");
+      const title = optString(msg, "title");
+      const lastLine = optString(msg, "last_line");
+      const lastActivityMs = optLeanInteger(msg, "last_activity_ms");
+      const done = optLeanInteger(msg, "done");
+      const dagDone = optLeanInteger(msg, "dag_done");
+      const dagTotal = optLeanInteger(msg, "dag_total");
+      const running = parseLeanCounts(msg["running"]);
+      const truncated = parseLeanTruncation(msg["truncated"]);
+      if (
+        id === null ||
+        title === null ||
+        lastLine === null ||
+        lastActivityMs === null ||
+        done === null ||
+        dagDone === null ||
+        dagTotal === null ||
+        running === null ||
+        truncated === null
+      ) {
+        return null;
+      }
       return {
         type: "sessions.activity",
         sessionId,
         durableSessionId,
         ...(replacesSessionId === undefined ? {} : { replacesSessionId }),
+        ...(id === undefined ? {} : { id }),
+        ...(title === undefined ? {} : { title }),
         ...(typeof msg["active"] === "boolean" ? { active: msg["active"] } : {}),
-        snapshots: snapshots as import("./contract/types_gen").ActivitySnapshot[],
         overflow,
-        ...(taskDigest === undefined ? {} : { taskDigest }),
-        ...(dagDigest === undefined ? {} : { dagDigest }),
+        ...(running === undefined ? {} : { running }),
+        ...(truncated === undefined ? {} : { truncated }),
+        ...(done === undefined ? {} : { done }),
+        ...(dagDone === undefined ? {} : { dag_done: dagDone }),
+        ...(dagTotal === undefined ? {} : { dag_total: dagTotal }),
+        ...(lastActivityMs === undefined ? {} : { last_activity_ms: lastActivityMs }),
+        ...(lastLine === undefined ? {} : { last_line: lastLine }),
       };
     }
     case "approval": {

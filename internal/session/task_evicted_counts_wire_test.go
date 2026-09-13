@@ -9,7 +9,6 @@ package session_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -84,17 +83,17 @@ func (c *evictedCountsCollector) next(t *testing.T, typ string) map[string]any {
 	}
 }
 
-// nextTaskDigestFrame awaits the next sessions.activity frame carrying a task
-// digest, skipping any digest-less frame. Waiting is event-driven only.
-func (c *evictedCountsCollector) nextTaskDigestFrame(t *testing.T) map[string]any {
+// nextTaskCountFrame skips lifecycle-only rows before the first activity receipt.
+// Waiting remains event-driven; publication is the ingestion barrier.
+func (c *evictedCountsCollector) nextTaskCountFrame(t *testing.T) map[string]any {
 	t.Helper()
 	for i := 0; i < 8; i++ {
 		frame := c.next(t, "sessions.activity")
-		if _, ok := frame["taskDigest"].(map[string]any); ok {
+		if _, ok := frame["last_activity_ms"].(float64); ok {
 			return frame
 		}
 	}
-	t.Fatal("no sessions.activity frame with a task digest")
+	t.Fatal("no sessions.activity frame with an activity receipt")
 	return nil
 }
 
@@ -117,6 +116,7 @@ type evictedCountsFixture struct {
 	chat      cursorstore.Chat
 	serverURL string
 	token     string
+	manager   *session.Manager
 }
 
 func newEvictedCountsFixture(t *testing.T) *evictedCountsFixture {
@@ -172,7 +172,7 @@ func newEvictedCountsFixture(t *testing.T) *evictedCountsFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &evictedCountsFixture{t: t, daemon: daemon, client: client, store: store, chat: chat, serverURL: httpServer.URL, token: token}
+	return &evictedCountsFixture{t: t, daemon: daemon, client: client, store: store, chat: chat, serverURL: httpServer.URL, token: token, manager: manager}
 }
 
 func (f *evictedCountsFixture) connect() (*gws.Conn, *evictedCountsCollector) {
@@ -248,95 +248,4 @@ func (f *evictedCountsFixture) liveRow(t *testing.T) map[string]any {
 	}
 	t.Fatalf("live REST row for %q absent: %v", f.chat.ID, body)
 	return nil
-}
-
-func assertEvictedWireScalar(t *testing.T, digest map[string]any, field string, want int, stage string) {
-	t.Helper()
-	if digest == nil {
-		t.Fatalf("%s: task digest absent", stage)
-	}
-	got, present := digest[field]
-	if !present {
-		t.Fatalf("%s: task digest field %q absent: %v", stage, field, digest)
-	}
-	if number, ok := got.(float64); !ok || int(number) != want {
-		t.Errorf("%s: task digest %s = %v, want %d", stage, field, got, want)
-	}
-}
-
-func assertEvictedWireDigest(t *testing.T, digest map[string]any, stage string) {
-	t.Helper()
-	assertEvictedWireScalar(t, digest, "running_count", 0, stage)
-	assertEvictedWireScalar(t, digest, "agent_running_count", 0, stage)
-	assertEvictedWireScalar(t, digest, "total_count", evictedTotalCounts, stage)
-	assertEvictedWireScalar(t, digest, "agent_total_count", evictedTotalCounts, stage)
-	rows, _ := digest["tasks"].([]any)
-	if len(rows) != evictedDigestRows {
-		t.Errorf("%s: task digest rows=%d, want the %d-entry retention bound", stage, len(rows), evictedDigestRows)
-	}
-	for _, entry := range rows {
-		if entry.(map[string]any)["task_id"] == "task-0000" {
-			t.Errorf("%s: evicted victim row retained", stage)
-		}
-	}
-}
-
-func TestEvictedTaskOutcomePublishesCorrectedScalarsOnRESTAndActivityWS(t *testing.T) {
-	f := newEvictedCountsFixture(t)
-	attached, attachedFrames := f.openChat()
-	defer attached.WriteClose(1000, nil)
-
-	subscribeConn, frames := f.connect()
-	defer subscribeConn.WriteClose(1000, nil)
-	writeEvictedCountsFrame(t, subscribeConn, map[string]any{"type": "sessions.subscribe", "mode": "explicit", "sessionIds": []string{f.chat.ID}})
-	if ack := frames.next(t, "ack"); ack["command"] != "sessions.subscribe" {
-		t.Fatalf("subscription ack = %v", ack)
-	}
-
-	tasks := make([]any, evictedTotalCounts)
-	for i := range tasks {
-		status := "completed"
-		if i == 0 {
-			status = "running"
-		}
-		tasks[i] = map[string]any{
-			"task_id": fmt.Sprintf("task-%04d", i), "name": fmt.Sprintf("Task %d", i),
-			"status": status, "updated_at": "2026-09-10T10:02:00Z",
-		}
-	}
-	f.daemon.EmitSession(f.chat.SessionFile, map[string]any{
-		"type": "extension_event", "name": "omo.task.updated",
-		"data": map[string]any{"parent_session_id": f.chat.DurableSessionID, "truncated_tasks": false, "tasks": tasks},
-	})
-	taskFrame := frames.nextTaskDigestFrame(t)
-	assertEvictedWireScalar(t, taskFrame["taskDigest"].(map[string]any), "running_count", 1, "WS/initial")
-	assertEvictedWireScalar(t, taskFrame["taskDigest"].(map[string]any), "total_count", evictedTotalCounts, "WS/initial")
-	initial := attachedFrames.next(t, "extensionEvent")
-	if initial["name"] != "omo.task.updated" {
-		t.Fatalf("attached initial frame = %v", initial)
-	}
-	if data, ok := initial["data"].(map[string]any); !ok || data["running_count"] != float64(1) || data["total_count"] != float64(evictedTotalCounts) {
-		t.Fatalf("attached initial task counts = %v", initial["data"])
-	}
-
-	f.daemon.EmitSession(f.chat.SessionFile, map[string]any{
-		"type": "extension_event", "name": "omo.dag.updated",
-		"data": map[string]any{
-			"parent_session_id": f.chat.DurableSessionID, "truncated_runs": false,
-			"runs": []any{map[string]any{
-				"run_id": "outcome", "status": "completed", "updated_at": "2026-09-10T10:03:00Z",
-				"nodes": []any{map[string]any{"id": "node", "task_id": "task-0000", "state": "completed"}},
-			}},
-		},
-	})
-	outcome := attachedFrames.next(t, "extensionEvent")
-	if outcome["name"] != "omo.dag.updated" {
-		t.Fatalf("attached outcome frame = %v", outcome)
-	}
-	if data, ok := outcome["data"].(map[string]any); !ok || data["agent_running_count"] != float64(0) || data["agent_total_count"] != float64(evictedTotalCounts) || data["running_count"] != float64(0) {
-		t.Errorf("attached outcome authority = %v", outcome["data"])
-	}
-	outcomeFrame := frames.nextTaskDigestFrame(t)
-	assertEvictedWireDigest(t, outcomeFrame["taskDigest"].(map[string]any), "WS")
-	assertEvictedWireDigest(t, f.liveRow(t)["task_digest"].(map[string]any), "REST")
 }

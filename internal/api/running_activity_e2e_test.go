@@ -54,7 +54,7 @@ func (f *runningActivityFixture) awaitActive(want bool) {
 	if frame["active"] != want || frame["sessionId"] != f.chat.ID || frame["durableSessionId"] != f.chat.DurableSessionID {
 		f.t.Fatalf("activity update = %v, want active=%v with stable identity", frame, want)
 	}
-	if snapshots, ok := frame["snapshots"].([]any); !ok || len(snapshots) != 0 || frame["taskDigest"] != nil || frame["dagDigest"] != nil {
+	if running, ok := frame["running"].(map[string]any); !ok || running["agents"] != float64(0) || running["tasks"] != float64(0) || running["dag"] != float64(0) {
 		f.t.Fatalf("main run invented child activity: %v", frame)
 	}
 }

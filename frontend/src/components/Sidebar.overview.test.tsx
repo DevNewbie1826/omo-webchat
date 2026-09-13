@@ -20,19 +20,7 @@ const LIVE_RESPONSE = {
     {
       id: "tm-1",
       title: "Refactor auth",
-      task: {
-        parent_session_id: "tm-1",
-        tasks: [
-          {
-            task_id: "t1",
-            name: "Greeter",
-            status: "running",
-            updated_at: new Date(Date.now() - 1000).toISOString(),
-            live_progress: { activity: "thinking", last_assistant_line: "ls" },
-          },
-        ],
-      },
-      dag: null,
+      running: { agents: 1 }, done: 0, last_line: "ls",
     },
   ],
 };
@@ -44,18 +32,7 @@ const IDLE_LIVE_RESPONSE = {
       id: "disk-1",
       title: "Idle attached session",
       active: false,
-      task: {
-        parent_session_id: "disk-1",
-        tasks: [
-          {
-            task_id: "t1",
-            name: "Finished",
-            status: "completed",
-            updated_at: new Date(Date.now() - 1000).toISOString(),
-          },
-        ],
-      },
-      dag: null,
+      running: { agents: 0 }, done: 1,
     },
   ],
 };
@@ -102,18 +79,9 @@ function liveEntry(id: string, title: string, status: "running" | "completed" | 
     // The server flags attached sessions with an explicit active boolean;
     // rows without it are finished history, not live sessions.
     ...(active === undefined ? {} : { active }),
-    task: status === null ? null : {
-      parent_session_id: id,
-      tasks: [
-        {
-          task_id: "t1",
-          name: "Worker",
-          status,
-          updated_at: new Date(Date.now() - updatedAgoMs).toISOString(),
-        },
-      ],
-    },
-    dag: null,
+    running: { agents: status === "running" ? 1 : 0 },
+    done: status === "completed" ? 1 : 0,
+    last_activity_ms: 2000 - updatedAgoMs,
   };
 }
 

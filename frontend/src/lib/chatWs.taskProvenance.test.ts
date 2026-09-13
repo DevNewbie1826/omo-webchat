@@ -1,61 +1,46 @@
 import { describe, expect, it } from "vitest";
 import corrected from "../../../contract/fixtures/server-sessions.activity-task-correction.json";
-import legacy from "../../../contract/fixtures/server-sessions.activity.json";
+import activity from "../../../contract/fixtures/server-sessions.activity.json";
+import extension from "../../../contract/fixtures/server-extensionEvent-task-correction.json";
 import { parseChatServerFrame } from "./chatWs";
-import { parseServerFrame } from "./contract/types_gen";
 
-function digestFrame(row: unknown) {
-  return { ...corrected, snapshots: [], taskDigest: { tasks: [row], truncated: false, running_count: 0, total_count: 1, agent_running_count: 0, agent_total_count: 1 } };
-}
-
-const rawRow = { task_id: "task-1", status: "completed", updated_at: "2026-09-07T10:01:00Z" };
-
-describe("task provenance wire boundary", () => {
-  it("roundtrips the correction and original clock through the actual chat parser", () => {
-    expect(parseChatServerFrame(JSON.parse(JSON.stringify(corrected)))).toEqual(corrected);
+ describe("lean activity wire boundary", () => {
+  it.each([corrected, activity])("roundtrips lean activity when the server emits a valid fixture", frame => {
+    // Given a real lean server fixture; when it crosses the actual parser.
+    const parsed = parseChatServerFrame(JSON.parse(JSON.stringify(frame)));
+    // Then the emitted counts and identity survive unchanged.
+    expect(parsed).toEqual(frame);
   });
-
-  it("preserves old valid frames without inventing provenance", () => {
-    expect(parseChatServerFrame(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
+  it("preserves task provenance when it arrives through the attached extension surface", () => {
+    // Given the real attached correction fixture; when it is parsed.
+    const parsed = parseChatServerFrame(extension);
+    // Then original status and clock remain available to task reconciliation.
+    expect(parsed).toEqual(extension);
   });
-
-  it("preserves raw extension snapshot provenance", () => {
-    const frame = { type: "extensionEvent", sessionId: "chat-1", name: "omo.task.updated", data: corrected.snapshots[0]?.data };
-    expect(parseChatServerFrame(frame)).toEqual(frame);
-  });
-
-  it.each([null, 42, true, [], {}].map((value) => [value]))("rejects non-string provenance in the generated strict contract: %j", (raw_status) => {
-    expect(parseServerFrame(digestFrame({ ...rawRow, raw_status }))).toBeNull();
-  });
-
-  it.each([null, 42, true, [], {}].map((value) => [value]))("ignores malformed optional provenance without losing membership: %j", (raw_status) => {
-    const input = digestFrame({ ...rawRow, raw_status });
-    const original = JSON.stringify(input);
-    expect(parseChatServerFrame(input)).toEqual(digestFrame(rawRow));
-    expect(JSON.stringify(input)).toBe(original);
-  });
-
-  it.each([null, 42, true, [], {}].map((value) => [value]))("retains membership with an unknown non-string raw clock: %j", (updated_at) => {
-    expect(parseChatServerFrame(digestFrame({ ...rawRow, raw_status: "running", updated_at }))).toEqual(
-      digestFrame({ task_id: "task-1", status: "completed", raw_status: "running" }),
-    );
-  });
-
-  it.each([{}, null, { status: "running" }, { task_id: 42, status: "running" }, { task_id: "task-1", status: null }])(
-    "does not turn malformed required membership into an empty digest: %j", (row) => {
-      expect(parseChatServerFrame(digestFrame(row))).toBeNull();
+  it.each([null, 42, true, [], {}, { tasks: [{ task_id: 42, raw_status: null }] }])(
+    "ignores removed payload fields when unknown keys contain %j", value => {
+      // Given removed fields that are no longer part of the wire contract.
+      const input = { ...corrected, snapshots: value, taskDigest: value, dagDigest: value };
+      const original = JSON.stringify(input);
+      // When the lean activity crosses the parser.
+      const parsed = parseChatServerFrame(input);
+      // Then only the lean frame is returned and the input stays untouched.
+      expect(parsed).toEqual(corrected);
+      expect(JSON.stringify(input)).toBe(original);
     },
   );
-
-  it("preserves absent, empty and partial task sides", () => {
-    const base = { type: "sessions.activity", sessionId: "chat-1", durableSessionId: "child-session-1", snapshots: [], overflow: false };
-    for (const frame of [
-      base,
-      { ...base, taskDigest: { tasks: [], truncated: false, running_count: 0, total_count: 0, agent_running_count: 0, agent_total_count: 0 } },
-      { ...base, taskDigest: { tasks: [rawRow], truncated: true, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 } },
-    ]) {
-      expect(parseChatServerFrame(frame)).toEqual(frame);
-    }
-    expect(parseChatServerFrame({ ...base, taskDigest: { tasks: null, truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 } })).toBeNull();
+  it.each([-1, 1.5, "7", null])("rejects malformed lean membership counts when agents=%j", agents => {
+    // Given a malformed machine-consumed scalar; when it crosses the parser.
+    const parsed = parseChatServerFrame({ ...corrected, running: { agents } });
+    // Then malformed live count data cannot enter the store.
+    expect(parsed).toBeNull();
+  });
+  it("does not invent counts when the optional scalar fields are absent", () => {
+    // Given a membership-only envelope.
+    const frame = { type: "sessions.activity", sessionId: "s", durableSessionId: "s", overflow: false };
+    // When the frame is parsed.
+    const parsed = parseChatServerFrame(frame);
+    // Then absence remains absence, not a fabricated aggregate.
+    expect(parsed).toEqual(frame);
   });
 });

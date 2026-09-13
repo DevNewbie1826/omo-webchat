@@ -1,43 +1,17 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { connectChat } from "../../lib/chatWs";
-import type { ChatClient, ChatServerFrame } from "../../lib/chatWs";
-import { parseDagDigest, parseTaskDigest } from "./activityDigest";
-import {
-  acceptLiveDagCounts,
-  acceptLiveTaskInfo,
-  canonicalLiveSessionId,
-  projectLiveTaskInfo,
-  retireLiveTaskSessions,
-  useAcceptedLiveTaskInfos,
-  nextLiveActivitySequence,
-  settleLiveBadgePoll,
-  settleLiveBadgePush,
-} from "./liveBadgeStore";
-import { listLiveSessions } from "./workspace";
-import type { LiveSessionInfo } from "./workspace";
+import type { ChatClient } from "../../lib/chatWs";
+import { nextLiveActivitySequence } from "./liveBadgeStore";
+import { LiveSessionMembership } from "./liveSessionMembership";
+import { listLiveSummarySessions } from "./useLiveSessionsLean";
+import type { LiveSessionInfo } from "./useLiveSessionsLean";
 
 const POLL_MS = 4000;
 const STALL_MS = 30000;
-const MAX_PUSHED_SESSIONS = 256;
-
 const EMPTY_SESSIONS: readonly LiveSessionInfo[] = [];
-
-interface PushedSession {
-  readonly info: LiveSessionInfo;
-  readonly membershipArrival: number;
-  readonly taskArrival?: number;
-  readonly dagArrival?: number;
-  readonly activeArrival?: number;
-}
-
-// One module-level source owns session membership and independent activity
-// arrival fences. Every task input is admitted to the shared per-ID store;
-// retained transport payloads below never elect task status or raw revision.
+const membership = new LiveSessionMembership();
 const listeners = new Set<() => void>();
 let sessions: readonly LiveSessionInfo[] = EMPTY_SESSIONS;
-let polledSessions: readonly LiveSessionInfo[] = EMPTY_SESSIONS;
-let pushedSessions = new Map<string, PushedSession>();
-let sessionAliases = new Map<string, string>();
 let polling = false;
 let timer: number | undefined;
 let activeCtrl: AbortController | undefined;
@@ -46,149 +20,11 @@ let refreshRequested = false;
 let pushClient: ChatClient | undefined;
 let pushOpen = false;
 
-function emit(): void {
-  for (const listener of listeners) listener();
-}
-
-function parentSessionIdOf(info: LiveSessionInfo): string | undefined {
-  for (const payload of [info.task, info.dag]) {
-    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) continue;
-    const parent = (payload as Record<string, unknown>)["parent_session_id"];
-    if (typeof parent === "string" && parent.length > 0) return parent;
-  }
-  return undefined;
-}
-
-function publishMerged(): void {
-  const merged = new Map(polledSessions.map(info => {
-    const id = canonicalLiveSessionId(info.id);
-    return [id, { ...info, id }];
-  }));
-  for (const [id, pushed] of pushedSessions) {
-    const polled = merged.get(id);
-    // A cleared activity fence cannot create process membership by itself.
-    if (pushed.membershipArrival < 0 && polled === undefined) continue;
-    const active = pushed.activeArrival !== undefined ? pushed.info.active : polled?.active;
-    const taskPushed = pushed.taskArrival !== undefined;
-    const dagPushed = pushed.dagArrival !== undefined;
-    const taskDigest = taskPushed ? pushed.info.taskDigest : polled?.taskDigest;
-    const dagDigest = dagPushed ? pushed.info.dagDigest : polled?.dagDigest;
-    merged.set(id, {
-      id,
-      title: polled?.title ?? pushed.info.title,
-      ...(active === undefined ? {} : { active }),
-      task: taskPushed ? pushed.info.task : polled?.task ?? null,
-      dag: dagPushed ? pushed.info.dag : polled?.dag ?? null,
-      ...(taskPushed
-        ? { taskOversized: pushed.info.taskOversized === true }
-        : polled?.taskOversized === true ? { taskOversized: true } : {}),
-      ...(dagPushed
-        ? { dagOversized: pushed.info.dagOversized === true }
-        : polled?.dagOversized === true ? { dagOversized: true } : {}),
-      ...(taskDigest === undefined ? {} : { taskDigest }),
-      ...(dagDigest === undefined ? {} : { dagDigest }),
-    });
-  }
-  const next = [...merged.values()].map(projectLiveTaskInfo);
+function publish(): void {
+  const next = membership.values();
   if (JSON.stringify(next) === JSON.stringify(sessions)) return;
   sessions = next;
-  emit();
-}
-
-function mergePushedSessions(id: string, first: PushedSession, second: PushedSession): PushedSession {
-  const taskSource = (first.taskArrival ?? -1) >= (second.taskArrival ?? -1) ? first : second;
-  const dagSource = (first.dagArrival ?? -1) >= (second.dagArrival ?? -1) ? first : second;
-  const activeSource = (first.activeArrival ?? -1) >= (second.activeArrival ?? -1) ? first : second;
-  const activeArrival = Math.max(first.activeArrival ?? -1, second.activeArrival ?? -1);
-  const newest = first.membershipArrival >= second.membershipArrival ? first : second;
-  const taskArrival = Math.max(first.taskArrival ?? -1, second.taskArrival ?? -1);
-  const dagArrival = Math.max(first.dagArrival ?? -1, second.dagArrival ?? -1);
-  return {
-    info: {
-      id,
-      title: newest.info.title,
-      ...(activeSource.info.active === undefined ? {} : { active: activeSource.info.active }),
-      task: taskSource.info.task,
-      dag: dagSource.info.dag,
-      ...(taskSource.info.taskOversized === true ? { taskOversized: true } : {}),
-      ...(dagSource.info.dagOversized === true ? { dagOversized: true } : {}),
-      ...(taskSource.info.taskDigest === undefined ? {} : { taskDigest: taskSource.info.taskDigest }),
-      ...(dagSource.info.dagDigest === undefined ? {} : { dagDigest: dagSource.info.dagDigest }),
-    },
-    membershipArrival: newest.membershipArrival,
-    ...(taskArrival < 0 ? {} : { taskArrival }),
-    ...(dagArrival < 0 ? {} : { dagArrival }),
-    ...(activeArrival < 0 ? {} : { activeArrival }),
-  };
-}
-
-function applyPoll(next: readonly LiveSessionInfo[], requestSequence: number): void {
-  settleLiveBadgePoll(next, requestSequence);
-  const nextAliases = new Map(sessionAliases);
-  for (const info of next) {
-    const parentId = parentSessionIdOf(info);
-    if (parentId === undefined || parentId === info.id) continue;
-    nextAliases.set(parentId, info.id);
-    const unbound = pushedSessions.get(parentId);
-    if (unbound === undefined) continue;
-    const attached = pushedSessions.get(info.id);
-    pushedSessions.set(info.id, attached === undefined
-      ? { ...unbound, info: { ...unbound.info, id: info.id } }
-      : mergePushedSessions(info.id, unbound, attached));
-    pushedSessions.delete(parentId);
-  }
-  sessionAliases = nextAliases;
-  const previousIds = polledSessions.map(info => info.id);
-  polledSessions = next.map(info => {
-    const previous = polledSessions.find(previous => canonicalLiveSessionId(previous.id) === canonicalLiveSessionId(info.id));
-    return info.active === undefined && previous?.active !== undefined ? { ...info, active: previous.active } : info;
-  });
-  const polledActiveIds = new Set(next.filter(info => info.active !== undefined).map(info => canonicalLiveSessionId(info.id)));
-  const liveIds = new Set(next.map((info) => canonicalLiveSessionId(info.id)));
-  for (const [id, pushed] of pushedSessions) {
-    const taskArrival = pushed.taskArrival !== undefined && pushed.taskArrival > requestSequence
-      ? pushed.taskArrival
-      : undefined;
-    const dagArrival = pushed.dagArrival !== undefined && pushed.dagArrival > requestSequence
-      ? pushed.dagArrival
-      : undefined;
-    const activeArrival = pushed.activeArrival !== undefined
-      && (pushed.activeArrival > requestSequence || !polledActiveIds.has(id))
-      ? pushed.activeArrival
-      : undefined;
-    if (liveIds.has(id)) {
-      if (taskArrival === undefined && dagArrival === undefined && activeArrival === undefined) {
-        pushedSessions.delete(id);
-      } else {
-        pushedSessions.set(id, {
-          info: pushed.info,
-          membershipArrival: pushed.membershipArrival,
-          ...(taskArrival === undefined ? {} : { taskArrival }),
-          ...(dagArrival === undefined ? {} : { dagArrival }),
-          ...(activeArrival === undefined ? {} : { activeArrival }),
-        });
-      }
-      continue;
-    }
-    // A frame that raced the request remains visible until the next success.
-    if (pushed.membershipArrival <= requestSequence) pushedSessions.delete(id);
-  }
-  retireLiveTaskSessions(previousIds.filter(id => !liveIds.has(id) && !pushedSessions.has(id) && !sessionAliases.has(id)));
-  publishMerged();
-}
-
-/** Clear main work without changing the established process-membership rule.
- * The negative membership arrival retains only a false activity fence, so an
- * in-flight poll cannot restore activity after a tombstone or socket close. */
-function clearMainActivity(id: string, arrival: number): void {
-  const previous = pushedSessions.get(id)?.info ?? polledSessions.find(info => canonicalLiveSessionId(info.id) === id);
-  if (previous === undefined) return;
-  pushedSessions.set(id, {
-    info: { ...previous, id, active: false },
-    membershipArrival: -1,
-    activeArrival: arrival,
-  });
-  polledSessions = polledSessions.map(info => canonicalLiveSessionId(info.id) === id ? { ...info, active: false } : info);
+  for (const listener of listeners) listener();
 }
 
 function requestFallbackRefresh(): void {
@@ -199,111 +35,6 @@ function requestFallbackRefresh(): void {
   }
   if (timer !== undefined) window.clearTimeout(timer);
   timer = window.setTimeout(tick, 0);
-}
-
-function frameIdentity(frame: Extract<ChatServerFrame, { readonly type: "sessions.activity" }>): {
-  readonly id: string;
-  readonly sourceIds: readonly string[];
-  readonly tombstone: boolean;
-} {
-  const record = frame as unknown as Record<string, unknown>;
-  const replaces = typeof record["replacesSessionId"] === "string" && record["replacesSessionId"].length > 0
-    ? record["replacesSessionId"]
-    : undefined;
-  const durable = typeof record["durableSessionId"] === "string" && record["durableSessionId"].length > 0
-    ? record["durableSessionId"]
-    : undefined;
-  const id = record["tombstone"] === true ? frame.sessionId : canonicalLiveSessionId(frame.sessionId);
-  return {
-    id,
-    sourceIds: [...new Set([replaces, durable].filter((value): value is string => value !== undefined && value !== id))],
-    tombstone: record["tombstone"] === true,
-  };
-}
-
-function applyActivityFrame(frame: Extract<ChatServerFrame, { readonly type: "sessions.activity" }>): void {
-  const identity = frameIdentity(frame);
-  const arrival = nextLiveActivitySequence();
-  if (identity.tombstone) {
-    const removedIds = identity.sourceIds.length > 0 ? identity.sourceIds : [identity.id];
-    for (const removedId of removedIds) {
-      clearMainActivity(removedId, arrival);
-      if (canonicalLiveSessionId(removedId) === removedId) retireLiveTaskSessions([removedId]);
-      settleLiveBadgePush(removedId, [], true, true, arrival);
-    }
-    publishMerged();
-    return;
-  }
-
-  let pushed = pushedSessions.get(identity.id);
-  for (const sourceId of identity.sourceIds) {
-    sessionAliases.set(sourceId, identity.id);
-    const source = pushedSessions.get(sourceId);
-    if (source !== undefined) {
-      pushed = pushed === undefined ? { ...source, info: { ...source.info, id: identity.id } }
-        : mergePushedSessions(identity.id, source, pushed);
-    }
-    pushedSessions.delete(sourceId);
-  }
-  const previous = pushed?.info ?? polledSessions.find((info) => info.id === identity.id);
-  const task = frame.snapshots.find((snapshot) => snapshot.name === "omo.task.updated");
-  const dag = frame.snapshots.find((snapshot) => snapshot.name === "omo.dag.updated");
-  const taskDigest = parseTaskDigest(frame.taskDigest);
-  const dagDigest = parseDagDigest(frame.dagDigest);
-  const taskUpdated = task !== undefined || taskDigest !== null;
-  const dagUpdated = dag !== undefined || dagDigest !== null;
-  const activeUpdated = frame.active !== undefined;
-  settleLiveBadgePush(identity.id, identity.sourceIds, taskUpdated, dagUpdated, arrival);
-  acceptLiveTaskInfo({ id: identity.id, task: task?.data,
-    ...(taskDigest === null ? {} : { taskDigest }), taskOversized: task?.oversized === true }, arrival);
-  if (dagUpdated) {
-    acceptLiveDagCounts({
-      id: identity.id,
-      ...(dag === undefined ? {} : { dag: dag.data }),
-      ...(dagDigest == null ? {} : { dagDigest }),
-    }, arrival);
-  }
-  const info: LiveSessionInfo = {
-    id: identity.id,
-    title: previous?.title ?? "",
-    ...(activeUpdated ? { active: frame.active } : previous?.active === undefined ? {} : { active: previous.active }),
-    task: task === undefined
-      ? previous?.task ?? null
-      : task.data ?? (task.oversized ? previous?.task ?? null : null),
-    dag: dag === undefined
-      ? previous?.dag ?? null
-      : dag.data ?? (dag.oversized ? previous?.dag ?? null : null),
-    ...(taskUpdated
-      ? { taskOversized: task?.oversized === true }
-      : previous?.taskOversized === true ? { taskOversized: true } : {}),
-    ...(dagUpdated
-      ? { dagOversized: dag?.oversized === true }
-      : previous?.dagOversized === true ? { dagOversized: true } : {}),
-    ...(taskUpdated
-      ? taskDigest === null ? {} : { taskDigest }
-      : previous?.taskDigest === undefined ? {} : { taskDigest: previous.taskDigest }),
-    ...(dagUpdated
-      ? dagDigest === null ? {} : { dagDigest }
-      : previous?.dagDigest === undefined ? {} : { dagDigest: previous.dagDigest }),
-  };
-  pushedSessions.delete(identity.id);
-  pushedSessions.set(identity.id, {
-    info,
-    membershipArrival: arrival,
-    ...(taskUpdated ? { taskArrival: arrival } : pushed?.taskArrival === undefined ? {} : { taskArrival: pushed.taskArrival }),
-    ...(dagUpdated ? { dagArrival: arrival } : pushed?.dagArrival === undefined ? {} : { dagArrival: pushed.dagArrival }),
-    ...(activeUpdated ? { activeArrival: arrival } : pushed?.activeArrival === undefined ? {} : { activeArrival: pushed.activeArrival }),
-  });
-  while (pushedSessions.size > MAX_PUSHED_SESSIONS) {
-    const oldest = pushedSessions.keys().next().value as string | undefined;
-    if (oldest === undefined) break;
-    pushedSessions.delete(oldest);
-    retireLiveTaskSessions([oldest]);
-  }
-  publishMerged();
-  // Overflow can mean another session's latest row was displaced. Recover the
-  // complete membership through the existing serialized REST chain.
-  if (frame.overflow) requestFallbackRefresh();
 }
 
 function startPush(): void {
@@ -317,33 +48,25 @@ function startPush(): void {
         pushClient?.send({ type: "sessions.subscribe", mode: "all_live" });
       },
       onFrame: (frame) => {
-        if (frame.type === "sessions.activity") applyActivityFrame(frame);
+        if (frame.type !== "sessions.activity") return;
+        membership.push(frame, nextLiveActivitySequence());
+        publish();
+        if (frame.overflow) requestFallbackRefresh();
       },
       onClose: () => {
         pushOpen = false;
-        const arrival = nextLiveActivitySequence();
-        for (const id of new Set([...polledSessions.map(info => canonicalLiveSessionId(info.id)), ...pushedSessions.keys()])) {
-          clearMainActivity(id, arrival);
-        }
-        publishMerged();
+        membership.disconnect(nextLiveActivitySequence());
+        publish();
       },
     });
     pushClient = client;
-    if (openedSynchronously) pushClient?.send({ type: "sessions.subscribe", mode: "all_live" });
-  } catch {
-    // Browsers without a usable socket stay on the established REST path.
+    if (openedSynchronously) client.send({ type: "sessions.subscribe", mode: "all_live" });
+  } catch (error) {
+    // A browser without WebSocket support keeps the established REST path.
+    if (!(error instanceof Error)) throw error;
     pushClient = undefined;
     pushOpen = false;
   }
-}
-
-function stopPush(): void {
-  if (pushOpen) pushClient?.send({ type: "sessions.subscribe", mode: "none" });
-  pushClient?.close();
-  pushClient = undefined;
-  pushOpen = false;
-  pushedSessions = new Map();
-  sessionAliases = new Map();
 }
 
 function tick(): void {
@@ -366,9 +89,12 @@ function tick(): void {
       timer = window.setTimeout(tick, delay);
     }
   };
-  void listLiveSessions(ctrl.signal).then(
+  void listLiveSummarySessions(ctrl.signal).then(
     (infos) => {
-      if (polling && generation === requestGeneration && !superseded) applyPoll(infos, requestSequence);
+      if (polling && generation === requestGeneration && !superseded) {
+        membership.poll(infos, requestSequence);
+        publish();
+      }
       reschedule();
     },
     reschedule,
@@ -397,9 +123,11 @@ function stop(): void {
   }
   activeCtrl?.abort();
   activeCtrl = undefined;
-  retireLiveTaskSessions([...new Set([...polledSessions.map(info => info.id), ...pushedSessions.keys()])]);
-  stopPush();
-  polledSessions = EMPTY_SESSIONS;
+  if (pushOpen) pushClient?.send({ type: "sessions.subscribe", mode: "none" });
+  pushClient?.close();
+  pushClient = undefined;
+  pushOpen = false;
+  membership.reset();
   sessions = EMPTY_SESSIONS;
 }
 
@@ -412,23 +140,19 @@ function subscribeLiveSessions(onStoreChange: () => void): () => void {
   };
 }
 
-function getSessions(): readonly LiveSessionInfo[] {
-  return sessions;
-}
-
+const getSessions = (): readonly LiveSessionInfo[] => sessions;
 const noopSubscribe = (): (() => void) => () => undefined;
 const getEmptySessions = (): readonly LiveSessionInfo[] => EMPTY_SESSIONS;
 
-/** Live session records merged from sessions.activity push and GET /api/sessions/live fallback. */
+/** Lean records from sessions.activity push and GET /api/sessions/live fallback. */
 export function useLiveSessionInfos(enabled: boolean): readonly LiveSessionInfo[] {
-  const infos = useSyncExternalStore(
+  return useSyncExternalStore(
     enabled ? subscribeLiveSessions : noopSubscribe,
     enabled ? getSessions : getEmptySessions,
   );
-  return useAcceptedLiveTaskInfos(infos);
 }
 
-/** Ids of the sessions with a live provider process (established contract). */
+/** Ids of sessions with a live provider process (established contract). */
 export function useLiveSessions(enabled: boolean): ReadonlySet<string> {
   const infos = useLiveSessionInfos(enabled);
   return useMemo(() => new Set(infos.map((info) => info.id)), [infos]);

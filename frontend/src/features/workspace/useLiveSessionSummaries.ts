@@ -9,7 +9,8 @@ import type { DagDigest, TaskDigest, DagDigestRun, TaskDigestEntry } from "./act
 import { reconcileTaskSources } from "../split/taskAuthority";
 import { canonicalLiveSessionId, useLiveAgentAggregates } from "./liveBadgeStore";
 import { useLiveSessionInfos } from "./useLiveSessions";
-import type { LiveSessionInfo } from "./workspace";
+import type { LeanSessionFields, LiveSessionInfo } from "./useLiveSessionsLean";
+import { applyLeanSummary, hasLeanSummary } from "./useLiveSessionSummariesLean";
 
 /** Per-session rollup shown by the sessions overview and the tree badge.
  * Running counts come from the server's pre-truncation scalars whenever the
@@ -23,6 +24,8 @@ export const STALE_RUNNING_WINDOW_MS = 90_000;
 const FRESHNESS_TICK_MS = 15_000;
 
 export interface LiveSessionSummary {
+  /** Accepted server scalars survive attached-socket fallback merging. */
+  readonly lean?: LeanSessionFields;
   readonly id: string;
   readonly title: string;
   /** Main-session work; never included in runningCount. */
@@ -183,6 +186,7 @@ export function summarizeLiveSession(
   nowMs = Date.now(),
   freshness?: SummaryFreshness,
 ): LiveSessionSummary {
+  if (hasLeanSummary(info)) return applyLeanSummary(info);
   const parsedTask = info.task == null ? null : parseTaskUpdated(info.task);
   const taskProjection = reconcileTaskSources({ tasks: new Map<string, ActivityTask>() }, parsedTask, info.taskDigest);
   const tasks = [...taskProjection.tasks.values()];
@@ -274,7 +278,7 @@ export function summarizeLiveSession(
     dagDone += run.counts.completed;
     dagTotal += run.counts.total;
   }
-  return {
+  return applyLeanSummary(info, {
     id: info.id,
     title: info.title,
     ...(info.active === undefined ? {} : { active: info.active }),
@@ -293,7 +297,7 @@ export function summarizeLiveSession(
     dagTotal,
     lastLine: lastLineOf(tasks),
     dagRunning,
-  };
+  });
 }
 
 
