@@ -1969,6 +1969,162 @@ func TestChatCreateSessionActiveConflictsUseContractCode(t *testing.T) {
 	})
 }
 
+// alwaysActiveCheck models a session source a foreign writer keeps touching:
+// any ungated provider acquisition must observe activity.
+func alwaysActiveCheck(context.Context, string, time.Duration) (SessionActivity, error) {
+	return SessionActivity{SizeDelta: 1, MtimeDeltaNano: 1, Changed: true}, nil
+}
+
+func TestChatCreateForceAuthorizationDoesNotOutliveLiveAttach(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "force-live-attach")
+	AuthorizeInPlaceOpen(h.store, "force-live-attach", false, alwaysActiveCheck)
+	conn, frames := h.connect(t)
+	retired := h.soleServerConnection(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-live-attach"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("armed gate error = %#v, want session-active", got)
+	}
+
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-live-attach", "force": true})
+	frames.next(t, "ready")
+	opens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+
+	// A second device's force create attaches to the live route: the manager
+	// returns before CursorForOpen, so this attempt never consumes its own
+	// force authorization.
+	second, secondFrames := h.connect(t)
+	writeClient(t, second, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-live-attach", "force": true})
+	secondFrames.next(t, "ready")
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != opens {
+		t.Fatalf("live attach issued %d provider opens, want %d", got, opens)
+	}
+
+	// Retire the first socket, then the live route itself. The next
+	// acquisition is fresh and must not inherit the live attach's force.
+	awaitCommandFence(t, second, secondFrames)
+	_ = conn.WriteClose(1000, nil)
+	select {
+	case <-retired.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("retired socket was not unregistered")
+	}
+	h.daemon.UnloadSession(h.path)
+	h.markSessionResumable(t)
+	writeClient(t, second, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-live-attach"})
+	if got := secondFrames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("fresh acquisition after live attach = %#v, want session-active", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != opens {
+		t.Fatalf("ungated fresh acquisition issued %d provider opens, want %d", got, opens)
+	}
+}
+
+func TestChatCreateForceAuthorizationDoesNotOutliveFailedCreate(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "force-failed-create")
+	AuthorizeInPlaceOpen(h.store, "force-failed-create", false, alwaysActiveCheck)
+	var chatVersion atomic.Int64
+	h.bridge.cfg.ChatVersion = func(string) uint64 { return uint64(chatVersion.Load()) }
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-failed-create"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("armed gate error = %#v, want session-active", got)
+	}
+
+	// Fail the attempt after the force authorization is stored but before the
+	// per-chat flight reaches CursorForOpen: a stale metadata generation is
+	// rejected at the acquire boundary.
+	chatVersion.Store(1)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-failed-create", "force": true})
+	if got := frames.next(t, "error"); got["code"] != "no_chat" {
+		t.Fatalf("stale-generation force create = %#v, want no_chat", got)
+	}
+
+	chatVersion.Store(0)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-failed-create"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("fresh acquisition after failed force create = %#v, want session-active", got)
+	}
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 0 {
+		t.Fatalf("gated acquisitions issued %d provider opens, want 0", got)
+	}
+}
+
+func TestRESTReopenDoesNotRevokeInFlightWSForce(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "force-vs-rest")
+	AuthorizeInPlaceOpen(h.store, "force-vs-rest", false, alwaysActiveCheck)
+	// A concurrent REST bound reopen (the session_adoption.go early return)
+	// reauthorizes this chat non-force while the WS force attempt is in
+	// flight. validate() runs after the WS force store and before
+	// CursorForOpen, making the interleaving deterministic.
+	h.bridge.cfg.ChatVersion = func(string) uint64 {
+		AuthorizeInPlaceOpen(h.store, "force-vs-rest", false, alwaysActiveCheck)
+		return h.chatVersion.Load()
+	}
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-vs-rest"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("armed gate error = %#v, want session-active", got)
+	}
+
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-vs-rest", "force": true})
+	frames.next(t, "ready")
+	if got := h.daemon.RequestCount(omorpc.CmdOpenSession); got != 1 {
+		t.Fatalf("forced create issued %d provider opens, want 1", got)
+	}
+
+	// The interleaved reopen must not have turned the one-shot force into a
+	// standing authorization: the next fresh acquisition is gated again.
+	awaitCommandFence(t, conn, frames)
+	h.daemon.UnloadSession(h.path)
+	h.markSessionResumable(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-vs-rest"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("fresh acquisition after forced create = %#v, want session-active", got)
+	}
+}
+
+func TestChatCreateForceBypassesPersistentActivityChecker(t *testing.T) {
+	h := newInPlaceBridgeHarness(t, "force-persistent-check")
+	AuthorizeInPlaceOpen(h.store, "force-persistent-check", false, alwaysActiveCheck)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-persistent-check"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("non-force create = %#v, want session-active", got)
+	}
+
+	// The forced retry must bypass the SAME checker, not replace it with the
+	// filesystem observer.
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-persistent-check", "force": true})
+	frames.next(t, "ready")
+
+	// The bypass is one-shot: a later fresh non-force acquisition is gated
+	// again by the still-attached checker.
+	awaitCommandFence(t, conn, frames)
+	h.daemon.UnloadSession(h.path)
+	h.markSessionResumable(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-persistent-check"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("fresh non-force acquisition = %#v, want session-active", got)
+	}
+
+	// Cross-chat isolation: another chat's gate is unaffected by this chat's
+	// force attempt.
+	siblingPath := filepath.Join(filepath.Dir(h.path), "force-persistent-sibling.jsonl")
+	siblingBody := fmt.Sprintf("{\"type\":\"session\",\"id\":\"durable-sibling\",\"version\":3,\"timestamp\":\"2026-09-03T00:00:00Z\",\"cwd\":%s}\n", mustJSON(t, filepath.Dir(h.path)))
+	if err := os.WriteFile(siblingPath, []byte(siblingBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sibling := cursorstore.Chat{ID: "force-persistent-sibling", WorkspaceID: "ws-1", CWD: filepath.Dir(h.path), Name: "sibling", SessionFile: siblingPath, DurableSessionID: "durable-sibling", SessionProvenance: cursorstore.SessionProvenanceInPlace}
+	if err := h.store.SaveChat(sibling); err != nil {
+		t.Fatal(err)
+	}
+	AuthorizeInPlaceOpen(h.store, "force-persistent-sibling", false, alwaysActiveCheck)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": "force-persistent-sibling"})
+	if got := frames.next(t, "error"); got["code"] != "session-active" {
+		t.Fatalf("sibling chat create = %#v, want session-active", got)
+	}
+}
+
 func TestChatCreateExternalWriteRequiresExplicitRecoveryLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "external-recovery")
 	h.daemon.UseLegacyEmptyUnknownHistory()
