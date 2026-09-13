@@ -158,7 +158,7 @@ export function SessionTree({
                     title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
                   >
                     <span className="th-tree-running-dot" aria-hidden="true" />
-                    {workspaceRunning > 0 ? workspaceRunning : t("sidebar.tm.mainRunning")}
+                    {workspaceRunning > 0 ? workspaceRunning : null}
                   </span>
                 ) : null;
               })()}
@@ -295,7 +295,7 @@ export function SessionTree({
                         title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
                       >
                         <span className="th-tree-running-dot" aria-hidden="true" />
-                        {running > 0 ? running : t("sidebar.tm.mainRunning")}
+                        {running > 0 ? running : null}
                       </span>
                     )}
                     {tm ? (
