@@ -134,7 +134,35 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "extension_event":
 		s.forwardExtensionEventLocked(raw)
 	case "extension_ui_request":
-		s.publishLocked(Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: eventPayload(raw)})
+		frame := Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: eventPayload(raw)}
+		// Interactive methods await a client answer; retain the latest one so a
+		// subscriber attaching after the broadcast still sees the pending ask.
+		if approvalInteractive(raw["method"]) {
+			s.pendingApproval = &frame
+		}
+		s.publishLocked(frame)
+	case "question_resolved":
+		if s.pendingApproval != nil && s.pendingApproval.ApprovalID == stringValue(raw["id"]) {
+			s.pendingApproval = nil
+		}
+	case "question_updated":
+		if s.pendingApproval != nil && s.pendingApproval.ApprovalID == stringValue(raw["id"]) {
+			if data, ok := s.pendingApproval.Data.(map[string]any); ok {
+				updated := make(map[string]any, len(data)+2)
+				for key, value := range data {
+					updated[key] = value
+				}
+				if deadline, present := raw["deadlineAtMs"]; present {
+					updated["deadlineAtMs"] = deadline
+				}
+				if remaining, present := raw["remainingMs"]; present {
+					updated["remainingMs"] = remaining
+				}
+				frame := *s.pendingApproval
+				frame.Data = updated
+				s.pendingApproval = &frame
+			}
+		}
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
 	case "high_reasoning_warning", "retry_fallback_applied", "retry_fallback_reverted", "retry_fallback_succeeded", "retry_fallback_exhausted", "server_fallback_aborted", "auto_retry_start", "auto_retry_end", "extension_notify":
@@ -405,6 +433,17 @@ func commandSource(raw map[string]any) string {
 	x, _ := c["source"].(string)
 	return x
 }
+// approvalInteractive reports whether an extension_ui_request method blocks on a
+// client answer. Fire-and-forget methods (notify, setStatus, setWidget, ...)
+// are still broadcast live but must not be retained as a pending ask.
+func approvalInteractive(method any) bool {
+	switch method {
+	case "select", "confirm", "input", "editor", "question":
+		return true
+	}
+	return false
+}
+
 func stringValue(v any) string { x, _ := v.(string); return x }
 func decodeEntries(raw map[string]any) ([]json.RawMessage, string, bool) {
 	b, _ := json.Marshal(raw["entries"])

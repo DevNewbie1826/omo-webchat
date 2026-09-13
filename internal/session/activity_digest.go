@@ -21,13 +21,17 @@ type TaskDigestEntry struct {
 }
 
 type TaskDigest struct {
-	Tasks             []TaskDigestEntry `json:"tasks"`
-	Truncated         bool              `json:"truncated"`
-	RunningCount      int               `json:"running_count"`
-	TotalCount        int               `json:"total_count"`
-	AgentRunningCount int               `json:"agent_running_count"`
-	AgentTotalCount   int               `json:"agent_total_count"`
-	ReceivedAt        string            `json:"received_at,omitempty"`
+	liveDone           int
+	liveLastLine       *string
+	liveIncomplete     bool
+	liveRosterComplete bool
+	Tasks              []TaskDigestEntry `json:"tasks"`
+	Truncated          bool              `json:"truncated"`
+	RunningCount       int               `json:"running_count"`
+	TotalCount         int               `json:"total_count"`
+	AgentRunningCount  int               `json:"agent_running_count"`
+	AgentTotalCount    int               `json:"agent_total_count"`
+	ReceivedAt         string            `json:"received_at,omitempty"`
 }
 
 func (d TaskDigest) MarshalJSON() ([]byte, error) {
@@ -56,15 +60,18 @@ func (r RunDigestEntry) MarshalJSON() ([]byte, error) {
 }
 
 type DagDigest struct {
-	Runs                 []RunDigestEntry `json:"runs"`
-	Truncated            bool             `json:"truncated"`
-	RunningCount         int              `json:"running_count"`
-	RunRunningCount      *int64           `json:"run_running_count,omitempty"`
-	RunTotalCount        *int64           `json:"run_total_count,omitempty"`
-	RunCountsUnavailable bool             `json:"run_counts_unavailable,omitempty"`
-	AgentRunningCount    int              `json:"agent_running_count"`
-	AgentTotalCount      int              `json:"agent_total_count"`
-	ReceivedAt           string           `json:"received_at,omitempty"`
+	liveRunning, liveDone, liveTotal int
+	liveIncomplete                   bool
+	liveRosterComplete               bool
+	Runs                             []RunDigestEntry `json:"runs"`
+	Truncated                        bool             `json:"truncated"`
+	RunningCount                     int              `json:"running_count"`
+	RunRunningCount                  *int64           `json:"run_running_count,omitempty"`
+	RunTotalCount                    *int64           `json:"run_total_count,omitempty"`
+	RunCountsUnavailable             bool             `json:"run_counts_unavailable,omitempty"`
+	AgentRunningCount                int              `json:"agent_running_count"`
+	AgentTotalCount                  int              `json:"agent_total_count"`
+	ReceivedAt                       string           `json:"received_at,omitempty"`
 }
 
 func (d DagDigest) MarshalJSON() ([]byte, error) {
@@ -124,6 +131,7 @@ func parseTaskDigest(data json.RawMessage) (*TaskDigest, bool) {
 	if raw, exists := doc["tasks"]; !exists || json.Unmarshal(raw, &rows) != nil || rows == nil {
 		return nil, false
 	}
+	rosterComplete := !truncated
 	tasks := make([]TaskDigestEntry, 0, min(len(rows), maxActivityDigestEntries))
 	for _, raw := range rows {
 		var row map[string]json.RawMessage
@@ -141,7 +149,7 @@ func parseTaskDigest(data json.RawMessage) (*TaskDigest, bool) {
 		}
 		tasks = append(tasks, taskDigestRow(row))
 	}
-	return &TaskDigest{Tasks: tasks, Truncated: truncated, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
+	return &TaskDigest{Tasks: tasks, Truncated: truncated, liveLastLine: lastTaskLine(rows), liveRosterComplete: rosterComplete, ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano)}, true
 }
 
 // Optional malformed clocks are unknown, not missing task membership.
@@ -178,6 +186,8 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 	if raw, exists := doc["runs"]; !exists || json.Unmarshal(raw, &rows) != nil || rows == nil {
 		return nil, false
 	}
+	partial, partialOK := parseOptionalBool(doc, "partial")
+	rosterComplete := !truncated && partialOK && !partial
 	runs := make([]RunDigestEntry, 0, min(len(rows), maxActivityDigestEntries))
 	retainedIDs := 0
 	for _, raw := range rows {
@@ -225,53 +235,7 @@ func parseDagDigest(data json.RawMessage) (*DagDigest, bool) {
 		}
 		runs = append(runs, RunDigestEntry{RunID: id, Status: status, RunningTaskIDs: ids})
 	}
-	return &DagDigest{Runs: runs, Truncated: truncated, RunCountsUnavailable: unavailable, ReceivedAt: time.Now().UTC().Format(time.RFC3339)}, true
-}
-
-type dagTaskOutcome struct {
-	status   string
-	fromNode bool
-}
-
-func terminalDagRunTaskOutcomes(dag json.RawMessage) map[string]dagTaskOutcome {
-	if len(dag) == 0 {
-		return nil
-	}
-	var doc struct {
-		Runs []struct {
-			Status string `json:"status"`
-			Nodes  []struct {
-				TaskID string `json:"task_id"`
-				State  string `json:"state"`
-			} `json:"nodes"`
-		} `json:"runs"`
-	}
-	if json.Unmarshal(dag, &doc) != nil {
-		return nil
-	}
-	var outcomes map[string]dagTaskOutcome
-	for _, run := range doc.Runs {
-		if !terminalDagStatuses[run.Status] {
-			continue
-		}
-		for _, node := range run.Nodes {
-			if node.TaskID == "" {
-				continue
-			}
-			outcome := dagTaskOutcome{status: run.Status}
-			if terminalTaskStatuses[node.State] {
-				outcome = dagTaskOutcome{status: node.State, fromNode: true}
-			}
-			if previous, exists := outcomes[node.TaskID]; exists && previous.fromNode && !outcome.fromNode {
-				continue
-			}
-			if outcomes == nil {
-				outcomes = make(map[string]dagTaskOutcome)
-			}
-			outcomes[node.TaskID] = outcome
-		}
-	}
-	return outcomes
+	return &DagDigest{Runs: runs, Truncated: truncated, RunCountsUnavailable: unavailable, liveRosterComplete: rosterComplete, ReceivedAt: time.Now().UTC().Format(time.RFC3339Nano)}, true
 }
 
 func cloneTaskDigest(src *TaskDigest) *TaskDigest {

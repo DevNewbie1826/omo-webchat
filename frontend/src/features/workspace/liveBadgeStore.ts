@@ -5,7 +5,7 @@ import { summarizeLiveSession } from "./useLiveSessionSummaries";
 import type { AcceptedAgentAggregate, LiveSessionSummary } from "./useLiveSessionSummaries";
 import { applyTaskActivity, mergeTaskAuthorities, reconcileTaskSources, taskAuthorityPayload, applyCountAuthority, type CountAuthority, type TaskAuthority } from "../split/taskAuthority";
 import type { TaskDigest, DagDigest } from "./activityDigest";
-import type { LiveSessionInfo } from "./workspace";
+import type { LiveSessionInfo } from "./useLiveSessionsLean";
 
 /** How long a WS-pushed side or heartbeat-stamp set stays authoritative,
  * mirroring STALE_RUNNING_WINDOW_MS in useLiveSessionSummaries. */
@@ -523,6 +523,7 @@ export function useMergedLiveSummaries(pollSummaries: readonly LiveSessionSummar
       const mergedInfo = projectLiveTaskInfo({
         id: poll.id,
         title: poll.title,
+        ...(poll.lean === undefined ? {} : { lean: poll.lean }),
         ...(poll.active === undefined ? {} : { active: poll.active }),
         task: task.payload,
         dag: dag.payload,

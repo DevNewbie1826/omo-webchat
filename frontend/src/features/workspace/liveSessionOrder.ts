@@ -6,6 +6,7 @@ export interface LiveSessionOrderable {
   /** Main-session work, independent of child counts. */
   readonly active?: boolean;
   readonly runningCount: number;
+  readonly lean?: { readonly last_activity_ms?: number };
 }
 
 function isWorking(session: LiveSessionOrderable): boolean {
@@ -23,8 +24,8 @@ export function isLiveSessionListed(session: LiveSessionOrderable): boolean {
 
 /** Total, stable order for the live-session list: working sessions first,
  * then most recent activity; ties fall back to title then id. The caller
- * supplies last-activity timestamps (ms) keyed by session id; sessions with
- * no known timestamp sort last within their group. */
+ * supplies catalog timestamps as a fallback only; accepted lean receipts take
+ * precedence. Sessions with no known timestamp sort last within their group. */
 export function compareLiveSessions(
   a: LiveSessionOrderable,
   b: LiveSessionOrderable,
@@ -32,8 +33,8 @@ export function compareLiveSessions(
 ): number {
   const workingDelta = Number(isWorking(b)) - Number(isWorking(a));
   if (workingDelta !== 0) return workingDelta;
-  const aMs = lastActivityMs.get(a.id) ?? Number.NEGATIVE_INFINITY;
-  const bMs = lastActivityMs.get(b.id) ?? Number.NEGATIVE_INFINITY;
+  const aMs = a.lean?.last_activity_ms ?? lastActivityMs.get(a.id) ?? Number.NEGATIVE_INFINITY;
+  const bMs = b.lean?.last_activity_ms ?? lastActivityMs.get(b.id) ?? Number.NEGATIVE_INFINITY;
   if (aMs !== bMs) return bMs - aMs;
   if (a.title !== b.title) return a.title < b.title ? -1 : 1;
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;

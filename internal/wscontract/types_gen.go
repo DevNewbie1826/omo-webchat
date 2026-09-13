@@ -446,17 +446,38 @@ type RunStartedFrame struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
-// SessionsActivityFrame — Latest overview activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. snapshots are ordered task then DAG; overflow reports that this socket dropped older activity frames.
+type SessionsActivityFrameRunning struct {
+	Agents *int64 `json:"agents,omitempty"`
+	Dag    *int64 `json:"dag,omitempty"`
+	Tasks  *int64 `json:"tasks,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type SessionsActivityFrameTruncated struct {
+	Dag  *bool `json:"dag,omitempty"`
+	Task *bool `json:"task,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+// SessionsActivityFrame — Lean rendered activity for one subscribed session. durableSessionId is the provider-stable identity; replacesSessionId names a provisional row that sessionId replaces. overflow reports that this socket dropped older activity frames. Rich snapshots and per-object digests are available only on attached chat activity surfaces.
 type SessionsActivityFrame struct {
-	Active            *bool              `json:"active,omitempty"`
-	DagDigest         *DagDigest         `json:"dagDigest,omitempty"`
-	DurableSessionID  string             `json:"durableSessionId"`
-	Overflow          bool               `json:"overflow"`
-	ReplacesSessionID *string            `json:"replacesSessionId,omitempty"`
-	SessionID         string             `json:"sessionId"`
-	Snapshots         []ActivitySnapshot `json:"snapshots"`
-	TaskDigest        *TaskDigest        `json:"taskDigest,omitempty"`
-	Type              string             `json:"type"`
+	Active            *bool                           `json:"active,omitempty"`
+	DagDone           *int64                          `json:"dag_done,omitempty"`
+	DagTotal          *int64                          `json:"dag_total,omitempty"`
+	Done              *int64                          `json:"done,omitempty"`
+	DurableSessionID  string                          `json:"durableSessionId"`
+	ID                *string                         `json:"id,omitempty"`
+	LastActivityMs    *int64                          `json:"last_activity_ms,omitempty"`
+	LastLine          *string                         `json:"last_line,omitempty"`
+	Overflow          bool                            `json:"overflow"`
+	ReplacesSessionID *string                         `json:"replacesSessionId,omitempty"`
+	Running           *SessionsActivityFrameRunning   `json:"running,omitempty"`
+	SessionID         string                          `json:"sessionId"`
+	Title             *string                         `json:"title,omitempty"`
+	Truncated         *SessionsActivityFrameTruncated `json:"truncated,omitempty"`
+	Type              string                          `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1534,12 +1555,48 @@ func (v RunStartedFrame) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *SessionsActivityFrameRunning) UnmarshalJSON(data []byte) error {
+	type plain SessionsActivityFrameRunning
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"agents", "dag", "tasks"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v SessionsActivityFrameRunning) MarshalJSON() ([]byte, error) {
+	type plain SessionsActivityFrameRunning
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *SessionsActivityFrameTruncated) UnmarshalJSON(data []byte) error {
+	type plain SessionsActivityFrameTruncated
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"dag", "task"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v SessionsActivityFrameTruncated) MarshalJSON() ([]byte, error) {
+	type plain SessionsActivityFrameTruncated
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *SessionsActivityFrame) UnmarshalJSON(data []byte) error {
 	type plain SessionsActivityFrame
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"active", "dagDigest", "durableSessionId", "overflow", "replacesSessionId", "sessionId", "snapshots", "taskDigest", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"active", "dag_done", "dag_total", "done", "durableSessionId", "id", "last_activity_ms", "last_line", "overflow", "replacesSessionId", "running", "sessionId", "title", "truncated", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2487,7 +2544,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "sessions.activity":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"active": validationSchema{Type: "boolean"}, "dagDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"agent_running_count": validationSchema{Type: "integer"}, "agent_total_count": validationSchema{Type: "integer"}, "received_at": validationSchema{Type: "string"}, "run_counts_unavailable": validationSchema{Type: "boolean"}, "run_running_count": validationSchema{Type: "integer"}, "run_total_count": validationSchema{Type: "integer"}, "running_count": validationSchema{Type: "integer"}, "runs": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"run_id": validationSchema{Type: "string"}, "running_task_ids": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "status": validationSchema{Type: "string"}}, Required: []string{"run_id", "status", "running_task_ids"}}}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"runs", "truncated", "running_count", "agent_running_count", "agent_total_count"}}, "durableSessionId": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "snapshots": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"data": validationSchema{}, "name": validationSchema{Type: "string", Enum: []string{"omo.task.updated", "omo.dag.updated"}}, "oversized": validationSchema{Type: "boolean"}}, Required: []string{"name", "oversized"}}}, "taskDigest": validationSchema{Type: "object", Properties: map[string]validationSchema{"agent_running_count": validationSchema{Type: "integer"}, "agent_total_count": validationSchema{Type: "integer"}, "received_at": validationSchema{Type: "string"}, "running_count": validationSchema{Type: "integer"}, "tasks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"raw_status": validationSchema{Type: "string"}, "status": validationSchema{Type: "string"}, "task_id": validationSchema{Type: "string"}, "updated_at": validationSchema{Type: "string"}}, Required: []string{"task_id", "status"}}}, "total_count": validationSchema{Type: "integer"}, "truncated": validationSchema{Type: "boolean"}}, Required: []string{"tasks", "truncated", "running_count", "total_count", "agent_running_count", "agent_total_count"}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "snapshots", "overflow"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"active": validationSchema{Type: "boolean"}, "dag_done": validationSchema{Type: "integer"}, "dag_total": validationSchema{Type: "integer"}, "done": validationSchema{Type: "integer"}, "durableSessionId": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "last_activity_ms": validationSchema{Type: "integer"}, "last_line": validationSchema{Type: "string"}, "overflow": validationSchema{Type: "boolean"}, "replacesSessionId": validationSchema{Type: "string"}, "running": validationSchema{Type: "object", Properties: map[string]validationSchema{"agents": validationSchema{Type: "integer"}, "dag": validationSchema{Type: "integer"}, "tasks": validationSchema{Type: "integer"}}}, "sessionId": validationSchema{Type: "string"}, "title": validationSchema{Type: "string"}, "truncated": validationSchema{Type: "object", Properties: map[string]validationSchema{"dag": validationSchema{Type: "boolean"}, "task": validationSchema{Type: "boolean"}}}, "type": validationSchema{Const: "sessions.activity"}}, Required: []string{"type", "sessionId", "durableSessionId", "overflow"}}); err != nil {
 				return nil, err
 			}
 		case "approval":

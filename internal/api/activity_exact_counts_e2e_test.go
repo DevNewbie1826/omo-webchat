@@ -114,7 +114,10 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 		if pushed["sessionId"] != "child-unknown" {
 			t.Fatalf("unexpected partial activity: %v", pushed)
 		}
-		assertOptionalDagRunPair(t, pushed["dagDigest"], complete)
+		assertOptionalDagRunPair(t, retainedDagDigest(t, manager, "child-unknown"), complete)
+		if !complete && pushed["truncated"].(map[string]any)["dag"] != true {
+			t.Fatalf("WS partial disclosure = %v", pushed)
+		}
 		req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/sessions/live", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -136,7 +139,9 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 		for _, row := range rest.Sessions {
 			if row["id"] == "child-unknown" {
 				found = true
-				assertOptionalDagRunPair(t, row["dag_digest"], complete)
+				if !complete && row["truncated"].(map[string]any)["dag"] != true {
+					t.Fatalf("REST partial disclosure = %v", row)
+				}
 			}
 		}
 		if !found {
@@ -186,17 +191,9 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 		payload map[string]any
 	}{{"omo.task.updated", taskPayload}, {"omo.dag.updated", dagPayload}} {
 		daemon.Emit(map[string]any{"type": "extension_event", "sessionId": "child-counts", "name": event.name, "data": event.payload})
-		var pushed map[string]any
-		for attempts := 0; attempts < 3; attempts++ {
-			candidate := collector.next(t, "sessions.activity")
-			snapshots, ok := candidate["snapshots"].([]any)
-			if ok && len(snapshots) > 0 && snapshots[len(snapshots)-1].(map[string]any)["name"] == event.name {
-				pushed = candidate
-				break
-			}
-		}
-		if pushed == nil {
-			t.Fatalf("subscribed socket did not receive %s snapshot", event.name)
+		pushed := collector.next(t, "sessions.activity")
+		if pushed["sessionId"] != "child-counts" {
+			t.Fatalf("unexpected activity: %v", pushed)
 		}
 		assertExactCountFrame(t, event.name, pushed)
 	}
@@ -230,88 +227,12 @@ func TestActivitySubscribeExactCountsSurviveDigestTruncation(t *testing.T) {
 	if row == nil {
 		t.Fatalf("live rows missing child-counts: %v", rest.Sessions)
 	}
-	assertExactCountDigest(t, "live row task_digest", "task", row["task_digest"], 50, 520)
-	assertExactCountDigest(t, "live row dag_digest", "dag", row["dag_digest"], 3, -1)
-}
-
-func assertOptionalDagRunPair(t *testing.T, value any, known bool) {
-	t.Helper()
-	digest, ok := value.(map[string]any)
-	if !ok {
-		t.Fatalf("missing DAG digest: %v", value)
-	}
-	for _, key := range []string{"run_running_count", "run_total_count"} {
-		count, present := digest[key]
-		if present != known || (known && count != float64(1)) {
-			t.Fatalf("DAG %s = %v (present=%v), want known=%v and 1: %v", key, count, present, known, digest)
+	assertExactCountFrame(t, "omo.task.updated", row)
+	assertExactCountFrame(t, "omo.dag.updated", row)
+	for _, summary := range manager.LiveSummaries() {
+		if summary.ChatID == "child-counts" {
+			assertExactCountDigest(t, "retained task digest", "task", digestObject(t, summary.TaskDigest), 50, 520)
+			assertExactCountDigest(t, "retained DAG digest", "dag", digestObject(t, summary.DagDigest), 3, -1)
 		}
-	}
-}
-
-func assertExactCountFrame(t *testing.T, name string, frame map[string]any) {
-	t.Helper()
-	switch name {
-	case "omo.task.updated":
-		assertExactCountDigest(t, "frame taskDigest", "task", frame["taskDigest"], 50, 520)
-	case "omo.dag.updated":
-		assertExactCountDigest(t, "frame dagDigest", "dag", frame["dagDigest"], 3, -1)
-	}
-}
-
-// assertExactCountDigest fails on absent scalars (nil pointers) so the test
-// cannot pass on truncation-derived field omission.
-func assertExactCountDigest(t *testing.T, label, kind string, value any, wantRunning, wantTotal int) {
-	t.Helper()
-	digest, ok := value.(map[string]any)
-	if !ok || digest == nil {
-		t.Fatalf("%s absent (%s)", label, kind)
-	}
-	raw, err := json.Marshal(digest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var typed struct {
-		RunningCount    *int  `json:"running_count"`
-		TotalCount      *int  `json:"total_count"`
-		RunRunningCount *int  `json:"run_running_count"`
-		RunTotalCount   *int  `json:"run_total_count"`
-		Truncated       bool  `json:"truncated"`
-		Tasks           []any `json:"tasks"`
-		Runs            []any `json:"runs"`
-	}
-	if err := json.Unmarshal(raw, &typed); err != nil {
-		t.Fatal(err)
-	}
-	if typed.RunningCount == nil {
-		t.Fatalf("%s running_count absent: %s", label, raw)
-	}
-	if got := *typed.RunningCount; got != wantRunning {
-		t.Fatalf("%s running_count = %d, want %d", label, got, wantRunning)
-	}
-	if wantTotal >= 0 {
-		if typed.TotalCount == nil {
-			t.Fatalf("%s total_count absent: %s", label, raw)
-		}
-		if got := *typed.TotalCount; got != wantTotal {
-			t.Fatalf("%s total_count = %d, want %d (pre-truncation total)", label, got, wantTotal)
-		}
-		if !typed.Truncated || len(typed.Tasks) >= wantTotal {
-			t.Fatalf("%s rows must stay truncated: truncated=%v rows=%d", label, typed.Truncated, len(typed.Tasks))
-		}
-		return
-	}
-	if len(typed.Runs) != 2 {
-		t.Fatalf("%s runs = %s", label, raw)
-	}
-	// The DAG side also reports run membership, not just node work: both
-	// emitted runs are non-terminal, so the exact pair is 2 running of 2.
-	if typed.RunRunningCount == nil || typed.RunTotalCount == nil {
-		t.Fatalf("%s run count scalars absent: %s", label, raw)
-	}
-	if got := *typed.RunRunningCount; got != 2 {
-		t.Fatalf("%s run_running_count = %d, want 2", label, got)
-	}
-	if got := *typed.RunTotalCount; got != 2 {
-		t.Fatalf("%s run_total_count = %d, want 2", label, got)
 	}
 }

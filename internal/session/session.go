@@ -122,11 +122,13 @@ type Session struct {
 	queueFileIdentity                                                       os.FileInfo
 	queueFileErr                                                            error
 	queueHistoryEstablished                                                 bool
+	liveRevision                                                            liveRevision
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 	dagSnapshots                                                            dagSnapshotCache
 	taskSnapshots                                                           taskSnapshotCache
 	engineQueue                                                             EngineQueueSnapshot
+	pendingApproval                                                         *Frame
 
 	todoRead todoReadState
 
@@ -1474,6 +1476,11 @@ func (s *Session) respondApprovalContext(ctx context.Context, id, requestID stri
 	}
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
+	// The responding client's dismissal settles the ask for every subscriber:
+	// clear it before the ack so replayed and live views agree the request is gone.
+	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == id {
+		s.pendingApproval = nil
+	}
 	if err == nil {
 		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: id})
 	}
@@ -1553,6 +1560,12 @@ func (s *Session) attachCheckedTargetWithReplay(sub Subscriber, replay bool, rep
 		if outcome := owner.operations[requestID].outcome; outcome.Kind != "" {
 			initial = append(initial, outcome)
 		}
+	}
+	// A pending interactive ask outlives its live broadcast: replay it to a
+	// subscriber that attached after the request was published so every client
+	// sees the question the session is still waiting on.
+	if s.pendingApproval != nil {
+		initial = append(initial, *s.pendingApproval)
 	}
 	// Journaled durable notices replay after retained send outcomes. The
 	// journal fence spans snapshot and subscriber registration, placing each
@@ -1809,6 +1822,9 @@ func (s *Session) markProviderUnloadedLocked() {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
+	// An unload cancels the provider's pending UI requests; retaining one
+	// would resurface an unanswerable ask on the next attach.
+	s.pendingApproval = nil
 	s.cancelIdleLocked()
 	s.notifyActivityLocked()
 }
@@ -1831,20 +1847,6 @@ func (s *Session) summary() (Summary, bool) {
 	return s.summaryLocked(), true
 }
 
-func (s *Session) summaryLocked() Summary {
-	return Summary{
-		ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile,
-		CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count(), Title: s.title,
-		ActivityPair: ActivityPair{
-			Task: append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[0]]...),
-			Dag:  append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[1]]...),
-		},
-		TaskOversized: s.activityOversized[activitySnapshotOrder[0]],
-		DagOversized:  s.activityOversized[activitySnapshotOrder[1]],
-		TaskDigest:    cloneTaskDigest(s.taskDigest),
-		DagDigest:     cloneDagDigest(s.dagDigest),
-	}
-}
 func (s *Session) publishLocked(f Frame) {
 	switch f.Kind {
 	case FrameRunStarted, FrameRunDone, FrameCompactionStart, FrameCompactionDone:
@@ -1876,6 +1878,7 @@ func (s *Session) invalidate(code, message string) {
 	s.providerRunActive = false
 	s.compactionActive = false
 	s.localCommandActive = false
+	s.pendingApproval = nil
 	s.cancelIdleLocked()
 	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: code, Message: message}})
 	s.lifecycleMu.Unlock()

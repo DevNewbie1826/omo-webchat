@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -59,6 +60,35 @@ func TestGeneratorsFailClosed(t *testing.T) {
 					t.Fatalf("failure did not name %q:\n%s", tc.want, output)
 				}
 			})
+		}
+	}
+}
+
+func TestLiveSchemaContainsOnlyRenderedActivity(t *testing.T) {
+	// Given the machine-consumed source of both generated contracts.
+	data, err := os.ReadFile("schemas/server-frames.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Defs map[string]struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"$defs"`
+	}
+	// When its live-frame definition is parsed.
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	properties := schema.Defs["SessionsActivityFrame"].Properties
+	// Then raw payloads cannot re-enter the generated live DTO.
+	for _, key := range []string{"snapshots", "taskDigest", "dagDigest", "task", "dag", "task_digest", "dag_digest"} {
+		if _, exists := properties[key]; exists {
+			t.Errorf("live schema retains %s", key)
+		}
+	}
+	for _, key := range []string{"id", "title", "active", "last_activity_ms", "running", "done", "dag_done", "dag_total", "truncated", "last_line"} {
+		if _, exists := properties[key]; !exists {
+			t.Errorf("live schema lacks %s", key)
 		}
 	}
 }

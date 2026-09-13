@@ -5,7 +5,7 @@ import { connectChat, parseChatServerFrame, type ChatHandlers, type ChatServerFr
 import { Sidebar } from "../../components/Sidebar";
 import { useLiveSessionInfos } from "./useLiveSessions";
 import { useLiveSessionSummaries, type LiveSessionSummary } from "./useLiveSessionSummaries";
-import { __resetLiveBadgeStoreForTests, ingestExtensionEvent, useMergedLiveSummaries } from "./liveBadgeStore";
+import { __resetLiveBadgeStoreForTests, useMergedLiveSummaries } from "./liveBadgeStore";
 import { listLiveSessions, type LiveSessionInfo } from "./workspace";
 
 vi.mock("../../lib/chatWs", async (original) => ({
@@ -29,7 +29,7 @@ function deferred<T>() {
 }
 const base = { id: "s1", title: "Main", task: null, dag: null };
 type ActivityFrame = Extract<ChatServerFrame, { readonly type: "sessions.activity" }>;
-const wire: ActivityFrame = { type: "sessions.activity", sessionId: "s1", durableSessionId: "s1", snapshots: [], overflow: false };
+const wire: ActivityFrame = { type: "sessions.activity", sessionId: "s1", durableSessionId: "s1", overflow: false };
 
 describe("main running transport and sidebar", () => {
   let root: Root;
@@ -102,7 +102,7 @@ describe("main running transport and sidebar", () => {
     vi.stubGlobal("fetch", vi.fn(() => poll.promise));
     await mount();
     push({ active: value });
-    push({ snapshots: [{ name: "omo.task.updated", data: { tasks: [], agent_running_count: 3 }, oversized: false }] });
+    push({ running: { agents: 3 } });
     expect(active()).toBe(value);
     await act(async () => { poll.resolve(response([{ ...base, active: !value }])); await poll.promise; });
     expect(active()).toBe(value);
@@ -128,7 +128,7 @@ describe("main running transport and sidebar", () => {
     expect(summaries[0]).toMatchObject({ active: true, runningCount: 0 });
     expect(container.querySelector(".th-tree-live")).not.toBeNull();
     expect(container.querySelector(".th-tree-placed--on")).not.toBeNull();
-    act(() => ingestExtensionEvent("s1", "omo.task.updated", { tasks: [], agent_running_count: 7 }));
+    push({ running: { agents: 7 } });
     expect(summaries[0]).toMatchObject({ active: true, runningCount: 7 });
     for (const selector of [".th-sidebar-live-count", ".th-overview-card-running", ".th-tree-children .th-tree-running", ".th-tree-running--workspace"]) {
       expect(container.querySelector(selector)?.textContent).toBe("7");
@@ -138,7 +138,7 @@ describe("main running transport and sidebar", () => {
     push({ active: false });
     expect(summaries[0]).toMatchObject({ active: false, runningCount: 7 });
     expect(container.querySelector(".th-overview-card-running")?.textContent).toBe("7");
-    push({ snapshots: [{ name: "omo.task.updated", data: { tasks: [], agent_running_count: 0 }, oversized: false }] });
+    push({ running: { agents: 0 } });
     expect(container.querySelector(".th-sidebar-live")).not.toBeNull();
     expect(container.querySelector(".th-overview-card-running")).toBeNull();
     expect(container.querySelector(".th-tree-children .th-tree-running")).toBeNull();
@@ -154,7 +154,7 @@ describe("main running transport and sidebar", () => {
     vi.stubGlobal("fetch", vi.fn(() => poll.promise));
     await mount();
     push({ sessionId: "durable", durableSessionId: "durable", active: true });
-    push({ sessionId: "s1", durableSessionId: "s1", snapshots: [{ name: "omo.dag.updated", data: { runs: [] }, oversized: false }] });
+    push({ sessionId: "s1", durableSessionId: "s1", running: { dag: 0 } });
     push({ replacesSessionId: "durable" });
     expect(infos).toHaveLength(1);
     expect(infos[0]).toMatchObject({ id: "s1", active: true });

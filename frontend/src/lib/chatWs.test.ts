@@ -78,29 +78,27 @@ describe("parseChatServerFrame", () => {
     expect(parseChatServerFrame({ type: "messageDelta", delta: { kind: "text_delta" } })).toBeNull();
   });
 
-  it("parses subscribed activity snapshots and remap identity", () => {
+  it("parses subscribed lean activity and remap identity", () => {
     expect(parseChatServerFrame({
       type: "sessions.activity",
       sessionId: "attached-chat",
       durableSessionId: "child-1",
       replacesSessionId: "child-1",
-      snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
-      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 },
+      running: { agents: 1, tasks: 1, dag: 0 },
       overflow: true,
     })).toEqual({
       type: "sessions.activity",
       sessionId: "attached-chat",
       durableSessionId: "child-1",
       replacesSessionId: "child-1",
-      snapshots: [{ name: "omo.task.updated", data: { tasks: [] }, oversized: false }],
-      taskDigest: { tasks: [{ task_id: "t1", status: "running" }], truncated: false, running_count: 1, total_count: 1, agent_running_count: 1, agent_total_count: 1 },
+      running: { agents: 1, tasks: 1, dag: 0 },
       overflow: true,
     });
     expect(parseChatServerFrame({
       type: "sessions.activity",
       sessionId: "child-1",
       durableSessionId: "child-1",
-      snapshots: [{ name: "omo.other", oversized: false }],
+      running: { agents: "invalid" },
       overflow: false,
     })).toBeNull();
   });
