@@ -10,6 +10,8 @@ export class LiveSessionMembership {
   // Receipt provenance outlives the request-sequence membership fence: even a
   // later poll cannot overwrite a tied push from a compatible older server.
   private readonly pushedReceipts = new Map<string, number>();
+  // Disconnect withdraws push authority for main activity only, not child scalars.
+  private readonly disconnected = new Map<string, number>();
   private readonly activeArrivals = new Map<string, number>();
   private readonly closed = new Map<string, number>();
   private polled = new Set<string>();
@@ -26,7 +28,16 @@ export class LiveSessionMembership {
       live.add(id);
       const previous = this.accepted.get(id);
       const pushedReceipt = this.pushedReceipts.get(id);
-      if (pushedReceipt !== undefined && row.lean?.last_activity_ms === pushedReceipt) continue;
+      if (pushedReceipt !== undefined && row.lean?.last_activity_ms === pushedReceipt) {
+        const disconnectedAt = this.disconnected.get(id);
+        if (previous !== undefined && previous.lean?.last_activity_ms === pushedReceipt
+          && disconnectedAt !== undefined && sequence > disconnectedAt && row.active !== undefined) {
+          // A fresh fallback request can recover locally cleared main activity.
+          // The tied push still owns child counts and all other server fields.
+          this.accepted.set(id, { ...previous, active: row.active });
+        }
+        continue;
+      }
       const closedDuringRequest = (this.closed.get(id) ?? -1) > sequence;
       const pushedDuringRequest = (this.activeArrivals.get(id) ?? -1) > sequence
         && row.lean?.last_activity_ms === undefined;
@@ -47,6 +58,7 @@ export class LiveSessionMembership {
       this.accepted.delete(id);
       this.pushed.delete(id);
       this.pushedReceipts.delete(id);
+      this.disconnected.delete(id);
       this.activeArrivals.delete(id);
       this.closed.delete(id);
       retired.push(id);
@@ -73,7 +85,7 @@ export class LiveSessionMembership {
         this.accepted.delete(sourceId);
       }
       if (this.polled.delete(sourceId)) this.polled.add(id);
-      for (const arrivals of [this.pushed, this.pushedReceipts, this.activeArrivals, this.closed]) {
+      for (const arrivals of [this.pushed, this.pushedReceipts, this.disconnected, this.activeArrivals, this.closed]) {
         const at = arrivals.get(sourceId);
         if (at !== undefined) arrivals.set(id, Math.max(at, arrivals.get(id) ?? -1));
         arrivals.delete(sourceId);
@@ -90,6 +102,7 @@ export class LiveSessionMembership {
         ? previous?.active === undefined ? {} : { active: previous.active }
         : { active: frame.active }),
     }));
+    this.disconnected.delete(id);
     this.pushed.delete(id);
     this.pushed.set(id, sequence);
     if (lean.last_activity_ms !== undefined) this.pushedReceipts.set(id, lean.last_activity_ms);
@@ -102,6 +115,7 @@ export class LiveSessionMembership {
         this.accepted.delete(oldest);
         this.pushedReceipts.delete(oldest);
       }
+      this.disconnected.delete(oldest);
       this.activeArrivals.delete(oldest);
       this.closed.delete(oldest);
       retireLiveTaskSessions([oldest]);
@@ -112,6 +126,7 @@ export class LiveSessionMembership {
     const canonical = canonicalLiveSessionId(id);
     const previous = this.accepted.get(canonical);
     if (previous === undefined) return;
+    this.disconnected.delete(canonical);
     this.closed.set(canonical, sequence);
     this.activeArrivals.set(canonical, sequence);
     this.pushed.delete(canonical);
@@ -125,6 +140,7 @@ export class LiveSessionMembership {
   disconnect(sequence: number): void {
     for (const [id, previous] of this.accepted) {
       this.accepted.set(id, { ...previous, active: false });
+      this.disconnected.set(id, sequence);
       this.closed.set(id, sequence);
       this.activeArrivals.set(id, sequence);
     }
@@ -135,6 +151,7 @@ export class LiveSessionMembership {
     this.accepted.clear();
     this.pushed.clear();
     this.pushedReceipts.clear();
+    this.disconnected.clear();
     this.activeArrivals.clear();
     this.closed.clear();
     this.polled.clear();

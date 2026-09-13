@@ -8,6 +8,40 @@ const completed = { ...running, active: false, lean: { ...running.lean, running:
 
 describe("lean membership receipt provenance", () => {
   afterEach(() => __resetLiveBadgeStoreForTests());
+  it("restores unchanged activity from post-disconnect polls while fencing an in-flight response", () => {
+    const membership = new LiveSessionMembership();
+    const row = { ...completed, active: true, lean: { ...completed.lean, last_activity_ms: 300 } };
+    membership.poll([row], 1);
+    membership.push({ type: "sessions.activity", sessionId: "s", durableSessionId: "s", overflow: false,
+      active: true, ...row.lean }, 2);
+    membership.disconnect(4);
+    expect(membership.values()[0]?.active).toBe(false);
+    membership.poll([row], 3);
+    expect(membership.values()[0]?.active).toBe(false);
+    membership.poll([row], 5);
+    expect(membership.values()[0]?.active).toBe(true);
+    membership.poll([row], 6);
+    expect(membership.values()).toEqual([row]);
+  });
+  it("recovers main activity without resurrecting completed children on a tied REST receipt", () => {
+    const membership = new LiveSessionMembership();
+    membership.poll([running], 1);
+    membership.push({ type: "sessions.activity", sessionId: "s", durableSessionId: "s", overflow: false,
+      active: true, ...completed.lean }, 2);
+    membership.disconnect(4);
+    membership.poll([running], 3);
+    expect(membership.values()[0]).toMatchObject({ active: false, lean: completed.lean });
+    membership.poll([running], 5);
+    expect(membership.values()[0]).toMatchObject({ active: true, lean: completed.lean });
+    membership.poll([{ ...running, active: false }], 6);
+    expect(membership.values()[0]).toMatchObject({ active: false, lean: completed.lean });
+    membership.push({ type: "sessions.activity", sessionId: "s", durableSessionId: "s", overflow: false,
+      active: false, ...completed.lean }, 7);
+    membership.poll([running], 8);
+    expect(membership.values()[0]).toMatchObject({ active: false, lean: completed.lean });
+    membership.poll([{ ...running, lean: { ...running.lean, last_activity_ms: 201 } }], 9);
+    expect(membership.values()[0]).toMatchObject({ active: true, lean: { running: { agents: 7 } } });
+  });
   it("accepts the later same-receipt REST observation", () => {
     // Given a running REST snapshot.
     const membership = new LiveSessionMembership();
