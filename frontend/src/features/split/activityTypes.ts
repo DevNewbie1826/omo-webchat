@@ -117,12 +117,23 @@ export interface ActivityState {
   readonly dags: ReadonlyMap<string, ActivityDagRun>;
   /** Known per-ID high-water marks survive membership removal, without retaining graphs. */
   readonly dagFreshness?: ReadonlyMap<string, number>;
+  /** Membership authority, not rich rows: accepted identities and their fence
+   *  survive row removal; unresolved inventories require newer evidence. */
+  readonly dagMembership?: {
+    readonly ids: ReadonlySet<string>;
+    readonly highWater: number;
+    readonly unresolved: boolean;
+  };
   readonly taskFreshness?: ReadonlyMap<string, number>;
   readonly todo: readonly TodoPhase[] | null;
   readonly heartbeats: ReadonlyMap<string, ActivityHeartbeat>;
   /** The retained task/DAG rows are a bounded prefix of a larger history. */
   readonly truncatedTasks?: boolean;
   readonly truncatedDags?: boolean;
+  /** Run-MEMBERSHIP completeness only: the snapshot's run list itself was
+   *  truncated. Kept separate from truncatedDags, which also reports graph/
+   *  node loss — node truncation never implies missing run membership. */
+  readonly truncatedDagRuns?: boolean;
   /** True between chat run.started and run.done; gates shelf staleness. */
   readonly runInFlight?: boolean;
 }

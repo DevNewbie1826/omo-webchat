@@ -8,6 +8,7 @@ import (
 type liveSessionResponse struct {
 	ID            string          `json:"id"`
 	Title         string          `json:"title"`
+	Active        bool            `json:"active"`
 	Task          json.RawMessage `json:"task"`
 	Dag           json.RawMessage `json:"dag"`
 	TaskOversized bool            `json:"task_oversized"`
@@ -47,7 +48,7 @@ func (s *Server) handleListLiveSessions(w http.ResponseWriter, _ *http.Request) 
 		if title == "" {
 			title = x.Title
 		}
-		row := liveSessionResponse{ID: x.ChatID, Title: title, Task: rawOrNull(x.ActivityPair.Task), Dag: rawOrNull(x.ActivityPair.Dag), TaskOversized: x.TaskOversized, DagOversized: x.DagOversized}
+		row := liveSessionResponse{ID: x.ChatID, Title: title, Active: x.Active, Task: rawOrNull(x.ActivityPair.Task), Dag: rawOrNull(x.ActivityPair.Dag), TaskOversized: x.TaskOversized, DagOversized: x.DagOversized}
 		if x.TaskDigest != nil {
 			row.TaskDigest = x.TaskDigest
 		}

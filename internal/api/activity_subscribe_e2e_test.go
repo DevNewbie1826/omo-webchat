@@ -248,6 +248,8 @@ func TestActivitySubscribeEngineShapedEndToEnd(t *testing.T) {
 		"parent_session_id":   chat.DurableSessionID,
 		"truncated_runs":      false,
 		"running_count":       1,
+		"run_running_count":   1,
+		"run_total_count":     1,
 		"agent_running_count": 1,
 		"agent_total_count":   2,
 		"runs": []any{map[string]any{

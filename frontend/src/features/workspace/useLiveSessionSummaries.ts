@@ -25,6 +25,8 @@ const FRESHNESS_TICK_MS = 15_000;
 export interface LiveSessionSummary {
   readonly id: string;
   readonly title: string;
+  /** Main-session work; never included in runningCount. */
+  readonly active?: boolean;
   /** Raw sides retained so WS updates can be merged independently with polls. */
   readonly task?: unknown;
   readonly dag?: unknown;
@@ -275,6 +277,7 @@ export function summarizeLiveSession(
   return {
     id: info.id,
     title: info.title,
+    ...(info.active === undefined ? {} : { active: info.active }),
     task: info.task,
     dag: info.dag,
     ...(info.taskDigest === undefined ? {} : { taskDigest: info.taskDigest }),

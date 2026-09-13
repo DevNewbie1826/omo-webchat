@@ -95,7 +95,7 @@ describe("ActivityShelf tabs", () => {
     // Compact counts: todo done/total; agents running/total including the
     // projected DAG node rows (workflow children surface as agent rows).
     const counts = tabs.map((tab) => tab.querySelector(".th-activity-tab-count")?.textContent);
-    expect(counts).toEqual(["2/4", "2/5", "2/3"]);
+    expect(counts).toEqual(["2/4", "2/5", "1/1"]);
   });
 
   it("shows exactly the selected tabpanel and hides the others", () => {
@@ -177,7 +177,7 @@ describe("ActivityShelf tabs", () => {
     expect(selectedTab(harness.container)).toBe("todo");
     const tabs = [...harness.container.querySelectorAll("[data-activity-tab]")];
     expect(tabs.map((tab) => tab.getAttribute("data-activity-tab"))).toEqual(["todo", "agents", "dag"]);
-    expect(tabs.map((tab) => tab.querySelector(".th-activity-tab-count")?.textContent)).toEqual(["2/4", "2/4", "2/3"]);
+    expect(tabs.map((tab) => tab.querySelector(".th-activity-tab-count")?.textContent)).toEqual(["2/4", "2/4", "1/1"]);
 
     // Reopening through the retained selection restores the same content.
     selectTab(harness.container, "todo");

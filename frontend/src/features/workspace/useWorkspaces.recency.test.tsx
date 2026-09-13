@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { deferred } from "../../App.testHarness";
 import type { LayoutApi } from "../split/useLayout";
 import type { WorkspaceSessionPage, Workspace } from "./workspace";
-import { CATALOG_REFRESH_DELAY_MS, useWorkspaces } from "./useWorkspaces";
+import { CATALOG_REFRESH_DELAY_MS, RECENCY_REFRESH_INTERVAL_MS, useWorkspaces } from "./useWorkspaces";
 
 const workspace: Workspace = { id: "ws", name: "Workspace", path: "/work", chats: [
   { id: "web", name: "Web", provider: "omo" },
@@ -23,6 +23,8 @@ let pages: ReturnType<typeof deferred<WorkspaceSessionPage>>[];
 let touches: ReturnType<typeof deferred<{ readonly recencyMs: number }>>[];
 let touchStatuses: Map<number, number>;
 let paths: string[];
+let liveWorkspaces: Workspace[];
+let mounted: boolean;
 const notify = vi.fn();
 function Probe() {
   current = useWorkspaces({ layout, notify, t: key => key, confirm: async () => true });
@@ -32,11 +34,12 @@ beforeEach(async () => {
   vi.useFakeTimers(); vi.setSystemTime(1000);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear(); paths = []; pages = []; touches = []; touchStatuses = new Map(); notify.mockClear();
+  liveWorkspaces = [workspace]; mounted = true;
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     const url = new URL(input, "http://localhost");
     paths.push(`${init?.method ?? "GET"} ${url.pathname}`);
     if (init?.method === "DELETE") return new Response(null, { status: 204 });
-    if (url.pathname === "/api/workspaces") return Response.json([workspace]);
+    if (url.pathname === "/api/workspaces") return Response.json(liveWorkspaces);
     if (url.pathname.endsWith("/touch")) {
       const index = touches.length;
       const touch = deferred<{ readonly recencyMs: number }>(); touches.push(touch);
@@ -55,7 +58,8 @@ beforeEach(async () => {
   await act(async () => pages[0]?.resolve({ items: [disk, web], nextCursor: "more" }));
 });
 afterEach(async () => {
-  await act(async () => root.unmount()); container.remove(); localStorage.clear();
+  if (mounted) await act(async () => root.unmount());
+  container.remove(); localStorage.clear();
   vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 function rows() { return current.sessionLists.get("ws")?.map(row => [row.id, row.recencyMs]); }
@@ -235,6 +239,94 @@ it("reconciles a newly created row to authoritative use time when the client clo
   await act(async () => touches[0]?.resolve({ recencyMs: 900 }));
   // Then
   expect(rows()?.[0]).toEqual(["created", 900]);
+});
+
+it("keeps the recency cadence firing while the live inputs keep changing", async () => {
+  // Given: the live owner is registered with the catalog scheduler.
+  act(() => current.setRecencyTargets(["ws"]));
+  expect(paths.filter(path => path === "GET /api/workspaces/ws/sessions")).toHaveLength(1);
+  // When: fifteen 4s live ticks each re-publish equal targets (fresh array
+  // identity) alongside other live-driven state replacements.
+  let resolved = 1;
+  for (let tick = 1; tick <= 15; tick++) {
+    await act(async () => vi.advanceTimersByTime(4000));
+    act(() => {
+      current.setRecencyTargets(["ws"]);
+      current.handleChatName("ws", "web", `Live ${tick}`);
+    });
+    while (resolved < pages.length) {
+      const page = pages[resolved]; resolved++;
+      await act(async () => page?.resolve({ items: [disk, web], nextCursor: "" }));
+    }
+  }
+  // Then: 60s elapsed, the 15s cadence fired exactly 4 times - never starved
+  // by changing live inputs, never duplicated by them.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws/sessions")).toHaveLength(5);
+});
+
+it("refreshes only the workspaces that own live sessions", async () => {
+  // Given: two ready workspaces; only ws-a owns a live session (learned via
+  // the membership crawl, not the legacy chat list).
+  const wsA: Workspace = { id: "ws-a", name: "A", path: "/a", chats: [] };
+  const wsB: Workspace = { id: "ws-b", name: "B", path: "/b", chats: [] };
+  liveWorkspaces = [wsA, wsB];
+  await act(async () => current.load());
+  act(() => { current.ensureSessionsLoaded("ws-a"); current.ensureSessionsLoaded("ws-b"); });
+  await act(async () => pages[1]?.resolve({ items: [], nextCursor: "" }));
+  await act(async () => pages[2]?.resolve({ items: [], nextCursor: "" }));
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-a/sessions")).toHaveLength(1);
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-b/sessions")).toHaveLength(1);
+  // When: the consumer registers only the resolved owner.
+  act(() => current.setRecencyTargets(["ws-a"]));
+  await act(async () => vi.advanceTimersByTime(RECENCY_REFRESH_INTERVAL_MS));
+  // Then: exactly one scheduled refresh, and only for the owner.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-a/sessions")).toHaveLength(2);
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-b/sessions")).toHaveLength(1);
+  await act(async () => pages[3]?.resolve({ items: [], nextCursor: "" }));
+  // When: the feed carries only excluded legacy rows, no targets remain.
+  act(() => current.setRecencyTargets([]));
+  await act(async () => vi.advanceTimersByTime(RECENCY_REFRESH_INTERVAL_MS * 4));
+  // Then: the cadence is disarmed - zero further requests for any workspace.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-a/sessions")).toHaveLength(2);
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-b/sessions")).toHaveLength(1);
+});
+
+it("keeps the armed cadence for a stable owner while other owners join and leave", async () => {
+  // Given: two ready workspaces; ws-1 owns a live session throughout while
+  // ws-2's session alternates in and out of the live responses every 4s.
+  const wsA: Workspace = { id: "ws-1", name: "A", path: "/a", chats: [] };
+  const wsB: Workspace = { id: "ws-2", name: "B", path: "/b", chats: [] };
+  liveWorkspaces = [wsA, wsB];
+  await act(async () => current.load());
+  act(() => { current.ensureSessionsLoaded("ws-1"); current.ensureSessionsLoaded("ws-2"); });
+  await act(async () => pages[1]?.resolve({ items: [], nextCursor: "" }));
+  await act(async () => pages[2]?.resolve({ items: [], nextCursor: "" }));
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-1/sessions")).toHaveLength(1);
+  act(() => current.setRecencyTargets(["ws-1"]));
+  // When: 60s elapse with ws-2 joining and leaving the target set between
+  // deadlines - the stable owner's armed cadence must survive the churn.
+  let resolved = 3;
+  for (let tick = 1; tick <= 15; tick++) {
+    await act(async () => vi.advanceTimersByTime(4000));
+    act(() => current.setRecencyTargets(tick % 2 === 1 ? ["ws-1", "ws-2"] : ["ws-1"]));
+    while (resolved < pages.length) {
+      const page = pages[resolved]; resolved++;
+      await act(async () => page?.resolve({ items: [], nextCursor: "" }));
+    }
+  }
+  // Then: ws-1 was refreshed on EVERY 15s deadline - exactly 4 scheduled
+  // requests on top of the first page, none starved by owner churn.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws-1/sessions")).toHaveLength(5);
+});
+
+it("disarms the recency cadence on unmount", async () => {
+  // Given
+  act(() => current.setRecencyTargets(["ws"]));
+  // When
+  await act(async () => root.unmount()); mounted = false;
+  await act(async () => vi.advanceTimersByTime(RECENCY_REFRESH_INTERVAL_MS * 3));
+  // Then: only the harness's first page was ever requested.
+  expect(paths.filter(path => path === "GET /api/workspaces/ws/sessions")).toHaveLength(1);
 });
 
 it("preserves logical file recency when adding its stored wrapper without activation", () => {

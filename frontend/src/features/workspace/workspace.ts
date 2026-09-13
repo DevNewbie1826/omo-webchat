@@ -43,6 +43,8 @@ export interface Workspace {
 export interface LiveSessionInfo {
   readonly id: string;
   readonly title: string;
+  /** Main-session work, independent of process liveness and child counts. */
+  readonly active?: boolean;
   readonly task: unknown;
   readonly dag: unknown;
   readonly taskOversized?: boolean;
@@ -71,6 +73,7 @@ function parseLiveSession(value: unknown): LiveSessionInfo | null {
   return {
     id,
     title: typeof title === "string" ? title : "",
+    ...(typeof record["active"] === "boolean" ? { active: record["active"] } : {}),
     task: record["task"] ?? null,
     dag: record["dag"] ?? null,
     ...(record["task_oversized"] === true ? { taskOversized: true } : {}),
@@ -189,6 +192,9 @@ export async function openWorkspaceSession(
  * of the sidebar's expansion state and visible pagination. */
 export interface WorkspaceSessionMembership {
   memberships: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Last-activity ms per matched session id, from the same catalog rows that
+   * established membership (max of last-used and transcript mtime). */
+  recency: ReadonlyMap<string, number>;
   hadFailures: boolean;
 }
 
@@ -199,23 +205,35 @@ export async function resolveWorkspaceSessionMembership(
 ): Promise<WorkspaceSessionMembership> {
   const results = await Promise.allSettled(workspaces.map(async (workspace) => {
     const matches = new Set<string>();
+    const recency = new Map<string, number>();
     const seenCursors = new Set<string>();
     let cursor = "";
     do {
       const page = await listWorkspaceSessions(workspace.id, cursor, signal);
       for (const item of page.items) {
-        if (item.source === "stored" && sessionIds.has(item.id)) matches.add(item.id);
+        if (item.source === "stored" && sessionIds.has(item.id)) {
+          matches.add(item.id);
+          recency.set(item.id, Math.max(recency.get(item.id) ?? 0, item.recencyMs));
+        }
       }
       if (page.nextCursor === "" || seenCursors.has(page.nextCursor)) break;
       seenCursors.add(page.nextCursor);
       cursor = page.nextCursor;
     } while (matches.size < sessionIds.size);
-    return [workspace.id, matches] as const;
+    return [workspace.id, matches, recency] as const;
   }));
   if (signal?.aborted) throw new DOMException("Membership resolution aborted", "AbortError");
-  const memberships = new Map(results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []));
+  const memberships = new Map(results.flatMap((result) =>
+    result.status === "fulfilled" ? [[result.value[0], result.value[1]] as const] : []));
+  const recency = new Map<string, number>();
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const [id, recencyMs] of result.value[2]) {
+      recency.set(id, Math.max(recency.get(id) ?? 0, recencyMs));
+    }
+  }
   const hadFailures = results.some((result) => result.status === "rejected");
-  return { memberships, hadFailures };
+  return { memberships, recency, hadFailures };
 }
 
 export async function listWorkspaces(): Promise<readonly Workspace[]> {

@@ -45,6 +45,11 @@ export type DagDigest = {
   readonly dagRunningCount?: number;
   readonly agentRunningCount?: number;
   readonly agentTotalCount?: number;
+  /** Exact DAG-run membership scalars over the full pre-truncation
+   *  membership; the sole count authority for the collapsed DAG tab. */
+  readonly dagRunRunningCount?: number;
+  readonly dagRunTotalCount?: number;
+  readonly dagRunCountsUnavailable?: boolean;
 };
 
 function parseTaskDigestEntry(record: Record<string, unknown>): TaskDigestEntry | null {
@@ -126,6 +131,8 @@ export function parseDagDigest(value: unknown): DagDigest | null {
   const dagRunningCount = optCount(value["running_count"]);
   const agentRunningCount = optCount(value["agent_running_count"]);
   const agentTotalCount = optCount(value["agent_total_count"]);
+  const dagRunRunningCount = optCount(value["run_running_count"]);
+  const dagRunTotalCount = optCount(value["run_total_count"]);
   return {
     runs,
     truncated,
@@ -133,5 +140,8 @@ export function parseDagDigest(value: unknown): DagDigest | null {
     ...(dagRunningCount === undefined ? {} : { dagRunningCount }),
     ...(agentRunningCount === undefined ? {} : { agentRunningCount }),
     ...(agentTotalCount === undefined ? {} : { agentTotalCount }),
+    ...(dagRunRunningCount === undefined ? {} : { dagRunRunningCount }),
+    ...(dagRunTotalCount === undefined ? {} : { dagRunTotalCount }),
+    ...(typeof value["run_counts_unavailable"] === "boolean" ? { dagRunCountsUnavailable: value["run_counts_unavailable"] } : {}),
   };
 }

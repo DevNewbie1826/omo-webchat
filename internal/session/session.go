@@ -413,6 +413,7 @@ func (s *Session) sendPrompt(ctx context.Context, msg string, images []map[strin
 	s.promptResponse = false
 	s.localCommandActive = false
 	s.cancelIdleLocked()
+	s.notifyActivityLocked()
 	s.lifecycleMu.Unlock()
 
 	complete := func(_ *omorpc.Response, _ omorpc.EpochToken, callErr error) {
@@ -503,6 +504,7 @@ func (s *Session) completePrompt(seq uint64, msg string, callErr error) {
 				s.completeLocalCommandLocked(seq)
 			}
 		}
+		s.notifyActivityLocked()
 	}
 	s.lifecycleMu.Unlock()
 	if callErr == nil {
@@ -1206,6 +1208,7 @@ func (s *Session) QueryState(ctx context.Context) (*omorpc.SessionState, error) 
 	s.engineQueue = engineQueueFromState(out)
 	if (s.activityHydrationPending || s.hasUnresolvedSendLocked()) && activityRevision == s.activityRevision && !s.resumable && !s.closed {
 		s.hydrateActivityLocked(out)
+		s.notifyActivityLocked()
 		s.activityHydrationPending = out.IsStreaming == nil || out.IsCompacting == nil || s.hasUnresolvedSendLocked()
 		if s.activeLocked() || s.recoveryWorkLocked() {
 			s.cancelIdleLocked()
@@ -1807,6 +1810,13 @@ func (s *Session) markProviderUnloadedLocked() {
 	s.compactionActive = false
 	s.localCommandActive = false
 	s.cancelIdleLocked()
+	s.notifyActivityLocked()
+}
+
+func (s *Session) notifyActivityLocked() {
+	if s.manager != nil {
+		s.manager.notifySessionActivityLocked(s)
+	}
 }
 
 func (s *Session) activeLocked() bool {
@@ -1836,6 +1846,10 @@ func (s *Session) summaryLocked() Summary {
 	}
 }
 func (s *Session) publishLocked(f Frame) {
+	switch f.Kind {
+	case FrameRunStarted, FrameRunDone, FrameCompactionStart, FrameCompactionDone:
+		s.notifyActivityLocked()
+	}
 	if f.Kind == FrameNotice && s.manager != nil {
 		// The journal fence covers both admission and broadcaster fanout so an
 		// attaching subscriber receives this frame through replay or live delivery.

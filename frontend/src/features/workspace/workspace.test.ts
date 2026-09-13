@@ -66,7 +66,7 @@ describe("listWorkspaceSessions", () => {
       const path = String(input);
       return path.includes("cursor=page-2")
         ? okResponse({
-            items: [{ id: "cursor-only", name: "Cursor only", source: "stored", recencyMs: 1 }],
+            items: [{ id: "cursor-only", name: "Cursor only", source: "stored", recencyMs: 7 }],
             nextCursor: "page-3",
           })
         : okResponse({
@@ -88,6 +88,49 @@ describe("listWorkspaceSessions", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(membership.memberships.get("ws-1")).toEqual(new Set(["cursor-only"]));
+    expect(membership.recency.get("cursor-only")).toBe(7);
     expect(membership.hadFailures).toBe(false);
+  });
+
+  it("returns the catalog recency for every matched session without extra requests", async () => {
+    const workspace: Workspace = { id: "ws-1", name: "Workspace", path: "/work", chats: [] };
+    vi.stubGlobal("fetch", vi.fn(async () => okResponse({
+      items: [
+        { id: "live-a", name: "A", source: "stored", recencyMs: 30 },
+        { id: "live-b", name: "B", source: "stored", recencyMs: 20 },
+        { id: "other", name: "Other", source: "stored", recencyMs: 10 },
+        { id: "live-a", name: "A alias", source: "discovered", recencyMs: 99 },
+      ],
+      nextCursor: "",
+    })));
+
+    const membership = await resolveWorkspaceSessionMembership(
+      [workspace],
+      new Set(["live-a", "live-b"]),
+    );
+
+    expect(membership.recency).toEqual(new Map([["live-a", 30], ["live-b", 20]]));
+    expect(membership.hadFailures).toBe(false);
+  });
+
+  it("keeps the highest recency when workspaces disagree about a session", async () => {
+    const workspaces: Workspace[] = [
+      { id: "ws-1", name: "One", path: "/one", chats: [] },
+      { id: "ws-2", name: "Two", path: "/two", chats: [] },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      okResponse({
+        items: [{
+          id: "live",
+          name: "Live",
+          source: "stored",
+          recencyMs: String(input).includes("ws-1") ? 40 : 60,
+        }],
+        nextCursor: "",
+      })));
+
+    const membership = await resolveWorkspaceSessionMembership(workspaces, new Set(["live"]));
+
+    expect(membership.recency.get("live")).toBe(60);
   });
 });

@@ -449,6 +449,18 @@
           "type": "integer",
           "description": "Exact running nodes summed over all non-terminal runs of the full pre-truncation graph; independent of the truncated runs list."
         },
+        "run_running_count": {
+          "type": "integer",
+          "description": "Exact count of DAG runs whose status is not terminal over the full pre-truncation membership; terminal statuses are completed, failed, cancelled, canceled."
+        },
+        "run_total_count": {
+          "type": "integer",
+          "description": "Exact session-cumulative count of all DAG runs; independent of the truncated runs list."
+        },
+        "run_counts_unavailable": {
+          "type": "boolean",
+          "description": "True when a run-count-capable producer cannot establish exact run membership; neither run scalar is emitted in that case. Absence of all three fields identifies a legacy producer."
+        },
         "agent_running_count": {
           "type": "integer",
           "description": "Exact running agent work after full-membership task/DAG overlap removal; task status is authoritative for overlap."
@@ -497,6 +509,9 @@
         },
         "dagDigest": {
           "$ref": "#/$defs/DagDigest"
+        },
+        "active": {
+          "type": "boolean"
         },
         "overflow": {
           "type": "boolean"

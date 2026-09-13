@@ -6,6 +6,7 @@ import { checkAuth, logout } from "./features/auth/auth";
 import { setUnauthorizedHandler } from "./lib/api";
 import { LoginPage } from "./features/auth/LoginPage";
 import { MOBILE_QUERY, Sidebar } from "./components/Sidebar";
+import type { LiveRecencyShare } from "./components/Sidebar";
 import type { ToastKind } from "./components/SessionTree";
 import { WorkspaceWizard } from "./features/workspace/WorkspaceWizard";
 import { ChatPane } from "./features/split/ChatPane";
@@ -34,11 +35,24 @@ import { SessionDraftProvider } from "./features/split/sessionDraft";
 import { LiveSessionList } from "./features/workspace/LiveSessionList";
 import { useLiveSessionSummaries } from "./features/workspace/useLiveSessionSummaries";
 import { useMergedLiveSummaries } from "./features/workspace/liveBadgeStore";
+import { compareLiveSessions, isLiveSessionListed } from "./features/workspace/liveSessionOrder";
 import "./styles/home-live.css";
 
 const SPLIT_QUERY = "(min-width: 1024px)";
 
 const TOAST_DISMISS_MS = 2600;
+
+function sameRecencyMap(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, ms] of a) if (b.get(id) !== ms) return false;
+  return true;
+}
+
+function sameOwnerSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
 
 interface Toast {
   readonly id: number;
@@ -85,7 +99,7 @@ export function App() {
   const {
     workspaces, setWorkspaces, expanded, setExpanded, sessions,
     sessionLists, sessionPages, load, addCreatedSession, loadMoreSessions,
-    ensureSessionsLoaded, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
+    ensureSessionsLoaded, setRecencyTargets, markSessionUsed, toggleExpanded, handleDeleteWorkspace,
     handleDeleteTerminal, handleRenameWorkspace, handleRenameTerminal,
     handleChatName,
   } = useWorkspaces({ notify, t, layout, confirm });
@@ -195,33 +209,85 @@ export function App() {
     }
   };
 
-  // The home empty state pins the same running-session cards the sidebar
-  // shows, derived from the same shared poller and WS-override store, so this
-  // consumer adds no network traffic. Only sessions with running agents pin;
-  // cards activate through the same select/open path the picker uses.
+  // The home empty state lists every live session - idle ones included, so
+  // main-only work (active flag) appears here exactly as in the sidebar -
+  // derived from the same shared poller and WS-override store, so this
+  // consumer adds no network traffic. Cards activate through the same
+  // select/open path the picker uses.
   const homePollSummaries = useLiveSessionSummaries(authed === true);
   const homeLiveSummaries = useMergedLiveSummaries(homePollSummaries);
-  const homeRunningSummaries = useMemo(
-    () => homeLiveSummaries.filter((summary) => summary.runningCount > 0),
-    [homeLiveSummaries],
+  // Recency comes from the already-loaded catalog rows, raised by whatever
+  // the sidebar's membership crawl learned and published; no extra fetch.
+  const [liveShare, setLiveShare] = useState<LiveRecencyShare | null>(null);
+  const liveShareRef = useRef<LiveRecencyShare | null>(null);
+  const handleLiveRecencyChange = useCallback((share: LiveRecencyShare): void => {
+    const previous = liveShareRef.current;
+    if (previous !== null
+      && sameRecencyMap(previous.recencyMs, share.recencyMs)
+      && sameOwnerSet(previous.ownerWsIds, share.ownerWsIds)) return;
+    liveShareRef.current = share;
+    setLiveShare(share);
+  }, []);
+  const homeRecencyMs = useMemo(() => {
+    const recency = new Map<string, number>();
+    for (const listed of sessionLists.values()) {
+      for (const session of listed) {
+        recency.set(session.id, Math.max(recency.get(session.id) ?? 0, session.recencyMs));
+      }
+    }
+    for (const [id, recencyMs] of liveShare?.recencyMs ?? []) {
+      recency.set(id, Math.max(recency.get(id) ?? 0, recencyMs));
+    }
+    return recency;
+  }, [sessionLists, liveShare]);
+  const homeOrderedSummaries = useMemo(
+    () => homeLiveSummaries.filter(isLiveSessionListed).sort((a, b) => compareLiveSessions(a, b, homeRecencyMs)),
+    [homeLiveSummaries, homeRecencyMs],
   );
   const homeRunningCount = useMemo(
-    () => homeRunningSummaries.reduce((total, summary) => total + summary.runningCount, 0),
-    [homeRunningSummaries],
+    () => homeOrderedSummaries.reduce((total, summary) => total + summary.runningCount, 0),
+    [homeOrderedSummaries],
   );
   const homeSessionOpen = useSessionOpenAttempts(openSession);
 
-  // The same running-session block the mobile empty state shows, offered to
+  // Recency freshness: neither surface owns a timer. The sidebar publishes
+  // the workspaces that own live sessions (resolved through its membership
+  // crawl, catalog rows and chat lists), and the catalog scheduler in
+  // useWorkspaces owns the single periodic cadence for exactly those
+  // workspaces. Until the first publication arrives there is nothing to arm.
+  // Tracks whether this effect has registered recency targets, so the
+  // authentication-ended branch below clears exactly what it registered.
+  const recencyRegisteredRef = useRef(false);
+  useEffect(() => {
+    if (authed !== true) {
+      // Authentication ended (logout or the unauthorized handler): the hook
+      // stays mounted on the login page, so explicitly clear the registered
+      // targets - an empty list disarms the scheduler's cadence.
+      if (recencyRegisteredRef.current) {
+        recencyRegisteredRef.current = false;
+        setRecencyTargets([]);
+      }
+      return;
+    }
+    if (liveShare === null) return;
+    recencyRegisteredRef.current = true;
+    setRecencyTargets([...liveShare.ownerWsIds]);
+  }, [authed, liveShare, setRecencyTargets]);
+
+  // The same live-session block the mobile empty state shows, offered to
   // SplitView so wide-layout empty panes render it above their session
-  // picker instead of dropping the cards.
-  const homeRunningSessions = homeRunningSummaries.length > 0 ? (
+  // picker instead of dropping the cards. Nothing renders when no session
+  // is live.
+  const homeRunningSessions = homeOrderedSummaries.length > 0 ? (
     <div className="th-home-live">
       <div className="th-home-live-label">
-        {t("sidebar.overview")}
-        <span className="th-home-live-count">{homeRunningCount}</span>
+        {t("sidebar.sessions")}
+        {homeRunningCount > 0 && (
+          <span className="th-home-live-count" aria-label={t("overview.runningAria", { n: homeRunningCount })}>{homeRunningCount}</span>
+        )}
       </div>
       <LiveSessionList
-        summaries={homeRunningSummaries}
+        summaries={homeOrderedSummaries}
         workspaces={workspaces}
         sessionLists={sessionLists}
         onSelect={selectTerminal}
@@ -331,6 +397,7 @@ export function App() {
             onRenameTerminal={handleRenameTerminal}
             onLogout={() => void handleLogout()}
             notify={notify}
+            onLiveRecencyChange={handleLiveRecencyChange}
           />
           <main className="th-main">
             {toast && (

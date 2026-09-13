@@ -15,7 +15,7 @@ import { requireElement } from "./chatPaneTestHarness";
  * Collapsed tab-count contract (successor of the summary-bar separator
  * contract). The shelf no longer mounts a summary bar, so the per-region
  * information it carried — todo done/total, agents running/total, DAG
- * done/total — must ride in the permanent tab strip, visible while the
+ * running/total runs — must ride in the permanent tab strip, visible while the
  * panel is closed, and survive a close/reopen round trip unchanged.
  */
 
@@ -45,7 +45,7 @@ describe("ActivityShelf collapsed tab counts", () => {
         todo: [{ name: "phase", tasks: [] }],
       }),
     );
-    expect(tabCounts()).toEqual(["0/0", "2/4", "2/3"]);
+    expect(tabCounts()).toEqual(["0/0", "2/4", "1/1"]);
   });
 
   it("keeps the counts visible while the panel is closed and after a close/reopen", () => {
@@ -57,7 +57,7 @@ describe("ActivityShelf collapsed tab counts", () => {
         todo: [{ name: "phase", tasks: [{ content: "done", status: "completed" }] }],
       }),
     );
-    expect(tabCounts()).toEqual(["1/1", "2/4", "2/3"]);
+    expect(tabCounts()).toEqual(["1/1", "2/4", "1/1"]);
 
     const selectedTab = () =>
       requireElement(
@@ -69,7 +69,7 @@ describe("ActivityShelf collapsed tab counts", () => {
     click(selectedTab());
     expect(harness.container.querySelector(".th-activity-panel")).toBeNull();
     // Collapsed again: the same counts, same order.
-    expect(tabCounts()).toEqual(["1/1", "2/4", "2/3"]);
+    expect(tabCounts()).toEqual(["1/1", "2/4", "1/1"]);
   });
 
   it("leaves the count off a tab with no content instead of showing an empty pair", () => {

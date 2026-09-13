@@ -20,10 +20,9 @@ export interface SessionTreeProps {
   readonly activeTerminalId: string | null;
   readonly placedSessions: ReadonlySet<string>;
   readonly liveSessions: ReadonlySet<string>;
-  /** Live session id -> exact running agent count from server scalars; rows
-   * show a badge while > 0. Zero running renders no badge and no View live
-   * action. */
+  /** Exact child-agent counts, never including main-session work. */
   readonly runningCounts?: ReadonlyMap<string, number> | undefined;
+  readonly activeSessions?: ReadonlySet<string> | undefined;
   readonly aggregateSessionIds?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   readonly expanded: ReadonlySet<string>;
   readonly sessionLists: ReadonlyMap<string, readonly WorkspaceSession[]>;
@@ -55,6 +54,7 @@ export function SessionTree({
   placedSessions,
   liveSessions,
   runningCounts,
+  activeSessions,
   aggregateSessionIds,
   expanded,
   sessionLists,
@@ -149,14 +149,16 @@ export function SessionTree({
               <span className="th-tree-count">{mergedSessionIds.size}</span>
               {(() => {
                 const workspaceRunning = Array.from(mergedSessionIds).reduce((total, id) => total + (runningCounts?.get(id) ?? 0), 0);
-                return workspaceRunning > 0 ? (
+                const mainRunning = Array.from(mergedSessionIds).some((id) => activeSessions?.has(id));
+                return workspaceRunning > 0 || mainRunning ? (
                   <span
                     className="th-tree-running th-tree-running--workspace"
                     role="img"
-                    aria-label={t("sidebar.ws.runningAgents", { n: workspaceRunning })}
+                    aria-label={workspaceRunning > 0 ? t("sidebar.ws.runningAgents", { n: workspaceRunning }) : t("sidebar.tm.mainRunning")}
+                    title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
                   >
                     <span className="th-tree-running-dot" aria-hidden="true" />
-                    {workspaceRunning}
+                    {workspaceRunning > 0 ? workspaceRunning : null}
                   </span>
                 ) : null;
               })()}
@@ -214,6 +216,7 @@ export function SessionTree({
                   : null;
                 const runningInfo = runningCounts?.get(item.id);
                 const running = runningInfo ?? 0;
+                const mainRunning = activeSessions?.has(item.id) === true;
                 const displayName = item.name.trim() !== "" ? item.name : t("sidebar.tm.untitled", { id: item.id.slice(0, 8) });
                 const discoveredLabel = discovered
                   ? t("sidebar.tm.discoveredHint", { name: displayName })
@@ -266,7 +269,7 @@ export function SessionTree({
                     {(activeElsewhere || openFailed) && (
                       <span className="th-tree-session-active" role="status">
                         {t(activeElsewhere ? "sidebar.tm.sessionActive" : "sidebar.tm.openFailed")}
-                        {activeElsewhere && onViewLive && running > 0 && (
+                        {activeElsewhere && onViewLive && (running > 0 || mainRunning) && (
                           <button
                             type="button"
                             className="th-btn th-btn--ghost th-tree-view-live"
@@ -284,14 +287,15 @@ export function SessionTree({
                         </button>
                       </span>
                     )}
-                    {running > 0 && (
+                    {(running > 0 || mainRunning) && (
                       <span
                         className="th-tree-running"
                         role="img"
-                        aria-label={t("sidebar.tm.runningAgents", { n: running })}
+                        aria-label={running > 0 ? t("sidebar.tm.runningAgents", { n: running }) : t("sidebar.tm.mainRunning")}
+                        title={mainRunning ? t("sidebar.tm.mainRunning") : undefined}
                       >
                         <span className="th-tree-running-dot" aria-hidden="true" />
-                        {running}
+                        {running > 0 ? running : null}
                       </span>
                     )}
                     {tm ? (
