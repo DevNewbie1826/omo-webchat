@@ -12,6 +12,7 @@ import (
 
 	"github.com/DevNewbie1826/omo-webchat/internal/fileid"
 	"github.com/DevNewbie1826/omo-webchat/internal/fileio"
+	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
 
 const (
@@ -52,20 +53,12 @@ type storedGoalState struct {
 	} `json:"goal"`
 }
 
-// CodingAgentDir resolves the omo coding agent dir: an explicit environment
-// override wins, otherwise ~/.omo/agent.
+// CodingAgentDir resolves the coding-agent state directory via omorpc.CodingAgentDir.
+// Observed engine behavior - an explicit directory wins over the default,
+// several legacy variable spellings are read with first defined winning,
+// default is ~/.omo/agent.
 func CodingAgentDir() string {
-	if v := os.Getenv("OMO_CODING_AGENT_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("SENPI_CODING_AGENT_DIR"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".omo", "agent")
+	return omorpc.CodingAgentDir()
 }
 
 // SessionDirNameForCwd encodes an absolute working directory the way omo

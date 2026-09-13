@@ -599,13 +599,10 @@ var _ io.WriteCloser = (*boundedSpawnLog)(nil)
 
 func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 	if cfg.AgentDir == "" {
-		cfg.AgentDir = os.Getenv("OMO_CODING_AGENT_DIR")
+		cfg.AgentDir = CodingAgentDir()
 		if cfg.AgentDir == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return cfg, fmt.Errorf("omorpc: resolve home directory: %w", err)
-			}
-			cfg.AgentDir = filepath.Join(home, ".omo", "agent")
+			_, err := os.UserHomeDir()
+			return cfg, fmt.Errorf("omorpc: resolve home directory: %w", err)
 		}
 	}
 	if cfg.SocketPath == "" {
@@ -626,6 +623,10 @@ func normalizeEnsureConfig(cfg EnsureConfig) (EnsureConfig, error) {
 	if cfg.Env == nil {
 		cfg.Env = os.Environ()
 	}
+	// Observed engine behavior - the engine resolves its state directory itself
+	// unless told explicitly; pinning the variable makes the directory the server
+	// scans and sockets into the directory the spawned engine actually uses.
+	cfg.Env = setEnv(cfg.Env, "OMO_CODING_AGENT_DIR", cfg.AgentDir)
 	if cfg.ReadyTimeout == 0 {
 		cfg.ReadyTimeout = 10 * time.Second
 	}
