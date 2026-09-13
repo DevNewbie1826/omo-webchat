@@ -47,6 +47,12 @@ var (
 	// ErrUnsupportedProvider reports metadata that this bridge cannot launch.
 	ErrUnsupportedProvider = errors.New("chat provider is not supported")
 	inPlaceAuthorizations  sync.Map
+	// inPlaceAuthMu serializes mutations of an in-place authorization entry
+	// (arming, attempt takeover, release, checker swap, force consumption) so
+	// that a WS create attempt, a REST re-authorization, and the
+	// CursorForOpen gate cannot interleave into a lost update. The slow
+	// activity check itself runs outside the lock.
+	inPlaceAuthMu sync.Mutex
 )
 
 // SessionActivity describes source-file changes observed during the takeover
@@ -76,15 +82,111 @@ type inPlaceAuthorizationKey struct {
 type inPlaceAuthorization struct {
 	force atomic.Bool
 	check SessionActivityCheck
+	// owner identifies the connection.create attempt that currently owns the
+	// armed force bit. nil means the bit is REST-owned and is only cleared by
+	// consumption at the CursorForOpen boundary. Guarded by inPlaceAuthMu,
+	// like every other mutation of an entry's fields.
+	owner *inPlaceForceAttempt
+}
+
+// inPlaceForceAttempt is the token handed out by beginInPlaceForceAttempt:
+// it both identifies the owning create flight and carries the authorization
+// key its release must consult.
+type inPlaceForceAttempt struct {
+	key inPlaceAuthorizationKey
+}
+
+// inPlaceForceAttemptContextKey scopes the attempt token a force create
+// carries through its request context into the manager flight.
+type inPlaceForceAttemptContextKey struct{}
+
+// inPlaceForceAttemptFromContext returns the create attempt whose acquisition
+// is reaching the cursor boundary, or nil for acquisitions outside any
+// force-armed create flight (REST opens, resumes, other transports).
+func inPlaceForceAttemptFromContext(ctx context.Context) *inPlaceForceAttempt {
+	attempt, _ := ctx.Value(inPlaceForceAttemptContextKey{}).(*inPlaceForceAttempt)
+	return attempt
 }
 
 // AuthorizeInPlaceOpen carries a REST force choice to the next provider
 // acquisition. The activity checker remains attached for later reopens, but
 // force is consumed once at the CursorForOpen boundary.
+//
+// An existing entry is mutated in place under inPlaceAuthMu instead of being
+// replaced: force=true arms the bit and takes REST ownership (clearing any
+// attempt owner, leaving the one-shot REST handoff unchanged); force=false
+// attaches or replaces only the activity checker and preserves an armed
+// force, so a non-force reopen can no longer revoke an in-flight WS force.
+// A nil check never wipes an already-attached checker.
 func AuthorizeInPlaceOpen(store *cursorstore.Store, chatID string, force bool, check SessionActivityCheck) {
-	authorization := &inPlaceAuthorization{check: check}
-	authorization.force.Store(force)
-	inPlaceAuthorizations.Store(inPlaceAuthorizationKey{store: store, chatID: chatID}, authorization)
+	key := inPlaceAuthorizationKey{store: store, chatID: chatID}
+	inPlaceAuthMu.Lock()
+	defer inPlaceAuthMu.Unlock()
+	authorization := loadOrCreateInPlaceAuthorization(key)
+	if force {
+		authorization.force.Store(true)
+		authorization.owner = nil
+	}
+	if check != nil {
+		authorization.check = check
+	}
+}
+
+// beginInPlaceForceAttempt arms the in-place force authorization for one
+// connection.create flight and returns the attempt token that owns it. The
+// caller must defer releaseInPlaceForceAttempt on the returned token so the
+// bit cannot outlive the flight that armed it.
+//
+// Arming is first-writer-wins: if an armed authorization already exists
+// (another pending WS attempt, or a REST handoff), the newer attempt's arm is
+// a no-op. Taking over would let this attempt's release revoke an
+// authorization it never owned; instead the newer attempt stays unarmed, its
+// own acquisition runs the activity gate, and — while someone else still owns
+// the entry — fails with the retryable session-active outcome.
+func beginInPlaceForceAttempt(store *cursorstore.Store, chatID string) *inPlaceForceAttempt {
+	key := inPlaceAuthorizationKey{store: store, chatID: chatID}
+	attempt := &inPlaceForceAttempt{key: key}
+	inPlaceAuthMu.Lock()
+	defer inPlaceAuthMu.Unlock()
+	authorization := loadOrCreateInPlaceAuthorization(key)
+	if authorization.force.Load() {
+		return attempt
+	}
+	authorization.force.Store(true)
+	authorization.owner = attempt
+	return attempt
+}
+
+// releaseInPlaceForceAttempt revokes the force authorization a create flight
+// armed, but only while that flight still owns it: a bit already consumed by
+// CursorForOpen or re-owned by a newer attempt (or handed back to REST as an
+// owner-nil authorization) is left untouched.
+func releaseInPlaceForceAttempt(attempt *inPlaceForceAttempt) {
+	if attempt == nil {
+		return
+	}
+	inPlaceAuthMu.Lock()
+	defer inPlaceAuthMu.Unlock()
+	if value, ok := inPlaceAuthorizations.Load(attempt.key); ok {
+		authorization := value.(*inPlaceAuthorization)
+		if authorization.owner == attempt {
+			authorization.force.Store(false)
+			authorization.owner = nil
+		}
+	}
+}
+
+// loadOrCreateInPlaceAuthorization returns the live entry for key, creating
+// an empty one on first use. Callers must hold inPlaceAuthMu; mutating the
+// returned entry in place (never replacing it) is what keeps a concurrent
+// consumer or checker swap from losing state.
+func loadOrCreateInPlaceAuthorization(key inPlaceAuthorizationKey) *inPlaceAuthorization {
+	if value, ok := inPlaceAuthorizations.Load(key); ok {
+		return value.(*inPlaceAuthorization)
+	}
+	authorization := &inPlaceAuthorization{}
+	inPlaceAuthorizations.Store(key, authorization)
+	return authorization
 }
 
 // Config supplies the independently-owned v2 session stack.
@@ -1075,6 +1177,21 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 		c.sendError("unsupported_provider", ErrUnsupportedProvider.Error(), "", "")
 		return
 	}
+	// A second-device attach rejected by the in-place activity gate can be
+	// retried explicitly: force authorizes this create attempt's acquisition
+	// at CursorForOpen exactly like the REST open path does. The attempt owns
+	// the authorization: releasing it on every return path keeps a completed
+	// live attach, rejection, or cancellation from leaving force armed for a
+	// later unrelated acquisition.
+	if f.Force != nil && *f.Force && cursorstore.IsInPlaceSession(rec) {
+		attempt := beginInPlaceForceAttempt(c.bridge.cfg.Store, rec.ID)
+		defer releaseInPlaceForceAttempt(attempt)
+		// The armed bit belongs to THIS create: its request context carries the
+		// attempt token through the manager flight, and CursorForOpen consumes
+		// the bit only for this attempt's own acquisition. Every other
+		// acquisition runs the activity gate normally and leaves the bit armed.
+		ctx = context.WithValue(ctx, inPlaceForceAttemptContextKey{}, attempt)
+	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
 	commitBinding := func(acquired *session.Session, started bool, acquiredDetach func()) error {
 		wrappedDetach := sub.wrapDetach(acquiredDetach)
@@ -1898,13 +2015,28 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 		store := (*cursorstore.Store)(s)
 		forced := false
 		check := SessionActivityCheck(observeSessionActivity)
+		inPlaceAuthMu.Lock()
 		if value, ok := inPlaceAuthorizations.Load(inPlaceAuthorizationKey{store: store, chatID: id}); ok {
 			authorization := value.(*inPlaceAuthorization)
-			forced = authorization.force.CompareAndSwap(true, false)
+			// A WS attempt's armed bit is consumable only by that attempt's own
+			// acquisition — the flight whose request context carries the owning
+			// token. A REST-owned entry (owner nil) is the one-shot
+			// next-acquisition handoff: whatever acquires next consumes it,
+			// including a WS attempt's acquisition. Any other acquisition must
+			// not touch the armed bit; it runs the activity gate below, which
+			// yields the retryable session-active outcome while another attempt
+			// still owns the authorization.
+			if authorization.owner == nil || authorization.owner == inPlaceForceAttemptFromContext(ctx) {
+				if authorization.force.CompareAndSwap(true, false) {
+					forced = true
+					authorization.owner = nil
+				}
+			}
 			if authorization.check != nil {
 				check = authorization.check
 			}
 		}
+		inPlaceAuthMu.Unlock()
 		if !forced {
 			activity, err := check(ctx, c.SessionFile, takeoverActivityWindow)
 			if err != nil {

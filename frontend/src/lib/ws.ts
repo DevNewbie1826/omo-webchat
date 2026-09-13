@@ -59,6 +59,10 @@ const PING_INTERVAL_MS = 20_000;
 const PONG_TIMEOUT_MS = 10_000;
 /** Pong deadline for the resume-time liveness probe on an OPEN socket. */
 const RESUME_PONG_TIMEOUT_MS = 2_000;
+/** Upgrade deadline: a socket that never leaves CONNECTING (a stalled
+ * mobile handshake dispatches neither onopen nor onclose) is recycled so the
+ * pane cannot sit on "reconnecting" forever. */
+const OPEN_TIMEOUT_MS = 15_000;
 /** Application close code when the heartbeat detects a dead connection. */
 const CLOSE_PING_TIMEOUT = 4000;
 /** Application close code when a visibility reconnect replaces a stale socket. */
@@ -83,6 +87,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
   let retryTimer = 0;
   let pingTimer = 0;
   let pongTimer = 0;
+  let openTimer = 0;
   let awaitingPong = false;
   // True while the short resume liveness probe is outstanding (suspect
   // window): the socket looks OPEN but may be dead, so sends fail fast.
@@ -122,11 +127,30 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
     const ws = new WebSocket(`${proto}//${window.location.host}${path}`);
     socket = ws;
     closeSignaled = false;
+    window.clearTimeout(openTimer);
+    openTimer = window.setTimeout(() => {
+      // Stuck in CONNECTING: neither onopen nor onclose has fired. Treat it
+      // like a dropped socket — detach, close, and take the normal backoff
+      // path instead of waiting on the OS TCP timeout (which can take
+      // minutes and may never dispatch on some mobile networks).
+      if (closed || reconnectVetoed || socket !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+      closeSignaled = true;
+      ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+      ws.close();
+      handlers.onClose?.(1006);
+      if (closed) return;
+      if (!(options.reconnect?.(1006) ?? true)) {
+        vetoReconnect();
+        return;
+      }
+      scheduleReconnect();
+    }, OPEN_TIMEOUT_MS);
     // False until this socket's onopen fires: a close before that means the
     // HTTP upgrade itself was refused, not a dropped live connection.
     let opened = false;
 
     ws.onopen = () => {
+      window.clearTimeout(openTimer);
       opened = true;
       attempt = 0;
       startHeartbeat(ws);
@@ -155,6 +179,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       handlers.onError?.(ev);
     };
     ws.onclose = (ev: CloseEvent) => {
+      window.clearTimeout(openTimer);
       clearTimers();
       closeSignaled = true;
       handlers.onClose?.(ev.code);
@@ -297,6 +322,7 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       closed = true;
       clearTimers();
       window.clearTimeout(retryTimer);
+      window.clearTimeout(openTimer);
       document.removeEventListener("visibilitychange", onVisibility);
       const ws = socket;
       if (ws) {

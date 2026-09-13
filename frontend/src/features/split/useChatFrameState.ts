@@ -127,6 +127,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [error, setError] = useState("");
   const [missingOriginal, setMissingOriginal] = useState<MissingOriginal | null>(null);
   const [externalWriteDetected, setExternalWriteDetected] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [cacheHitRate, setCacheHitRate] = useState<number | null>(null);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -452,6 +453,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setError,
     setMissingOriginal,
     setExternalWriteDetected,
+    setSessionActive,
     setContextUsage,
     setCacheHitRate,
     setIsCompacting,
@@ -615,6 +617,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
     setHistoryStatus("loading");
+    setSessionActive(false);
     setConnected(true);
     pageBuffer.reset();
     return connectionGeneration;
@@ -685,6 +688,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     error,
     missingOriginal,
     externalWriteDetected,
+    sessionActive,
+    setSessionActive,
     contextUsage,
     cacheHitRate,
     isCompacting,

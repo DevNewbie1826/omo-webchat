@@ -38,7 +38,8 @@
         "type": { "const": "chat.create" },
         "wsId": { "type": "string" },
         "chatId": { "type": "string" },
-        "recovery": { "type": "boolean", "description": "Explicitly authorizes replacement of a quarantined in-place provider route" }
+        "recovery": { "type": "boolean", "description": "Explicitly authorizes replacement of a quarantined in-place provider route" },
+        "force": { "type": "boolean", "description": "Explicitly authorizes opening an in-place session whose source file shows concurrent write activity (session-active retry)" }
       }
     },
     "ChatSendFrame": {

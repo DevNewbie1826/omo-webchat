@@ -332,3 +332,141 @@ describe("connectWs upgrade failure probe", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 });
+
+describe("connectWs CONNECTING timeout", () => {
+  let conn: WsConn | null = null;
+
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    conn?.close();
+    conn = null;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps a CONNECTING socket silent at 14,999ms and signals exactly one 1006 at the 15s deadline", async () => {
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    expect(FakeWebSocket.instances).toHaveLength(1); // replacement only via backoff
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("consults reconnect(1006) on the timeout and a false veto stops replacement, even on visibility", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const onClose = vi.fn();
+    const reconnect = vi.fn(() => false);
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose }, { reconnect });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(1006);
+
+    // The veto is terminal: no backoff retry, and a later foreground return
+    // must not resurrect the connection either.
+    await vi.advanceTimersByTimeAsync(60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    visibility.mockRestore();
+  });
+
+  it("takes the normal backoff retry when reconnect returns true on the timeout", async () => {
+    const reconnect = vi.fn(() => true);
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose }, { reconnect });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    expect(reconnect).toHaveBeenCalledExactlyOnceWith(1006);
+
+    await vi.advanceTimersByTimeAsync(1_000); // first backoff step (1s)
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("does not double-notify when the detached socket opens or closes late", async () => {
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    const stale = FakeWebSocket.instances[0]!;
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The detached socket's handlers were nulled: a very late handshake
+    // success or native close must not fire handlers again or spawn sockets.
+    stale.serverOpen();
+    stale.serverClose(1006);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(1006);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it("cancels the deadline when onopen arrives just before it", async () => {
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    const socket = FakeWebSocket.instances[0]!;
+
+    await vi.advanceTimersByTimeAsync(14_999);
+    socket.serverOpen();
+    await vi.advanceTimersByTimeAsync(1_001); // crosses the original 15s deadline
+    expect(onClose).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("close() while CONNECTING removes the deadline and never reconnects", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    conn.close();
+    conn = null;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    visibility.mockRestore();
+  });
+
+  it("gives a visibility replacement its own 15s CONNECTING deadline", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const onClose = vi.fn();
+    conn = connectWs("/chat", { onMessage: () => undefined, onClose });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Foreground return while CONNECTING replaces the stale socket at once.
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(4001);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    // The replacement runs its own full deadline: silent at +14,999ms...
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(onClose.mock.calls.map((c) => c[0])).toEqual([4001]);
+    // ...one 1006 at its own +15,000ms, then the normal backoff retry.
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onClose.mock.calls.map((c) => c[0])).toEqual([4001, 1006]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    visibility.mockRestore();
+  });
+});
