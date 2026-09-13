@@ -106,7 +106,7 @@ export function LiveSessionList({
                     title={summary.active === true ? t("sidebar.tm.mainRunning") : undefined}
                   >
                     <span className="th-overview-card-running-dot" aria-hidden="true" />
-                    {summary.runningCount > 0 ? summary.runningCount : t("sidebar.tm.mainRunning")}
+                    {summary.runningCount > 0 ? summary.runningCount : null}
                   </span>
                 )}
               </span>

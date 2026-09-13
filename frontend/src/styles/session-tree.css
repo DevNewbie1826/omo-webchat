@@ -88,12 +88,15 @@
 
 /* Running-agent chip for live sessions with active sub-agents. Mirrors the
    .th-tree-count pill at the success hue; the dot breathes while work is alive
-   (animation is disabled globally under prefers-reduced-motion). */
+   (animation is disabled globally under prefers-reduced-motion). The min-height
+   matches the text chip's full height (micro line box + border) so a dot-only
+   chip (main session running, no agents) keeps the same size as `● N`. */
 .th-tree-running {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: var(--th-space-0-5);
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
