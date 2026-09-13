@@ -2125,6 +2125,195 @@ func TestChatCreateForceBypassesPersistentActivityChecker(t *testing.T) {
 	}
 }
 
+// forceOutcome reports whether the collected frames contain a ready or a
+// session-active rejection, so a counter-case can assert the create outcome
+// without assuming which frame type arrives.
+func forceOutcome(t *testing.T, frames *collector) (ready, active bool) {
+	t.Helper()
+	frames.mu.Lock()
+	defer frames.mu.Unlock()
+	for _, f := range frames.decoded {
+		if f.err != nil {
+			t.Fatal(f.err)
+		}
+		switch f.typ {
+		case "ready":
+			ready = true
+		case "error":
+			var value map[string]any
+			if err := json.Unmarshal(f.raw, &value); err != nil {
+				t.Fatal(err)
+			}
+			active = active || value["code"] == "session-active"
+		}
+	}
+	return ready, active
+}
+
+// inPlaceForceState returns the armed bit and owner of a chat's in-place
+// authorization entry, for direct ownership assertions.
+func inPlaceForceState(t *testing.T, store *cursorstore.Store, chatID string) (armed bool, owner *inPlaceForceAttempt) {
+	t.Helper()
+	inPlaceAuthMu.Lock()
+	defer inPlaceAuthMu.Unlock()
+	value, ok := inPlaceAuthorizations.Load(inPlaceAuthorizationKey{store: store, chatID: chatID})
+	if !ok {
+		return false, nil
+	}
+	authorization := value.(*inPlaceAuthorization)
+	return authorization.force.Load(), authorization.owner
+}
+
+// An armed WS force bit belongs to its own create attempt. A different
+// acquisition — here an ordinary create that already owns the per-chat flight
+// while the force attempt is armed but has not entered it — must run the
+// activity gate and leave the armed bit intact for its owner.
+func TestChatCreateForceNotConsumedByUnrelatedAcquisition(t *testing.T) {
+	const id = "force-unrelated-consumer"
+	h := newInPlaceBridgeHarness(t, id)
+	AuthorizeInPlaceOpen(h.store, id, false, alwaysActiveCheck)
+	// The pending force attempt is armed through the real begin helper the
+	// moment the ordinary create's validation callback runs: that attempt is
+	// paused immediately after arming, before it can enter the occupied
+	// per-chat flight. Only its scheduling position is modeled; everything
+	// else (wire, manager, cursor adapter, provider daemon) is real.
+	armed := make(chan *inPlaceForceAttempt, 1)
+	var once sync.Once
+	h.bridge.cfg.ChatVersion = func(string) uint64 {
+		once.Do(func() { armed <- beginInPlaceForceAttempt(h.store, id) })
+		return h.chatVersion.Load()
+	}
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": id})
+	awaitCommandFence(t, conn, frames)
+	var attempt *inPlaceForceAttempt
+	select {
+	case attempt = <-armed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending force attempt was not armed")
+	}
+	defer releaseInPlaceForceAttempt(attempt)
+	ready, active := forceOutcome(t, frames)
+	opens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	if ready || !active || opens != 0 {
+		t.Fatalf("ordinary create consumed another pending WS attempt's force: ready=%v session-active=%v provider-opens=%d; want false/true/0", ready, active, opens)
+	}
+	if forceArmed, owner := inPlaceForceState(t, h.store, id); !forceArmed || owner != attempt {
+		t.Fatalf("armed bit was not left intact for its owner: armed=%v ownerMatches=%v", forceArmed, owner == attempt)
+	}
+}
+
+// A newer force create that never enters the occupied per-chat flight (here:
+// canceled immediately) must neither revoke the older in-flight attempt's
+// authorization nor leave it consumed; the older attempt opens the provider.
+func TestCanceledNewerCreateDoesNotRevokeInFlightWSForce(t *testing.T) {
+	const id = "force-newer-cancel"
+	h := newInPlaceBridgeHarness(t, id)
+	AuthorizeInPlaceOpen(h.store, id, false, alwaysActiveCheck)
+	var newer *connection
+	canceledReturned := make(chan struct{})
+	var once sync.Once
+	h.bridge.cfg.ChatVersion = func(string) uint64 {
+		once.Do(func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			force := true
+			newer.create(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: "ws-1", ChatID: id, Force: &force})
+			close(canceledReturned)
+		})
+		return h.chatVersion.Load()
+	}
+	newerSocket, newerFrames := h.connect(t)
+	newer = h.soleServerConnection(t)
+	awaitCommandFence(t, newerSocket, newerFrames)
+	conn, frames := h.connect(t)
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": id, "force": true})
+	awaitCommandFence(t, conn, frames)
+	select {
+	case <-canceledReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled newer create did not return")
+	}
+	if got := newerFrames.next(t, "error"); got["code"] != "start_failed" {
+		t.Fatalf("canceled newer create = %v, want start_failed", got)
+	}
+	ready, active := forceOutcome(t, frames)
+	opens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	if !ready || active || opens != 1 {
+		t.Fatalf("canceled newer create revoked older in-flight force: ready=%v session-active=%v provider-opens=%d; want true/false/1", ready, active, opens)
+	}
+}
+
+// A canceled WS force create must not erase a previously armed REST handoff;
+// the next ordinary acquisition then consumes the preserved REST-owned bit.
+func TestCanceledWSCreateDoesNotRevokeArmedRESTForce(t *testing.T) {
+	const id = "force-rest-before-ws"
+	h := newInPlaceBridgeHarness(t, id)
+	AuthorizeInPlaceOpen(h.store, id, true, alwaysActiveCheck)
+	conn, frames := h.connect(t)
+	server := h.soleServerConnection(t)
+	awaitCommandFence(t, conn, frames)
+	held := make(chan struct{})
+	release := make(chan struct{})
+	released := make(chan struct{})
+	h.manager.EnqueueChat(id, func() { close(held); <-release; close(released) })
+	select {
+	case <-held:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chat flight was not captured")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	force := true
+	server.create(ctx, &wscontract.ChatCreateFrame{Type: "chat.create", WsID: "ws-1", ChatID: id, Force: &force})
+	close(release)
+	select {
+	case <-released:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chat flight was not released")
+	}
+	if got := frames.next(t, "error"); got["code"] != "start_failed" {
+		t.Fatalf("canceled WS create = %v, want start_failed", got)
+	}
+	writeClient(t, conn, map[string]any{"type": "chat.create", "wsId": "ws-1", "chatId": id})
+	awaitCommandFence(t, conn, frames)
+	ready, active := forceOutcome(t, frames)
+	opens := h.daemon.RequestCount(omorpc.CmdOpenSession)
+	if !ready || active || opens != 1 {
+		t.Fatalf("canceled WS create revoked prior REST handoff: ready=%v session-active=%v provider-opens=%d; want true/false/1", ready, active, opens)
+	}
+}
+
+// First-writer-wins arming: the first begin owns the bit, a newer begin is a
+// no-op whose release cannot revoke what it never owned, and a REST-owned
+// handoff survives both — its release must leave the REST authorization armed.
+func TestBeginInPlaceForceAttemptFirstWriterWins(t *testing.T) {
+	const id = "force-owner-positive"
+	h := newInPlaceBridgeHarness(t, id)
+	older := beginInPlaceForceAttempt(h.store, id)
+	newer := beginInPlaceForceAttempt(h.store, id)
+	if armed, owner := inPlaceForceState(t, h.store, id); !armed || owner != older {
+		t.Fatalf("newer begin took ownership from the first writer: armed=%v ownerIsOlder=%v", armed, owner == older)
+	}
+	releaseInPlaceForceAttempt(newer)
+	if armed, owner := inPlaceForceState(t, h.store, id); !armed || owner != older {
+		t.Fatalf("newer release revoked the first writer's authorization: armed=%v ownerIsOlder=%v", armed, owner == older)
+	}
+	releaseInPlaceForceAttempt(older)
+	if armed, owner := inPlaceForceState(t, h.store, id); armed || owner != nil {
+		t.Fatalf("owner release did not clear its own authorization: armed=%v owner=%v", armed, owner)
+	}
+	AuthorizeInPlaceOpen(h.store, id, true, alwaysActiveCheck)
+	rest := beginInPlaceForceAttempt(h.store, id)
+	if armed, owner := inPlaceForceState(t, h.store, id); !armed || owner != nil {
+		t.Fatalf("begin took a REST-owned handoff: armed=%v ownerIsNil=%v", armed, owner == nil)
+	}
+	releaseInPlaceForceAttempt(rest)
+	if armed, owner := inPlaceForceState(t, h.store, id); !armed || owner != nil {
+		t.Fatalf("release revoked a REST-owned handoff it never owned: armed=%v ownerIsNil=%v", armed, owner == nil)
+	}
+}
+
 func TestChatCreateExternalWriteRequiresExplicitRecoveryLegacyEmptyUnknownHistoryResponse(t *testing.T) {
 	h := newInPlaceBridgeHarness(t, "external-recovery")
 	h.daemon.UseLegacyEmptyUnknownHistory()

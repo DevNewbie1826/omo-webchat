@@ -96,6 +96,18 @@ type inPlaceForceAttempt struct {
 	key inPlaceAuthorizationKey
 }
 
+// inPlaceForceAttemptContextKey scopes the attempt token a force create
+// carries through its request context into the manager flight.
+type inPlaceForceAttemptContextKey struct{}
+
+// inPlaceForceAttemptFromContext returns the create attempt whose acquisition
+// is reaching the cursor boundary, or nil for acquisitions outside any
+// force-armed create flight (REST opens, resumes, other transports).
+func inPlaceForceAttemptFromContext(ctx context.Context) *inPlaceForceAttempt {
+	attempt, _ := ctx.Value(inPlaceForceAttemptContextKey{}).(*inPlaceForceAttempt)
+	return attempt
+}
+
 // AuthorizeInPlaceOpen carries a REST force choice to the next provider
 // acquisition. The activity checker remains attached for later reopens, but
 // force is consumed once at the CursorForOpen boundary.
@@ -124,12 +136,22 @@ func AuthorizeInPlaceOpen(store *cursorstore.Store, chatID string, force bool, c
 // connection.create flight and returns the attempt token that owns it. The
 // caller must defer releaseInPlaceForceAttempt on the returned token so the
 // bit cannot outlive the flight that armed it.
+//
+// Arming is first-writer-wins: if an armed authorization already exists
+// (another pending WS attempt, or a REST handoff), the newer attempt's arm is
+// a no-op. Taking over would let this attempt's release revoke an
+// authorization it never owned; instead the newer attempt stays unarmed, its
+// own acquisition runs the activity gate, and — while someone else still owns
+// the entry — fails with the retryable session-active outcome.
 func beginInPlaceForceAttempt(store *cursorstore.Store, chatID string) *inPlaceForceAttempt {
 	key := inPlaceAuthorizationKey{store: store, chatID: chatID}
 	attempt := &inPlaceForceAttempt{key: key}
 	inPlaceAuthMu.Lock()
 	defer inPlaceAuthMu.Unlock()
 	authorization := loadOrCreateInPlaceAuthorization(key)
+	if authorization.force.Load() {
+		return attempt
+	}
 	authorization.force.Store(true)
 	authorization.owner = attempt
 	return attempt
@@ -1164,6 +1186,11 @@ func (c *connection) create(routeCtx context.Context, f *wscontract.ChatCreateFr
 	if f.Force != nil && *f.Force && cursorstore.IsInPlaceSession(rec) {
 		attempt := beginInPlaceForceAttempt(c.bridge.cfg.Store, rec.ID)
 		defer releaseInPlaceForceAttempt(attempt)
+		// The armed bit belongs to THIS create: its request context carries the
+		// attempt token through the manager flight, and CursorForOpen consumes
+		// the bit only for this attempt's own acquisition. Every other
+		// acquisition runs the activity gate normally and leaves the bit armed.
+		ctx = context.WithValue(ctx, inPlaceForceAttemptContextKey{}, attempt)
 	}
 	ref := chatRef{id: rec.ID, cwd: rec.CWD}
 	commitBinding := func(acquired *session.Session, started bool, acquiredDetach func()) error {
@@ -1991,9 +2018,19 @@ func (s *CursorStore) CursorForOpen(ctx context.Context, id string) (session.Cur
 		inPlaceAuthMu.Lock()
 		if value, ok := inPlaceAuthorizations.Load(inPlaceAuthorizationKey{store: store, chatID: id}); ok {
 			authorization := value.(*inPlaceAuthorization)
-			if authorization.force.CompareAndSwap(true, false) {
-				forced = true
-				authorization.owner = nil
+			// A WS attempt's armed bit is consumable only by that attempt's own
+			// acquisition — the flight whose request context carries the owning
+			// token. A REST-owned entry (owner nil) is the one-shot
+			// next-acquisition handoff: whatever acquires next consumes it,
+			// including a WS attempt's acquisition. Any other acquisition must
+			// not touch the armed bit; it runs the activity gate below, which
+			// yields the retryable session-active outcome while another attempt
+			// still owns the authorization.
+			if authorization.owner == nil || authorization.owner == inPlaceForceAttemptFromContext(ctx) {
+				if authorization.force.CompareAndSwap(true, false) {
+					forced = true
+					authorization.owner = nil
+				}
 			}
 			if authorization.check != nil {
 				check = authorization.check
