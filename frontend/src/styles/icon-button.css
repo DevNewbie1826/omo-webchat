@@ -29,3 +29,28 @@
   color: var(--th-error);
   background: var(--th-error-bg);
 }
+
+/* Coarse pointers: the 28px visual is unchanged; an invisible ::before ring
+   grows the hitbox toward 40px on phones. The ring is scoped to the sidebar
+   nav-actions pair only (the two buttons inside .th-sidebar-nav-actions),
+   giving 30x40 effective; the pair sits only 2px apart (--th-space-0-5), so
+   its horizontal inset is capped at 1px to keep the two hitboxes from
+   overlapping. The footer buttons (settings/logout) are excluded: the
+   footer's own space above the button is only 8px padding + 1px border, so
+   any upward growth past that boundary steals clicks from the navigation
+   row above (measured), and the space below is clipped by the
+   .th-sidebar-inner overflow edge — their base 28px box stands, which is
+   still above the 24px touch floor. The empty-state button is excluded as
+   well: it already reaches 44px via app-empty.css, and re-anchoring it with
+   position:relative would capture its absolutely-positioned menu. */
+@media (pointer: coarse) {
+  .th-sidebar-nav-actions .th-btn-icon {
+    position: relative;
+  }
+
+  .th-sidebar-nav-actions .th-btn-icon::before {
+    content: "";
+    position: absolute;
+    inset: -6px -1px;
+  }
+}

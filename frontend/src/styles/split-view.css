@@ -205,6 +205,11 @@
   .th-pane--focused {
     outline: none;
   }
+  /* The picker list is sparse on phones, so full 44px rows are affordable
+     there — the only 44 in this design. */
+  .th-picker-pane-item {
+    min-height: var(--th-space-11);
+  }
 }
 
 .th-session-workarea {

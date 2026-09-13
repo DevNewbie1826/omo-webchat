@@ -26,6 +26,32 @@
   .th-tree-node {
     min-height: var(--th-space-11);
   }
+
+  /* The chevron glyph stays compact; only its box grows, centred inside the
+     already-44px row. */
+  .th-tree-chevron {
+    min-width: 24px;
+    min-height: 24px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* The more-button keeps its 27.5px visual size; the ::before ring grows the
+     hitbox without overlapping neighbours. The button sits at the end of the
+     .th-tree-children list: the activation row ends 4px before the button.
+     The top inset takes 4px of free space, leaving measured zero theft; sides
+     take 2px of the 4px gap; the bottom is 6px. Visual 47x27.5; nominal
+     hitbox 49x35.5; gate:
+     centre-span >= 30px (measured 47.5x30). */
+  .th-tree-more {
+    position: relative;
+  }
+
+  .th-tree-more::before {
+    content: "";
+    position: absolute;
+    inset: -4px -2px -6px;
+  }
 }
 
 .th-tree-node:hover {
