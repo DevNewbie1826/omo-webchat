@@ -287,3 +287,29 @@ func TestEqualGoalStateComparesAllProjectedFields(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+func TestCodingAgentDirHonorsLegacyAlias(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := filepath.Join(home, ".omo", "agent")
+	piDir := filepath.Join(t.TempDir(), "pi-agent")
+
+	t.Run("only PI_", func(t *testing.T) {
+		t.Setenv("OMO_CODING_AGENT_DIR", "")
+		t.Setenv("SENPI_CODING_AGENT_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", piDir)
+		if got := CodingAgentDir(); got != piDir {
+			t.Fatalf("CodingAgentDir() = %q, want %q", got, piDir)
+		}
+	})
+	t.Run("none", func(t *testing.T) {
+		t.Setenv("OMO_CODING_AGENT_DIR", "")
+		t.Setenv("SENPI_CODING_AGENT_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		if got := CodingAgentDir(); got != def {
+			t.Fatalf("CodingAgentDir() = %q, want %q", got, def)
+		}
+	})
+}
