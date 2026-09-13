@@ -148,12 +148,19 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "question_updated":
 		if s.pendingApproval != nil && s.pendingApproval.ApprovalID == stringValue(raw["id"]) {
 			if data, ok := s.pendingApproval.Data.(map[string]any); ok {
+				updated := make(map[string]any, len(data)+2)
+				for key, value := range data {
+					updated[key] = value
+				}
 				if deadline, present := raw["deadlineAtMs"]; present {
-					data["deadlineAtMs"] = deadline
+					updated["deadlineAtMs"] = deadline
 				}
 				if remaining, present := raw["remainingMs"]; present {
-					data["remainingMs"] = remaining
+					updated["remainingMs"] = remaining
 				}
+				frame := *s.pendingApproval
+				frame.Data = updated
+				s.pendingApproval = &frame
 			}
 		}
 	case "entries.stream":
