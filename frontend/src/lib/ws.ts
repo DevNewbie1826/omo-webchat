@@ -138,6 +138,11 @@ export function connectWs(path: string, handlers: WsHandlers, options: WsOptions
       ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
       ws.close();
       handlers.onClose?.(1006);
+      if (closed) return;
+      if (!(options.reconnect?.(1006) ?? true)) {
+        vetoReconnect();
+        return;
+      }
       scheduleReconnect();
     }, OPEN_TIMEOUT_MS);
     // False until this socket's onopen fires: a close before that means the
