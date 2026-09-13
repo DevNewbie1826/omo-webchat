@@ -72,12 +72,15 @@
 }
 
 /* Alive pulse treatment, shared with the tree badge: success-hued pill whose
-   dot breathes while agents run (disabled globally under reduced motion). */
+   dot breathes while agents run (disabled globally under reduced motion). The
+   min-height matches the text chip's full height (micro line box + border) so a
+   dot-only chip (main session running, no agents) keeps the same size as `● N`. */
 .th-overview-card-running {
   display: inline-flex;
   flex: none;
   align-items: center;
   gap: var(--th-space-0-5);
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
   font-weight: var(--th-weight-emphasize);
