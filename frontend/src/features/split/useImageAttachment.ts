@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { DragEvent } from "react";
+import type { ClipboardEvent, DragEvent } from "react";
 import type { PendingImage } from "./chatSessionTypes";
 
 export function useImageAttachment(pendingImage: PendingImage | null, setPendingImage: (image: PendingImage | null) => void) {
@@ -20,7 +20,8 @@ export function useImageAttachment(pendingImage: PendingImage | null, setPending
       setPendingImage({
         data: comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl,
         mimeType: file.type || "application/octet-stream",
-        name: file.name,
+        // Pasted clipboard files may arrive unnamed; keep the chip label readable.
+        name: file.name || "clipboard.png",
       });
     };
     reader.readAsDataURL(file);
@@ -43,5 +44,14 @@ export function useImageAttachment(pendingImage: PendingImage | null, setPending
     if (image) pick(image);
   };
 
-  return { pendingImage, setPendingImage, clear, pick, fileInputRef, isDragOver, dragHandlers: { onDragOver, onDragLeave, onDrop } };
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const image = Array.from(event.clipboardData?.files ?? []).find((file) => file.type.startsWith("image/"));
+    if (!image) return;
+    // The clipboard holds an image, so the paste targets the attachment slot
+    // instead of inserting a placeholder path into the text.
+    event.preventDefault();
+    pick(image);
+  };
+
+  return { pendingImage, setPendingImage, clear, pick, fileInputRef, isDragOver, dragHandlers: { onDragOver, onDragLeave, onDrop }, onPaste };
 }
