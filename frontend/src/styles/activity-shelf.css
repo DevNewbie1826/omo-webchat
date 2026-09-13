@@ -169,6 +169,16 @@ button.th-activity-bar:hover {
   outline-offset: -2px;
 }
 
+/* Phones get a 32px tab strip (segmented-control scale); the base alignment
+   is baseline, so center keeps the label/count row visually centred in the
+   grown strip. */
+@media (pointer: coarse) {
+  .th-activity-tab {
+    min-height: var(--th-space-8);
+    align-items: center;
+  }
+}
+
 .th-activity-tab[aria-selected="true"] {
   border-color: var(--th-border-strong);
   background: var(--th-hover);

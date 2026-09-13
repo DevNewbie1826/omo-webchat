@@ -217,6 +217,16 @@
   cursor: pointer;
 }
 
+/* The collapsed summary is the only affordance for reasoning text; grow it
+   to a 24px tappable row without display:flex/grid — the default summary
+   display keeps the disclosure triangle marker. */
+@media (pointer: coarse) {
+  .th-chat-thinking summary {
+    min-height: var(--th-space-6);
+    padding-block: var(--th-space-1);
+  }
+}
+
 .th-chat-thinking pre {
   max-height: 200px;
   margin-top: var(--th-space-1);
