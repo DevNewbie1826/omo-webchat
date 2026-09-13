@@ -122,6 +122,7 @@ type Session struct {
 	queueFileIdentity                                                       os.FileInfo
 	queueFileErr                                                            error
 	queueHistoryEstablished                                                 bool
+	liveRevision                                                            liveRevision
 	taskDigest                                                              *TaskDigest
 	dagDigest                                                               *DagDigest
 	dagSnapshots                                                            dagSnapshotCache
@@ -1831,20 +1832,6 @@ func (s *Session) summary() (Summary, bool) {
 	return s.summaryLocked(), true
 }
 
-func (s *Session) summaryLocked() Summary {
-	return Summary{
-		ChatID: s.chatID, DurableSessionID: s.durableID, SessionFile: s.sessionFile,
-		CWD: s.cwd, Active: s.activeLocked(), Attachments: s.broadcast.count(), Title: s.title,
-		ActivityPair: ActivityPair{
-			Task: append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[0]]...),
-			Dag:  append(json.RawMessage(nil), s.activitySnapshots[activitySnapshotOrder[1]]...),
-		},
-		TaskOversized: s.activityOversized[activitySnapshotOrder[0]],
-		DagOversized:  s.activityOversized[activitySnapshotOrder[1]],
-		TaskDigest:    cloneTaskDigest(s.taskDigest),
-		DagDigest:     cloneDagDigest(s.dagDigest),
-	}
-}
 func (s *Session) publishLocked(f Frame) {
 	switch f.Kind {
 	case FrameRunStarted, FrameRunDone, FrameCompactionStart, FrameCompactionDone:

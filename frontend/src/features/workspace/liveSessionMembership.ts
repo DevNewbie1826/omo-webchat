@@ -7,6 +7,9 @@ import type { LiveSessionInfo } from "./useLiveSessionsLean";
 export class LiveSessionMembership {
   private readonly accepted = new Map<string, LiveSessionInfo>();
   private readonly pushed = new Map<string, number>();
+  // Receipt provenance outlives the request-sequence membership fence: even a
+  // later poll cannot overwrite a tied push from a compatible older server.
+  private readonly pushedReceipts = new Map<string, number>();
   private readonly activeArrivals = new Map<string, number>();
   private readonly closed = new Map<string, number>();
   private polled = new Set<string>();
@@ -22,6 +25,8 @@ export class LiveSessionMembership {
       const id = canonicalLiveSessionId(row.id);
       live.add(id);
       const previous = this.accepted.get(id);
+      const pushedReceipt = this.pushedReceipts.get(id);
+      if (pushedReceipt !== undefined && row.lean?.last_activity_ms === pushedReceipt) continue;
       const closedDuringRequest = (this.closed.get(id) ?? -1) > sequence;
       const pushedDuringRequest = (this.activeArrivals.get(id) ?? -1) > sequence
         && row.lean?.last_activity_ms === undefined;
@@ -41,6 +46,7 @@ export class LiveSessionMembership {
       if ((this.pushed.get(id) ?? -1) > sequence) continue;
       this.accepted.delete(id);
       this.pushed.delete(id);
+      this.pushedReceipts.delete(id);
       this.activeArrivals.delete(id);
       this.closed.delete(id);
       retired.push(id);
@@ -67,7 +73,7 @@ export class LiveSessionMembership {
         this.accepted.delete(sourceId);
       }
       if (this.polled.delete(sourceId)) this.polled.add(id);
-      for (const arrivals of [this.pushed, this.activeArrivals, this.closed]) {
+      for (const arrivals of [this.pushed, this.pushedReceipts, this.activeArrivals, this.closed]) {
         const at = arrivals.get(sourceId);
         if (at !== undefined) arrivals.set(id, Math.max(at, arrivals.get(id) ?? -1));
         arrivals.delete(sourceId);
@@ -86,12 +92,16 @@ export class LiveSessionMembership {
     }));
     this.pushed.delete(id);
     this.pushed.set(id, sequence);
+    if (lean.last_activity_ms !== undefined) this.pushedReceipts.set(id, lean.last_activity_ms);
     if (frame.active !== undefined) this.activeArrivals.set(id, sequence);
     while (this.pushed.size > 256) {
       const oldest = this.pushed.keys().next().value;
       if (oldest === undefined) break;
       this.pushed.delete(oldest);
-      if (!this.polled.has(oldest)) this.accepted.delete(oldest);
+      if (!this.polled.has(oldest)) {
+        this.accepted.delete(oldest);
+        this.pushedReceipts.delete(oldest);
+      }
       this.activeArrivals.delete(oldest);
       this.closed.delete(oldest);
       retireLiveTaskSessions([oldest]);
@@ -106,7 +116,10 @@ export class LiveSessionMembership {
     this.activeArrivals.set(canonical, sequence);
     this.pushed.delete(canonical);
     if (this.polled.has(canonical)) this.accepted.set(canonical, { ...previous, active: false });
-    else this.accepted.delete(canonical);
+    else {
+      this.accepted.delete(canonical);
+      this.pushedReceipts.delete(canonical);
+    }
   }
 
   disconnect(sequence: number): void {
@@ -121,6 +134,7 @@ export class LiveSessionMembership {
     retireLiveTaskSessions([...this.accepted.keys()]);
     this.accepted.clear();
     this.pushed.clear();
+    this.pushedReceipts.clear();
     this.activeArrivals.clear();
     this.closed.clear();
     this.polled.clear();

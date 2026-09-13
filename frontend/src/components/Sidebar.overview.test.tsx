@@ -68,7 +68,7 @@ const MIXED_LIVE_RESPONSE = {
   sessions: [
     liveEntry("disk-1", "Working session", "running"),
     liveEntry("disk-2", "Idle older", null, 1000, false),
-    liveEntry("disk-3", "Idle recent", null, 1000, false),
+    liveEntry("disk-3", "Idle recent", null, 500, false),
   ],
 };
 
@@ -89,7 +89,7 @@ function liveEntry(id: string, title: string, status: "running" | "completed" | 
 const BUSY_LIVE_RESPONSE = {
   sessions: [
     liveEntry("disk-1", "First busy", "running"),
-    liveEntry("disk-2", "Second busy", "running"),
+    liveEntry("disk-2", "Second busy", "running", 500),
   ],
 };
 
@@ -308,7 +308,7 @@ describe("Sidebar pinned running sessions", () => {
       };
 
       // Poll lands: both sessions run one agent each and pin working-first,
-      // most-recent-activity first (disk-2's catalog recency is newer).
+      // most-recent-activity first (disk-2's accepted lean receipt is newer).
       await act(async () => {});
       const pinned = container.querySelector(".th-sidebar-live");
       expect(pinned).not.toBeNull();

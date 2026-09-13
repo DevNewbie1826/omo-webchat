@@ -2,6 +2,8 @@ package session
 
 import "time"
 
+const maxLiveInteger = 1<<53 - 1
+
 // LiveValues is the rendered projection shared by REST and sessions.activity.
 // Rich activity and provenance remain on the attached chat activity surface.
 type LiveValues struct {
@@ -27,6 +29,9 @@ type LiveTruncated struct {
 
 // LiveValues reads only cached scalars; it never reparses snapshots on a poll.
 func (s Summary) LiveValues() LiveValues {
+	if s.live != nil {
+		return *s.live
+	}
 	out := LiveValues{Truncated: LiveTruncated{
 		Task: s.TaskOversized || (s.TaskDigest == nil && len(s.ActivityPair.Task) > 0),
 		Dag:  s.DagOversized || (s.DagDigest == nil && len(s.ActivityPair.Dag) > 0),
@@ -80,9 +85,10 @@ func publishLiveCounts(task *TaskDigest, dag *DagDigest, caches liveCountCaches)
 	dag.liveRunning = dag.RunningCount
 	for _, run := range caches.dags.countRuns {
 		if run.present || run.terminal {
-			dag.liveDone += run.completed
-			dag.liveTotal += run.total
-			dag.liveIncomplete = dag.liveIncomplete || run.countsIncomplete
+			dag.liveIncomplete = dag.liveIncomplete || run.countsIncomplete ||
+				run.completed > maxLiveInteger-dag.liveDone || run.total > maxLiveInteger-dag.liveTotal
+			dag.liveDone = min(maxLiveInteger, dag.liveDone+run.completed)
+			dag.liveTotal = min(maxLiveInteger, dag.liveTotal+run.total)
 		}
 	}
 	// The old client subtracts unique running task IDs only when BOTH identity

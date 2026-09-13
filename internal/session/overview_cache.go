@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"sort"
+	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
@@ -13,6 +14,7 @@ const (
 )
 
 type overviewCacheEntry struct {
+	liveRevision  liveRevision
 	epoch         omorpc.EpochToken
 	chatID        string
 	snapshots     map[string]json.RawMessage
@@ -194,7 +196,9 @@ func (m *Manager) notifySessionOverviewUpdateLocked(s *Session, activityOnly boo
 // Manager.mu serializes this bounded enqueue with replacement publication.
 func (m *Manager) removeOverviewLocked(chatID string) {
 	if snapshot, ok := m.overviewCurrent[chatID]; ok && snapshot.Active {
+		revision := liveRevision{values: snapshot.LiveValues(), active: snapshot.Active, title: snapshot.Title, initialized: true}
 		snapshot.Active = false
+		snapshot = revision.project(snapshot, time.Now().UnixMilli())
 		deliverOverview(m.updateOverviewLocked(snapshot), snapshot)
 	}
 	delete(m.overviewCurrent, chatID)
@@ -346,20 +350,6 @@ func (m *Manager) evictOverviewLRULocked() {
 	}
 }
 
-func (entry *overviewCacheEntry) summary(chatID, durableID string) Summary {
-	return Summary{
-		ChatID: chatID, DurableSessionID: durableID,
-		ActivityPair: ActivityPair{
-			Task: append(json.RawMessage(nil), entry.snapshots[activitySnapshotOrder[0]]...),
-			Dag:  append(json.RawMessage(nil), entry.snapshots[activitySnapshotOrder[1]]...),
-		},
-		TaskOversized: entry.oversized[activitySnapshotOrder[0]],
-		DagOversized:  entry.oversized[activitySnapshotOrder[1]],
-		TaskDigest:    cloneTaskDigest(entry.task),
-		DagDigest:     cloneDagDigest(entry.dag),
-	}
-}
-
 // mergeOverviewIntoSessionLocked transfers cached child state while the
 // caller holds Session.lifecycleMu followed by Manager.mu. That ordering makes
 // route publication and cache eviction one atomic event-loop transition.
@@ -382,6 +372,7 @@ func (m *Manager) mergeOverviewIntoSessionLocked(s *Session) (Summary, []*overvi
 	delete(m.overviewCache, s.durableID)
 	delete(m.overviewCurrent, entry.chatID)
 	if entry.epoch == s.epoch {
+		s.liveRevision = entry.liveRevision
 		s.taskDigest = cloneTaskDigest(entry.task)
 		s.dagDigest = cloneDagDigest(entry.dag)
 		s.dagSnapshots = entry.dagSnapshots

@@ -38,14 +38,15 @@ func dagCountRevision(raw json.RawMessage) (string, dagCountRun) {
 	run := dagCountRun{millis: millis, known: known, present: true, terminal: terminal, works: make([]dagCountWork, 0, len(row.Nodes))}
 	if len(row.Counts) > 0 {
 		var counts *struct {
-			Completed int `json:"completed"`
-			Total     int `json:"total"`
+			Completed *int64 `json:"completed"`
+			Total     *int64 `json:"total"`
 		}
-		if err := json.Unmarshal(row.Counts, &counts); err != nil || counts == nil {
+		if err := json.Unmarshal(row.Counts, &counts); err != nil || counts == nil ||
+			counts.Completed == nil || counts.Total == nil ||
+			*counts.Completed < 0 || *counts.Total < *counts.Completed || *counts.Total > maxLiveInteger {
 			run.countsIncomplete = true
 		} else {
-			run.countsIncomplete = counts.Completed < 0 || counts.Total < 0
-			run.completed, run.total = max(0, counts.Completed), max(0, counts.Total)
+			run.completed, run.total = int(*counts.Completed), int(*counts.Total)
 		}
 	}
 	for i, node := range row.Nodes {
