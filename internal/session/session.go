@@ -1477,7 +1477,9 @@ func (s *Session) respondApprovalContext(ctx context.Context, id, requestID stri
 	route, err := s.routeLocked()
 	// The responding client's dismissal settles the ask for every subscriber:
 	// clear it before the ack so replayed and live views agree the request is gone.
-	s.pendingApproval = nil
+	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == id {
+		s.pendingApproval = nil
+	}
 	if err == nil {
 		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: id})
 	}
