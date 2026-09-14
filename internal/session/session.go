@@ -2136,7 +2136,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	}
 
 	var tail entriesTail
-	var diskLeaf string
+	persistedCompactions := 0
 	var preparationErr error
 	callbackFailed := false
 	prepared := false
@@ -2151,7 +2151,9 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				preparationErr = identityErr
 				return identityErr
 			}
-			diskLeaf = metadata.LeafID
+			// Complete the disk scan before the validated callback can admit
+			// a send that unloads or mutates the provider route.
+			persistedCompactions = s.countPersistedCompactions(ctx, sessionPath, metadata.LeafID)
 			cursor := metadata.LeafID
 			if cursor == "" {
 				cursor = metadata.Header.ID
@@ -2227,7 +2229,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	if routeErr := s.acquisitionError(); routeErr != nil {
 		return publishErr(routeErr)
 	}
-	compactionCount = s.countPersistedCompactions(ctx, sessionPath, diskLeaf)
+	compactionCount = persistedCompactions
 	if err := s.emitTailEntries(tail, emit); err != nil {
 		return publishErr(err)
 	}
