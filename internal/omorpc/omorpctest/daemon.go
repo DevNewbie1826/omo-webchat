@@ -89,6 +89,13 @@ type daemonSession struct {
 	opens     int
 	prompts   []string
 
+	// clientCaps is the capability list the opener connection advertised
+	// through set_client_info before opening the session — the daemon-side
+	// view a session binding inherits. nil when the opener never sent the
+	// record (the daemon's process-environment fallback is then in force,
+	// which this mock models as empty).
+	clientCaps []string
+
 	// Pending queue model (observed engine behavior): steer during an
 	// active run parks the message in the steering queue; follow_up parks
 	// it in the follow-up queue. abort leaves both intact. After a run's agent_settled exactly one head follow-up item is consumed
@@ -187,6 +194,12 @@ type Daemon struct {
 	legacyEmptyUnknownHistory bool
 	omitActivityFields        bool
 
+	// Daemon-side client capability view: per-connection sets start empty
+	// and are populated only by the session-less set_client_info record.
+	clientCaps     map[net.Conn][]string
+	clientInfos    int
+	clientInfoFeed chan struct{}
+
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
 
@@ -215,6 +228,8 @@ func New(dir string) *Daemon {
 		media:               map[mediaRef]map[string]any{},
 		conns:               map[net.Conn]struct{}{},
 		registry:            map[string]*daemonSession{},
+		clientCaps:          map[net.Conn][]string{},
+		clientInfoFeed:      make(chan struct{}, 1),
 		rpcPaths:            map[string]string{},
 		promptScripts:       map[string][]map[string]any{},
 		compactScripts:      map[string][]map[string]any{},
@@ -319,6 +334,7 @@ func (d *Daemon) readLoop(conn net.Conn) {
 		if err != nil {
 			d.mu.Lock()
 			delete(d.conns, conn)
+			delete(d.clientCaps, conn)
 			d.mu.Unlock()
 			_ = conn.Close()
 			return
@@ -431,6 +447,22 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		}
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"sessions": sessions}))
+		return
+
+	case omorpc.CmdSetClientInfo:
+		// Observed engine behavior on the multi-session daemon path: a
+		// connection's capability set starts empty and this session-less
+		// record is what populates it, replacing any earlier list. The
+		// reply carries no data payload.
+		d.mu.Lock()
+		d.clientCaps[conn] = stringList(req["capabilities"])
+		d.clientInfos++
+		d.notify(d.clientInfoFeed)
+		d.mu.Unlock()
+		d.write(conn, map[string]any{
+			"id": id, "type": "response", "command": cmd,
+			"success": true,
+		})
 		return
 	}
 
@@ -728,6 +760,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	rec.live = true
 	rec.used = false
 	rec.opens++
+	rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
 	if cwd != "" {
 		rec.cwd = cwd
 	}
@@ -1279,9 +1312,67 @@ func (d *Daemon) SetRefuseMode(on bool) {
 
 // ---- observations ----
 
+// Handshakes counts get_protocol_info requests. ClientInfoCount,
+// AwaitClientInfoCount, and SessionClientCapabilities expose the daemon-side
+// client capability view that the set_client_info handshake feeds.
 func (d *Daemon) Handshakes() int  { d.mu.Lock(); defer d.mu.Unlock(); return d.handshakes }
 func (d *Daemon) Connections() int { d.mu.Lock(); defer d.mu.Unlock(); return d.connections }
 func (d *Daemon) Refusals() int    { d.mu.Lock(); defer d.mu.Unlock(); return d.refusals }
+
+// ClientInfoCount is the number of session-less set_client_info records
+// received, across restarts.
+func (d *Daemon) ClientInfoCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.clientInfos
+}
+
+// AwaitClientInfoCount waits on the record feed until at least n
+// set_client_info records have arrived. It uses an event signal rather than
+// polling or sleeps.
+func (d *Daemon) AwaitClientInfoCount(n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if d.ClientInfoCount() >= n {
+			return true
+		}
+		select {
+		case <-d.clientInfoFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
+}
+
+// SessionClientCapabilities returns the client capability list the engine
+// would hand the session opened from sessionPath: the capabilities the
+// opener connection last advertised through set_client_info, or nil when it
+// never did.
+func (d *Daemon) SessionClientCapabilities(sessionPath string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rec := d.registry[sessionPath]
+	if rec == nil {
+		return nil
+	}
+	return append([]string(nil), rec.clientCaps...)
+}
+
+// stringList converts a decoded JSON array value to its string items.
+func stringList(v any) []string {
+	raw, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // OpenCount is the total number of open_session requests received, across
 // restarts.

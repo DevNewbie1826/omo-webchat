@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "./chatEntries";
 import { messageText } from "./chatEntries";
-import { queuedSendFrame, nextToolEntry, reconcileHistory } from "./chatSessionState";
+import { queuedSendFrame, nextToolEntry, mergeToolResultMedia, reconcileHistory } from "./chatSessionState";
 import { ChatSendStore } from "./chatSendState";
 import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
@@ -135,6 +135,80 @@ describe("nextToolEntry", () => {
   });
 });
 
+describe("nextToolEntry result media", () => {
+  const base = { type: "tool" as const, sessionId: "chat-1", toolCallId: "t1", toolName: "screenshot" };
+
+  it("captures inline and referenced images from a native-type end payload", () => {
+    const ended = nextToolEntry({}, {
+      ...base,
+      phase: "end",
+      result: {
+        content: [
+          { type: "text", text: "shot" },
+          { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+          { type: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t1", contentIndex: 1 } },
+        ],
+      },
+    });
+    expect(ended["t1"]?.media).toEqual([
+      { data: "iVBORw0KGgo=", mimeType: "image/png" },
+      { mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t1", contentIndex: 1 } },
+    ]);
+  });
+
+  it("accepts the synthetic kind discriminator too", () => {
+    const ended = nextToolEntry({}, {
+      ...base,
+      phase: "end",
+      result: { content: [{ kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] },
+    });
+    expect(ended["t1"]?.media).toEqual([{ data: "iVBORw0KGgo=", mimeType: "image/png" }]);
+  });
+
+  it("keeps partial media when the end frame carries none, and omits it when none ever arrived", () => {
+    const updated = nextToolEntry({}, {
+      ...base,
+      phase: "update",
+      partial: { content: [{ kind: "image", data: "YWJj", mimeType: "image/png" }] },
+    });
+    expect(updated["t1"]?.media).toEqual([{ data: "YWJj", mimeType: "image/png" }]);
+    const ended = nextToolEntry(updated, { ...base, phase: "end", result: { content: [{ text: "done" }] } });
+    expect(ended["t1"]?.media).toEqual([{ data: "YWJj", mimeType: "image/png" }]);
+    const never = nextToolEntry({}, { ...base, phase: "end", result: { content: [{ text: "plain" }] } });
+    expect(never["t1"]?.media).toBeUndefined();
+  });
+});
+
+describe("mergeToolResultMedia", () => {
+  const endedEntry: ToolEntry = { toolName: "screenshot", phase: "end", text: "shot", isError: false };
+
+  it("merges message images into the invocation named by the placeholder ref", () => {
+    const merged = mergeToolResultMedia(
+      { "call-1": endedEntry },
+      { blocks: [{ kind: "image_ref", mimeType: "image/png", byteLength: 8, ref: { toolCallId: "call-1", contentIndex: 0 } }] },
+    );
+    expect(merged?.["call-1"]?.media).toEqual([
+      { mimeType: "image/png", byteLength: 8, ref: { toolCallId: "call-1", contentIndex: 0 } },
+    ]);
+  });
+
+  it("falls back positionally to the latest completed call without the image", () => {
+    const merged = mergeToolResultMedia(
+      { "call-1": { ...endedEntry, media: [{ data: "aaa", mimeType: "image/png" }] }, "call-2": endedEntry },
+      { blocks: [{ kind: "image", data: "bbb", mimeType: "image/png" }] },
+    );
+    expect(merged?.["call-2"]?.media).toEqual([{ data: "bbb", mimeType: "image/png" }]);
+    expect(merged?.["call-1"]?.media).toEqual([{ data: "aaa", mimeType: "image/png" }]);
+  });
+
+  it("ignores a repeated image, a text-only result message, and a missing invocation", () => {
+    const current = { "call-1": { ...endedEntry, media: [{ data: "aaa", mimeType: "image/png" }] } };
+    expect(mergeToolResultMedia(current, { blocks: [{ kind: "image", data: "aaa", mimeType: "image/png" }] })).toBeNull();
+    expect(mergeToolResultMedia(current, { blocks: [{ kind: "text", text: "shot" }] })).toBeNull();
+    expect(mergeToolResultMedia({}, { blocks: [{ kind: "image", data: "aaa", mimeType: "image/png" }] })).toBeNull();
+  });
+});
+
 describe("materializeFinalTools", () => {
   const tools: Readonly<Record<string, ToolEntry>> = {
     t1: { toolName: "bash", phase: "end", text: "out", isError: false },
@@ -209,6 +283,63 @@ describe("materializeFinalTools", () => {
     expect(result[0]?.blocks).toEqual([
       { kind: "tool", id: "t2", name: "read", text: "data", isError: false },
       { kind: "tool", id: "t1", name: "bash", text: "boom", isError: true },
+    ]);
+  });
+});
+
+describe("materializeFinalTools result media", () => {
+  it("folds the first result image onto the block and keeps additional images beside it", () => {
+    const messages: readonly UiMessage[] = [
+      { role: "user", blocks: [{ kind: "text", text: "shoot" }] },
+      { role: "assistant", blocks: [{ kind: "text", text: "reply" }] },
+    ];
+
+    const result = materializeFinalTools(messages, {
+      t1: {
+        toolName: "gallery",
+        phase: "end",
+        text: "two images",
+        isError: false,
+        media: [
+          { data: "aaa", mimeType: "image/png" },
+          { mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t1", contentIndex: 1 } },
+        ],
+      },
+    });
+
+    expect(result[1]?.blocks).toEqual([
+      { kind: "tool", id: "t1", name: "gallery", text: "two images", isError: false, data: "aaa", mimeType: "image/png" },
+      { kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t1", contentIndex: 1 } },
+      { kind: "text", text: "reply" },
+    ]);
+  });
+
+  it("folds a referenced image onto an in-place replaced tool block", () => {
+    const messages: readonly UiMessage[] = [
+      { role: "assistant", blocks: [{ kind: "toolCall", id: "t1", name: "screenshot" }] },
+    ];
+
+    const result = materializeFinalTools(messages, {
+      t1: {
+        toolName: "screenshot",
+        phase: "end",
+        text: "shot",
+        isError: false,
+        media: [{ mimeType: "image/png", byteLength: 12595, ref: { toolCallId: "t1", contentIndex: 0 } }],
+      },
+    });
+
+    expect(result[0]?.blocks).toEqual([
+      {
+        kind: "tool",
+        id: "t1",
+        name: "screenshot",
+        text: "shot",
+        isError: false,
+        mimeType: "image/png",
+        byteLength: 12595,
+        ref: { toolCallId: "t1", contentIndex: 0 },
+      },
     ]);
   });
 });

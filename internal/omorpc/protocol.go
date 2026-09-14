@@ -66,6 +66,9 @@ const (
 	CmdClearQueue          = "clear_queue"
 
 	CmdExtensionUIResponse = "extension_ui_response"
+
+	// CmdSetClientInfo is the session-less client handshake record.
+	CmdSetClientInfo = "set_client_info"
 )
 
 // Prompt streaming behaviors: deliver the text while a run is active
@@ -154,6 +157,22 @@ type Notification interface {
 type GetProtocolInfo struct{}
 
 func (GetProtocolInfo) commandName() string { return CmdGetProtocolInfo }
+
+// SetClientInfo is the client handshake record: it tells the engine the
+// caller's render width and capability list. On the multi-session daemon
+// path this is how client capabilities travel — a connection's capability
+// set starts empty there, and this session-less record is the only way a
+// connecting client populates it. Sessions the connection opens afterward
+// inherit exactly this list, so the record must precede the first
+// open_session of the connection. Capabilities REPLACE any earlier view
+// for the connection, so every capability the client relies on must be in
+// every record.
+type SetClientInfo struct {
+	Width        int      `json:"width"`
+	Capabilities []string `json:"capabilities"`
+}
+
+func (SetClientInfo) commandName() string { return CmdSetClientInfo }
 
 // OpenSession opens a fresh session rooted at CWD or, when SessionPath is
 // set, resumes the session stored at that file (durable id = file UUID).

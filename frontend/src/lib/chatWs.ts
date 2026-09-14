@@ -86,9 +86,12 @@ type ContentBlockSeam = Omit<ct.ContentBlock, "arguments"> & { readonly argument
  * Seam adapter: tool payload content items keep the image fields the contract
  * added to ContentBlock (data/mimeType/byteLength/ref) so tool-frame
  * partial/result content can carry images through the parse boundary; the
- * generated ToolPayload still models text-only items.
+ * generated ToolPayload still models text-only items. `type` is the native
+ * provider discriminator the server forwards unchanged ("image"/"image_ref");
+ * `kind` stays for synthetic items.
  */
 interface ToolPayloadContentItemSeam {
+  readonly type?: string;
   readonly kind?: string;
   readonly text?: string;
   readonly data?: string;

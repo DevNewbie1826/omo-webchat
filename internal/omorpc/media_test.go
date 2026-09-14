@@ -59,6 +59,24 @@ func TestEnsureMediaPlaceholdersIdempotentAndDedupe(t *testing.T) {
 	}
 }
 
+// TestProtocolSetClientInfoWireShape pins the client handshake record's
+// wire shape: the capability list serializes completely beside the render
+// width. On the daemon path this record is the only capability
+// advertisement a connecting client's peer reads.
+func TestProtocolSetClientInfoWireShape(t *testing.T) {
+	got, err := EncodeRequest("r1", SetClientInfo{
+		Width:        80,
+		Capabilities: []string{capExtensionEvents, capMediaPlaceholders},
+	})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+	want := `{"capabilities":["extension_events","media_placeholders"],"id":"r1","type":"set_client_info","width":80}` + "\n"
+	if string(got) != want {
+		t.Fatalf("wire mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
 // TestProtocolGetMediaRequestShape pins the get_media wire request: the
 // command fields flatten beside id/type, and contentIndex serializes even
 // when zero — the placeholder ref is positional, so an omitted index would

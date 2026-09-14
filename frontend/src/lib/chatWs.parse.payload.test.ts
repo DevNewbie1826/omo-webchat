@@ -209,9 +209,11 @@ describe("parseChatServerFrame", () => {
     ).toBeNull();
   });
 
-  it("preserves image content items through tool partial/result payloads", () => {
-    const image = { kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
-    const imageRef = { kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "call_1", contentIndex: 1 } };
+  it("preserves native image content items through tool partial/result payloads", () => {
+    // The server forwards tool-result content with the provider's native block
+    // discriminator: type "image"/"image_ref", never a synthetic kind.
+    const image = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+    const imageRef = { type: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "call_1", contentIndex: 1 } };
     const frame = parseChatServerFrame({
       type: "tool",
       sessionId: "c1",
@@ -222,6 +224,8 @@ describe("parseChatServerFrame", () => {
       result: { content: [{ text: "saved" }, image, imageRef] },
     });
     if (frame?.type !== "tool") throw new Error("tool frame rejected");
+    // The native discriminator and every image field survive the parse
+    // boundary verbatim.
     expect(frame.partial?.content).toEqual([image]);
     expect(frame.result?.content).toEqual([{ text: "saved" }, image, imageRef]);
     // Present-but-malformed image fields reject the frame at the parse seam.
@@ -232,7 +236,11 @@ describe("parseChatServerFrame", () => {
       parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ byteLength: "big" }] } }),
     ).toBeNull();
     expect(
-      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ kind: "image_ref", ref: { toolCallId: "call_1" } }] } }),
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ type: "image_ref", ref: { toolCallId: "call_1" } }] } }),
+    ).toBeNull();
+    // A native discriminator of the wrong type rejects instead of being dropped.
+    expect(
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ type: 7, data: "iVBORw0KGgo=", mimeType: "image/png" }] } }),
     ).toBeNull();
   });
 

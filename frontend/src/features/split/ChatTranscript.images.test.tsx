@@ -193,4 +193,49 @@ describe("ChatTranscript preserved image blocks", () => {
 			"blob:mock-media",
 		);
 	});
+
+	it("keeps additional result images inside their tool disclosure, gated on expansion", async () => {
+		// The restored form of a multi-image result: the first image folds onto
+		// the tool block, additional images are stored as standalone blocks
+		// after it. Neither may fetch or render while the disclosure is
+		// collapsed.
+		const blocks: readonly ContentBlock[] = [
+			{
+				kind: "tool",
+				id: "t-multi",
+				name: "gallery",
+				text: "two images",
+				data: PNG_DATA,
+				mimeType: "image/png",
+			},
+			{
+				kind: "image_ref",
+				mimeType: "image/jpeg",
+				byteLength: 2048,
+				ref: { toolCallId: "t-multi", contentIndex: 1 },
+			},
+		];
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript {...baseProps} items={[messageItem(blocks)]} />
+				</I18nContext.Provider>,
+			);
+		});
+		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		const head = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			head?.click();
+		});
+		const images = container.querySelectorAll<HTMLImageElement>("img.th-chat-image");
+		expect(images).toHaveLength(2);
+		expect(images[0]?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_DATA}`);
+		expect(images[1]?.getAttribute("src")).toBe("blob:mock-media");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-multi&contentIndex=1",
+		);
+	});
 });

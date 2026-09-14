@@ -211,8 +211,13 @@ export function parseAssistantDelta(record: Record<string, unknown>): AssistantD
   };
 }
 
-/** Validate one tool partial/result content item; image fields included. */
+/**
+ * Validate one tool partial/result content item; image fields included. The
+ * discriminator is preserved whatever form the server forwarded: the native
+ * provider block `type` ("image"/"image_ref") and/or the synthetic `kind`.
+ */
 function parseToolContentItem(record: Record<string, unknown>): ToolPayloadContentItem | null {
+  const type = optString(record, "type");
   const kind = optString(record, "kind");
   const text = optString(record, "text");
   const data = optString(record, "data");
@@ -220,11 +225,12 @@ function parseToolContentItem(record: Record<string, unknown>): ToolPayloadConte
   const byteLength = optNumber(record, "byteLength");
   const ref = parseContentRef(record["ref"]);
   if (
-    kind === null || text === null || data === null || mimeType === null || byteLength === null || ref === null
+    type === null || kind === null || text === null || data === null || mimeType === null || byteLength === null || ref === null
   ) {
     return null;
   }
   return {
+    ...(type !== undefined ? { type } : {}),
     ...(kind !== undefined ? { kind } : {}),
     ...(text !== undefined ? { text } : {}),
     ...(data !== undefined ? { data } : {}),

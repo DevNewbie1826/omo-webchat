@@ -222,6 +222,7 @@ export function ChatPane({
           error={chat.missingOriginal ? "" : chat.error}
           restoreVersion={chat.restoreVersion}
           focused={focused}
+          mediaSource={{ wsId: chatSession.wsId, chatId: chatSession.id }}
         />
         <GoalBar goal={chat.goal} />
         <ActivityShelf activities={chat.activities} dagSource={{ wsId: chatSession.wsId, chatId: chatSession.id, connected: chat.connected }} />

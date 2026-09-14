@@ -268,7 +268,16 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // and it must complete the streaming/thinking cleanup. Zero-block
         // assistant messages render no transcript row — that filtering is
         // owned by the presentation seam (ChatPane), not transcript state.
-        if (frame.message.role === "toolResult") return;
+        if (frame.message.role === "toolResult") {
+          // The engine repeats each invocation's result as a role
+          // "toolResult" message whose blocks carry the result images (the
+          // tool end frame's own content is often text-only). Fold the media
+          // into the matching live invocation; the message itself never
+          // becomes a transcript row.
+          const merged = chatState.mergeToolResultMedia(bindings.toolCallsRef.current, frame.message);
+          if (merged !== null) bindings.replaceToolCalls(merged);
+          return;
+        }
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(
           [...bindings.messagesRef.current, frame.message], steerMarks(frame.sessionId),
