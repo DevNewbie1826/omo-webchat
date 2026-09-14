@@ -150,8 +150,10 @@ describe("ChatPane hydrated summary entries", () => {
 				handlers.onOpen?.();
 				return { send: () => true, close: () => undefined };
 			};
-			const element = (
-				<I18nContext.Provider value={i18n}>
+			// Fresh element + fresh context value on each call so the second
+			// render cannot be bailed out by React element-identity reuse.
+			const renderPane = () => (
+				<I18nContext.Provider value={{ ...i18n }}>
 					<ChatPane
 						chatSession={chatSession}
 						focused
@@ -166,7 +168,7 @@ describe("ChatPane hydrated summary entries", () => {
 				</I18nContext.Provider>
 			);
 			act(() => {
-				root.render(element);
+				root.render(renderPane());
 			});
 			act(() => {
 				deliver?.({
@@ -192,7 +194,7 @@ describe("ChatPane hydrated summary entries", () => {
 			// the frozen receipt times must not move.
 			vi.setSystemTime(receipt + 91_000);
 			act(() => {
-				root.render(element);
+				root.render(renderPane());
 			});
 			expect(readTimes()).toEqual(first);
 		} finally {

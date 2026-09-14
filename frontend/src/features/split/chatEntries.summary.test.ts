@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseEntries } from "./chatEntries";
 
 // Persisted summary entries (observed engine behavior/contract): compaction
@@ -7,6 +7,10 @@ import { parseEntries } from "./chatEntries";
 // (string) and `tokensBefore` (number); entries carry id/timestamp like every
 // other history entry.
 describe("parseEntries summary entries", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	it("maps a persisted compaction entry to a custom compaction message keeping summary and tokensBefore", () => {
 		const messages = parseEntries([
 			{
@@ -105,16 +109,16 @@ describe("parseEntries summary entries", () => {
 	});
 
 	it("falls back to the frozen hydration receipt time for finite numeric timestamps outside the Date range", () => {
-		const before = Date.now();
+		vi.useFakeTimers();
+		const receipt = 1_800_000_000_000;
+		vi.setSystemTime(receipt);
 		const messages = parseEntries([
 			{ type: "compaction", id: "over", timestamp: 8640000000000001, summary: "positive overflow" },
 			{ type: "branch_summary", id: "under", timestamp: -8640000000000001, summary: "negative overflow" },
 		]);
-		const after = Date.now();
 		expect(messages).toHaveLength(2);
+		expect(messages.map((message) => message.ts)).toEqual([receipt, receipt]);
 		for (const message of messages) {
-			expect(message.ts).toBeGreaterThanOrEqual(before);
-			expect(message.ts).toBeLessThanOrEqual(after);
 			expect(Number.isNaN(new Date(message.ts ?? Number.NaN).getTime())).toBe(false);
 		}
 	});
@@ -130,16 +134,13 @@ describe("parseEntries summary entries", () => {
 	});
 
 	it("freezes a hydration receipt time when the entry timestamp is absent or invalid", () => {
-		const before = Date.now();
+		vi.useFakeTimers();
+		const receipt = 1_800_000_000_000;
+		vi.setSystemTime(receipt);
 		const messages = parseEntries([
 			{ type: "compaction", id: "missing", summary: "no timestamp" },
 			{ type: "branch_summary", id: "invalid", timestamp: "not-a-date", summary: "bad timestamp" },
 		]);
-		const after = Date.now();
-		for (const message of messages) {
-			expect(Number.isFinite(message.ts)).toBe(true);
-			expect(message.ts).toBeGreaterThanOrEqual(before);
-			expect(message.ts).toBeLessThanOrEqual(after);
-		}
+		expect(messages.map((message) => message.ts)).toEqual([receipt, receipt]);
 	});
 });
