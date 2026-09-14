@@ -67,9 +67,9 @@ describe("ChatPane in-transcript notices", () => {
     });
 
     expect(container.querySelector(".th-notice-stack")).toBeNull();
-    const block = container.querySelector(".th-chat-history .th-chat-notice");
+    const block = container.querySelector(".th-chat-history .th-notice-status");
     expect(block).not.toBeNull();
-    expect(block?.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+    expect(block?.className).toContain("th-notice-status--warning");
     expect(block?.textContent).toContain("n1");
     expect(block?.textContent).not.toContain("notice.autoRetryStarted");
     const texts = rowTexts(container);
@@ -90,10 +90,10 @@ describe("ChatPane in-transcript notices", () => {
       deliverWire(deliver, wireNoticeFrame(1));
       deliverWire(deliver, wireNoticeFrame(2));
     });
-    expect(container.querySelectorAll(".th-chat-notice").length).toBe(2);
+    expect(container.querySelectorAll(".th-notice-status").length).toBe(2);
     const sentBefore = sent.length;
 
-    const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
+    const row = [...container.querySelectorAll(".th-notice-status")].find((block) =>
       block.textContent?.includes("n1"),
     );
     expect(row?.querySelectorAll("button").length).toBe(0);
@@ -118,7 +118,7 @@ describe("ChatPane in-transcript notices", () => {
       deliverWire(deliver, wireNoticeFrame(1));
     });
 
-    expect(container.querySelector(".th-chat-live .th-chat-notice")).toBeNull();
-    expect(container.querySelector(".th-chat-history .th-chat-notice")).not.toBeNull();
+    expect(container.querySelector(".th-chat-live .th-notice-status")).toBeNull();
+    expect(container.querySelector(".th-chat-history .th-notice-status")).not.toBeNull();
   });
 });

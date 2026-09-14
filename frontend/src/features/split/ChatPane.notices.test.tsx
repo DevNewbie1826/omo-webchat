@@ -56,7 +56,7 @@ describe("ChatPane notice frames", () => {
     });
 
     expect(container.querySelector(".th-notice-stack")).toBeNull();
-    const rows = container.querySelectorAll(".th-chat-history .th-chat-notice");
+    const rows = container.querySelectorAll(".th-chat-history .th-notice-status");
     expect(rows.length).toBe(3);
     const texts = [...rows].map((row) => row.textContent ?? "");
     expect(texts.findIndex((text) => text.includes("n1"))).toBe(0);
@@ -70,16 +70,16 @@ describe("ChatPane notice frames", () => {
       loadHistory(deliver);
       deliverWire(deliver, wireNoticeFrame(1, "chat-2"));
     });
-    expect(container.querySelector(".th-chat-notice")).toBeNull();
+    expect(container.querySelector(".th-notice-status")).toBeNull();
 
     act(() => {
       deliverWire(deliver, wireNoticeFrame(2));
     });
-    expect(container.querySelector(".th-chat-notice")).not.toBeNull();
+    expect(container.querySelector(".th-notice-status")).not.toBeNull();
     expect(container.textContent).toContain("n2");
   });
 
-  it("keeps notices mounted while later lifecycle frames arrive, showing the raw kind", () => {
+  it("keeps notices mounted while later lifecycle frames arrive, showing the payload message verbatim", () => {
     const { deliver } = renderChatPane(root, chatSession, realI18n("en"));
 
     act(() => {
@@ -89,13 +89,14 @@ describe("ChatPane notice frames", () => {
       deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
     });
 
+    const row = container.querySelector(".th-notice-status--warning");
+    expect(row).not.toBeNull();
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("auto_retry_start");
     expect(container.textContent).not.toContain("Auto retry started");
     expect(container.textContent).not.toContain(translate("en", "notice.autoRetryStarted"));
   });
 
-  it("renders the auto-retry notice with the raw kind under the ko locale", () => {
+  it("renders the auto-retry notice as a warning status line under the ko locale", () => {
     const { deliver } = renderChatPane(root, chatSession, realI18n("ko"));
 
     act(() => {
@@ -103,8 +104,9 @@ describe("ChatPane notice frames", () => {
       deliverWire(deliver, wireNoticeFrame(1));
     });
 
+    const row = container.querySelector(".th-notice-status--warning");
+    expect(row).not.toBeNull();
     expect(container.textContent).toContain("n1");
-    expect(container.textContent).toContain("auto_retry_start");
     expect(container.textContent).not.toContain("자동 재시도 시작");
     expect(container.textContent).not.toContain(translate("ko", "notice.autoRetryStarted"));
   });

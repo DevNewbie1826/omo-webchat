@@ -76,7 +76,7 @@ describe("ChatPane notices while history is loading", () => {
 
     expect(noticeRows(container).length).toBe(1);
     expect(container.querySelector(".th-chat-loading")).toBeNull();
-    expect(container.textContent).toContain("auto_retry_start");
+    expect(container.querySelector(".th-notice-status--warning")).not.toBeNull();
     expect(container.textContent).toContain("n1");
     expect(container.textContent).not.toContain("notice.autoRetryStarted");
   });

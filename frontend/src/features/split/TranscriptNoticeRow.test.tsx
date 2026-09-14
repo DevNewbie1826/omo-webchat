@@ -118,7 +118,7 @@ describe("TranscriptNoticeRow", () => {
 
   describe("notice-box format (all other kinds)", () => {
     it("renders a bold title line, the primary line, and remaining fields as dim key: value lines", () => {
-      renderRow(notice(1, "auto_retry_start", { title: "Retrying", why: "rate limited", chainKey: "c1" }));
+      renderRow(notice(1, "brand_new_kind", { title: "Retrying", why: "rate limited", chainKey: "c1" }));
       const title = container.querySelector(".th-notice-title");
       expect(title).not.toBeNull();
       expect(title?.textContent).toBe("Retrying");
@@ -132,17 +132,17 @@ describe("TranscriptNoticeRow", () => {
     });
 
     it("keeps a numeric payload.title visible as a key: value line instead of dropping it", () => {
-      renderRow(notice(1, "auto_retry_start", { title: 94731, message: "QA_NUMBER_PRIMARY" }));
+      renderRow(notice(1, "brand_new_kind", { title: 94731, message: "QA_NUMBER_PRIMARY" }));
       // The non-string title must not take the bold-title role…
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       // …but its value must stay visible as text, not be silently dropped.
       expect(container.textContent).toContain("QA_NUMBER_PRIMARY");
       expect(container.textContent).toContain("title: 94731");
     });
 
     it("keeps an object payload.title visible as a key: value line instead of dropping it", () => {
-      renderRow(notice(1, "auto_retry_start", { title: { code: "QA_TITLE_VALUE" }, why: "QA_PRIMARY" }));
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      renderRow(notice(1, "brand_new_kind", { title: { code: "QA_TITLE_VALUE" }, why: "QA_PRIMARY" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       expect(container.textContent).toContain("QA_PRIMARY");
       expect(container.textContent).toContain("QA_TITLE_VALUE");
     });
@@ -154,8 +154,8 @@ describe("TranscriptNoticeRow", () => {
       ["populated array", [0, false, null, { code: "QA_ARRAY_VALUE" }], 'title: 0, false, null, {"code":"QA_ARRAY_VALUE"}'],
       ["empty array", [], "title: "],
     ])("keeps a %s payload.title visible as a key: value line instead of dropping it", (_name, title, expected) => {
-      renderRow(notice(1, "auto_retry_start", { title, why: "QA_PRIMARY", message: "QA_SECONDARY" }));
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      renderRow(notice(1, "brand_new_kind", { title, why: "QA_PRIMARY", message: "QA_SECONDARY" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual([
         "QA_PRIMARY",
         expected,
@@ -166,15 +166,15 @@ describe("TranscriptNoticeRow", () => {
     });
 
     it("consumes a string payload.title as the bold title exactly once", () => {
-      renderRow(notice(1, "auto_retry_start", { title: "QA_STRING", message: "QA_PRIMARY" }));
+      renderRow(notice(1, "brand_new_kind", { title: "QA_STRING", message: "QA_PRIMARY" }));
       expect(container.querySelector(".th-notice-title")?.textContent).toBe("QA_STRING");
       expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual(["QA_PRIMARY"]);
       expect(container.textContent).not.toContain("title: QA_STRING");
     });
 
     it("falls back to the kind as the title when payload.title is absent", () => {
-      renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }));
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      renderRow(notice(1, "brand_new_kind", { message: "attempt 2" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       expect(container.textContent).toContain("attempt 2");
     });
 
@@ -211,15 +211,15 @@ describe("TranscriptNoticeRow", () => {
     });
 
     it("keeps the receipt time row", () => {
-      renderRow(notice(1, "auto_retry_start", { message: "m1" }));
+      renderRow(notice(1, "brand_new_kind", { message: "m1" }));
       const time = container.querySelector(".th-notice-time");
       expect(time).not.toBeNull();
       expect(time?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
     });
 
     it("renders a null payload as the kind title with no field lines", () => {
-      renderRow(notice(1, "auto_retry_end"));
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_end");
+      renderRow(notice(1, "brand_new_kind"));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       expect(container.querySelectorAll(".th-notice-line")).toHaveLength(0);
       expect(container.querySelector("pre")).toBeNull();
     });
@@ -250,18 +250,22 @@ describe("TranscriptNoticeRow", () => {
       expect(container.querySelector("details")).toBeNull();
     });
 
-    it.each<Lang>(["en", "ko"])("renders the auto-retry start payload without translated prose (%s)", (lang) => {
+    it.each<Lang>(["en", "ko"])("renders the auto-retry start payload as a warning status line without translated prose (%s)", (lang) => {
       renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), lang);
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
-      expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual(["attempt 2"]);
+      const row = container.querySelector(".th-notice-status--warning");
+      expect(row).not.toBeNull();
+      expect(row?.textContent).toContain("attempt 2");
+      expect(container.querySelector(".th-chat-notice")).toBeNull();
       expect(container.querySelector("details")).toBeNull();
       expect(container.querySelector("pre")).toBeNull();
       expect(container.textContent).not.toContain(translate(lang, "notice.autoRetryStarted"));
     });
 
-    it.each<Lang>(["en", "ko"])("renders a null payload as the kind title with no field lines (%s)", (lang) => {
+    it.each<Lang>(["en", "ko"])("renders a null auto-retry payload as a warning status line with the kind text (%s)", (lang) => {
       renderRow(notice(1, "auto_retry_end"), lang);
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_end");
+      const row = container.querySelector(".th-notice-status--warning");
+      expect(row).not.toBeNull();
+      expect(row?.textContent).toContain("auto_retry_end");
       expect(container.querySelectorAll(".th-notice-line")).toHaveLength(0);
       expect(container.querySelector("details")).toBeNull();
       expect(container.querySelector("pre")).toBeNull();
@@ -269,9 +273,9 @@ describe("TranscriptNoticeRow", () => {
     });
 
     it("preserves a payload's own type field as a key: value line alongside the kind title", () => {
-      renderRow(notice(1, "auto_retry_start", { type: "QA_ORIGINAL_TYPE", message: "m1" }));
+      renderRow(notice(1, "brand_new_kind", { type: "QA_ORIGINAL_TYPE", message: "m1" }));
       // The wrapper kind keeps the bold-title role…
-      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("brand_new_kind");
       // …and the payload's own type field stays visible as its own line.
       expect(container.textContent).toContain("type: QA_ORIGINAL_TYPE");
       expect(container.textContent).toContain("m1");
@@ -348,7 +352,7 @@ describe("TranscriptNoticeRow", () => {
     });
 
     it("renders no dismiss button", () => {
-      renderRows([notice(1, "auto_retry_start", { message: "first" }), notice(2, "auto_retry_end")]);
+      renderRows([notice(1, "brand_new_kind", { message: "first" }), notice(2, "brand_new_other_kind")]);
       const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
         block.textContent?.includes("first"),
       );
