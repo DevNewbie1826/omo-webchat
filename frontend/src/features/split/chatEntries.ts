@@ -220,6 +220,30 @@ export function parseEntries(entries: unknown): UiMessage[] {
       });
       continue;
     }
+    // Persisted summary entries resurface during history hydration under
+    // their own entry types (observed engine behavior/contract: compaction
+    // summaries persist as "compaction", branch summaries as
+    // "branch_summary"). Map them onto the same summary rows as the
+    // message/custom-message forms, preserving entry identity and time and
+    // keeping the compaction token count as separate metadata.
+    if (entry["type"] === "compaction" || entry["type"] === "branch_summary") {
+      const summary = entry["summary"];
+      if (typeof summary !== "string") continue;
+      const id = entry["id"];
+      const isCompaction = entry["type"] === "compaction";
+      const tokensBefore = entry["tokensBefore"];
+      const tokensAlias = entry["tokens"];
+      const tokens =
+        typeof tokensBefore === "number" ? tokensBefore : typeof tokensAlias === "number" ? tokensAlias : undefined;
+      messages.push({
+        ...(typeof id === "string" ? { id } : {}),
+        role: isCompaction ? "compactionSummary" : "branchSummary",
+        blocks: [{ kind: "text", text: summary }],
+        ts: parseTimestamp(entry["timestamp"]),
+        ...(isCompaction && tokens !== undefined ? { summaryTokens: tokens } : {}),
+      });
+      continue;
+    }
     if (entry["type"] !== "message") continue;
     const message = entry["message"];
     if (!isRecord(message)) continue;

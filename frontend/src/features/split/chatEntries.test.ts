@@ -136,6 +136,64 @@ describe("parseEntries", () => {
 		expect(messages[0]?.role).toBe("branchSummary");
 	});
 
+	it("hydrates persisted compaction entries as summary rows with tokens kept separate", () => {
+		// Observed engine behavior/contract: compaction summaries persist as
+		// session entries of type "compaction" carrying the summary text and
+		// the compacted token count, and resurface during history hydration.
+		const messages = parseEntries([
+			{ type: "compaction", id: "comp-1", parentId: null, timestamp: "2026-09-14T12:00:01.000Z", tokensBefore: 42100, summary: "Kept the plan.\nSecond line of the compaction summary" },
+			{ type: "message", id: "control", message: { role: "user", content: "still here", timestamp: 1789387202000 } },
+		]);
+		expect(messages).toEqual([
+			{
+				id: "comp-1",
+				role: "compactionSummary",
+				blocks: [{ kind: "text", text: "Kept the plan.\nSecond line of the compaction summary" }],
+				ts: Date.parse("2026-09-14T12:00:01.000Z"),
+				summaryTokens: 42100,
+			},
+			{ id: "control", role: "user", blocks: [{ kind: "text", text: "still here" }], ts: 1789387202000 },
+		]);
+		expect(messages.every(hasRenderableContent)).toBe(true);
+	});
+
+	it("hydrates persisted branch_summary entries as summary rows", () => {
+		// Observed engine behavior/contract: branch summaries persist as
+		// session entries of type "branch_summary".
+		const messages = parseEntries([
+			{ type: "branch_summary", id: "branch-1", parentId: null, timestamp: "2026-09-14T12:00:00.000Z", summary: "Branched context\nBranch detail line" },
+		]);
+		expect(messages).toEqual([
+			{
+				id: "branch-1",
+				role: "branchSummary",
+				blocks: [{ kind: "text", text: "Branched context\nBranch detail line" }],
+				ts: Date.parse("2026-09-14T12:00:00.000Z"),
+			},
+		]);
+	});
+
+	it("keeps a zero token count visible on persisted compaction entries", () => {
+		const messages = parseEntries([
+			{ type: "compaction", id: "comp-0", timestamp: 1789387201000, tokensBefore: 0, summary: "Nothing was dropped." },
+		]);
+		expect(messages[0]).toEqual({
+			id: "comp-0",
+			role: "compactionSummary",
+			blocks: [{ kind: "text", text: "Nothing was dropped." }],
+			ts: 1789387201000,
+			summaryTokens: 0,
+		});
+	});
+
+	it("skips persisted summary entries whose summary text is not a string", () => {
+		const messages = parseEntries([
+			{ type: "compaction", id: "bad-1", tokensBefore: 10 },
+			{ type: "branch_summary", id: "bad-2", summary: 42 },
+		]);
+		expect(messages).toEqual([]);
+	});
+
 	it("keeps tool-result folding renderable", () => {
 		const messages = parseEntries([
 			{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "lookup" }] } },
