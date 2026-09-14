@@ -12,6 +12,8 @@ import (
 // All derivations mirror the observed engine contract. lifecycleMu guards state.
 type transcriptNoticeState struct {
 	initialized        bool
+	restored           bool
+	source             string
 	previous           *cacheRequest
 	continuityDisabled bool
 }
@@ -28,6 +30,7 @@ type cacheRequest struct {
 type persistedTranscriptNoticeState struct {
 	Previous           *cacheRequest `json:"previous,omitempty"`
 	ContinuityDisabled bool          `json:"continuityDisabled,omitempty"`
+	Source             string        `json:"source,omitempty"`
 }
 
 func (s *Session) restoreTranscriptNoticesLocked() {
@@ -35,12 +38,13 @@ func (s *Session) restoreTranscriptNoticesLocked() {
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
 	if state, ok := journal.transcripts[s.durableID]; ok {
-		s.transcriptNotices = transcriptNoticeState{initialized: true, previous: state.Previous, continuityDisabled: state.ContinuityDisabled}
+		s.transcriptNotices = transcriptNoticeState{initialized: true, restored: true, source: state.Source, previous: state.Previous, continuityDisabled: state.ContinuityDisabled}
 	}
 }
 
 func (s *Session) persistTranscriptNoticesLocked() {
 	s.transcriptNotices.initialized = true
+	s.transcriptNotices.restored = false
 	journal := s.manager.noticeJournal(s.chatID)
 	journal.mu.Lock()
 	defer journal.mu.Unlock()
@@ -50,7 +54,7 @@ func (s *Session) persistTranscriptNoticesLocked() {
 	if journal.transcripts == nil {
 		journal.transcripts = make(map[string]persistedTranscriptNoticeState)
 	}
-	journal.transcripts[s.durableID] = persistedTranscriptNoticeState{Previous: s.transcriptNotices.previous, ContinuityDisabled: s.transcriptNotices.continuityDisabled}
+	journal.transcripts[s.durableID] = persistedTranscriptNoticeState{Previous: s.transcriptNotices.previous, ContinuityDisabled: s.transcriptNotices.continuityDisabled, Source: s.transcriptNotices.source}
 	journal.persistLocked()
 }
 
@@ -147,6 +151,9 @@ func (s *Session) deriveCompactionNoticesLocked(raw map[string]any) {
 		return
 	}
 	s.transcriptNotices.previous = nil
+	// This event has no entry identity. Until an identified source arrives,
+	// older history cannot prove that it follows this live reset.
+	s.transcriptNotices.source = ""
 	s.persistTranscriptNoticesLocked()
 	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: map[string]any{"kind": "compaction_summary", "tokensBefore": result["tokensBefore"], "summary": result["summary"]}})
 	usage, ok := result["usage"].(map[string]any)
@@ -179,6 +186,7 @@ func (s *Session) deriveMessageNoticesLocked(raw map[string]any) {
 		return
 	}
 	defer s.persistTranscriptNoticesLocked()
+	s.transcriptNotices.source = transcriptMessageSource(message)
 	diagnostics, _ := message["diagnostics"].([]any)
 	s.deriveContinuityNoticeLocked(diagnostics)
 	s.deriveCacheNoticeLocked(message)
@@ -322,6 +330,7 @@ func (s *Session) deriveEntryNoticeLocked(entry map[string]any) {
 	case "compaction", "branch_summary":
 		if s.admitTranscriptIdentityLocked("boundary", stringValue(entry["id"])) {
 			s.transcriptNotices.previous = nil
+			s.transcriptNotices.source = "entry:" + stringValue(entry["id"])
 			s.persistTranscriptNoticesLocked()
 		}
 	case "model_change_rejected":
@@ -352,10 +361,23 @@ func (s *Session) deriveHistoryPageLocked(entries []json.RawMessage) int {
 	return count
 }
 
-// Subscriber replay presents diagnostics but folds content boundaries and
-// requests only into its private candidate. Apply that candidate only after
-// the complete history succeeds, and only if no live checkpoint exists.
-func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *transcriptNoticeState) int {
+// Message payloads are shared by completed events and persisted entries even
+// when the enclosing event and entry use different IDs.
+func transcriptMessageSource(message map[string]any) string {
+	raw, _ := json.Marshal(message)
+	return fmt.Sprintf("message:%x", sha256.Sum256(raw))
+}
+
+type transcriptNoticeReplay struct {
+	transcriptNoticeState
+	checkpointSeen bool
+	boundaries     []string
+}
+
+// Reconstruct privately until the complete validated history succeeds. A
+// restored checkpoint anchors the fold: only its suffix may advance state.
+// An absent anchor means the checkpoint may be newer than hydrated history.
+func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *transcriptNoticeReplay) int {
 	count := 0
 	for _, raw := range entries {
 		var entry map[string]any
@@ -365,16 +387,22 @@ func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *t
 		switch entry["type"] {
 		case "compaction", "branch_summary":
 			candidate.previous = nil
-			s.admitTranscriptIdentityLocked("boundary", stringValue(entry["id"]))
+			candidate.source = "entry:" + stringValue(entry["id"])
+			candidate.boundaries = append(candidate.boundaries, stringValue(entry["id"]))
 			if entry["type"] == "compaction" {
 				count++
 			}
 		case "message":
 			if message, ok := entry["message"].(map[string]any); ok && message["role"] == "assistant" {
 				candidate.foldCacheRequest(message)
+				candidate.source = transcriptMessageSource(message)
 			}
 		default:
 			s.deriveEntryNoticeLocked(entry)
+		}
+		if !candidate.checkpointSeen && s.transcriptNotices.restored && s.transcriptNotices.source != "" && candidate.source == s.transcriptNotices.source {
+			candidate.transcriptNoticeState = s.transcriptNotices
+			candidate.checkpointSeen = true
 		}
 	}
 	return count

@@ -2030,7 +2030,7 @@ func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget 
 // history while successful long transcripts remain page-bounded.
 func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath string, target *subscription, onValidated func() error) error {
 	compactionCount := 0
-	var noticeCandidate transcriptNoticeState
+	var noticeCandidate transcriptNoticeReplay
 	emit := func(frame Frame, terminal bool) error {
 		if routeErr := s.acquisitionError(); errors.Is(routeErr, ErrSessionResumable) || errors.Is(routeErr, ErrSessionClosed) {
 			return routeErr
@@ -2040,8 +2040,11 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			if !s.closed && !s.resumable {
 				pageCount := s.deriveReplayPageLocked(page.Entries, &noticeCandidate)
 				if page.Final {
-					if !s.transcriptNotices.initialized {
-						s.transcriptNotices = noticeCandidate
+					if !s.transcriptNotices.initialized || (s.transcriptNotices.restored && noticeCandidate.checkpointSeen) {
+						s.transcriptNotices = noticeCandidate.transcriptNoticeState
+					}
+					for _, id := range noticeCandidate.boundaries {
+						s.admitTranscriptIdentityLocked("boundary", id)
 					}
 					s.persistTranscriptNoticesLocked()
 				}
