@@ -19,10 +19,10 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	var raw map[string]any
 	if json.Unmarshal(ev.Raw, &raw) != nil {
 		// Dedicated mappings keep the float64 decode above, including its
-		// failure (the event is dropped). Unmapped events still publish a
-		// lossless notice when the payload is valid JSON with numbers that
-		// overflow float64. Shown custom entry_appended events also re-decode
-		// losslessly so an overflowing number cannot drop a shown line.
+		// failure (the event is dropped). Known shown notice kinds and shown
+		// custom entry_appended events still re-decode losslessly so an
+		// overflowing number cannot drop a published line. Unmapped events
+		// stay silent.
 		if ev.Type == "entry_appended" {
 			s.lifecycleMu.Lock()
 			defer s.lifecycleMu.Unlock()
@@ -32,7 +32,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 			s.publishShownCustomEntryLocked(ev)
 			return
 		}
-		if mappedEngineEvent(ev.Type) {
+		if !transcriptNoticeKind(ev.Type) {
 			return
 		}
 		s.lifecycleMu.Lock()
@@ -200,29 +200,33 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		}
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
-	case "turn_start", "turn_end", "agent_idle", "loaded_surfaces_changed", "message_start":
-		// Transcript-silent lifecycle markers (observed engine behavior): the
-		// engine transcript renders none of these, so neither does the notice
-		// feed.
+	case "turn_start", "turn_end", "agent_idle", "loaded_surfaces_changed", "message_start",
+		"tool_hook_status", "thinking_level_changed":
+		// Transcript-silent (observed engine behavior): lifecycle markers and
+		// footer/status-only events render no transcript rows, so neither does
+		// the notice feed.
 	case "entry_appended":
 		s.publishShownCustomEntryLocked(ev)
 	default:
-		s.publishVerbatimNoticeLocked(ev)
+		// Strict engine-UI mirror: only the known shown notice kinds publish.
+		// Unmapped engine events stay silent.
+		if transcriptNoticeKind(ev.Type) {
+			s.publishVerbatimNoticeLocked(ev)
+		}
 	}
 }
 
-func mappedEngineEvent(eventType string) bool {
+func transcriptNoticeKind(eventType string) bool {
 	switch eventType {
-	case "session_info_changed", omorpc.EventQueueUpdate,
-		"agent_start", "agent_end", "agent_settled", "command_invocation",
-		"message_delta", "message_update", "message", "message_end", "message_start",
-		"turn_start", "turn_end", "agent_idle", "loaded_surfaces_changed",
-		"tool", "tool_execution_start", "tool_execution_update", "tool_execution_end",
-		"compaction_start", "compaction_end", "compaction_done",
-		"session_unloaded", "session_closed", "response",
-		"state", "state_changed", "commands_changed",
-		"extension_event", "extension_ui_request",
-		"question_resolved", "question_updated", "entries.stream", "entry_appended":
+	case "high_reasoning_warning",
+		"retry_fallback_applied",
+		"retry_fallback_reverted",
+		"retry_fallback_succeeded",
+		"retry_fallback_exhausted",
+		"server_fallback_aborted",
+		"auto_retry_start",
+		"auto_retry_end",
+		"extension_notify":
 		return true
 	default:
 		return false

@@ -128,6 +128,8 @@ func TestDispatchTranscriptSilentEventsPublishNothing(t *testing.T) {
 		"agent_idle",
 		"loaded_surfaces_changed",
 		"message_start",
+		"tool_hook_status",
+		"thinking_level_changed",
 	}
 	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {
