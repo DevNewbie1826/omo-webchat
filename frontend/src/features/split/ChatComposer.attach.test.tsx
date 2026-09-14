@@ -259,6 +259,7 @@ describe("ChatComposer attachment chip", () => {
 		act(() => {
 			textarea.dispatchEvent(event);
 		});
+		expect(event.defaultPrevented).toBe(true);
 		await chipInserted;
 
 		const chip = requireElement(
@@ -266,6 +267,92 @@ describe("ChatComposer attachment chip", () => {
 			"missing attachment chip",
 		);
 		expect(chip.textContent).toContain("clipboard.png");
+	});
+
+	it("ignores image pastes when the model does not support images", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+						imageSupported={false}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const readAsDataURL = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		try {
+			const file = new File(["screenshot bytes"], "", { type: "image/png" });
+			const event = new Event("paste", { bubbles: true, cancelable: true });
+			Object.defineProperty(event, "clipboardData", {
+				configurable: true,
+				value: { files: [file] },
+			});
+			act(() => {
+				textarea.dispatchEvent(event);
+			});
+			expect(event.defaultPrevented).toBe(false);
+			expect(readAsDataURL).not.toHaveBeenCalled();
+			expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
+	it("ignores image pastes while the composer is disabled", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+						disabled={true}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const readAsDataURL = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		try {
+			const file = new File(["screenshot bytes"], "", { type: "image/png" });
+			const event = new Event("paste", { bubbles: true, cancelable: true });
+			Object.defineProperty(event, "clipboardData", {
+				configurable: true,
+				value: { files: [file] },
+			});
+			act(() => {
+				textarea.dispatchEvent(event);
+			});
+			expect(event.defaultPrevented).toBe(false);
+			expect(readAsDataURL).not.toHaveBeenCalled();
+			expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
+		} finally {
+			readAsDataURL.mockRestore();
+		}
 	});
 
 	it("leaves text-only pastes to the default textarea handling", () => {
