@@ -1,0 +1,304 @@
+package session
+
+import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"math"
+	"math/big"
+	"strings"
+)
+
+// All derivations mirror the observed engine contract. lifecycleMu guards state.
+type transcriptNoticeState struct {
+	messages           map[[32]byte]struct{}
+	previous           *cacheRequest
+	continuityDisabled bool
+}
+
+type cacheRequest struct {
+	promptTokens  float64
+	modelKey      string
+	timestamp     float64
+	reportedCache bool
+}
+
+func noticeNumber(value any) float64 { n, _ := value.(float64); return n }
+
+// Decimal ties round upward in the observed engine contract, rather than
+// Go's ties-to-even formatting. Preserve the exact binary value before rounding.
+func noticeFixed(n float64, decimals int) string {
+	value := new(big.Rat).SetFloat64(n)
+	value.Mul(value, new(big.Rat).SetInt64(int64(math.Pow10(decimals))))
+	whole, remainder := new(big.Int), new(big.Int)
+	whole.QuoRem(value.Num(), value.Denom(), remainder)
+	if remainder.Lsh(remainder, 1).Cmp(value.Denom()) >= 0 {
+		whole.Add(whole, big.NewInt(1))
+	}
+	digits := whole.String()
+	if decimals == 0 {
+		return digits
+	}
+	if len(digits) <= decimals {
+		digits = strings.Repeat("0", decimals+1-len(digits)) + digits
+	}
+	return digits[:len(digits)-decimals] + "." + digits[len(digits)-decimals:]
+}
+
+func noticeTokens(n float64) string {
+	unit := ""
+	for _, suffix := range []string{"K", "M", "B"} {
+		if n < 1000 {
+			break
+		}
+		n /= 1000
+		unit = suffix
+	}
+	if unit != "" && n < 10 {
+		return strings.TrimSuffix(noticeFixed(n, 1), ".0") + unit
+	}
+	return noticeFixed(n, 0) + unit
+}
+
+func noticeBytes(n float64) string {
+	if n < 1024 {
+		return noticeFixed(n, 0) + "B"
+	}
+	if n < 1024*1024 {
+		return noticeFixed(n/1024, 1) + "KB"
+	}
+	return noticeFixed(n/(1024*1024), 1) + "MB"
+}
+
+func (s *Session) publishNoticeTextLocked(kind, text string) {
+	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: map[string]any{"kind": kind, "text": text}})
+}
+
+// The key lives beside the journal, not in the public payload, so rehydration
+// cannot stamp a second identity for the same persisted entry after reopening.
+func (s *Session) publishNoticeOnceLocked(key, kind, text string) {
+	journal := s.manager.noticeJournal(s.chatID)
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if journal.retired || journal.derivations[key] {
+		return
+	}
+	if journal.derivations == nil {
+		journal.derivations = make(map[string]bool)
+	}
+	journal.derivations[key] = true
+	frame, admitted := stampNotice(s.chatID, journal, Frame{Kind: FrameNotice, SessionID: s.durableID, Data: map[string]any{"kind": kind, "text": text}})
+	if admitted {
+		s.broadcast.publish(frame)
+	}
+}
+
+func (s *Session) deriveCompactionNoticesLocked(raw map[string]any) {
+	result, ok := raw["result"].(map[string]any)
+	if !ok || raw["accepted"] == false {
+		return
+	}
+	s.transcriptNotices.previous = nil
+	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: map[string]any{"kind": "compaction_summary", "tokensBefore": result["tokensBefore"], "summary": result["summary"]}})
+	usage, ok := result["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	total := noticeNumber(usage["input"]) + noticeNumber(usage["output"]) + noticeNumber(usage["cacheRead"]) + noticeNumber(usage["cacheWrite"])
+	text := "Compaction: " + noticeTokens(total) + " tokens billed"
+	cost, _ := usage["cost"].(map[string]any)
+	if n := noticeNumber(cost["total"]); n >= 0.01 {
+		text += " (~$" + noticeFixed(n, 2) + ")"
+	}
+	s.publishNoticeTextLocked("compaction_cost", text)
+}
+
+func (s *Session) deriveMessageNoticesLocked(raw map[string]any) {
+	message, ok := raw["message"].(map[string]any)
+	if !ok || message["role"] != "assistant" {
+		return
+	}
+	// Completed messages need not have an ID on the wire. The complete payload
+	// provides stable duplicate identity without conflating timestamps alone.
+	identity, _ := json.Marshal(message)
+	if id := stringValue(raw["messageId"]); id != "" {
+		identity = []byte("messageId:" + id)
+	} else if id := stringValue(message["id"]); id != "" {
+		identity = []byte("id:" + id)
+	}
+	key := sha256.Sum256(identity)
+	state := &s.transcriptNotices
+	if _, seen := state.messages[key]; seen {
+		return
+	}
+	if state.messages == nil {
+		state.messages = make(map[[32]byte]struct{})
+	}
+	state.messages[key] = struct{}{}
+	diagnostics, _ := message["diagnostics"].([]any)
+	s.deriveContinuityNoticeLocked(diagnostics)
+	s.deriveCacheNoticeLocked(message)
+	if message["stopReason"] == "aborted" || message["stopReason"] == "error" {
+		return
+	}
+	var reasons []string
+	for _, item := range diagnostics {
+		diagnostic, _ := item.(map[string]any)
+		if diagnostic["type"] != "anthropic_input_transformations" {
+			continue
+		}
+		details, _ := diagnostic["details"].(map[string]any)
+		transformations, _ := details["transformations"].([]any)
+		for _, item := range transformations {
+			transformation, _ := item.(map[string]any)
+			if transformation["type"] != "thinking_dropped" {
+				continue
+			}
+			reason, ok := transformation["reason"].(string)
+			if !ok {
+				reason = "unknown reason"
+			}
+			if path, ok := transformation["path"].(string); ok {
+				reason += " at " + path
+			}
+			reasons = append(reasons, reason)
+		}
+	}
+	if len(reasons) == 0 {
+		return
+	}
+	label := "Anthropic dropped thinking block: "
+	if len(reasons) > 1 {
+		label = fmt.Sprintf("Anthropic dropped %d thinking blocks: ", len(reasons))
+	}
+	s.publishNoticeTextLocked("thinking_dropped", label+strings.Join(reasons, "; "))
+}
+
+func (s *Session) deriveContinuityNoticeLocked(diagnostics []any) {
+	for _, item := range diagnostics {
+		diagnostic, _ := item.(map[string]any)
+		details, _ := diagnostic["details"].(map[string]any)
+		text := ""
+		switch diagnostic["type"] {
+		case "claude_sdk_oauth_resume_fallback":
+			text = "Session continuity lost - resume failed, resent the full conversation"
+		case "claude_sdk_oauth_session_continuity":
+			switch details["kind"] {
+			case "flatten":
+				text = "Session continuity lost - resent the full conversation"
+			case "disabled":
+				if s.transcriptNotices.continuityDisabled {
+					return
+				}
+				s.transcriptNotices.continuityDisabled = true
+				text = "Session continuity disabled (resumeMode: off) - resending the conversation each turn"
+			}
+		}
+		if text == "" {
+			continue
+		}
+		if reason, ok := details["reason"].(string); ok {
+			text += " (" + reason + ")"
+		}
+		if size, ok := details["payloadBytes"].(float64); ok {
+			text += " - sent " + noticeBytes(size)
+		}
+		if n := noticeNumber(details["collapsedDirectives"]); n > 0 {
+			text += fmt.Sprintf(", %.0f duplicate ultrawork blocks collapsed", n)
+		}
+		s.publishNoticeTextLocked("continuity_notice", text)
+		return
+	}
+}
+
+func (s *Session) deriveCacheNoticeLocked(message map[string]any) {
+	usage, ok := message["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	input, read, write := noticeNumber(usage["input"]), noticeNumber(usage["cacheRead"]), noticeNumber(usage["cacheWrite"])
+	prompt := input + read + write
+	prev := s.transcriptNotices.previous
+	current := &cacheRequest{promptTokens: prompt, modelKey: stringValue(message["provider"]) + "/" + stringValue(message["model"]), timestamp: noticeNumber(message["timestamp"]), reportedCache: read+write > 0}
+	if prev != nil {
+		current.reportedCache = current.reportedCache || prev.reportedCache
+	}
+	s.transcriptNotices.previous = current
+	if prev == nil || prompt <= 0 || !current.reportedCache {
+		return
+	}
+	missed := math.Min(prev.promptTokens, prompt) - read
+	if missed <= 1024 {
+		return
+	}
+	cost, _ := usage["cost"].(map[string]any)
+	paidRate := 0.0
+	if input+write > 0 {
+		paidRate = (noticeNumber(cost["input"]) + noticeNumber(cost["cacheWrite"])) / (input + write)
+	}
+	// Observed engine contract uses a catalog read rate without cache reads;
+	// no catalog is on the wire, so this mirror's documented fallback is zero.
+	readRate := 0.0
+	if read > 0 {
+		readRate = noticeNumber(cost["cacheRead"]) / read
+	}
+	missedCost := missed * (paidRate - readRate)
+	if missed < 20000 && missedCost < 0.1 {
+		return
+	}
+	label := "Cache miss"
+	idle := math.Max(0, current.timestamp-prev.timestamp)
+	if current.modelKey != prev.modelKey {
+		label += " after model switch"
+	} else if idle >= 300000 {
+		label += fmt.Sprintf(" after %.0fm idle", math.Round(idle/60000))
+	}
+	text := label + ": " + noticeTokens(missed) + " tokens re-billed"
+	if missedCost >= 0.01 {
+		text += "(~$" + noticeFixed(missedCost, 2) + ")"
+	}
+	s.publishNoticeTextLocked("cache_miss", text)
+}
+
+func (s *Session) deriveEntryNoticeLocked(entry map[string]any) {
+	switch entry["type"] {
+	case "compaction", "branch_summary":
+		s.transcriptNotices.previous = nil
+	case "model_change_rejected":
+		text, ok := entry["detail"].(string)
+		if !ok {
+			text = stringValue(entry["reason"])
+		}
+		if id := stringValue(entry["id"]); id != "" {
+			s.publishNoticeOnceLocked("warning:"+id, "engine_warning", text)
+		}
+	}
+}
+
+// Process hydrated entry diagnostics and count compactions in a page. The
+// complete disk count replaces active-branch totals before adding the live tail.
+func (s *Session) deriveHistoryPageLocked(entries []json.RawMessage) int {
+	count := 0
+	for _, raw := range entries {
+		var entry map[string]any
+		if json.Unmarshal(raw, &entry) != nil {
+			continue
+		}
+		s.deriveEntryNoticeLocked(entry)
+		if entry["type"] == "compaction" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Session) deriveCompactionHistoryLocked(count int) {
+	if count == 0 {
+		return
+	}
+	unit := "times"
+	if count == 1 {
+		unit = "time"
+	}
+	s.publishNoticeOnceLocked("compaction_history", "compaction_history", fmt.Sprintf("Session compacted %d %s", count, unit))
+}

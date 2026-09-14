@@ -130,7 +130,8 @@ type Session struct {
 	engineQueue                                                             EngineQueueSnapshot
 	pendingApproval                                                         *Frame
 
-	todoRead todoReadState
+	transcriptNotices transcriptNoticeState
+	todoRead          todoReadState
 
 	broadcast broadcaster
 }
@@ -2028,9 +2029,23 @@ func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget 
 // and before streaming starts, so a failed generation cannot leak partial
 // history while successful long transcripts remain page-bounded.
 func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath string, target *subscription, onValidated func() error) error {
+	compactionCount := 0
 	emit := func(frame Frame, terminal bool) error {
 		if routeErr := s.acquisitionError(); errors.Is(routeErr, ErrSessionResumable) || errors.Is(routeErr, ErrSessionClosed) {
 			return routeErr
+		}
+		if page, ok := frame.Data.(EntriesFrame); ok {
+			s.lifecycleMu.Lock()
+			if !s.closed && !s.resumable {
+				pageCount := s.deriveHistoryPageLocked(page.Entries)
+				if compactionCount >= 0 {
+					compactionCount += pageCount
+					if page.Final {
+						s.deriveCompactionHistoryLocked(compactionCount)
+					}
+				}
+			}
+			s.lifecycleMu.Unlock()
 		}
 		if target != nil {
 			return target.enqueueReplay(ctx, frame, terminal)
@@ -2114,6 +2129,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	}
 
 	var tail entriesTail
+	var diskLeaf string
 	var preparationErr error
 	callbackFailed := false
 	prepared := false
@@ -2128,6 +2144,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				preparationErr = identityErr
 				return identityErr
 			}
+			diskLeaf = metadata.LeafID
 			cursor := metadata.LeafID
 			if cursor == "" {
 				cursor = metadata.Header.ID
@@ -2203,6 +2220,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	if routeErr := s.acquisitionError(); routeErr != nil {
 		return publishErr(routeErr)
 	}
+	compactionCount = s.countPersistedCompactions(ctx, sessionPath, diskLeaf)
 	if err := s.emitTailEntries(tail, emit); err != nil {
 		return publishErr(err)
 	}

@@ -23,15 +23,16 @@ const NoticeJournalCapacity = 50
 // and stays installed in the manager's map so no second journal can ever be
 // created for the same pathname within this manager instance.
 type noticeJournal struct {
-	mu         sync.Mutex
-	dir        string
-	chatID     string
-	generation int64
-	retired    bool
-	loaded     bool
-	seq        uint64
-	ring       []Frame
-	sessions   map[*Session]struct{}
+	mu          sync.Mutex
+	dir         string
+	chatID      string
+	generation  int64
+	retired     bool
+	loaded      bool
+	seq         uint64
+	ring        []Frame
+	derivations map[string]bool
+	sessions    map[*Session]struct{}
 }
 
 // append admits one journaled frame, evicting the oldest entry once the ring
@@ -80,6 +81,7 @@ func (j *noticeJournal) ensureLoaded() {
 	}
 	state := loadNoticeJournal(j.dir, j.chatID)
 	j.seq = state.Seq
+	j.derivations = state.Derivations
 	j.ring = make([]Frame, 0, len(state.Entries))
 	for _, e := range state.Entries {
 		j.ring = append(j.ring, Frame{Kind: e.Kind, SessionID: e.SessionID, Data: e.Data})
@@ -99,7 +101,7 @@ func (j *noticeJournal) persistLocked() {
 	if j.dir == "" || j.retired {
 		return
 	}
-	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring))}
+	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring)), Derivations: j.derivations}
 	for _, f := range j.ring {
 		payload, _ := f.Data.(map[string]any)
 		state.Entries = append(state.Entries, persistedNotice{Kind: f.Kind, SessionID: f.SessionID, Data: payload})

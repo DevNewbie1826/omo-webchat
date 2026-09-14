@@ -31,8 +31,9 @@ type persistedNotice struct {
 // per-instance generation qualifier, so identities issued before a restart
 // are never re-issued by the restarted one.
 type persistedNoticeJournal struct {
-	Seq     uint64            `json:"seq"`
-	Entries []persistedNotice `json:"entries"`
+	Seq         uint64            `json:"seq"`
+	Entries     []persistedNotice `json:"entries"`
+	Derivations map[string]bool   `json:"derivations,omitempty"`
 }
 
 func noticeJournalPath(dir, chatID string) string {
