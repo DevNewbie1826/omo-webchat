@@ -93,6 +93,64 @@ func TestLiveSchemaContainsOnlyRenderedActivity(t *testing.T) {
 	}
 }
 
+func TestGeneratedMirrorsExposeContentBlockImageFields(t *testing.T) {
+	// Given the committed Go and TypeScript contract mirrors.
+	goSrc, err := os.ReadFile(filepath.Join("..", "internal", "wscontract", "types_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsSrc, err := os.ReadFile(filepath.Join("..", "frontend", "src", "lib", "contract", "types_gen.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// When their ContentBlock definitions are extracted.
+	goBlock := extractDecl(t, string(goSrc), "type ContentBlock struct {")
+	tsBlock := extractDecl(t, string(tsSrc), "export interface ContentBlock {")
+
+	// Then both expose the optional image-carrying fields, and kind stays an open string.
+	if !strings.Contains(goBlock, `Kind`) || !strings.Contains(goBlock, `json:"kind"`) {
+		t.Errorf("Go ContentBlock kind is not an open string:\n%s", goBlock)
+	}
+	if !strings.Contains(tsBlock, "readonly kind: string;") {
+		t.Errorf("TS ContentBlock kind is not an open string:\n%s", tsBlock)
+	}
+	for _, field := range []string{"data", "mimeType", "byteLength", "ref"} {
+		if !strings.Contains(goBlock, `json:"`+field+`,omitempty"`) {
+			t.Errorf("Go ContentBlock missing optional field %s", field)
+		}
+		if !strings.Contains(tsBlock, "readonly "+field+"?:") {
+			t.Errorf("TS ContentBlock missing optional field %s", field)
+		}
+	}
+}
+
+func extractDecl(t *testing.T, src, header string) string {
+	t.Helper()
+	i := strings.Index(src, header)
+	if i < 0 {
+		t.Fatalf("missing %q", header)
+	}
+	start := strings.LastIndex(src[:i+len(header)], "{")
+	if start < 0 {
+		t.Fatalf("header %q has no opening brace", header)
+	}
+	depth := 0
+	for j := start; j < len(src); j++ {
+		switch src[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[start : j+1]
+			}
+		}
+	}
+	t.Fatalf("unclosed %q", header)
+	return ""
+}
+
 func copySchemas(t *testing.T) string {
 	t.Helper()
 	dst := t.TempDir()

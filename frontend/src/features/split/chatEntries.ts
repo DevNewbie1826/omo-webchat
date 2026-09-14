@@ -58,6 +58,14 @@ function parseBlocks(content: unknown): readonly ContentBlock[] {
     const name = value["name"];
     const isError = value["isError"];
     const args = value["arguments"];
+    const data = value["data"];
+    const mimeType = value["mimeType"];
+    const byteLength = value["byteLength"];
+    const rawRef = value["ref"];
+    const ref =
+      isRecord(rawRef) && typeof rawRef["toolCallId"] === "string" && typeof rawRef["contentIndex"] === "number"
+        ? { toolCallId: rawRef["toolCallId"], contentIndex: rawRef["contentIndex"] }
+        : undefined;
     const block: ContentBlock = {
       kind,
       ...(typeof valueText === "string" ? { text: valueText } : {}),
@@ -66,6 +74,10 @@ function parseBlocks(content: unknown): readonly ContentBlock[] {
       ...(typeof name === "string" ? { name } : {}),
       ...(isStructuredArguments(args) ? { arguments: args } : {}),
       ...(typeof isError === "boolean" ? { isError } : {}),
+      ...(typeof data === "string" ? { data } : {}),
+      ...(typeof mimeType === "string" ? { mimeType } : {}),
+      ...(typeof byteLength === "number" ? { byteLength } : {}),
+      ...(ref !== undefined ? { ref } : {}),
     };
     // A restored toolResult carries the output for an invocation. Fold it into
     // that toolCall/tool block so one logical call normalizes to a single named
@@ -84,6 +96,10 @@ function parseBlocks(content: unknown): readonly ContentBlock[] {
             kind: "tool",
             ...(block.text !== undefined ? { text: block.text } : {}),
             ...(block.isError !== undefined ? { isError: block.isError } : {}),
+            ...(block.data !== undefined ? { data: block.data } : {}),
+            ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+            ...(block.byteLength !== undefined ? { byteLength: block.byteLength } : {}),
+            ...(block.ref !== undefined ? { ref: block.ref } : {}),
           };
           continue;
         }
@@ -101,6 +117,11 @@ function toolResultText(content: unknown): string {
     .join("");
 }
 
+/** Image blocks carried by a restored toolResult's content, in content order. */
+function toolResultImages(content: unknown): readonly ContentBlock[] {
+  return parseBlocks(content).filter((block) => block.kind === "image" || block.kind === "image_ref");
+}
+
 /**
  * Fold a separate top-level toolResult message (the provider's stored shape:
  * role "toolResult" with message-level toolCallId/toolName/content/isError)
@@ -114,12 +135,20 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
   const toolName = message["toolName"];
   const isError = message["isError"];
   const text = toolResultText(message["content"]);
+  // The ContentBlock shape carries one image slot, so the first image's fields
+  // land on the merged block; additional images survive as standalone blocks.
+  const images = toolResultImages(message["content"]);
+  const image = images[0];
   const result: ContentBlock = {
     kind: "tool",
     ...(typeof toolCallId === "string" ? { id: toolCallId } : {}),
     ...(typeof toolName === "string" ? { name: toolName } : {}),
     text,
     ...(typeof isError === "boolean" ? { isError } : {}),
+    ...(image?.data !== undefined ? { data: image.data } : {}),
+    ...(image?.mimeType !== undefined ? { mimeType: image.mimeType } : {}),
+    ...(image?.byteLength !== undefined ? { byteLength: image.byteLength } : {}),
+    ...(image?.ref !== undefined ? { ref: image.ref } : {}),
   };
   if (typeof toolCallId === "string") {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -137,12 +166,24 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
         text,
         ...(existing.name === undefined && result.name !== undefined ? { name: result.name } : {}),
         ...(result.isError !== undefined ? { isError: result.isError } : {}),
+        ...(result.data !== undefined ? { data: result.data } : {}),
+        ...(result.mimeType !== undefined ? { mimeType: result.mimeType } : {}),
+        ...(result.byteLength !== undefined ? { byteLength: result.byteLength } : {}),
+        ...(result.ref !== undefined ? { ref: result.ref } : {}),
       };
-      messages[index] = { ...target, blocks: blocks.map((block, i) => (i === blockIndex ? merged : block)) };
+      messages[index] = {
+        ...target,
+        blocks: [...blocks.slice(0, blockIndex), merged, ...images.slice(1), ...blocks.slice(blockIndex + 1)],
+      };
       return;
     }
   }
-  messages.push({ ...(typeof entryId === "string" ? { id: entryId } : {}), role: "assistant", blocks: [result], ts: 0 });
+  messages.push({
+    ...(typeof entryId === "string" ? { id: entryId } : {}),
+    role: "assistant",
+    blocks: [result, ...images.slice(1)],
+    ts: 0,
+  });
 }
 
 /** Zero-renderable-block assistant messages are omitted from rendering.

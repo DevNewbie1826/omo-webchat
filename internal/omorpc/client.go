@@ -31,6 +31,28 @@ var (
 	ErrEpochMismatch = fmt.Errorf("%w: expected connection epoch is not current", ErrDisconnected)
 )
 
+const (
+	// defaultClientWidth is the render width advertised in the client
+	// handshake when the embedder has no terminal: the engine's own
+	// fallback width.
+	defaultClientWidth = 80
+
+	// clientInfoResponseBudget bounds the wait for the handshake record's
+	// response during negotiation, so an engine that predates the record
+	// and never answers it cannot consume the caller's whole dial budget.
+	clientInfoResponseBudget = 5 * time.Second
+)
+
+// clientHandshakeCapabilities is the capability list every set_client_info
+// handshake record carries — the same set the spawn environment injects
+// (see EnsureExtensionEventsCapability), so both advertisement paths are
+// identical. The record REPLACES the connection's capability view, so it
+// must include every capability the client relies on: omitting
+// extension_events here would silently disable it on the daemon path.
+func clientHandshakeCapabilities() []string {
+	return []string{capExtensionEvents, capMediaPlaceholders}
+}
+
 // Config tunes the client. Zero-valued fields are replaced field-wise by
 // the DefaultConfig values, so partial configs keep sane defaults.
 type Config struct {
@@ -288,6 +310,14 @@ func (c *Client) negotiate(ctx context.Context, ep *connectionEpoch) error {
 	if err := json.Unmarshal(resp.Data, &info); err != nil {
 		return fmt.Errorf("omorpc: decode protocol info: %w", err)
 	}
+	// Advertise the client's capabilities before the epoch is published as
+	// negotiated. Sessions can only be driven on a negotiated epoch, so
+	// the handshake record provably precedes this connection's first
+	// open_session — the ordering under which the capability set governs
+	// the sessions that connection opens.
+	if err := c.advertiseClientInfo(ctx, ep); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	if c.closed || c.current != ep {
 		c.mu.Unlock()
@@ -300,6 +330,32 @@ func (c *Client) negotiate(ctx context.Context, ep *connectionEpoch) error {
 	prev := ep.previous
 	c.mu.Unlock()
 	c.notifyEpochChange(EpochToken{epoch: prev}, EpochToken{epoch: ep})
+	return nil
+}
+
+// advertiseClientInfo sends the set_client_info handshake record for one
+// fresh connection epoch. Advertisement is best-effort: an engine that
+// rejects the record or leaves it unanswered within the budget simply keeps
+// its default capability view, and the negotiation still succeeds — a
+// capability the peer cannot read must never fail a handshake that
+// get_protocol_info already settled. A transport-level failure propagates:
+// the epoch died, and the reconnect loop dials and re-advertises.
+func (c *Client) advertiseClientInfo(ctx context.Context, ep *connectionEpoch) error {
+	ctx, cancel := context.WithTimeout(ctx, clientInfoResponseBudget)
+	defer cancel()
+	_, err := c.callOnEpoch(ctx, ep, SetClientInfo{
+		Width:        defaultClientWidth,
+		Capabilities: clientHandshakeCapabilities(),
+	})
+	if err == nil {
+		return nil
+	}
+	// Transport death propagates (the epoch died and reconnection re-dials),
+	// as does the caller's own cancellation. The record's response-budget
+	// expiry is a tolerated rejection.
+	if errors.Is(err, ErrDisconnected) || errors.Is(err, context.Canceled) {
+		return err
+	}
 	return nil
 }
 
@@ -903,6 +959,26 @@ func (c *Client) ServerVersion() string {
 		return ""
 	}
 	return info.ServerVersion
+}
+
+// GetMedia fetches the inline media block an image_ref placeholder stands in
+// for: the placeholder's ref (toolCallId plus contentIndex) addresses the
+// block, and the reply carries the original image content. Coordinates that
+// do not resolve to a block fail with a *StableError whose code is
+// ErrCodeMediaNotFound.
+func (c *Client) GetMedia(ctx context.Context, sessionID, toolCallID string, contentIndex int) (*GetMediaData, error) {
+	resp, err := c.Call(ctx, GetMedia{SessionID: sessionID, ToolCallID: toolCallID, ContentIndex: contentIndex})
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var data GetMediaData
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return nil, fmt.Errorf("omorpc: decode get_media data: %w", err)
+	}
+	return &data, nil
 }
 
 // Close releases the socket, goroutines, pending calls, and event stream.

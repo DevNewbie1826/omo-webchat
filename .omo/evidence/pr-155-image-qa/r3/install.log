@@ -1,0 +1,21 @@
+bun install v1.4.2 (744846f84)
+[1.41ms] migrated lockfile from package-lock.json
+Saved lockfile
+
++ @tanstack/react-virtual@3.14.8
++ katex@0.16.47
++ react@18.3.1
++ react-dom@18.3.1
++ react-markdown@10.1.0
++ rehype-katex@7.0.1
++ remark-gfm@4.0.1
++ remark-math@6.0.0
++ @types/react@18.3.31
++ @types/react-dom@18.3.7
++ @vitejs/plugin-react@4.7.0
++ jsdom@29.1.1
++ typescript@5.9.3
++ vite@6.4.3
++ vitest@4.1.11
+
+255 packages installed [234.00ms]

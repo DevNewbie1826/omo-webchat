@@ -23,6 +23,7 @@ const (
 	requiredProtocolVersion = 1
 	capMultiSession         = "multi_session"
 	capExtensionEvents      = "extension_events"
+	capMediaPlaceholders    = "media_placeholders"
 )
 
 // ErrIncompatibleDaemon reports a reachable RPC host that cannot provide the
@@ -779,9 +780,10 @@ func releaseEnsureLock(file *os.File) {
 	_ = file.Close()
 }
 
-// EnsureExtensionEventsCapability adds extension_events exactly once to both
-// capability variables. Branded hosts prefer OMO_RPC_CLIENT_CAPABILITIES when
-// it is present, while an unbranded native host reads the SENPI spelling.
+// EnsureExtensionEventsCapability adds extension_events and
+// media_placeholders exactly once to both capability variables. Branded
+// hosts prefer OMO_RPC_CLIENT_CAPABILITIES when it is present, while an
+// unbranded native host reads the SENPI spelling.
 func EnsureExtensionEventsCapability(env []string) []string {
 	if env == nil {
 		return nil
@@ -789,7 +791,7 @@ func EnsureExtensionEventsCapability(env []string) []string {
 	for _, key := range []string{"SENPI_RPC_CLIENT_CAPABILITIES", "OMO_RPC_CLIENT_CAPABILITIES"} {
 		value, _ := lookupEnv(env, key)
 		seen := make(map[string]struct{})
-		capabilities := make([]string, 0, len(strings.Split(value, ","))+1)
+		capabilities := make([]string, 0, len(strings.Split(value, ","))+2)
 		for _, capability := range strings.Split(value, ",") {
 			capability = strings.TrimSpace(capability)
 			if capability == "" {
@@ -801,8 +803,10 @@ func EnsureExtensionEventsCapability(env []string) []string {
 			seen[capability] = struct{}{}
 			capabilities = append(capabilities, capability)
 		}
-		if _, exists := seen[capExtensionEvents]; !exists {
-			capabilities = append(capabilities, capExtensionEvents)
+		for _, capability := range []string{capExtensionEvents, capMediaPlaceholders} {
+			if _, exists := seen[capability]; !exists {
+				capabilities = append(capabilities, capability)
+			}
 		}
 		env = setEnv(env, key, strings.Join(capabilities, ","))
 	}

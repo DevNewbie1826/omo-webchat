@@ -20,6 +20,9 @@ const (
 	// ErrCodeOpenFailed is a prefix code: the wire form is
 	// "open_failed: <detail>", so it never travels as a bare token.
 	ErrCodeOpenFailed = "open_failed"
+	// ErrCodeMediaNotFound is the get_media failure: the tool call is unknown
+	// or the content index does not point at an image block.
+	ErrCodeMediaNotFound = "media_not_found"
 )
 
 // openFailedPrefix is the exact wire prefix of an open_failed error string.
@@ -27,7 +30,7 @@ const openFailedPrefix = ErrCodeOpenFailed + ":"
 
 // StableError is a parsed stable error code from a failed response. Detail
 // carries the free-form suffix of "open_failed: <detail>" and is empty for
-// the seven exact codes. Error() returns the original wire string when the
+// the exact codes. Error() returns the original wire string when the
 // value was parsed, and otherwise reconstructs "open_failed: " + Detail.
 type StableError struct {
 	Code   string
@@ -46,7 +49,7 @@ func (e *StableError) Error() string {
 }
 
 // ParseStableError classifies a response "error" string. It reports the
-// matched StableError for the seven exact codes and for the open_failed prefix
+// matched StableError for the exact codes and for the open_failed prefix
 // form (with or without the space before the detail); ok is false for any
 // other string.
 func ParseStableError(wire string) (*StableError, bool) {
@@ -57,7 +60,8 @@ func ParseStableError(wire string) (*StableError, bool) {
 		ErrCodeMissingSessionID,
 		ErrCodeMultiSessionDisabled,
 		ErrCodeInvalidPath,
-		ErrCodeTooManySessions:
+		ErrCodeTooManySessions,
+		ErrCodeMediaNotFound:
 		return &StableError{Code: wire}, true
 	}
 	if strings.HasPrefix(wire, openFailedPrefix) {

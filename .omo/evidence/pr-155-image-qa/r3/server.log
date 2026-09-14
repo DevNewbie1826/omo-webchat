@@ -1,0 +1,4 @@
+time=2026-09-15T02:01:08.631+09:00 level=INFO msg=listening addr=127.0.0.1:18089 root=/private/tmp/webchat-image-qa-r3/workspace
+time=2026-09-15T02:03:10.060+09:00 level=INFO msg=listening addr=127.0.0.1:18089 root=/private/tmp/webchat-image-qa-r3/workspace
+time=2026-09-15T02:05:00.412+09:00 level=INFO msg=listening addr=127.0.0.1:18090 root=/private/tmp/webchat-image-qa-r3/workspace
+time=2026-09-15T02:06:45.350+09:00 level=INFO msg=listening addr=127.0.0.1:18091 root=/private/tmp/webchat-image-qa-r3/workspace-final

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -7,11 +7,16 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import "../../styles/math.css";
 import { useT } from "../../i18n";
+import {
+  fetchChatMediaObjectUrl,
+  formatByteLength,
+  type ChatMediaSource,
+} from "../../lib/chatMedia";;
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
 import { hasRenderableContent } from "./chatEntries";
-import type { ToolEntry } from "./chatSessionTypes";
+import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
@@ -22,6 +27,26 @@ import type { TranscriptItem } from "./useChatFrameState";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
   return block.id ?? `${block.kind}:${block.name ?? ""}:${block.text ?? block.thinking ?? ""}:${JSON.stringify(block.arguments ?? null)}`;
+}
+
+/** Identity of one result image: shared media-ref coordinates or equal bytes. */
+function sameMedia(a: ToolResultImage, b: ToolResultImage): boolean {
+  if (a.ref !== undefined || b.ref !== undefined) {
+    return a.ref?.toolCallId === b.ref?.toolCallId && a.ref?.contentIndex === b.ref?.contentIndex;
+  }
+  return a.data === b.data;
+}
+
+/** The image carried by an image/image_ref block, if the block is well-formed. */
+function blockMedia(block: NonNullable<UiMessage["blocks"]>[number]): ToolResultImage | null {
+  if (block.kind !== "image" && block.kind !== "image_ref") return null;
+  if (block.data === undefined && block.ref === undefined) return null;
+  return {
+    ...(block.data !== undefined ? { data: block.data } : {}),
+    ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+    ...(block.byteLength !== undefined ? { byteLength: block.byteLength } : {}),
+    ...(block.ref !== undefined ? { ref: block.ref } : {}),
+  };
 }
 
 function messageText(message: UiMessage): string {
@@ -113,9 +138,86 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
   });
 }
 
+/** Inline image carried on a preserved block: bytes already inline as base64. */
+function InlineImage({ data, mimeType, alt }: {
+  readonly data: string;
+  readonly mimeType: string | undefined;
+  readonly alt: string;
+}) {
+  return (
+    <img
+      className="th-chat-image"
+      src={`data:${mimeType ?? "image/png"};base64,${data}`}
+      alt={alt}
+      loading="lazy"
+    />
+  );
+}
+
+/** Failure placeholder: exact mimeType + formatted byteLength, never a blank. */
+function ImageUnavailable({ mimeType, byteLength }: {
+  readonly mimeType: string | undefined;
+  readonly byteLength: number | undefined;
+}) {
+  const { t } = useT();
+  return (
+    <div className="th-chat-image-unavailable" role="img" aria-label={t("chat.imageUnavailable")}>
+      <span className="th-chat-image-meta">
+        {mimeType ?? t("chat.image")} · {formatByteLength(byteLength ?? 0)}
+      </span>
+      <span className="th-chat-image-note">{t("chat.imageUnavailable")}</span>
+    </div>
+  );
+}
+
+/**
+ * Referenced image: bytes live server-side, so they are fetched lazily — the
+ * component mounts only when its disclosure is expanded (or the block is
+ * standalone-visible) — and the object URL is cached per (toolCallId,
+ * contentIndex) so remounts never refetch.
+ */
+function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
+  readonly source: ChatMediaSource | undefined;
+  readonly toolCallId: string;
+  readonly contentIndex: number;
+  readonly mimeType: string | undefined;
+  readonly byteLength: number | undefined;
+}) {
+  const { t } = useT();
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const wsId = source?.wsId;
+  const chatId = source?.chatId;
+  useEffect(() => {
+    if (wsId === undefined || chatId === undefined) {
+      setFailed(true);
+      return;
+    }
+    let active = true;
+    fetchChatMediaObjectUrl({ wsId, chatId }, { toolCallId, contentIndex }).then(
+      (url) => {
+        if (active) setObjectUrl(url);
+      },
+      () => {
+        if (active) setFailed(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [wsId, chatId, toolCallId, contentIndex]);
+  if (objectUrl !== null) {
+    return <img className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
+  }
+  if (failed) return <ImageUnavailable mimeType={mimeType} byteLength={byteLength} />;
+  return null;
+}
+
 interface ChatTranscriptProps {
   /** Unified render list: conversation entries merged with notice blocks. */
   readonly items: readonly TranscriptItem[];
+  /** Workspace/chat identity for lazy image_ref media fetches. */
+  readonly mediaSource?: ChatMediaSource | undefined;
   readonly streaming: string;
   readonly thinking: string;
   readonly toolCalls: Readonly<Record<string, ToolEntry>>;
@@ -136,6 +238,7 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
+  mediaSource,
 }: ChatTranscriptProps) {
   const { t } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
@@ -157,6 +260,127 @@ export function ChatTranscript({
       }}
     />
   );
+  const renderMedia = (media: ToolResultImage, key: string) => {
+    if (media.data !== undefined) {
+      return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} />;
+    }
+    if (media.ref !== undefined) {
+      return (
+        <RefImage
+          key={key}
+          source={mediaSource}
+          toolCallId={media.ref.toolCallId}
+          contentIndex={media.ref.contentIndex}
+          mimeType={media.mimeType}
+          byteLength={media.byteLength}
+        />
+      );
+    }
+    return null;
+  };
+  // Per-message block rendering. Result images that immediately follow a tool
+  // block belong to that invocation's disclosure: they never mount as
+  // standalone rows — whose image_ref fetches would fire while the card is
+  // collapsed — and instead render inside the tool's media wrapper, gated on
+  // the disclosure being open.
+  const renderMessageBlocks = (message: UiMessage): ReactNode[] => {
+    const blocks = message.blocks ?? [];
+    const groupedResultImages = new Set<number>();
+    return blocks.map((block, blockIndex) => {
+      if ((block.kind === "image" || block.kind === "image_ref") && groupedResultImages.has(blockIndex)) return null;
+      if (block.kind === "thinking") {
+        return (
+          <details key={blockKey(block)} className="th-chat-thinking">
+            <summary>{t("chat.thinking")}</summary>
+            <pre>{block.thinking ?? block.text}</pre>
+          </details>
+        );
+      }
+      if (block.kind === "image" && typeof block.data === "string") {
+        return (
+          <InlineImage
+            key={blockKey(block)}
+            data={block.data}
+            mimeType={block.mimeType}
+            alt={t("chat.image")}
+          />
+        );
+      }
+      if (block.kind === "image_ref" && block.ref !== undefined) {
+        return (
+          <RefImage
+            key={blockKey(block)}
+            source={mediaSource}
+            toolCallId={block.ref.toolCallId}
+            contentIndex={block.ref.contentIndex}
+            mimeType={block.mimeType}
+            byteLength={block.byteLength}
+          />
+        );
+      }
+      if (block.kind === "tool" || block.kind === "toolCall" || block.kind === "toolResult") {
+        // A live result streaming for this disclosure's call id
+        // finalizes it in place: show the live phase/output so
+        // the invocation renders one card, not a detached twin.
+        const live = block.id ? toolCalls[block.id] : undefined;
+        const cardId = block.id ?? blockKey(block);
+        const isError = live?.isError ?? block.isError ?? false;
+        const card = rememberedToolCard({
+          toolCallId: cardId,
+          toolName: block.name ?? live?.toolName ?? "",
+          phase: live?.phase ?? "end",
+          text: live ? live.text : block.text ?? "",
+          isError,
+          details: live?.details,
+          args: live?.args ?? block.arguments,
+        });
+        // Every result image of this call — the one folded onto the tool
+        // block plus the additional ones stored after it — renders inside
+        // the disclosure and mounts only while the card is open, which is
+        // what keeps the image_ref fetches lazy. The open derivation mirrors
+        // ToolCard's (user choice, else error auto-open).
+        const extras: ToolResultImage[] = [];
+        for (let next = blockIndex + 1; next < blocks.length; next += 1) {
+          const extra = blockMedia(blocks[next]!);
+          if (extra === null) break;
+          groupedResultImages.add(next);
+          extras.push(extra);
+        }
+        const hasFolded = (typeof block.data === "string" && block.data.length > 0) || block.ref !== undefined;
+        const blockList: readonly ToolResultImage[] = hasFolded
+          ? [{
+              ...(typeof block.data === "string" && block.data.length > 0 ? { data: block.data } : {}),
+              ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+              ...(block.byteLength !== undefined ? { byteLength: block.byteLength } : {}),
+              ...(block.ref !== undefined ? { ref: block.ref } : {}),
+            }, ...extras]
+          : extras;
+        // A result streaming for this anchored invocation carries its media
+        // on the live entry: the persisted blocks predate the result, so the
+        // disclosure must surface live.media too or expanding the anchored
+        // card would show no image and issue no request. Media already folded
+        // into the blocks (a mid-run replay) renders once.
+        const liveMedia = (live?.media ?? []).filter((image) => !blockList.some((existing) => sameMedia(existing, image)));
+        const media: readonly ToolResultImage[] = [...blockList, ...liveMedia];
+        if (media.length === 0) return card;
+        const open = toolDisclosureRef.current.get(cardId) ?? isError;
+        const mediaKey = blockKey(block);
+        return (
+          <div key={mediaKey} className="th-chat-tool-media">
+            {card}
+            {open && media.map((image, mediaIndex) => renderMedia(image, `${mediaKey}:${mediaIndex}`))}
+          </div>
+        );
+      }
+      return message.role === "assistant" ? (
+        <div key={blockKey(block)} className="th-chat-markdown">
+          <Markdown text={block.text ?? ""} />
+        </div>
+      ) : (
+        <span key={blockKey(block)}>{block.text}</span>
+      );
+    });
+  };
   // Tool call ids already disclosed inside a history message. A live result
   // streaming for one of these ids must finalize that disclosure in place
   // (below) rather than render a second card in the live region.
@@ -278,38 +502,7 @@ export function ChatTranscript({
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
-                    ) : (message.blocks ?? []).map((block) => {
-                      if (block.kind === "thinking") {
-                        return (
-                          <details key={blockKey(block)} className="th-chat-thinking">
-                            <summary>{t("chat.thinking")}</summary>
-                            <pre>{block.thinking ?? block.text}</pre>
-                          </details>
-                        );
-                      }
-                      if (block.kind === "tool" || block.kind === "toolCall" || block.kind === "toolResult") {
-                        // A live result streaming for this disclosure's call id
-                        // finalizes it in place: show the live phase/output so
-                        // the invocation renders one card, not a detached twin.
-                        const live = block.id ? toolCalls[block.id] : undefined;
-                        return rememberedToolCard({
-                          toolCallId: block.id ?? blockKey(block),
-                          toolName: block.name ?? live?.toolName ?? "",
-                          phase: live?.phase ?? "end",
-                          text: live ? live.text : block.text ?? "",
-                          isError: live?.isError ?? block.isError ?? false,
-                          details: live?.details,
-                          args: live?.args ?? block.arguments,
-                        });
-                      }
-                      return message.role === "assistant" ? (
-                        <div key={blockKey(block)} className="th-chat-markdown">
-                          <Markdown text={block.text ?? ""} />
-                        </div>
-                      ) : (
-                        <span key={blockKey(block)}>{block.text}</span>
-                      );
-                    })}
+                    ) : renderMessageBlocks(message)}
                   </div>
                 </div>
               );
@@ -324,15 +517,29 @@ export function ChatTranscript({
             )}
             {Object.entries(toolCalls)
               .filter(([id]) => !historyToolIds.has(id))
-              .map(([id, entry]) => rememberedToolCard({
-                toolCallId: id,
-                toolName: entry.toolName,
-                phase: entry.phase,
-                text: entry.text,
-                isError: entry.isError,
-                details: entry.details,
-                args: entry.args,
-              }))}
+              .map(([id, entry]) => {
+                const card = rememberedToolCard({
+                  toolCallId: id,
+                  toolName: entry.toolName,
+                  phase: entry.phase,
+                  text: entry.text,
+                  isError: entry.isError,
+                  details: entry.details,
+                  args: entry.args,
+                });
+                // Live result media rides inside the invocation's disclosure
+                // like the finalized card's: it mounts only while open, so a
+                // collapsed card never fetches its image_ref coordinates.
+                const media = entry.media ?? [];
+                if (media.length === 0) return card;
+                const open = toolDisclosureRef.current.get(id) ?? entry.isError;
+                return (
+                  <div key={id} className="th-chat-tool-media">
+                    {card}
+                    {open && media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`))}
+                  </div>
+                );
+              })}
             {streaming && (
               <div className="th-chat-msg th-chat-msg--streaming">
                 <div className="th-chat-markdown">

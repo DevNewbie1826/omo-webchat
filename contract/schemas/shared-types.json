@@ -68,7 +68,19 @@
         "id": { "type": "string" },
         "name": { "type": "string" },
         "arguments": { "$ref": "#/$defs/JsonValue" },
-        "isError": { "type": "boolean" }
+        "isError": { "type": "boolean" },
+        "data": { "type": "string" },
+        "mimeType": { "type": "string" },
+        "byteLength": { "type": "integer" },
+        "ref": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["toolCallId", "contentIndex"],
+          "properties": {
+            "toolCallId": { "type": "string" },
+            "contentIndex": { "type": "integer" }
+          }
+        }
       }
     },
     "AssistantMessage": {

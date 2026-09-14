@@ -1,0 +1,91 @@
+{
+  "check": 1,
+  "network": [
+    {
+      "event": "request",
+      "method": "GET",
+      "url": "http://127.0.0.1:18090/api/workspaces/ws-edaf55a6/chats/chat-64848f04/media?toolCallId=toolu_01LKJJufhJtDVCdJJ5UG9C2x&contentIndex=1"
+    },
+    {
+      "event": "response",
+      "status": 200,
+      "url": "http://127.0.0.1:18090/api/workspaces/ws-edaf55a6/chats/chat-64848f04/media?toolCallId=toolu_01LKJJufhJtDVCdJJ5UG9C2x&contentIndex=1"
+    }
+  ],
+  "frames": [
+    {
+      "type": "tool",
+      "image_ref": true
+    },
+    {
+      "type": "message",
+      "image_ref": true
+    }
+  ],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-64848f04",
+      "type": "run.done"
+    }
+  ],
+  "newId": "toolu_01LKJJufhJtDVCdJJ5UG9C2x",
+  "collapsed": "false",
+  "collapsedGETs": 0,
+  "verdict": "FAIL",
+  "error": "locator.waitFor: Timeout 20000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.th-tool[data-tool-call-id]').last().locator('img') to be visible\u001b[22m\n\n    at decode (/private/tmp/webchat-image-qa-r3/qa.mjs:10:38)\n    at /private/tmp/webchat-image-qa-r3/qa.mjs:27:40"
+}
+{
+  "check": 2,
+  "network": [
+    {
+      "event": "request",
+      "method": "GET",
+      "url": "http://127.0.0.1:18090/api/workspaces/ws-edaf55a6/chats/chat-64848f04/media?toolCallId=toolu_01Lak6aHYEUpg8A3eYfUuwCg&contentIndex=1"
+    },
+    {
+      "event": "response",
+      "status": 200,
+      "url": "http://127.0.0.1:18090/api/workspaces/ws-edaf55a6/chats/chat-64848f04/media?toolCallId=toolu_01Lak6aHYEUpg8A3eYfUuwCg&contentIndex=1"
+    }
+  ],
+  "frames": [
+    {
+      "type": "tool",
+      "image_ref": true
+    },
+    {
+      "type": "message",
+      "image_ref": true
+    }
+  ],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-64848f04",
+      "type": "run.done"
+    }
+  ],
+  "newId": "toolu_01Lak6aHYEUpg8A3eYfUuwCg",
+  "collapsed": "false",
+  "collapsedGETs": 0,
+  "verdict": "FAIL",
+  "error": "locator.waitFor: Timeout 20000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.th-tool[data-tool-call-id]').last().locator('img') to be visible\u001b[22m\n\n    at decode (/private/tmp/webchat-image-qa-r3/qa.mjs:10:38)\n    at /private/tmp/webchat-image-qa-r3/qa.mjs:27:40"
+}
+{
+  "check": 3,
+  "network": [],
+  "frames": [],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-64848f04",
+      "type": "run.done"
+    }
+  ],
+  "text": "IMAGE_QA_TEXT_OK",
+  "verdict": "PASS"
+}

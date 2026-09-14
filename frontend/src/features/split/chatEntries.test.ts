@@ -74,4 +74,72 @@ describe("parseEntries", () => {
 		expect(messages).toHaveLength(1);
 		expect(messages[0]?.blocks).toEqual([{ kind: "tool", id: "t1", name: "lookup", text: "done" }]);
 	});
+
+	it("preserves image and image_ref blocks in restored message content", () => {
+		const messages = parseEntries([
+			{
+				type: "message",
+				id: "e1",
+				message: {
+					role: "assistant",
+					timestamp: 42,
+					content: [
+						{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+						{ type: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t9", contentIndex: 0 } },
+					],
+				},
+			},
+		]);
+		expect(messages[0]?.blocks).toEqual([
+			{ kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+			{ kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t9", contentIndex: 0 } },
+		]);
+	});
+
+	it("folds restored inline toolResult image fields onto the merged tool block", () => {
+		const messages = parseEntries([
+			{
+				type: "message",
+				id: "e1",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "t1", name: "read" },
+						{ type: "toolResult", id: "t1", data: "iVBORw0KGgo=", mimeType: "image/png" },
+					],
+				},
+			},
+		]);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]?.blocks).toEqual([
+			{ kind: "tool", id: "t1", name: "read", data: "iVBORw0KGgo=", mimeType: "image/png" },
+		]);
+	});
+
+	it("folds a restored toolResult message's image content onto the merged tool block", () => {
+		const messages = parseEntries([
+			{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "t2", name: "screenshot" }] } },
+			{
+				type: "message",
+				id: "result",
+				message: {
+					role: "toolResult",
+					toolCallId: "t2",
+					toolName: "screenshot",
+					content: [
+						{ type: "text", text: "shot" },
+						{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+						{ type: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t2", contentIndex: 1 } },
+					],
+				},
+			},
+		]);
+		expect(messages).toHaveLength(1);
+		// The first image lands on the merged block (the ContentBlock shape has
+		// one image slot); additional image blocks survive as standalone blocks.
+		expect(messages[0]?.blocks).toEqual([
+			{ kind: "tool", id: "t2", name: "screenshot", text: "shot", data: "iVBORw0KGgo=", mimeType: "image/png" },
+			{ kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t2", contentIndex: 1 } },
+		]);
+	});
 });

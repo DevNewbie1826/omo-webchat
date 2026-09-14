@@ -1,0 +1,112 @@
+{
+  "check": 1,
+  "network": [
+    {
+      "event": "request",
+      "method": "GET",
+      "url": "http://127.0.0.1:18091/api/workspaces/ws-e4fb6ca6/chats/chat-36d7fa30/media?toolCallId=toolu_01CXZLwQb5kcXy8pJ9bx3Gqp&contentIndex=1"
+    },
+    {
+      "event": "response",
+      "status": 200,
+      "url": "http://127.0.0.1:18091/api/workspaces/ws-e4fb6ca6/chats/chat-36d7fa30/media?toolCallId=toolu_01CXZLwQb5kcXy8pJ9bx3Gqp&contentIndex=1"
+    }
+  ],
+  "frames": [
+    {
+      "type": "tool",
+      "image_ref": true
+    },
+    {
+      "type": "message",
+      "image_ref": true
+    }
+  ],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-36d7fa30",
+      "type": "run.done"
+    }
+  ],
+  "newId": "toolu_01CXZLwQb5kcXy8pJ9bx3Gqp",
+  "collapsed": "false",
+  "collapsedGETs": 0,
+  "image": {
+    "srcScheme": "blob",
+    "complete": true,
+    "width": 640,
+    "height": 400
+  },
+  "expandedGETs": 1,
+  "reexpandedGETs": 1,
+  "verdict": "PASS"
+}
+{
+  "check": 2,
+  "network": [
+    {
+      "event": "request",
+      "method": "GET",
+      "url": "http://127.0.0.1:18091/api/workspaces/ws-e4fb6ca6/chats/chat-36d7fa30/media?toolCallId=toolu_01AiGHeTkJce9BPhhucf6KoD&contentIndex=1"
+    },
+    {
+      "event": "response",
+      "status": 200,
+      "url": "http://127.0.0.1:18091/api/workspaces/ws-e4fb6ca6/chats/chat-36d7fa30/media?toolCallId=toolu_01AiGHeTkJce9BPhhucf6KoD&contentIndex=1"
+    }
+  ],
+  "frames": [
+    {
+      "type": "tool",
+      "image_ref": true
+    },
+    {
+      "type": "message",
+      "image_ref": true
+    }
+  ],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-36d7fa30",
+      "type": "run.done"
+    }
+  ],
+  "newId": "toolu_01AiGHeTkJce9BPhhucf6KoD",
+  "collapsed": "false",
+  "collapsedGETs": 0,
+  "image": {
+    "srcScheme": "blob",
+    "complete": true,
+    "width": 640,
+    "height": 400
+  },
+  "expandedGETs": 1,
+  "reexpandedGETs": 1,
+  "earlierId": "toolu_01CXZLwQb5kcXy8pJ9bx3Gqp",
+  "earlierImage": {
+    "srcScheme": "data",
+    "complete": true,
+    "width": 640,
+    "height": 400
+  },
+  "verdict": "PASS"
+}
+{
+  "check": 3,
+  "network": [],
+  "frames": [],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-36d7fa30",
+      "type": "run.done"
+    }
+  ],
+  "text": "IMAGE_QA_TEXT_OK",
+  "verdict": "PASS"
+}

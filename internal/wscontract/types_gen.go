@@ -64,14 +64,25 @@ type CommandSourceInfo struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type ContentBlockRef struct {
+	ContentIndex int64  `json:"contentIndex"`
+	ToolCallID   string `json:"toolCallId"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type ContentBlock struct {
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	ID        *string         `json:"id,omitempty"`
-	IsError   *bool           `json:"isError,omitempty"`
-	Kind      string          `json:"kind"`
-	Name      *string         `json:"name,omitempty"`
-	Text      *string         `json:"text,omitempty"`
-	Thinking  *string         `json:"thinking,omitempty"`
+	Arguments  json.RawMessage  `json:"arguments,omitempty"`
+	ByteLength *int64           `json:"byteLength,omitempty"`
+	Data       *string          `json:"data,omitempty"`
+	ID         *string          `json:"id,omitempty"`
+	IsError    *bool            `json:"isError,omitempty"`
+	Kind       string           `json:"kind"`
+	MimeType   *string          `json:"mimeType,omitempty"`
+	Name       *string          `json:"name,omitempty"`
+	Ref        *ContentBlockRef `json:"ref,omitempty"`
+	Text       *string          `json:"text,omitempty"`
+	Thinking   *string          `json:"thinking,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -871,12 +882,30 @@ func (v CommandSourceInfo) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *ContentBlockRef) UnmarshalJSON(data []byte) error {
+	type plain ContentBlockRef
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"contentIndex", "toolCallId"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v ContentBlockRef) MarshalJSON() ([]byte, error) {
+	type plain ContentBlockRef
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ContentBlock) UnmarshalJSON(data []byte) error {
 	type plain ContentBlock
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"arguments", "id", "isError", "kind", "name", "text", "thinking"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"arguments", "byteLength", "data", "id", "isError", "kind", "mimeType", "name", "ref", "text", "thinking"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2525,7 +2554,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "message":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "content": validationSchema{Type: "string"}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "timestamp": validationSchema{Type: "number"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "byteLength": validationSchema{Type: "integer"}, "data": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "ref": validationSchema{Type: "object", Properties: map[string]validationSchema{"contentIndex": validationSchema{Type: "integer"}, "toolCallId": validationSchema{Type: "string"}}, Required: []string{"toolCallId", "contentIndex"}}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "content": validationSchema{Type: "string"}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "timestamp": validationSchema{Type: "number"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
 				return nil, err
 			}
 		case "tool":

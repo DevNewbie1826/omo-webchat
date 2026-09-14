@@ -1,0 +1,38 @@
+{
+  "seq": 3,
+  "entries": [
+    {
+      "kind": "notice",
+      "session_id": "01a0a0e3-3616-76d4-805c-68350913a47d",
+      "data": {
+        "at": "2026-09-14T17:07:31.180934Z",
+        "kind": "engine_notify",
+        "message": "TPS 69.6 tok/s. Cache hit 28.3%, 4.1s",
+        "nid": "chat-36d7fa30:g1789405605348270000:1",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a0e3-3616-76d4-805c-68350913a47d",
+      "data": {
+        "at": "2026-09-14T17:07:41.528683Z",
+        "kind": "engine_notify",
+        "message": "TPS 121.1 tok/s. Cache hit 26.8%, 2.4s",
+        "nid": "chat-36d7fa30:g1789405605348270000:2",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a0e3-3616-76d4-805c-68350913a47d",
+      "data": {
+        "at": "2026-09-14T17:07:46.124356Z",
+        "kind": "engine_notify",
+        "message": "TPS 89.0 tok/s. Cache hit 53.1%, 0.2s",
+        "nid": "chat-36d7fa30:g1789405605348270000:3",
+        "notifyType": "info"
+      }
+    }
+  ]
+}

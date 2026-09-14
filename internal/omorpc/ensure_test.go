@@ -421,8 +421,8 @@ func TestEnsureExtensionEventsCapabilityNormalizesValues(t *testing.T) {
 		"OMO_RPC_CLIENT_CAPABILITIES=custom_only,, custom_only ",
 	})
 	for key, want := range map[string]string{
-		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events",
-		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events",
+		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events,media_placeholders",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events,media_placeholders",
 	} {
 		if got, _ := lookupEnv(env, key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)

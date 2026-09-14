@@ -23,6 +23,18 @@ export interface FailedDraft extends ChatDraft {
   readonly requestId: string;
 }
 
+/**
+ * One image carried by a tool result: inline base64 bytes (`data`) or a
+ * server-side media locator (`ref`). The remaining fields describe the bytes
+ * for the unavailable fallback.
+ */
+export interface ToolResultImage {
+  readonly data?: string;
+  readonly mimeType?: string;
+  readonly byteLength?: number;
+  readonly ref?: { readonly toolCallId: string; readonly contentIndex: number };
+}
+
 export interface ToolEntry {
   readonly toolName: string;
   readonly phase: "start" | "update" | "end";
@@ -30,6 +42,8 @@ export interface ToolEntry {
   readonly isError: boolean;
   readonly details?: JsonValue | undefined;
   readonly args?: JsonValue | undefined;
+  /** Result images in content order; absent until a result delivers media. */
+  readonly media?: readonly ToolResultImage[];
 }
 
 /** One webchat-owned queued send from the server's queue snapshot (head-first). */

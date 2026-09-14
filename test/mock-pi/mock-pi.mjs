@@ -21,6 +21,15 @@
 //   MOCK_PI_HOLD_MS    milliseconds before a held prompt completes (default 500)
 //   MOCK_PI_RESUME_CONTRACT path to persist history across process restarts
 //   MOCK_PI_RESUME_IDENTITY exact identity used by that restart contract
+//   MOCK_PI_IMAGE_REF  "1" to emit the call_mock tool result with an image_ref
+//                      placeholder instead of an inline image block (the
+//                      media_placeholders client contract)
+//
+// Media fetching (get_media): the ref (toolCallId "call_mock", contentIndex 0)
+// is always armed and answers with a tiny valid PNG image block; every other
+// coordinate answers media_not_found, matching the engine's durable-entry
+// lookup for an unknown tool call or a content index that does not point at
+// an image block.
 //
 // Multi-session mode (omo `--mode rpc --multi-session`):
 //   node mock-pi.mjs --multi-session
@@ -54,6 +63,12 @@ const DO_HOOK = process.env.MOCK_PI_HOOK === '1';
 const DO_EXT_EVENT = process.env.MOCK_PI_EXT_EVENT === '1';
 const TOOL_COMMAND = process.env.MOCK_PI_TOOL_COMMAND || 'echo hi';
 const TOOL_TEXT = process.env.MOCK_PI_TOOL_TEXT ?? 'hi\n';
+const DO_IMAGE_REF = process.env.MOCK_PI_IMAGE_REF === '1';
+// A 69-byte 1x1 red PNG: the block get_media returns for the armed ref.
+const MOCK_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+const IMAGE_REF_TOOL_CALL_ID = 'call_mock';
+const IMAGE_REF_CONTENT_INDEX = 0;
+const IMAGE_REF_BYTE_LENGTH = Buffer.from(MOCK_PNG_BASE64, 'base64').length;
 const DO_LOCAL_PROMPT = process.env.MOCK_PI_LOCAL_PROMPT === '1';
 const DO_WAKE_TURN = process.env.MOCK_PI_WAKE_TURN === '1';
 const HOLD_PROMPT = process.env.MOCK_PI_HOLD === '1';
@@ -99,6 +114,17 @@ let commandInventory = COMMAND_COUNT > 0
   ? Array.from({ length: COMMAND_COUNT }, (_, i) => command(`command-${String(i + 1).padStart(2, '0')}`, `Command ${i + 1}`))
   : [command('fix-tests', 'Fix failing tests'), command('skill:demo', 'Demo skill', 'skill', '<skill:demo>')];
 function omoCommands() { return commandInventory; }
+
+// Content of the call_mock tool result message. Opted-in runs deliver the
+// image_ref placeholder in place of the inline image block; the original
+// block stays fetchable through get_media under the placeholder's ref.
+function toolResultMessageContent() {
+  if (!DO_IMAGE_REF) return [{ type: 'text', text: TOOL_TEXT }];
+  return [
+    { type: 'image_ref', mimeType: 'image/png', byteLength: IMAGE_REF_BYTE_LENGTH, ref: { toolCallId: IMAGE_REF_TOOL_CALL_ID, contentIndex: IMAGE_REF_CONTENT_INDEX } },
+    { type: 'text', text: TOOL_TEXT },
+  ];
+}
 
 // ---- Per-session runtime state ----
 // Single-session mode runs on one implicit session whose frames are never tagged;
@@ -288,11 +314,12 @@ async function streamTurn(S, userMessage, injectedMessage = null) {
     emit(S, { type: 'message_start', message: { role: 'assistant', content: [], provider: 'mock', model: 'mock-model', usage: USAGE } });
 
     if (DO_TOOL) {
+      const toolResultContent = toolResultMessageContent();
       emit(S, { type: 'message_update', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call_mock', name: 'bash', arguments: { command: TOOL_COMMAND } }] }, assistantMessageEvent: { type: 'toolcall_end', toolCall: { id: 'call_mock', name: 'bash', arguments: { command: TOOL_COMMAND } } } });
       emit(S, { type: 'tool_execution_start', toolCallId: 'call_mock', toolName: 'bash', args: { command: TOOL_COMMAND } });
       emit(S, { type: 'tool_execution_update', toolCallId: 'call_mock', toolName: 'bash', args: { command: TOOL_COMMAND }, partialResult: { content: [{ type: 'text', text: TOOL_TEXT }] } });
       emit(S, { type: 'tool_execution_end', toolCallId: 'call_mock', toolName: 'bash', result: { content: [{ type: 'text', text: TOOL_TEXT }] }, isError: false });
-      emit(S, { type: 'message_end', message: { role: 'toolResult', toolCallId: 'call_mock', toolName: 'bash', content: [{ type: 'text', text: TOOL_TEXT }], isError: false } });
+      emit(S, { type: 'message_end', message: { role: 'toolResult', toolCallId: 'call_mock', toolName: 'bash', content: toolResultContent, isError: false } });
     }
 
     // Stream text in CHUNKS pieces.
@@ -329,6 +356,7 @@ async function streamTurn(S, userMessage, injectedMessage = null) {
           isError: false,
         },
       ] : [];
+      if (DO_TOOL && DO_IMAGE_REF) restoredToolMessages[restoredToolMessages.length - 1].content = toolResultMessageContent();
       S.contractHistory = [
         ...hookMessages.map((hook) => ({
           type: 'custom_message',
@@ -447,6 +475,16 @@ function onCommand(S, cmd) {
     case 'get_commands':
       emit(S, { type: 'response', command: 'get_commands', success: true, id: cmd.id, data: { commands: omoCommands() } });
       return;
+    case 'get_media': {
+      const toolCallId = typeof cmd.toolCallId === 'string' ? cmd.toolCallId : '';
+      const contentIndex = Number.isInteger(cmd.contentIndex) ? cmd.contentIndex : -1;
+      if (toolCallId === IMAGE_REF_TOOL_CALL_ID && contentIndex === IMAGE_REF_CONTENT_INDEX) {
+        emit(S, { type: 'response', command: 'get_media', success: true, id: cmd.id, data: { toolCallId, contentIndex, content: { type: 'image', data: MOCK_PNG_BASE64, mimeType: 'image/png' } } });
+      } else {
+        emit(S, { type: 'response', command: 'get_media', success: false, error: 'media_not_found', id: cmd.id });
+      }
+      return;
+    }
     case 'mock_commands_changed': {
       if (Array.isArray(cmd.commands)) commandInventory = cmd.commands;
       else if (cmd.count != null) commandInventory = Array.from({ length: Math.max(0, Number(cmd.count) || 0) }, (_, i) => command(`command-${String(i + 1).padStart(2, '0')}`, `Command ${i + 1}`));

@@ -25,7 +25,8 @@ export type AssistantDelta = ct.AssistantDelta;
 export type AssistantMessage = AssistantMessageSeam;
 export type ContentBlock = ContentBlockSeam;
 export type ContextUsage = ct.ContextUsage;
-export type ToolPayload = ct.ToolPayload;
+export type ToolPayload = ToolPayloadSeam;
+export type ToolPayloadContentItem = ToolPayloadContentItemSeam;
 export type ResumeCandidate = ct.ResumeCandidate;
 export type CommandSourceInfo = ct.CommandSourceInfo;
 export type CommandEntry = ct.CommandEntry;
@@ -81,6 +82,34 @@ type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final"> & {
  */
 type ContentBlockSeam = Omit<ct.ContentBlock, "arguments"> & { readonly arguments?: unknown };
 
+/**
+ * Seam adapter: tool payload content items keep the image fields the contract
+ * added to ContentBlock (data/mimeType/byteLength/ref) so tool-frame
+ * partial/result content can carry images through the parse boundary; the
+ * generated ToolPayload still models text-only items. `type` is the native
+ * provider discriminator the server forwards unchanged ("image"/"image_ref");
+ * `kind` stays for synthetic items.
+ */
+interface ToolPayloadContentItemSeam {
+  readonly type?: string;
+  readonly kind?: string;
+  readonly text?: string;
+  readonly data?: string;
+  readonly mimeType?: string;
+  readonly byteLength?: number;
+  readonly ref?: ct.ContentBlock["ref"];
+}
+
+type ToolPayloadSeam = Omit<ct.ToolPayload, "content"> & {
+  readonly content?: readonly ToolPayloadContentItemSeam[];
+};
+
+/** Seam adapter: the tool frame carries the seam payloads. */
+type ToolFrameSeam = Omit<ct.ToolFrame, "partial" | "result"> & {
+  readonly partial?: ToolPayloadSeam;
+  readonly result?: ToolPayloadSeam;
+};
+
 /** Seam adapter: AssistantMessage carries the seam ContentBlock in blocks, so
  * features' UiMessage (extends AssistantMessage) keeps one block type. */
 type AssistantMessageSeam = Omit<ct.AssistantMessage, "blocks"> & {
@@ -117,7 +146,7 @@ export type ChatServerFrame =
   | ChatNameFrameSeam
   | ct.MessageDeltaFrame
   | MessageFrameSeam
-  | ct.ToolFrame
+  | ToolFrameSeam
   | ct.StateFrame
   | ct.StatsFrame
   | ct.ExtensionEventFrame

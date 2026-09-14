@@ -1,0 +1,27 @@
+{
+  "seq": 2,
+  "entries": [
+    {
+      "kind": "notice",
+      "session_id": "01a0a0e0-5f6c-7e91-aca4-465e692a1713",
+      "data": {
+        "at": "2026-09-14T17:04:31.265039Z",
+        "kind": "engine_notify",
+        "message": "TPS 67.1 tok/s. Cache hit 0.0%, 6.0s",
+        "nid": "chat-e7ff99b6:g1789405390059027000:1",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a0e0-5f6c-7e91-aca4-465e692a1713",
+      "data": {
+        "at": "2026-09-14T17:04:36.895503Z",
+        "kind": "engine_notify",
+        "message": "TPS 76.8 tok/s. Cache hit 0.0%, 0.2s",
+        "nid": "chat-e7ff99b6:g1789405390059027000:2",
+        "notifyType": "info"
+      }
+    }
+  ]
+}

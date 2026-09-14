@@ -489,3 +489,34 @@
   overflow-wrap: anywhere;
 }
 
+
+/* Preserved image blocks (inline data or lazily fetched image_ref). */
+.th-chat-image {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  margin-block-start: var(--th-space-2);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius);
+  background: var(--th-surface);
+  object-fit: contain;
+}
+
+.th-chat-image-unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  margin-block-start: var(--th-space-2);
+  padding: var(--th-space-3);
+  border: 1px dashed var(--th-border-strong);
+  border-radius: var(--th-radius);
+  color: var(--th-muted);
+  font-size: var(--th-type-secondary-size);
+  line-height: var(--th-type-secondary-line);
+  letter-spacing: var(--th-type-secondary-tracking);
+}
+
+.th-chat-image-meta {
+  font-family: var(--th-font-mono);
+  color: var(--th-text-dim);
+}

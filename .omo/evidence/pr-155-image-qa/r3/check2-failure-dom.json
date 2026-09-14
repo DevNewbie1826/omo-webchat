@@ -1,0 +1,20 @@
+[
+  {
+    "id": "toolu_01LKJJufhJtDVCdJJ5UG9C2x",
+    "expanded": "false",
+    "images": [],
+    "text": "read\n완료\n{\"path\":\"test-display.png\"}\n·\nRead image file [image/png]"
+  },
+  {
+    "id": null,
+    "expanded": "false",
+    "images": [],
+    "text": "omo-memory:notice\n<memory_notice> - 13 previous messages between you and the user are stored in re…"
+  },
+  {
+    "id": "toolu_01Lak6aHYEUpg8A3eYfUuwCg",
+    "expanded": "true",
+    "images": [],
+    "text": "read\n완료\n{\"path\":\"test-display.png\"}\n·\nRead image file [image/png]\n입력\n{\n  \"path\": \"test-display.png\"\n}\n출력\nRead image file [image/png]"
+  }
+]

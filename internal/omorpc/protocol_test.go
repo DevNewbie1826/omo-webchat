@@ -67,6 +67,7 @@ func TestProtocolEncodeRequestTable(t *testing.T) {
 		{"set_auto_compaction_off", SetAutoCompaction{SessionID: "rpc-1", Enabled: false}, `{"enabled":false,"id":"r1","sessionId":"rpc-1","type":"set_auto_compaction"}`},
 		{"set_auto_compaction_on", SetAutoCompaction{SessionID: "rpc-1", Enabled: true}, `{"enabled":true,"id":"r1","sessionId":"rpc-1","type":"set_auto_compaction"}`},
 		{"extension_request", ExtensionRequest{SessionID: "rpc-1", Name: "pick", Data: json.RawMessage(`{"a":1}`)}, `{"data":{"a":1},"id":"r1","name":"pick","sessionId":"rpc-1","type":"extension_request"}`},
+		{"set_client_info", SetClientInfo{Width: 120, Capabilities: []string{"extension_events", "media_placeholders"}}, `{"capabilities":["extension_events","media_placeholders"],"id":"r1","type":"set_client_info","width":120}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

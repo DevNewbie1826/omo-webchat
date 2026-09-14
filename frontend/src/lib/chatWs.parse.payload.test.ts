@@ -189,6 +189,82 @@ describe("parseChatServerFrame", () => {
     ).toBeNull();
   });
 
+  it("preserves image and image_ref blocks on a live message frame", () => {
+    const image = { kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+    const imageRef = { kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "call_9", contentIndex: 1 } };
+    const frame = parseChatServerFrame({
+      type: "message",
+      sessionId: "c1",
+      message: { role: "assistant", blocks: [image, imageRef] },
+    });
+    if (frame?.type !== "message") throw new Error("message frame rejected");
+    // Every image field survives the parse boundary verbatim.
+    expect(frame.message.blocks).toEqual([image, imageRef]);
+    // Present-but-malformed image fields keep the frame rejected.
+    expect(
+      parseChatServerFrame({ type: "message", sessionId: "c1", message: { role: "assistant", blocks: [{ kind: "image", data: 5 }] } }),
+    ).toBeNull();
+    expect(
+      parseChatServerFrame({ type: "message", sessionId: "c1", message: { role: "assistant", blocks: [{ kind: "image_ref", mimeType: "image/png", byteLength: 1, ref: { toolCallId: "call_9" } }] } }),
+    ).toBeNull();
+  });
+
+  it("preserves the message-level toolCallId on a live toolResult message", () => {
+    // The engine repeats each invocation's result as a role "toolResult"
+    // message that names its invocation at the message level (stored
+    // transcripts carry the same field); the merge seam addresses the media
+    // by it, so the parse boundary must keep it.
+    const frame = parseChatServerFrame({
+      type: "message",
+      sessionId: "c1",
+      message: {
+        role: "toolResult",
+        toolCallId: "call_2",
+        blocks: [{ kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+      },
+    });
+    expect(frame).toMatchObject({ type: "message", message: { role: "toolResult", toolCallId: "call_2" } });
+    // Present-but-malformed toolCallId keeps the frame rejected.
+    expect(
+      parseChatServerFrame({ type: "message", sessionId: "c1", message: { role: "toolResult", toolCallId: 5 } }),
+    ).toBeNull();
+  });
+
+  it("preserves native image content items through tool partial/result payloads", () => {
+    // The server forwards tool-result content with the provider's native block
+    // discriminator: type "image"/"image_ref", never a synthetic kind.
+    const image = { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" };
+    const imageRef = { type: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "call_1", contentIndex: 1 } };
+    const frame = parseChatServerFrame({
+      type: "tool",
+      sessionId: "c1",
+      toolCallId: "call_1",
+      toolName: "read",
+      phase: "end",
+      partial: { content: [image] },
+      result: { content: [{ text: "saved" }, image, imageRef] },
+    });
+    if (frame?.type !== "tool") throw new Error("tool frame rejected");
+    // The native discriminator and every image field survive the parse
+    // boundary verbatim.
+    expect(frame.partial?.content).toEqual([image]);
+    expect(frame.result?.content).toEqual([{ text: "saved" }, image, imageRef]);
+    // Present-but-malformed image fields reject the frame at the parse seam.
+    expect(
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ data: 5 }] } }),
+    ).toBeNull();
+    expect(
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ byteLength: "big" }] } }),
+    ).toBeNull();
+    expect(
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ type: "image_ref", ref: { toolCallId: "call_1" } }] } }),
+    ).toBeNull();
+    // A native discriminator of the wrong type rejects instead of being dropped.
+    expect(
+      parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "call_1", toolName: "read", phase: "end", result: { content: [{ type: 7, data: "iVBORw0KGgo=", mimeType: "image/png" }] } }),
+    ).toBeNull();
+  });
+
   it("enforces the approval method enum and string options", () => {
     expect(
       parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "select", options: ["yes", "no"] }),

@@ -1,0 +1,528 @@
+diff --git a/frontend/src/features/split/ChatPane.images.test.tsx b/frontend/src/features/split/ChatPane.images.test.tsx
+index e8ea735..2567761 100644
+--- a/frontend/src/features/split/ChatPane.images.test.tsx
++++ b/frontend/src/features/split/ChatPane.images.test.tsx
+@@ -193,6 +193,85 @@ describe("ChatPane tool result images (production media wiring)", () => {
+ 		expect(mediaUrls()).toHaveLength(1);
+ 	});
+ 
++	it("renders live media for an invocation anchored by an earlier assistant toolCall, through run.done", async () => {
++		const { deliver } = renderWithFakeConnect();
++		act(() => {
++			deliver({ type: "run.started", sessionId: "chat-1" });
++			// The reviewer counter-case: the assistant toolCall frame anchors the
++			// invocation BEFORE the tool and toolResult frames, so the transcript
++			// message owns the card and the live region excludes the anchored id.
++			deliver({
++				type: "message",
++				sessionId: "chat-1",
++				message: {
++					role: "assistant",
++					blocks: [{ kind: "toolCall", id: "call-anchored", name: "screenshot", arguments: { target: "viewport" } }],
++				},
++			});
++			deliver({
++				type: "tool",
++				sessionId: "chat-1",
++				toolCallId: "call-anchored",
++				toolName: "screenshot",
++				phase: "start",
++				args: { target: "viewport" },
++			});
++			deliver({
++				type: "tool",
++				sessionId: "chat-1",
++				toolCallId: "call-anchored",
++				toolName: "screenshot",
++				phase: "end",
++				result: { content: [{ text: "captured viewport" }] },
++				isError: false,
++			});
++			deliver({
++				type: "message",
++				sessionId: "chat-1",
++				message: {
++					role: "toolResult",
++					blocks: [{
++						kind: "image_ref",
++						mimeType: "image/png",
++						byteLength: 12595,
++						ref: { toolCallId: "call-anchored", contentIndex: 0 },
++					}],
++				},
++			});
++		});
++
++		// One card for the logical call; untouched and completed it stays
++		// collapsed and must not fetch the referenced media.
++		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
++		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("false");
++		expect(mediaUrls()).toEqual([]);
++
++		// Expanding the anchored card must issue the media request an
++		// unanchored live card would have issued.
++		await clickHead("call-anchored");
++		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("true");
++		expect(mediaUrls()).toEqual([
++			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-anchored&contentIndex=0",
++		]);
++		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
++
++		await act(async () => {
++			deliver({
++				type: "message",
++				sessionId: "chat-1",
++				message: { role: "assistant", blocks: [{ kind: "text", text: "here is the shot" }] },
++			});
++			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
++		});
++
++		// Finalization keeps exactly one card for the logical call (the
++			// anchored block is replaced in place, never duplicated), and the
++			// image survives inside it without refetching.
++		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
++		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
++		expect(mediaUrls()).toHaveLength(1);
++	});
++
+ 	it("renders a live inline result image inside its disclosure without fetching", async () => {
+ 		const { deliver } = renderWithFakeConnect();
+ 		act(() => {
+@@ -252,8 +331,8 @@ describe("ChatPane tool result images (production media wiring)", () => {
+ 				result: { content: [{ text: "two images" }] },
+ 				isError: false,
+ 			});
+-			// The result's first image plus an additional one: both belong to the
+-			// invocation's disclosure, neither may fetch while it is collapsed.
++			// The result's first image plus two additional ones: all belong to
++			// the invocation's disclosure, none may fetch while it is collapsed.
+ 			deliver({
+ 				type: "message",
+ 				sessionId: "chat-1",
+@@ -267,6 +346,12 @@ describe("ChatPane tool result images (production media wiring)", () => {
+ 							byteLength: 2048,
+ 							ref: { toolCallId: "call-multi", contentIndex: 1 },
+ 						},
++						{
++							kind: "image_ref",
++							mimeType: "image/webp",
++							byteLength: 4096,
++							ref: { toolCallId: "call-multi", contentIndex: 2 },
++						},
+ 					],
+ 				},
+ 			});
+@@ -279,16 +364,27 @@ describe("ChatPane tool result images (production media wiring)", () => {
+ 
+ 		await clickHead("call-multi");
+ 		const images = container.querySelectorAll<HTMLImageElement>("img.th-chat-image");
+-		expect(images).toHaveLength(2);
++		expect(images).toHaveLength(3);
+ 		expect(images[0]?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_DATA}`);
+ 		expect(images[1]?.getAttribute("src")).toBe("blob:mock-media");
++		expect(images[2]?.getAttribute("src")).toBe("blob:mock-media");
++		// Each ref coordinate of the call fetches independently, exactly once.
+ 		expect(mediaUrls()).toEqual([
+ 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=1",
++			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=2",
+ 		]);
+ 
+ 		// Collapsing the disclosure unmounts every result image of the call.
+ 		await clickHead("call-multi");
+ 		expect(container.querySelector("img.th-chat-image")).toBeNull();
++
++		// Re-expanding remounts all of them from the cache: no additional fetch.
++		await clickHead("call-multi");
++		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(3);
++		expect(mediaUrls()).toEqual([
++			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=1",
++			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=2",
++		]);
+ 	});
+ 
+ 	it("fetches a restored tool result image through the pane's media source", async () => {
+diff --git a/frontend/src/features/split/ChatTranscript.images.test.tsx b/frontend/src/features/split/ChatTranscript.images.test.tsx
+index 42d6af3..c4826ed 100644
+--- a/frontend/src/features/split/ChatTranscript.images.test.tsx
++++ b/frontend/src/features/split/ChatTranscript.images.test.tsx
+@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { I18nContext, translate, type I18nValue } from "../../i18n";
+ import type { ContentBlock } from "../../lib/chatWs";
+-import { clearChatMediaCache } from "../../lib/chatMedia";
++import { clearChatMediaCache, type ChatMediaSource } from "../../lib/chatMedia";
+ import { ChatTranscript } from "./ChatTranscript";
+ import type { ToolEntry } from "./chatSessionTypes";
+ 
+@@ -138,6 +138,105 @@ describe("ChatTranscript preserved image blocks", () => {
+ 			);
+ 		});
+ 		expect(fetchMock).toHaveBeenCalledTimes(1);
++
++		// A committed collapse unmounts the image; re-expanding remounts it
++		// from the cache — no additional fetch.
++		const collapsedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
++		await act(async () => {
++			collapsedHead?.click();
++		});
++		expect(container.querySelector("img.th-chat-image")).toBeNull();
++		const reopenedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
++		await act(async () => {
++			reopenedHead?.click();
++		});
++		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
++		expect(fetchMock).toHaveBeenCalledTimes(1);
++
++		// A full unmount/remount into a fresh root is also served from the
++		// page-lifetime cache, collapsed or expanded.
++		await act(async () => {
++			root.unmount();
++		});
++		root = createRoot(container);
++		act(() => {
++			root.render(
++				<I18nContext.Provider value={i18n}>
++					<ChatTranscript {...baseProps} items={[messageItem([block])]} />
++				</I18nContext.Provider>,
++			);
++		});
++		expect(fetchMock).toHaveBeenCalledTimes(1);
++		const remountedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
++		await act(async () => {
++			remountedHead?.click();
++		});
++		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
++		expect(fetchMock).toHaveBeenCalledTimes(1);
++	});
++
++	it("fetches each distinct workspace, chat, or ref coordinate independently", async () => {
++		const block: ContentBlock = {
++			kind: "tool",
++			id: "t-coord",
++			name: "screenshot",
++			text: "captured",
++			ref: { toolCallId: "t-coord", contentIndex: 0 },
++		};
++		const renderWith = (mediaSource: ChatMediaSource) => {
++			act(() => {
++				root.render(
++					<I18nContext.Provider value={i18n}>
++						<ChatTranscript {...baseProps} mediaSource={mediaSource} items={[messageItem([block])]} />
++					</I18nContext.Provider>,
++				);
++			});
++		};
++		renderWith({ wsId: "ws-1", chatId: "chat-1" });
++		const head = container.querySelector<HTMLButtonElement>(".th-tool-head");
++		await act(async () => {
++			head?.click();
++		});
++		expect(fetchMock).toHaveBeenCalledTimes(1);
++		expect(fetchMock.mock.calls[0]?.[0]).toBe(
++			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-coord&contentIndex=0",
++		);
++
++		// The same ref under another workspace or chat is a different cache
++		// coordinate: each fetches independently of the cached promise.
++		renderWith({ wsId: "ws-2", chatId: "chat-1" });
++		expect(fetchMock).toHaveBeenCalledTimes(2);
++		expect(fetchMock.mock.calls[1]?.[0]).toBe(
++			"/api/workspaces/ws-2/chats/chat-1/media?toolCallId=t-coord&contentIndex=0",
++		);
++		renderWith({ wsId: "ws-2", chatId: "chat-2" });
++		expect(fetchMock).toHaveBeenCalledTimes(3);
++		expect(fetchMock.mock.calls[2]?.[0]).toBe(
++			"/api/workspaces/ws-2/chats/chat-2/media?toolCallId=t-coord&contentIndex=0",
++		);
++
++		// A second result image of the same call — a different ref coordinate
++		// (contentIndex) — fetches on its own too.
++		const nextBlock: ContentBlock = {
++			kind: "image_ref",
++			mimeType: "image/png",
++			ref: { toolCallId: "t-coord", contentIndex: 1 },
++		};
++		act(() => {
++			root.render(
++				<I18nContext.Provider value={i18n}>
++					<ChatTranscript
++						{...baseProps}
++						mediaSource={{ wsId: "ws-2", chatId: "chat-2" }}
++						items={[messageItem([block, nextBlock])]}
++					/>
++				</I18nContext.Provider>,
++			);
++		});
++		expect(fetchMock).toHaveBeenCalledTimes(4);
++		expect(fetchMock.mock.calls[3]?.[0]).toBe(
++			"/api/workspaces/ws-2/chats/chat-2/media?toolCallId=t-coord&contentIndex=1",
++		);
+ 	});
+ 
+ 	it("shows the mimeType + byteLength fallback when the media fetch fails", async () => {
+@@ -194,6 +293,53 @@ describe("ChatTranscript preserved image blocks", () => {
+ 		);
+ 	});
+ 
++	it("renders live media inside the existing disclosure of a transcript-anchored invocation", async () => {
++		// The engine can anchor the invocation first: the assistant toolCall
++		// block lands in the transcript before the tool/result frames. The
++		// live entry then carries the result media; the anchored card's own
++		// disclosure must surface it (the live region excludes anchored ids),
++		// or expanding the single card issues zero media requests.
++		const block: ContentBlock = {
++			kind: "toolCall",
++			id: "t-anchored",
++			name: "screenshot",
++			arguments: { target: "viewport" },
++		};
++		const liveEntry: ToolEntry = {
++			toolName: "screenshot",
++			phase: "end",
++			text: "captured",
++			isError: false,
++			media: [{ ref: { toolCallId: "t-anchored", contentIndex: 0 } }],
++		};
++		act(() => {
++			root.render(
++				<I18nContext.Provider value={i18n}>
++					<ChatTranscript
++						{...baseProps}
++						toolCalls={{ "t-anchored": liveEntry }}
++						items={[messageItem([block])]}
++					/>
++				</I18nContext.Provider>,
++			);
++		});
++		// Exactly one card for the logical call; untouched and completed it
++		// stays collapsed and must not fetch.
++		expect(container.querySelectorAll(".th-tool[data-tool-call-id='t-anchored']")).toHaveLength(1);
++		expect(container.querySelector<HTMLButtonElement>(".th-tool-head")?.getAttribute("aria-expanded")).toBe("false");
++		expect(fetchMock).not.toHaveBeenCalled();
++
++		const head = container.querySelector<HTMLButtonElement>(".th-tool-head");
++		await act(async () => {
++			head?.click();
++		});
++		expect(fetchMock).toHaveBeenCalledTimes(1);
++		expect(fetchMock.mock.calls[0]?.[0]).toBe(
++			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-anchored&contentIndex=0",
++		);
++		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
++	});
++
+ 	it("keeps additional result images inside their tool disclosure, gated on expansion", async () => {
+ 		// The restored form of a multi-image result: the first image folds onto
+ 		// the tool block, additional images are stored as standalone blocks
+diff --git a/frontend/src/features/split/ChatTranscript.tsx b/frontend/src/features/split/ChatTranscript.tsx
+index e4b66ae..290e1b9 100644
+--- a/frontend/src/features/split/ChatTranscript.tsx
++++ b/frontend/src/features/split/ChatTranscript.tsx
+@@ -28,6 +28,14 @@ function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
+   return block.id ?? `${block.kind}:${block.name ?? ""}:${block.text ?? block.thinking ?? ""}:${JSON.stringify(block.arguments ?? null)}`;
+ }
+ 
++/** Identity of one result image: shared media-ref coordinates or equal bytes. */
++function sameMedia(a: ToolResultImage, b: ToolResultImage): boolean {
++  if (a.ref !== undefined || b.ref !== undefined) {
++    return a.ref?.toolCallId === b.ref?.toolCallId && a.ref?.contentIndex === b.ref?.contentIndex;
++  }
++  return a.data === b.data;
++}
++
+ /** The image carried by an image/image_ref block, if the block is well-formed. */
+ function blockMedia(block: NonNullable<UiMessage["blocks"]>[number]): ToolResultImage | null {
+   if (block.kind !== "image" && block.kind !== "image_ref") return null;
+@@ -338,7 +346,7 @@ export function ChatTranscript({
+           extras.push(extra);
+         }
+         const hasFolded = (typeof block.data === "string" && block.data.length > 0) || block.ref !== undefined;
+-        const media: readonly ToolResultImage[] = hasFolded
++        const blockList: readonly ToolResultImage[] = hasFolded
+           ? [{
+               ...(typeof block.data === "string" && block.data.length > 0 ? { data: block.data } : {}),
+               ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+@@ -346,6 +354,13 @@ export function ChatTranscript({
+               ...(block.ref !== undefined ? { ref: block.ref } : {}),
+             }, ...extras]
+           : extras;
++        // A result streaming for this anchored invocation carries its media
++        // on the live entry: the persisted blocks predate the result, so the
++        // disclosure must surface live.media too or expanding the anchored
++        // card would show no image and issue no request. Media already folded
++        // into the blocks (a mid-run replay) renders once.
++        const liveMedia = (live?.media ?? []).filter((image) => !blockList.some((existing) => sameMedia(existing, image)));
++        const media: readonly ToolResultImage[] = [...blockList, ...liveMedia];
+         if (media.length === 0) return card;
+         const open = toolDisclosureRef.current.get(cardId) ?? isError;
+         const mediaKey = blockKey(block);
+diff --git a/frontend/src/features/split/chatSessionState.test.ts b/frontend/src/features/split/chatSessionState.test.ts
+index 1d375c7..bdc0db4 100644
+--- a/frontend/src/features/split/chatSessionState.test.ts
++++ b/frontend/src/features/split/chatSessionState.test.ts
+@@ -201,6 +201,41 @@ describe("mergeToolResultMedia", () => {
+     expect(merged?.["call-1"]?.media).toEqual([{ data: "aaa", mimeType: "image/png" }]);
+   });
+ 
++  it("merges a repeated inline image strictly by the message's toolCallId, never an older completed call", () => {
++    // Reviewer reproduction: an older text-only call, then a newer call whose
++    // end frame already carried the inline image, then the engine's repeated
++    // toolResult message naming "call-2" — the image must stay on call-2 only.
++    const current = {
++      "call-1": endedEntry,
++      "call-2": { ...endedEntry, media: [{ data: "bbb", mimeType: "image/png" }] },
++    };
++    expect(mergeToolResultMedia(current, {
++      toolCallId: "call-2",
++      blocks: [{ kind: "image", data: "bbb", mimeType: "image/png" }],
++    })).toBeNull();
++  });
++
++  it("attaches an identity-named image to that invocation alone, even the older one", () => {
++    const current = {
++      "call-1": endedEntry,
++      "call-2": { ...endedEntry, media: [{ data: "bbb", mimeType: "image/png" }] },
++    };
++    const merged = mergeToolResultMedia(current, {
++      toolCallId: "call-1",
++      blocks: [{ kind: "image", data: "ccc", mimeType: "image/png" }],
++    });
++    expect(merged?.["call-1"]?.media).toEqual([{ data: "ccc", mimeType: "image/png" }]);
++    expect(merged?.["call-2"]?.media).toEqual([{ data: "bbb", mimeType: "image/png" }]);
++  });
++
++  it("merges nowhere when the message names an unknown invocation", () => {
++    const current = { "call-1": endedEntry, "call-2": endedEntry };
++    expect(mergeToolResultMedia(current, {
++      toolCallId: "call-x",
++      blocks: [{ kind: "image", data: "bbb", mimeType: "image/png" }],
++    })).toBeNull();
++  });
++
+   it("ignores a repeated image, a text-only result message, and a missing invocation", () => {
+     const current = { "call-1": { ...endedEntry, media: [{ data: "aaa", mimeType: "image/png" }] } };
+     expect(mergeToolResultMedia(current, { blocks: [{ kind: "image", data: "aaa", mimeType: "image/png" }] })).toBeNull();
+diff --git a/frontend/src/features/split/chatSessionState.ts b/frontend/src/features/split/chatSessionState.ts
+index d329236..12aa614 100644
+--- a/frontend/src/features/split/chatSessionState.ts
++++ b/frontend/src/features/split/chatSessionState.ts
+@@ -95,17 +95,19 @@ export function nextToolEntry(
+ 
+ /**
+  * Merge a live role "toolResult" message's images into the invocation they
+- * belong to. The parse boundary keeps neither the message-level toolCallId nor
+- * its text (the tool end frame already carries both), so the target is
+- * addressed by an image_ref placeholder's own toolCallId when one matches, and
+- * otherwise positionally: the engine emits the result message right after the
+- * matching end frame, so the latest completed call not already holding the
+- * image is it. Returns null when there is nothing to merge (no images, or no
+- * invocation to attach them to) so the caller can skip the state write.
++ * belong to. The parse seam preserves the message-level toolCallId (the
++ * engine repeats each invocation's result as a role "toolResult" message
++ * right after the matching end frame): when present, the merge is strictly
++ * by that identity — the named invocation, or nowhere when it is unknown,
++ * never an older completed call. Only identity-less messages (legacy
++ * engines) fall back to an image_ref placeholder's own toolCallId and then
++ * positionally: the latest completed call not already holding the image.
++ * Returns null when there is nothing to merge (no images, or no invocation
++ * to attach them to) so the caller can skip the state write.
+  */
+ export function mergeToolResultMedia(
+   current: Readonly<Record<string, ToolEntry>>,
+-  message: { readonly blocks?: readonly ContentBlock[] },
++  message: { readonly blocks?: readonly ContentBlock[]; readonly toolCallId?: string },
+ ): Readonly<Record<string, ToolEntry>> | null {
+   const ids = Object.keys(current);
+   if (ids.length === 0) return null;
+@@ -113,14 +115,22 @@ export function mergeToolResultMedia(
+   let changed = false;
+   for (const image of toolResultMessageMedia(message)) {
+     const refId = image.ref?.toolCallId;
+-    let targetId = refId !== undefined && current[refId] !== undefined ? refId : undefined;
+-    if (targetId === undefined) {
+-      for (let index = ids.length - 1; index >= 0; index -= 1) {
+-        const id = ids[index];
+-        const entry = id === undefined ? undefined : next[id];
+-        if (entry?.phase !== "end" || entryHasImage(entry, image)) continue;
+-        targetId = id;
+-        break;
++    let targetId: string | undefined;
++    if (message.toolCallId !== undefined) {
++      // Identity-strict: the message names its invocation, so the image
++      // merges there or nowhere — positional guessing would attach a
++      // repeated inline result to an unrelated older completed call.
++      targetId = current[message.toolCallId] !== undefined ? message.toolCallId : undefined;
++    } else {
++      targetId = refId !== undefined && current[refId] !== undefined ? refId : undefined;
++      if (targetId === undefined) {
++        for (let index = ids.length - 1; index >= 0; index -= 1) {
++          const id = ids[index];
++          const entry = id === undefined ? undefined : next[id];
++          if (entry?.phase !== "end" || entryHasImage(entry, image)) continue;
++          targetId = id;
++          break;
++        }
+       }
+     }
+     const id = targetId;
+diff --git a/frontend/src/lib/chatWs.parse.payload.test.ts b/frontend/src/lib/chatWs.parse.payload.test.ts
+index 1663629..c3c37cd 100644
+--- a/frontend/src/lib/chatWs.parse.payload.test.ts
++++ b/frontend/src/lib/chatWs.parse.payload.test.ts
+@@ -209,6 +209,27 @@ describe("parseChatServerFrame", () => {
+     ).toBeNull();
+   });
+ 
++  it("preserves the message-level toolCallId on a live toolResult message", () => {
++    // The engine repeats each invocation's result as a role "toolResult"
++    // message that names its invocation at the message level (stored
++    // transcripts carry the same field); the merge seam addresses the media
++    // by it, so the parse boundary must keep it.
++    const frame = parseChatServerFrame({
++      type: "message",
++      sessionId: "c1",
++      message: {
++        role: "toolResult",
++        toolCallId: "call_2",
++        blocks: [{ kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
++      },
++    });
++    expect(frame).toMatchObject({ type: "message", message: { role: "toolResult", toolCallId: "call_2" } });
++    // Present-but-malformed toolCallId keeps the frame rejected.
++    expect(
++      parseChatServerFrame({ type: "message", sessionId: "c1", message: { role: "toolResult", toolCallId: 5 } }),
++    ).toBeNull();
++  });
++
+   it("preserves native image content items through tool partial/result payloads", () => {
+     // The server forwards tool-result content with the provider's native block
+     // discriminator: type "image"/"image_ref", never a synthetic kind.
+diff --git a/frontend/src/lib/chatWsParseFields.ts b/frontend/src/lib/chatWsParseFields.ts
+index c50e263..ab34987 100644
+--- a/frontend/src/lib/chatWsParseFields.ts
++++ b/frontend/src/lib/chatWsParseFields.ts
+@@ -182,14 +182,23 @@ export function parseAssistantMessage(record: Record<string, unknown>): Assistan
+     : mapRecords(rawBlocks, parseContentBlock);
+   if (blocks === null) return null;
+   const usage = record["usage"];
+-  return {
++  const toolCallId = optString(record, "toolCallId");
++  if (toolCallId === null) return null;
++  // The engine's role "toolResult" messages name their invocation with a
++  // message-level toolCallId (stored transcripts carry the same field), but
++  // the generated AssistantMessage does not declare it. The merge seam
++  // (chatSessionState.mergeToolResultMedia) addresses the live invocation by
++  // it, so the seam preserves the field without widening the contract type.
++  const parsed: AssistantMessage & { readonly toolCallId?: string } = {
+     role,
+     ...(customType !== undefined ? { customType } : {}),
+     ...(blocks !== undefined ? { blocks } : {}),
+     ...(model !== undefined ? { model } : {}),
+     ...(ts !== undefined ? { ts } : {}),
++    ...(toolCallId !== undefined ? { toolCallId } : {}),
+     ...(usage !== undefined ? { usage: sanitizeJson(usage) } : {}),
+   };
++  return parsed;
+ }
+ 
+ export function parseAssistantDelta(record: Record<string, unknown>): AssistantDelta | null {

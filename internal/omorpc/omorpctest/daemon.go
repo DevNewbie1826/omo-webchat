@@ -59,6 +59,15 @@ const (
 	CodeUnknownSession   = omorpc.ErrCodeUnknownSession
 )
 
+// mediaRef addresses one fetchable inline media block: the durable session
+// it belongs to plus the placeholder ref a media_placeholders client
+// received (toolCallId, contentIndex).
+type mediaRef struct {
+	path         string
+	toolCallID   string
+	contentIndex int
+}
+
 // queuedItem is one pending queue entry held by the mock.
 type queuedItem struct {
 	text  string
@@ -79,6 +88,13 @@ type daemonSession struct {
 	cwd       string
 	opens     int
 	prompts   []string
+
+	// clientCaps is the capability list the opener connection advertised
+	// through set_client_info before opening the session — the daemon-side
+	// view a session binding inherits. nil when the opener never sent the
+	// record (the daemon's process-environment fallback is then in force,
+	// which this mock models as empty).
+	clientCaps []string
 
 	// Pending queue model (observed engine behavior): steer during an
 	// active run parks the message in the steering queue; follow_up parks
@@ -157,6 +173,7 @@ type Daemon struct {
 	handlerGateByPath   map[string]map[string]<-chan struct{}
 	failNext            map[string]string
 	pathFailures        map[string]openFailure
+	media               map[mediaRef]map[string]any
 	nextOpenIdentity    string
 	evictUsedSession    bool
 	refuse              bool
@@ -176,6 +193,12 @@ type Daemon struct {
 
 	legacyEmptyUnknownHistory bool
 	omitActivityFields        bool
+
+	// Daemon-side client capability view: per-connection sets start empty
+	// and are populated only by the session-less set_client_info record.
+	clientCaps     map[net.Conn][]string
+	clientInfos    int
+	clientInfoFeed chan struct{}
 
 	defaultPromptScript []map[string]any
 	writeMu             sync.Mutex
@@ -202,8 +225,11 @@ func New(dir string) *Daemon {
 		handlerGateByPath:   map[string]map[string]<-chan struct{}{},
 		failNext:            map[string]string{},
 		pathFailures:        map[string]openFailure{},
+		media:               map[mediaRef]map[string]any{},
 		conns:               map[net.Conn]struct{}{},
 		registry:            map[string]*daemonSession{},
+		clientCaps:          map[net.Conn][]string{},
+		clientInfoFeed:      make(chan struct{}, 1),
 		rpcPaths:            map[string]string{},
 		promptScripts:       map[string][]map[string]any{},
 		compactScripts:      map[string][]map[string]any{},
@@ -308,6 +334,7 @@ func (d *Daemon) readLoop(conn net.Conn) {
 		if err != nil {
 			d.mu.Lock()
 			delete(d.conns, conn)
+			delete(d.clientCaps, conn)
 			d.mu.Unlock()
 			_ = conn.Close()
 			return
@@ -420,6 +447,22 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 		}
 		d.mu.Unlock()
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"sessions": sessions}))
+		return
+
+	case omorpc.CmdSetClientInfo:
+		// Observed engine behavior on the multi-session daemon path: a
+		// connection's capability set starts empty and this session-less
+		// record is what populates it, replacing any earlier list. The
+		// reply carries no data payload.
+		d.mu.Lock()
+		d.clientCaps[conn] = stringList(req["capabilities"])
+		d.clientInfos++
+		d.notify(d.clientInfoFeed)
+		d.mu.Unlock()
+		d.write(conn, map[string]any{
+			"id": id, "type": "response", "command": cmd,
+			"success": true,
+		})
 		return
 	}
 
@@ -632,6 +675,32 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 	case omorpc.CmdGetMessages:
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"messages": []any{}}))
 
+	case omorpc.CmdGetMedia:
+		// On-demand fetch of a media block a media_placeholders client
+		// received as an image_ref stub. Only coordinates armed through
+		// SetSessionMedia resolve; anything else is media_not_found, modeling
+		// the engine's durable-entry lookup for an unknown tool call or a
+		// content index that does not point at an image block.
+		toolCallID, _ := req["toolCallId"].(string)
+		contentIndex := 0
+		if f, ok := req["contentIndex"].(float64); ok {
+			contentIndex = int(f)
+		}
+		d.mu.Lock()
+		content, found := d.media[mediaRef{path: recPath, toolCallID: toolCallID, contentIndex: contentIndex}]
+		d.mu.Unlock()
+		if !found {
+			d.write(conn, map[string]any{
+				"id": id, "type": "response", "command": cmd,
+				"success": false, "error": omorpc.ErrCodeMediaNotFound,
+			})
+			return
+		}
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{
+			"toolCallId": toolCallID, "contentIndex": contentIndex, "content": content,
+		}))
+		return
+
 	default:
 		// set_model, set_thinking_level, set_session_name, set_auto_compaction,
 		// get_session_stats, extension_request: plain success, no data
@@ -691,6 +760,7 @@ func (d *Daemon) handleOpenSession(conn net.Conn, id string, req map[string]any)
 	rec.live = true
 	rec.used = false
 	rec.opens++
+	rec.clientCaps = append([]string(nil), d.clientCaps[conn]...)
 	if cwd != "" {
 		rec.cwd = cwd
 	}
@@ -1116,6 +1186,16 @@ func (d *Daemon) FailNext(cmd, code string) {
 	d.mu.Unlock()
 }
 
+// SetSessionMedia arms one fetchable inline media block for the session
+// identified by its durable sessionFile path: get_media resolves
+// (toolCallId, contentIndex) against armed blocks and answers media_not_found
+// for any other coordinates, modeling the engine's durable-entry lookup.
+func (d *Daemon) SetSessionMedia(sessionFile, toolCallID string, contentIndex int, content map[string]any) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.media[mediaRef{path: sessionFile, toolCallID: toolCallID, contentIndex: contentIndex}] = content
+}
+
 // EvictUsedSessionOnNextRoutingCommand silently forgets the next live route
 // that has already handled a command. The triggering command receives
 // unknown_session and the one-shot knob is consumed; no unload event is sent.
@@ -1232,9 +1312,67 @@ func (d *Daemon) SetRefuseMode(on bool) {
 
 // ---- observations ----
 
+// Handshakes counts get_protocol_info requests. ClientInfoCount,
+// AwaitClientInfoCount, and SessionClientCapabilities expose the daemon-side
+// client capability view that the set_client_info handshake feeds.
 func (d *Daemon) Handshakes() int  { d.mu.Lock(); defer d.mu.Unlock(); return d.handshakes }
 func (d *Daemon) Connections() int { d.mu.Lock(); defer d.mu.Unlock(); return d.connections }
 func (d *Daemon) Refusals() int    { d.mu.Lock(); defer d.mu.Unlock(); return d.refusals }
+
+// ClientInfoCount is the number of session-less set_client_info records
+// received, across restarts.
+func (d *Daemon) ClientInfoCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.clientInfos
+}
+
+// AwaitClientInfoCount waits on the record feed until at least n
+// set_client_info records have arrived. It uses an event signal rather than
+// polling or sleeps.
+func (d *Daemon) AwaitClientInfoCount(n int, timeout time.Duration) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		if d.ClientInfoCount() >= n {
+			return true
+		}
+		select {
+		case <-d.clientInfoFeed:
+		case <-deadline.C:
+			return false
+		}
+	}
+}
+
+// SessionClientCapabilities returns the client capability list the engine
+// would hand the session opened from sessionPath: the capabilities the
+// opener connection last advertised through set_client_info, or nil when it
+// never did.
+func (d *Daemon) SessionClientCapabilities(sessionPath string) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rec := d.registry[sessionPath]
+	if rec == nil {
+		return nil
+	}
+	return append([]string(nil), rec.clientCaps...)
+}
+
+// stringList converts a decoded JSON array value to its string items.
+func stringList(v any) []string {
+	raw, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // OpenCount is the total number of open_session requests received, across
 // restarts.
