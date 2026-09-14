@@ -40,7 +40,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
   const paletteListboxId = `${paletteId}-command-listbox`, paletteOptionIdPrefix = `${paletteId}-command-option`;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isTouch = useMediaQuery(TOUCH_QUERY);
-  const { clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers } = useImageAttachment(pendingImage, setPendingImage);
+  const { clear: clearImage, pick: pickImage, fileInputRef, isDragOver, dragHandlers, onPaste } = useImageAttachment(pendingImage, setPendingImage);
   const [caret, setCaret] = useState(0);
   const fileId = useId();
   const fileListboxId = `${fileId}-file-listbox`, fileOptionIdPrefix = `${fileId}-file-option`;
@@ -243,6 +243,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
             setCaret(at);
             setPaletteHidden(false);
           }}
+          onPaste={imageSupported && !disabled ? onPaste : undefined}
           onKeyDown={(event) => handleChatComposerKeyDown(event, {
             file: { open: fileOpen, mention: fileMention, onSelect: selectFile },
             command: {

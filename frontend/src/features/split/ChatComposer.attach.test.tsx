@@ -218,4 +218,172 @@ describe("ChatComposer attachment chip", () => {
 		act(() => remove.click());
 		expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
 	});
+
+	it("attaches a pasted clipboard image to the composer", async () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const chipInserted = new Promise<void>((resolve, reject) => {
+			const timeout = window.setTimeout(() => { observer.disconnect(); reject(new Error("attachment chip was not inserted")); }, 1000);
+			const observer = new MutationObserver(() => {
+				if (container.querySelector(".th-chat-attach-chip")) {
+					observer.disconnect();
+					window.clearTimeout(timeout);
+					resolve();
+				}
+			});
+			observer.observe(container, { childList: true, subtree: true });
+		});
+		const file = new File(["screenshot bytes"], "", { type: "image/png" });
+		const event = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(event, "clipboardData", { configurable: true, value: { files: [file] } });
+		act(() => {
+			textarea.dispatchEvent(event);
+		});
+		expect(event.defaultPrevented).toBe(true);
+		await chipInserted;
+
+		const chip = requireElement(
+			container.querySelector<HTMLElement>(".th-chat-attach-chip"),
+			"missing attachment chip",
+		);
+		expect(chip.textContent).toContain("clipboard.png");
+	});
+
+	it("ignores image pastes when the model does not support images", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+						imageSupported={false}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const readAsDataURL = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		try {
+			const file = new File(["screenshot bytes"], "", { type: "image/png" });
+			const event = new Event("paste", { bubbles: true, cancelable: true });
+			Object.defineProperty(event, "clipboardData", {
+				configurable: true,
+				value: { files: [file] },
+			});
+			act(() => {
+				textarea.dispatchEvent(event);
+			});
+			expect(event.defaultPrevented).toBe(false);
+			expect(readAsDataURL).not.toHaveBeenCalled();
+			expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
+	it("ignores image pastes while the composer is disabled", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+						disabled={true}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const readAsDataURL = vi.spyOn(FileReader.prototype, "readAsDataURL");
+		try {
+			const file = new File(["screenshot bytes"], "", { type: "image/png" });
+			const event = new Event("paste", { bubbles: true, cancelable: true });
+			Object.defineProperty(event, "clipboardData", {
+				configurable: true,
+				value: { files: [file] },
+			});
+			act(() => {
+				textarea.dispatchEvent(event);
+			});
+			expect(event.defaultPrevented).toBe(false);
+			expect(readAsDataURL).not.toHaveBeenCalled();
+			expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
+	it("leaves text-only pastes to the default textarea handling", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatComposer
+						commands={[]}
+						running={false}
+						isCompacting={false}
+						retryDraft={null}
+						onSubmit={() => true}
+						onSteer={() => true}
+						onStop={() => undefined}
+						provider="omo"
+						cwd="/tmp"
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+
+		const textarea = requireElement(
+			container.querySelector<HTMLTextAreaElement>("textarea"),
+			"missing composer textarea",
+		);
+		const event = new Event("paste", { bubbles: true, cancelable: true });
+		Object.defineProperty(event, "clipboardData", { configurable: true, value: { files: [] } });
+		act(() => {
+			textarea.dispatchEvent(event);
+		});
+		expect(event.defaultPrevented).toBe(false);
+		expect(container.querySelector(".th-chat-attach-chip")).toBeNull();
+	});
 });

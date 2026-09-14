@@ -1,4 +1,4 @@
-import type { KeyboardEventHandler, RefObject } from "react";
+import type { ClipboardEventHandler, KeyboardEventHandler, RefObject } from "react";
 import { IconArrowUp, IconX } from "../../components/icons";
 
 interface ChatComposerEditorProps {
@@ -15,6 +15,7 @@ interface ChatComposerEditorProps {
   readonly onCaret: (caret: number) => void;
   readonly onInput: (input: string, caret: number) => void;
   readonly onKeyDown: KeyboardEventHandler<HTMLTextAreaElement>;
+  readonly onPaste?: ClipboardEventHandler<HTMLTextAreaElement> | undefined;
   readonly onStop: () => void;
 }
 
@@ -32,6 +33,7 @@ export function ChatComposerEditor({
   onCaret,
   onInput,
   onKeyDown,
+  onPaste,
   onStop,
 }: ChatComposerEditorProps) {
   return (
@@ -54,6 +56,7 @@ export function ChatComposerEditor({
         }}
         onChange={(event) => onInput(event.target.value, event.target.selectionStart ?? 0)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
       <button
         type={running ? "button" : "submit"}
