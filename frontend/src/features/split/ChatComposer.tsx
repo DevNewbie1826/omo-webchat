@@ -23,7 +23,7 @@ interface ChatComposerProps {
   readonly disabled?: boolean;
   readonly retryDraft: RecoveredChatDraft | null;
   readonly onSubmit: (draft: ChatDraft) => boolean;
-  readonly onSteer: (text: string) => boolean;
+  readonly onSteer: (text: string, command: CommandEntry | null) => boolean;
   readonly onStop: () => void;
   readonly onNewChat?: () => void;
   readonly provider: string;
@@ -177,7 +177,7 @@ export function ChatComposer({ session, commands, running, disabled = false, ret
       submit();
       return;
     }
-    if (!onSteer(input)) return;
+    if (!onSteer(input, draftCommand)) return;
     setInput("");
     setDraftCommand(null);
     setPaletteHidden(false);

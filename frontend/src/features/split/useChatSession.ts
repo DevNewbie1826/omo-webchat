@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, type ChatClientFrame, type ChatConnector } from "../../lib/chatWs";
+import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, type ChatClientFrame, type ChatConnector, type CommandEntry } from "../../lib/chatWs";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
@@ -210,10 +210,15 @@ export function useChatSession(
     text === `/${RELOAD_COMMAND.name}` && draft.image === null
     && (draft.command ? isCuratedReload(draft.command) : !providerOwnsReload());
 
-  const steer = (text: string): boolean => {
+  const steer = (text: string, command: CommandEntry | null = null): boolean => {
     // A mid-run "/reload" would otherwise be steered into the model as text;
     // route it to resync(), which refuses while responding and says why.
-    if (text.trim() === `/${RELOAD_COMMAND.name}` && !providerOwnsReload()) return resync();
+    // Same identity-first predicate as submit: the palette selection decides,
+    // so a curated /reload stays local even after the provider advertises its
+    // own reload, and a provider-selected reload steers even after the
+    // advertisement is dropped. Manually typed /reload keeps the
+    // provider-ownership rule. Images never ride the steer path.
+    if (isLocalReload(text.trim(), { text, image: null, ...(command ? { command } : {}) })) return resync();
     return frameState.steer(text, nextSendRequestId(), session.id, clientRef.current);
   };
 

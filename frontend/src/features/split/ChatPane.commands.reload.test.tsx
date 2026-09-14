@@ -110,4 +110,54 @@ describe("ChatPane /reload command", () => {
 		expect(input.value).toBe("/reload ");
 		expect(container.textContent).toContain("chat.resyncBusyResponding");
 	});
+
+	// Steer path, refresh direction (a): the palette selection is the curated
+	// reload, so a later provider advertisement of the same name must not
+	// reclassify the draft as a model prompt. Identity outranks ownership.
+	it("keeps a palette-selected curated /reload local after the provider advertises its own reload", () => {
+		const { sent, input, deliver } = mount();
+		act(() => setTextareaValue(input, "/reload"));
+		act(() => pressKey(input, "Enter")); // palette insert only
+		expect(input.value).toBe("/reload ");
+		act(() => deliver({
+			type: "commands",
+			sessionId: "chat-1",
+			commands: [{ name: "reload", description: "Provider reload", source: "extension", syntax: "slash" }],
+		}));
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+
+		const before = sent.length;
+		act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
+
+		expect(frames(sent, "chat.send", before)).toHaveLength(0);
+		expect(frames(sent, "chat.close", before)).toHaveLength(0);
+		expect(frames(sent, "chat.create", before)).toHaveLength(0);
+		expect(input.value).toBe("/reload ");
+		expect(container.textContent).toContain("chat.resyncBusyResponding");
+	});
+
+	// Steer path, refresh direction (b): the palette selection is the
+	// provider's own reload, so a later commands frame that drops it must not
+	// reclassify the draft as the local resync action. It steers to the model.
+	it("steers a palette-selected provider /reload into the model after the provider drops it", () => {
+		const { sent, input, deliver } = mount([
+			{ name: "reload", description: "Provider reload", source: "extension", syntax: "slash" },
+		]);
+		act(() => setTextareaValue(input, "/reload"));
+		act(() => pressKey(input, "Enter")); // palette insert only
+		expect(input.value).toBe("/reload ");
+		act(() => deliver({ type: "commands", sessionId: "chat-1", commands: [] }));
+		act(() => deliver({ type: "run.started", sessionId: "chat-1" }));
+
+		const before = sent.length;
+		act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
+
+		const steerSends = frames(sent, "chat.send", before);
+		expect(steerSends).toHaveLength(1);
+		expect((steerSends[0] as { run: { kind: string; message: string } }).run)
+			.toEqual({ kind: "steer", message: "/reload" });
+		expect(frames(sent, "chat.close", before)).toHaveLength(0);
+		expect(frames(sent, "chat.create", before)).toHaveLength(0);
+		expect(input.value).toBe("");
+	});
 });
