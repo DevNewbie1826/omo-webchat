@@ -4,6 +4,11 @@ export interface UiMessage extends AssistantMessage {
   readonly id?: string;
   /** Compacted token count carried by a persisted compaction summary entry. */
   readonly tokensBefore?: number;
+  /** Persisted-summary provenance: set ONLY for entries whose persisted type
+   * is "compaction" or "branch_summary". Summary-box routing keys on this
+   * discriminator alone, so arbitrary custom-message customType names are
+   * never reserved and keep rendering as HookCards. */
+  readonly summaryKind?: "compaction" | "branch_summary";
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -19,6 +24,20 @@ function parseTimestamp(value: unknown): number {
   if (typeof value !== "string") return 0;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+/** Summary-entry timestamp: a valid entry timestamp (numeric — epoch zero
+ * included — or a parseable string) wins; absent or invalid values fall back
+ * to the hydration receipt time frozen once per parseEntries call, so every
+ * accepted summary box keeps a stable time instead of a changing render-time
+ * stamp. */
+function parseSummaryTimestamp(value: unknown, receiptTime: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const timestamp = Date.parse(value);
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return receiptTime;
 }
 
 function parseBlocks(content: unknown): readonly ContentBlock[] {
@@ -153,6 +172,9 @@ export function concatEntries(pages: readonly unknown[]): unknown[] {
 export function parseEntries(entries: unknown): UiMessage[] {
   if (!Array.isArray(entries)) return [];
   const messages: UiMessage[] = [];
+  // Hydration receipt time, frozen once per hydration pass: summary entries
+  // with an absent/invalid timestamp fall back to this stable value.
+  const hydrationReceiptTime = Date.now();
   for (const entry of entries) {
     if (!isRecord(entry)) continue;
     if (entry["type"] === "custom_message") {
@@ -177,21 +199,27 @@ export function parseEntries(entries: unknown): UiMessage[] {
     // Persisted summary entries (observed engine behavior/contract):
     // compaction summaries persist as entries of type "compaction", branch
     // summaries as "branch_summary". Both resurface during history hydration
-    // and render as summary boxes. The documented fields are `summary`
-    // (string) and, for compaction, `tokensBefore` (number); entries without
-    // a string summary are dropped rather than invented.
+    // and render as summary boxes. Observed persisted compaction envelopes
+    // carry top-level `summary` (string) and `tokensBefore` (number) beside
+    // id/timestamp; branch_summary envelopes are not locally observable, so
+    // only the same `summary` text field is read and no token line is
+    // invented. Entries without a string summary are dropped rather than
+    // invented. The summaryKind tag carries the persisted-type provenance so
+    // rendering routes on it alone, never on the customType name.
     if (entry["type"] === "compaction" || entry["type"] === "branch_summary") {
       const summary = entry["summary"];
       if (typeof summary !== "string") continue;
       const id = entry["id"];
       const tokensBefore = entry["tokensBefore"];
+      const summaryKind = entry["type"];
       messages.push({
         ...(typeof id === "string" ? { id } : {}),
         role: "custom",
-        customType: entry["type"],
+        customType: summaryKind,
+        summaryKind,
         blocks: [{ kind: "text", text: summary }],
-        ts: parseTimestamp(entry["timestamp"]),
-        ...(entry["type"] === "compaction" && typeof tokensBefore === "number" ? { tokensBefore } : {}),
+        ts: parseSummaryTimestamp(entry["timestamp"], hydrationReceiptTime),
+        ...(summaryKind === "compaction" && typeof tokensBefore === "number" ? { tokensBefore } : {}),
       });
       continue;
     }

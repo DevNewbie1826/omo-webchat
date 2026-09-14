@@ -258,17 +258,23 @@ export function ChatTranscript({
                         <span className="th-chat-steer-mark">{t("chat.steer")}</span>
                         <span className="th-chat-steer-text">{messageText(message)}</span>
                       </div>
-                    ) : message.role === "custom" &&
-                      (message.customType === "compaction" || message.customType === "branch_summary") ? (
+                    ) : message.summaryKind !== undefined ? (
                       // Hydrated summary entries render as summary boxes in
                       // the notice-box visual language, never as hook cards.
+                      // Routing keys on the persisted-entry provenance tag
+                      // (summaryKind) alone: an ordinary custom message whose
+                      // customType happens to be named "compaction" or
+                      // "branch_summary" stays on the HookCard path below.
                       <SummaryNoticeBox
-                        label={message.customType === "compaction" ? "[compaction]" : "[branch]"}
+                        label={message.summaryKind === "compaction" ? "[compaction]" : "[branch]"}
                         summary={messageText(message)}
-                        {...(message.customType === "compaction" && typeof message.tokensBefore === "number"
+                        {...(message.summaryKind === "compaction" && typeof message.tokensBefore === "number"
                           ? { tokensBefore: message.tokensBefore }
                           : {})}
-                        {...(typeof message.ts === "number" && message.ts > 0 ? { at: message.ts } : {})}
+                        // The parser always stamps summaryKind messages
+                        // (entry timestamp, else the frozen hydration
+                        // receipt time); the ?? 0 only satisfies the type.
+                        at={message.ts ?? 0}
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />

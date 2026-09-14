@@ -89,4 +89,55 @@ describe("ChatPane hydrated summary entries", () => {
 		});
 		expect(container.querySelector(".th-hook")).toBeNull();
 	});
+
+	it("keeps display:true custom messages named compaction or branch_summary on the HookCard path", () => {
+		const { deliver } = renderChatPane(root);
+		act(() => {
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [
+					{ type: "custom_message", id: "x1", customType: "compaction", display: true, content: "CUSTOM_COMPACTION_SENTINEL" },
+					{ type: "custom_message", id: "x2", customType: "branch_summary", display: true, content: "CUSTOM_BRANCH_SENTINEL" },
+				],
+				final: true,
+			});
+		});
+		const hooks = container.querySelectorAll(".th-chat-history .th-hook");
+		expect(hooks).toHaveLength(2);
+		expect(container.querySelector(".th-chat-history .th-chat-notice")).toBeNull();
+		expect(container.textContent).toContain("CUSTOM_COMPACTION_SENTINEL");
+		expect(container.textContent).toContain("CUSTOM_BRANCH_SENTINEL");
+	});
+
+	it("keeps a stable time on a summary box with a valid epoch-zero timestamp", () => {
+		const { deliver } = renderChatPane(root);
+		act(() => {
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [{ type: "compaction", id: "zero", timestamp: 0, summary: "ZERO_TIMESTAMP_SENTINEL" }],
+				final: true,
+			});
+		});
+		const box = container.querySelector(".th-chat-history .th-chat-notice");
+		expect(box).not.toBeNull();
+		expect(box?.querySelector(".th-notice-time")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+	});
+
+	it("keeps a stable hydration receipt time on a summary box whose entry has no timestamp", () => {
+		const { deliver } = renderChatPane(root);
+		act(() => {
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [{ type: "branch_summary", id: "missing", summary: "MISSING_TIMESTAMP_SENTINEL" }],
+				final: true,
+			});
+		});
+		const box = container.querySelector(".th-chat-history .th-chat-notice");
+		expect(box).not.toBeNull();
+		const time = box?.querySelector(".th-notice-time")?.textContent;
+		expect(time).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+	});
 });
