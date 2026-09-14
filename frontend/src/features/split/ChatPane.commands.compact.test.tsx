@@ -64,8 +64,9 @@ describe("ChatPane commands", () => {
 			container.querySelectorAll<HTMLElement>('[role="option"]'),
 		);
 		// The discovered compact stands in for the curated one: the palette
-		// retains every provider entry and adds only the curated update action.
-		expect(options).toHaveLength(13);
+		// retains every provider entry and adds only the curated reload and
+		// update actions.
+		expect(options).toHaveLength(14);
 		const compactOptions = options.filter((option) =>
 			option.textContent?.includes("/compact"),
 		);

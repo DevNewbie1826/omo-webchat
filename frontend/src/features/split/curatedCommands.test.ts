@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CommandEntry } from "../../lib/chatWs";
-import { COMPACT_COMMAND, isCuratedCompact, mergeCommands, NEW_COMMAND, UPDATE_COMMAND } from "./curatedCommands";
+import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, mergeCommands, NEW_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND } from "./curatedCommands";
 
 describe("mergeCommands", () => {
   it("appends the curated compact action after the provider-discovered commands", () => {
@@ -8,12 +8,13 @@ describe("mergeCommands", () => {
       { name: "hooks", description: "Inspect hooks", source: "extension", syntax: "slash" },
       { name: "todo", description: "Todos", source: "extension", syntax: "slash" },
     ];
-    expect(mergeCommands(discovered)).toEqual([...discovered, COMPACT_COMMAND, UPDATE_COMMAND]);
+    expect(mergeCommands(discovered)).toEqual([...discovered, COMPACT_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND]);
   });
 
   it("keeps the provider-discovered list untouched and in order when nothing is added", () => {
     const discovered: readonly CommandEntry[] = [
       { name: "compact", description: "Provider compact", source: "extension" },
+      { name: "reload", description: "Provider reload", source: "extension" },
       { name: "update", source: "extension" },
     ];
     // A provider-advertised compact suppresses the curated entry: the
@@ -23,11 +24,11 @@ describe("mergeCommands", () => {
   });
 
   it("offers the curated compact action when nothing was discovered", () => {
-    expect(mergeCommands([])).toEqual([COMPACT_COMMAND, UPDATE_COMMAND]);
+    expect(mergeCommands([])).toEqual([COMPACT_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND]);
   });
 
   it("offers local new-chat navigation only when the composer can create chats", () => {
-    expect(mergeCommands([], true)).toEqual([NEW_COMMAND, COMPACT_COMMAND, UPDATE_COMMAND]);
+    expect(mergeCommands([], true)).toEqual([NEW_COMMAND, COMPACT_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND]);
   });
 
   it("reserves /new without hijacking $new or provider compact", () => {
@@ -35,7 +36,7 @@ describe("mergeCommands", () => {
     const dollarNew: CommandEntry = { name: "new", source: "skill", syntax: "dollar" };
     const compact: CommandEntry = { name: "compact", source: "extension" };
     const discovered = [slashNew, dollarNew, compact];
-    expect(mergeCommands(discovered, true)).toEqual([dollarNew, compact, NEW_COMMAND, UPDATE_COMMAND]);
+    expect(mergeCommands(discovered, true)).toEqual([dollarNew, compact, NEW_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND]);
     expect(discovered).toEqual([slashNew, dollarNew, compact]);
   });
 });
@@ -44,5 +45,12 @@ describe("isCuratedCompact", () => {
   it("matches only the curated entry, never a same-named provider command", () => {
     expect(isCuratedCompact(COMPACT_COMMAND)).toBe(true);
     expect(isCuratedCompact({ name: "compact", description: "Provider compact", source: "extension" })).toBe(false);
+  });
+});
+
+describe("isCuratedReload", () => {
+  it("matches only the curated entry, never a same-named provider command", () => {
+    expect(isCuratedReload(RELOAD_COMMAND)).toBe(true);
+    expect(isCuratedReload({ name: "reload", description: "Provider reload", source: "extension" })).toBe(false);
   });
 });

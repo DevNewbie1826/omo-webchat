@@ -6,7 +6,7 @@ import { newUuid } from "../../lib/uuid";
 import type { ChatDraft } from "./chatSessionTypes";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
-import { COMPACT_COMMAND, isCuratedCompact } from "./curatedCommands";
+import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
 import { useChatFrameState } from "./useChatFrameState";
 
 export function useChatSession(
@@ -170,6 +170,10 @@ export function useChatSession(
     // /compact remains the curated action only while the provider has not
     // advertised an authoritative same-name command.
     if (exactCompact && (draft.command ? isCuratedCompact(draft.command) : !providerOwnsCompact)) return compact();
+    // Exact /reload is the header's reload action, never a prompt. resync()
+    // owns the busy guards and reports them, so a refused reload keeps the
+    // draft in the composer instead of queuing "/reload" for the model.
+    if (isLocalReload(text, draft)) return resync();
     if (frameState.running || frameState.isCompacting) {
       // The server owns the run-time queue: send a plain prompt for the bridge
       // to enqueue; the queue frame publishes the item to the panel.
@@ -199,7 +203,19 @@ export function useChatSession(
     return sendControl({ type: "chat.compact", sessionId: session.id }, "Failed to start compaction.");
   };
 
-  const steer = (text: string): boolean => frameState.steer(text, nextSendRequestId(), session.id, clientRef.current);
+  const providerOwnsReload = (): boolean =>
+    frameState.commands.some((command) => command.name === RELOAD_COMMAND.name);
+
+  const isLocalReload = (text: string, draft: ChatDraft): boolean =>
+    text === `/${RELOAD_COMMAND.name}` && draft.image === null
+    && (draft.command ? isCuratedReload(draft.command) : !providerOwnsReload());
+
+  const steer = (text: string): boolean => {
+    // A mid-run "/reload" would otherwise be steered into the model as text;
+    // route it to resync(), which refuses while responding and says why.
+    if (text.trim() === `/${RELOAD_COMMAND.name}` && !providerOwnsReload()) return resync();
+    return frameState.steer(text, nextSendRequestId(), session.id, clientRef.current);
+  };
 
   const stop = (): boolean => sendControl({ type: "chat.abort", sessionId: session.id }, "Failed to stop the current run.");
 
