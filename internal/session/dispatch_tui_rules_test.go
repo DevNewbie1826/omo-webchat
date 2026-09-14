@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // The engine TUI transcript rules, mirrored as observed engine behavior:
 // fire-and-forget notify asks become journaled notices, lifecycle markers
@@ -194,6 +197,104 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 	}
 }
 
+func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
+	// Finite literals take the ordinary decode path (float64 rounding);
+	// 1e400 takes the overflow path (initial Unmarshal fails). Each is a
+	// shown-set custom entry so the projection, not the unmapped fallback,
+	// is the unit under test.
+	cases := []struct {
+		name    string
+		literal string
+	}{
+		{name: "finite_integer", literal: "9007199254740993"},
+		{name: "finite_decimal", literal: "12345678901234567890.123456"},
+		{name: "overflow_exponent", literal: "1e400"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a live session and a shown-set custom entry.
+			s, sub := acquireDrained(t, "tui-entry-numeric-"+tc.name)
+			number := json.Number(tc.literal)
+			want := map[string]any{
+				"kind":       "omo-loop:tick",
+				"type":       "custom",
+				"id":         "entry-1",
+				"customType": "omo-loop:tick",
+				"data": map[string]any{
+					"value":  number,
+					"nested": []any{number, nil, true},
+				},
+			}
+
+			// When the shown custom entry is dispatched.
+			injectEvent(t, s, map[string]any{
+				"type": "entry_appended",
+				"entry": map[string]any{
+					"type":       "custom",
+					"id":         "entry-1",
+					"customType": "omo-loop:tick",
+					"data": map[string]any{
+						"value":  number,
+						"nested": []any{number, nil, true},
+					},
+				},
+			})
+			frames := publishCompactionMarker(t, s, sub)
+
+			// Then exactly one notice is published with the numeric literals
+			// preserved verbatim, and journal replay presents the same payload.
+			assertShownCustomNumericNotice(t, frames, want)
+			late := &synchronousApprovalRecorder{recorder: newRecorder(16)}
+			lateDetach := s.Attach(late)
+			t.Cleanup(lateDetach)
+			assertShownCustomNumericNotice(t, drainSync(late.recorder), want)
+		})
+	}
+}
+
+func assertShownCustomNumericNotice(t *testing.T, frames []Frame, want map[string]any) {
+	t.Helper()
+	literal := want["data"].(map[string]any)["value"].(json.Number)
+	if got := counts(frames)[FrameNotice]; got != 1 {
+		t.Fatalf("shown entry produced %d FrameNotice, want 1 for literal %s; frames=%+v", got, literal, frames)
+	}
+	var notice Frame
+	for _, f := range frames {
+		if f.Kind == FrameNotice {
+			notice = f
+			break
+		}
+	}
+	data, ok := notice.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
+	}
+	nid, _ := data["nid"].(string)
+	at, _ := data["at"].(string)
+	if nid == "" || at == "" {
+		t.Fatalf("entry notice missing journal identity: nid=%q at=%q", nid, at)
+	}
+	entryData, _ := data["data"].(map[string]any)
+	if n, ok := entryData["value"].(json.Number); !ok || n != literal {
+		encoded, _ := json.Marshal(entryData["value"])
+		t.Fatalf("value = %s (%T), want verbatim %s", encoded, entryData["value"], literal)
+	}
+	wantPayload, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal expected payload: %v", err)
+	}
+	stripped := cloneAnyMap(data)
+	delete(stripped, "nid")
+	delete(stripped, "at")
+	gotPayload, err := json.Marshal(stripped)
+	if err != nil {
+		t.Fatalf("marshal notice payload: %v", err)
+	}
+	if string(gotPayload) != string(wantPayload) {
+		t.Fatalf("notice payload = %s, want %s", gotPayload, wantPayload)
+	}
+}
+
 func TestDispatchEntryAppendedUnknownCustomTypeStaysSilent(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -206,6 +307,15 @@ func TestDispatchEntryAppendedUnknownCustomTypeStaysSilent(t *testing.T) {
 				"id":         "entry-2",
 				"customType": "senpi-task.usage",
 				"data":       map[string]any{"tokens": 12},
+			},
+		},
+		{
+			name: "unshown_overflow_exponent",
+			entry: map[string]any{
+				"type":       "custom",
+				"id":         "entry-2",
+				"customType": "senpi-task.usage",
+				"data":       map[string]any{"value": json.Number("1e400")},
 			},
 		},
 		{

@@ -21,7 +21,17 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		// Dedicated mappings keep the float64 decode above, including its
 		// failure (the event is dropped). Unmapped events still publish a
 		// lossless notice when the payload is valid JSON with numbers that
-		// overflow float64.
+		// overflow float64. Shown custom entry_appended events also re-decode
+		// losslessly so an overflowing number cannot drop a shown line.
+		if ev.Type == "entry_appended" {
+			s.lifecycleMu.Lock()
+			defer s.lifecycleMu.Unlock()
+			if s.closed || s.resumable || s.closing {
+				return
+			}
+			s.publishShownCustomEntryLocked(ev)
+			return
+		}
 		if mappedEngineEvent(ev.Type) {
 			return
 		}
@@ -195,7 +205,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		// engine transcript renders none of these, so neither does the notice
 		// feed.
 	case "entry_appended":
-		s.publishShownCustomEntryLocked(raw)
+		s.publishShownCustomEntryLocked(ev)
 	default:
 		s.publishVerbatimNoticeLocked(ev)
 	}
@@ -219,11 +229,19 @@ func mappedEngineEvent(eventType string) bool {
 	}
 }
 
-func (s *Session) publishVerbatimNoticeLocked(ev *omorpc.Event) {
-	dec := json.NewDecoder(bytes.NewReader(ev.Raw))
+func decodeLosslessObject(raw json.RawMessage) (map[string]any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var lossless map[string]any
 	if dec.Decode(&lossless) != nil {
+		return nil, false
+	}
+	return lossless, true
+}
+
+func (s *Session) publishVerbatimNoticeLocked(ev *omorpc.Event) {
+	lossless, ok := decodeLosslessObject(ev.Raw)
+	if !ok {
 		return
 	}
 	payload := eventPayload(lossless)
@@ -518,7 +536,13 @@ var transcriptShownCustomTypes = []string{
 // custom entry (observed engine behavior): a shown customType becomes exactly
 // one journaled notice carrying the entry's own fields verbatim with kind set
 // to the customType. Every other entry_appended payload stays silent.
-func (s *Session) publishShownCustomEntryLocked(raw map[string]any) {
+// Numbers come from a lossless re-decode of ev.Raw so literals survive as
+// json.Number rather than float64.
+func (s *Session) publishShownCustomEntryLocked(ev *omorpc.Event) {
+	raw, ok := decodeLosslessObject(ev.Raw)
+	if !ok {
+		return
+	}
 	entry, _ := raw["entry"].(map[string]any)
 	if entry["type"] != "custom" {
 		return
