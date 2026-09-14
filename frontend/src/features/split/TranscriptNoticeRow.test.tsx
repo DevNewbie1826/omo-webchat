@@ -147,6 +147,31 @@ describe("TranscriptNoticeRow", () => {
       expect(container.textContent).toContain("QA_TITLE_VALUE");
     });
 
+    it.each<[string, unknown, string]>([
+      ["boolean false", false, "title: false"],
+      ["boolean true", true, "title: true"],
+      ["null", null, "title: null"],
+      ["populated array", [0, false, null, { code: "QA_ARRAY_VALUE" }], 'title: 0, false, null, {"code":"QA_ARRAY_VALUE"}'],
+      ["empty array", [], "title: "],
+    ])("keeps a %s payload.title visible as a key: value line instead of dropping it", (_name, title, expected) => {
+      renderRow(notice(1, "auto_retry_start", { title, why: "QA_PRIMARY", message: "QA_SECONDARY" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual([
+        "QA_PRIMARY",
+        expected,
+        "message: QA_SECONDARY",
+      ]);
+      expect(container.querySelector("details")).toBeNull();
+      expect(container.querySelector("pre")).toBeNull();
+    });
+
+    it("consumes a string payload.title as the bold title exactly once", () => {
+      renderRow(notice(1, "auto_retry_start", { title: "QA_STRING", message: "QA_PRIMARY" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("QA_STRING");
+      expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual(["QA_PRIMARY"]);
+      expect(container.textContent).not.toContain("title: QA_STRING");
+    });
+
     it("falls back to the kind as the title when payload.title is absent", () => {
       renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }));
       expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
@@ -225,10 +250,22 @@ describe("TranscriptNoticeRow", () => {
       expect(container.querySelector("details")).toBeNull();
     });
 
-    it("shows no translated prose for known kinds", () => {
-      renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), "en");
-      expect(container.textContent).toContain("attempt 2");
-      expect(container.textContent).not.toContain("Auto retry started");
+    it.each<Lang>(["en", "ko"])("renders the auto-retry start payload without translated prose (%s)", (lang) => {
+      renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), lang);
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      expect([...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent)).toEqual(["attempt 2"]);
+      expect(container.querySelector("details")).toBeNull();
+      expect(container.querySelector("pre")).toBeNull();
+      expect(container.textContent).not.toContain(translate(lang, "notice.autoRetryStarted"));
+    });
+
+    it.each<Lang>(["en", "ko"])("renders a null payload as the kind title with no field lines (%s)", (lang) => {
+      renderRow(notice(1, "auto_retry_end"), lang);
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_end");
+      expect(container.querySelectorAll(".th-notice-line")).toHaveLength(0);
+      expect(container.querySelector("details")).toBeNull();
+      expect(container.querySelector("pre")).toBeNull();
+      expect(container.textContent).not.toContain(translate(lang, "notice.autoRetryEnded"));
     });
 
     it("preserves a payload's own type field as a key: value line alongside the kind title", () => {
