@@ -301,9 +301,9 @@ export interface ModelsFrame {
 export interface NoticeFrame {
   /** RFC3339Nano receipt time; every notice carries one (invariant 14) */
   readonly at: string;
-  /** Open set: durable kinds are enumerated in notice-kinds.json; everything else is transient */
+  /** Open set: kinds are enumerated in notice-kinds.json; every notice kind is journaled per chat and persisted across restarts */
   readonly kind: string;
-  /** Server-assigned replay identity for durable notices */
+  /** Server-assigned replay identity; a persisted nid is never re-issued across restarts */
   readonly nid?: string;
   readonly payload?: JsonValue;
   readonly sessionId: string;

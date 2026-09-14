@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "notice-kinds.json",
-  "title": "Every notice kind is journaled per chat, persisted across restarts, and replayed to every attach; all other kinds are transient. The enum documents the known kind vocabulary.",
+  "title": "Every notice kind is journaled per chat, persisted across restarts, and replayed to every attach. The enum documents the known kind vocabulary.",
   "$defs": {
     "DurableNoticeKind": {
       "type": "string",

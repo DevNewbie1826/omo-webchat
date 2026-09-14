@@ -358,9 +358,9 @@ type ModelsFrame struct {
 type NoticeFrame struct {
 	// RFC3339Nano receipt time; every notice carries one (invariant 14)
 	At string `json:"at"`
-	// Open set: durable kinds are enumerated in notice-kinds.json; everything else is transient
+	// Open set: kinds are enumerated in notice-kinds.json; every notice kind is journaled per chat and persisted across restarts
 	Kind string `json:"kind"`
-	// Server-assigned replay identity for durable notices
+	// Server-assigned replay identity; a persisted nid is never re-issued across restarts
 	Nid       *string         `json:"nid,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
 	SessionID string          `json:"sessionId"`
