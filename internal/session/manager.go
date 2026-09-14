@@ -762,7 +762,14 @@ func (m *Manager) RetireIdentity(chatID string) {
 	m.retireChatIdentityLocked(chatID)
 	delete(m.operationOwners, chatID)
 	delete(m.noticeJournals, chatID)
+	noticeDir := m.cfg.NoticeDir
 	m.mu.Unlock()
+	if noticeDir == "" {
+		return
+	}
+	if err := removeNoticeJournal(noticeDir, chatID); err != nil {
+		slog.Warn("failed to remove persisted notice journal", "chat_id", chatID, "error", err)
+	}
 }
 
 // ReplayBackpressureSubscriber lets a transport apply replay-specific write

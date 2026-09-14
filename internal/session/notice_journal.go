@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -18,6 +19,9 @@ const NoticeJournalCapacity = 50
 // every replay delivers the stored values verbatim.
 type noticeJournal struct {
 	mu       sync.Mutex
+	dir      string
+	chatID   string
+	loaded   bool
 	seq      uint64
 	ring     []Frame
 	sessions map[*Session]struct{}
@@ -41,13 +45,54 @@ func (j *noticeJournal) append(f Frame) {
 // must deliver, so live delivery and replay present identical values.
 func (m *Manager) noticeJournal(chatID string) *noticeJournal {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	journal := m.noticeJournals[chatID]
 	if journal == nil {
-		journal = &noticeJournal{}
+		journal = &noticeJournal{dir: m.cfg.NoticeDir, chatID: chatID}
 		m.noticeJournals[chatID] = journal
 	}
+	m.mu.Unlock()
+	journal.ensureLoaded()
 	return journal
+}
+
+// ensureLoaded populates the journal from disk exactly once, before its
+// first use. Loading runs outside the manager lock so disk latency on one
+// chat never stalls unrelated chats; journal.mu serializes it against
+// concurrent appends and replays.
+func (j *noticeJournal) ensureLoaded() {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.loaded {
+		return
+	}
+	j.loaded = true
+	if j.dir == "" {
+		return
+	}
+	state := loadNoticeJournal(j.dir, j.chatID)
+	j.seq = state.Seq
+	j.ring = make([]Frame, 0, len(state.Entries))
+	for _, e := range state.Entries {
+		j.ring = append(j.ring, Frame{Kind: e.Kind, SessionID: e.SessionID, Data: e.Data})
+	}
+}
+
+// persistLocked installs the journal's current state on disk. Callers hold
+// mu. Persistence is best-effort: the in-memory ring stays authoritative,
+// and every append rewrites the full state, so a failed write is logged and
+// superseded by the next journal update.
+func (j *noticeJournal) persistLocked() {
+	if j.dir == "" {
+		return
+	}
+	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring))}
+	for _, f := range j.ring {
+		payload, _ := f.Data.(map[string]any)
+		state.Entries = append(state.Entries, persistedNotice{Kind: f.Kind, SessionID: f.SessionID, Data: payload})
+	}
+	if err := saveNoticeJournal(j.dir, j.chatID, state); err != nil {
+		slog.Warn("failed to persist notice journal", "chat_id", j.chatID, "error", err)
+	}
 }
 
 func stampNotice(chatID string, journal *noticeJournal, f Frame) Frame {
@@ -63,6 +108,7 @@ func stampNotice(chatID string, journal *noticeJournal, f Frame) Frame {
 	stamped["nid"] = fmt.Sprintf("%s:%d", chatID, journal.seq)
 	f.Data = stamped
 	journal.append(f)
+	journal.persistLocked()
 	return f
 }
 

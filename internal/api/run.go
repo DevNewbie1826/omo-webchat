@@ -255,7 +255,7 @@ func Run(ctx context.Context, cfg *config.Config, logger *slog.Logger, onReady f
 	if err != nil {
 		return fmt.Errorf("opening send queue: %w", err)
 	}
-	manager := session.NewManager(session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors)})
+	manager := session.NewManager(session.Config{Client: ensured.Client, Store: (*wsbridge.CursorStore)(cursors), NoticeDir: filepath.Join(cursors.StateDir(), "notices")})
 	var apiServer *Server
 	bridge := wsbridge.New(wsbridge.Config{Context: ctx, Manager: manager, Store: cursors, SendQueue: queue, ServerVersionFunc: ensured.Client.ServerVersion, Logger: logger,
 		PrepareChatVersion: func(c context.Context, wsID, chatID string) (uint64, error) {
