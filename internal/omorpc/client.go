@@ -905,6 +905,26 @@ func (c *Client) ServerVersion() string {
 	return info.ServerVersion
 }
 
+// GetMedia fetches the inline media block an image_ref placeholder stands in
+// for: the placeholder's ref (toolCallId plus contentIndex) addresses the
+// block, and the reply carries the original image content. Coordinates that
+// do not resolve to a block fail with a *StableError whose code is
+// ErrCodeMediaNotFound.
+func (c *Client) GetMedia(ctx context.Context, sessionID, toolCallID string, contentIndex int) (*GetMediaData, error) {
+	resp, err := c.Call(ctx, GetMedia{SessionID: sessionID, ToolCallID: toolCallID, ContentIndex: contentIndex})
+	if err != nil {
+		return nil, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, err
+	}
+	var data GetMediaData
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return nil, fmt.Errorf("omorpc: decode get_media data: %w", err)
+	}
+	return &data, nil
+}
+
 // Close releases the socket, goroutines, pending calls, and event stream.
 func (c *Client) Close() error {
 	c.mu.Lock()

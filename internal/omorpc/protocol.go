@@ -53,6 +53,7 @@ const (
 	CmdGetEntries         = "get_entries"
 	CmdGetMessages        = "get_messages"
 	CmdGetCommands        = "get_commands"
+	CmdGetMedia           = "get_media"
 	CmdGetSessionStats    = "get_session_stats"
 	CmdSetSessionName     = "set_session_name"
 	CmdSetModel           = "set_model"
@@ -259,6 +260,20 @@ type GetCommands struct {
 
 func (GetCommands) commandName() string { return CmdGetCommands }
 
+// GetMedia fetches one inline media block by its image_ref placeholder ref.
+// A client that advertises the media_placeholders capability receives the
+// placeholder (ImageRefBlock) in tool-result content; its Ref addresses the
+// original block, which this command returns in GetMediaData.Content.
+// Coordinates that do not resolve to a block fail with a *StableError whose
+// code is ErrCodeMediaNotFound.
+type GetMedia struct {
+	SessionID    string `json:"sessionId"`
+	ToolCallID   string `json:"toolCallId"`
+	ContentIndex int    `json:"contentIndex"`
+}
+
+func (GetMedia) commandName() string { return CmdGetMedia }
+
 // GetSessionStats returns token and context statistics for the session.
 type GetSessionStats struct {
 	SessionID string `json:"sessionId"`
@@ -401,6 +416,39 @@ type GetFollowUpMessagesData struct {
 type ClearQueueData struct {
 	Steering []string `json:"steering"`
 	FollowUp []string `json:"followUp"`
+}
+
+// MediaRef is the routing handle an image_ref placeholder carries: the tool
+// call that produced the block and the block's index inside that tool
+// result's content array.
+type MediaRef struct {
+	ToolCallID   string `json:"toolCallId"`
+	ContentIndex int    `json:"contentIndex"`
+}
+
+// ImageRefBlock is the placeholder a media_placeholders client receives in
+// place of an inline tool-result image: media type and byte length travel
+// without the base64 payload, which is fetched on demand with GetMedia.
+type ImageRefBlock struct {
+	Type       string   `json:"type"` // always "image_ref"
+	MimeType   string   `json:"mimeType"`
+	ByteLength int      `json:"byteLength"`
+	Ref        MediaRef `json:"ref"`
+}
+
+// ImageBlock is one inline image content block; Data is base64.
+type ImageBlock struct {
+	Type     string `json:"type"` // "image"
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
+// GetMediaData is the data payload of the get_media response: the resolved
+// content block plus the coordinates that addressed it.
+type GetMediaData struct {
+	ToolCallID   string     `json:"toolCallId"`
+	ContentIndex int        `json:"contentIndex"`
+	Content      ImageBlock `json:"content"`
 }
 
 // QueueUpdate is the typed payload of the queue_update event, sent whenever

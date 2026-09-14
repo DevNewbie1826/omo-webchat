@@ -204,6 +204,7 @@
   "chat.sendErrorDismiss": "Dismiss",
   "chat.failedSends": "Failed sends",
   "chat.image": "Image",
+  "chat.imageUnavailable": "Image unavailable",
   "queue.region": "Send queue",
   "queue.count": "Queued: {count}",
   "queue.engineCount": "Engine queue: {count}",

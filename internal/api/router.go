@@ -89,6 +89,7 @@ func (s *Server) Handler() http.Handler {
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/dag-runs", s.handleListChatDagRuns)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/dag-runs/{runId}", s.handleGetChatDagRun)
 	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/goal", s.handleGetChatGoal)
+	protected.HandleFunc("GET /api/workspaces/{wsId}/chats/{chatId}/media", s.handleGetChatMedia)
 	protected.HandleFunc("POST /api/workspaces/{wsId}/chats/{chatId}/upload", s.handleUpload)
 	protected.HandleFunc("GET /api/providers", s.handleListProviders)
 	protected.HandleFunc("GET /api/sessions/live", s.handleListLiveSessions)

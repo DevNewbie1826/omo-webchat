@@ -8,8 +8,8 @@ import type {
   JsonValue,
   ModelInfo,
   ResumeCandidate,
-  ToolPayload,
 } from "./contract/types_gen";
+import type { ToolPayload, ToolPayloadContentItem } from "./chatWs";
 
 /**
  * Structural validation primitives and nested parsers shared by the inbound
@@ -119,6 +119,19 @@ export function mapRecords<T>(value: unknown, map: (item: Record<string, unknown
   return out;
 }
 
+/**
+ * Validate the image_ref pointer field: a record carrying toolCallId and
+ * contentIndex, shaped exactly by the generated contract schema.
+ */
+function parseContentRef(value: unknown): ContentBlock["ref"] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const toolCallId = reqString(value, "toolCallId");
+  const contentIndex = reqNumber(value, "contentIndex");
+  if (toolCallId === null || contentIndex === null) return null;
+  return { toolCallId, contentIndex };
+}
+
 export function parseContentBlock(record: Record<string, unknown>): ContentBlock | null {
   const kind = reqString(record, "kind");
   if (kind === null) return null;
@@ -127,7 +140,16 @@ export function parseContentBlock(record: Record<string, unknown>): ContentBlock
   const id = optString(record, "id");
   const name = optString(record, "name");
   const isError = optBoolean(record, "isError");
-  if (text === null || thinking === null || id === null || name === null || isError === null) return null;
+  const data = optString(record, "data");
+  const mimeType = optString(record, "mimeType");
+  const byteLength = optNumber(record, "byteLength");
+  const ref = parseContentRef(record["ref"]);
+  if (
+    text === null || thinking === null || id === null || name === null || isError === null
+    || data === null || mimeType === null || byteLength === null || ref === null
+  ) {
+    return null;
+  }
   const args = record["arguments"];
   return {
     kind,
@@ -136,6 +158,10 @@ export function parseContentBlock(record: Record<string, unknown>): ContentBlock
     ...(id !== undefined ? { id } : {}),
     ...(name !== undefined ? { name } : {}),
     ...(isError !== undefined ? { isError } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(mimeType !== undefined ? { mimeType } : {}),
+    ...(byteLength !== undefined ? { byteLength } : {}),
+    ...(ref !== undefined ? { ref } : {}),
     ...(args !== undefined ? { arguments: sanitizeJson(args) } : {}),
   };
 }
@@ -185,7 +211,31 @@ export function parseAssistantDelta(record: Record<string, unknown>): AssistantD
   };
 }
 
-/** Validate a tool partial/result payload whose content[].text and details are dereferenced. */
+/** Validate one tool partial/result content item; image fields included. */
+function parseToolContentItem(record: Record<string, unknown>): ToolPayloadContentItem | null {
+  const kind = optString(record, "kind");
+  const text = optString(record, "text");
+  const data = optString(record, "data");
+  const mimeType = optString(record, "mimeType");
+  const byteLength = optNumber(record, "byteLength");
+  const ref = parseContentRef(record["ref"]);
+  if (
+    kind === null || text === null || data === null || mimeType === null || byteLength === null || ref === null
+  ) {
+    return null;
+  }
+  return {
+    ...(kind !== undefined ? { kind } : {}),
+    ...(text !== undefined ? { text } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(mimeType !== undefined ? { mimeType } : {}),
+    ...(byteLength !== undefined ? { byteLength } : {}),
+    ...(ref !== undefined ? { ref } : {}),
+  };
+}
+
+/** Validate a tool partial/result payload whose content items (text or image)
+ * and details are dereferenced. */
 export function parseToolPayload(value: unknown): ToolPayload | null | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) return null;
@@ -193,11 +243,7 @@ export function parseToolPayload(value: unknown): ToolPayload | null | undefined
   const rawDetails = value["details"];
   const hasDetails = rawDetails !== undefined;
   if (rawContent === undefined && !hasDetails) return {};
-  const content = rawContent === undefined ? undefined : mapRecords(rawContent, (item) => {
-    const text = optString(item, "text");
-    if (text === null) return null;
-    return text === undefined ? {} : { text };
-  });
+  const content = rawContent === undefined ? undefined : mapRecords(rawContent, parseToolContentItem);
   if (content === null) return null;
   return {
     ...(content !== undefined ? { content } : {}),

@@ -7,6 +7,11 @@ import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import "../../styles/math.css";
 import { useT } from "../../i18n";
+import {
+  fetchChatMediaObjectUrl,
+  formatByteLength,
+  type ChatMediaSource,
+} from "../../lib/chatMedia";;
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
@@ -112,9 +117,86 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
   });
 }
 
+/** Inline image carried on a preserved block: bytes already inline as base64. */
+function InlineImage({ data, mimeType, alt }: {
+  readonly data: string;
+  readonly mimeType: string | undefined;
+  readonly alt: string;
+}) {
+  return (
+    <img
+      className="th-chat-image"
+      src={`data:${mimeType ?? "image/png"};base64,${data}`}
+      alt={alt}
+      loading="lazy"
+    />
+  );
+}
+
+/** Failure placeholder: exact mimeType + formatted byteLength, never a blank. */
+function ImageUnavailable({ mimeType, byteLength }: {
+  readonly mimeType: string | undefined;
+  readonly byteLength: number | undefined;
+}) {
+  const { t } = useT();
+  return (
+    <div className="th-chat-image-unavailable" role="img" aria-label={t("chat.imageUnavailable")}>
+      <span className="th-chat-image-meta">
+        {mimeType ?? t("chat.image")} · {formatByteLength(byteLength ?? 0)}
+      </span>
+      <span className="th-chat-image-note">{t("chat.imageUnavailable")}</span>
+    </div>
+  );
+}
+
+/**
+ * Referenced image: bytes live server-side, so they are fetched lazily — the
+ * component mounts only when its disclosure is expanded (or the block is
+ * standalone-visible) — and the object URL is cached per (toolCallId,
+ * contentIndex) so remounts never refetch.
+ */
+function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
+  readonly source: ChatMediaSource | undefined;
+  readonly toolCallId: string;
+  readonly contentIndex: number;
+  readonly mimeType: string | undefined;
+  readonly byteLength: number | undefined;
+}) {
+  const { t } = useT();
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const wsId = source?.wsId;
+  const chatId = source?.chatId;
+  useEffect(() => {
+    if (wsId === undefined || chatId === undefined) {
+      setFailed(true);
+      return;
+    }
+    let active = true;
+    fetchChatMediaObjectUrl({ wsId, chatId }, { toolCallId, contentIndex }).then(
+      (url) => {
+        if (active) setObjectUrl(url);
+      },
+      () => {
+        if (active) setFailed(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [wsId, chatId, toolCallId, contentIndex]);
+  if (objectUrl !== null) {
+    return <img className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
+  }
+  if (failed) return <ImageUnavailable mimeType={mimeType} byteLength={byteLength} />;
+  return null;
+}
+
 interface ChatTranscriptProps {
   /** Unified render list: conversation entries merged with notice blocks. */
   readonly items: readonly TranscriptItem[];
+  /** Workspace/chat identity for lazy image_ref media fetches. */
+  readonly mediaSource?: ChatMediaSource | undefined;
   readonly streaming: string;
   readonly thinking: string;
   readonly toolCalls: Readonly<Record<string, ToolEntry>>;
@@ -135,6 +217,7 @@ export function ChatTranscript({
   restoreVersion,
   focused,
   historyLoaded,
+  mediaSource,
 }: ChatTranscriptProps) {
   const { t } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
@@ -268,20 +351,71 @@ export function ChatTranscript({
                           </details>
                         );
                       }
+                      if (block.kind === "image" && typeof block.data === "string") {
+                        return (
+                          <InlineImage
+                            key={blockKey(block)}
+                            data={block.data}
+                            mimeType={block.mimeType}
+                            alt={t("chat.image")}
+                          />
+                        );
+                      }
+                      if (block.kind === "image_ref" && block.ref !== undefined) {
+                        return (
+                          <RefImage
+                            key={blockKey(block)}
+                            source={mediaSource}
+                            toolCallId={block.ref.toolCallId}
+                            contentIndex={block.ref.contentIndex}
+                            mimeType={block.mimeType}
+                            byteLength={block.byteLength}
+                          />
+                        );
+                      }
                       if (block.kind === "tool" || block.kind === "toolCall" || block.kind === "toolResult") {
                         // A live result streaming for this disclosure's call id
                         // finalizes it in place: show the live phase/output so
                         // the invocation renders one card, not a detached twin.
                         const live = block.id ? toolCalls[block.id] : undefined;
-                        return rememberedToolCard({
-                          toolCallId: block.id ?? blockKey(block),
+                        const cardId = block.id ?? blockKey(block);
+                        const isError = live?.isError ?? block.isError ?? false;
+                        const card = rememberedToolCard({
+                          toolCallId: cardId,
                           toolName: block.name ?? live?.toolName ?? "",
                           phase: live?.phase ?? "end",
                           text: live ? live.text : block.text ?? "",
-                          isError: live?.isError ?? block.isError ?? false,
+                          isError,
                           details: live?.details,
                           args: live?.args ?? block.arguments,
                         });
+                        // A preserved image folded onto the tool block renders
+                        // after the card's text, inside the disclosure: it
+                        // mounts only while the card is open, which is what
+                        // makes the image_ref fetch lazy. The open derivation
+                        // mirrors ToolCard's (user choice, else error
+                        // auto-open).
+                        const hasInline = typeof block.data === "string" && block.data.length > 0;
+                        const hasRef = block.ref !== undefined;
+                        if (!hasInline && !hasRef) return card;
+                        const open = toolDisclosureRef.current.get(cardId) ?? isError;
+                        return (
+                          <div key={blockKey(block)} className="th-chat-tool-media">
+                            {card}
+                            {open && hasInline && (
+                              <InlineImage data={block.data ?? ""} mimeType={block.mimeType} alt={t("chat.image")} />
+                            )}
+                            {open && hasRef && block.ref !== undefined && (
+                              <RefImage
+                                source={mediaSource}
+                                toolCallId={block.ref.toolCallId}
+                                contentIndex={block.ref.contentIndex}
+                                mimeType={block.mimeType}
+                                byteLength={block.byteLength}
+                              />
+                            )}
+                          </div>
+                        );
                       }
                       return message.role === "assistant" ? (
                         <div key={blockKey(block)} className="th-chat-markdown">

@@ -59,6 +59,15 @@ const (
 	CodeUnknownSession   = omorpc.ErrCodeUnknownSession
 )
 
+// mediaRef addresses one fetchable inline media block: the durable session
+// it belongs to plus the placeholder ref a media_placeholders client
+// received (toolCallId, contentIndex).
+type mediaRef struct {
+	path         string
+	toolCallID   string
+	contentIndex int
+}
+
 // queuedItem is one pending queue entry held by the mock.
 type queuedItem struct {
 	text  string
@@ -157,6 +166,7 @@ type Daemon struct {
 	handlerGateByPath   map[string]map[string]<-chan struct{}
 	failNext            map[string]string
 	pathFailures        map[string]openFailure
+	media               map[mediaRef]map[string]any
 	nextOpenIdentity    string
 	evictUsedSession    bool
 	refuse              bool
@@ -202,6 +212,7 @@ func New(dir string) *Daemon {
 		handlerGateByPath:   map[string]map[string]<-chan struct{}{},
 		failNext:            map[string]string{},
 		pathFailures:        map[string]openFailure{},
+		media:               map[mediaRef]map[string]any{},
 		conns:               map[net.Conn]struct{}{},
 		registry:            map[string]*daemonSession{},
 		rpcPaths:            map[string]string{},
@@ -631,6 +642,32 @@ func (d *Daemon) handle(conn net.Conn, req map[string]any) {
 
 	case omorpc.CmdGetMessages:
 		d.write(conn, d.resp(id, cmd, sid, map[string]any{"messages": []any{}}))
+
+	case omorpc.CmdGetMedia:
+		// On-demand fetch of a media block a media_placeholders client
+		// received as an image_ref stub. Only coordinates armed through
+		// SetSessionMedia resolve; anything else is media_not_found, modeling
+		// the engine's durable-entry lookup for an unknown tool call or a
+		// content index that does not point at an image block.
+		toolCallID, _ := req["toolCallId"].(string)
+		contentIndex := 0
+		if f, ok := req["contentIndex"].(float64); ok {
+			contentIndex = int(f)
+		}
+		d.mu.Lock()
+		content, found := d.media[mediaRef{path: recPath, toolCallID: toolCallID, contentIndex: contentIndex}]
+		d.mu.Unlock()
+		if !found {
+			d.write(conn, map[string]any{
+				"id": id, "type": "response", "command": cmd,
+				"success": false, "error": omorpc.ErrCodeMediaNotFound,
+			})
+			return
+		}
+		d.write(conn, d.resp(id, cmd, sid, map[string]any{
+			"toolCallId": toolCallID, "contentIndex": contentIndex, "content": content,
+		}))
+		return
 
 	default:
 		// set_model, set_thinking_level, set_session_name, set_auto_compaction,
@@ -1114,6 +1151,16 @@ func (d *Daemon) FailNext(cmd, code string) {
 	d.mu.Lock()
 	d.failNext[cmd] = code
 	d.mu.Unlock()
+}
+
+// SetSessionMedia arms one fetchable inline media block for the session
+// identified by its durable sessionFile path: get_media resolves
+// (toolCallId, contentIndex) against armed blocks and answers media_not_found
+// for any other coordinates, modeling the engine's durable-entry lookup.
+func (d *Daemon) SetSessionMedia(sessionFile, toolCallID string, contentIndex int, content map[string]any) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.media[mediaRef{path: sessionFile, toolCallID: toolCallID, contentIndex: contentIndex}] = content
 }
 
 // EvictUsedSessionOnNextRoutingCommand silently forgets the next live route
