@@ -874,7 +874,7 @@
         },
         "kind": {
           "type": "string",
-          "description": "Open set: durable kinds are enumerated in notice-kinds.json; everything else is transient"
+          "description": "Open set: kinds are enumerated in notice-kinds.json; every notice kind is journaled per chat and persisted across restarts"
         },
         "payload": {
           "$ref": "shared-types.json#/$defs/JsonValue"
@@ -886,7 +886,7 @@
         },
         "nid": {
           "type": "string",
-          "description": "Server-assigned replay identity for durable notices"
+          "description": "Server-assigned replay identity; a persisted nid is never re-issued across restarts"
         }
       }
     },

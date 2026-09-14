@@ -153,6 +153,10 @@ type Config struct {
 	OnRunSettled func(string, *Session)
 	// OnQueueUpdate is called when the engine publishes a queue snapshot.
 	OnQueueUpdate func(string, *Session)
+	// NoticeDir names the directory where each chat's notice journal
+	// persists across restarts. Empty (the zero value) keeps the journal
+	// memory-only.
+	NoticeDir string
 }
 
 type FrameKind string
