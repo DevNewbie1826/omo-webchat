@@ -148,6 +148,17 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 	case "extension_event":
 		s.forwardExtensionEventLocked(raw)
 	case "extension_ui_request":
+		if stringValue(raw["method"]) == "notify" {
+			// Fire-and-forget announcements (turn stats lines, ...) render as
+			// transcript lines in the engine TUI (observed engine behavior), so
+			// they mirror to exactly one journaled notice, never a pending ask.
+			payload := map[string]any{"kind": "engine_notify", "message": stringValue(raw["message"])}
+			if notifyType, present := raw["notifyType"]; present {
+				payload["notifyType"] = notifyType
+			}
+			s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
+			return
+		}
 		frame := Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: eventPayload(raw)}
 		// Interactive methods await a client answer; retain the latest one so a
 		// subscriber attaching after the broadcast still sees the pending ask.
@@ -179,6 +190,12 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		}
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
+	case "turn_start", "turn_end", "agent_idle", "loaded_surfaces_changed", "message_start":
+		// Transcript-silent lifecycle markers (observed engine behavior): the
+		// engine transcript renders none of these, so neither does the notice
+		// feed.
+	case "entry_appended":
+		s.publishShownCustomEntryLocked(raw)
 	default:
 		s.publishVerbatimNoticeLocked(ev)
 	}
@@ -188,13 +205,14 @@ func mappedEngineEvent(eventType string) bool {
 	switch eventType {
 	case "session_info_changed", omorpc.EventQueueUpdate,
 		"agent_start", "agent_end", "agent_settled", "command_invocation",
-		"message_delta", "message_update", "message", "message_end",
+		"message_delta", "message_update", "message", "message_end", "message_start",
+		"turn_start", "turn_end", "agent_idle", "loaded_surfaces_changed",
 		"tool", "tool_execution_start", "tool_execution_update", "tool_execution_end",
 		"compaction_start", "compaction_end", "compaction_done",
 		"session_unloaded", "session_closed", "response",
 		"state", "state_changed", "commands_changed",
 		"extension_event", "extension_ui_request",
-		"question_resolved", "question_updated", "entries.stream":
+		"question_resolved", "question_updated", "entries.stream", "entry_appended":
 		return true
 	default:
 		return false
@@ -484,6 +502,34 @@ func approvalInteractive(method any) bool {
 		return true
 	}
 	return false
+}
+
+// transcriptShownCustomTypes documents observed engine behavior: these are the
+// custom entry types the engine transcript renders, so only they mirror into
+// the notice feed. Unknown customTypes stay transcript-silent.
+var transcriptShownCustomTypes = []string{
+	"goal-cache-warmup",
+	"omo-loop:tick",
+	"omo-cache-keepalive",
+	"omo-rule-activation",
+}
+
+// publishShownCustomEntryLocked mirrors the engine transcript rules for a
+// custom entry (observed engine behavior): a shown customType becomes exactly
+// one journaled notice carrying the entry's own fields verbatim with kind set
+// to the customType. Every other entry_appended payload stays silent.
+func (s *Session) publishShownCustomEntryLocked(raw map[string]any) {
+	entry, _ := raw["entry"].(map[string]any)
+	if entry["type"] != "custom" {
+		return
+	}
+	customType := stringValue(entry["customType"])
+	if !slices.Contains(transcriptShownCustomTypes, customType) {
+		return
+	}
+	payload := cloneAnyMap(entry)
+	payload["kind"] = customType
+	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 }
 
 func stringValue(v any) string { x, _ := v.(string); return x }
