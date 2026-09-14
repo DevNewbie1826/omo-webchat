@@ -53,13 +53,13 @@ function payloadText(payload: ChatNotice["payload"]): string {
   return typeof value === "string" ? value : "";
 }
 
-/** First present of message/reason/error, verbatim; empty when none is a string. */
-function payloadMessageText(payload: ChatNotice["payload"]): string {
+/** First present of message/reason/error, verbatim; undefined when none is a string. */
+function payloadMessageText(payload: ChatNotice["payload"]): string | undefined {
   for (const key of ["message", "reason", "error"] as const) {
     const value = payload?.[key];
     if (typeof value === "string") return value;
   }
-  return "";
+  return undefined;
 }
 
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
@@ -96,7 +96,7 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   // message/reason/error — falling back to the notice kind itself when no
   // text field exists. Receipt time kept.
   if (notice.kind === "auto_retry_start" || notice.kind === "auto_retry_end") {
-    const text = payloadMessageText(payload) || notice.kind;
+    const text = payloadMessageText(payload) ?? notice.kind;
     return (
       <div className="th-notice-status th-notice-status--warning" role="status">
         <span className="th-notice-status-text">{text}</span>

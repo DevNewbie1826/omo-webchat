@@ -23,18 +23,27 @@ func TestDispatchGoalCustomNoticesStaySilent(t *testing.T) {
 	}
 }
 
+var goalActivationNotifyCases = []struct {
+	name, message, notifyType string
+	shown                     bool
+}{
+	{"activation", "Goal active\nObjective: finish task", "info", false},
+	{"prefix", "Goal active", "info", false},
+	{"tps", "TPS 42", "turn_stats", true},
+	{"memory", "Memory usage 42 MB", "info", true},
+	{"warning", "Budget nearly exhausted", "warning", true},
+	{"non_prefix", "Status: Goal active", "info", true},
+	{"prefix_warning", "Goal active count is inconsistent; manual intervention required", "warning", true},
+	{"prefix_error", "Goal active checkpoint could not be saved", "error", true},
+	{"word_collision", "Goal actively recovering from memory pressure", "info", true},
+	{"heading_warning", "Goal active", "warning", true},
+	{"heading_error", "Goal active", "error", true},
+	{"multiline_warning", "Goal active\nObjective: finish task", "warning", true},
+	{"multiline_error", "Goal active\nObjective: finish task", "error", true},
+}
+
 func TestDispatchGoalActivationNotifyStaysSilent(t *testing.T) {
-	for _, tc := range []struct {
-		name, message, notifyType string
-		shown                     bool
-	}{
-		{"activation", "Goal active\nObjective: finish task", "info", false},
-		{"prefix", "Goal active", "info", false},
-		{"tps", "TPS 42", "turn_stats", true},
-		{"memory", "Memory usage 42 MB", "info", true},
-		{"warning", "Budget nearly exhausted", "warning", true},
-		{"non_prefix", "Status: Goal active", "info", true},
-	} {
+	for _, tc := range goalActivationNotifyCases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, sub := acquireDrained(t, "goal-notify-"+tc.name)
 			injectEvent(t, s, map[string]any{"type": "extension_ui_request", "method": "notify", "message": tc.message, "notifyType": tc.notifyType})
@@ -51,6 +60,43 @@ func TestDispatchGoalActivationNotifyStaysSilent(t *testing.T) {
 			data := frames[0].Data.(map[string]any)
 			if data["kind"] != "engine_notify" || data["message"] != tc.message || data["notifyType"] != tc.notifyType {
 				t.Fatalf("notify payload changed: %+v", data)
+			}
+		})
+	}
+}
+
+func TestGoalActivationNotifyReplayBoundaries(t *testing.T) {
+	for _, tc := range goalActivationNotifyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			mgr := NewManager(Config{NoticeDir: dir})
+			const chatID = "goal-boundary-replay"
+			before := mgr.RecordNotice(chatID, map[string]any{"kind": "engine_notify", "message": "before"})
+			candidate := mgr.RecordNotice(chatID, map[string]any{"kind": "engine_notify", "message": tc.message, "notifyType": tc.notifyType})
+			after := mgr.RecordNotice(chatID, map[string]any{"kind": "engine_notify", "message": "after"})
+			want := []Frame{before, after}
+			if tc.shown {
+				want = []Frame{before, candidate, after}
+			}
+			stored := readPersistedNotices(t, dir, chatID)
+			for name, source := range map[string]*Manager{"memory": mgr, "disk": NewManager(Config{NoticeDir: dir})} {
+				t.Run(name, func(t *testing.T) {
+					s, _ := acquireDrained(t, chatID)
+					s.manager = source
+					late := &synchronousApprovalRecorder{recorder: newRecorder(16)}
+					detach := s.Attach(late)
+					frames := dropAttachReady(drainSync(late.recorder))
+					detach()
+					if !reflect.DeepEqual(frames, want) {
+						t.Errorf("attach replay = %+v, want unchanged frames %+v", frames, want)
+					}
+					if seq := source.noticeJournal(chatID).seq; seq != stored.Seq {
+						t.Errorf("replay sequence = %d, want %d", seq, stored.Seq)
+					}
+					if got := readPersistedNotices(t, dir, chatID); !reflect.DeepEqual(got, stored) {
+						t.Error("attach changed persisted journal")
+					}
+				})
 			}
 		})
 	}

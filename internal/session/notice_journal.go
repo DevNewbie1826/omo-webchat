@@ -186,6 +186,17 @@ func (m *Manager) PublishNotice(chatID string, payload map[string]any) {
 	}
 }
 
+// goalActivationNotify matches the observed activation heading, not unrelated
+// advisories sharing its prefix. Warning and error notifications always survive.
+func goalActivationNotify(payload map[string]any) bool {
+	tone := stringValue(payload["notifyType"])
+	if tone == "warning" || tone == "error" {
+		return false
+	}
+	message := stringValue(payload["message"])
+	return message == "Goal active" || strings.HasPrefix(message, "Goal active\n")
+}
+
 func (m *Manager) withNoticeReplay(chatID string, sess *Session, use func([]Frame)) {
 	journal := m.noticeJournal(chatID)
 	journal.mu.Lock()
@@ -212,7 +223,7 @@ func (m *Manager) withNoticeReplay(chatID string, sess *Session, use func([]Fram
 		case "goal-cache-warmup", "omo-loop:tick", "omo-cache-keepalive", "omo-rule-activation":
 			continue
 		case "engine_notify":
-			if strings.HasPrefix(stringValue(payload["message"]), "Goal active") {
+			if goalActivationNotify(payload) {
 				continue
 			}
 		}

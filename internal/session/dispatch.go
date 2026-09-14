@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
-	"strings"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/omorpc"
 )
@@ -172,7 +171,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 	case "extension_ui_request":
 		if stringValue(raw["method"]) == "notify" {
-			if strings.HasPrefix(stringValue(raw["message"]), "Goal active") {
+			if goalActivationNotify(raw) {
 				// Observed engine behavior: goal activation belongs in the goal bar.
 				return
 			}

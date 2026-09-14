@@ -65,6 +65,24 @@ describe("TranscriptNoticeRow auto_retry bundle", () => {
     },
   );
 
+  it.each(["auto_retry_start", "auto_retry_end"])(
+    "%s preserves a present empty text field rather than falling back",
+    (kind) => {
+      for (const payload of [{ message: "", reason: "not selected" }, { reason: "", error: "not selected" }, { error: "" }]) {
+        renderRow(notice(1, kind, payload));
+        const row = container.querySelector(".th-notice-status--warning");
+        expect(row?.querySelector(".th-notice-status-text")?.textContent).toBe("");
+        expect(row?.querySelector(".th-notice-time")).not.toBeNull();
+        expect(container.querySelector(".th-chat-notice")).toBeNull();
+      }
+    },
+  );
+
+  it.each(["auto_retry_start", "auto_retry_end"])("%s falls back when string text is absent", (kind) => {
+    renderRow(notice(1, kind, { message: 0, reason: null, error: false }));
+    expect(container.querySelector(".th-notice-status-text")?.textContent).toBe(kind);
+  });
+
   it("uses the reason field when message is absent, then error", () => {
     renderRow(notice(1, "auto_retry_start", { reason: "overloaded" }));
     expect(container.querySelector(".th-notice-status--warning")?.textContent).toContain("overloaded");
