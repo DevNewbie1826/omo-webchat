@@ -14,8 +14,9 @@ import { hasRenderableContent } from "./chatEntries";
 import type { ToolEntry } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
+import { SummaryBox } from "./SummaryBox";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
-import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
+import { formatNoticeTime, TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { useChatScroll } from "./useChatScroll";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -257,6 +258,17 @@ export function ChatTranscript({
                         <span className="th-chat-steer-mark">{t("chat.steer")}</span>
                         <span className="th-chat-steer-text">{messageText(message)}</span>
                       </div>
+                    ) : message.role === "branchSummary" || message.role === "compactionSummary" ? (
+                      // Hydrated summaries render in the same box language as
+                      // the live notice variant: bracket label, first line
+                      // collapsed behind a toggle, compaction tokens always
+                      // visible as their own line.
+                      <SummaryBox
+                        label={message.role === "compactionSummary" ? "[compaction]" : "[branch]"}
+                        {...(typeof message.summaryTokens === "number" ? { tokens: message.summaryTokens } : {})}
+                        summary={messageText(message)}
+                        time={formatNoticeTime(message.ts ?? 0)}
+                      />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
                     ) : (message.blocks ?? []).map((block) => {

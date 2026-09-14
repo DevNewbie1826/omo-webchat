@@ -87,9 +87,53 @@ describe("parseEntries", () => {
 		]);
 		expect(messages).toEqual([
 			{ id: "c1", role: "compactionSummary", blocks: [{ kind: "text", text: "Compacted the earlier turns." }], ts: 0 },
-			{ id: "c2", role: "compactionSummary", blocks: [{ kind: "text", text: "42100 tokens\nKept the plan." }], ts: 7 },
+			{ id: "c2", role: "compactionSummary", blocks: [{ kind: "text", text: "Kept the plan." }], ts: 7, summaryTokens: 42100 },
 		]);
 		expect(messages.every(hasRenderableContent)).toBe(true);
+	});
+
+	it("treats inherited property names as ordinary custom types, keeping the display gate", () => {
+		// The summary-role lookup must be own-key-only: "constructor",
+		// "toString" and "__proto__" are inherited Object properties, not
+		// summary roles, so they fall through to the standard display gate.
+		const messages = parseEntries([
+			{ type: "custom_message", id: "h1", customType: "constructor", content: "secret", display: false },
+			{ type: "custom_message", id: "h2", customType: "toString", content: "secret", display: false },
+			{ type: "custom_message", id: "h3", customType: "__proto__", content: "secret", display: false },
+			{ type: "custom_message", id: "h4", customType: "constructor", content: "visible", display: true },
+			{ type: "custom_message", id: "h5", customType: "toString", content: "shown", display: true },
+		]);
+		expect(messages.map((message) => message.id)).toEqual(["h4", "h5"]);
+		// Displayed entries keep the existing custom-role HookCard behavior.
+		expect(messages[0]).toEqual({
+			id: "h4",
+			role: "custom",
+			customType: "constructor",
+			blocks: [{ kind: "text", text: "visible" }],
+			ts: 0,
+		});
+		expect(messages[1]?.role).toBe("custom");
+		expect(messages[1]?.customType).toBe("toString");
+	});
+
+	it("does not divert inherited property message roles into summary rows", () => {
+		const messages = parseEntries([
+			{ type: "message", id: "r1", message: { role: "constructor", content: "plain" } },
+			{ type: "message", id: "r2", message: { role: "toString", content: "plain" } },
+		]);
+		expect(messages.map((message) => message.role)).toEqual(["constructor", "toString"]);
+	});
+
+	it("keeps summary-named custom entries with explicit display:false hidden", () => {
+		// The summary bypass never overrides an explicit display:false — the
+		// display gate hides those entries exactly like any other custom type.
+		const messages = parseEntries([
+			{ type: "custom_message", id: "s1", customType: "branchSummary", content: "hidden branch", display: false },
+			{ type: "custom_message", id: "s2", customType: "compaction_summary", content: "hidden compaction", display: false },
+			{ type: "custom_message", id: "s3", customType: "branchSummary", content: "shown branch", display: true },
+		]);
+		expect(messages.map((message) => message.id)).toEqual(["s3"]);
+		expect(messages[0]?.role).toBe("branchSummary");
 	});
 
 	it("keeps tool-result folding renderable", () => {

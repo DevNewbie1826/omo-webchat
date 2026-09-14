@@ -2,6 +2,10 @@ import type { AssistantMessage, ContentBlock } from "../../lib/chatWs";
 
 export interface UiMessage extends AssistantMessage {
   readonly id?: string;
+  /** Compaction summaries keep their token count as metadata, separate from
+   * the summary text, so the box can render it as its own always-visible
+   * line. */
+  readonly summaryTokens?: number;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -153,28 +157,26 @@ export function concatEntries(pages: readonly unknown[]): unknown[] {
  * behavior: branch and compaction summaries persist as session entries — as
  * messages with a summary role or as custom messages of the matching
  * customType — and resurface during hydration. Both map to a renderable
- * transcript row carrying the summary text instead of being skipped.
+ * transcript row carrying the summary text instead of being skipped. A Map
+ * keeps the lookup own-key-only: inherited Object property names
+ * ("constructor", "toString", "__proto__") are ordinary custom types and
+ * fall through to the standard display gate.
  */
-const SUMMARY_ROLES: Readonly<Record<string, string>> = {
-  branchSummary: "branchSummary",
-  compactionSummary: "compactionSummary",
-  compaction_summary: "compactionSummary",
-};
+const SUMMARY_ROLES: ReadonlyMap<string, string> = new Map([
+  ["branchSummary", "branchSummary"],
+  ["compactionSummary", "compactionSummary"],
+  ["compaction_summary", "compactionSummary"],
+]);
 
 /** Text for a summary entry: a plain string passes through; a structured
- * content record contributes its summary (compaction summaries keep their
- * token count as a leading "{tokens} tokens" line). */
-function summaryEntryText(role: string, content: unknown): string {
+ * content record contributes its summary. The token count stays metadata
+ * (see UiMessage.summaryTokens) instead of being folded into the text. */
+function summaryEntryText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!isRecord(content)) return "";
-  const summary = typeof content["summary"] === "string" ? content["summary"]
+  return typeof content["summary"] === "string" ? content["summary"]
     : typeof content["text"] === "string" ? content["text"]
     : "";
-  const tokens = content["tokens"];
-  if (role === "compactionSummary" && typeof tokens === "number") {
-    return `${tokens} tokens\n${summary}`;
-  }
-  return summary;
 }
 
 export function parseEntries(entries: unknown): UiMessage[] {
@@ -186,10 +188,15 @@ export function parseEntries(entries: unknown): UiMessage[] {
       const customType = entry["customType"];
       const content = entry["content"];
       if (typeof customType !== "string" || typeof content !== "string") continue;
+      // Observed engine contract: an explicit display:false hides any custom
+      // message from the transcript, summary-named ones included.
+      const inner = entry["message"];
+      const display = entry["display"] ?? (isRecord(inner) ? inner["display"] : undefined);
+      if (display === false) continue;
       // Branch/compaction summary custom entries are transcript rows in their
-      // own right: they bypass the explicit-display gate that hides
-      // transcript-silent custom messages.
-      const summaryRole = SUMMARY_ROLES[customType];
+      // own right: absent an explicit display flag they bypass the gate that
+      // hides transcript-silent custom messages.
+      const summaryRole = SUMMARY_ROLES.get(customType);
       if (summaryRole !== undefined) {
         const id = entry["id"];
         messages.push({
@@ -200,10 +207,8 @@ export function parseEntries(entries: unknown): UiMessage[] {
         });
         continue;
       }
-      // Observed engine contract: only custom messages explicitly flagged for
-      // display enter the transcript; anything else is dropped.
-      const inner = entry["message"];
-      const display = entry["display"] ?? (isRecord(inner) ? inner["display"] : undefined);
+      // Only custom messages explicitly flagged for display enter the
+      // transcript; anything else is dropped.
       if (display !== true) continue;
       const id = entry["id"];
       messages.push({
@@ -229,10 +234,12 @@ export function parseEntries(entries: unknown): UiMessage[] {
     const id = entry["id"];
     // Summary-role messages may carry a structured content record; fold it to
     // the summary text so the row stays renderable.
-    const summaryRole = SUMMARY_ROLES[role];
+    const summaryRole = SUMMARY_ROLES.get(role);
     const content = message["content"];
-    const blocks = summaryRole !== undefined && !Array.isArray(content) && typeof content !== "string"
-      ? [{ kind: "text", text: summaryEntryText(summaryRole, content) } as ContentBlock]
+    const structuredSummary = summaryRole !== undefined && !Array.isArray(content) && typeof content !== "string";
+    const tokens = structuredSummary && isRecord(content) ? content["tokens"] : undefined;
+    const blocks = structuredSummary
+      ? [{ kind: "text", text: summaryEntryText(content) } as ContentBlock]
       : parseBlocks(content);
     const parsed: UiMessage = {
       ...(typeof id === "string" ? { id } : {}),
@@ -240,6 +247,7 @@ export function parseEntries(entries: unknown): UiMessage[] {
       blocks,
       ts: typeof timestamp === "number" ? timestamp : 0,
       ...(typeof model === "string" ? { model } : {}),
+      ...(summaryRole === "compactionSummary" && typeof tokens === "number" ? { summaryTokens: tokens } : {}),
     };
     // Kept in state even with zero blocks: an empty restored completion
     // anchors current-turn tool results exactly like the live path, so

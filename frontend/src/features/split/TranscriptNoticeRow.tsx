@@ -5,8 +5,8 @@ export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
 }
 
-/** Receipt time of the advisory, formatted as local HH:MM:SS. */
-function formatNoticeTime(at: number): string {
+/** Receipt time of an advisory or summary row, formatted as local HH:MM:SS. */
+export function formatNoticeTime(at: number): string {
   const date = new Date(at);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
