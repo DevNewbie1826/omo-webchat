@@ -1,4 +1,5 @@
 import type { ChatNotice } from "./useChatFrameState";
+import { SummaryNoticeBox } from "./SummaryNoticeBox";
 
 export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
@@ -42,6 +43,16 @@ const PRIMARY_KEYS = ["why", "message", "reason"] as const;
  * payload field as a dim "key: value" line. All information stays visible as
  * text — no JSON blob, no disclosure. Rows are permanent and non-interactive.
  */
+/** {kind, text} one-liners that render as a warning-toned single line. */
+const WARNING_LINE_KINDS = new Set(["compaction_cost", "cache_miss", "engine_warning"]);
+/** {kind, text} one-liners that render as a dim single-line status row. */
+const DIM_LINE_KINDS = new Set(["thinking_dropped", "continuity_notice", "compaction_history"]);
+
+function payloadText(payload: ChatNotice["payload"]): string {
+  const value = payload?.["text"];
+  return typeof value === "string" ? value : "";
+}
+
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const payload = notice.payload;
 
@@ -51,6 +62,54 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
       <div className={`th-notice-status th-notice-status--${notifyTone(payload)}`} role="status">
         <span className="th-notice-status-text">{message}</span>
         <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
+
+  // compaction_summary renders as the summary box: a "[compaction]" label, an
+  // optional tokens line, and the summary collapsed to one line + expandable.
+  if (notice.kind === "compaction_summary") {
+    const summaryValue = payload?.["summary"];
+    const tokensValue = payload?.["tokensBefore"];
+    return (
+      <SummaryNoticeBox
+        label="[compaction]"
+        summary={typeof summaryValue === "string" ? summaryValue : ""}
+        {...(typeof tokensValue === "number" ? { tokensBefore: tokensValue } : {})}
+        at={notice.at}
+      />
+    );
+  }
+
+  // {kind, text} one-liners: warning-toned or dim single-line status rows,
+  // text verbatim, receipt time kept.
+  if (WARNING_LINE_KINDS.has(notice.kind) || DIM_LINE_KINDS.has(notice.kind)) {
+    const tone = WARNING_LINE_KINDS.has(notice.kind) ? "warning" : "info";
+    return (
+      <div className={`th-notice-status th-notice-status--${tone}`} role="status">
+        <span className="th-notice-status-text">{payloadText(payload)}</span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
+
+  // extension_error renders as an error-toned block: a title line (the
+  // extension path, plus the event when present) and the error text block.
+  if (notice.kind === "extension_error") {
+    const pathValue = payload?.["extensionPath"];
+    const eventValue = payload?.["event"];
+    const errorValue = payload?.["error"];
+    const path = typeof pathValue === "string" ? pathValue : "";
+    const title = typeof eventValue === "string" ? `${path} (${eventValue})` : path;
+    return (
+      <div className="th-chat-notice th-alert th-alert--error" role="status">
+        <div className="th-chat-notice-content">
+          <span className="th-notice-title">{title}</span>
+          <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+          <span className="th-notice-line th-notice-error-text">
+            {typeof errorValue === "string" ? errorValue : ""}
+          </span>
+        </div>
       </div>
     );
   }

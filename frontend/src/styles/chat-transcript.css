@@ -150,6 +150,35 @@
   color: var(--th-error);
 }
 
+/* Summary box disclosure (compaction / branch summaries): the toggle shows
+   the summary's first line collapsed to a single ellipsis-truncated line;
+   expanding reveals the full verbatim text below. */
+.th-notice-summary {
+  min-width: 0;
+}
+
+.th-notice-summary-toggle {
+  cursor: pointer;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.th-notice-summary[open] .th-notice-summary-toggle {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.th-notice-summary-full {
+  display: block;
+  margin-top: var(--th-space-1);
+  white-space: pre-wrap;
+}
+
 .th-chat-live {
   display: flex;
   flex-direction: column;

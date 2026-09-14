@@ -16,6 +16,7 @@ import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
+import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -257,6 +258,18 @@ export function ChatTranscript({
                         <span className="th-chat-steer-mark">{t("chat.steer")}</span>
                         <span className="th-chat-steer-text">{messageText(message)}</span>
                       </div>
+                    ) : message.role === "custom" &&
+                      (message.customType === "compaction" || message.customType === "branch_summary") ? (
+                      // Hydrated summary entries render as summary boxes in
+                      // the notice-box visual language, never as hook cards.
+                      <SummaryNoticeBox
+                        label={message.customType === "compaction" ? "[compaction]" : "[branch]"}
+                        summary={messageText(message)}
+                        {...(message.customType === "compaction" && typeof message.tokensBefore === "number"
+                          ? { tokensBefore: message.tokensBefore }
+                          : {})}
+                        {...(typeof message.ts === "number" && message.ts > 0 ? { at: message.ts } : {})}
+                      />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
                     ) : (message.blocks ?? []).map((block) => {

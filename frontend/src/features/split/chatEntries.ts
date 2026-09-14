@@ -2,6 +2,8 @@ import type { AssistantMessage, ContentBlock } from "../../lib/chatWs";
 
 export interface UiMessage extends AssistantMessage {
   readonly id?: string;
+  /** Compacted token count carried by a persisted compaction summary entry. */
+  readonly tokensBefore?: number;
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -169,6 +171,27 @@ export function parseEntries(entries: unknown): UiMessage[] {
         customType,
         blocks: [{ kind: "text", text: content }],
         ts: parseTimestamp(entry["timestamp"]),
+      });
+      continue;
+    }
+    // Persisted summary entries (observed engine behavior/contract):
+    // compaction summaries persist as entries of type "compaction", branch
+    // summaries as "branch_summary". Both resurface during history hydration
+    // and render as summary boxes. The documented fields are `summary`
+    // (string) and, for compaction, `tokensBefore` (number); entries without
+    // a string summary are dropped rather than invented.
+    if (entry["type"] === "compaction" || entry["type"] === "branch_summary") {
+      const summary = entry["summary"];
+      if (typeof summary !== "string") continue;
+      const id = entry["id"];
+      const tokensBefore = entry["tokensBefore"];
+      messages.push({
+        ...(typeof id === "string" ? { id } : {}),
+        role: "custom",
+        customType: entry["type"],
+        blocks: [{ kind: "text", text: summary }],
+        ts: parseTimestamp(entry["timestamp"]),
+        ...(entry["type"] === "compaction" && typeof tokensBefore === "number" ? { tokensBefore } : {}),
       });
       continue;
     }
