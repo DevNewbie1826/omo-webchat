@@ -370,13 +370,18 @@ func transcriptMessageSource(message map[string]any) string {
 
 type transcriptNoticeReplay struct {
 	transcriptNoticeState
-	checkpointSeen bool
-	boundaries     []string
+	checkpointSeen   bool
+	checkpointSource string
+	checkpointOnDisk bool
+	newerBoundaries  map[string]bool
+	replayingTail    bool
+	boundaries       []string
 }
 
 // Reconstruct privately until the complete validated history succeeds. A
 // restored checkpoint anchors the fold: only its suffix may advance state.
-// An absent anchor means the checkpoint may be newer than hydrated history.
+// Retained file order also identifies newer boundaries whose ancestry omits
+// the checkpoint. A source absent from the retained file may still be newer.
 func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *transcriptNoticeReplay) int {
 	count := 0
 	for _, raw := range entries {
@@ -386,6 +391,11 @@ func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *t
 		}
 		switch entry["type"] {
 		case "compaction", "branch_summary":
+			if !candidate.checkpointSeen && s.transcriptNotices.restored && candidate.checkpointSource == s.transcriptNotices.source &&
+				(candidate.newerBoundaries[stringValue(entry["id"])] || (candidate.replayingTail && candidate.checkpointOnDisk)) {
+				candidate.transcriptNoticeState = s.transcriptNotices
+				candidate.checkpointSeen = true
+			}
 			candidate.previous = nil
 			candidate.source = "entry:" + stringValue(entry["id"])
 			candidate.boundaries = append(candidate.boundaries, stringValue(entry["id"]))

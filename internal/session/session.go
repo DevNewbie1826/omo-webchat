@@ -2156,7 +2156,12 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 			}
 			// Complete the disk scan before the validated callback can admit
 			// a send that unloads or mutates the provider route.
-			persistedCompactions = s.countPersistedCompactions(ctx, sessionPath, metadata.LeafID)
+			s.lifecycleMu.Lock()
+			if s.transcriptNotices.restored {
+				noticeCandidate.checkpointSource = s.transcriptNotices.source
+			}
+			s.lifecycleMu.Unlock()
+			persistedCompactions = s.countPersistedCompactions(ctx, sessionPath, metadata.LeafID, &noticeCandidate)
 			cursor := metadata.LeafID
 			if cursor == "" {
 				cursor = metadata.Header.ID
@@ -2233,6 +2238,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		return publishErr(routeErr)
 	}
 	compactionCount = persistedCompactions
+	noticeCandidate.replayingTail = true
 	if err := s.emitTailEntries(tail, emit); err != nil {
 		return publishErr(err)
 	}
