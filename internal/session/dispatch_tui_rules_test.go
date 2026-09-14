@@ -148,7 +148,16 @@ func TestDispatchTranscriptSilentEventsPublishNothing(t *testing.T) {
 	}
 }
 
+// Keep projection coverage independent of the currently empty production shown set.
+func useShownCustomFixture(t *testing.T) {
+	t.Helper()
+	previous := transcriptShownCustomTypes
+	transcriptShownCustomTypes = []string{"test-shown-custom"}
+	t.Cleanup(func() { transcriptShownCustomTypes = previous })
+}
+
 func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
+	useShownCustomFixture(t)
 	// Given a live session.
 	s, sub := acquireDrained(t, "tui-entry-shown")
 
@@ -159,7 +168,7 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 		"entry": map[string]any{
 			"type":       "custom",
 			"id":         "entry-1",
-			"customType": "goal-cache-warmup",
+			"customType": "test-shown-custom",
 			"data":       map[string]any{"goals": []any{"g1"}},
 		},
 	})
@@ -181,8 +190,8 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 	if !ok {
 		t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
 	}
-	if data["kind"] != "goal-cache-warmup" {
-		t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
+	if data["kind"] != "test-shown-custom" {
+		t.Fatalf("entry notice kind = %v, want test-shown-custom", data["kind"])
 	}
 	goals, _ := data["goals"].([]any)
 	if len(goals) != 1 || goals[0] != "g1" {
@@ -201,6 +210,7 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 }
 
 func TestDispatchEntryAppendedProjectsDisplayFields(t *testing.T) {
+	useShownCustomFixture(t)
 	// Given a live session.
 	s, sub := acquireDrained(t, "tui-entry-display")
 
@@ -210,7 +220,7 @@ func TestDispatchEntryAppendedProjectsDisplayFields(t *testing.T) {
 		"type": "entry_appended",
 		"entry": map[string]any{
 			"type":       "custom",
-			"customType": "goal-cache-warmup",
+			"customType": "test-shown-custom",
 			"id":         "entry-1",
 			"parentId":   "parent-1",
 			"timestamp":  json.Number("1710000000000"),
@@ -241,8 +251,8 @@ func TestDispatchEntryAppendedProjectsDisplayFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
 	}
-	if data["kind"] != "goal-cache-warmup" {
-		t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
+	if data["kind"] != "test-shown-custom" {
+		t.Fatalf("entry notice kind = %v, want test-shown-custom", data["kind"])
 	}
 	nid, _ := data["nid"].(string)
 	at, _ := data["at"].(string)
@@ -268,6 +278,7 @@ func TestDispatchEntryAppendedProjectsDisplayFields(t *testing.T) {
 }
 
 func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
+	useShownCustomFixture(t)
 	cases := []struct {
 		name  string
 		entry map[string]any
@@ -277,7 +288,7 @@ func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
 			name: "data_absent",
 			entry: map[string]any{
 				"type":       "custom",
-				"customType": "goal-cache-warmup",
+				"customType": "test-shown-custom",
 				"id":         "entry-1",
 				"parentId":   "parent-1",
 				"timestamp":  json.Number("1"),
@@ -289,7 +300,7 @@ func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
 			name: "data_string",
 			entry: map[string]any{
 				"type":       "custom",
-				"customType": "goal-cache-warmup",
+				"customType": "test-shown-custom",
 				"id":         "entry-1",
 				"data":       "QA_DATA",
 			},
@@ -320,8 +331,8 @@ func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
 			if !ok {
 				t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
 			}
-			if data["kind"] != "goal-cache-warmup" {
-				t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
+			if data["kind"] != "test-shown-custom" {
+				t.Fatalf("entry notice kind = %v, want test-shown-custom", data["kind"])
 			}
 			for k, want := range tc.want {
 				if data[k] != want {
@@ -338,6 +349,7 @@ func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
 }
 
 func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
+	useShownCustomFixture(t)
 	// Finite literals take the ordinary decode path (float64 rounding);
 	// 1e400 takes the overflow path (initial Unmarshal fails). Each is a
 	// shown-set custom entry so the projection, not the unmapped fallback,
@@ -356,7 +368,7 @@ func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
 			s, sub := acquireDrained(t, "tui-entry-numeric-"+tc.name)
 			number := json.Number(tc.literal)
 			want := map[string]any{
-				"kind":   "omo-loop:tick",
+				"kind":   "test-shown-custom",
 				"value":  number,
 				"nested": []any{number, nil, true},
 			}
@@ -367,7 +379,7 @@ func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
 				"entry": map[string]any{
 					"type":       "custom",
 					"id":         "entry-1",
-					"customType": "omo-loop:tick",
+					"customType": "test-shown-custom",
 					"data": map[string]any{
 						"value":  number,
 						"nested": []any{number, nil, true},

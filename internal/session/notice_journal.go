@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -202,8 +203,21 @@ func (m *Manager) withNoticeReplay(chatID string, sess *Session, use func([]Fram
 		}
 		journal.sessions[sess] = struct{}{}
 	}
-	out := make([]Frame, len(journal.ring))
-	copy(out, journal.ring)
+	out := make([]Frame, 0, len(journal.ring))
+	for _, frame := range journal.ring {
+		payload, _ := frame.Data.(map[string]any)
+		// Apply the observed engine contract to historical rows too, without
+		// changing retained identities or the journal sequence.
+		switch stringValue(payload["kind"]) {
+		case "goal-cache-warmup", "omo-loop:tick", "omo-cache-keepalive", "omo-rule-activation":
+			continue
+		case "engine_notify":
+			if strings.HasPrefix(stringValue(payload["message"]), "Goal active") {
+				continue
+			}
+		}
+		out = append(out, frame)
+	}
 	use(out)
 }
 
