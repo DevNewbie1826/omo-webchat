@@ -17,70 +17,119 @@ func acquireDrained(t *testing.T, chatID string) (*Session, *recorder) {
 }
 
 func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
-	// Given a live session with no dedicated mapping for this event type.
-	s, sub := acquireDrained(t, "passthrough-unlisted")
+	// Two independent fixtures: finite numbers take the normal default
+	// branch; an overflowing exponent takes the fallback path. Nested
+	// arrays/null/booleans ride with the finite event so both decode
+	// paths pin the full payload contract.
+	cases := []struct {
+		name  string
+		chat  string
+		event map[string]any
+		want  map[string]any
+	}{
+		{
+			name: "normal_finite_numbers",
+			chat: "passthrough-unlisted-normal",
+			event: map[string]any{
+				"type":      "provider_lifecycle_hint",
+				"sessionId": "raw-session-id",
+				"message":   "m1",
+				"severity":  "info",
+				"meta":      map[string]any{"k": "v"},
+				"intValue":  json.Number("9007199254740993"),
+				"smallInt":  json.Number("42"),
+				"decValue":  json.Number("12345678901234567890.123456"),
+				"nested":    []any{map[string]any{"value": json.Number("9007199254740993")}, nil, true, false},
+			},
+			want: map[string]any{
+				"kind":     "provider_lifecycle_hint",
+				"message":  "m1",
+				"severity": "info",
+				"meta":     map[string]any{"k": "v"},
+				"intValue": json.Number("9007199254740993"),
+				"smallInt": json.Number("42"),
+				"decValue": json.Number("12345678901234567890.123456"),
+				"nested":   []any{map[string]any{"value": json.Number("9007199254740993")}, nil, true, false},
+			},
+		},
+		{
+			name: "overflow_exponent",
+			chat: "passthrough-unlisted-overflow",
+			event: map[string]any{
+				"type":      "provider_lifecycle_hint",
+				"sessionId": "raw-session-id",
+				"message":   "m1",
+				"severity":  "info",
+				"meta":      map[string]any{"k": "v"},
+				"intValue":  json.Number("9007199254740993"),
+				"expValue":  json.Number("1e400"),
+			},
+			want: map[string]any{
+				"kind":     "provider_lifecycle_hint",
+				"message":  "m1",
+				"severity": "info",
+				"meta":     map[string]any{"k": "v"},
+				"intValue": json.Number("9007199254740993"),
+				"expValue": json.Number("1e400"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a live session with no dedicated mapping for this event type.
+			s, sub := acquireDrained(t, tc.chat)
 
-	// When an unlisted engine event arrives on the dispatch path.
-	injectEvent(t, s, map[string]any{
-		"type":      "provider_lifecycle_hint",
-		"sessionId": "raw-session-id",
-		"message":   "m1",
-		"severity":  "info",
-		"meta":      map[string]any{"k": "v"},
-		"intValue":  json.Number("9007199254740993"),
-		"expValue":  json.Number("1e400"),
-	})
-	frames := publishCompactionMarker(t, s, sub)
+			// When an unlisted event arrives on the dispatch path.
+			injectEvent(t, s, tc.event)
+			frames := publishCompactionMarker(t, s, sub)
 
-	// Then exactly one FrameNotice is published with the event kind, payload
-	// fields carried verbatim (including numeric literals), envelope fields
-	// stripped, and journal identity stamped.
-	got := counts(frames)[FrameNotice]
-	if got != 1 {
-		t.Fatalf("unlisted event produced %d FrameNotice, want 1; frames=%+v", got, frames)
-	}
-	var notice Frame
-	for _, f := range frames {
-		if f.Kind == FrameNotice {
-			notice = f
-			break
-		}
-	}
-	data, ok := notice.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("notice data = %T, want map[string]any", notice.Data)
-	}
-	nid, _ := data["nid"].(string)
-	at, _ := data["at"].(string)
-	if nid == "" || at == "" {
-		t.Fatalf("notice missing journal identity: nid=%q at=%q", nid, at)
-	}
-	if _, present := data["sessionId"]; present {
-		t.Fatalf("sessionId leaked into notice payload: %+v", data)
-	}
-	if _, present := data["type"]; present {
-		t.Fatalf("type leaked into notice payload: %+v", data)
-	}
-	wantPayload, err := json.Marshal(map[string]any{
-		"kind":     "provider_lifecycle_hint",
-		"message":  "m1",
-		"severity": "info",
-		"meta":     map[string]any{"k": "v"},
-		"intValue": json.Number("9007199254740993"),
-		"expValue": json.Number("1e400"),
-	})
-	if err != nil {
-		t.Fatalf("marshal expected payload: %v", err)
-	}
-	stripped := cloneAnyMap(data)
-	delete(stripped, "nid")
-	delete(stripped, "at")
-	gotPayload, err := json.Marshal(stripped)
-	if err != nil {
-		t.Fatalf("marshal notice payload: %v", err)
-	}
-	if string(gotPayload) != string(wantPayload) {
-		t.Fatalf("notice payload = %s, want %s", gotPayload, wantPayload)
+			// Then exactly one FrameNotice is published with the event kind, payload
+			// fields carried verbatim (including numeric literals), envelope fields
+			// stripped, and journal identity stamped.
+			got := counts(frames)[FrameNotice]
+			if got != 1 {
+				t.Fatalf("unlisted event produced %d FrameNotice, want 1; frames=%+v", got, frames)
+			}
+			var notice Frame
+			for _, f := range frames {
+				if f.Kind == FrameNotice {
+					notice = f
+					break
+				}
+			}
+			data, ok := notice.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("notice data = %T, want map[string]any", notice.Data)
+			}
+			nid, _ := data["nid"].(string)
+			at, _ := data["at"].(string)
+			if nid == "" || at == "" {
+				t.Fatalf("notice missing journal identity: nid=%q at=%q", nid, at)
+			}
+			if _, present := data["sessionId"]; present {
+				t.Fatalf("sessionId leaked into notice payload: %+v", data)
+			}
+			if _, present := data["type"]; present {
+				t.Fatalf("type leaked into notice payload: %+v", data)
+			}
+			if n, ok := data["intValue"].(json.Number); !ok || n != "9007199254740993" {
+				t.Fatalf("intValue = %T(%v), want json.Number 9007199254740993", data["intValue"], data["intValue"])
+			}
+			wantPayload, err := json.Marshal(tc.want)
+			if err != nil {
+				t.Fatalf("marshal expected payload: %v", err)
+			}
+			stripped := cloneAnyMap(data)
+			delete(stripped, "nid")
+			delete(stripped, "at")
+			gotPayload, err := json.Marshal(stripped)
+			if err != nil {
+				t.Fatalf("marshal notice payload: %v", err)
+			}
+			if string(gotPayload) != string(wantPayload) {
+				t.Fatalf("notice payload = %s, want %s", gotPayload, wantPayload)
+			}
+		})
 	}
 }
 
