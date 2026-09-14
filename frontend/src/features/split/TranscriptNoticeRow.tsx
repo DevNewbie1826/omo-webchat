@@ -17,13 +17,15 @@ function formatNoticeTime(at: number): string {
  * virtualized transcript flow — never inside the live region. Every notice
  * renders the same uniform structure regardless of kind: the system tag, the
  * receipt time, and the full original payload as always-visible JSON with the
- * wire kind merged in as `type` (a null payload renders as `{"type": kind}`).
+ * wire kind merged in as a non-colliding wrapper `{ type, payload }`, so a
+ * payload's own fields — including its own `type` — are preserved verbatim (a
+ * null payload renders as `{"type": kind, "payload": null}`).
  * Rows are permanent, non-interactive display blocks: no disclosure and no
  * dismissal control is rendered.
  */
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const { t } = useT();
-  const fullPayload = { ...(notice.payload ?? {}), type: notice.kind };
+  const fullPayload = { type: notice.kind, payload: notice.payload };
   return (
     <div className="th-chat-notice th-alert th-alert--info" role="status">
       <div className="th-chat-notice-content">

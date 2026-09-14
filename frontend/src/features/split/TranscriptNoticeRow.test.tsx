@@ -35,6 +35,11 @@ function payloadJson(container: HTMLElement): Record<string, unknown> {
   return JSON.parse(text ?? "") as Record<string, unknown>;
 }
 
+/** The original payload object inside the `{ type, payload }` wrapper. */
+function innerPayload(container: HTMLElement): Record<string, unknown> {
+  return payloadJson(container)["payload"] as Record<string, unknown>;
+}
+
 describe("TranscriptNoticeRow", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -88,9 +93,10 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("c1");
     expect(container.querySelector("details")).toBeNull();
     const json = payloadJson(container);
-    expect(json["message"]).toBe("m1");
-    expect(json["reason"]).toBe("r1");
-    expect(json["chainKey"]).toBe("c1");
+    const inner = innerPayload(container);
+    expect(inner["message"]).toBe("m1");
+    expect(inner["reason"]).toBe("r1");
+    expect(inner["chainKey"]).toBe("c1");
     expect(json["type"]).toBe("auto_retry_start");
   });
 
@@ -114,7 +120,10 @@ describe("TranscriptNoticeRow", () => {
       expect(row.querySelector(".th-notice-payload")).not.toBeNull();
       expect(row.querySelector(".th-notice-time")).not.toBeNull();
     }
-    expect(rows[0].className).toBe(rows[1].className);
+    expect(rows.map((row) => row.className)).toEqual([
+      "th-chat-notice th-alert th-alert--info",
+      "th-chat-notice th-alert th-alert--info",
+    ]);
   });
 
   it("renders the fallback-applied payload fully expanded with the kind as type", () => {
@@ -127,10 +136,11 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).not.toContain("notice.fallbackApplied");
     expect(container.textContent).not.toContain("notice.fallbackReason");
     const json = payloadJson(container);
-    expect(json["from"]).toBe("zai/glm");
-    expect(json["to"]).toBe("moonshot/kimi");
-    expect(json["chainKey"]).toBe("main");
-    expect(json["reason"]).toBe("rate_limited");
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("zai/glm");
+    expect(inner["to"]).toBe("moonshot/kimi");
+    expect(inner["chainKey"]).toBe("main");
+    expect(inner["reason"]).toBe("rate_limited");
     expect(json["type"]).toBe("retry_fallback_applied");
   });
 
@@ -138,8 +148,9 @@ describe("TranscriptNoticeRow", () => {
     renderRow(notice(1, "retry_fallback_reverted", { from: "moonshot/kimi", to: "zai/glm" }));
     expect(container.textContent).not.toContain("notice.fallbackReverted");
     const json = payloadJson(container);
-    expect(json["from"]).toBe("moonshot/kimi");
-    expect(json["to"]).toBe("zai/glm");
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("moonshot/kimi");
+    expect(inner["to"]).toBe("zai/glm");
     expect(json["type"]).toBe("retry_fallback_reverted");
   });
 
@@ -151,28 +162,29 @@ describe("TranscriptNoticeRow", () => {
     }));
     expect(container.textContent).not.toContain("notice.highReasoningWarning");
     expect(container.textContent).not.toContain("notice.highReasoningGuidance");
-    const json = payloadJson(container);
-    expect(json["provider"]).toBe("zai");
-    expect(json["modelId"]).toBe("glm-5.2");
-    expect(json["thinkingLevel"]).toBe("high");
+    const inner = innerPayload(container);
+    expect(inner["provider"]).toBe("zai");
+    expect(inner["modelId"]).toBe("glm-5.2");
+    expect(inner["thinkingLevel"]).toBe("high");
   });
 
   it("renders the server fallback-aborted payload fully expanded", () => {
     renderRow(notice(1, "server_fallback_aborted", { from: "a/one", to: "b/two", chainConfigured: true }));
     expect(container.textContent).not.toContain("notice.fallbackAborted");
-    const json = payloadJson(container);
-    expect(json["from"]).toBe("a/one");
-    expect(json["to"]).toBe("b/two");
-    expect(json["chainConfigured"]).toBe(true);
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("a/one");
+    expect(inner["to"]).toBe("b/two");
+    expect(inner["chainConfigured"]).toBe(true);
   });
 
   it("renders extension_notify fully expanded with id, message, and title", () => {
     renderRow(notice(1, "extension_notify", { id: "n1", message: "Disk almost full", title: "Storage" }));
     expect(container.textContent).toContain("Disk almost full");
     const json = payloadJson(container);
-    expect(json["id"]).toBe("n1");
-    expect(json["message"]).toBe("Disk almost full");
-    expect(json["title"]).toBe("Storage");
+    const inner = innerPayload(container);
+    expect(inner["id"]).toBe("n1");
+    expect(inner["message"]).toBe("Disk almost full");
+    expect(inner["title"]).toBe("Storage");
     expect(json["type"]).toBe("extension_notify");
   });
 
@@ -180,22 +192,26 @@ describe("TranscriptNoticeRow", () => {
     renderRow(notice(1, "brand_new_unknown_kind", { message: "hello there" }));
     expect(container.textContent).toContain("hello there");
     expect(container.querySelector("details")).toBeNull();
-    expect(payloadJson(container)).toEqual({ message: "hello there", type: "brand_new_unknown_kind" });
+    expect(payloadJson(container)).toEqual({
+      type: "brand_new_unknown_kind",
+      payload: { message: "hello there" },
+    });
   });
 
   it("renders fallback success fully expanded", () => {
     renderRow(notice(1, "retry_fallback_succeeded", { to: "zai/glm" }));
     expect(container.textContent).not.toContain("notice.fallbackSucceeded");
     const json = payloadJson(container);
-    expect(json["to"]).toBe("zai/glm");
+    const inner = innerPayload(container);
+    expect(inner["to"]).toBe("zai/glm");
     expect(json["type"]).toBe("retry_fallback_succeeded");
   });
 
   it("renders fallback exhaustion fully expanded", () => {
     renderRow(notice(1, "retry_fallback_exhausted", { chainKey: "main" }));
     expect(container.textContent).not.toContain("notice.fallbackExhausted");
-    const json = payloadJson(container);
-    expect(json["chainKey"]).toBe("main");
+    const inner = innerPayload(container);
+    expect(inner["chainKey"]).toBe("main");
   });
 
   it.each<[Lang, string]>([
@@ -206,7 +222,10 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("attempt 2");
     expect(container.textContent).not.toContain(started);
     expect(container.querySelector("details")).toBeNull();
-    expect(payloadJson(container)).toEqual({ message: "attempt 2", type: "auto_retry_start" });
+    expect(payloadJson(container)).toEqual({
+      type: "auto_retry_start",
+      payload: { message: "attempt 2" },
+    });
   });
 
   it.each<[Lang, string]>([
@@ -216,7 +235,16 @@ describe("TranscriptNoticeRow", () => {
     renderRow(notice(1, "auto_retry_end"), lang);
     expect(container.textContent).not.toContain(ended);
     expect(container.querySelector("details")).toBeNull();
-    expect(payloadJson(container)).toEqual({ type: "auto_retry_end" });
+    expect(payloadJson(container)).toEqual({ type: "auto_retry_end", payload: null });
+  });
+
+  it("preserves a payload's own type field alongside the wire kind", () => {
+    renderRow(notice(1, "auto_retry_start", { type: "QA_ORIGINAL_TYPE", message: "m1" }));
+    const json = payloadJson(container);
+    expect(json["type"]).toBe("auto_retry_start");
+    const inner = json["payload"] as Record<string, unknown>;
+    expect(inner["type"]).toBe("QA_ORIGINAL_TYPE");
+    expect(inner["message"]).toBe("m1");
   });
 
   it("renders no dismiss button", () => {
