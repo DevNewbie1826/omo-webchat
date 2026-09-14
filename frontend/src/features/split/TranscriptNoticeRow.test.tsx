@@ -131,6 +131,22 @@ describe("TranscriptNoticeRow", () => {
       expect(container.textContent).not.toContain("{");
     });
 
+    it("keeps a numeric payload.title visible as a key: value line instead of dropping it", () => {
+      renderRow(notice(1, "auto_retry_start", { title: 94731, message: "QA_NUMBER_PRIMARY" }));
+      // The non-string title must not take the bold-title role…
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      // …but its value must stay visible as text, not be silently dropped.
+      expect(container.textContent).toContain("QA_NUMBER_PRIMARY");
+      expect(container.textContent).toContain("title: 94731");
+    });
+
+    it("keeps an object payload.title visible as a key: value line instead of dropping it", () => {
+      renderRow(notice(1, "auto_retry_start", { title: { code: "QA_TITLE_VALUE" }, why: "QA_PRIMARY" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      expect(container.textContent).toContain("QA_PRIMARY");
+      expect(container.textContent).toContain("QA_TITLE_VALUE");
+    });
+
     it("falls back to the kind as the title when payload.title is absent", () => {
       renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }));
       expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
@@ -213,6 +229,65 @@ describe("TranscriptNoticeRow", () => {
       renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), "en");
       expect(container.textContent).toContain("attempt 2");
       expect(container.textContent).not.toContain("Auto retry started");
+    });
+
+    it("preserves a payload's own type field as a key: value line alongside the kind title", () => {
+      renderRow(notice(1, "auto_retry_start", { type: "QA_ORIGINAL_TYPE", message: "m1" }));
+      // The wrapper kind keeps the bold-title role…
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
+      // …and the payload's own type field stays visible as its own line.
+      expect(container.textContent).toContain("type: QA_ORIGINAL_TYPE");
+      expect(container.textContent).toContain("m1");
+    });
+
+    it("renders the fallback-reverted from/to payload as key: value lines", () => {
+      renderRow(notice(1, "retry_fallback_reverted", { from: "moonshot/kimi", to: "zai/glm" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("retry_fallback_reverted");
+      expect(container.textContent).toContain("from: moonshot/kimi");
+      expect(container.textContent).toContain("to: zai/glm");
+      expect(container.textContent).not.toContain("notice.fallbackReverted");
+    });
+
+    it("renders the high-reasoning payload fields with no guidance copy", () => {
+      renderRow(notice(1, "high_reasoning_warning", {
+        provider: "zai",
+        modelId: "glm-5.2",
+        thinkingLevel: "high",
+      }));
+      expect(container.textContent).toContain("provider: zai");
+      expect(container.textContent).toContain("modelId: glm-5.2");
+      expect(container.textContent).toContain("thinkingLevel: high");
+      expect(container.textContent).not.toContain("notice.highReasoningWarning");
+      expect(container.textContent).not.toContain("notice.highReasoningGuidance");
+    });
+
+    it("renders the server fallback-aborted payload with its boolean field", () => {
+      renderRow(notice(1, "server_fallback_aborted", { from: "a/one", to: "b/two", chainConfigured: true }));
+      expect(container.textContent).toContain("from: a/one");
+      expect(container.textContent).toContain("to: b/two");
+      expect(container.textContent).toContain("chainConfigured: true");
+      expect(container.textContent).not.toContain("notice.fallbackAborted");
+    });
+
+    it("renders extension_notify with the title as the bold line and id/message visible", () => {
+      renderRow(notice(1, "extension_notify", { id: "n1", message: "Disk almost full", title: "Storage" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("Storage");
+      expect(container.textContent).toContain("Disk almost full");
+      expect(container.textContent).toContain("id: n1");
+    });
+
+    it("renders the fallback-succeeded payload as key: value lines", () => {
+      renderRow(notice(1, "retry_fallback_succeeded", { to: "zai/glm" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("retry_fallback_succeeded");
+      expect(container.textContent).toContain("to: zai/glm");
+      expect(container.textContent).not.toContain("notice.fallbackSucceeded");
+    });
+
+    it("renders the fallback-exhausted payload as key: value lines", () => {
+      renderRow(notice(1, "retry_fallback_exhausted", { chainKey: "main" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("retry_fallback_exhausted");
+      expect(container.textContent).toContain("chainKey: main");
+      expect(container.textContent).not.toContain("notice.fallbackExhausted");
     });
 
     it("renders no dismiss button", () => {

@@ -37,7 +37,7 @@ const PRIMARY_KEYS = ["why", "message", "reason"] as const;
  * payload message verbatim, toned by `notifyType` (info/warning/error).
  *
  * Every other kind renders as a notice box: a bold title line (payload.title
- * when present, else the kind), one primary explanatory line (the first of
+ * when it is a string, else the kind), one primary explanatory line (the first of
  * payload.why / payload.message / payload.reason), then every remaining
  * payload field as a dim "key: value" line. All information stays visible as
  * text — no JSON blob, no disclosure. Rows are permanent and non-interactive.
@@ -57,11 +57,14 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
 
   const fields = payload ?? {};
   const titleValue = fields["title"];
+  // Only a string title takes the bold-title role; a non-string title is not
+  // special-cased and flows through the remaining "key: value" lines below so
+  // every present value stays visible.
   const title = typeof titleValue === "string" ? titleValue : notice.kind;
   const primaryKey = PRIMARY_KEYS.find((key) => fields[key] !== undefined);
   const primary = primaryKey === undefined ? undefined : fieldText(fields[primaryKey]);
   const rest = Object.entries(fields).filter(
-    ([key]) => key !== "title" && key !== primaryKey,
+    ([key]) => (typeof titleValue === "string" ? key !== "title" : true) && key !== primaryKey,
   );
 
   return (
