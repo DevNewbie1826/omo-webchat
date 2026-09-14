@@ -108,14 +108,14 @@ func TestNoticeJournalStoreSequencesCapsAndReplaysStably(t *testing.T) {
 	if !ok {
 		t.Fatalf("RecordNotice data = %T", first.Data)
 	}
-	if firstPayload["nid"] != "chat-a:1" || firstPayload["at"] != engineAt {
+	if firstPayload["nid"] != fmt.Sprintf("chat-a:g%d:1", mgr.nidGeneration) || firstPayload["at"] != engineAt {
 		t.Fatalf("engine-supplied at not preserved and sequenced nid missing: %+v", firstPayload)
 	}
 	second := mgr.RecordNotice("chat-a", map[string]any{"kind": "auto_retry_start"})
-	if secondPayload := second.Data.(map[string]any); secondPayload["nid"] != "chat-a:2" || secondPayload["at"] == "" {
+	if secondPayload := second.Data.(map[string]any); secondPayload["nid"] != fmt.Sprintf("chat-a:g%d:2", mgr.nidGeneration) || secondPayload["at"] == "" {
 		t.Fatalf("second notice not stamped: %+v", secondPayload)
 	}
-	if other := mgr.RecordNotice("chat-b", map[string]any{"kind": "auto_retry_start"}); other.Data.(map[string]any)["nid"] != "chat-b:1" {
+	if other := mgr.RecordNotice("chat-b", map[string]any{"kind": "auto_retry_start"}); other.Data.(map[string]any)["nid"] != fmt.Sprintf("chat-b:g%d:1", mgr.nidGeneration) {
 		t.Fatalf("journal sequence is not chat-scoped: %+v", other.Data)
 	}
 
@@ -129,10 +129,10 @@ func TestNoticeJournalStoreSequencesCapsAndReplaysStably(t *testing.T) {
 	}
 	head, _ := replay[0].Data.(map[string]any)
 	tail, _ := replay[NoticeJournalCapacity-1].Data.(map[string]any)
-	if head["nid"] != "chat-a:8" {
+	if head["nid"] != fmt.Sprintf("chat-a:g%d:8", mgr.nidGeneration) {
 		t.Fatalf("oldest notices were not evicted first: head=%v", head["nid"])
 	}
-	if tail["nid"] != fmt.Sprintf("chat-a:%d", 2+extra) {
+	if tail["nid"] != fmt.Sprintf("chat-a:g%d:%d", mgr.nidGeneration, 2+extra) {
 		t.Fatalf("newest notice was evicted: tail=%v", tail["nid"])
 	}
 	again := mgr.noticeReplay("chat-a")

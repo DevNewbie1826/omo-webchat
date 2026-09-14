@@ -16,15 +16,20 @@ const NoticeJournalCapacity = 50
 
 // noticeJournal is the per-chat durable-notice ring. Each entry was stamped
 // once, at publish time, with its replay identity (nid) and receipt time (at);
-// every replay delivers the stored values verbatim.
+// every replay delivers the stored values verbatim. generation qualifies
+// every stamped nid with this manager instance's lifetime, and retired marks
+// an identity that deletion removed: both fields are guarded by mu, and a
+// retired journal refuses every further save.
 type noticeJournal struct {
-	mu       sync.Mutex
-	dir      string
-	chatID   string
-	loaded   bool
-	seq      uint64
-	ring     []Frame
-	sessions map[*Session]struct{}
+	mu         sync.Mutex
+	dir        string
+	chatID     string
+	generation int64
+	retired    bool
+	loaded     bool
+	seq        uint64
+	ring       []Frame
+	sessions   map[*Session]struct{}
 }
 
 // append admits one journaled frame, evicting the oldest entry once the ring
@@ -47,7 +52,7 @@ func (m *Manager) noticeJournal(chatID string) *noticeJournal {
 	m.mu.Lock()
 	journal := m.noticeJournals[chatID]
 	if journal == nil {
-		journal = &noticeJournal{dir: m.cfg.NoticeDir, chatID: chatID}
+		journal = &noticeJournal{dir: m.cfg.NoticeDir, chatID: chatID, generation: m.nidGeneration}
 		m.noticeJournals[chatID] = journal
 	}
 	m.mu.Unlock()
@@ -78,11 +83,15 @@ func (j *noticeJournal) ensureLoaded() {
 }
 
 // persistLocked installs the journal's current state on disk. Callers hold
-// mu. Persistence is best-effort: the in-memory ring stays authoritative,
-// and every append rewrites the full state, so a failed write is logged and
-// superseded by the next journal update.
+// mu. A retired journal must never touch the disk again: retirement unlinks
+// the file after draining writers under mu, and a save that ran to the rename
+// before the flag was set has already been unlinked, so checking here closes
+// the resurrection window. Other failures are best-effort: the in-memory ring
+// stays authoritative, every append rewrites the full state, and delivered
+// nids stay unique across restarts because each manager instance stamps its
+// own generation, so a failed write is logged and superseded.
 func (j *noticeJournal) persistLocked() {
-	if j.dir == "" {
+	if j.dir == "" || j.retired {
 		return
 	}
 	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring))}
@@ -105,7 +114,11 @@ func stampNotice(chatID string, journal *noticeJournal, f Frame) Frame {
 		stamped["at"] = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	journal.seq++
-	stamped["nid"] = fmt.Sprintf("%s:%d", chatID, journal.seq)
+	// The generation qualifier makes delivered nids per-manager-instance:
+	// a nid whose save failed and never reached disk cannot be re-issued by
+	// a restarted manager, because the restart stamps a fresh generation.
+	// Within one instance the seq stays strictly monotonic per chat.
+	stamped["nid"] = fmt.Sprintf("%s:g%d:%d", chatID, journal.generation, journal.seq)
 	f.Data = stamped
 	journal.append(f)
 	journal.persistLocked()

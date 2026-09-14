@@ -230,8 +230,12 @@ type Manager struct {
 	// Session (including idle provider eviction); only identity retirement
 	// (chat deletion) drops them.
 	noticeJournals map[string]*noticeJournal
-	pendingOpen    map[string]chan struct{}
-	openSlots      chan struct{}
+	// nidGeneration qualifies every stamped notice nid with this manager
+	// instance's lifetime, so an identity issued here is never re-issued by
+	// a later instance over the same directory, even after a failed save.
+	nidGeneration int64
+	pendingOpen   map[string]chan struct{}
+	openSlots     chan struct{}
 	// openSettled broadcasts detached-open settlement: the channel is
 	// closed and replaced under m.mu each time a retained detached open
 	// releases its slot, so waiters observe settlement without polling.
@@ -275,7 +279,7 @@ func NewManager(cfg Config) *Manager {
 		cfg.RetiredRouteLimit = DefaultRetiredRouteLimit
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-	m := &Manager{cfg: cfg, byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
+	m := &Manager{cfg: cfg, nidGeneration: time.Now().UnixNano(), byChat: make(map[string]*Session), byRoute: make(map[string]*Session), routeCleanup: make(map[string]chan struct{}), operationOwners: make(map[string]*sendOperationOwner), byDurableEpoch: make(map[omorpc.EpochToken]map[string]*durableEpochBinding), durableToChat: make(map[string]string), retiredDurable: make(map[string]uint64), invalidatedEpochs: make(map[omorpc.EpochToken]struct{}), epochIngestions: make(map[omorpc.EpochToken]int), retiringByChat: make(map[string]map[retiringRoute]struct{}), slotGeneration: make(map[string]uint64), done: make(chan struct{}), shutdownCtx: shutdownCtx, shutdownCancel: shutdownCancel, openCleanupExpired: make(chan struct{}, 64), retiredRoutes: make(map[retiringRoute]struct{}), noticeJournals: make(map[string]*noticeJournal), pendingOpen: make(map[string]chan struct{}), openSlots: make(chan struct{}, cfg.DetachedOpenLimit), openSettled: make(chan struct{}), overviewCache: make(map[string]*overviewCacheEntry), overviewCurrent: make(map[string]Summary), overviewSubscribers: make(map[uint64]*overviewSubscriber)}
 	if cfg.Client != nil {
 		m.eventWG.Add(1)
 		go m.eventLoop()
@@ -761,15 +765,33 @@ func (m *Manager) RetireIdentity(chatID string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
 	delete(m.operationOwners, chatID)
+	journal := m.noticeJournals[chatID]
 	delete(m.noticeJournals, chatID)
 	noticeDir := m.cfg.NoticeDir
 	m.mu.Unlock()
-	if noticeDir == "" {
+	if journal == nil {
+		if noticeDir == "" {
+			return
+		}
+		if err := removeNoticeJournal(noticeDir, chatID); err != nil {
+			slog.Warn("failed to remove persisted notice journal", "chat_id", chatID, "error", err)
+		}
 		return
 	}
-	if err := removeNoticeJournal(noticeDir, chatID); err != nil {
-		slog.Warn("failed to remove persisted notice journal", "chat_id", chatID, "error", err)
+	// Retirement barrier: draining the writer and unlinking under the same
+	// journal mutex (a leaf lock; m.mu is already released, preserving the
+	// m.mu -> journal.mu order) means an in-flight save either renames
+	// before this unlink, or is refused by the retired flag afterwards - it
+	// can never resurrect the file. Detaching the map entry under m.mu
+	// keeps later lookups from reaching this journal at all.
+	journal.mu.Lock()
+	journal.retired = true
+	if journal.dir != "" {
+		if err := removeNoticeJournal(journal.dir, journal.chatID); err != nil {
+			slog.Warn("failed to remove persisted notice journal", "chat_id", journal.chatID, "error", err)
+		}
 	}
+	journal.mu.Unlock()
 }
 
 // ReplayBackpressureSubscriber lets a transport apply replay-specific write

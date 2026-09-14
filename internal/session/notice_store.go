@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/DevNewbie1826/omo-webchat/internal/dirsync"
@@ -24,8 +26,10 @@ type persistedNotice struct {
 
 // persistedNoticeJournal is the on-disk state of one chat's notice journal:
 // the monotonic stamping sequence plus the retained entries in replay order.
-// The sequence is stored even when entries were evicted, so nids stamped
-// after a restart can never collide with evicted ones.
+// The sequence is stored even when entries were evicted, so a restarted
+// manager continues past every persisted nid; the nids themselves carry a
+// per-instance generation qualifier, so identities issued before a restart
+// are never re-issued by the restarted one.
 type persistedNoticeJournal struct {
 	Seq     uint64            `json:"seq"`
 	Entries []persistedNotice `json:"entries"`
@@ -36,11 +40,11 @@ func noticeJournalPath(dir, chatID string) string {
 }
 
 // loadNoticeJournal reads the persisted journal for chatID. A missing file
-// is the normal empty journal. Every other failure degrades to an empty
-// journal with one warn line: notices are best-effort durable, so an
-// unreadable file must never block startup or panic. A corrupt file is moved
-// aside as "<chatID>.json.corrupt-<unixts>" for inspection instead of being
-// destroyed.
+// is the normal empty journal. A file that fails to decode, or that decodes
+// but violates journal invariants, is moved aside as
+// "<chatID>.json.corrupt-<unixts>" for inspection instead of being destroyed,
+// and the journal starts empty: notices are best-effort durable, so an
+// unusable file must never block startup or panic.
 func loadNoticeJournal(dir, chatID string) persistedNoticeJournal {
 	path := noticeJournalPath(dir, chatID)
 	raw, err := os.ReadFile(path)
@@ -52,15 +56,73 @@ func loadNoticeJournal(dir, chatID string) persistedNoticeJournal {
 	}
 	var state persistedNoticeJournal
 	if err := json.Unmarshal(raw, &state); err != nil {
-		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
-		if renameErr := os.Rename(path, aside); renameErr != nil {
-			slog.Warn("failed to move corrupt notice journal aside; starting empty", "chat_id", chatID, "error", renameErr)
-			return persistedNoticeJournal{}
-		}
-		slog.Warn("notice journal corrupt; moved aside and starting empty", "chat_id", chatID, "path", aside, "error", err)
-		return persistedNoticeJournal{}
+		return quarantineNoticeJournal(path, chatID, err)
+	}
+	if err := validateNoticeJournalState(chatID, state); err != nil {
+		return quarantineNoticeJournal(path, chatID, err)
 	}
 	return state
+}
+
+// quarantineNoticeJournal moves an unusable journal aside and starts empty.
+func quarantineNoticeJournal(path, chatID string, cause error) persistedNoticeJournal {
+	aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+	if renameErr := os.Rename(path, aside); renameErr != nil {
+		slog.Warn("failed to move corrupt notice journal aside; starting empty", "chat_id", chatID, "error", renameErr)
+		return persistedNoticeJournal{}
+	}
+	slog.Warn("notice journal corrupt; moved aside and starting empty", "chat_id", chatID, "path", aside, "error", cause)
+	return persistedNoticeJournal{}
+}
+
+// validateNoticeJournalState rejects a decodable file whose contents violate
+// journal invariants. The persisted file is a system boundary: successful
+// unmarshalling does not establish journal validity, and an admitted
+// inconsistent state would replay notices or re-issue their nids. seq cannot
+// be negative (uint64); a negative JSON value fails decoding instead.
+func validateNoticeJournalState(chatID string, state persistedNoticeJournal) error {
+	if len(state.Entries) > NoticeJournalCapacity {
+		return fmt.Errorf("journal holds %d entries, over cap %d", len(state.Entries), NoticeJournalCapacity)
+	}
+	prefix := chatID + ":"
+	var maxTail uint64
+	for i, e := range state.Entries {
+		nid, _ := e.Data["nid"].(string)
+		at, _ := e.Data["at"].(string)
+		if nid == "" {
+			return fmt.Errorf("entry %d has empty nid", i)
+		}
+		if !strings.HasPrefix(nid, prefix) {
+			return fmt.Errorf("entry %d nid %q is not %q-prefixed", i, nid, prefix)
+		}
+		if at == "" {
+			return fmt.Errorf("entry %d has empty receipt time", i)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
+			return fmt.Errorf("entry %d receipt time %q is not RFC3339: %w", i, at, err)
+		}
+		if tail, ok := noticeNIDTail(nid); ok && tail > maxTail {
+			maxTail = tail
+		}
+	}
+	if state.Seq < maxTail {
+		return fmt.Errorf("seq %d is below the highest persisted nid tail %d", state.Seq, maxTail)
+	}
+	return nil
+}
+
+// noticeNIDTail extracts the numeric sequence suffix of a stamped nid
+// ("<chatID>:g<generation>:<seq>" or the legacy "<chatID>:<seq>").
+func noticeNIDTail(nid string) (uint64, bool) {
+	idx := strings.LastIndexByte(nid, ':')
+	if idx < 0 {
+		return 0, false
+	}
+	tail, err := strconv.ParseUint(nid[idx+1:], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return tail, true
 }
 
 // saveNoticeJournal atomically replaces the persisted journal: temp file in

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,8 +54,10 @@ func TestNoticeJournalPersistsAcrossManagerRestart(t *testing.T) {
 	second := mgr.RecordNotice("chat-a", map[string]any{"kind": "auto_retry_start"})
 	_, firstNID, _ := noticeIdentity(t, first)
 	_, secondNID, _ := noticeIdentity(t, second)
-	if firstNID != "chat-a:1" || secondNID != "chat-a:2" {
-		t.Fatalf("pre-restart nids = (%q, %q), want (chat-a:1, chat-a:2)", firstNID, secondNID)
+	wantFirst := fmt.Sprintf("chat-a:g%d:1", mgr.nidGeneration)
+	wantSecond := fmt.Sprintf("chat-a:g%d:2", mgr.nidGeneration)
+	if firstNID != wantFirst || secondNID != wantSecond {
+		t.Fatalf("pre-restart nids = (%q, %q), want (%q, %q)", firstNID, secondNID, wantFirst, wantSecond)
 	}
 	if err := mgr.CloseAll(context.Background()); err != nil {
 		t.Fatalf("closing first manager: %v", err)
@@ -67,7 +70,7 @@ func TestNoticeJournalPersistsAcrossManagerRestart(t *testing.T) {
 	if len(file.Entries) != 2 {
 		t.Fatalf("persisted entries = %d, want 2", len(file.Entries))
 	}
-	if file.Entries[0].Data["nid"] != "chat-a:1" || file.Entries[1].Data["nid"] != "chat-a:2" {
+	if file.Entries[0].Data["nid"] != firstNID || file.Entries[1].Data["nid"] != secondNID {
 		t.Fatalf("persisted entries lost recorded nids: %+v", file.Entries)
 	}
 	if file.Entries[0].Data["kind"] != "high_reasoning_warning" || file.Entries[1].Data["kind"] != "auto_retry_start" {
@@ -77,13 +80,14 @@ func TestNoticeJournalPersistsAcrossManagerRestart(t *testing.T) {
 	restarted := NewManager(Config{NoticeDir: dir})
 	t.Cleanup(func() { _ = restarted.CloseAll(context.Background()) })
 	replay := restarted.noticeReplay("chat-a")
-	if got := noticeNIDs(replay); len(got) != 2 || got[0] != "chat-a:1" || got[1] != "chat-a:2" {
-		t.Fatalf("replayed nids after restart = %v, want [chat-a:1 chat-a:2]", got)
+	if got := noticeNIDs(replay); len(got) != 2 || got[0] != firstNID || got[1] != secondNID {
+		t.Fatalf("replayed nids after restart = %v, want [%s %s]", got, firstNID, secondNID)
 	}
 	third := restarted.RecordNotice("chat-a", map[string]any{"kind": "extension_notify"})
 	_, thirdNID, _ := noticeIdentity(t, third)
-	if thirdNID != "chat-a:3" {
-		t.Fatalf("post-restart nid = %q, want chat-a:3 (sequence must continue past both persisted nids)", thirdNID)
+	wantThird := fmt.Sprintf("chat-a:g%d:3", restarted.nidGeneration)
+	if thirdNID != wantThird {
+		t.Fatalf("post-restart nid = %q, want %q (sequence continues past both persisted nids, generation must differ)", thirdNID, wantThird)
 	}
 }
 
@@ -140,8 +144,8 @@ func TestRecordNoticeWithoutNoticeDirKeepsMemoryOnly(t *testing.T) {
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
 
 	recorded := mgr.RecordNotice("chat-a", map[string]any{"kind": "queue_delivery_uncertain"})
-	if _, nid, _ := noticeIdentity(t, recorded); nid != "chat-a:1" {
-		t.Fatalf("memory-only nid = %q, want chat-a:1", nid)
+	if _, nid, _ := noticeIdentity(t, recorded); nid != fmt.Sprintf("chat-a:g%d:1", mgr.nidGeneration) {
+		t.Fatalf("memory-only nid = %q, want chat-a:g%d:1", nid, mgr.nidGeneration)
 	}
 	if replay := mgr.noticeReplay("chat-a"); len(replay) != 1 {
 		t.Fatalf("memory-only replay holds %d notices, want 1", len(replay))

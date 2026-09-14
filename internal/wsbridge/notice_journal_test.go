@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,8 +159,8 @@ func TestQueueNoticeAttachInterleavingsDeliverExactlyOnce(t *testing.T) {
 				t.Fatalf("attach delivered %d queue notices before the post-binding sentinel, want exactly 1: %+v", len(notices), notices)
 			}
 			_, nid, at := noticeFields(t, notices[0])
-			if nid != chat+":1" || at == "" {
-				t.Fatalf("notice identity = (%q,%q), want stable nid %q and non-empty at", nid, at, chat+":1")
+			if !strings.HasPrefix(nid, chat+":g") || !strings.HasSuffix(nid, ":1") || at == "" {
+				t.Fatalf("notice identity = (%q,%q), want chat-scoped generation-qualified nid with sequence 1 and non-empty at", nid, at)
 			}
 		})
 	}
