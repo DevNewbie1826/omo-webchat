@@ -150,6 +150,62 @@
   color: var(--th-error);
 }
 
+/* Summary boxes (compaction/branch): the fold toggle is a quiet text-row
+   button in the notice-box language — the first summary line plus a caret,
+   with the full summary unfolding below as a dim wrapped line. The tokens
+   line stays visible in both states so folding never hides information. */
+.th-notice-summary-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: var(--th-space-2);
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-notice-summary-toggle:hover {
+  color: var(--th-text);
+}
+
+.th-notice-summary-first {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.th-notice-summary-caret {
+  flex: 0 0 auto;
+}
+
+.th-notice-summary-full {
+  white-space: pre-wrap;
+}
+
+/* Extension-error blocks render the error string/stack as a muted pre block
+   inside the error-toned notice box. */
+.th-notice-pre {
+  margin: 0;
+  padding: var(--th-space-2) var(--th-space-3);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-bg);
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-text-dim);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .th-chat-live {
   display: flex;
   flex-direction: column;

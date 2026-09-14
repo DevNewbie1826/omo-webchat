@@ -1,4 +1,5 @@
 import type { ChatNotice } from "./useChatFrameState";
+import { SummaryBox } from "./SummaryBox";
 
 export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
@@ -30,6 +31,25 @@ function fieldText(value: unknown): string {
 const PRIMARY_KEYS = ["why", "message", "reason"] as const;
 
 /**
+ * Advisory kinds that render as a single toned status line, mirroring the
+ * observed engine display: warning-toned (yellow) for cost/cache-miss/
+ * thinking-dropped/engine warnings, dim gray for continuity and compaction
+ * history. The payload message renders verbatim.
+ */
+const WARNING_LINE_KINDS = new Set([
+  "compaction_cost",
+  "cache_miss",
+  "thinking_dropped",
+  "engine_warning",
+]);
+const DIM_LINE_KINDS = new Set(["continuity_notice", "compaction_history"]);
+
+function payloadString(payload: ChatNotice["payload"], key: string): string | undefined {
+  const value = payload?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
  * One server advisory rendered in the observed engine display format inside
  * the virtualized transcript flow — never inside the live region.
  *
@@ -51,6 +71,52 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
       <div className={`th-notice-status th-notice-status--${notifyTone(payload)}`} role="status">
         <span className="th-notice-status-text">{message}</span>
         <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
+
+  // Compaction and branch summaries render as labeled boxes: the tokens line
+  // stays visible and the summary folds to its first line behind a toggle.
+  if (notice.kind === "compaction_summary" || notice.kind === "branchSummary") {
+    const tokensValue = payload?.["tokens"];
+    const summary =
+      payloadString(payload, "summary") ?? payloadString(payload, "message") ?? payloadString(payload, "text") ?? "";
+    return (
+      <SummaryBox
+        label={notice.kind === "compaction_summary" ? "[compaction]" : "[branch]"}
+        {...(typeof tokensValue === "number" ? { tokens: tokensValue } : {})}
+        summary={summary}
+        time={formatNoticeTime(notice.at)}
+      />
+    );
+  }
+
+  // Cost/cache-miss/thinking-dropped/warning advisories are warning-toned
+  // single lines; continuity and compaction-history advisories are dim gray.
+  // Both keep the receipt time exactly like the engine_notify status row.
+  if (WARNING_LINE_KINDS.has(notice.kind) || DIM_LINE_KINDS.has(notice.kind)) {
+    const tone = WARNING_LINE_KINDS.has(notice.kind) ? "warning" : "info";
+    const message = payloadString(payload, "message") ?? "";
+    return (
+      <div className={`th-notice-status th-notice-status--${tone}`} role="status">
+        <span className="th-notice-status-text">{message}</span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
+
+  // Extension failures render as an error-toned notice block: the extension
+  // path as the bold title and the error string/stack in a muted pre block.
+  if (notice.kind === "extension_error") {
+    const title = payloadString(payload, "extensionPath") ?? "Extension error";
+    const error = payloadString(payload, "error") ?? "";
+    return (
+      <div className="th-chat-notice th-alert th-alert--error" role="status">
+        <div className="th-chat-notice-content">
+          <span className="th-notice-title">{title}</span>
+          <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+          {error !== "" && <pre className="th-notice-pre">{error}</pre>}
+        </div>
       </div>
     );
   }

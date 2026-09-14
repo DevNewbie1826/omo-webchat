@@ -355,4 +355,116 @@ describe("TranscriptNoticeRow", () => {
       expect(row?.querySelectorAll("button").length).toBe(0);
     });
   });
+
+  describe("compaction_summary box", () => {
+    const summary = "Compacted the earlier turns.\nKept the open tasks and the current plan.\nDropped quoted tool output.";
+
+    it("renders a [compaction] labeled box with the tokens line and the summary folded to its first line", () => {
+      renderRow(notice(1, "compaction_summary", { tokens: 42100, summary }));
+      const box = container.querySelector(".th-chat-notice");
+      expect(box).not.toBeNull();
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("[compaction]");
+      expect(container.textContent).toContain("42100 tokens");
+      // Collapsed: only the first summary line shows, the rest stays folded.
+      expect(container.textContent).toContain("Compacted the earlier turns.");
+      expect(container.textContent).not.toContain("Kept the open tasks and the current plan.");
+      expect(container.textContent).not.toContain("Dropped quoted tool output.");
+      // The fold is a toggle, not a loss: no pre block, no JSON dump.
+      expect(container.querySelector("pre")).toBeNull();
+      expect(container.textContent).not.toContain("{");
+    });
+
+    it("expands to the full summary on toggle while the tokens line stays visible", () => {
+      renderRow(notice(1, "compaction_summary", { tokens: 42100, summary }));
+      const toggle = container.querySelector<HTMLButtonElement>(".th-notice-summary-toggle");
+      expect(toggle).not.toBeNull();
+      expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+      act(() => {
+        toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(container.textContent).toContain("Kept the open tasks and the current plan.");
+      expect(container.textContent).toContain("Dropped quoted tool output.");
+      expect(container.textContent).toContain("42100 tokens");
+      expect(container.querySelector(".th-notice-summary-toggle")?.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("keeps the receipt time on the box", () => {
+      renderRow(notice(1, "compaction_summary", { tokens: 1, summary: "s" }));
+      expect(container.querySelector(".th-notice-time")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    });
+  });
+
+  describe("branchSummary box", () => {
+    const summary = "Branched from the earlier session.\nFirst folded line done.\nSecond folded line kept.";
+
+    it("renders a [branch] labeled box with the summary folded to its first line", () => {
+      renderRow(notice(1, "branchSummary", { summary }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("[branch]");
+      expect(container.textContent).toContain("Branched from the earlier session.");
+      expect(container.textContent).not.toContain("Second folded line kept.");
+      expect(container.querySelector("pre")).toBeNull();
+    });
+
+    it("expands to the full branch summary on toggle", () => {
+      renderRow(notice(1, "branchSummary", { summary }));
+      act(() => {
+        container.querySelector<HTMLButtonElement>(".th-notice-summary-toggle")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(container.textContent).toContain("First folded line done.");
+      expect(container.textContent).toContain("Second folded line kept.");
+    });
+  });
+
+  describe("single-line advisory kinds", () => {
+    it.each([
+      ["compaction_cost", "Compaction: 42100 tokens billed (~$0.42)"],
+      ["cache_miss", "Cache miss: 42100 tokens re-billed (~$0.42)"],
+      ["thinking_dropped", "Provider dropped 2 thinking block(s): signature mismatch"],
+      ["engine_warning", "Warning: resume requires compaction"],
+    ] as const)("%s renders as a warning-toned single status line with the message verbatim", (kind, message) => {
+      renderRow(notice(1, kind, { message }));
+      const row = container.querySelector(".th-notice-status");
+      expect(row).not.toBeNull();
+      expect(row?.className).toContain("th-notice-status--warning");
+      expect(row?.textContent).toContain(message);
+      expect(row?.querySelector(".th-notice-time")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      // A single line: no box, no title, no key: value expansion.
+      expect(container.querySelector(".th-chat-notice")).toBeNull();
+      expect(container.textContent).not.toContain("message:");
+    });
+
+    it.each([
+      ["continuity_notice", "Session continuity lost - resent 12 message(s)"],
+      ["compaction_history", "Session compacted 2 time(s)"],
+    ] as const)("%s renders as a dim gray status line with the message verbatim", (kind, message) => {
+      renderRow(notice(1, kind, { message }));
+      const row = container.querySelector(".th-notice-status");
+      expect(row).not.toBeNull();
+      expect(row?.className).toContain("th-notice-status--info");
+      expect(row?.className).not.toContain("th-notice-status--warning");
+      expect(row?.textContent).toContain(message);
+      expect(row?.querySelector(".th-notice-time")).not.toBeNull();
+      expect(container.querySelector(".th-chat-notice")).toBeNull();
+    });
+  });
+
+  describe("extension_error block", () => {
+    it("renders the extension path as the bold title and the error stack in a muted pre block with an error tone", () => {
+      const stack = "Error: boom\n    at load (/ext/index.ts:10:5)";
+      renderRow(notice(1, "extension_error", { extensionPath: "/ext/index.ts", error: stack }));
+      const box = container.querySelector(".th-chat-notice");
+      expect(box).not.toBeNull();
+      expect(box?.className).toContain("th-alert--error");
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("/ext/index.ts");
+      const pre = container.querySelector("pre");
+      expect(pre).not.toBeNull();
+      expect(pre?.textContent).toBe(stack);
+    });
+
+    it("falls back to a generic title when the path is absent", () => {
+      renderRow(notice(1, "extension_error", { error: "boom" }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("Extension error");
+      expect(container.querySelector("pre")?.textContent).toBe("boom");
+    });
+  });
 });

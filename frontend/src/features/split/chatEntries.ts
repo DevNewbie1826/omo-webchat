@@ -148,6 +148,35 @@ export function concatEntries(pages: readonly unknown[]): unknown[] {
   return out;
 }
 
+/**
+ * Summary entry roles and the transcript role each maps to. Observed engine
+ * behavior: branch and compaction summaries persist as session entries — as
+ * messages with a summary role or as custom messages of the matching
+ * customType — and resurface during hydration. Both map to a renderable
+ * transcript row carrying the summary text instead of being skipped.
+ */
+const SUMMARY_ROLES: Readonly<Record<string, string>> = {
+  branchSummary: "branchSummary",
+  compactionSummary: "compactionSummary",
+  compaction_summary: "compactionSummary",
+};
+
+/** Text for a summary entry: a plain string passes through; a structured
+ * content record contributes its summary (compaction summaries keep their
+ * token count as a leading "{tokens} tokens" line). */
+function summaryEntryText(role: string, content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!isRecord(content)) return "";
+  const summary = typeof content["summary"] === "string" ? content["summary"]
+    : typeof content["text"] === "string" ? content["text"]
+    : "";
+  const tokens = content["tokens"];
+  if (role === "compactionSummary" && typeof tokens === "number") {
+    return `${tokens} tokens\n${summary}`;
+  }
+  return summary;
+}
+
 export function parseEntries(entries: unknown): UiMessage[] {
   if (!Array.isArray(entries)) return [];
   const messages: UiMessage[] = [];
@@ -157,6 +186,20 @@ export function parseEntries(entries: unknown): UiMessage[] {
       const customType = entry["customType"];
       const content = entry["content"];
       if (typeof customType !== "string" || typeof content !== "string") continue;
+      // Branch/compaction summary custom entries are transcript rows in their
+      // own right: they bypass the explicit-display gate that hides
+      // transcript-silent custom messages.
+      const summaryRole = SUMMARY_ROLES[customType];
+      if (summaryRole !== undefined) {
+        const id = entry["id"];
+        messages.push({
+          ...(typeof id === "string" ? { id } : {}),
+          role: summaryRole,
+          blocks: [{ kind: "text", text: content }],
+          ts: parseTimestamp(entry["timestamp"]),
+        });
+        continue;
+      }
       // Observed engine contract: only custom messages explicitly flagged for
       // display enter the transcript; anything else is dropped.
       const inner = entry["message"];
@@ -184,10 +227,17 @@ export function parseEntries(entries: unknown): UiMessage[] {
     const timestamp = message["timestamp"];
     const model = message["model"];
     const id = entry["id"];
+    // Summary-role messages may carry a structured content record; fold it to
+    // the summary text so the row stays renderable.
+    const summaryRole = SUMMARY_ROLES[role];
+    const content = message["content"];
+    const blocks = summaryRole !== undefined && !Array.isArray(content) && typeof content !== "string"
+      ? [{ kind: "text", text: summaryEntryText(summaryRole, content) } as ContentBlock]
+      : parseBlocks(content);
     const parsed: UiMessage = {
       ...(typeof id === "string" ? { id } : {}),
-      role,
-      blocks: parseBlocks(message["content"]),
+      role: summaryRole ?? role,
+      blocks,
       ts: typeof timestamp === "number" ? timestamp : 0,
       ...(typeof model === "string" ? { model } : {}),
     };

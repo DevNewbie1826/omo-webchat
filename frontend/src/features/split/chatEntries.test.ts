@@ -66,6 +66,32 @@ describe("parseEntries", () => {
 		expect(messages.map((message) => message.id)).toEqual(["m-shown"]);
 	});
 
+	it("maps branch summary entries to renderable rows instead of skipping them", () => {
+		const messages = parseEntries([
+			// Observed engine behavior: branch summaries persist as session
+			// entries and resurface during hydration.
+			{ type: "message", id: "b1", message: { role: "branchSummary", content: { summary: "Branched context" }, timestamp: 5 } },
+			{ type: "custom_message", id: "b2", customType: "branchSummary", content: "Branched from earlier session" },
+		]);
+		expect(messages).toEqual([
+			{ id: "b1", role: "branchSummary", blocks: [{ kind: "text", text: "Branched context" }], ts: 5 },
+			{ id: "b2", role: "branchSummary", blocks: [{ kind: "text", text: "Branched from earlier session" }], ts: 0 },
+		]);
+		expect(messages.every(hasRenderableContent)).toBe(true);
+	});
+
+	it("maps compaction summary entries to renderable rows with tokens and summary text", () => {
+		const messages = parseEntries([
+			{ type: "custom_message", id: "c1", customType: "compaction_summary", content: "Compacted the earlier turns." },
+			{ type: "message", id: "c2", message: { role: "compactionSummary", content: { tokens: 42100, summary: "Kept the plan." }, timestamp: 7 } },
+		]);
+		expect(messages).toEqual([
+			{ id: "c1", role: "compactionSummary", blocks: [{ kind: "text", text: "Compacted the earlier turns." }], ts: 0 },
+			{ id: "c2", role: "compactionSummary", blocks: [{ kind: "text", text: "42100 tokens\nKept the plan." }], ts: 7 },
+		]);
+		expect(messages.every(hasRenderableContent)).toBe(true);
+	});
+
 	it("keeps tool-result folding renderable", () => {
 		const messages = parseEntries([
 			{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "lookup" }] } },
