@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"slices"
 
@@ -17,6 +18,19 @@ func (s *Session) dispatchEpoch(epoch omorpc.EpochToken, ev *omorpc.Event) {
 func (s *Session) dispatch(ev *omorpc.Event) {
 	var raw map[string]any
 	if json.Unmarshal(ev.Raw, &raw) != nil {
+		// Dedicated mappings keep the float64 decode above, including its
+		// failure (the event is dropped). Unmapped events still publish a
+		// lossless notice when the payload is valid JSON with numbers that
+		// overflow float64.
+		if mappedEngineEvent(ev.Type) {
+			return
+		}
+		s.lifecycleMu.Lock()
+		defer s.lifecycleMu.Unlock()
+		if s.closed || s.resumable || s.closing {
+			return
+		}
+		s.publishVerbatimNoticeLocked(ev)
 		return
 	}
 	if ev.Type == "session_info_changed" {
@@ -165,11 +179,38 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		}
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
-	case "high_reasoning_warning", "retry_fallback_applied", "retry_fallback_reverted", "retry_fallback_succeeded", "retry_fallback_exhausted", "server_fallback_aborted", "auto_retry_start", "auto_retry_end", "extension_notify":
-		payload := eventPayload(raw)
-		payload["kind"] = ev.Type
-		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
+	default:
+		s.publishVerbatimNoticeLocked(ev)
 	}
+}
+
+func mappedEngineEvent(eventType string) bool {
+	switch eventType {
+	case "session_info_changed", omorpc.EventQueueUpdate,
+		"agent_start", "agent_end", "agent_settled", "command_invocation",
+		"message_delta", "message_update", "message", "message_end",
+		"tool", "tool_execution_start", "tool_execution_update", "tool_execution_end",
+		"compaction_start", "compaction_end", "compaction_done",
+		"session_unloaded", "session_closed", "response",
+		"state", "state_changed", "commands_changed",
+		"extension_event", "extension_ui_request",
+		"question_resolved", "question_updated", "entries.stream":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Session) publishVerbatimNoticeLocked(ev *omorpc.Event) {
+	dec := json.NewDecoder(bytes.NewReader(ev.Raw))
+	dec.UseNumber()
+	var lossless map[string]any
+	if dec.Decode(&lossless) != nil {
+		return
+	}
+	payload := eventPayload(lossless)
+	payload["kind"] = ev.Type
+	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 }
 
 func (s *Session) completeProviderRunLocked(reason string) {
@@ -433,6 +474,7 @@ func commandSource(raw map[string]any) string {
 	x, _ := c["source"].(string)
 	return x
 }
+
 // approvalInteractive reports whether an extension_ui_request method blocks on a
 // client answer. Fire-and-forget methods (notify, setStatus, setWidget, ...)
 // are still broadcast live but must not be retained as a pending ask.
