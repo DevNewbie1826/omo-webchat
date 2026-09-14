@@ -17,10 +17,12 @@ func acquireDrained(t *testing.T, chatID string) (*Session, *recorder) {
 }
 
 func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
-	// Two independent fixtures: finite numbers take the normal default
-	// branch; an overflowing exponent takes the fallback path. Nested
-	// arrays/null/booleans ride with the finite event so both decode
-	// paths pin the full payload contract.
+	// Verbatim numeric fidelity for a known shown notice kind. Finite
+	// numbers take the ordinary decode path; an overflowing exponent
+	// takes the Unmarshal-failure lossless path. Nested arrays/null/
+	// booleans ride with the finite event so both decode paths pin the
+	// full payload contract. Unmapped kinds are silent (see the
+	// zero-notice cases below).
 	cases := []struct {
 		name  string
 		chat  string
@@ -29,9 +31,9 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 	}{
 		{
 			name: "normal_finite_numbers",
-			chat: "passthrough-unlisted-normal",
+			chat: "passthrough-known-normal",
 			event: map[string]any{
-				"type":      "provider_lifecycle_hint",
+				"type":      "auto_retry_start",
 				"sessionId": "raw-session-id",
 				"message":   "m1",
 				"severity":  "info",
@@ -42,7 +44,7 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 				"nested":    []any{map[string]any{"value": json.Number("9007199254740993")}, nil, true, false},
 			},
 			want: map[string]any{
-				"kind":     "provider_lifecycle_hint",
+				"kind":     "auto_retry_start",
 				"message":  "m1",
 				"severity": "info",
 				"meta":     map[string]any{"k": "v"},
@@ -54,9 +56,9 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 		},
 		{
 			name: "overflow_exponent",
-			chat: "passthrough-unlisted-overflow",
+			chat: "passthrough-known-overflow",
 			event: map[string]any{
-				"type":      "provider_lifecycle_hint",
+				"type":      "auto_retry_start",
 				"sessionId": "raw-session-id",
 				"message":   "m1",
 				"severity":  "info",
@@ -65,7 +67,7 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 				"expValue":  json.Number("1e400"),
 			},
 			want: map[string]any{
-				"kind":     "provider_lifecycle_hint",
+				"kind":     "auto_retry_start",
 				"message":  "m1",
 				"severity": "info",
 				"meta":     map[string]any{"k": "v"},
@@ -76,10 +78,10 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Given a live session with no dedicated mapping for this event type.
+			// Given a live session.
 			s, sub := acquireDrained(t, tc.chat)
 
-			// When an unlisted event arrives on the dispatch path.
+			// When a known shown notice kind arrives on the dispatch path.
 			injectEvent(t, s, tc.event)
 			frames := publishCompactionMarker(t, s, sub)
 
@@ -88,7 +90,7 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 			// stripped, and journal identity stamped.
 			got := counts(frames)[FrameNotice]
 			if got != 1 {
-				t.Fatalf("unlisted event produced %d FrameNotice, want 1; frames=%+v", got, frames)
+				t.Fatalf("known notice kind produced %d FrameNotice, want 1; frames=%+v", got, frames)
 			}
 			var notice Frame
 			for _, f := range frames {
@@ -128,6 +130,60 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 			}
 			if string(gotPayload) != string(wantPayload) {
 				t.Fatalf("notice payload = %s, want %s", gotPayload, wantPayload)
+			}
+		})
+	}
+}
+
+func TestDispatchUnmappedEngineEventsStaySilent(t *testing.T) {
+	cases := []struct {
+		name  string
+		chat  string
+		event map[string]any
+	}{
+		{
+			name: "tool_hook_status",
+			chat: "passthrough-silent-hook",
+			event: map[string]any{
+				"type":   "tool_hook_status",
+				"status": "running",
+				"hook":   "pre",
+			},
+		},
+		{
+			name: "future_engine_event",
+			chat: "passthrough-silent-future",
+			event: map[string]any{
+				"type":      "future_engine_event",
+				"sessionId": "raw-session-id",
+				"message":   "m1",
+				"severity":  "info",
+				"meta":      map[string]any{"k": "v"},
+				"intValue":  json.Number("9007199254740993"),
+			},
+		},
+		{
+			name: "future_engine_event_overflow",
+			chat: "passthrough-silent-future-overflow",
+			event: map[string]any{
+				"type":     "future_engine_event",
+				"message":  "m1",
+				"expValue": json.Number("1e400"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a live session with no dedicated mapping for this event type.
+			s, sub := acquireDrained(t, tc.chat)
+
+			// When an unmapped engine event arrives on the dispatch path.
+			injectEvent(t, s, tc.event)
+			frames := publishCompactionMarker(t, s, sub)
+
+			// Then no FrameNotice is published (strict engine-UI mirror).
+			if got := counts(frames)[FrameNotice]; got != 0 {
+				t.Fatalf("%s produced %d FrameNotice, want 0; frames=%+v", tc.name, got, frames)
 			}
 		})
 	}
