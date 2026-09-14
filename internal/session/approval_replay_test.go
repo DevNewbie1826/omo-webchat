@@ -107,11 +107,12 @@ func TestApprovalReplaySkipsFireAndForgetMethods(t *testing.T) {
 	t.Cleanup(detach)
 	first.await(t, FrameReady)
 
-	// notify is fire-and-forget: broadcast live, never retained for replay.
+	// notify is fire-and-forget: journaled as a notice, never retained as a
+	// pending ask for replay.
 	injectEvent(t, s, approvalEvent("notice-1", "notify"))
-	_, live := first.await(t, FrameApproval)
-	if live.ApprovalID != "notice-1" {
-		t.Fatalf("live notify frame id = %q", live.ApprovalID)
+	_, live := first.await(t, FrameNotice)
+	if data, ok := live.Data.(map[string]any); !ok || data["kind"] != "engine_notify" {
+		t.Fatalf("live notify frame = %+v, want an engine_notify notice", live)
 	}
 
 	late := &synchronousApprovalRecorder{recorder: newRecorder(16)}

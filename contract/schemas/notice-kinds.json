@@ -16,7 +16,8 @@
         "auto_retry_end",
         "compaction_error",
         "queue_delivery_uncertain",
-        "extension_notify"
+        "extension_notify",
+        "engine_notify"
       ]
     }
   }
