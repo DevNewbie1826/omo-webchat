@@ -96,23 +96,20 @@
   font-weight: var(--th-weight-emphasize);
 }
 
-.th-notice-raw {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.th-notice-time {
+  font-family: var(--th-font-mono);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  color: var(--th-text-dim);
 }
 
+/* The full payload renders always expanded; the block grows with its content
+   so the virtualized row keeps its dynamic height, and long lines wrap
+   instead of clipping. */
 .th-notice-payload {
   min-width: 0;
-}
-
-.th-notice-payload summary {
-  cursor: pointer;
-}
-
-.th-notice-payload pre {
-  max-height: 200px;
   margin: 0;
-  overflow: auto;
   font-family: var(--th-font-mono);
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);

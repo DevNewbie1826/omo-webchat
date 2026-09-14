@@ -5,54 +5,33 @@ export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
 }
 
-/** Kinds rendered with the warning tone; every other kind renders as info. */
-const WARNING_KINDS: ReadonlySet<string> = new Set([
-  "high_reasoning_warning",
-  "retry_fallback_applied",
-  "retry_fallback_reverted",
-  "retry_fallback_exhausted",
-  "server_fallback_aborted",
-  "compaction_error",
-]);
-
-function payloadMessage(payload: ChatNotice["payload"]): string | null {
-  if (payload === null) return null;
-  const value = payload["message"];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function showPayloadDetails(payload: ChatNotice["payload"]): payload is NonNullable<ChatNotice["payload"]> {
-  return payload !== null;
+/** Receipt time of the advisory, formatted as local HH:MM:SS. */
+function formatNoticeTime(at: number): string {
+  const date = new Date(at);
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 /**
  * One server advisory rendered as a distinct bordered system block in the
- * virtualized transcript flow — never inside the live region. The body is the
- * wire kind plus payload.message when present; every non-null payload sits in
- * a collapsed JSON disclosure. Rows are permanent, non-interactive display
- * blocks: no dismissal control is rendered.
+ * virtualized transcript flow — never inside the live region. Every notice
+ * renders the same uniform structure regardless of kind: the system tag, the
+ * receipt time, and the full original payload as always-visible JSON with the
+ * wire kind merged in as a non-colliding wrapper `{ type, payload }`, so a
+ * payload's own fields — including its own `type` — are preserved verbatim (a
+ * null payload renders as `{"type": kind, "payload": null}`).
+ * Rows are permanent, non-interactive display blocks: no disclosure and no
+ * dismissal control is rendered.
  */
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const { t } = useT();
-  const payload = notice.payload;
-  const message = payloadMessage(payload);
-  const rawLine = message !== null ? `${notice.kind} ${message}` : notice.kind;
+  const fullPayload = { type: notice.kind, payload: notice.payload };
   return (
-    <div
-      className={`th-chat-notice th-alert ${WARNING_KINDS.has(notice.kind) ? "th-alert--warning" : "th-alert--info"}`}
-      role="status"
-    >
+    <div className="th-chat-notice th-alert th-alert--info" role="status">
       <div className="th-chat-notice-content">
         <span className="th-chat-notice-tag">{t("notice.system")}</span>
-        <span className="th-notice-body">
-          <span className="th-notice-raw">{rawLine}</span>
-          {showPayloadDetails(payload) && (
-            <details className="th-notice-payload">
-              <summary />
-              <pre>{JSON.stringify(payload, null, 2)}</pre>
-            </details>
-          )}
-        </span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+        <pre className="th-notice-payload">{JSON.stringify(fullPayload, null, 2)}</pre>
       </div>
     </div>
   );

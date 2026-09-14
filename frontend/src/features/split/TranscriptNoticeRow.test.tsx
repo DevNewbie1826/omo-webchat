@@ -28,10 +28,16 @@ function notice(id: number, kind: string, values?: Record<string, unknown>): Cha
   return { id, kind, payload: values ? payload(values) : null, at: 1_000 + id };
 }
 
-function payloadDetails(container: HTMLElement): Record<string, unknown> {
-  const text = container.querySelector("details pre")?.textContent;
-  expect(text, "expected collapsed payload JSON").toBeTruthy();
+/** The always-visible payload JSON (no disclosure interaction required). */
+function payloadJson(container: HTMLElement): Record<string, unknown> {
+  const text = container.querySelector(".th-notice-payload")?.textContent;
+  expect(text, "expected always-visible payload JSON").toBeTruthy();
   return JSON.parse(text ?? "") as Record<string, unknown>;
+}
+
+/** The original payload object inside the `{ type, payload }` wrapper. */
+function innerPayload(container: HTMLElement): Record<string, unknown> {
+  return payloadJson(container)["payload"] as Record<string, unknown>;
 }
 
 describe("TranscriptNoticeRow", () => {
@@ -80,126 +86,165 @@ describe("TranscriptNoticeRow", () => {
     expect(container.textContent).toContain("notice.system");
   });
 
-  it("renders the fallback-applied kind raw with payload fields in collapsed JSON as a warning", () => {
+  it("renders every payload field fully expanded without any interaction", () => {
+    renderRow(notice(1, "auto_retry_start", { message: "m1", reason: "r1", chainKey: "c1" }));
+    expect(container.textContent).toContain("m1");
+    expect(container.textContent).toContain("r1");
+    expect(container.textContent).toContain("c1");
+    expect(container.querySelector("details")).toBeNull();
+    const json = payloadJson(container);
+    const inner = innerPayload(container);
+    expect(inner["message"]).toBe("m1");
+    expect(inner["reason"]).toBe("r1");
+    expect(inner["chainKey"]).toBe("c1");
+    expect(json["type"]).toBe("auto_retry_start");
+  });
+
+  it("renders a receipt-time element with a stable hook", () => {
+    renderRow(notice(1, "auto_retry_start", { message: "m1" }));
+    const time = container.querySelector(".th-notice-time");
+    expect(time).not.toBeNull();
+    expect(time?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("renders warning-kind and unknown-kind rows with the same uniform structure", () => {
+    renderRows([
+      notice(1, "retry_fallback_applied", { message: "warn" }),
+      notice(2, "brand_new_unknown_kind", { message: "info" }),
+    ]);
+    const rows = [...container.querySelectorAll(".th-chat-notice")];
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.querySelector(".th-alert--warning")).toBeNull();
+      expect(row.querySelector("details")).toBeNull();
+      expect(row.querySelector(".th-notice-payload")).not.toBeNull();
+      expect(row.querySelector(".th-notice-time")).not.toBeNull();
+    }
+    expect(rows.map((row) => row.className)).toEqual([
+      "th-chat-notice th-alert th-alert--info",
+      "th-chat-notice th-alert th-alert--info",
+    ]);
+  });
+
+  it("renders the fallback-applied payload fully expanded with the kind as type", () => {
     renderRow(notice(1, "retry_fallback_applied", {
       from: "zai/glm",
       to: "moonshot/kimi",
       chainKey: "main",
       reason: "rate_limited",
     }));
-    expect(container.textContent).toContain("retry_fallback_applied");
     expect(container.textContent).not.toContain("notice.fallbackApplied");
     expect(container.textContent).not.toContain("notice.fallbackReason");
-    expect(container.querySelector(".th-alert--warning")).not.toBeNull();
-    expect(container.querySelector(".th-alert--info")).toBeNull();
-    expect(container.querySelector("details")?.open).toBe(false);
-    const json = payloadDetails(container);
-    expect(json["from"]).toBe("zai/glm");
-    expect(json["to"]).toBe("moonshot/kimi");
-    expect(json["chainKey"]).toBe("main");
-    expect(json["reason"]).toBe("rate_limited");
+    const json = payloadJson(container);
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("zai/glm");
+    expect(inner["to"]).toBe("moonshot/kimi");
+    expect(inner["chainKey"]).toBe("main");
+    expect(inner["reason"]).toBe("rate_limited");
+    expect(json["type"]).toBe("retry_fallback_applied");
   });
 
-  it("renders the fallback-reverted kind raw with from and to in payload JSON", () => {
+  it("renders the fallback-reverted payload fully expanded", () => {
     renderRow(notice(1, "retry_fallback_reverted", { from: "moonshot/kimi", to: "zai/glm" }));
-    expect(container.textContent).toContain("retry_fallback_reverted");
     expect(container.textContent).not.toContain("notice.fallbackReverted");
-    expect(container.querySelector(".th-alert--warning")).not.toBeNull();
-    const json = payloadDetails(container);
-    expect(json["from"]).toBe("moonshot/kimi");
-    expect(json["to"]).toBe("zai/glm");
+    const json = payloadJson(container);
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("moonshot/kimi");
+    expect(inner["to"]).toBe("zai/glm");
+    expect(json["type"]).toBe("retry_fallback_reverted");
   });
 
-  it("renders the high-reasoning kind raw with payload JSON and no guidance copy", () => {
+  it("renders the high-reasoning payload fully expanded with no guidance copy", () => {
     renderRow(notice(1, "high_reasoning_warning", {
       provider: "zai",
       modelId: "glm-5.2",
       thinkingLevel: "high",
     }));
-    expect(container.textContent).toContain("high_reasoning_warning");
     expect(container.textContent).not.toContain("notice.highReasoningWarning");
     expect(container.textContent).not.toContain("notice.highReasoningGuidance");
-    expect(container.textContent).not.toContain("zai/glm-5.2");
-    expect(container.querySelector(".th-alert--warning")).not.toBeNull();
-    const json = payloadDetails(container);
-    expect(json["provider"]).toBe("zai");
-    expect(json["modelId"]).toBe("glm-5.2");
-    expect(json["thinkingLevel"]).toBe("high");
+    const inner = innerPayload(container);
+    expect(inner["provider"]).toBe("zai");
+    expect(inner["modelId"]).toBe("glm-5.2");
+    expect(inner["thinkingLevel"]).toBe("high");
   });
 
-  it("renders the server fallback-aborted kind raw with from and to in payload JSON", () => {
+  it("renders the server fallback-aborted payload fully expanded", () => {
     renderRow(notice(1, "server_fallback_aborted", { from: "a/one", to: "b/two", chainConfigured: true }));
-    expect(container.textContent).toContain("server_fallback_aborted");
     expect(container.textContent).not.toContain("notice.fallbackAborted");
-    expect(container.querySelector(".th-alert--warning")).not.toBeNull();
-    const json = payloadDetails(container);
-    expect(json["from"]).toBe("a/one");
-    expect(json["to"]).toBe("b/two");
-    expect(json["chainConfigured"]).toBe(true);
+    const inner = innerPayload(container);
+    expect(inner["from"]).toBe("a/one");
+    expect(inner["to"]).toBe("b/two");
+    expect(inner["chainConfigured"]).toBe(true);
   });
 
-  it("renders extension_notify as info with the raw kind, message, and payload JSON", () => {
+  it("renders extension_notify fully expanded with id, message, and title", () => {
     renderRow(notice(1, "extension_notify", { id: "n1", message: "Disk almost full", title: "Storage" }));
-    expect(container.textContent).toContain("extension_notify");
     expect(container.textContent).toContain("Disk almost full");
-    expect(container.querySelector(".th-alert--info")).not.toBeNull();
-    expect(container.querySelector(".th-alert--warning")).toBeNull();
-    const json = payloadDetails(container);
-    expect(json["id"]).toBe("n1");
-    expect(json["message"]).toBe("Disk almost full");
-    expect(json["title"]).toBe("Storage");
+    const json = payloadJson(container);
+    const inner = innerPayload(container);
+    expect(inner["id"]).toBe("n1");
+    expect(inner["message"]).toBe("Disk almost full");
+    expect(inner["title"]).toBe("Storage");
+    expect(json["type"]).toBe("extension_notify");
   });
 
   it("renders an unknown kind generically without crashing", () => {
     renderRow(notice(1, "brand_new_unknown_kind", { message: "hello there" }));
-    expect(container.textContent).toContain("brand_new_unknown_kind");
     expect(container.textContent).toContain("hello there");
-    expect(container.querySelector(".th-alert--info")).not.toBeNull();
-    expect(container.querySelector("details")?.open).toBe(false);
-    expect(payloadDetails(container)).toEqual({ message: "hello there" });
+    expect(container.querySelector("details")).toBeNull();
+    expect(payloadJson(container)).toEqual({
+      type: "brand_new_unknown_kind",
+      payload: { message: "hello there" },
+    });
   });
 
-  it("renders fallback success as the wire kind with payload JSON", () => {
+  it("renders fallback success fully expanded", () => {
     renderRow(notice(1, "retry_fallback_succeeded", { to: "zai/glm" }));
-    expect(container.textContent).toContain("retry_fallback_succeeded");
     expect(container.textContent).not.toContain("notice.fallbackSucceeded");
-    const json = payloadDetails(container);
-    expect(json["to"]).toBe("zai/glm");
+    const json = payloadJson(container);
+    const inner = innerPayload(container);
+    expect(inner["to"]).toBe("zai/glm");
+    expect(json["type"]).toBe("retry_fallback_succeeded");
   });
 
-  it("renders fallback exhaustion as the wire kind with a warning tone", () => {
+  it("renders fallback exhaustion fully expanded", () => {
     renderRow(notice(1, "retry_fallback_exhausted", { chainKey: "main" }));
-    expect(container.textContent).toContain("retry_fallback_exhausted");
     expect(container.textContent).not.toContain("notice.fallbackExhausted");
-    expect(container.querySelector(".th-alert--warning")).not.toBeNull();
-    const json = payloadDetails(container);
-    expect(json["chainKey"]).toBe("main");
+    const inner = innerPayload(container);
+    expect(inner["chainKey"]).toBe("main");
   });
 
   it.each<[Lang, string]>([
     ["en", "Auto retry started"],
     ["ko", "자동 재시도 시작"],
-  ])("shows the raw auto-retry start kind with its message as an info line (%s)", (lang, started) => {
+  ])("shows the auto-retry start payload expanded without translated prose (%s)", (lang, started) => {
     renderRow(notice(1, "auto_retry_start", { message: "attempt 2" }), lang);
-    expect(container.textContent).toContain("auto_retry_start");
     expect(container.textContent).toContain("attempt 2");
     expect(container.textContent).not.toContain(started);
-    expect(container.querySelector(".th-alert--info")).not.toBeNull();
-    expect(container.querySelector(".th-alert--warning")).toBeNull();
-    expect(container.querySelector("details")?.open).toBe(false);
-    expect(payloadDetails(container)).toEqual({ message: "attempt 2" });
+    expect(container.querySelector("details")).toBeNull();
+    expect(payloadJson(container)).toEqual({
+      type: "auto_retry_start",
+      payload: { message: "attempt 2" },
+    });
   });
 
   it.each<[Lang, string]>([
     ["en", "Auto retry ended"],
     ["ko", "자동 재시도 종료"],
-  ])("shows the raw auto-retry end kind as an info line (%s)", (lang, ended) => {
+  ])("renders a null payload as the kind-only JSON object (%s)", (lang, ended) => {
     renderRow(notice(1, "auto_retry_end"), lang);
-    expect(container.textContent).toContain("auto_retry_end");
     expect(container.textContent).not.toContain(ended);
-    expect(container.querySelector(".th-alert--info")).not.toBeNull();
-    expect(container.querySelector(".th-alert--warning")).toBeNull();
     expect(container.querySelector("details")).toBeNull();
+    expect(payloadJson(container)).toEqual({ type: "auto_retry_end", payload: null });
+  });
+
+  it("preserves a payload's own type field alongside the wire kind", () => {
+    renderRow(notice(1, "auto_retry_start", { type: "QA_ORIGINAL_TYPE", message: "m1" }));
+    const json = payloadJson(container);
+    expect(json["type"]).toBe("auto_retry_start");
+    const inner = json["payload"] as Record<string, unknown>;
+    expect(inner["type"]).toBe("QA_ORIGINAL_TYPE");
+    expect(inner["message"]).toBe("m1");
   });
 
   it("renders no dismiss button", () => {
