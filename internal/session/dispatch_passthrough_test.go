@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -21,15 +22,19 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 
 	// When an unlisted engine event arrives on the dispatch path.
 	injectEvent(t, s, map[string]any{
-		"type":     "provider_lifecycle_hint",
-		"message":  "m1",
-		"severity": "info",
-		"meta":     map[string]any{"k": "v"},
+		"type":      "provider_lifecycle_hint",
+		"sessionId": "raw-session-id",
+		"message":   "m1",
+		"severity":  "info",
+		"meta":      map[string]any{"k": "v"},
+		"intValue":  json.Number("9007199254740993"),
+		"expValue":  json.Number("1e400"),
 	})
 	frames := publishCompactionMarker(t, s, sub)
 
 	// Then exactly one FrameNotice is published with the event kind, payload
-	// fields carried verbatim, and journal identity stamped.
+	// fields carried verbatim (including numeric literals), envelope fields
+	// stripped, and journal identity stamped.
 	got := counts(frames)[FrameNotice]
 	if got != 1 {
 		t.Fatalf("unlisted event produced %d FrameNotice, want 1; frames=%+v", got, frames)
@@ -45,67 +50,160 @@ func TestDispatchUnlistedEventPublishesRawNotice(t *testing.T) {
 	if !ok {
 		t.Fatalf("notice data = %T, want map[string]any", notice.Data)
 	}
-	if data["kind"] != "provider_lifecycle_hint" {
-		t.Fatalf("notice kind = %v, want provider_lifecycle_hint", data["kind"])
-	}
-	if data["message"] != "m1" || data["severity"] != "info" {
-		t.Fatalf("notice payload mutated: message=%v severity=%v", data["message"], data["severity"])
-	}
-	meta, _ := data["meta"].(map[string]any)
-	if meta["k"] != "v" {
-		t.Fatalf("notice meta not carried verbatim: %+v", data["meta"])
-	}
 	nid, _ := data["nid"].(string)
 	at, _ := data["at"].(string)
 	if nid == "" || at == "" {
 		t.Fatalf("notice missing journal identity: nid=%q at=%q", nid, at)
 	}
+	if _, present := data["sessionId"]; present {
+		t.Fatalf("sessionId leaked into notice payload: %+v", data)
+	}
+	if _, present := data["type"]; present {
+		t.Fatalf("type leaked into notice payload: %+v", data)
+	}
+	wantPayload, err := json.Marshal(map[string]any{
+		"kind":     "provider_lifecycle_hint",
+		"message":  "m1",
+		"severity": "info",
+		"meta":     map[string]any{"k": "v"},
+		"intValue": json.Number("9007199254740993"),
+		"expValue": json.Number("1e400"),
+	})
+	if err != nil {
+		t.Fatalf("marshal expected payload: %v", err)
+	}
+	stripped := cloneAnyMap(data)
+	delete(stripped, "nid")
+	delete(stripped, "at")
+	gotPayload, err := json.Marshal(stripped)
+	if err != nil {
+		t.Fatalf("marshal notice payload: %v", err)
+	}
+	if string(gotPayload) != string(wantPayload) {
+		t.Fatalf("notice payload = %s, want %s", gotPayload, wantPayload)
+	}
 }
 
-func TestDispatchListedNoticeKindStillPublishes(t *testing.T) {
-	// Given a live session.
-	s, sub := acquireDrained(t, "passthrough-listed")
-
-	// When a previously allowlisted notice kind arrives.
-	injectEvent(t, s, map[string]any{"type": "auto_retry_start"})
-	_, notice := sub.await(t, FrameNotice)
-
-	// Then it still publishes as FrameNotice with that kind.
-	data, ok := notice.Data.(map[string]any)
-	if !ok {
-		t.Fatalf("notice data = %T, want map[string]any", notice.Data)
+func TestDispatchListedNoticeKindsStillPublish(t *testing.T) {
+	kinds := []string{
+		"high_reasoning_warning",
+		"retry_fallback_applied",
+		"retry_fallback_reverted",
+		"retry_fallback_succeeded",
+		"retry_fallback_exhausted",
+		"server_fallback_aborted",
+		"auto_retry_start",
+		"auto_retry_end",
+		"extension_notify",
 	}
-	if data["kind"] != "auto_retry_start" {
-		t.Fatalf("notice kind = %v, want auto_retry_start", data["kind"])
+	for _, kind := range kinds {
+		t.Run(kind, func(t *testing.T) {
+			// Given a live session.
+			s, sub := acquireDrained(t, "passthrough-listed-"+kind)
+
+			// When a previously allowlisted notice kind arrives.
+			injectEvent(t, s, map[string]any{
+				"type":     kind,
+				"message":  "m-" + kind,
+				"severity": "info",
+				"meta":     map[string]any{"k": kind},
+			})
+			frames := publishCompactionMarker(t, s, sub)
+
+			// Then exactly one FrameNotice is published with that kind and payload shape intact.
+			if got := counts(frames)[FrameNotice]; got != 1 {
+				t.Fatalf("%s produced %d FrameNotice, want 1; frames=%+v", kind, got, frames)
+			}
+			var notice Frame
+			for _, f := range frames {
+				if f.Kind == FrameNotice {
+					notice = f
+					break
+				}
+			}
+			data, ok := notice.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("%s notice data = %T, want map[string]any", kind, notice.Data)
+			}
+			if data["kind"] != kind {
+				t.Fatalf("%s notice kind = %v, want %s", kind, data["kind"], kind)
+			}
+			if data["message"] != "m-"+kind || data["severity"] != "info" {
+				t.Fatalf("%s payload mutated: message=%v severity=%v", kind, data["message"], data["severity"])
+			}
+			meta, _ := data["meta"].(map[string]any)
+			if meta["k"] != kind {
+				t.Fatalf("%s meta not carried: %+v", kind, data["meta"])
+			}
+		})
 	}
 }
 
 func TestDispatchMappedEventsDoNotPublishNotice(t *testing.T) {
 	cases := []struct {
-		name string
-		ev   map[string]any
-		want FrameKind
+		name  string
+		ev    map[string]any
+		want  FrameKind
+		setup func(*testing.T, *Session, *recorder)
 	}{
 		{name: "state", ev: map[string]any{"type": "state"}, want: FrameState},
+		{name: "state_changed", ev: map[string]any{"type": "state_changed"}, want: FrameState},
 		{name: "message", ev: map[string]any{"type": "message"}, want: FrameMessage},
-		{name: "agent_start", ev: map[string]any{"type": "agent_start"}, want: FrameRunStarted},
+		{name: "message_end", ev: map[string]any{"type": "message_end"}, want: FrameMessage},
+		{name: "message_update", ev: map[string]any{"type": "message_update"}, want: FrameMessageDelta},
+		{name: "message_delta", ev: map[string]any{"type": "message_delta"}, want: FrameMessageDelta},
 		{name: "tool_execution_start", ev: map[string]any{"type": "tool_execution_start"}, want: FrameTool},
+		{name: "tool_execution_update", ev: map[string]any{"type": "tool_execution_update"}, want: FrameTool},
+		{name: "tool_execution_end", ev: map[string]any{"type": "tool_execution_end"}, want: FrameTool},
+		{name: "commands_changed", ev: map[string]any{"type": "commands_changed"}, want: FrameCommands},
+		{name: "extension_event", ev: map[string]any{"type": "extension_event", "name": "allowed", "data": map[string]any{"x": 1}}, want: FrameExtensionEvent},
+		{name: "extension_ui_request", ev: map[string]any{"type": "extension_ui_request", "id": "approval-1", "requestId": "client-7", "method": "select"}, want: FrameApproval},
+		{name: "entries.stream", ev: map[string]any{"type": "entries.stream", "entries": []any{map[string]any{"x": 1}}, "leafId": "leaf", "final": true}, want: FrameEntries},
+		{name: "compaction_start", ev: map[string]any{"type": "compaction_start", "reason": "threshold", "requestId": "auto-1"}, want: FrameCompactionStart},
+		{
+			name: "compaction_end",
+			ev:   map[string]any{"type": "compaction_end", "requestId": "auto-1"},
+			want: FrameCompactionDone,
+			setup: func(t *testing.T, s *Session, sub *recorder) {
+				injectEvent(t, s, map[string]any{"type": "compaction_start", "reason": "threshold", "requestId": "auto-1"})
+				sub.await(t, FrameCompactionStart)
+			},
+		},
+		{name: "agent_start", ev: map[string]any{"type": "agent_start"}, want: FrameRunStarted},
+		{
+			name: "agent_settled",
+			ev:   map[string]any{"type": "agent_settled", "reason": "end_turn"},
+			want: FrameRunDone,
+			setup: func(t *testing.T, s *Session, sub *recorder) {
+				injectEvent(t, s, map[string]any{"type": "agent_start"})
+				sub.await(t, FrameRunStarted)
+			},
+		},
+		{name: "agent_end", ev: map[string]any{"type": "agent_end"}},
+		{name: "session_unloaded", ev: map[string]any{"type": "session_unloaded"}},
+		{name: "session_closed", ev: map[string]any{"type": "session_closed"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Given a live session with a dedicated frame mapping for this event.
 			s, sub := acquireDrained(t, "passthrough-"+tc.name)
+			if tc.setup != nil {
+				tc.setup(t, s, sub)
+			}
 
 			// When the mapped engine event is dispatched.
 			injectEvent(t, s, tc.ev)
-			prior, got := sub.await(t, tc.want)
 
-			// Then the dedicated frame is published and no FrameNotice is.
-			if got.Kind != tc.want {
-				t.Fatalf("%s produced kind %s, want %s", tc.name, got.Kind, tc.want)
-			}
-			if counts(prior)[FrameNotice] != 0 {
-				t.Fatalf("%s published FrameNotice before %s: %+v", tc.name, tc.want, prior)
+			// Then the dedicated frame is published (when the mapping emits one)
+			// and no FrameNotice is produced by the passthrough path.
+			if tc.want != "" {
+				prior, got := sub.await(t, tc.want)
+				if got.Kind != tc.want {
+					t.Fatalf("%s produced kind %s, want %s", tc.name, got.Kind, tc.want)
+				}
+				if counts(prior)[FrameNotice] != 0 {
+					t.Fatalf("%s published FrameNotice before %s: %+v", tc.name, tc.want, prior)
+				}
 			}
 			if trailing := publishCompactionMarker(t, s, sub); counts(trailing)[FrameNotice] != 0 {
 				t.Fatalf("%s published trailing FrameNotice: %+v", tc.name, trailing)
