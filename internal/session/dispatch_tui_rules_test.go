@@ -166,8 +166,7 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 	frames := publishCompactionMarker(t, s, sub)
 
 	// Then exactly one FrameNotice is published whose kind is the customType
-	// and whose payload is the entry's own fields verbatim, with journal
-	// identity stamped.
+	// and whose payload hoists the entry data fields, with journal identity.
 	if got := counts(frames)[FrameNotice]; got != 1 {
 		t.Fatalf("entry_appended produced %d FrameNotice, want 1; frames=%+v", got, frames)
 	}
@@ -185,17 +184,156 @@ func TestDispatchEntryAppendedMirrorsShownCustomType(t *testing.T) {
 	if data["kind"] != "goal-cache-warmup" {
 		t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
 	}
-	if data["customType"] != "goal-cache-warmup" || data["type"] != "custom" || data["id"] != "entry-1" {
-		t.Fatalf("entry fields not carried verbatim: %+v", data)
+	goals, _ := data["goals"].([]any)
+	if len(goals) != 1 || goals[0] != "g1" {
+		t.Fatalf("entry data not hoisted: %+v", data)
 	}
-	entryData, _ := data["data"].(map[string]any)
-	if entryData["goals"] == nil {
-		t.Fatalf("entry data not carried: %+v", data)
+	for _, key := range []string{"id", "type", "data", "customType"} {
+		if _, present := data[key]; present {
+			t.Fatalf("envelope key %q leaked into notice: %+v", key, data)
+		}
 	}
 	nid, _ := data["nid"].(string)
 	at, _ := data["at"].(string)
 	if nid == "" || at == "" {
 		t.Fatalf("entry notice missing journal identity: nid=%q at=%q", nid, at)
+	}
+}
+
+func TestDispatchEntryAppendedProjectsDisplayFields(t *testing.T) {
+	// Given a live session.
+	s, sub := acquireDrained(t, "tui-entry-display")
+
+	// When an entry_appended event carries a shown custom entry whose data
+	// object is the display box (title/why/values) plus session envelope keys.
+	injectEvent(t, s, map[string]any{
+		"type": "entry_appended",
+		"entry": map[string]any{
+			"type":       "custom",
+			"customType": "goal-cache-warmup",
+			"id":         "entry-1",
+			"parentId":   "parent-1",
+			"timestamp":  json.Number("1710000000000"),
+			"data": map[string]any{
+				"title":   "QA_TITLE",
+				"why":     "QA_WHY",
+				"warm":    2,
+				"savings": json.Number("9007199254740993"),
+			},
+		},
+	})
+	frames := publishCompactionMarker(t, s, sub)
+
+	// Then exactly one notice is published whose Data (minus kind) hoists
+	// title/why/warm/savings to the top level with savings as json.Number,
+	// and drops the session envelope keys.
+	if got := counts(frames)[FrameNotice]; got != 1 {
+		t.Fatalf("entry_appended produced %d FrameNotice, want 1; frames=%+v", got, frames)
+	}
+	var notice Frame
+	for _, f := range frames {
+		if f.Kind == FrameNotice {
+			notice = f
+			break
+		}
+	}
+	data, ok := notice.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
+	}
+	if data["kind"] != "goal-cache-warmup" {
+		t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
+	}
+	nid, _ := data["nid"].(string)
+	at, _ := data["at"].(string)
+	if nid == "" || at == "" {
+		t.Fatalf("entry notice missing journal identity: nid=%q at=%q", nid, at)
+	}
+	if data["title"] != "QA_TITLE" || data["why"] != "QA_WHY" {
+		t.Fatalf("display fields not hoisted: %+v", data)
+	}
+	if n, ok := data["savings"].(json.Number); !ok || n != "9007199254740993" {
+		encoded, _ := json.Marshal(data["savings"])
+		t.Fatalf("savings = %s (%T), want json.Number 9007199254740993", encoded, data["savings"])
+	}
+	if n, ok := data["warm"].(json.Number); !ok || n != "2" {
+		encoded, _ := json.Marshal(data["warm"])
+		t.Fatalf("warm = %s (%T), want json.Number 2", encoded, data["warm"])
+	}
+	for _, key := range []string{"id", "parentId", "timestamp", "type", "data", "customType"} {
+		if _, present := data[key]; present {
+			t.Fatalf("envelope key %q leaked into notice: %+v", key, data)
+		}
+	}
+}
+
+func TestDispatchEntryAppendedDropsEnvelopeWhenDataIsNotObject(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry map[string]any
+		want  map[string]any
+	}{
+		{
+			name: "data_absent",
+			entry: map[string]any{
+				"type":       "custom",
+				"customType": "goal-cache-warmup",
+				"id":         "entry-1",
+				"parentId":   "parent-1",
+				"timestamp":  json.Number("1"),
+				"note":       "QA_NOTE",
+			},
+			want: map[string]any{"note": "QA_NOTE"},
+		},
+		{
+			name: "data_string",
+			entry: map[string]any{
+				"type":       "custom",
+				"customType": "goal-cache-warmup",
+				"id":         "entry-1",
+				"data":       "QA_DATA",
+			},
+			want: map[string]any{"data": "QA_DATA"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Given a live session.
+			s, sub := acquireDrained(t, "tui-entry-flat-"+tc.name)
+
+			// When a shown custom entry has no data object.
+			injectEvent(t, s, map[string]any{"type": "entry_appended", "entry": tc.entry})
+			frames := publishCompactionMarker(t, s, sub)
+
+			// Then remaining non-envelope fields are carried and envelope keys are dropped.
+			if got := counts(frames)[FrameNotice]; got != 1 {
+				t.Fatalf("entry_appended produced %d FrameNotice, want 1; frames=%+v", got, frames)
+			}
+			var notice Frame
+			for _, f := range frames {
+				if f.Kind == FrameNotice {
+					notice = f
+					break
+				}
+			}
+			data, ok := notice.Data.(map[string]any)
+			if !ok {
+				t.Fatalf("entry notice data = %T, want map[string]any", notice.Data)
+			}
+			if data["kind"] != "goal-cache-warmup" {
+				t.Fatalf("entry notice kind = %v, want goal-cache-warmup", data["kind"])
+			}
+			for k, want := range tc.want {
+				if data[k] != want {
+					t.Fatalf("field %q = %v, want %v; data=%+v", k, data[k], want, data)
+				}
+			}
+			for _, key := range []string{"id", "parentId", "timestamp", "type", "customType"} {
+				if _, present := data[key]; present {
+					t.Fatalf("envelope key %q leaked into notice: %+v", key, data)
+				}
+			}
+		})
 	}
 }
 
@@ -218,14 +356,9 @@ func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
 			s, sub := acquireDrained(t, "tui-entry-numeric-"+tc.name)
 			number := json.Number(tc.literal)
 			want := map[string]any{
-				"kind":       "omo-loop:tick",
-				"type":       "custom",
-				"id":         "entry-1",
-				"customType": "omo-loop:tick",
-				"data": map[string]any{
-					"value":  number,
-					"nested": []any{number, nil, true},
-				},
+				"kind":   "omo-loop:tick",
+				"value":  number,
+				"nested": []any{number, nil, true},
 			}
 
 			// When the shown custom entry is dispatched.
@@ -256,7 +389,7 @@ func TestDispatchEntryAppendedPreservesNumericLiterals(t *testing.T) {
 
 func assertShownCustomNumericNotice(t *testing.T, frames []Frame, want map[string]any) {
 	t.Helper()
-	literal := want["data"].(map[string]any)["value"].(json.Number)
+	literal := want["value"].(json.Number)
 	if got := counts(frames)[FrameNotice]; got != 1 {
 		t.Fatalf("shown entry produced %d FrameNotice, want 1 for literal %s; frames=%+v", got, literal, frames)
 	}
@@ -276,10 +409,9 @@ func assertShownCustomNumericNotice(t *testing.T, frames []Frame, want map[strin
 	if nid == "" || at == "" {
 		t.Fatalf("entry notice missing journal identity: nid=%q at=%q", nid, at)
 	}
-	entryData, _ := data["data"].(map[string]any)
-	if n, ok := entryData["value"].(json.Number); !ok || n != literal {
-		encoded, _ := json.Marshal(entryData["value"])
-		t.Fatalf("value = %s (%T), want verbatim %s", encoded, entryData["value"], literal)
+	if n, ok := data["value"].(json.Number); !ok || n != literal {
+		encoded, _ := json.Marshal(data["value"])
+		t.Fatalf("value = %s (%T), want verbatim %s", encoded, data["value"], literal)
 	}
 	wantPayload, err := json.Marshal(want)
 	if err != nil {

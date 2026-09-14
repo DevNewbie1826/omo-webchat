@@ -538,10 +538,13 @@ var transcriptShownCustomTypes = []string{
 
 // publishShownCustomEntryLocked mirrors the engine transcript rules for a
 // custom entry (observed engine behavior): a shown customType becomes exactly
-// one journaled notice carrying the entry's own fields verbatim with kind set
-// to the customType. Every other entry_appended payload stays silent.
-// Numbers come from a lossless re-decode of ev.Raw so literals survive as
-// json.Number rather than float64.
+// one journaled notice whose payload is the display fields. Keys from
+// entry.data are hoisted to the top level; session envelope keys (type, id,
+// parentId, timestamp, customType) are dropped because kind already carries
+// the customType. If data is absent or not an object, remaining non-envelope
+// entry fields are carried instead. Every other entry_appended payload stays
+// silent. Numbers come from a lossless re-decode of ev.Raw so literals
+// survive as json.Number rather than float64.
 func (s *Session) publishShownCustomEntryLocked(ev *omorpc.Event) {
 	raw, ok := decodeLosslessObject(ev.Raw)
 	if !ok {
@@ -555,7 +558,20 @@ func (s *Session) publishShownCustomEntryLocked(ev *omorpc.Event) {
 	if !slices.Contains(transcriptShownCustomTypes, customType) {
 		return
 	}
-	payload := cloneAnyMap(entry)
+	payload := make(map[string]any)
+	if data, ok := entry["data"].(map[string]any); ok {
+		for k, v := range data {
+			payload[k] = v
+		}
+	} else {
+		for k, v := range entry {
+			switch k {
+			case "type", "id", "parentId", "timestamp", "customType":
+				continue
+			}
+			payload[k] = v
+		}
+	}
 	payload["kind"] = customType
 	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 }
