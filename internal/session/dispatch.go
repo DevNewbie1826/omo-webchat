@@ -107,6 +107,9 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.publishLocked(Frame{Kind: FrameMessageDelta, SessionID: s.durableID, Data: messageDeltaPayload(raw)})
 	case "message", "message_end":
 		s.publishLocked(Frame{Kind: FrameMessage, SessionID: s.durableID, Data: messagePayload(raw)})
+		if ev.Type == "message_end" {
+			s.deriveMessageNoticesLocked(raw)
+		}
 	case "tool", "tool_execution_start", "tool_execution_update", "tool_execution_end":
 		payload := eventPayload(raw)
 		if partial, ok := payload["partialResult"]; ok {
@@ -129,6 +132,9 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.beginCompactionLocked(raw)
 	case "compaction_end", "compaction_done":
 		s.endCompactionLocked(ev.Type, raw)
+		if ev.Type == "compaction_end" {
+			s.deriveCompactionNoticesLocked(raw)
+		}
 	case "session_unloaded", "session_closed":
 		// Provider lifecycle notices only invalidate the epoch-local routing
 		// handle. The durable chat remains attached and reopens lazily when a
@@ -157,6 +163,12 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.publishLocked(Frame{Kind: FrameCommands, SessionID: s.durableID, Data: eventPayload(raw)})
 	case "extension_event":
 		s.forwardExtensionEventLocked(raw)
+	case "extension_error":
+		payload := map[string]any{"kind": "extension_error", "extensionPath": raw["extensionPath"], "error": raw["error"]}
+		if event, present := raw["event"]; present {
+			payload["event"] = event
+		}
+		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 	case "extension_ui_request":
 		if stringValue(raw["method"]) == "notify" {
 			// Fire-and-forget announcements (turn stats lines, ...) render as
@@ -206,6 +218,8 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		// footer/status-only events render no transcript rows, so neither does
 		// the notice feed.
 	case "entry_appended":
+		entry, _ := raw["entry"].(map[string]any)
+		s.deriveEntryNoticeLocked(entry)
 		s.publishShownCustomEntryLocked(ev)
 	default:
 		// Strict engine-UI mirror: only the known shown notice kinds publish.
@@ -447,6 +461,7 @@ func (s *Session) forwardExtensionEventLocked(raw map[string]any) {
 
 func (s *Session) deliverStreamedEntriesLocked(raw map[string]any) {
 	entries, leaf, final := decodeEntries(raw)
+	s.deriveHistoryPageLocked(entries)
 	s.publishEntriesPageLocked(entries, leaf, final)
 }
 
