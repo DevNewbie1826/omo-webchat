@@ -327,6 +327,26 @@ describe("TranscriptNoticeRow", () => {
       expect(container.textContent).not.toContain("notice.fallbackExhausted");
     });
 
+    it("renders a projected goal-cache-warmup notice as a title box without the session envelope dump", () => {
+      renderRow(notice(1, "goal-cache-warmup", {
+        title: "QA_TITLE",
+        why: "QA_WHY",
+        warm: 2,
+        savings: 9007199254740993,
+      }));
+      expect(container.querySelector(".th-notice-title")?.textContent).toBe("QA_TITLE");
+      const lines = [...container.querySelectorAll(".th-notice-line")].map((el) => el.textContent);
+      expect(lines[0]).toBe("QA_WHY");
+      expect(lines).toContain("warm: 2");
+      expect(lines.some((line) => line?.startsWith("savings: "))).toBe(true);
+      expect(container.textContent).not.toContain("parentId");
+      expect(container.textContent).not.toContain("timestamp");
+      expect(container.textContent).not.toContain("customType");
+      expect(container.textContent).not.toContain("data:");
+      expect(container.querySelector("pre")).toBeNull();
+      expect(container.querySelector("details")).toBeNull();
+    });
+
     it("renders no dismiss button", () => {
       renderRows([notice(1, "auto_retry_start", { message: "first" }), notice(2, "auto_retry_end")]);
       const row = [...container.querySelectorAll(".th-chat-notice")].find((block) =>
