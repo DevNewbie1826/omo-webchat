@@ -69,8 +69,7 @@ describe("ChatPane in-transcript notices", () => {
     expect(container.querySelector(".th-notice-stack")).toBeNull();
     const block = container.querySelector(".th-chat-history .th-chat-notice");
     expect(block).not.toBeNull();
-    expect(block?.textContent).toContain("notice.system");
-    expect(block?.textContent).toContain("auto_retry_start");
+    expect(block?.querySelector(".th-notice-title")?.textContent).toBe("auto_retry_start");
     expect(block?.textContent).toContain("n1");
     expect(block?.textContent).not.toContain("notice.autoRetryStarted");
     const texts = rowTexts(container);

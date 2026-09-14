@@ -157,6 +157,11 @@ export function parseEntries(entries: unknown): UiMessage[] {
       const customType = entry["customType"];
       const content = entry["content"];
       if (typeof customType !== "string" || typeof content !== "string") continue;
+      // Observed engine contract: only custom messages explicitly flagged for
+      // display enter the transcript; anything else is dropped.
+      const inner = entry["message"];
+      const display = entry["display"] ?? (isRecord(inner) ? inner["display"] : undefined);
+      if (display !== true) continue;
       const id = entry["id"];
       messages.push({
         ...(typeof id === "string" ? { id } : {}),
