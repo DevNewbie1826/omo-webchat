@@ -761,31 +761,30 @@ func (m *Manager) retireSessionIdentityLocked(s *Session, bumpGeneration bool) {
 }
 
 // RetireIdentity permanently forgets aliases for deleted chat metadata.
+// The chat's notice journal is not detached from the map: it is transitioned
+// to a terminal retired state and left installed as a tombstone, so every
+// later lookup - from a publisher racing this retirement or holding the old
+// pointer - lands on the dead journal and is refused, and no second journal
+// can ever be created for the same pathname within this manager instance.
 func (m *Manager) RetireIdentity(chatID string) {
 	m.mu.Lock()
 	m.retireChatIdentityLocked(chatID)
 	delete(m.operationOwners, chatID)
 	journal := m.noticeJournals[chatID]
-	delete(m.noticeJournals, chatID)
-	noticeDir := m.cfg.NoticeDir
-	m.mu.Unlock()
 	if journal == nil {
-		if noticeDir == "" {
-			return
-		}
-		if err := removeNoticeJournal(noticeDir, chatID); err != nil {
-			slog.Warn("failed to remove persisted notice journal", "chat_id", chatID, "error", err)
-		}
-		return
+		journal = &noticeJournal{dir: m.cfg.NoticeDir, chatID: chatID, loaded: true, retired: true}
+		m.noticeJournals[chatID] = journal
 	}
+	m.mu.Unlock()
 	// Retirement barrier: draining the writer and unlinking under the same
-	// journal mutex (a leaf lock; m.mu is already released, preserving the
-	// m.mu -> journal.mu order) means an in-flight save either renames
-	// before this unlink, or is refused by the retired flag afterwards - it
-	// can never resurrect the file. Detaching the map entry under m.mu
-	// keeps later lookups from reaching this journal at all.
+	// journal mutex means an in-flight save either renames before this
+	// unlink, or is refused by the retired flag afterwards - it can never
+	// resurrect the file. The map keeps the tombstone under m.mu, so an
+	// admission cannot race this transition into a second live journal.
 	journal.mu.Lock()
 	journal.retired = true
+	journal.ring = nil
+	journal.sessions = nil
 	if journal.dir != "" {
 		if err := removeNoticeJournal(journal.dir, journal.chatID); err != nil {
 			slog.Warn("failed to remove persisted notice journal", "chat_id", journal.chatID, "error", err)

@@ -79,13 +79,20 @@ func quarantineNoticeJournal(path, chatID string, cause error) persistedNoticeJo
 // journal invariants. The persisted file is a system boundary: successful
 // unmarshalling does not establish journal validity, and an admitted
 // inconsistent state would replay notices or re-issue their nids. seq cannot
-// be negative (uint64); a negative JSON value fails decoding instead.
+// be negative (uint64); a negative JSON value fails decoding instead. The
+// retained identities must be unique (the client dedupes retained notices by
+// nid string, so an admitted duplicate silently drops one retained record)
+// and their sequence tails must strictly increase in replay order; every
+// stamped nid carries a numeric tail after its last ':' (legacy
+// "<chatID>:<seq>" and generation "<chatID>:g<gen>:<seq>" alike), so a nid
+// without one is corruption too.
 func validateNoticeJournalState(chatID string, state persistedNoticeJournal) error {
 	if len(state.Entries) > NoticeJournalCapacity {
 		return fmt.Errorf("journal holds %d entries, over cap %d", len(state.Entries), NoticeJournalCapacity)
 	}
 	prefix := chatID + ":"
-	var maxTail uint64
+	seen := make(map[string]struct{}, len(state.Entries))
+	var prevTail uint64
 	for i, e := range state.Entries {
 		nid, _ := e.Data["nid"].(string)
 		at, _ := e.Data["at"].(string)
@@ -95,18 +102,27 @@ func validateNoticeJournalState(chatID string, state persistedNoticeJournal) err
 		if !strings.HasPrefix(nid, prefix) {
 			return fmt.Errorf("entry %d nid %q is not %q-prefixed", i, nid, prefix)
 		}
+		tail, ok := noticeNIDTail(nid)
+		if !ok {
+			return fmt.Errorf("entry %d nid %q has no numeric sequence tail", i, nid)
+		}
+		if _, duplicate := seen[nid]; duplicate {
+			return fmt.Errorf("entry %d repeats retained nid %q", i, nid)
+		}
+		seen[nid] = struct{}{}
+		if i > 0 && tail <= prevTail {
+			return fmt.Errorf("entry %d nid tail %d does not follow retained tail %d", i, tail, prevTail)
+		}
+		prevTail = tail
 		if at == "" {
 			return fmt.Errorf("entry %d has empty receipt time", i)
 		}
 		if _, err := time.Parse(time.RFC3339Nano, at); err != nil {
 			return fmt.Errorf("entry %d receipt time %q is not RFC3339: %w", i, at, err)
 		}
-		if tail, ok := noticeNIDTail(nid); ok && tail > maxTail {
-			maxTail = tail
-		}
 	}
-	if state.Seq < maxTail {
-		return fmt.Errorf("seq %d is below the highest persisted nid tail %d", state.Seq, maxTail)
+	if state.Seq < prevTail {
+		return fmt.Errorf("seq %d is below the highest persisted nid tail %d", state.Seq, prevTail)
 	}
 	return nil
 }

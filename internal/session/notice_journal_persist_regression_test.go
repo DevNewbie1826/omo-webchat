@@ -30,22 +30,31 @@ func (g *journalSaveGate) MarshalJSON() ([]byte, error) {
 	}
 }
 
-// Retiring a chat identity must stay final even while a save is in flight:
-// retirement must drain the journal's writer before unlinking, and the
-// in-flight save must never rename its file back afterwards.
-func TestNoticeJournalRetirementCannotBeUndoneByInflightSave(t *testing.T) {
+// Retiring a chat identity must stay final across both publishers that can
+// straddle the retirement boundary: a save already in flight when retirement
+// runs (retirement must drain it before unlinking, and it must never rename
+// its file back), and a publisher admitted after retirement (its lookup must
+// land on the tombstoned journal and be refused outright - a fresh journal
+// for the same pathname would re-issue a delivered nid and resurrect the
+// file). Retirement completion is observed on a channel before the second
+// publisher is admitted, so the schedule is deterministic; launching the
+// goroutine alone would not establish that retirement's admission transition
+// ran first.
+func TestNoticeJournalRetirementFencesInflightSaveAndLatePublisher(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(Config{NoticeDir: dir})
 	t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
-	mgr.RecordNotice("chat-a", map[string]any{"kind": "extension_notify"})
+	first := mgr.RecordNotice("chat-a", map[string]any{"kind": "extension_notify"})
+	_, firstNID, _ := noticeIdentity(t, first)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	gate := &journalSaveGate{entered: make(chan struct{}), release: make(chan struct{}), ctx: ctx}
 	saved := make(chan struct{})
+	var inflight Frame
 	go func() {
 		defer close(saved)
-		mgr.PublishNotice("chat-a", map[string]any{"kind": "queue_delivery_uncertain", "payload": gate})
+		inflight = mgr.RecordNotice("chat-a", map[string]any{"kind": "queue_delivery_uncertain", "payload": gate})
 	}()
 	select {
 	case <-gate.entered:
@@ -72,24 +81,106 @@ func TestNoticeJournalRetirementCannotBeUndoneByInflightSave(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "chat-a.json")); !os.IsNotExist(err) {
 		t.Fatalf("in-flight save resurrected retired file: stat err = %v", err)
 	}
+	_, inflightNID, _ := noticeIdentity(t, inflight)
+
+	late := mgr.RecordNotice("chat-a", map[string]any{"kind": "auto_retry_start"})
+	latePayload, ok := late.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("late publisher data = %T, want map[string]any", late.Data)
+	}
+	if lateNID, _ := latePayload["nid"].(string); lateNID != "" {
+		t.Fatalf("retired identity re-issued nid %q to a late publisher (already delivered: %q, %q)", lateNID, firstNID, inflightNID)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "chat-a.json")); !os.IsNotExist(err) {
+		t.Fatalf("late publisher resurrected retired file: stat err = %v", err)
+	}
+	if replay := mgr.noticeReplay("chat-a"); len(replay) != 0 {
+		t.Fatalf("retired journal retained %d late notices, want 0", len(replay))
+	}
+	if firstNID == "" || inflightNID == "" || firstNID == inflightNID {
+		t.Fatalf("retirement boundary issued colliding nids: %q vs %q", firstNID, inflightNID)
+	}
+}
+
+// A valid-JSON file whose retained entries violate the identity invariants -
+// a repeated nid string, or sequence tails that do not strictly increase -
+// must be quarantined exactly like any other corruption: the client dedupes
+// retained notices by nid string, so an admitted duplicate would silently
+// drop one retained record instead of taking the clean-start path.
+func TestNoticeJournalQuarantinesCorruptRetainedIdentities(t *testing.T) {
+	tests := map[string]struct {
+		raw string
+		bad string
+	}{
+		"duplicate retained nid": {
+			raw: `{"seq":2,"entries":[` +
+				`{"kind":"notice","session_id":"chat-a","data":{"kind":"extension_notify","nid":"chat-a:g123:1","at":"2026-09-14T00:00:00Z"}},` +
+				`{"kind":"notice","session_id":"chat-a","data":{"kind":"auto_retry_start","nid":"chat-a:g123:1","at":"2026-09-14T00:00:01Z"}}]}`,
+			bad: "chat-a:g123:1",
+		},
+		"reversed retained sequence": {
+			raw: `{"seq":2,"entries":[` +
+				`{"kind":"notice","session_id":"chat-a","data":{"kind":"extension_notify","nid":"chat-a:g123:2","at":"2026-09-14T00:00:00Z"}},` +
+				`{"kind":"notice","session_id":"chat-a","data":{"kind":"auto_retry_start","nid":"chat-a:g123:1","at":"2026-09-14T00:00:01Z"}}]}`,
+			bad: "chat-a:g123:1",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "chat-a.json")
+			if err := os.WriteFile(path, []byte(tt.raw), 0o600); err != nil {
+				t.Fatalf("writing corrupt fixture: %v", err)
+			}
+			mgr := NewManager(Config{NoticeDir: dir})
+			t.Cleanup(func() { _ = mgr.CloseAll(context.Background()) })
+
+			if replay := mgr.noticeReplay("chat-a"); len(replay) != 0 {
+				t.Fatalf("inconsistent journal admitted: replay=%v quarantined=[]", noticeNIDs(replay))
+			}
+			fresh := mgr.RecordNotice("chat-a", map[string]any{"kind": "auto_retry_start"})
+			_, nid, _ := noticeIdentity(t, fresh)
+			if nid == tt.bad {
+				t.Fatalf("new notice re-issued quarantined nid %q", nid)
+			}
+			moved, err := filepath.Glob(path + ".corrupt-*")
+			if err != nil {
+				t.Fatalf("globbing corrupt leftovers: %v", err)
+			}
+			if len(moved) != 1 {
+				t.Fatalf("corrupt leftovers = %v, want exactly one chat-a.json.corrupt-<unixts> file", moved)
+			}
+		})
+	}
 }
 
 // A nid delivered to callers must never be re-issued after a restart, even
 // when its save failed: the persisted file still holds the older sequence, so
 // the restarted manager must stamp the fresh notice with an identity that
 // differs from every previously delivered one while continuing the persisted
-// sequence.
+// sequence. The fault is injected by occupying the notices directory's
+// pathname with a regular file, so the save's directory creation fails on
+// every supported platform - directory permission bits do not stop writes on
+// Windows.
 func TestNoticeJournalSaveFailureThenRestartDoesNotReuseDeliveredNID(t *testing.T) {
 	dir := t.TempDir()
 	mgr := NewManager(Config{NoticeDir: dir})
 	mgr.RecordNotice("chat-a", map[string]any{"kind": "extension_notify"})
 
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatalf("freezing notice directory: %v", err)
+	aside := dir + ".save-fault"
+	if err := os.Rename(dir, aside); err != nil {
+		t.Fatalf("moving notices directory aside: %v", err)
+	}
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		_ = os.Rename(aside, dir)
+		t.Fatalf("occupying notices pathname with a regular file: %v", err)
 	}
 	failed := mgr.RecordNotice("chat-a", map[string]any{"kind": "auto_retry_start"})
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatalf("restoring notice directory: %v", err)
+	if err := os.Remove(dir); err != nil {
+		t.Fatalf("removing the blocking file: %v", err)
+	}
+	if err := os.Rename(aside, dir); err != nil {
+		t.Fatalf("restoring notices directory: %v", err)
 	}
 	_, deliveredNID, _ := noticeIdentity(t, failed)
 
