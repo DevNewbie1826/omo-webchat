@@ -1,0 +1,47 @@
+{
+  "check": 1,
+  "network": [],
+  "frames": [
+    {
+      "type": "tool",
+      "image_ref": true
+    },
+    {
+      "type": "message",
+      "image_ref": true
+    }
+  ],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-e7ff99b6",
+      "type": "run.done"
+    }
+  ],
+  "verdict": "FAIL",
+  "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 1\n\n    at file:///private/tmp/webchat-image-qa-r3/qa.mjs:26:9"
+}
+{
+  "check": 2,
+  "network": [],
+  "frames": [],
+  "errors": [],
+  "verdict": "FAIL",
+  "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n0 !== 1\n\n    at file:///private/tmp/webchat-image-qa-r3/qa.mjs:25:60"
+}
+{
+  "check": 3,
+  "network": [],
+  "frames": [],
+  "errors": [],
+  "done": [
+    {
+      "reason": "",
+      "sessionId": "chat-e7ff99b6",
+      "type": "run.done"
+    }
+  ],
+  "text": "IMAGE_QA_TEXT_OK",
+  "verdict": "PASS"
+}

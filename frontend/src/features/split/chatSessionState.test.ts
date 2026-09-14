@@ -201,6 +201,41 @@ describe("mergeToolResultMedia", () => {
     expect(merged?.["call-1"]?.media).toEqual([{ data: "aaa", mimeType: "image/png" }]);
   });
 
+  it("merges a repeated inline image strictly by the message's toolCallId, never an older completed call", () => {
+    // Reviewer reproduction: an older text-only call, then a newer call whose
+    // end frame already carried the inline image, then the engine's repeated
+    // toolResult message naming "call-2" — the image must stay on call-2 only.
+    const current = {
+      "call-1": endedEntry,
+      "call-2": { ...endedEntry, media: [{ data: "bbb", mimeType: "image/png" }] },
+    };
+    expect(mergeToolResultMedia(current, {
+      toolCallId: "call-2",
+      blocks: [{ kind: "image", data: "bbb", mimeType: "image/png" }],
+    })).toBeNull();
+  });
+
+  it("attaches an identity-named image to that invocation alone, even the older one", () => {
+    const current = {
+      "call-1": endedEntry,
+      "call-2": { ...endedEntry, media: [{ data: "bbb", mimeType: "image/png" }] },
+    };
+    const merged = mergeToolResultMedia(current, {
+      toolCallId: "call-1",
+      blocks: [{ kind: "image", data: "ccc", mimeType: "image/png" }],
+    });
+    expect(merged?.["call-1"]?.media).toEqual([{ data: "ccc", mimeType: "image/png" }]);
+    expect(merged?.["call-2"]?.media).toEqual([{ data: "bbb", mimeType: "image/png" }]);
+  });
+
+  it("merges nowhere when the message names an unknown invocation", () => {
+    const current = { "call-1": endedEntry, "call-2": endedEntry };
+    expect(mergeToolResultMedia(current, {
+      toolCallId: "call-x",
+      blocks: [{ kind: "image", data: "bbb", mimeType: "image/png" }],
+    })).toBeNull();
+  });
+
   it("ignores a repeated image, a text-only result message, and a missing invocation", () => {
     const current = { "call-1": { ...endedEntry, media: [{ data: "aaa", mimeType: "image/png" }] } };
     expect(mergeToolResultMedia(current, { blocks: [{ kind: "image", data: "aaa", mimeType: "image/png" }] })).toBeNull();

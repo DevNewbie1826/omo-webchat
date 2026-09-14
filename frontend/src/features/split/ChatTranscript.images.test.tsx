@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext, translate, type I18nValue } from "../../i18n";
 import type { ContentBlock } from "../../lib/chatWs";
-import { clearChatMediaCache } from "../../lib/chatMedia";
+import { clearChatMediaCache, type ChatMediaSource } from "../../lib/chatMedia";
 import { ChatTranscript } from "./ChatTranscript";
 import type { ToolEntry } from "./chatSessionTypes";
 
@@ -138,6 +138,105 @@ describe("ChatTranscript preserved image blocks", () => {
 			);
 		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		// A committed collapse unmounts the image; re-expanding remounts it
+		// from the cache — no additional fetch.
+		const collapsedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			collapsedHead?.click();
+		});
+		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		const reopenedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			reopenedHead?.click();
+		});
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		// A full unmount/remount into a fresh root is also served from the
+		// page-lifetime cache, collapsed or expanded.
+		await act(async () => {
+			root.unmount();
+		});
+		root = createRoot(container);
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript {...baseProps} items={[messageItem([block])]} />
+				</I18nContext.Provider>,
+			);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const remountedHead = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			remountedHead?.click();
+		});
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("fetches each distinct workspace, chat, or ref coordinate independently", async () => {
+		const block: ContentBlock = {
+			kind: "tool",
+			id: "t-coord",
+			name: "screenshot",
+			text: "captured",
+			ref: { toolCallId: "t-coord", contentIndex: 0 },
+		};
+		const renderWith = (mediaSource: ChatMediaSource) => {
+			act(() => {
+				root.render(
+					<I18nContext.Provider value={i18n}>
+						<ChatTranscript {...baseProps} mediaSource={mediaSource} items={[messageItem([block])]} />
+					</I18nContext.Provider>,
+				);
+			});
+		};
+		renderWith({ wsId: "ws-1", chatId: "chat-1" });
+		const head = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			head?.click();
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-coord&contentIndex=0",
+		);
+
+		// The same ref under another workspace or chat is a different cache
+		// coordinate: each fetches independently of the cached promise.
+		renderWith({ wsId: "ws-2", chatId: "chat-1" });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[1]?.[0]).toBe(
+			"/api/workspaces/ws-2/chats/chat-1/media?toolCallId=t-coord&contentIndex=0",
+		);
+		renderWith({ wsId: "ws-2", chatId: "chat-2" });
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+		expect(fetchMock.mock.calls[2]?.[0]).toBe(
+			"/api/workspaces/ws-2/chats/chat-2/media?toolCallId=t-coord&contentIndex=0",
+		);
+
+		// A second result image of the same call — a different ref coordinate
+		// (contentIndex) — fetches on its own too.
+		const nextBlock: ContentBlock = {
+			kind: "image_ref",
+			mimeType: "image/png",
+			ref: { toolCallId: "t-coord", contentIndex: 1 },
+		};
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript
+						{...baseProps}
+						mediaSource={{ wsId: "ws-2", chatId: "chat-2" }}
+						items={[messageItem([block, nextBlock])]}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(4);
+		expect(fetchMock.mock.calls[3]?.[0]).toBe(
+			"/api/workspaces/ws-2/chats/chat-2/media?toolCallId=t-coord&contentIndex=1",
+		);
 	});
 
 	it("shows the mimeType + byteLength fallback when the media fetch fails", async () => {
@@ -192,6 +291,53 @@ describe("ChatTranscript preserved image blocks", () => {
 		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
 			"blob:mock-media",
 		);
+	});
+
+	it("renders live media inside the existing disclosure of a transcript-anchored invocation", async () => {
+		// The engine can anchor the invocation first: the assistant toolCall
+		// block lands in the transcript before the tool/result frames. The
+		// live entry then carries the result media; the anchored card's own
+		// disclosure must surface it (the live region excludes anchored ids),
+		// or expanding the single card issues zero media requests.
+		const block: ContentBlock = {
+			kind: "toolCall",
+			id: "t-anchored",
+			name: "screenshot",
+			arguments: { target: "viewport" },
+		};
+		const liveEntry: ToolEntry = {
+			toolName: "screenshot",
+			phase: "end",
+			text: "captured",
+			isError: false,
+			media: [{ ref: { toolCallId: "t-anchored", contentIndex: 0 } }],
+		};
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript
+						{...baseProps}
+						toolCalls={{ "t-anchored": liveEntry }}
+						items={[messageItem([block])]}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+		// Exactly one card for the logical call; untouched and completed it
+		// stays collapsed and must not fetch.
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='t-anchored']")).toHaveLength(1);
+		expect(container.querySelector<HTMLButtonElement>(".th-tool-head")?.getAttribute("aria-expanded")).toBe("false");
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		const head = container.querySelector<HTMLButtonElement>(".th-tool-head");
+		await act(async () => {
+			head?.click();
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-anchored&contentIndex=0",
+		);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
 	});
 
 	it("keeps additional result images inside their tool disclosure, gated on expansion", async () => {

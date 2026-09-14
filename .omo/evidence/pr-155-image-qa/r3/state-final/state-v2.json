@@ -1,0 +1,28 @@
+{
+  "workspaces": [
+    {
+      "id": "ws-e4fb6ca6",
+      "name": "workspace-final",
+      "path": "/private/tmp/webchat-image-qa-r3/workspace-final"
+    }
+  ],
+  "chats": {
+    "chat-36d7fa30": {
+      "id": "chat-36d7fa30",
+      "workspaceId": "ws-e4fb6ca6",
+      "cwd": "/private/tmp/webchat-image-qa-r3/workspace-final",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-image-qa-r3-workspace-final--/2026-09-14T17-07-20-212Z_f9275b87-eb7c-42f5-a756-4736c725af9c.jsonl",
+      "durableSessionId": "01a0a0e3-3616-76d4-805c-68350913a47d",
+      "sessionProvenance": "native",
+      "name": "Read test-display.png using the read tool from thi…",
+      "nameSource": "auto",
+      "createdAt": 1789405639714,
+      "lastUsedAt": 1789405663075
+    }
+  },
+  "layout": {
+    "kind": "leaf",
+    "id": "pane-e90666b4-512a-4bd3-a8f3-b7771808ba6d",
+    "sessionId": "chat-36d7fa30"
+  }
+}

@@ -28,6 +28,14 @@ function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
   return block.id ?? `${block.kind}:${block.name ?? ""}:${block.text ?? block.thinking ?? ""}:${JSON.stringify(block.arguments ?? null)}`;
 }
 
+/** Identity of one result image: shared media-ref coordinates or equal bytes. */
+function sameMedia(a: ToolResultImage, b: ToolResultImage): boolean {
+  if (a.ref !== undefined || b.ref !== undefined) {
+    return a.ref?.toolCallId === b.ref?.toolCallId && a.ref?.contentIndex === b.ref?.contentIndex;
+  }
+  return a.data === b.data;
+}
+
 /** The image carried by an image/image_ref block, if the block is well-formed. */
 function blockMedia(block: NonNullable<UiMessage["blocks"]>[number]): ToolResultImage | null {
   if (block.kind !== "image" && block.kind !== "image_ref") return null;
@@ -338,7 +346,7 @@ export function ChatTranscript({
           extras.push(extra);
         }
         const hasFolded = (typeof block.data === "string" && block.data.length > 0) || block.ref !== undefined;
-        const media: readonly ToolResultImage[] = hasFolded
+        const blockList: readonly ToolResultImage[] = hasFolded
           ? [{
               ...(typeof block.data === "string" && block.data.length > 0 ? { data: block.data } : {}),
               ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
@@ -346,6 +354,13 @@ export function ChatTranscript({
               ...(block.ref !== undefined ? { ref: block.ref } : {}),
             }, ...extras]
           : extras;
+        // A result streaming for this anchored invocation carries its media
+        // on the live entry: the persisted blocks predate the result, so the
+        // disclosure must surface live.media too or expanding the anchored
+        // card would show no image and issue no request. Media already folded
+        // into the blocks (a mid-run replay) renders once.
+        const liveMedia = (live?.media ?? []).filter((image) => !blockList.some((existing) => sameMedia(existing, image)));
+        const media: readonly ToolResultImage[] = [...blockList, ...liveMedia];
         if (media.length === 0) return card;
         const open = toolDisclosureRef.current.get(cardId) ?? isError;
         const mediaKey = blockKey(block);

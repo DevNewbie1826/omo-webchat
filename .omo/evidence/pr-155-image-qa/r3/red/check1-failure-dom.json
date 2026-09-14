@@ -1,0 +1,20 @@
+[
+  {
+    "id": null,
+    "expanded": "false",
+    "images": [],
+    "text": "senpi-task.usage\n<omo-senpi-task> Background task results are automatically delivered: an idle se…"
+  },
+  {
+    "id": null,
+    "expanded": "false",
+    "images": [],
+    "text": "omo-memory:notice\n<memory_notice> - 5 previous messages between you and the user are stored in rec…"
+  },
+  {
+    "id": "toolu_019mgus6nf86pprUnK2k34gD",
+    "expanded": "false",
+    "images": [],
+    "text": "read\n완료\n{\"path\":\"test-display.png\"}\n·\nRead image file [image/png]"
+  }
+]

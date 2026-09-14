@@ -182,14 +182,23 @@ export function parseAssistantMessage(record: Record<string, unknown>): Assistan
     : mapRecords(rawBlocks, parseContentBlock);
   if (blocks === null) return null;
   const usage = record["usage"];
-  return {
+  const toolCallId = optString(record, "toolCallId");
+  if (toolCallId === null) return null;
+  // The engine's role "toolResult" messages name their invocation with a
+  // message-level toolCallId (stored transcripts carry the same field), but
+  // the generated AssistantMessage does not declare it. The merge seam
+  // (chatSessionState.mergeToolResultMedia) addresses the live invocation by
+  // it, so the seam preserves the field without widening the contract type.
+  const parsed: AssistantMessage & { readonly toolCallId?: string } = {
     role,
     ...(customType !== undefined ? { customType } : {}),
     ...(blocks !== undefined ? { blocks } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(ts !== undefined ? { ts } : {}),
+    ...(toolCallId !== undefined ? { toolCallId } : {}),
     ...(usage !== undefined ? { usage: sanitizeJson(usage) } : {}),
   };
+  return parsed;
 }
 
 export function parseAssistantDelta(record: Record<string, unknown>): AssistantDelta | null {

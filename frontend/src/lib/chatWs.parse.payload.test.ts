@@ -209,6 +209,27 @@ describe("parseChatServerFrame", () => {
     ).toBeNull();
   });
 
+  it("preserves the message-level toolCallId on a live toolResult message", () => {
+    // The engine repeats each invocation's result as a role "toolResult"
+    // message that names its invocation at the message level (stored
+    // transcripts carry the same field); the merge seam addresses the media
+    // by it, so the parse boundary must keep it.
+    const frame = parseChatServerFrame({
+      type: "message",
+      sessionId: "c1",
+      message: {
+        role: "toolResult",
+        toolCallId: "call_2",
+        blocks: [{ kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+      },
+    });
+    expect(frame).toMatchObject({ type: "message", message: { role: "toolResult", toolCallId: "call_2" } });
+    // Present-but-malformed toolCallId keeps the frame rejected.
+    expect(
+      parseChatServerFrame({ type: "message", sessionId: "c1", message: { role: "toolResult", toolCallId: 5 } }),
+    ).toBeNull();
+  });
+
   it("preserves native image content items through tool partial/result payloads", () => {
     // The server forwards tool-result content with the provider's native block
     // discriminator: type "image"/"image_ref", never a synthetic kind.

@@ -95,17 +95,19 @@ export function nextToolEntry(
 
 /**
  * Merge a live role "toolResult" message's images into the invocation they
- * belong to. The parse boundary keeps neither the message-level toolCallId nor
- * its text (the tool end frame already carries both), so the target is
- * addressed by an image_ref placeholder's own toolCallId when one matches, and
- * otherwise positionally: the engine emits the result message right after the
- * matching end frame, so the latest completed call not already holding the
- * image is it. Returns null when there is nothing to merge (no images, or no
- * invocation to attach them to) so the caller can skip the state write.
+ * belong to. The parse seam preserves the message-level toolCallId (the
+ * engine repeats each invocation's result as a role "toolResult" message
+ * right after the matching end frame): when present, the merge is strictly
+ * by that identity — the named invocation, or nowhere when it is unknown,
+ * never an older completed call. Only identity-less messages (legacy
+ * engines) fall back to an image_ref placeholder's own toolCallId and then
+ * positionally: the latest completed call not already holding the image.
+ * Returns null when there is nothing to merge (no images, or no invocation
+ * to attach them to) so the caller can skip the state write.
  */
 export function mergeToolResultMedia(
   current: Readonly<Record<string, ToolEntry>>,
-  message: { readonly blocks?: readonly ContentBlock[] },
+  message: { readonly blocks?: readonly ContentBlock[]; readonly toolCallId?: string },
 ): Readonly<Record<string, ToolEntry>> | null {
   const ids = Object.keys(current);
   if (ids.length === 0) return null;
@@ -113,14 +115,22 @@ export function mergeToolResultMedia(
   let changed = false;
   for (const image of toolResultMessageMedia(message)) {
     const refId = image.ref?.toolCallId;
-    let targetId = refId !== undefined && current[refId] !== undefined ? refId : undefined;
-    if (targetId === undefined) {
-      for (let index = ids.length - 1; index >= 0; index -= 1) {
-        const id = ids[index];
-        const entry = id === undefined ? undefined : next[id];
-        if (entry?.phase !== "end" || entryHasImage(entry, image)) continue;
-        targetId = id;
-        break;
+    let targetId: string | undefined;
+    if (message.toolCallId !== undefined) {
+      // Identity-strict: the message names its invocation, so the image
+      // merges there or nowhere — positional guessing would attach a
+      // repeated inline result to an unrelated older completed call.
+      targetId = current[message.toolCallId] !== undefined ? message.toolCallId : undefined;
+    } else {
+      targetId = refId !== undefined && current[refId] !== undefined ? refId : undefined;
+      if (targetId === undefined) {
+        for (let index = ids.length - 1; index >= 0; index -= 1) {
+          const id = ids[index];
+          const entry = id === undefined ? undefined : next[id];
+          if (entry?.phase !== "end" || entryHasImage(entry, image)) continue;
+          targetId = id;
+          break;
+        }
       }
     }
     const id = targetId;

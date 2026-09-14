@@ -1,0 +1,22 @@
+{
+  "servers": [
+    {
+      "pid": 17930,
+      "gone": true
+    },
+    {
+      "pid": 19593,
+      "gone": true
+    },
+    {
+      "pid": 21285,
+      "gone": true
+    }
+  ],
+  "listeners": "",
+  "browsers": {
+    "closed": true,
+    "at": "2026-09-14T17:07:46.742Z"
+  },
+  "repoDiffUnchanged": true
+}

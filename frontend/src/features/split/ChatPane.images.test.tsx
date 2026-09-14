@@ -193,6 +193,85 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		expect(mediaUrls()).toHaveLength(1);
 	});
 
+	it("renders live media for an invocation anchored by an earlier assistant toolCall, through run.done", async () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			// The reviewer counter-case: the assistant toolCall frame anchors the
+			// invocation BEFORE the tool and toolResult frames, so the transcript
+			// message owns the card and the live region excludes the anchored id.
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: {
+					role: "assistant",
+					blocks: [{ kind: "toolCall", id: "call-anchored", name: "screenshot", arguments: { target: "viewport" } }],
+				},
+			});
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-anchored",
+				toolName: "screenshot",
+				phase: "start",
+				args: { target: "viewport" },
+			});
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-anchored",
+				toolName: "screenshot",
+				phase: "end",
+				result: { content: [{ text: "captured viewport" }] },
+				isError: false,
+			});
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: {
+					role: "toolResult",
+					blocks: [{
+						kind: "image_ref",
+						mimeType: "image/png",
+						byteLength: 12595,
+						ref: { toolCallId: "call-anchored", contentIndex: 0 },
+					}],
+				},
+			});
+		});
+
+		// One card for the logical call; untouched and completed it stays
+		// collapsed and must not fetch the referenced media.
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
+		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("false");
+		expect(mediaUrls()).toEqual([]);
+
+		// Expanding the anchored card must issue the media request an
+		// unanchored live card would have issued.
+		await clickHead("call-anchored");
+		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("true");
+		expect(mediaUrls()).toEqual([
+			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-anchored&contentIndex=0",
+		]);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+
+		await act(async () => {
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: { role: "assistant", blocks: [{ kind: "text", text: "here is the shot" }] },
+			});
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
+		});
+
+		// Finalization keeps exactly one card for the logical call (the
+			// anchored block is replaced in place, never duplicated), and the
+			// image survives inside it without refetching.
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
+		expect(mediaUrls()).toHaveLength(1);
+	});
+
 	it("renders a live inline result image inside its disclosure without fetching", async () => {
 		const { deliver } = renderWithFakeConnect();
 		act(() => {
@@ -252,8 +331,8 @@ describe("ChatPane tool result images (production media wiring)", () => {
 				result: { content: [{ text: "two images" }] },
 				isError: false,
 			});
-			// The result's first image plus an additional one: both belong to the
-			// invocation's disclosure, neither may fetch while it is collapsed.
+			// The result's first image plus two additional ones: all belong to
+			// the invocation's disclosure, none may fetch while it is collapsed.
 			deliver({
 				type: "message",
 				sessionId: "chat-1",
@@ -267,6 +346,12 @@ describe("ChatPane tool result images (production media wiring)", () => {
 							byteLength: 2048,
 							ref: { toolCallId: "call-multi", contentIndex: 1 },
 						},
+						{
+							kind: "image_ref",
+							mimeType: "image/webp",
+							byteLength: 4096,
+							ref: { toolCallId: "call-multi", contentIndex: 2 },
+						},
 					],
 				},
 			});
@@ -279,16 +364,27 @@ describe("ChatPane tool result images (production media wiring)", () => {
 
 		await clickHead("call-multi");
 		const images = container.querySelectorAll<HTMLImageElement>("img.th-chat-image");
-		expect(images).toHaveLength(2);
+		expect(images).toHaveLength(3);
 		expect(images[0]?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_DATA}`);
 		expect(images[1]?.getAttribute("src")).toBe("blob:mock-media");
+		expect(images[2]?.getAttribute("src")).toBe("blob:mock-media");
+		// Each ref coordinate of the call fetches independently, exactly once.
 		expect(mediaUrls()).toEqual([
 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=1",
+			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=2",
 		]);
 
 		// Collapsing the disclosure unmounts every result image of the call.
 		await clickHead("call-multi");
 		expect(container.querySelector("img.th-chat-image")).toBeNull();
+
+		// Re-expanding remounts all of them from the cache: no additional fetch.
+		await clickHead("call-multi");
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(3);
+		expect(mediaUrls()).toEqual([
+			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=1",
+			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=2",
+		]);
 	});
 
 	it("fetches a restored tool result image through the pane's media source", async () => {

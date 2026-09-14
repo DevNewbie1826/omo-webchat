@@ -1,0 +1,92 @@
+[
+  {
+    "check": 1,
+    "network": [],
+    "frames": [
+      {
+        "isError": false,
+        "phase": "end",
+        "result": {
+          "content": [
+            {
+              "text": "Read image file [image/png]",
+              "type": "text"
+            },
+            {
+              "byteLength": 6824,
+              "mimeType": "image/png",
+              "ref": {
+                "contentIndex": 1,
+                "toolCallId": "toolu_019mgus6nf86pprUnK2k34gD"
+              },
+              "type": "image_ref"
+            }
+          ]
+        },
+        "sessionId": "chat-e7ff99b6",
+        "toolCallId": "toolu_019mgus6nf86pprUnK2k34gD",
+        "toolName": "read",
+        "type": "tool"
+      },
+      {
+        "message": {
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "Read image file [image/png]"
+            },
+            {
+              "byteLength": 6824,
+              "kind": "image_ref",
+              "mimeType": "image/png",
+              "ref": {
+                "contentIndex": 1,
+                "toolCallId": "toolu_019mgus6nf86pprUnK2k34gD"
+              }
+            }
+          ],
+          "isError": false,
+          "role": "toolResult",
+          "timestamp": 1789405462912,
+          "toolCallId": "toolu_019mgus6nf86pprUnK2k34gD",
+          "toolName": "read"
+        },
+        "sessionId": "chat-e7ff99b6",
+        "type": "message"
+      }
+    ],
+    "errors": [],
+    "done": [
+      {
+        "reason": "",
+        "sessionId": "chat-e7ff99b6",
+        "type": "run.done"
+      }
+    ],
+    "verdict": "FAIL",
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n3 !== 1\n\n    at file:///private/tmp/webchat-image-qa-r3/qa.mjs:26:9"
+  },
+  {
+    "check": 2,
+    "network": [],
+    "frames": [],
+    "errors": [],
+    "verdict": "FAIL",
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n0 !== 1\n\n    at file:///private/tmp/webchat-image-qa-r3/qa.mjs:25:60"
+  },
+  {
+    "check": 3,
+    "network": [],
+    "frames": [],
+    "errors": [],
+    "done": [
+      {
+        "reason": "",
+        "sessionId": "chat-e7ff99b6",
+        "type": "run.done"
+      }
+    ],
+    "text": "IMAGE_QA_TEXT_OK",
+    "verdict": "PASS"
+  }
+]
