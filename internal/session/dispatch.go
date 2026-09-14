@@ -165,7 +165,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		}
 	case "entries.stream":
 		s.deliverStreamedEntriesLocked(raw)
-	case "high_reasoning_warning", "retry_fallback_applied", "retry_fallback_reverted", "retry_fallback_succeeded", "retry_fallback_exhausted", "server_fallback_aborted", "auto_retry_start", "auto_retry_end", "extension_notify":
+	default:
 		payload := eventPayload(raw)
 		payload["kind"] = ev.Type
 		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
