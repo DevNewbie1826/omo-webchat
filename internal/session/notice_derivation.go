@@ -11,16 +11,64 @@ import (
 
 // All derivations mirror the observed engine contract. lifecycleMu guards state.
 type transcriptNoticeState struct {
-	messages           map[[32]byte]struct{}
+	initialized        bool
 	previous           *cacheRequest
 	continuityDisabled bool
 }
 
 type cacheRequest struct {
-	promptTokens  float64
-	modelKey      string
-	timestamp     float64
-	reportedCache bool
+	PromptTokens  float64 `json:"promptTokens"`
+	ModelKey      string  `json:"modelKey"`
+	Timestamp     float64 `json:"timestamp"`
+	ReportedCache bool    `json:"reportedCache"`
+}
+
+// A checkpoint is scoped to the durable conversation, not its disposable RPC
+// route. A nil Previous is meaningful: a real content boundary reset it.
+type persistedTranscriptNoticeState struct {
+	Previous           *cacheRequest `json:"previous,omitempty"`
+	ContinuityDisabled bool          `json:"continuityDisabled,omitempty"`
+}
+
+func (s *Session) restoreTranscriptNoticesLocked() {
+	journal := s.manager.noticeJournal(s.chatID)
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if state, ok := journal.transcripts[s.durableID]; ok {
+		s.transcriptNotices = transcriptNoticeState{initialized: true, previous: state.Previous, continuityDisabled: state.ContinuityDisabled}
+	}
+}
+
+func (s *Session) persistTranscriptNoticesLocked() {
+	s.transcriptNotices.initialized = true
+	journal := s.manager.noticeJournal(s.chatID)
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if journal.retired {
+		return
+	}
+	if journal.transcripts == nil {
+		journal.transcripts = make(map[string]persistedTranscriptNoticeState)
+	}
+	journal.transcripts[s.durableID] = persistedTranscriptNoticeState{Previous: s.transcriptNotices.previous, ContinuityDisabled: s.transcriptNotices.continuityDisabled}
+	journal.persistLocked()
+}
+
+// Record even silent messages and boundaries; journal ring eviction must not
+// make their source identities eligible for derivation again.
+func (s *Session) admitTranscriptIdentityLocked(kind, identity string) bool {
+	key := fmt.Sprintf("transcript:%x", sha256.Sum256([]byte(s.durableID+"\x00"+kind+"\x00"+identity)))
+	journal := s.manager.noticeJournal(s.chatID)
+	journal.mu.Lock()
+	defer journal.mu.Unlock()
+	if journal.retired || journal.derivations[key] {
+		return false
+	}
+	if journal.derivations == nil {
+		journal.derivations = make(map[string]bool)
+	}
+	journal.derivations[key] = true
+	return true
 }
 
 func noticeNumber(value any) float64 { n, _ := value.(float64); return n }
@@ -99,6 +147,7 @@ func (s *Session) deriveCompactionNoticesLocked(raw map[string]any) {
 		return
 	}
 	s.transcriptNotices.previous = nil
+	s.persistTranscriptNoticesLocked()
 	s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: map[string]any{"kind": "compaction_summary", "tokensBefore": result["tokensBefore"], "summary": result["summary"]}})
 	usage, ok := result["usage"].(map[string]any)
 	if !ok {
@@ -126,15 +175,10 @@ func (s *Session) deriveMessageNoticesLocked(raw map[string]any) {
 	} else if id := stringValue(message["id"]); id != "" {
 		identity = []byte("id:" + id)
 	}
-	key := sha256.Sum256(identity)
-	state := &s.transcriptNotices
-	if _, seen := state.messages[key]; seen {
+	if !s.admitTranscriptIdentityLocked("message", string(identity)) {
 		return
 	}
-	if state.messages == nil {
-		state.messages = make(map[[32]byte]struct{})
-	}
-	state.messages[key] = struct{}{}
+	defer s.persistTranscriptNoticesLocked()
 	diagnostics, _ := message["diagnostics"].([]any)
 	s.deriveContinuityNoticeLocked(diagnostics)
 	s.deriveCacheNoticeLocked(message)
@@ -211,6 +255,23 @@ func (s *Session) deriveContinuityNoticeLocked(diagnostics []any) {
 	}
 }
 
+// Fold usage without publishing; history reconstruction uses the same sticky
+// cache rules in a candidate, never in the live detector.
+func (state *transcriptNoticeState) foldCacheRequest(message map[string]any) *cacheRequest {
+	usage, ok := message["usage"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	read, write := noticeNumber(usage["cacheRead"]), noticeNumber(usage["cacheWrite"])
+	prev := state.previous
+	current := &cacheRequest{PromptTokens: noticeNumber(usage["input"]) + read + write, ModelKey: stringValue(message["provider"]) + "/" + stringValue(message["model"]), Timestamp: noticeNumber(message["timestamp"]), ReportedCache: read+write > 0}
+	if prev != nil {
+		current.ReportedCache = current.ReportedCache || prev.ReportedCache
+	}
+	state.previous = current
+	return prev
+}
+
 func (s *Session) deriveCacheNoticeLocked(message map[string]any) {
 	usage, ok := message["usage"].(map[string]any)
 	if !ok {
@@ -218,16 +279,12 @@ func (s *Session) deriveCacheNoticeLocked(message map[string]any) {
 	}
 	input, read, write := noticeNumber(usage["input"]), noticeNumber(usage["cacheRead"]), noticeNumber(usage["cacheWrite"])
 	prompt := input + read + write
-	prev := s.transcriptNotices.previous
-	current := &cacheRequest{promptTokens: prompt, modelKey: stringValue(message["provider"]) + "/" + stringValue(message["model"]), timestamp: noticeNumber(message["timestamp"]), reportedCache: read+write > 0}
-	if prev != nil {
-		current.reportedCache = current.reportedCache || prev.reportedCache
-	}
-	s.transcriptNotices.previous = current
-	if prev == nil || prompt <= 0 || !current.reportedCache {
+	prev := s.transcriptNotices.foldCacheRequest(message)
+	current := s.transcriptNotices.previous
+	if prev == nil || prompt <= 0 || !current.ReportedCache {
 		return
 	}
-	missed := math.Min(prev.promptTokens, prompt) - read
+	missed := math.Min(prev.PromptTokens, prompt) - read
 	if missed <= 1024 {
 		return
 	}
@@ -247,8 +304,8 @@ func (s *Session) deriveCacheNoticeLocked(message map[string]any) {
 		return
 	}
 	label := "Cache miss"
-	idle := math.Max(0, current.timestamp-prev.timestamp)
-	if current.modelKey != prev.modelKey {
+	idle := math.Max(0, current.Timestamp-prev.Timestamp)
+	if current.ModelKey != prev.ModelKey {
 		label += " after model switch"
 	} else if idle >= 300000 {
 		label += fmt.Sprintf(" after %.0fm idle", math.Round(idle/60000))
@@ -263,7 +320,10 @@ func (s *Session) deriveCacheNoticeLocked(message map[string]any) {
 func (s *Session) deriveEntryNoticeLocked(entry map[string]any) {
 	switch entry["type"] {
 	case "compaction", "branch_summary":
-		s.transcriptNotices.previous = nil
+		if s.admitTranscriptIdentityLocked("boundary", stringValue(entry["id"])) {
+			s.transcriptNotices.previous = nil
+			s.persistTranscriptNoticesLocked()
+		}
 	case "model_change_rejected":
 		text, ok := entry["detail"].(string)
 		if !ok {
@@ -287,6 +347,34 @@ func (s *Session) deriveHistoryPageLocked(entries []json.RawMessage) int {
 		s.deriveEntryNoticeLocked(entry)
 		if entry["type"] == "compaction" {
 			count++
+		}
+	}
+	return count
+}
+
+// Subscriber replay presents diagnostics but folds content boundaries and
+// requests only into its private candidate. Apply that candidate only after
+// the complete history succeeds, and only if no live checkpoint exists.
+func (s *Session) deriveReplayPageLocked(entries []json.RawMessage, candidate *transcriptNoticeState) int {
+	count := 0
+	for _, raw := range entries {
+		var entry map[string]any
+		if json.Unmarshal(raw, &entry) != nil {
+			continue
+		}
+		switch entry["type"] {
+		case "compaction", "branch_summary":
+			candidate.previous = nil
+			s.admitTranscriptIdentityLocked("boundary", stringValue(entry["id"]))
+			if entry["type"] == "compaction" {
+				count++
+			}
+		case "message":
+			if message, ok := entry["message"].(map[string]any); ok && message["role"] == "assistant" {
+				candidate.foldCacheRequest(message)
+			}
+		default:
+			s.deriveEntryNoticeLocked(entry)
 		}
 	}
 	return count

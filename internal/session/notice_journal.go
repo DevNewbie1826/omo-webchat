@@ -32,6 +32,7 @@ type noticeJournal struct {
 	seq         uint64
 	ring        []Frame
 	derivations map[string]bool
+	transcripts map[string]persistedTranscriptNoticeState
 	sessions    map[*Session]struct{}
 }
 
@@ -82,6 +83,7 @@ func (j *noticeJournal) ensureLoaded() {
 	state := loadNoticeJournal(j.dir, j.chatID)
 	j.seq = state.Seq
 	j.derivations = state.Derivations
+	j.transcripts = state.Transcripts
 	j.ring = make([]Frame, 0, len(state.Entries))
 	for _, e := range state.Entries {
 		j.ring = append(j.ring, Frame{Kind: e.Kind, SessionID: e.SessionID, Data: e.Data})
@@ -101,7 +103,7 @@ func (j *noticeJournal) persistLocked() {
 	if j.dir == "" || j.retired {
 		return
 	}
-	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring)), Derivations: j.derivations}
+	state := persistedNoticeJournal{Seq: j.seq, Entries: make([]persistedNotice, 0, len(j.ring)), Derivations: j.derivations, Transcripts: j.transcripts}
 	for _, f := range j.ring {
 		payload, _ := f.Data.(map[string]any)
 		state.Entries = append(state.Entries, persistedNotice{Kind: f.Kind, SessionID: f.SessionID, Data: payload})
