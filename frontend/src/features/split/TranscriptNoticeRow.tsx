@@ -1,4 +1,3 @@
-import { useT } from "../../i18n";
 import type { ChatNotice } from "./useChatFrameState";
 
 export interface TranscriptNoticeRowProps {
@@ -12,26 +11,68 @@ function formatNoticeTime(at: number): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
+type NotifyTone = "info" | "warning" | "error";
+
+function notifyTone(payload: ChatNotice["payload"]): NotifyTone {
+  const value = payload?.["notifyType"];
+  return value === "warning" || value === "error" ? value : "info";
+}
+
+/** One payload field rendered as text: arrays joined, objects compact JSON. */
+function fieldText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(fieldText).join(", ");
+  if (value !== null && typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** Field keys already surfaced as the title or primary line of the box. */
+const PRIMARY_KEYS = ["why", "message", "reason"] as const;
+
 /**
- * One server advisory rendered as a distinct bordered system block in the
- * virtualized transcript flow — never inside the live region. Every notice
- * renders the same uniform structure regardless of kind: the system tag, the
- * receipt time, and the full original payload as always-visible JSON with the
- * wire kind merged in as a non-colliding wrapper `{ type, payload }`, so a
- * payload's own fields — including its own `type` — are preserved verbatim (a
- * null payload renders as `{"type": kind, "payload": null}`).
- * Rows are permanent, non-interactive display blocks: no disclosure and no
- * dismissal control is rendered.
+ * One server advisory rendered in the observed engine display format inside
+ * the virtualized transcript flow — never inside the live region.
+ *
+ * `engine_notify` advisories render as a single dim one-line status row: the
+ * payload message verbatim, toned by `notifyType` (info/warning/error).
+ *
+ * Every other kind renders as a notice box: a bold title line (payload.title
+ * when present, else the kind), one primary explanatory line (the first of
+ * payload.why / payload.message / payload.reason), then every remaining
+ * payload field as a dim "key: value" line. All information stays visible as
+ * text — no JSON blob, no disclosure. Rows are permanent and non-interactive.
  */
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
-  const { t } = useT();
-  const fullPayload = { type: notice.kind, payload: notice.payload };
+  const payload = notice.payload;
+
+  if (notice.kind === "engine_notify") {
+    const message = typeof payload?.["message"] === "string" ? payload["message"] : "";
+    return (
+      <div className={`th-notice-status th-notice-status--${notifyTone(payload)}`} role="status">
+        <span className="th-notice-status-text">{message}</span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
+    );
+  }
+
+  const fields = payload ?? {};
+  const titleValue = fields["title"];
+  const title = typeof titleValue === "string" ? titleValue : notice.kind;
+  const primaryKey = PRIMARY_KEYS.find((key) => fields[key] !== undefined);
+  const primary = primaryKey === undefined ? undefined : fieldText(fields[primaryKey]);
+  const rest = Object.entries(fields).filter(
+    ([key]) => key !== "title" && key !== primaryKey,
+  );
+
   return (
     <div className="th-chat-notice th-alert th-alert--info" role="status">
       <div className="th-chat-notice-content">
-        <span className="th-chat-notice-tag">{t("notice.system")}</span>
+        <span className="th-notice-title">{title}</span>
         <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
-        <pre className="th-notice-payload">{JSON.stringify(fullPayload, null, 2)}</pre>
+        {primary !== undefined && <span className="th-notice-line">{primary}</span>}
+        {rest.map(([key, value]) => (
+          <span key={key} className="th-notice-line">{`${key}: ${fieldText(value)}`}</span>
+        ))}
       </div>
     </div>
   );

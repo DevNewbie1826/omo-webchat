@@ -89,13 +89,6 @@
   min-width: 0;
 }
 
-.th-chat-notice-tag {
-  font-size: var(--th-type-micro-size);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  font-weight: var(--th-weight-emphasize);
-}
-
 .th-notice-time {
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);
@@ -104,18 +97,57 @@
   color: var(--th-text-dim);
 }
 
-/* The full payload renders always expanded; the block grows with its content
-   so the virtualized row keeps its dynamic height, and long lines wrap
-   instead of clipping. */
-.th-notice-payload {
-  min-width: 0;
-  margin: 0;
-  font-family: var(--th-font-mono);
+/* Notice-box format: a bold title line, then dim explanatory lines — one
+   primary line plus one "key: value" line per remaining payload field. All
+   information stays visible as text; the block grows with its content so the
+   virtualized row keeps its dynamic height, and long lines wrap instead of
+   clipping. */
+.th-notice-title {
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-  white-space: pre-wrap;
+  font-weight: var(--th-weight-emphasize);
   overflow-wrap: anywhere;
+}
+
+.th-notice-line {
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* engine_notify advisories render as a single dim one-line status row — the
+   message verbatim plus the receipt time, never a bordered box. Tone follows
+   notifyType: info stays dim/neutral, warning and error take the semantic
+   text colors. */
+.th-notice-status {
+  display: flex;
+  width: 100%;
+  max-width: 100%;
+  align-items: baseline;
+  gap: var(--th-space-2);
+  font-size: var(--th-type-label-size);
+  line-height: var(--th-type-label-line);
+  letter-spacing: var(--th-type-label-tracking);
+  color: var(--th-text-dim);
+}
+
+.th-notice-status-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.th-notice-status--warning {
+  color: var(--th-warning);
+}
+
+.th-notice-status--error {
+  color: var(--th-error);
 }
 
 .th-chat-live {

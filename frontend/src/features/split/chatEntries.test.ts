@@ -42,6 +42,30 @@ describe("parseEntries", () => {
 		expect(messages.filter(hasRenderableContent).map((message) => message.id)).toEqual(["e2", "e3"]);
 	});
 
+	it("drops custom_message entries unless display is explicitly true", () => {
+		const messages = parseEntries([
+			{ type: "custom_message", id: "hidden", customType: "hook", content: "secret", display: false },
+			{ type: "custom_message", id: "unset", customType: "hook", content: "implicit" },
+			{ type: "custom_message", id: "shown", customType: "hook", content: "visible", display: true },
+		]);
+		expect(messages.map((message) => message.id)).toEqual(["shown"]);
+		expect(messages[0]).toEqual({
+			id: "shown",
+			role: "custom",
+			customType: "hook",
+			blocks: [{ kind: "text", text: "visible" }],
+			ts: 0,
+		});
+	});
+
+	it("honors a message-level display flag on custom_message entries", () => {
+		const messages = parseEntries([
+			{ type: "custom_message", id: "m-hidden", customType: "hook", content: "secret", message: { display: false } },
+			{ type: "custom_message", id: "m-shown", customType: "hook", content: "visible", message: { display: true } },
+		]);
+		expect(messages.map((message) => message.id)).toEqual(["m-shown"]);
+	});
+
 	it("keeps tool-result folding renderable", () => {
 		const messages = parseEntries([
 			{ type: "message", id: "call", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "lookup" }] } },

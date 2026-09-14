@@ -22,11 +22,13 @@ it.each<Lang>(["en", "ko"])("renders a raw, inert compaction diagnostic (%s)", (
         <TranscriptNoticeRow notice={{ id: 1, at: 1, kind: "compaction_error", payload: { message: detail } }} />
       </I18nContext.Provider>,
     ));
-    expect(container.querySelector(".th-chat-notice-tag")?.textContent).toBe(translate(lang, "notice.system"));
-    expect(container.textContent).toContain("compaction_error");
+    // Notice-box format: the kind is the bold title, the message renders as
+    // inert text — never as markup and never as a JSON blob.
+    expect(container.querySelector(".th-notice-title")?.textContent).toBe("compaction_error");
+    expect(container.textContent).toContain("QA_OVERFLOW_RECOVERY_EXHAUSTED");
     expect(container.textContent).not.toContain(translate(lang, "notice.compactionError"));
     expect(container.querySelector("details")).toBeNull();
-    expect(JSON.parse(container.querySelector(".th-notice-payload")?.textContent ?? "")).toEqual({ type: "compaction_error", payload: { message: detail } });
+    expect(container.querySelector("pre")).toBeNull();
     expect(container.querySelectorAll("img, script")).toHaveLength(0);
     expect(container.querySelectorAll(".th-alert--warning")).toHaveLength(0);
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
