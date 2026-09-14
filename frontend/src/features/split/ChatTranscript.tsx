@@ -16,6 +16,7 @@ import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
+import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -257,6 +258,24 @@ export function ChatTranscript({
                         <span className="th-chat-steer-mark">{t("chat.steer")}</span>
                         <span className="th-chat-steer-text">{messageText(message)}</span>
                       </div>
+                    ) : message.summaryKind !== undefined ? (
+                      // Hydrated summary entries render as summary boxes in
+                      // the notice-box visual language, never as hook cards.
+                      // Routing keys on the persisted-entry provenance tag
+                      // (summaryKind) alone: an ordinary custom message whose
+                      // customType happens to be named "compaction" or
+                      // "branch_summary" stays on the HookCard path below.
+                      <SummaryNoticeBox
+                        label={message.summaryKind === "compaction" ? "[compaction]" : "[branch]"}
+                        summary={messageText(message)}
+                        {...(message.summaryKind === "compaction" && typeof message.tokensBefore === "number"
+                          ? { tokensBefore: message.tokensBefore }
+                          : {})}
+                        // The parser always stamps summaryKind messages
+                        // (entry timestamp, else the frozen hydration
+                        // receipt time); the ?? 0 only satisfies the type.
+                        at={message.ts ?? 0}
+                      />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
                     ) : (message.blocks ?? []).map((block) => {
