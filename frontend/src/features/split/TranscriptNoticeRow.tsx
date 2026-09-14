@@ -53,6 +53,15 @@ function payloadText(payload: ChatNotice["payload"]): string {
   return typeof value === "string" ? value : "";
 }
 
+/** First present of message/reason/error, verbatim; undefined when none is a string. */
+function payloadMessageText(payload: ChatNotice["payload"]): string | undefined {
+  for (const key of ["message", "reason", "error"] as const) {
+    const value = payload?.[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
 export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
   const payload = notice.payload;
 
@@ -78,6 +87,21 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
         {...(typeof tokensValue === "number" ? { tokensBefore: tokensValue } : {})}
         at={notice.at}
       />
+    );
+  }
+
+  // auto_retry_start / auto_retry_end render as warning-toned single-line
+  // status rows (same visual language as the engine_notify row, warning
+  // variant): the payload's own text verbatim — first present of
+  // message/reason/error — falling back to the notice kind itself when no
+  // text field exists. Receipt time kept.
+  if (notice.kind === "auto_retry_start" || notice.kind === "auto_retry_end") {
+    const text = payloadMessageText(payload) ?? notice.kind;
+    return (
+      <div className="th-notice-status th-notice-status--warning" role="status">
+        <span className="th-notice-status-text">{text}</span>
+        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
+      </div>
     );
   }
 

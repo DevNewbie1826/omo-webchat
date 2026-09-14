@@ -171,6 +171,10 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 	case "extension_ui_request":
 		if stringValue(raw["method"]) == "notify" {
+			if goalActivationNotify(raw) {
+				// Observed engine behavior: goal activation belongs in the goal bar.
+				return
+			}
 			// Fire-and-forget announcements (turn stats lines, ...) render as
 			// transcript lines in the engine TUI (observed engine behavior), so
 			// they mirror to exactly one journaled notice, never a pending ask.
@@ -544,12 +548,7 @@ func approvalInteractive(method any) bool {
 // transcriptShownCustomTypes documents observed engine behavior: these are the
 // custom entry types the engine transcript renders, so only they mirror into
 // the notice feed. Unknown customTypes stay transcript-silent.
-var transcriptShownCustomTypes = []string{
-	"goal-cache-warmup",
-	"omo-loop:tick",
-	"omo-cache-keepalive",
-	"omo-rule-activation",
-}
+var transcriptShownCustomTypes = []string{}
 
 // publishShownCustomEntryLocked mirrors the engine transcript rules for a
 // custom entry (observed engine behavior): a shown customType becomes exactly

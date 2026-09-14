@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -185,6 +186,17 @@ func (m *Manager) PublishNotice(chatID string, payload map[string]any) {
 	}
 }
 
+// goalActivationNotify matches the observed activation heading, not unrelated
+// advisories sharing its prefix. Warning and error notifications always survive.
+func goalActivationNotify(payload map[string]any) bool {
+	tone := stringValue(payload["notifyType"])
+	if tone == "warning" || tone == "error" {
+		return false
+	}
+	message := stringValue(payload["message"])
+	return message == "Goal active" || strings.HasPrefix(message, "Goal active\n")
+}
+
 func (m *Manager) withNoticeReplay(chatID string, sess *Session, use func([]Frame)) {
 	journal := m.noticeJournal(chatID)
 	journal.mu.Lock()
@@ -202,8 +214,21 @@ func (m *Manager) withNoticeReplay(chatID string, sess *Session, use func([]Fram
 		}
 		journal.sessions[sess] = struct{}{}
 	}
-	out := make([]Frame, len(journal.ring))
-	copy(out, journal.ring)
+	out := make([]Frame, 0, len(journal.ring))
+	for _, frame := range journal.ring {
+		payload, _ := frame.Data.(map[string]any)
+		// Apply the observed engine contract to historical rows too, without
+		// changing retained identities or the journal sequence.
+		switch stringValue(payload["kind"]) {
+		case "goal-cache-warmup", "omo-loop:tick", "omo-cache-keepalive", "omo-rule-activation":
+			continue
+		case "engine_notify":
+			if goalActivationNotify(payload) {
+				continue
+			}
+		}
+		out = append(out, frame)
+	}
 	use(out)
 }
 
