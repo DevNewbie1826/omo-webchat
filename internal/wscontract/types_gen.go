@@ -2362,6 +2362,7 @@ const (
 	DurableNoticeKindCompactionError        DurableNoticeKind = "compaction_error"
 	DurableNoticeKindQueueDeliveryUncertain DurableNoticeKind = "queue_delivery_uncertain"
 	DurableNoticeKindExtensionNotify        DurableNoticeKind = "extension_notify"
+	DurableNoticeKindEngineNotify           DurableNoticeKind = "engine_notify"
 )
 
 // ApprovalMethod values, from shared-types.json.
