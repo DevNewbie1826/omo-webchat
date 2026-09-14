@@ -24,13 +24,24 @@ export const COMPACT_COMMAND: CommandEntry = {
   syntax: "slash",
 };
 
+/**
+ * Curated reload: re-fetches this chat's history from the server, the same
+ * action as the transcript header's reload button. Like compact, a
+ * provider-advertised same-name command stays authoritative.
+ */
+export const RELOAD_COMMAND: CommandEntry = {
+  name: "reload",
+  source: "builtin",
+  syntax: "slash",
+};
+
 export const UPDATE_COMMAND: CommandEntry = {
   name: "update",
   source: "builtin",
   syntax: "slash",
 };
 
-const CURATED: readonly CommandEntry[] = [COMPACT_COMMAND, UPDATE_COMMAND];
+const CURATED: readonly CommandEntry[] = [COMPACT_COMMAND, RELOAD_COMMAND, UPDATE_COMMAND];
 
 /** Merge curated entries behind the discovered list, skipping discovered names. */
 export function mergeCommands(discovered: readonly CommandEntry[], includeNewChat = false): readonly CommandEntry[] {
@@ -50,4 +61,9 @@ export function mergeCommands(discovered: readonly CommandEntry[], includeNewCha
  */
 export function isCuratedCompact(command: CommandEntry): boolean {
   return command === COMPACT_COMMAND;
+}
+
+/** Whether a palette entry is the curated reload action (identity, never by name). */
+export function isCuratedReload(command: CommandEntry): boolean {
+  return command === RELOAD_COMMAND;
 }
