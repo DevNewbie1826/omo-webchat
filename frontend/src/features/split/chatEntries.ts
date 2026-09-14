@@ -32,10 +32,13 @@ function parseTimestamp(value: unknown): number {
  * accepted summary box keeps a stable time instead of a changing render-time
  * stamp. */
 function parseSummaryTimestamp(value: unknown, receiptTime: number): number {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  // A numeric timestamp is accepted only when it represents a valid Date
+  // instant: finite but out-of-Date-range values (beyond +/-8640000000000000)
+  // would render NaN times, so they fall back like any invalid timestamp.
+  if (typeof value === "number" && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime())) return value;
   if (typeof value === "string") {
     const timestamp = Date.parse(value);
-    if (Number.isFinite(timestamp)) return timestamp;
+    if (Number.isFinite(timestamp) && !Number.isNaN(new Date(timestamp).getTime())) return timestamp;
   }
   return receiptTime;
 }
@@ -201,11 +204,13 @@ export function parseEntries(entries: unknown): UiMessage[] {
     // summaries as "branch_summary". Both resurface during history hydration
     // and render as summary boxes. Observed persisted compaction envelopes
     // carry top-level `summary` (string) and `tokensBefore` (number) beside
-    // id/timestamp; branch_summary envelopes are not locally observable, so
-    // only the same `summary` text field is read and no token line is
-    // invented. Entries without a string summary are dropped rather than
-    // invented. The summaryKind tag carries the persisted-type provenance so
-    // rendering routes on it alone, never on the customType name.
+    // id/timestamp; observed persisted branch_summary envelopes carry the
+    // same top-level `summary` (string) plus `fromId` (string), with an
+    // ISO-string timestamp and no token count, so no token line is rendered
+    // for branch boxes. Entries without a string summary are dropped rather
+    // than invented. The summaryKind tag carries the persisted-type
+    // provenance so rendering routes on it alone, never on the customType
+    // name.
     if (entry["type"] === "compaction" || entry["type"] === "branch_summary") {
       const summary = entry["summary"];
       if (typeof summary !== "string") continue;

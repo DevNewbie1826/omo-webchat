@@ -31,8 +31,21 @@ describe("parseEntries summary entries", () => {
 	});
 
 	it("maps a persisted branch_summary entry to a custom branch_summary message with no token line", () => {
+		// Observed persisted branch_summary envelope (r-contract-notes.md):
+		// top-level summary (string), fromId (string), ISO-string timestamp,
+		// details/usage objects, fromHook boolean; no tokensBefore.
 		const messages = parseEntries([
-			{ type: "branch_summary", id: "b1", timestamp: 1735689600000, summary: "Branch recap" },
+			{
+				type: "branch_summary",
+				id: "b1",
+				parentId: "b0",
+				timestamp: "2026-01-02T03:05:12.000Z",
+				fromId: "a9",
+				summary: "Branch recap",
+				details: { readFiles: [], modifiedFiles: [] },
+				usage: { input: 418, output: 382, totalTokens: 800 },
+				fromHook: false,
+			},
 		]);
 		expect(messages).toEqual([
 			{
@@ -41,7 +54,7 @@ describe("parseEntries summary entries", () => {
 				customType: "branch_summary",
 				summaryKind: "branch_summary",
 				blocks: [{ kind: "text", text: "Branch recap" }],
-				ts: 1735689600000,
+				ts: Date.parse("2026-01-02T03:05:12.000Z"),
 			},
 		]);
 	});
@@ -89,6 +102,31 @@ describe("parseEntries summary entries", () => {
 	it("preserves a valid epoch-zero timestamp on a summary entry", () => {
 		const messages = parseEntries([{ type: "compaction", id: "zero", timestamp: 0, summary: "zero" }]);
 		expect(messages[0]?.ts).toBe(0);
+	});
+
+	it("falls back to the frozen hydration receipt time for finite numeric timestamps outside the Date range", () => {
+		const before = Date.now();
+		const messages = parseEntries([
+			{ type: "compaction", id: "over", timestamp: 8640000000000001, summary: "positive overflow" },
+			{ type: "branch_summary", id: "under", timestamp: -8640000000000001, summary: "negative overflow" },
+		]);
+		const after = Date.now();
+		expect(messages).toHaveLength(2);
+		for (const message of messages) {
+			expect(message.ts).toBeGreaterThanOrEqual(before);
+			expect(message.ts).toBeLessThanOrEqual(after);
+			expect(Number.isNaN(new Date(message.ts ?? Number.NaN).getTime())).toBe(false);
+		}
+	});
+
+	it("keeps both exact Date-range endpoints and valid negative timestamps", () => {
+		const messages = parseEntries([
+			{ type: "compaction", id: "max", timestamp: 8640000000000000, summary: "max endpoint" },
+			{ type: "compaction", id: "min", timestamp: -8640000000000000, summary: "min endpoint" },
+			{ type: "compaction", id: "neg", timestamp: -1, summary: "valid negative" },
+			{ type: "compaction", id: "zero", timestamp: 0, summary: "epoch zero" },
+		]);
+		expect(messages.map((message) => message.ts)).toEqual([8640000000000000, -8640000000000000, -1, 0]);
 	});
 
 	it("freezes a hydration receipt time when the entry timestamp is absent or invalid", () => {
