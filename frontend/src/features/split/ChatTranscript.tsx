@@ -16,7 +16,7 @@ import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
 import { SummaryBox } from "./SummaryBox";
 import { ToolCard, type ToolCardProps } from "./ToolCard";
-import { formatNoticeTime, TranscriptNoticeRow } from "./TranscriptNoticeRow";
+import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { useChatScroll } from "./useChatScroll";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -267,7 +267,6 @@ export function ChatTranscript({
                         label={message.role === "compactionSummary" ? "[compaction]" : "[branch]"}
                         {...(typeof message.summaryTokens === "number" ? { tokens: message.summaryTokens } : {})}
                         summary={messageText(message)}
-                        time={formatNoticeTime(message.ts ?? 0)}
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />

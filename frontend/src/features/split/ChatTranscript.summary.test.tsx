@@ -100,6 +100,9 @@ describe("ChatTranscript hydrated summary boxes", () => {
 		const boxes = [...container.querySelectorAll(".th-chat-notice")];
 		expect(boxes).toHaveLength(2);
 		expect(boxes.every((box) => box.getAttribute("role") === "status")).toBe(true);
+		// Observed engine behavior/contract: transcript rows carry no timestamps.
+		expect(container.querySelector(".th-notice-time")).toBeNull();
+		expect(container.textContent).not.toMatch(/\d{2}:\d{2}:\d{2}/);
 
 		// Branch box: collapsed to the first line, expands to the exact text.
 		const branchToggle = boxes[0]?.querySelector<HTMLButtonElement>(".th-notice-summary-toggle");

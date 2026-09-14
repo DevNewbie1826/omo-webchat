@@ -7,8 +7,6 @@ export interface SummaryBoxProps {
   readonly tokens?: number;
   /** Full summary text; collapsed to its first line until expanded. */
   readonly summary: string;
-  /** Receipt time, pre-formatted HH:MM:SS. */
-  readonly time: string;
 }
 
 /**
@@ -18,7 +16,7 @@ export interface SummaryBoxProps {
  * reveals the full summary text in place, and the row grows so the
  * virtualized transcript keeps its measured height.
  */
-export function SummaryBox({ label, tokens, summary, time }: SummaryBoxProps) {
+export function SummaryBox({ label, tokens, summary }: SummaryBoxProps) {
   const [open, setOpen] = useState(false);
   const newline = summary.indexOf("\n");
   const firstLine = newline === -1 ? summary : summary.slice(0, newline);
@@ -28,7 +26,6 @@ export function SummaryBox({ label, tokens, summary, time }: SummaryBoxProps) {
     <div className="th-chat-notice th-alert th-alert--info" role="status">
       <div className="th-chat-notice-content">
         <span className="th-notice-title">{label}</span>
-        <span className="th-notice-time">{time}</span>
         {tokens !== undefined && (
           <span className="th-notice-line th-notice-summary-tokens">{`${tokens} tokens`}</span>
         )}

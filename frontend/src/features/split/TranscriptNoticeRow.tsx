@@ -5,13 +5,6 @@ export interface TranscriptNoticeRowProps {
   readonly notice: ChatNotice;
 }
 
-/** Receipt time of an advisory or summary row, formatted as local HH:MM:SS. */
-export function formatNoticeTime(at: number): string {
-  const date = new Date(at);
-  const pad = (value: number): string => String(value).padStart(2, "0");
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-}
-
 type NotifyTone = "info" | "warning" | "error";
 
 function notifyTone(payload: ChatNotice["payload"]): NotifyTone {
@@ -70,7 +63,6 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
     return (
       <div className={`th-notice-status th-notice-status--${notifyTone(payload)}`} role="status">
         <span className="th-notice-status-text">{message}</span>
-        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
       </div>
     );
   }
@@ -86,21 +78,18 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
         label={notice.kind === "compaction_summary" ? "[compaction]" : "[branch]"}
         {...(typeof tokensValue === "number" ? { tokens: tokensValue } : {})}
         summary={summary}
-        time={formatNoticeTime(notice.at)}
       />
     );
   }
 
   // Cost/cache-miss/thinking-dropped/warning advisories are warning-toned
   // single lines; continuity and compaction-history advisories are dim gray.
-  // Both keep the receipt time exactly like the engine_notify status row.
   if (WARNING_LINE_KINDS.has(notice.kind) || DIM_LINE_KINDS.has(notice.kind)) {
     const tone = WARNING_LINE_KINDS.has(notice.kind) ? "warning" : "info";
     const message = payloadString(payload, "message") ?? "";
     return (
       <div className={`th-notice-status th-notice-status--${tone}`} role="status">
         <span className="th-notice-status-text">{message}</span>
-        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
       </div>
     );
   }
@@ -114,7 +103,6 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
       <div className="th-chat-notice th-alert th-alert--error" role="status">
         <div className="th-chat-notice-content">
           <span className="th-notice-title">{title}</span>
-          <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
           {error !== "" && <pre className="th-notice-pre">{error}</pre>}
         </div>
       </div>
@@ -137,7 +125,6 @@ export function TranscriptNoticeRow({ notice }: TranscriptNoticeRowProps) {
     <div className="th-chat-notice th-alert th-alert--info" role="status">
       <div className="th-chat-notice-content">
         <span className="th-notice-title">{title}</span>
-        <span className="th-notice-time">{formatNoticeTime(notice.at)}</span>
         {primary !== undefined && <span className="th-notice-line">{primary}</span>}
         {rest.map(([key, value]) => (
           <span key={key} className="th-notice-line">{`${key}: ${fieldText(value)}`}</span>

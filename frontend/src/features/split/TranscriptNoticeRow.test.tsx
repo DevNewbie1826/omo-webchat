@@ -83,11 +83,12 @@ describe("TranscriptNoticeRow", () => {
       expect(container.textContent).not.toContain("{");
     });
 
-    it("keeps the receipt time on the status row", () => {
+    it("shows no receipt time on the status row", () => {
+      // Observed engine behavior/contract: transcript rows carry no
+      // timestamps.
       renderRow(notice(1, "engine_notify", { message: "m" }));
-      const time = container.querySelector(".th-notice-status .th-notice-time");
-      expect(time).not.toBeNull();
-      expect(time?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(container.querySelector(".th-notice-time")).toBeNull();
+      expect(container.textContent).not.toMatch(/\d{2}:\d{2}:\d{2}/);
     });
 
     it("is permanent and non-interactive", () => {
@@ -210,11 +211,10 @@ describe("TranscriptNoticeRow", () => {
       expect(container.querySelector("pre")).toBeNull();
     });
 
-    it("keeps the receipt time row", () => {
+    it("shows no receipt time on the notice box", () => {
       renderRow(notice(1, "auto_retry_start", { message: "m1" }));
-      const time = container.querySelector(".th-notice-time");
-      expect(time).not.toBeNull();
-      expect(time?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(container.querySelector(".th-notice-time")).toBeNull();
+      expect(container.textContent).not.toMatch(/\d{2}:\d{2}:\d{2}/);
     });
 
     it("renders a null payload as the kind title with no field lines", () => {
@@ -233,7 +233,7 @@ describe("TranscriptNoticeRow", () => {
       expect(rows).toHaveLength(2);
       for (const row of rows) {
         expect(row.querySelector(".th-notice-title")).not.toBeNull();
-        expect(row.querySelector(".th-notice-time")).not.toBeNull();
+        expect(row.querySelector(".th-notice-time")).toBeNull();
         expect(row.querySelector("pre")).toBeNull();
         expect(row.querySelector("details")).toBeNull();
       }
@@ -388,9 +388,10 @@ describe("TranscriptNoticeRow", () => {
       expect(container.querySelector(".th-notice-summary-toggle")?.getAttribute("aria-expanded")).toBe("true");
     });
 
-    it("keeps the receipt time on the box", () => {
+    it("shows no receipt time on the box", () => {
       renderRow(notice(1, "compaction_summary", { tokens: 1, summary: "s" }));
-      expect(container.querySelector(".th-notice-time")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(container.querySelector(".th-notice-time")).toBeNull();
+      expect(container.textContent).not.toMatch(/\d{2}:\d{2}:\d{2}/);
     });
   });
 
@@ -427,7 +428,7 @@ describe("TranscriptNoticeRow", () => {
       expect(row).not.toBeNull();
       expect(row?.className).toContain("th-notice-status--warning");
       expect(row?.textContent).toContain(message);
-      expect(row?.querySelector(".th-notice-time")?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+      expect(row?.querySelector(".th-notice-time")).toBeNull();
       // A single line: no box, no title, no key: value expansion.
       expect(container.querySelector(".th-chat-notice")).toBeNull();
       expect(container.textContent).not.toContain("message:");
@@ -443,7 +444,7 @@ describe("TranscriptNoticeRow", () => {
       expect(row?.className).toContain("th-notice-status--info");
       expect(row?.className).not.toContain("th-notice-status--warning");
       expect(row?.textContent).toContain(message);
-      expect(row?.querySelector(".th-notice-time")).not.toBeNull();
+      expect(row?.querySelector(".th-notice-time")).toBeNull();
       expect(container.querySelector(".th-chat-notice")).toBeNull();
     });
   });

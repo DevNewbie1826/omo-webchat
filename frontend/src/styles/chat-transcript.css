@@ -89,14 +89,6 @@
   min-width: 0;
 }
 
-.th-notice-time {
-  font-family: var(--th-font-mono);
-  font-size: var(--th-type-micro-size);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-  color: var(--th-text-dim);
-}
-
 /* Notice-box format: a bold title line, then dim explanatory lines — one
    primary line plus one "key: value" line per remaining payload field. All
    information stays visible as text; the block grows with its content so the
