@@ -891,22 +891,18 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(count, "color")).toBe("var(--th-muted)");
   });
 
-  it("clamps card name, metadata, and last-output line to one ellipsized line each", () => {
-    const rows =
-      homeLive.match(
-        /\.th-home-live-list \.th-overview-card-name,\s*\.th-home-live-list \.th-overview-card-meta\s*\{([^}]*)\}/,
-      )?.[1] ?? "";
-    expect(rows, "shared clamp rule for home live card name and metadata").not.toBe("");
-    expect(declarationValue(rows, "min-width")).toBe("0");
-    expect(declarationValue(rows, "overflow")).toBe("hidden");
-    expect(declarationValue(rows, "text-overflow")).toBe("ellipsis");
-    expect(declarationValue(rows, "white-space")).toBe("nowrap");
+  it("clamps the card name and last-output line to one ellipsized line each", () => {
     const name = ruleBody(homeLive, ".th-home-live-list .th-overview-card-name");
     expect(declarationValue(name, "font-size")).toBe("var(--th-type-label-size)");
-    const meta = ruleBody(homeLive, ".th-home-live-list .th-overview-card-meta");
-    expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
+    expect(declarationValue(name, "min-width")).toBe("0");
+    expect(declarationValue(name, "overflow")).toBe("hidden");
+    expect(declarationValue(name, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(name, "white-space")).toBe("nowrap");
+    // The done/DAG meta row no longer renders anywhere, so no meta styling
+    // may linger in the sheet.
+    expect(homeLive.includes("th-overview-card-meta")).toBe(false);
     // Unlike the sidebar variant, the main-screen cards show their last
-    // output line; it clamps to one ellipsized line like the name and meta.
+    // output line; it clamps to one ellipsized line like the name.
     const line = ruleBody(homeLive, ".th-home-live-list .th-overview-card-line");
     expect(declarationValue(line, "min-width")).toBe("0");
     expect(declarationValue(line, "overflow")).toBe("hidden");
@@ -964,8 +960,9 @@ describe("pinned live-session section contracts", () => {
   // workspace tree: it never flexes, caps its height at min(30vh, 216px), and
   // scrolls internally, so live sessions can never push the tree out of
   // reach. Its rows reuse the overview card markup at compact density inside
-  // the 264px shell, so name and metadata stay on one ellipsized line each.
+  // the 264px shell, so the name stays on one ellipsized line.
   const sidebarLive = readStyle("sidebar-live");
+  const overview = readStyle("overview");
 
   it("pins the section with flex none and a bounded internal scrollport", () => {
     const section = ruleBody(sidebarLive, ".th-sidebar-live");
@@ -974,44 +971,61 @@ describe("pinned live-session section contracts", () => {
     expect(declarationValue(section, "overflow-y")).toBe("auto");
   });
 
-  it("clamps every compact live row to one ellipsized line at label and micro tiers", () => {
-    const rows =
-      sidebarLive.match(
-        /\.th-sidebar-live-list \.th-overview-card-name,\s*\.th-sidebar-live-list \.th-overview-card-meta\s*\{([^}]*)\}/,
-      )?.[1] ?? "";
-    expect(rows, "shared clamp rule for live row name and metadata").not.toBe("");
-    expect(declarationValue(rows, "min-width")).toBe("0");
-    expect(declarationValue(rows, "overflow")).toBe("hidden");
-    expect(declarationValue(rows, "text-overflow")).toBe("ellipsis");
-    expect(declarationValue(rows, "white-space")).toBe("nowrap");
+  it("clamps every compact live row's name to one ellipsized line at the label tier", () => {
     const name = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-name");
     expect(declarationValue(name, "font-size")).toBe("var(--th-type-label-size)");
-    const meta = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-meta");
-    expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
+    expect(declarationValue(name, "min-width")).toBe("0");
+    expect(declarationValue(name, "overflow")).toBe("hidden");
+    expect(declarationValue(name, "text-overflow")).toBe("ellipsis");
+    expect(declarationValue(name, "white-space")).toBe("nowrap");
+    // The done/DAG meta row no longer renders anywhere, so no meta styling
+    // may linger in either sheet or in the shared overview card styles.
+    expect(sidebarLive.includes("th-overview-card-meta")).toBe(false);
+    expect(overview.includes("th-overview-card-meta")).toBe(false);
   });
 
-  it("gives every compact live card one token-based minimum height independent of optional content", () => {
-    // The meta line renders only when a session has work, so a card's natural
-    // height used to depend on which optional spans it carried. The compact
-    // card rule must instead pin one minimum height, expressed purely from
-    // --th-* tokens, that exceeds the head row's tallest content (the running
-    // pill at calc(micro size * micro line + 2px)) — a card with the pill and
-    // a card without it then measure identical heights.
-    const card = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-open");
+  it("pins the card's minimum height geometrically above the head row's tallest content", () => {
+    // Resolve any --th-* token to a number: plain px/Unitless values parse
+    // directly, calc() expressions are substituted recursively and evaluated.
+    const numericToken = (name: string): number => {
+      const raw = tokenValue(name);
+      const expression = raw
+        .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+        .replace(/calc|px/g, "");
+      return Function(`"use strict"; return (${expression});`)() as number;
+    };
+    const evaluateCalc = (value: string): number =>
+      Function(
+        `"use strict"; return (${value
+          .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+          .replace(/calc|px/g, "")});`,
+      )() as number;
+
+    // The head row's tallest natural content is the running pill: the micro
+    // line box plus its 2px of border (overview.css .th-overview-card-running).
+    const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
+    const blockStep = numericToken("--th-space-2");
+    const requiredMin = pillHeight + 2 * blockStep;
+
+    // The height contract lives on the card element, not the inner button, so
+    // the row geometry belongs to the card. It must compute to strictly more
+    // than the pill plus both block padding steps — a rule even a few tenths
+    // of a pixel short fails here.
+    const card = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card");
     expect(card, "compact live card rule").not.toBe("");
     const minHeight = declarationValue(card, "min-height");
     expect(minHeight, "min-height declaration").toMatch(/^calc\(/);
     expect(containsVarToken(minHeight, "--th-type-micro-size")).toBe(true);
     expect(containsVarToken(minHeight, "--th-type-micro-line")).toBe(true);
-    // No bare px height beyond a single additive correction term.
-    const bareLengths = minHeight.replace(/var\(\s*--th-[\w-]+\s*\)/g, "").match(/\d+(?:\.\d+)?px/g) ?? [];
-    expect(bareLengths.length, `bare px terms in min-height: ${minHeight}`).toBeLessThanOrEqual(1);
-    // Block-direction padding steps up from --th-space-1 to at least --th-space-2.
-    const blockPadding = declarationValue(card, "padding").split(/\s+/)[0] ?? "";
+    expect(evaluateCalc(minHeight)).toBeGreaterThan(requiredMin);
+
+    // The button keeps its block padding step-up to at least --th-space-2 and
+    // carries no min-height of its own.
+    const open = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-open");
+    expect(declarationValue(open, "min-height")).toBe("");
+    const blockPadding = declarationValue(open, "padding").split(/\s+/)[0] ?? "";
     const blockToken = wholeVarToken(blockPadding);
     expect(blockToken, "block padding must be a spacing token").toMatch(/^--th-space-/);
-    expect(Number.parseFloat(tokenValue(blockToken))).toBeGreaterThanOrEqual(
-      Number.parseFloat(tokenValue("--th-space-2")),
-    );
+    expect(numericToken(blockToken)).toBeGreaterThanOrEqual(blockStep);
   });
 });
