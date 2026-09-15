@@ -151,6 +151,63 @@
   color: var(--th-muted);
 }
 
+/* Compact answerable summary: when the column cannot fit even the tight
+   dock (the measured budget is below the tight minimum), the summary band
+   itself carries the request's primary actions so the question stays
+   answerable without expanding — expanding would push the composer out of
+   the column. The section's inline max-height (the measured budget) bounds
+   the band; overflow: auto lets a wrapping action row scroll inside it
+   instead of growing past the budget. */
+.th-approval-dock--compact .th-approval-dock-summary {
+  flex-wrap: wrap;
+  overflow: auto;
+}
+
+.th-approval-dock-summary-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock-summary-actions .th-btn,
+.th-approval-dock-summary-form .th-btn {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  overflow-wrap: anywhere;
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock-summary-actions .th-btn {
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-dock-summary-actions .th-btn--ghost,
+.th-approval-dock-summary-form .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-approval-dock-summary-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock-summary-form .th-approval-input {
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
 /* Shared approval body primitives (formerly approval-modal.css; the modal
    presentation is retired, the dock reuses these verbatim). */
 .th-approval-message {

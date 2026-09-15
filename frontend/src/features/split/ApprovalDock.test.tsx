@@ -331,6 +331,52 @@ describe("ApprovalDock inline panel", () => {
 		expect(countdown()).toBe("approval.remaining seconds=2");
 	});
 
+	it("re-anchors the clock when a long-pending request is replaced by one with an absolute deadline", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		// Request A has no deadline: no interval ever runs, so a mount-time
+		// clock would go stale while A stays pending.
+		renderDock({ id: "confirm-a", method: "confirm" });
+		expect(container.querySelector(".th-approval-dock-countdown")).toBeNull();
+
+		act(() => {
+			vi.advanceTimersByTime(600_000); // A pending for ten minutes
+		});
+		rerender({
+			id: "confirm-b",
+			method: "confirm",
+			deadlineAtMs: 1_000_000 + 600_000 + 15_000,
+		});
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		// B's own 15 seconds must show IMMEDIATELY — not A's stale clock
+		// (615s) corrected by the first tick.
+		expect(countdown()).toBe("approval.remaining seconds=15");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=14");
+	});
+
+	it("re-anchors the clock when a long-pending request is replaced by one with remainingMs", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		renderDock({ id: "confirm-a", method: "confirm" });
+		act(() => {
+			vi.advanceTimersByTime(600_000);
+		});
+		rerender({ id: "confirm-b", method: "confirm", remainingMs: 15_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		expect(countdown()).toBe("approval.remaining seconds=15");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=14");
+	});
+
 	it("keeps the countdown visible on the collapsed summary bar", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(1_000_000);
@@ -782,34 +828,138 @@ describe("ApprovalDock inline panel", () => {
 			["zero", 124], // 124 − 24 controls − 100 composer = 0
 			["a few pixels of", 129], // budget 5
 		])(
-			"never renders an unusable dock after an explicit expand with %s budget",
+			"answers from the compact summary band with %s budget (expansion cannot fit)",
 			(_label, columnHeight) => {
+				// Below the tight density's 32px usable minimum even an explicit
+				// expansion cannot render a usable panel — forcing one pushes the
+				// composer out of the column (the one hard floor). The summary
+				// band itself must carry the answers instead.
+				const onRespond = vi.fn();
 				renderDockInColumn(
 					{ id: "select-1", method: "select", options: ["Allow", "Block"] },
 					{ column: columnHeight, dock: 0 },
+					onRespond,
 				);
-				expect(container.querySelector(".th-approval-dock-body")).toBeNull();
-
-				const expand = container.querySelector<HTMLButtonElement>(
-					".th-approval-dock-summary .th-approval-dock-toggle",
-				);
-				act(() => expand?.click());
 
 				const section = dock();
 				expect(section).not.toBeNull();
-				// The tight density is what keeps the box usable here.
-				expect(section?.className).toContain("th-approval-dock--tight");
+				// No expanded body, and no expand toggle that could only produce
+				// an overflowing panel.
+				expect(container.querySelector(".th-approval-dock-body")).toBeNull();
 				expect(
-					container.querySelector(".th-approval-dock-body"),
-				).not.toBeNull();
-				// The clamp can never produce an unusable panel: never "0px",
-				// never below the tight usable minimum (header + one complete
-				// option row + borders = 32px).
-				const maxHeight = section?.style.maxHeight;
-				expect(maxHeight).not.toBe("0px");
-				expect(Number.parseInt(maxHeight ?? "0", 10)).toBeGreaterThanOrEqual(32);
+					container.querySelector(".th-approval-dock-summary .th-approval-dock-toggle"),
+				).toBeNull();
+				expect(section?.className).toContain("th-approval-dock--compact");
+
+				// The summary band itself is answerable: every option plus cancel.
+				const summary = container.querySelector(".th-approval-dock-summary");
+				expect(summary).not.toBeNull();
+				const actions = Array.from(
+					summary?.querySelectorAll<HTMLButtonElement>(
+						".th-approval-dock-summary-actions button",
+					) ?? [],
+				);
+				expect(actions.map((button) => button.textContent)).toEqual([
+					"Allow",
+					"Block",
+					"approval.cancel",
+				]);
+
+				// Containment is a geometry claim, not a maxHeight string: the
+				// band never claims more than the measured budget
+				// (column − controls − composer).
+				const budget = columnHeight - 24 - 100;
+				const maxHeight = section?.style.maxHeight ?? "";
+				expect(maxHeight).not.toBe("");
+				expect(Number.parseFloat(maxHeight)).toBeLessThanOrEqual(Math.max(budget, 0) + 1);
+
+				act(() => actions[1]?.click());
+				expect(onRespond).toHaveBeenCalledTimes(1);
+				expect(onRespond).toHaveBeenCalledWith({ value: "Block" });
 			},
 		);
+
+		it("answers a confirm request from the compact summary band with allow/deny/cancel", () => {
+			const onRespond = vi.fn();
+			renderDockInColumn(
+				{ id: "confirm-1", method: "confirm" },
+				{ column: 129, dock: 0 },
+				onRespond,
+			);
+
+			const actions = Array.from(
+				container.querySelectorAll<HTMLButtonElement>(
+					".th-approval-dock-summary-actions button",
+				),
+			);
+			expect(actions.map((button) => button.textContent)).toEqual([
+				"approval.confirm",
+				"approval.deny",
+				"approval.cancel",
+			]);
+
+			act(() => actions[1]?.click());
+			expect(onRespond).toHaveBeenCalledTimes(1);
+			expect(onRespond).toHaveBeenCalledWith({ confirmed: false });
+		});
+
+		it("answers an input request from the compact summary band", () => {
+			const onRespond = vi.fn();
+			renderDockInColumn(
+				{ id: "input-1", method: "input", prefill: "draft" },
+				{ column: 129, dock: 0 },
+				onRespond,
+			);
+
+			const field = container.querySelector<HTMLInputElement>(
+				".th-approval-dock-summary-form input",
+			);
+			expect(field?.value).toBe("draft");
+			act(() => {
+				field
+					?.closest("form")
+					?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+			});
+			expect(onRespond).toHaveBeenCalledWith({ value: "draft" });
+		});
+
+		it("rounds the clamp UP so the rendered body never dips below the 48px floor", () => {
+			// Fractional geometry from a real stylesheet: a 24.34375px header
+			// plus 2px of borders puts the minimum dock at 74.34375px. Rounding
+			// that clamp DOWN to 74 leaves a 47.65625px body — under the floor.
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 228.34375, dock: 0 },
+			);
+			const section = dock();
+			expect(section).not.toBeNull();
+			const header = container.querySelector(".th-approval-dock-header");
+			expect(header).not.toBeNull();
+			vi.spyOn(header as Element, "getBoundingClientRect").mockReturnValue({
+				height: 24.34375,
+				width: 600,
+				top: 0,
+				bottom: 24.34375,
+				left: 0,
+				right: 600,
+				x: 0,
+				y: 0,
+				toJSON: () => ({}),
+			} as DOMRect);
+			(section as HTMLElement).style.borderTopWidth = "1px";
+			(section as HTMLElement).style.borderBottomWidth = "1px";
+			triggerResize();
+
+			// Budget: 228.34375 − 24 controls − 100 composer = 104.34375; the
+			// reserve yields down to the dock minimum, so the clamp lands exactly
+			// on the fractional floor 24.34375 + 2 + 48 = 74.34375.
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+			const maxHeight = Number.parseFloat(
+				(section as HTMLElement).style.maxHeight,
+			);
+			// The rendered body = clamp − header − borders must be >= 48.
+			expect(maxHeight - 24.34375 - 2).toBeGreaterThanOrEqual(48);
+		});
 
 		it("converges to a stable density after an explicit expand under the floor (no sizing feedback loop)", () => {
 			// Chrome-measured geometry: the tight density sheds header chrome,

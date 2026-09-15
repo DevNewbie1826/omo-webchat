@@ -154,8 +154,20 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// always be answerable.
 	const floorCollapsed =
 		columnSpace.clampPx !== null && columnSpace.clampPx < columnSpace.minDockPx;
+	// Below the tight density's usable minimum even an explicit expansion
+	// cannot render a usable panel — forcing one in would push the composer
+	// out of the column (the one hard floor). The arithmetic at 390x200: the
+	// 156px column pays ~78px for the composer and ~44px for the control
+	// strip, leaving ~30px — less than the tight minimum, so expansion is
+	// impossible by arithmetic, not by policy. There the collapsed summary
+	// itself becomes the answerable surface: the request's primary actions
+	// render as a compact row inside the summary band, so the user answers
+	// without expanding and nothing is pushed out.
+	const expansionImpossible =
+		columnSpace.clampPx !== null && columnSpace.clampPx < APPROVAL_TIGHT_MIN_DOCK_PX;
 	const expanded =
-		!collapsed && (!floorCollapsed || expandOverrideForId === request.id);
+		!collapsed &&
+		(!floorCollapsed || (expandOverrideForId === request.id && !expansionImpossible));
 	// An explicit expansion under the floor trades padding for answerability:
 	// the tight density sheds vertical chrome so the header plus one complete
 	// clickable option row fit whatever the column can give.
@@ -185,14 +197,31 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			? anchorRef.current.atMs + request.remainingMs
 			: undefined);
 
-	const [nowMs, setNowMs] = useState(() => Date.now());
+	// The clock is keyed to the countdown target: when a new request's
+	// deadline replaces a long-pending request that never started an
+	// interval, the first paint must already show the NEW request's
+	// remaining time — not the stale mount-time clock corrected one tick
+	// later. Adjusting during render (React's sanctioned pattern) re-anchors
+	// before commit, so there is no one-frame flash of the stale value.
+	const [clock, setClock] = useState<{ targetMs: number | undefined; nowMs: number }>(() => ({
+		targetMs,
+		nowMs: Date.now(),
+	}));
+	if (clock.targetMs !== targetMs) {
+		setClock({ targetMs, nowMs: Date.now() });
+	}
 	useEffect(() => {
 		if (targetMs === undefined) return;
-		const timer = setInterval(() => setNowMs(Date.now()), COUNTDOWN_TICK_MS);
+		const timer = setInterval(
+			() => setClock((previous) => ({ ...previous, nowMs: Date.now() })),
+			COUNTDOWN_TICK_MS,
+		);
 		return () => clearInterval(timer);
 	}, [targetMs]);
 	const countdownSeconds =
-		targetMs === undefined ? undefined : Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
+		targetMs === undefined
+			? undefined
+			: Math.max(0, Math.ceil((targetMs - clock.nowMs) / 1000));
 
 	// Focus discipline: only a newly arrived request or an explicit user
 	// expansion (clicking or keying the expand control) moves focus to the
@@ -285,7 +314,13 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		<section
 			ref={sectionRef}
 			role="region"
-			className={tight ? "th-approval-dock th-approval-dock--tight" : "th-approval-dock"}
+			className={
+				tight
+					? "th-approval-dock th-approval-dock--tight"
+					: !expanded && expansionImpossible
+						? "th-approval-dock th-approval-dock--compact"
+						: "th-approval-dock"
+			}
 			aria-labelledby={titleId}
 			// While the clamp is measured, hold the yield with flex-shrink: 0 so a
 			// long transcript's deficit lands on the transcript alone, and bound
@@ -295,9 +330,23 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			style={
 				expanded
 					? effectiveClampPx !== null
-						? { flexShrink: 0, maxHeight: `${Math.max(Math.round(effectiveClampPx), 0)}px` }
+						? // Round UP: rounding the fractional minimum down (74.34375 →
+						  // 74) leaves the rendered body at 47.65625px — under the
+						  // 48px floor. Ceil guarantees body >= floor; the
+						  // sub-pixel difference comes out of the transcript
+						  // reserve, never out of the composer.
+							{ flexShrink: 0, maxHeight: `${Math.max(Math.ceil(effectiveClampPx), 0)}px` }
 						: undefined
-					: { flexShrink: 0 }
+					: // The collapsed summary is a fixed band (never squeezed);
+					  // when expansion is impossible the band is also bounded by
+					  // the measured budget so a wrapping action row scrolls
+					  // inside it instead of pushing the composer out.
+						expansionImpossible
+						? {
+								flexShrink: 0,
+								maxHeight: `${Math.max(Math.ceil(columnSpace.clampPx ?? 0), 0)}px`,
+							}
+						: { flexShrink: 0 }
 			}
 			onKeyDown={(event) => {
 				if (event.key !== "Escape" || collapsed) return;
@@ -310,26 +359,121 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 					<span id={titleId} className="th-approval-dock-summary-title">
 						{request.title ?? t("approval.title")}
 					</span>
-					<span className="th-approval-dock-summary-pending">
-						{t("approval.pending")}
-					</span>
-					{countdown}
-					{/* Always operable, even under the space floor: a pending
-					    question must always be answerable. An explicit click
-					    overrides the floor and moves focus to the primary
-					    control; space-driven re-expansion never does. */}
-					<button
-						type="button"
-						className="th-approval-dock-toggle"
-						aria-label={t("approval.expand")}
-						onClick={() => {
-							userExpandPendingRef.current = true;
-							setExpandOverrideForId(request.id);
-							setCollapsedForId(null);
-						}}
-					>
-						{t("approval.expand")}
-					</button>
+					{expansionImpossible ? (
+						<>
+							{countdown}
+							{/* Expansion cannot fit even the tight dock here, so the
+							    summary band itself carries the answers: the request's
+							    primary actions as a compact row. No expand toggle —
+							    a toggle that could only produce an overflowing
+							    panel would be a lie. */}
+							{request.method === "select" && (
+								<div className="th-approval-dock-summary-actions">
+									{(request.options ?? []).map((opt, index) => (
+										<button
+											key={opt}
+											type="button"
+											className="th-btn"
+											data-approval-primary={index === 0 ? "" : undefined}
+											onClick={() => submitValue(opt)}
+										>
+											{opt}
+										</button>
+									))}
+									<button
+										type="button"
+										className="th-btn th-btn--ghost"
+										data-approval-primary={
+											(request.options ?? []).length === 0 ? "" : undefined
+										}
+										onClick={cancel}
+									>
+										{t("approval.cancel")}
+									</button>
+								</div>
+							)}
+							{request.method === "confirm" && (
+								<div className="th-approval-dock-summary-actions">
+									<button
+										type="button"
+										className="th-btn"
+										data-approval-primary
+										onClick={() => submitConfirm(true)}
+									>
+										{t("approval.confirm")}
+									</button>
+									<button
+										type="button"
+										className="th-btn th-btn--ghost"
+										onClick={() => submitConfirm(false)}
+									>
+										{t("approval.deny")}
+									</button>
+									<button
+										type="button"
+										className="th-btn th-btn--ghost"
+										onClick={cancel}
+									>
+										{t("approval.cancel")}
+									</button>
+								</div>
+							)}
+							{(request.method === "input" || request.method === "editor") && (
+								<form
+									className="th-approval-dock-summary-form"
+									onSubmit={(event) => {
+										event.preventDefault();
+										submitValue(text);
+									}}
+								>
+									{/* A one-line field stands in for the editor here: the
+									    band cannot host a multiline area, and an answerable
+									    single line beats an overflowing panel. */}
+									<input
+										type="text"
+										className="th-approval-input"
+										data-approval-primary
+										placeholder={request.placeholder ?? ""}
+										value={text}
+										onChange={(event) => setText(event.target.value)}
+									/>
+									<button type="submit" className="th-btn">
+										{t("approval.submit")}
+									</button>
+									<button
+										type="button"
+										className="th-btn th-btn--ghost"
+										onClick={cancel}
+									>
+										{t("approval.cancel")}
+									</button>
+								</form>
+							)}
+						</>
+					) : (
+						<>
+							<span className="th-approval-dock-summary-pending">
+								{t("approval.pending")}
+							</span>
+							{countdown}
+							{/* Always operable, even under the space floor: a pending
+							    question must always be answerable. An explicit click
+							    overrides the floor and moves focus to the primary
+							    control; space-driven re-expansion never does. */}
+							<button
+								type="button"
+								className="th-approval-dock-toggle"
+								aria-label={t("approval.expand")}
+								onClick={() => {
+									userExpandPendingRef.current = true;
+									setExpandOverrideForId(request.id);
+									setCollapsedForId(null);
+								}}
+							>
+								{t("approval.expand")}
+							</button>
+						</>
+					)}
 				</div>
 			) : (
 				<>
