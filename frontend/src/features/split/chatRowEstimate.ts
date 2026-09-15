@@ -98,9 +98,10 @@ function metricsFamilyKey(scrollElement: HTMLElement): string {
 
 /**
  * Live lane / type metrics for the transcript virtualizer. Appends an offscreen
- * probe with the real row classes, then removes it. Cached by rounded lane
- * width, resolved font-size, and font family (computed plus the applied
- * --th-font-mono stack); falls back when layout is missing (jsdom).
+ * probe with the real row classes to `.th-chat-history` (the containing block
+ * rendered rows resolve percentage width against), then removes it. Cached by
+ * rounded lane width, resolved font-size, and font family (computed plus the
+ * applied --th-font-mono stack); falls back when layout is missing (jsdom).
  */
 export function readRowMetrics(scrollElement: HTMLElement | null): RowMetrics {
   const fallback = fallbackMetrics();
@@ -153,7 +154,13 @@ export function readRowMetrics(scrollElement: HTMLElement | null): RowMetrics {
   markdown.append(bodySpan, pre);
   msg.append(markdown);
   probe.append(msg);
-  scrollElement.append(probe);
+  // Rendered rows are position:absolute inside `.th-chat-history` (position:relative),
+  // so 100% in `.th-chat-row` resolves against history — already reduced by the
+  // scroll element's stable both-edges scrollbar gutter. Appending to the scroll
+  // element would overstate the lane by that gutter (12px at 390/600 viewports).
+  const history = scrollElement.querySelector(".th-chat-history");
+  const host = history instanceof HTMLElement ? history : scrollElement;
+  host.append(probe);
 
   try {
     const laneWidth = probe.getBoundingClientRect().width;

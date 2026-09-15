@@ -134,6 +134,66 @@ describe("readRowMetrics", () => {
 		}
 	});
 
+	it("measures the probe against .th-chat-history, the same containing block a rendered row uses", () => {
+		// Rendered rows are position:absolute inside .th-chat-history (position:relative).
+		// Their percentage width therefore resolves against history, which is already
+		// narrower than .th-chat-body by the stable both-edges scrollbar gutter (12px).
+		// Appending the probe to the scroll element overstates the lane: 378 vs 366 at
+		// viewport 390, 564 vs 552 at viewport 600.
+		const SCROLL_WIDTH = 390;
+		const HISTORY_WIDTH = 378;
+		const GUTTER = 12;
+		const SCROLLBAR = 6;
+		const laneFrom = (containing: number): number =>
+			Math.min(760, containing + SCROLLBAR + SCROLLBAR - GUTTER - GUTTER);
+
+		const scrollElement = document.createElement("div");
+		scrollElement.className = "th-chat-body";
+		scrollElement.style.fontSize = "13px";
+		scrollElement.style.fontFamily = "ContainingBlockPin, sans-serif";
+		Object.defineProperty(scrollElement, "clientWidth", { configurable: true, value: SCROLL_WIDTH });
+
+		const content = document.createElement("div");
+		content.className = "th-chat-content";
+
+		const history = document.createElement("div");
+		history.className = "th-chat-history";
+		history.style.position = "relative";
+		Object.defineProperty(history, "clientWidth", { configurable: true, value: HISTORY_WIDTH });
+
+		content.append(history);
+		scrollElement.append(content);
+		document.body.append(scrollElement);
+
+		let probeParent: Element | null = null;
+		const spy = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement): DOMRect {
+			if (this.classList.contains("th-chat-row")) {
+				probeParent = this.parentElement;
+				const containing = this.parentElement?.clientWidth ?? 0;
+				return new DOMRect(0, 0, laneFrom(containing), 20);
+			}
+			if (isGlyphSample(this)) {
+				const fontSize = inheritedFontSize(this);
+				const text = this.textContent ?? "";
+				const width = isStretchedFlexItem(this) ? STRETCH_LANE : text.length * fontSize * ADVANCE_RATIO;
+				return new DOMRect(0, 0, width, fontSize);
+			}
+			return new DOMRect(0, 0, 20, 20);
+		});
+
+		try {
+			const metrics = readRowMetrics(scrollElement);
+			expect(probeParent).toBe(history);
+			expect(metrics.laneWidth).toBe(366);
+			expect(metrics.laneWidth).not.toBe(378);
+			expect(laneFrom(SCROLL_WIDTH)).toBe(378);
+			expect(laneFrom(HISTORY_WIDTH)).toBe(366);
+		} finally {
+			scrollElement.remove();
+			spy.mockRestore();
+		}
+	});
+
 	it("does not reuse cached metrics when font family changes at the same size and width", () => {
 		const restore = installGlyphLayout();
 		const scrollElement = document.createElement("div");
