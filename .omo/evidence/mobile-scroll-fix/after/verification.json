@@ -1,0 +1,55 @@
+{
+  "artifacts": [
+    {
+      "name": "scroll-travel.json",
+      "bytes": 3268
+    },
+    {
+      "name": "ios-path.json",
+      "bytes": 246103
+    },
+    {
+      "name": "follow-intent.json",
+      "bytes": 411
+    },
+    {
+      "name": "image-shift.json",
+      "bytes": 289
+    },
+    {
+      "name": "estimator-accuracy.json",
+      "bytes": 122206
+    },
+    {
+      "name": "transcript-390x844.png",
+      "bytes": 215035
+    },
+    {
+      "name": "transcript-older-history-390x844.png",
+      "bytes": 239821
+    }
+  ],
+  "estimatorRows": 300,
+  "allCriteriaPresent": true,
+  "productionHashesUnchanged": {
+    "ChatTranscript.tsx": "6bc041314d04ef6ee8fc6834402491cb0402c3c0",
+    "useChatScroll.ts": "d5324b5f23e829c880bdccbefb1a5453690beb1f",
+    "ChatTranscript.followIntent.test.tsx": "771c188b0171802ac596db60dd20e07fb5ea5fe9",
+    "ChatTranscript.scrollAdjust.test.tsx": "fcf7fb2550f8dbd1e5abc24fb402f313bb3aa95a",
+    "chatRowEstimate.test.ts": "6e7fa59b6d7a58197d8c670b58366807871cac07",
+    "chatRowEstimate.ts": "e7e1bcb23ee6aadc391832aad52fca096a32aa7f"
+  },
+  "gitStatus": " M frontend/src/features/split/ChatTranscript.tsx\n M frontend/src/features/split/useChatScroll.ts\n?? frontend/src/features/split/ChatTranscript.followIntent.test.tsx\n?? frontend/src/features/split/ChatTranscript.scrollAdjust.test.tsx\n?? frontend/src/features/split/chatRowEstimate.test.ts\n?? frontend/src/features/split/chatRowEstimate.ts\n",
+  "temporaryAbsent": true,
+  "portFree": true,
+  "syntaxCheck": "node --check passed",
+  "diagnostics": "Unavailable: language server could not locate TypeScript",
+  "cleanup": {
+    "mode": "after",
+    "viteStopped": true,
+    "temporaryRemoved": true,
+    "coreRestored": true,
+    "cmpExitCode": 0,
+    "portFree": true
+  }
+}

@@ -1,0 +1,8 @@
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vite' --port 5211 --strictPort --force
+2:39:41 PM [vite] (client) Forced re-optimization of dependencies
+
+  VITE v6.4.3  ready in 117 ms
+
+  ➜  Local:   http://localhost:5211/
+  ➜  Network: use --host to expose

@@ -1,0 +1,3 @@
+ frontend/src/features/split/ChatTranscript.tsx | 60 ++++++++++++++++++++++----
+ frontend/src/features/split/useChatScroll.ts   |  4 ++
+ 2 files changed, 56 insertions(+), 8 deletions(-)

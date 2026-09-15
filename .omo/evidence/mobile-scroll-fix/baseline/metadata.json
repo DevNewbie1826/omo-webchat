@@ -1,0 +1,12 @@
+{
+  "mode": "baseline",
+  "recordedAt": "2026-09-15T05:23:12.711Z",
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "bun": "1.4.2",
+  "sourceSha256": "7dde3caaf6847e6104bad9fa1cdfd5e0d44160fccc776a3778c9c4f371d197e9",
+  "constantEstimate80Present": true,
+  "fixture": "300 rows; assistant ordinal controls paragraph/list/code/image cadence; unloaded image is a text placeholder"
+}

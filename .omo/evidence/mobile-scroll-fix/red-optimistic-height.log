@@ -1,0 +1,31 @@
+❯ src/features/split/ChatPane.behavior.optimistic.test.tsx:86:5
+     84|   expect(
+     85|    container.querySelector<HTMLElement>(".th-chat-history")?.style.hei…
+     86|   ).toBe("160px");
+       |     ^
+     87|  });
+     88|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/features/split/ChatPane.behavior.optimistic.test.tsx > ChatPane optimistic prompt reconciliation > reconciles identical prompts independently after completion
+AssertionError: expected '130px' to be '160px' // Object.is equality
+
+Expected: "160px"
+Received: "130px"
+
+ ❯ src/features/split/ChatPane.behavior.optimistic.test.tsx:113:5
+    111|   expect(
+    112|    container.querySelector<HTMLElement>(".th-chat-history")?.style.hei…
+    113|   ).toBe("160px");
+       |     ^
+    114|  });
+    115| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed (2)
+   Start at  14:42:33
+   Duration  3.66s (transform 1.85s, setup 49ms, import 2.36s, tests 123ms, environment 937ms)
