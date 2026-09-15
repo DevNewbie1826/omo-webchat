@@ -160,7 +160,7 @@ func TestMergeSessionHistorySuppressesMatchingIdentityForEveryProvenance(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session})
+			items := mergeSessionHistory([]cursorstore.Chat{tt.chat}, []diskSession{session}, nil)
 			if len(items) != 1 || items[0].Source != sessionHistorySourceStored {
 				t.Fatalf("merged items = %+v, want only stored row", items)
 			}
@@ -168,7 +168,7 @@ func TestMergeSessionHistorySuppressesMatchingIdentityForEveryProvenance(t *test
 	}
 
 	unmatched := cursorstore.Chat{SessionFile: filepath.Join(ownedDir, filepath.Base(session.Path)), SessionProvenance: cursorstore.SessionProvenanceAdopted}
-	if items := mergeSessionHistory([]cursorstore.Chat{unmatched}, []diskSession{session}); len(items) != 2 || items[1].Source != sessionHistorySourceDiscovered {
+	if items := mergeSessionHistory([]cursorstore.Chat{unmatched}, []diskSession{session}, nil); len(items) != 2 || items[1].Source != sessionHistorySourceDiscovered {
 		t.Fatalf("unmatched merged items = %+v, want stored and discovered rows", items)
 	}
 }
@@ -273,7 +273,7 @@ func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *t
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			items := mergeSessionHistory(tt.chats, tt.disk)
+			items := mergeSessionHistory(tt.chats, tt.disk, nil)
 			discovered := 0
 			for _, item := range items {
 				if item.Source == sessionHistorySourceDiscovered {
@@ -288,7 +288,7 @@ func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatDangling(t *t
 
 	t.Run("aging past the window exposes the session without sleeping", func(t *testing.T) {
 		now = func() time.Time { return fixedNow.Add(2 * DiscoveredStabilityWindow) }
-		items := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{young})
+		items := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{young}, nil)
 		if len(items) != 2 || items[0].Source != sessionHistorySourceStored || items[1].Source != sessionHistorySourceDiscovered {
 			t.Fatalf("aged items = %+v, want stored row and discovered row", items)
 		}
@@ -373,7 +373,7 @@ func TestMergeSessionHistoryExposesContinuouslyTouchedSessionAfterWindow(t *test
 	danglingChat := cursorstore.Chat{ID: "chat-dangling", CWD: sameCWD, SessionFile: filepath.Join(t.TempDir(), "pending.jsonl")}
 	active := diskSession{ID: "disk-active", Path: "/catalog/active.jsonl", CWD: sameCWD, Name: "Active", ModTime: fixedNow}
 
-	hidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active})
+	hidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active}, nil)
 	if got := discoveredSessionIDs(hidden); len(got) != 0 {
 		t.Fatalf("new session must stay hidden within the window: %+v", hidden)
 	}
@@ -381,7 +381,7 @@ func TestMergeSessionHistoryExposesContinuouslyTouchedSessionAfterWindow(t *test
 	mid := fixedNow.Add(DiscoveredStabilityWindow - time.Second)
 	now = func() time.Time { return mid }
 	active.ModTime = mid
-	stillHidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active})
+	stillHidden := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active}, nil)
 	if got := discoveredSessionIDs(stillHidden); len(got) != 0 {
 		t.Fatalf("touched session must stay hidden before the window elapses: %+v", stillHidden)
 	}
@@ -390,7 +390,7 @@ func TestMergeSessionHistoryExposesContinuouslyTouchedSessionAfterWindow(t *test
 	now = func() time.Time { return later }
 	active.ModTime = later
 	brandNew := diskSession{ID: "disk-brand-new", Path: "/catalog/brand-new.jsonl", CWD: sameCWD, Name: "Brand new", ModTime: later}
-	exposed := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active, brandNew})
+	exposed := mergeSessionHistory([]cursorstore.Chat{danglingChat}, []diskSession{active, brandNew}, nil)
 	got := discoveredSessionIDs(exposed)
 	if len(got) != 1 || got[0] != "disk-active" {
 		t.Fatalf("touched session must be visible after the window, new session must stay hidden: %+v", exposed)
@@ -460,17 +460,17 @@ func TestEmptyCompletedWorkspaceScanResetsDiscoveredObservation(t *testing.T) {
 	t.Setenv("OMO_CODING_AGENT_DIR", agent)
 	path := filepath.Join(agent, "sessions", sessionDirNameForCwd(workspace), "disk-recreated.jsonl")
 	disk := diskSession{ID: "disk-recreated", Path: path, CWD: workspace, ModTime: fixedNow}
-	mergeSessionHistory(nil, []diskSession{disk}, workspace)
+	mergeSessionHistory(nil, []diskSession{disk}, nil, workspace)
 	// A successful empty scan must reset the prior sighting.
 	absent := fixedNow.Add(DiscoveredStabilityWindow)
 	now = func() time.Time { return absent }
-	mergeSessionHistory(nil, nil, workspace)
+	mergeSessionHistory(nil, nil, nil, workspace)
 
 	dangling := cursorstore.Chat{CWD: workspace, SessionFile: filepath.Join(t.TempDir(), "missing.jsonl")}
 	recreated := absent.Add(time.Second)
 	now = func() time.Time { return recreated }
 	disk.ModTime = recreated
-	items := mergeSessionHistory([]cursorstore.Chat{dangling}, []diskSession{disk}, workspace)
+	items := mergeSessionHistory([]cursorstore.Chat{dangling}, []diskSession{disk}, nil, workspace)
 	if got := discoveredSessionIDs(items); len(got) != 0 {
 		t.Fatalf("recreated session was immediately stable after an empty scan: %+v", items)
 	}
@@ -632,7 +632,7 @@ func TestMergeSessionHistoryKeepsReplacementSessionWithConflictingDurableID(t *t
 	disk := []diskSession{{
 		ID: "durable-new", Path: "/sessions/replacement.jsonl", Name: "replacement",
 	}}
-	items := mergeSessionHistory(chats, disk)
+	items := mergeSessionHistory(chats, disk, nil)
 	if len(items) != 2 {
 		t.Fatalf("items = %d, want 2 (stored row + discovered replacement): %+v", len(items), items)
 	}
@@ -701,5 +701,64 @@ func TestFailedWorkspaceScanPreservesDiscoveredObservation(t *testing.T) {
 	}
 	if discovered == nil || discovered.Source != sessionHistorySourceDiscovered {
 		t.Fatalf("failed scan must preserve the prior sighting so the restored session becomes stable: %+v", page.Items)
+	}
+}
+
+func TestMergeSessionHistoryMarksLiveMissingFilePreparing(t *testing.T) {
+	chat := cursorstore.Chat{
+		ID:          "chat-live",
+		CWD:         t.TempDir(),
+		SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"),
+		Name:        "live",
+	}
+	live := map[string]struct{}{chat.ID: {}}
+	items := mergeSessionHistory([]cursorstore.Chat{chat}, nil, live)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one stored row", items)
+	}
+	if item := items[0]; item.Dangling || !item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want preparing stored row (dangling=false preparing=true)", item)
+	}
+}
+
+func TestMergeSessionHistoryMarksMissingFileDanglingWhenNotLive(t *testing.T) {
+	chat := cursorstore.Chat{
+		ID:          "chat-gone",
+		CWD:         t.TempDir(),
+		SessionFile: filepath.Join(t.TempDir(), "missing.jsonl"),
+		Name:        "gone",
+	}
+	items := mergeSessionHistory([]cursorstore.Chat{chat}, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one stored row", items)
+	}
+	if item := items[0]; !item.Dangling || item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want dangling stored row (dangling=true preparing=false)", item)
+	}
+}
+
+func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatPreparing(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	sameCWD := t.TempDir()
+	preparingChat := cursorstore.Chat{
+		ID:          "chat-preparing",
+		CWD:         sameCWD,
+		SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"),
+	}
+	young := diskSession{
+		ID:      "disk-young",
+		Path:    "/catalog/young.jsonl",
+		CWD:     sameCWD,
+		Name:    "Fresh",
+		ModTime: fixedNow.Add(-time.Second),
+	}
+	live := map[string]struct{}{preparingChat.ID: {}}
+	items := mergeSessionHistory([]cursorstore.Chat{preparingChat}, []diskSession{young}, live)
+	if len(items) != 1 || items[0].ID != preparingChat.ID || items[0].Dangling || !items[0].Preparing {
+		t.Fatalf("preparing stored row missing or misclassified: %+v", items)
+	}
+	if got := discoveredSessionIDs(items); len(got) != 0 {
+		t.Fatalf("young disk session must stay hidden while the stored chat is preparing: %+v", items)
 	}
 }
