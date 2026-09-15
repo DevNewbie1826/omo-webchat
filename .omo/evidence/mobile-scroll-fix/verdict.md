@@ -1,56 +1,50 @@
 # Mobile transcript scroll verdict
 
-Overall: PASS. All five measured criteria pass against the estimate-stability fix. C4 improved from the previous +2063px failure to 0px using the unchanged harness.
+Overall: FAIL / REVISE. C1 and C2 regress with the unchanged yardstick. C3-C5 and the new settings sweep pass. No frontend source was edited by this evidence task.
 
-The harness was run unchanged once, successfully (exit 0):
+Frozen command (exit 0; criterion failures are judged below, not by the runner exit):
 
-```sh
-bun /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs --mode after
-```
+`bun /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs --mode after`
 
-Run recorded at 2026-09-15T06:00:51.061Z; Bun 1.4.2 WebView; viewport 390x844 CSS pixels. Source SHA256: `94f56486a0d31b16151611fed8a6c59cbb0aad946c9ae4be3009576b8c5540c5`.
+Recorded: 2026-09-15T06:49:16.132Z. Source SHA256: `0221574950f1a5581970d6e871f844109aa3c616242dbab7a43e230f46c64e0d`.
+Harness SHA256: `eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556`.
+Pre/post checks match for run-scroll-qa.mjs, main.tsx and index.html (`after/harness-before.sha256`, `after/harness-after.sha256`). The frozen harness was run once in this task.
 
-Harness SHA256 (from `shasum -a 256 /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs`):
+## C1-C5
 
-```text
-eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556
-```
-
-Pre/post SHA256 checks also confirm `harness/main.tsx` and `harness/index.html` were unchanged. The pre-run hashes are retained in `after/harness-before.sha256`; execution output is in `after/rerun.log`.
-
-All distances below are CSS pixels. Baselines come from the corresponding `baseline/*.json`.
-
-| Criterion | Baseline | New after | Threshold | Verdict |
+| Criterion | Baseline | After | Threshold | Verdict |
 |---|---|---|---|---|
-| C1 travel error | 1705px | 60px | abs(landed - target) <= 200px | PASS |
-| C2 iOS travel/maxJump, hops 8k; 16k; 24k | -580/300px; -2452/56px; -2111/390px | -3140/70px; -3077/67px; -3096/77px | Every hop: negative travel, magnitude >= 2400px; maxJump <= 200px | PASS |
-| C3 follow intent | Away bottom distance 6000 -> 0px; position not recorded. Bottom append distance 0px | Away position movement 0px; bottom append distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
-| C4 image anchor shift | 0px | 0px (previous after: +2063px) | abs(shift) <= 8px | PASS |
-| C5 estimator median/p90 absolute percentage error | 23.809524% / 83.739837% | 1.111111% / 10.385757% | Median <= 25%; p90 <= 35% | PASS |
+| C1 travel error | 1705px | 596px (signed -596) | Absolute error <= 200px | FAIL |
+| C2 travel/maxJump, hops 8k;16k;24k | -580/300px; -2452/56px; -2111/390px | -3422/179px; -3470/219px; -3466/293px | Each travel <= -2400px; maxJump <= 200px | FAIL |
+| C3 follow intent | Away bottom distance 6000 -> 0px; position absent. Bottom distance 0px | Away movement 0px; bottom distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
+| C4 image anchor shift | 0px | 0px | Absolute shift <= 8px | PASS |
+| C5 estimator median/p90 percentage error | 23.809524% / 83.739837% | 3.796296% / 20% | Median <= 25%; p90 <= 35% | PASS |
 
-## Measurement details and limitations
+C1 target 59019, landed 58423: 596px error, 396px over threshold. C2 hop 16000 exceeds the jump threshold by 19px; hop 24000 by 93px. Travel passes for all three hops. C3 away scrollTop stays 68945. C4 anchor 295 stays at -420px; image 293 is mounted and decoded (natural width 363). C5 covers all 300 rows; baseline percentages independently recomputed from measured heights (median 23.80952380952381%, p90 83.73983739837398%), not the stale 36.5% claim.
 
-- C1: `scroll-travel.json`. Baseline target 17614, landed 19319. New target 52582, landed 52522; signed error -60px, travel -4060px.
-- C2: `ios-path.json`, ordered by hops 8000, 16000, 24000. The unchanged experiment forces the iOS virtual-core branch in desktop WebKit; it does not verify physical iOS gestures.
-- C3: `follow-intent.json`. New away scrollTop is 62512 before and after append; final bottom distance is 0. Baseline omitted scrollTop, so exact baseline position movement cannot be reconstructed; its recorded bottom-distance change is stated instead.
-- C4: `image-shift.json`. The same anchor row 295 stayed at -420px before and after the pending-image swap. Image row 293 remained mounted; the image was complete, natural width 363, row height 720.65625px. scrollTop changed from 68581 to 68808 while the visible anchor stayed fixed. No measurement was changed or discounted.
-- C5: `estimator-accuracy.json`. Independently recomputed from all 300 unique rows in each dataset as `abs(height - estimate) / height * 100`, with constant 80 for baseline and each row's estimate for after. Median averages the middle pair; p90 is nearest rank (270th sorted value). Exact baseline median/p90: 23.80952380952381% / 83.73983739837398%. Exact after: 1.1111111111111112% / 10.385756676557865%.
+## Settings sweep: PASS
 
-C6/tests/build were outside this five-criterion rerun and were not rerun. No frontend/src files were edited by this verification task. No git add, commit, push, or PR merge was performed.
+Separate script: `harness/metrics-sweep.mjs`; run with Bun, final execution exit 0. Uses the real ChatTranscript, real useAppConfig setting setters/effects, and the actual virtualizer retrieved from React hook state, without source instrumentation. Font changes are applied sequentially in each WebView; readiness uses effect events and layout frames, never fixed sleeps. Widths are separate real page viewports, not a resize-in-place claim.
 
-## Screenshots and cleanup
+| Viewport / scrollport px | Font px | Glyph advance px | Independent glyph px | Unmeasured estimate / fresh px | Browser height px | Result |
+|---|---|---|---|---|---|---|
+| 390 / 384 | 10 | 6.091734 | 6.091488 | 96 / 96 | 80 | PASS |
+| 390 / 384 | 13 | 7.690524 | 7.690400 | 141 / 141 | 116 | PASS |
+| 390 / 384 | 17 | 9.724798 | 9.724627 | 207 / 207 | 178 | PASS |
+| 390 / 384 | 24 | 13.471018 | 13.470839 | 362 / 362 | 320 | PASS |
+| 600 / 594 | 10 | 6.091734 | 6.091488 | 64 / 64 | 64 | PASS |
+| 600 / 594 | 13 | 7.690524 | 7.690400 | 100 / 100 | 76 | PASS |
+| 600 / 594 | 17 | 9.724798 | 9.724627 | 153 / 153 | 124 | PASS |
+| 600 / 594 | 24 | 13.471018 | 13.470839 | 285 / 285 | 206 | PASS |
 
-Both screenshots were refreshed by the unchanged harness and visually inspected:
+The same unmeasured row 40 remains absent from itemSizeCache at every setting, and its virtualizer size equals the fresh estimate. All fixture rows have identical assistant text and structure; browser heights come from an identical mounted row (its actual index is recorded in JSON), representing the same row content at every setting without mounting row 40 and contaminating its unmeasured cache. Heights are reported for comparison, not required to equal estimates. Glyph advance increases at every font step and agrees with an independent DOM Range measurement to within 0.05px (maximum error 0.000247px). Estimates increase at every font step and decrease at the wider viewport for all four fonts. This sweep does not add a font-family or resize-in-place assertion.
 
-- `after/transcript-390x844.png`: latest questions 149-150.
-- `after/transcript-older-history-390x844.png`: older history around question 124, with return-to-bottom button.
+## Artifacts, verification and limits
 
-Both capture the verified 390x844 CSS viewport at 780x1688 device pixels. All after JSON files are refreshed, non-empty, and parse successfully. Artifact timestamps, sizes, dimensions, harness hash, and independent cleanup checks are recorded in refreshed `after/verification.json`.
+Both 390x844 CSS viewport screenshots were refreshed and visually inspected (780x1688 device pixels). The initial screenshot shows questions 141-142; older-history shows 125-126 and the bottom button. The initial screenshot is the frozen harness's readiness-time capture, not proof of final bottom landing.
 
-`after/cleanup.json` reports:
+`after/*.json`, `after/rerun.log`, `after/metrics-sweep.log`, and `after/verification.json` contain refreshed data. `STATUS.md` and `verify-diffstat.log` have been corrected. Sweep startup development encountered module-resolution issues and an unsuitable measured reference row; the final script explicitly asserts its chosen row remains unmeasured. No frozen measurement was retried or altered.
 
-```json
-{"mode":"after","viteStopped":true,"temporaryRemoved":true,"coreRestored":true,"cmpExitCode":0,"portFree":true}
-```
+Cleanup receipt: viteStopped=true, temporaryRemoved=true, coreRestored=true, cmpExitCode=0, portFree=true. Independent cmp exits 0; .qa-harness is absent; lsof -i :5211 prints nothing (exit 1). Sweep cache is removed as well.
 
-Independent cleanup verification: virtual-core matches `virtual-core-index.original.js` (`cmp` exit 0); `ls /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend/.qa-harness` fails with exit 1 and No such file or directory; `lsof -i :5211` prints nothing (exit 1).
+C2 forces the iOS virtual-core branch in desktop WebKit, not physical iOS gestures. C6 tests/build were not rerun by this evidence task. Script syntax validation passed; LSP diagnostics could not initialize because the language-server workspace could not locate TypeScript. No git add, commit, push, or merge was performed; PR #160 is left unmerged.

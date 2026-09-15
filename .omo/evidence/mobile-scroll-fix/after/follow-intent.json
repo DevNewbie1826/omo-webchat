@@ -1,19 +1,19 @@
 {
   "beforeAppend": {
-    "scrollTop": 62512,
-    "scrollHeight": 69259,
-    "distanceFromBottom": 5903,
+    "scrollTop": 68945,
+    "scrollHeight": 75788,
+    "distanceFromBottom": 5999,
     "buttonPresent": true
   },
   "afterAppendAway": {
-    "scrollTop": 62512,
-    "scrollHeight": 69387,
-    "distanceFromBottom": 6031,
+    "scrollTop": 68945,
+    "scrollHeight": 75939,
+    "distanceFromBottom": 6150,
     "buttonPresent": true
   },
   "afterAppendBottom": {
-    "scrollTop": 68667,
-    "scrollHeight": 69511,
+    "scrollTop": 75196,
+    "scrollHeight": 76040,
     "distanceFromBottom": 0,
     "buttonPresent": false
   }

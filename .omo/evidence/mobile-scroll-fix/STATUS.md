@@ -1,17 +1,7 @@
-# Baseline capture blocked on dependencies
+# Evidence refreshed: REVISE
 
-The harness files are implemented but browser measurements have NOT been verified or captured.
+Dependencies are installed; baseline and after measurements exist. The frozen harness ran successfully, unchanged, and refreshed both screenshots. Current C1 and C2 FAIL; C3-C5 PASS. The separate real-browser settings sweep PASSes all eight font/width combinations. See verdict.md for exact thresholds and both result tables, and after/metrics-sweep.json for full numbers.
 
-Attempted command:
+The yardstick SHA256 remains eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556. Baseline uses constant 80; after uses the real estimator. This task changed evidence only, with the frozen runner's temporary server/core instrumentation restored in cleanup. Existing frontend working-tree edits belong to the parent task; verify-diffstat.log is a current tracked diff snapshot, not a clean-tree claim.
 
-```sh
-bun /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs --mode baseline
-```
-
-It exited 1 at dependency preflight because `frontend/node_modules/@tanstack/virtual-core/dist/esm/index.js` does not exist; the entire `frontend/node_modules` directory is absent. Installing dependencies would exceed this child task's explicit write boundary, which allows only the evidence directory, temporary `.qa-harness`, and temporary virtual-core patch. The parent must provision frontend dependencies before this harness can execute.
-
-`node --check` passed for the runner. LSP diagnostics could not initialize because TypeScript is not installed. No measurement JSON contains fabricated numbers; the only baseline output is the failed-attempt cleanup receipt. No server was started and no virtual-core file was patched. Port 5211 is free and `.qa-harness` is absent.
-
-The evidence directory is ignored by existing git rules, so ordinary `git status --short` does not list these files. Nothing was staged, committed, or pushed.
-
-Fixture assumptions: cadence is based on assistant ordinals (not raw even/odd row indices), so assistant rows actually cycle through all four paragraph counts. Images are at indices 41,83,125,167,209,251,293. Text placeholders are replaced with real inline SVG image blocks by `__loadImages()`. M5 uses loaded images and retains the constant 80px comparator in both modes. M2 exercises the forced iOS branch of desktop WebKit, not physical iOS hardware.
+Both cleanup receipts show Vite stopped, temporary directory absent, core comparison exit 0, and port 5211 free. C6 tests/build were not rerun here. Desktop WebKit's forced iOS branch is not physical iOS verification. No git staging, commit, push or merge was performed.

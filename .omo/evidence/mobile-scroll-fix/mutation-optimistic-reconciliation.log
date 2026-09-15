@@ -1,0 +1,32 @@
+Reviewer NOTE on the r3 verdict: changing the expected row count from 2 to 3 proves the assertion is sensitive to the
+number, but not that it detects BROKEN RECONCILIATION. This closes that gap with a real production mutation.
+
+Method: an isolated scratch git worktree at the reviewed commit a5fe789 (node_modules symlinked, never copied) so the
+running DAG nodes and the browser harness could not be disturbed. chatSessionState.ts reconcileHistory was mutated to
+keep every current message alongside the restored canonical ones, i.e. an optimistic prompt and its echo both survive.
+
+Unmutated scratch baseline:
+Tests  2 passed (2)
+   Start at  15:36:48
+   Duration  1.11s (transform 404ms, setup 24ms, import 579ms, tests 76ms, environment 357ms)
+
+With reconciliation broken:
+Tests  2 passed (2)
+
+After reverting the mutation:
+Tests  2 passed (2)
+   Start at  15:36:51
+   Duration  1.10s (transform 396ms, setup 24ms, import 570ms, tests 75ms, environment 352ms)
+
+SECOND ATTEMPT AND HONEST OUTCOME
+Breaking reconcileHistory's id-based dedup did NOT make either test fail: both stayed at 2 passing rows, mutated and
+unmutated. A follow-up search for the seam that actually collapses an optimistic prompt into its canonical echo did not
+find a cheap, single-point mutation for these two scenarios.
+
+CONCLUSION, stated against my own change: I could NOT demonstrate that the row-count assertion detects broken
+reconciliation, so the reviewer's NOTE stands. What the rewrite did accomplish is narrower than "stronger test": the
+original assertion pinned .th-chat-history style.height to "160px", which was 2 rows times the OLD constant 80px
+estimate; it proved exactly the same thing (a row total) while additionally coupling the test to the row-height
+estimator, so it broke for a reason unrelated to reconciliation. The replacement asserts the same row total through the
+virtualizer's own count and is not estimator-coupled. Neither version proves reconciliation sensitivity. Recording this
+as a known limitation rather than claiming an improvement I did not make.

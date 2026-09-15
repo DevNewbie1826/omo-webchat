@@ -1,8 +1,10 @@
+$ git diff --stat main -- frontend/src
  .../split/ChatPane.behavior.optimistic.test.tsx    |  35 ++-
- .../split/ChatTranscript.followIntent.test.tsx     | 187 +++++++++++++++
- .../split/ChatTranscript.scrollAdjust.test.tsx     | 101 ++++++++
- frontend/src/features/split/ChatTranscript.tsx     | 146 +++++++++++-
- .../src/features/split/chatRowEstimate.test.ts     | 121 ++++++++++
- frontend/src/features/split/chatRowEstimate.ts     | 258 +++++++++++++++++++++
- frontend/src/features/split/useChatScroll.ts       |   4 +
- 7 files changed, 839 insertions(+), 13 deletions(-)
+ .../ChatTranscript.estimateStability.test.tsx      | 109 ++++++++
+ .../split/ChatTranscript.followIntent.test.tsx     | 187 ++++++++++++++
+ .../split/ChatTranscript.scrollAdjust.test.tsx     | 251 ++++++++++++++++++
+ frontend/src/features/split/ChatTranscript.tsx     | 180 ++++++++++++-
+ .../src/features/split/chatRowEstimate.test.ts     | 228 ++++++++++++++++
+ frontend/src/features/split/chatRowEstimate.ts     | 286 +++++++++++++++++++++
+ frontend/src/features/split/useChatScroll.ts       |  16 +-
+ 8 files changed, 1275 insertions(+), 17 deletions(-)

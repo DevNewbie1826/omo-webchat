@@ -1,87 +1,74 @@
 {
-  "verifiedAt": "2026-09-15T06:02:05.268071+00:00",
+  "recordedAt": "2026-09-15T06:56:23.884165+00:00",
+  "harnessUnchanged": true,
   "harnessSha256": "eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556",
-  "files": {
-    "estimator-accuracy.json": {
-      "bytes": 122056,
-      "refreshed": true,
-      "validJson": true
-    },
-    "ios-path.json": {
-      "bytes": 245395,
-      "refreshed": true,
-      "validJson": true
-    },
-    "metadata.json": {
-      "bytes": 390,
-      "refreshed": true,
-      "validJson": true
-    },
-    "cleanup.json": {
-      "bytes": 137,
-      "refreshed": true,
-      "validJson": true
-    },
-    "scroll-travel.json": {
-      "bytes": 3231,
-      "refreshed": true,
-      "validJson": true
-    },
-    "follow-intent.json": {
-      "bytes": 411,
-      "refreshed": true,
-      "validJson": true
-    },
-    "browser.json": {
+  "cmpExitCode": 0,
+  "temporaryRemoved": true,
+  "lsofOutput": "",
+  "lsofExitCode": 1,
+  "artifacts": [
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/browser.json",
       "bytes": 143,
-      "refreshed": true,
-      "validJson": true
+      "modifiedAt": "2026-09-15T06:49:17.370256+00:00"
     },
-    "image-shift.json": {
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/cleanup.json",
+      "bytes": 137,
+      "modifiedAt": "2026-09-15T06:49:48.239901+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/estimator-accuracy.json",
+      "bytes": 123337,
+      "modifiedAt": "2026-09-15T06:49:35.539574+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/follow-intent.json",
+      "bytes": 411,
+      "modifiedAt": "2026-09-15T06:49:25.312837+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/image-shift.json",
       "bytes": 286,
-      "refreshed": true,
-      "validJson": true
+      "modifiedAt": "2026-09-15T06:49:26.272847+00:00"
     },
-    "transcript-390x844.png": {
-      "bytes": 215035,
-      "refreshed": true,
-      "devicePixels": [
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/ios-path.json",
+      "bytes": 245332,
+      "modifiedAt": "2026-09-15T06:49:48.172490+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/metadata.json",
+      "bytes": 390,
+      "modifiedAt": "2026-09-15T06:49:16.132920+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/metrics-sweep.json",
+      "bytes": 5856,
+      "modifiedAt": "2026-09-15T06:54:51.606462+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/scroll-travel.json",
+      "bytes": 3272,
+      "modifiedAt": "2026-09-15T06:49:21.167985+00:00"
+    },
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/transcript-390x844.png",
+      "bytes": 220104,
+      "modifiedAt": "2026-09-15T06:49:17.407887+00:00",
+      "pixelDimensions": [
         780,
         1688
-      ],
-      "cssViewport": [
-        390,
-        844
       ]
     },
-    "transcript-older-history-390x844.png": {
-      "bytes": 239177,
-      "refreshed": true,
-      "devicePixels": [
+    {
+      "path": ".omo/evidence/mobile-scroll-fix/after/transcript-older-history-390x844.png",
+      "bytes": 234987,
+      "modifiedAt": "2026-09-15T06:49:19.659426+00:00",
+      "pixelDimensions": [
         780,
         1688
-      ],
-      "cssViewport": [
-        390,
-        844
       ]
     }
-  },
-  "cleanupChecks": {
-    "temporary": {
-      "exitCode": 1,
-      "stdout": "",
-      "stderr": "ls: frontend/.qa-harness: No such file or directory\n"
-    },
-    "port": {
-      "exitCode": 1,
-      "stdout": "",
-      "stderr": ""
-    },
-    "core": {
-      "exitCode": 0,
-      "stdout": "",
-      "stderr": ""
-    }
-  }
+  ]
 }

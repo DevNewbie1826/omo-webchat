@@ -1,1 +1,3 @@
-[grep exit code: 1]
+$ git diff main -- frontend/src | grep -nE '(it|test|describe)\.(skip|only)|xit\(|xdescribe\('
+(no matches)
+EXIT_CODE=1
