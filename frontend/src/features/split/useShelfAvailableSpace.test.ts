@@ -58,7 +58,82 @@ describe("computeShelfAvailableSpace", () => {
     expect(computeShelfAvailableSpace(column, selfPanel)).toBe(462);
   });
 
-  it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
+  it("counts the approval dock as a fixed band above the composer", () => {
+    const column = measured("th-chat-main", 800);
+    const content = measured("th-chat-main-content", 0);
+    const scrollport = measured("th-chat-scrollport", 400);
+    content.append(scrollport);
+    const controls = measured("th-chat-controls", 24);
+    const dock = measured("th-approval-dock", 60);
+    const composer = measured("th-chat-input", 100);
+    column.append(content, controls, dock, composer);
+    document.body.appendChild(column);
+
+    // 800 − 24 controls − 60 dock − 100 composer − 120 transcript reserve;
+    // the scrollport itself is the measured output, never a fixed band.
+    expect(computeShelfAvailableSpace(column, null)).toBe(496);
+    // Growing the dock shrinks the budget by exactly its outer height.
+    mockHeight(dock, 90);
+    expect(computeShelfAvailableSpace(column, null)).toBe(466);
+    // Removing the dock returns the budget, still reserving the transcript
+    // minimum band for the scrollport.
+    dock.remove();
+    expect(computeShelfAvailableSpace(column, null)).toBe(800 - 24 - 100 - TRANSCRIPT_MIN_BAND_PX);
+  });
+
+	it("counts the measured panel's own margins against its budget", () => {
+		const column = measured("th-chat-main", 800);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60, "4px");
+		dock.style.marginBottom = "2px";
+		column.append(dock, composer);
+		document.body.appendChild(column);
+
+		// 800 − 100 composer − 120 reserve − 6 dock margins: the panel's own
+		// gutters come out of its budget, never out of the transcript reserve.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(574);
+	});
+
+	it("yields the transcript reserve to the measured panel's minimum when the column is tight", () => {
+		const column = measured("th-chat-main", 300);
+		const controls = measured("th-chat-controls", 24);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60);
+		column.append(controls, dock, composer);
+		document.body.appendChild(column);
+
+		// Without a minimum the full reserve holds: 300 − 24 − 100 − 120 = 56.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(56);
+		// A 74px panel minimum (header + borders + body floor) yields the
+		// reserve down to what is left: 300 − 24 − 100 − 102 = 74.
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(74);
+		// Below the minimum the reserve is gone entirely and the panel takes
+		// what remains — the composer band is the only hard floor.
+		mockHeight(column, 160);
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(36);
+		// Space permits again: the reserve is intact — 800 − 24 − 100 − 120.
+		mockHeight(column, 800);
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(556);
+	});
+
+	it("excludes the panel under measurement from the fixed bands", () => {
+		const column = measured("th-chat-main", 800);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60);
+		column.append(composer, dock);
+		document.body.appendChild(column);
+
+		// A band measuring itself must not see its own box: 800 − 100 − 120.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+		// Growing or shrinking the measured band cannot move its own budget —
+		// otherwise the measurement oscillates with the panel it clamps.
+		mockHeight(dock, 200);
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+		mockHeight(dock, 20);
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+	});
+
+	it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
     const column = measured("th-chat-main", 800);
     const composer = measured("th-chat-input", 120);
     const status = measured("th-chat-status", 24);

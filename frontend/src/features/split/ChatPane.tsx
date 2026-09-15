@@ -7,7 +7,7 @@ import { useT } from "../../i18n";
 import type { ChatConnector } from "../../lib/chatWs";
 import { FileBrowser } from "../terminal/FileBrowser";
 import type { ChatSessionRef } from "../workspace/workspace";
-import { ApprovalModal } from "./ApprovalModal";
+import { ApprovalDock } from "./ApprovalDock";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
@@ -333,6 +333,10 @@ export function ChatPane({
           </div>
           {modelPicker}
         </div>
+        {/* Inline approval dock: a fixed band in the pane column directly
+           above the composer, so computeShelfAvailableSpace budgets it like
+           any other column child and the transcript keeps its reserve. */}
+        {chat.pendingApproval && <ApprovalDock request={chat.pendingApproval} onRespond={chat.respondApproval} />}
         <ChatComposer
           session={chatSession}
           commands={chat.commands}
@@ -360,7 +364,6 @@ export function ChatPane({
           onWidthChange={setFilePanelWidth}
         />
       )}
-      {chat.pendingApproval && <ApprovalModal request={chat.pendingApproval} onRespond={chat.respondApproval} />}
       {update.dialog}
       {inspectedOriginal && (
         <ModalDialog open labelledBy={originalTitleId} closeLabel={t("common.close")}

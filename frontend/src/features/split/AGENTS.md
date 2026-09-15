@@ -8,7 +8,7 @@ The main chat surface: pane tree layout, session orchestration, activity feed, c
 | Feature root / pane layout | SplitView.tsx, paneTree*, layout*, useLayout | `leaf`/`splitLeaf`/`removeNode`/`setRatio` ops |
 | Session state machine | useChatSession*, chatSessionState.ts | `reconcileHistory`/`reconcileOutcome`, `chatEntries` |
 | Activity feed | activity* | parse → state → view pipeline (DAG, todos, agents) |
-| Chat composition | ChatPane.tsx | composes ApprovalModal, ActivityShelf, ChatComposer, ModelPicker, ChatTranscript |
+| Chat composition | ChatPane.tsx | composes ApprovalDock, ActivityShelf, ChatComposer, ModelPicker, ChatTranscript |
 | Input | ChatComposer.tsx, CommandPalette, FilePalette, curatedCommands | command + file trigger matching |
 | Transcript | ChatTranscript.tsx | @tanstack/react-virtual + react-markdown + remark-gfm |
 | UI tests | chatPaneTestHarness, *.support.tsx | the integration entry point for component tests |

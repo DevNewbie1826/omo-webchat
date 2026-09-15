@@ -188,16 +188,18 @@ type ActivitySnapshot struct {
 }
 
 type ApprovalFrame struct {
-	ID          string         `json:"id"`
-	Message     *string        `json:"message,omitempty"`
-	Method      ApprovalMethod `json:"method"`
-	Options     []string       `json:"options,omitempty"`
-	Placeholder *string        `json:"placeholder,omitempty"`
-	Prefill     *string        `json:"prefill,omitempty"`
-	SessionID   string         `json:"sessionId"`
-	Timeout     *int64         `json:"timeout,omitempty"`
-	Title       *string        `json:"title,omitempty"`
-	Type        string         `json:"type"`
+	DeadlineAtMs *int64         `json:"deadlineAtMs,omitempty"`
+	ID           string         `json:"id"`
+	Message      *string        `json:"message,omitempty"`
+	Method       ApprovalMethod `json:"method"`
+	Options      []string       `json:"options,omitempty"`
+	Placeholder  *string        `json:"placeholder,omitempty"`
+	Prefill      *string        `json:"prefill,omitempty"`
+	RemainingMs  *int64         `json:"remainingMs,omitempty"`
+	SessionID    string         `json:"sessionId"`
+	Timeout      *int64         `json:"timeout,omitempty"`
+	Title        *string        `json:"title,omitempty"`
+	Type         string         `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -1125,7 +1127,7 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"id", "message", "method", "options", "placeholder", "prefill", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options"})
+	extra, err := captureExtraFields(data, []string{"deadlineAtMs", "id", "message", "method", "options", "placeholder", "prefill", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options"})
 	if err != nil {
 		return err
 	}
@@ -2583,7 +2585,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "approval":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor"}}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor"}}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
 				return nil, err
 			}
 		case "commands":

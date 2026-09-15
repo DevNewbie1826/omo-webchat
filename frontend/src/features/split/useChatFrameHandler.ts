@@ -1,6 +1,6 @@
 import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
-import type { ApprovalRequest } from "./ApprovalModal";
+import type { ApprovalRequest } from "./ApprovalDock";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";

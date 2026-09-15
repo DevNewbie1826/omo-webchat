@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "./chatEntries";
 import { messageText } from "./chatEntries";
-import { queuedSendFrame, nextToolEntry, mergeToolResultMedia, reconcileHistory } from "./chatSessionState";
+import { queuedSendFrame, nextToolEntry, mergeToolResultMedia, reconcileHistory, approvalRequestOf } from "./chatSessionState";
 import { ChatSendStore } from "./chatSendState";
 import { materializeFinalTools } from "./chatFinalTools";
 import type { ToolEntry } from "./chatSessionTypes";
@@ -376,5 +376,51 @@ describe("materializeFinalTools result media", () => {
         ref: { toolCallId: "t1", contentIndex: 0 },
       },
     ]);
+  });
+});
+
+const baseApprovalFrame = {
+  type: "approval" as const,
+  sessionId: "c1",
+  id: "a1",
+  method: "select" as const,
+  options: ["yes", "no"],
+};
+
+describe("approvalRequestOf", () => {
+  it("carries deadlineAtMs and remainingMs when the frame has them", () => {
+    const request = approvalRequestOf({
+      ...baseApprovalFrame,
+      deadlineAtMs: 1_800_000_000_000,
+      remainingMs: 45_000,
+    });
+    expect(request).toEqual({
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+      deadlineAtMs: 1_800_000_000_000,
+      remainingMs: 45_000,
+    });
+  });
+
+  it("omits deadlineAtMs and remainingMs when the frame lacks them", () => {
+    const request = approvalRequestOf(baseApprovalFrame);
+    expect(request).toEqual({
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+    });
+    expect(request).not.toHaveProperty("deadlineAtMs");
+    expect(request).not.toHaveProperty("remainingMs");
+  });
+
+  it("carries remainingMs 0 when the frame has it", () => {
+    const request = approvalRequestOf({
+      ...baseApprovalFrame,
+      deadlineAtMs: 0,
+      remainingMs: 0,
+    });
+    expect(request.deadlineAtMs).toBe(0);
+    expect(request.remainingMs).toBe(0);
   });
 });

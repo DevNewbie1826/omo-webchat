@@ -40,6 +40,18 @@ it("keeps dynamic queue and recovery controls in the bounded content scroll shel
   expect(input.value.split("\n")).toHaveLength(6);
 });
 
+it("mounts the approval dock inline as the band directly above the composer", () => {
+  const { deliver } = renderChatPane(root);
+  act(() => deliver({ type: "approval", sessionId: chatSession.id, id: "ap-1",
+    method: "confirm", title: "Continue?" }));
+  // The modal presentation is retired: no overlay is portaled to the body.
+  expect(document.querySelector(".th-modal-overlay")).toBeNull();
+  const column = requireElement(container.querySelector<HTMLElement>(".th-chat-main"), "pane column");
+  const dock = requireElement(column.querySelector<HTMLElement>(":scope > .th-approval-dock"), "inline approval dock");
+  expect(dock.previousElementSibling?.classList.contains("th-chat-controls")).toBe(true);
+  expect(dock.nextElementSibling?.classList.contains("th-chat-input")).toBe(true);
+});
+
 it("provides a shrinkable scroll shell and a column-local editor ceiling for a 320x300 pane", () => {
   const pane = readFileSync("src/styles/chat-pane.css", "utf8");
   const composer = readFileSync("src/styles/chat-composer.css", "utf8");

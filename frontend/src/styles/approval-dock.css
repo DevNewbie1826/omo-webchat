@@ -1,0 +1,286 @@
+/* Inline approval/question dock: replaces the modal presentation. Lives in
+   the chat column like .th-queue — never portalled, never fixed, never
+   overlaying the viewport. Width and gutters follow .th-chat-controls. */
+.th-approval-dock {
+  /* Shrink contract (matches .th-goal-panel): the dock yields height when the
+     chat column is short — flex shrink plus min-height: 0 let the column
+     squeeze it, and the cqh ceiling (the chat-column size container, falling
+     back to the small viewport height outside it) caps the whole panel
+     relative to the available column height, so the composer always stays
+     inside the column. The question content scrolls inside the body.
+     Once the shared column measurement runs, an inline max-height (the
+     column's real available space, bounded by this cap) and flex-shrink: 0
+     take over: the deficit lands on the transcript scrollport alone, and
+     below a readable body floor the dock swaps to its one-line summary
+     instead of rendering a sliver. overflow: hidden pairs with the shrink:
+     a dock squeezed below its content height clips instead of painting over
+     the bands that follow in the column. */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 60cqh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-1) auto 0;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  font-size: var(--th-type-micro-size);
+}
+
+.th-approval-dock-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-approval-dock-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+
+.th-approval-dock-countdown {
+  flex: none;
+  padding: 0 var(--th-space-1);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-pill);
+  color: var(--th-warning);
+  font-family: var(--th-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-approval-dock-toggle {
+  flex: none;
+  padding: 0 var(--th-space-1);
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: none;
+  color: var(--th-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.th-approval-dock-toggle:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+/* Tight density: only when the user explicitly expands while the column is
+   below the readability floor. Vertical chrome sheds to the smallest spacing
+   tokens and the body leads with the options (the message follows and
+   scrolls), so the header plus one complete clickable option row fit
+   whatever band the column can give — a pending question stays answerable. */
+/* The tight density must NOT change the dock's own box geometry that the
+   column measurement prices (margins, borders): computeShelfAvailableSpace
+   subtracts the dock's computed margins from its budget, so a density that
+   moved them would feed the density decision's own output back in as its
+   input — an every-frame relayout loop. Only interior chrome (header
+   padding, body padding, option gaps) sheds here; the header is likewise
+   never re-measured while tight (see ApprovalDock.tsx). */
+
+.th-approval-dock--tight .th-approval-dock-header {
+  padding: 0 var(--th-space-2);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock--tight .th-approval-dock-body {
+  padding-bottom: 0;
+}
+
+.th-approval-dock--tight .th-approval-options {
+  order: -1;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock--tight .th-approval-options .th-btn {
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock--tight .th-approval-message {
+  margin-bottom: var(--th-space-1);
+  font-size: var(--th-type-micro-size);
+}
+
+/* Bounded scrollport: a long message or many options scroll internally
+   instead of pushing the composer past the column. */
+.th-approval-dock-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: var(--th-queue-body-max, 240px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--th-space-2) var(--th-space-2);
+}
+
+.th-approval-dock-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-approval-dock-summary-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-approval-dock-summary-pending {
+  flex: none;
+  color: var(--th-muted);
+}
+
+/* Compact answerable summary: when the column cannot fit even the tight
+   dock (the measured budget is below the tight minimum), the summary band
+   itself carries the request's primary actions so the question stays
+   answerable without expanding — expanding would push the composer out of
+   the column. The section's inline max-height (the measured budget) bounds
+   the band; overflow: auto lets a wrapping action row scroll inside it
+   instead of growing past the budget. */
+.th-approval-dock--compact .th-approval-dock-summary {
+  flex-wrap: wrap;
+  overflow: auto;
+}
+
+.th-approval-dock-summary-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock-summary-actions .th-btn,
+.th-approval-dock-summary-form .th-btn {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  overflow-wrap: anywhere;
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock-summary-actions .th-btn {
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-dock-summary-actions .th-btn--ghost,
+.th-approval-dock-summary-form .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-approval-dock-summary-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock-summary-form .th-approval-input {
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+/* Shared approval body primitives (formerly approval-modal.css; the modal
+   presentation is retired, the dock reuses these verbatim). */
+.th-approval-message {
+  margin-bottom: var(--th-space-3);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.th-approval-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-2);
+}
+
+.th-approval-options .th-btn {
+  /* Long labels (paths, URLs) wrap instead of overflowing the dock: the
+     button may shrink below its content width, breaks anywhere, and grows
+     past the base 34px height as lines wrap. */
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 34px;
+  overflow-wrap: anywhere;
+  text-align: left;
+  padding: var(--th-space-2) var(--th-space-3);
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-options .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-approval-form {
+  display: flex;
+  gap: var(--th-space-2);
+}
+
+.th-approval-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--th-space-2) var(--th-space-3);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-bg);
+  color: var(--th-text);
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+}
+
+.th-approval-editor {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.th-approval-input:focus {
+  border-color: var(--th-border-strong);
+}
+
+@media (max-width: 420px) {
+  .th-approval-form {
+    flex-wrap: wrap;
+  }
+
+  .th-approval-input {
+    flex-basis: 100%;
+  }
+}
