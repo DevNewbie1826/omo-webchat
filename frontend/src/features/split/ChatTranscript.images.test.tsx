@@ -448,6 +448,158 @@ describe("ChatTranscript preserved image blocks", () => {
 	});
 });
 
+describe("ChatTranscript image zoom modal", () => {
+	let root: Root;
+	let container: HTMLDivElement;
+	let fetchMock: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+		clearChatMediaCache();
+		fetchMock = vi.fn(async () => okImageResponse());
+		vi.stubGlobal("fetch", fetchMock);
+		URL.createObjectURL = vi.fn(() => "blob:mock-media");
+		MockIntersectionObserver.instances.length = 0;
+		vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+		container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+	});
+
+	afterEach(async () => {
+		await act(async () => {
+			root.unmount();
+		});
+		container.remove();
+		vi.unstubAllGlobals();
+	});
+
+	function renderBlocks(blocks: readonly ContentBlock[]): void {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript {...baseProps} items={[messageItem(blocks)]} />
+				</I18nContext.Provider>,
+			);
+		});
+	}
+
+	const dialog = () => document.body.querySelector<HTMLElement>("[role='dialog']");
+	const dialogImage = () => dialog()?.querySelector<HTMLImageElement>("img") ?? null;
+	const zoomTrigger = () => container.querySelector<HTMLButtonElement>(".th-chat-image-button");
+
+	async function clickTrigger(): Promise<HTMLButtonElement> {
+		const trigger = zoomTrigger();
+		expect(trigger).not.toBeNull();
+		trigger!.focus();
+		await act(async () => {
+			trigger!.click();
+		});
+		return trigger!;
+	}
+
+	it("opens a dialog with the same src when an inline image is activated", async () => {
+		renderBlocks([{ kind: "image", data: PNG_DATA, mimeType: "image/png" }]);
+		const expected = `data:image/png;base64,${PNG_DATA}`;
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(expected);
+		expect(dialog()).toBeNull();
+
+		await clickTrigger();
+		expect(dialog()).not.toBeNull();
+		expect(dialog()?.getAttribute("aria-modal")).toBe("true");
+		expect(dialogImage()?.getAttribute("src")).toBe(expected);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("opens a dialog with the same cached object URL from a collapsed card's referenced image", async () => {
+		renderBlocks([
+			{
+				kind: "tool",
+				id: "t-zoom-ref",
+				name: "screenshot",
+				text: "captured",
+				mimeType: "image/png",
+				ref: { toolCallId: "t-zoom-ref", contentIndex: 0 },
+			},
+		]);
+		// The card stays collapsed the whole time.
+		expect(container.querySelector<HTMLButtonElement>(".th-tool-head")?.getAttribute("aria-expanded")).toBe("false");
+		await act(async () => {
+			lastObserver().intersect(true);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+
+		await clickTrigger();
+		expect(dialog()).not.toBeNull();
+		expect(dialogImage()?.getAttribute("src")).toBe("blob:mock-media");
+		// Collapsed state untouched by opening the zoom.
+		expect(container.querySelector<HTMLButtonElement>(".th-tool-head")?.getAttribute("aria-expanded")).toBe("false");
+	});
+
+	it("closes via Escape, backdrop click, and the close button, returning focus to the trigger", async () => {
+		renderBlocks([{ kind: "image", data: PNG_DATA, mimeType: "image/png" }]);
+
+		// Escape
+		let trigger = await clickTrigger();
+		expect(dialog()).not.toBeNull();
+		await act(async () => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		});
+		expect(dialog()).toBeNull();
+		expect(document.activeElement).toBe(trigger);
+
+		// Backdrop click
+		trigger = await clickTrigger();
+		const backdrop = document.body.querySelector<HTMLButtonElement>(".th-modal-backdrop");
+		expect(backdrop).not.toBeNull();
+		await act(async () => {
+			backdrop!.click();
+		});
+		expect(dialog()).toBeNull();
+		expect(document.activeElement).toBe(trigger);
+
+		// Close button
+		trigger = await clickTrigger();
+		const close = document.body.querySelector<HTMLButtonElement>(".th-modal-close");
+		expect(close).not.toBeNull();
+		await act(async () => {
+			close!.click();
+		});
+		expect(dialog()).toBeNull();
+		expect(document.activeElement).toBe(trigger);
+	});
+
+	it("issues no additional media request across repeated open/close of the zoom", async () => {
+		renderBlocks([
+			{
+				kind: "tool",
+				id: "t-zoom-cache",
+				name: "screenshot",
+				text: "captured",
+				ref: { toolCallId: "t-zoom-cache", contentIndex: 0 },
+			},
+		]);
+		await act(async () => {
+			lastObserver().intersect(true);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		await clickTrigger();
+		expect(dialogImage()?.getAttribute("src")).toBe("blob:mock-media");
+		await act(async () => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		});
+		expect(dialog()).toBeNull();
+
+		await clickTrigger();
+		expect(dialogImage()?.getAttribute("src")).toBe("blob:mock-media");
+		// The modal shows the SAME cached object URL: open → close → open stays
+		// at exactly one request for this (wsId, chatId, toolCallId, contentIndex).
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("ChatTranscript collapsed-card result images", () => {
 	let root: Root;
 	let container: HTMLDivElement;
