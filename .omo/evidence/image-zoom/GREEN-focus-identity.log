@@ -1,0 +1,13 @@
+$ npx vitest run src/features/split/ChatTranscript.images.test.tsx src/features/split/ChatPane.images.test.tsx src/styles/styleContracts.test.ts
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vitest' run src/features/split/ChatTranscript.images.test.tsx src/features/split/ChatPane.images.test.tsx src/styles/styleContracts.test.ts
+
+ RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-image-zoom/frontend
+
+
+ Test Files  3 passed (3)
+      Tests  81 passed (81)
+   Start at  20:19:38
+   Duration  3.77s (transform 1.95s, setup 78ms, import 2.79s, tests 1.31s, environment 3.03s)
+
+exit=0

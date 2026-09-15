@@ -11,10 +11,12 @@ export interface ModalDialogProps {
   readonly labelledBy?: string;
   readonly closeLabel?: string;
   readonly initialFocusSelector?: string;
+  /** Layout variant: "media" widens the panel for photo viewing. */
+  readonly variant?: "default" | "media";
   readonly children: ReactNode;
 }
 
-export function ModalDialog({ open, onClose, labelledBy, closeLabel = "Close", initialFocusSelector, children }: ModalDialogProps) {
+export function ModalDialog({ open, onClose, labelledBy, closeLabel = "Close", initialFocusSelector, variant = "default", children }: ModalDialogProps) {
   const panelRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
@@ -63,7 +65,7 @@ export function ModalDialog({ open, onClose, labelledBy, closeLabel = "Close", i
       />
       <div
         ref={panelRef}
-        className="th-modal"
+        className={variant === "media" ? "th-modal th-modal--media" : "th-modal"}
         role="dialog"
         aria-modal={isTop ? "true" : undefined}
         aria-labelledby={labelledBy}

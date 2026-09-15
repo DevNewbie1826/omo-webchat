@@ -205,6 +205,8 @@
   "chat.sendErrorDismiss": "Dismiss",
   "chat.failedSends": "Failed sends",
   "chat.image": "Image",
+  "chat.imageZoomTitle": "Image zoom",
+  "chat.imageZoom": "Zoom image",
   "chat.imageUnavailable": "Image unavailable",
   "queue.region": "Send queue",
   "queue.count": "Queued: {count}",

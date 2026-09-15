@@ -589,4 +589,79 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
 		expect(mediaUrls()).toHaveLength(1);
 	});
+
+	it("restores focus to the image trigger when the zoom closes after the live row finalizes", async () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-zoom",
+				toolName: "screenshot",
+				phase: "start",
+				args: { target: "viewport" },
+			});
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-zoom",
+				toolName: "screenshot",
+				phase: "end",
+				result: { content: [{ text: "captured viewport" }] },
+				isError: false,
+			});
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: {
+					role: "toolResult",
+					blocks: [{
+						kind: "image_ref",
+						mimeType: "image/png",
+						byteLength: 12595,
+						ref: { toolCallId: "call-zoom", contentIndex: 0 },
+					}],
+				},
+			});
+		});
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
+		const trigger = container.querySelector<HTMLButtonElement>(".th-chat-image-button");
+		expect(trigger).not.toBeNull();
+
+		// Open the zoom from the live row's trigger, with focus on it like a
+		// real keyboard/pointer interaction.
+		await act(async () => {
+			trigger?.focus();
+			trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+		});
+		expect(document.querySelector(".th-modal")).not.toBeNull();
+
+		// The run finalizes underneath the open zoom: the live row is replaced
+		// by the history row, disconnecting the original trigger node.
+		await act(async () => {
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: { role: "assistant", blocks: [{ kind: "text", text: "here is the shot" }] },
+			});
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
+		});
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
+		expect(trigger?.isConnected).toBe(false);
+		const replacement = container.querySelector<HTMLButtonElement>(".th-chat-image-button");
+		expect(replacement).not.toBeNull();
+
+		// Escape closes the zoom: focus must land on the CURRENT trigger, never
+		// fall through to <body> because the opener node was replaced.
+		await act(async () => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+		});
+		expect(document.querySelector(".th-modal")).toBeNull();
+		expect(document.activeElement).toBe(replacement);
+	});
 });
