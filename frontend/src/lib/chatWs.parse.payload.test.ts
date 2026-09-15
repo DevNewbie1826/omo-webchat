@@ -274,4 +274,44 @@ describe("parseChatServerFrame", () => {
       parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "select", options: ["yes", 1] }),
     ).toBeNull();
   });
+
+  it("carries optional approval deadlineAtMs and remainingMs when present", () => {
+    const frame = parseChatServerFrame({
+      type: "approval",
+      sessionId: "c1",
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+      deadlineAtMs: 1_800_000_000_000,
+      remainingMs: 45_000,
+    });
+    expect(frame).toEqual({
+      type: "approval",
+      sessionId: "c1",
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+      deadlineAtMs: 1_800_000_000_000,
+      remainingMs: 45_000,
+    });
+  });
+
+  it("omits approval deadlineAtMs and remainingMs when the wire frame lacks them", () => {
+    const frame = parseChatServerFrame({
+      type: "approval",
+      sessionId: "c1",
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+    });
+    expect(frame).toEqual({
+      type: "approval",
+      sessionId: "c1",
+      id: "a1",
+      method: "select",
+      options: ["yes", "no"],
+    });
+    expect(frame).not.toHaveProperty("deadlineAtMs");
+    expect(frame).not.toHaveProperty("remainingMs");
+  });
 });

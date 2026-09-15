@@ -595,6 +595,12 @@
         },
         "timeout": {
           "type": "integer"
+        },
+        "deadlineAtMs": {
+          "type": "integer"
+        },
+        "remainingMs": {
+          "type": "integer"
         }
       }
     },

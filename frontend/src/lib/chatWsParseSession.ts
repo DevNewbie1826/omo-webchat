@@ -203,7 +203,9 @@ export function parseSessionFrame(
       const options = optStringArray(msg, "options");
       const prefill = optString(msg, "prefill");
       const placeholder = optString(msg, "placeholder");
-      if (title === null || message === null || options === null || prefill === null || placeholder === null) return null;
+      const deadlineAtMs = optNumber(msg, "deadlineAtMs");
+      const remainingMs = optNumber(msg, "remainingMs");
+      if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null) return null;
       return {
         type: "approval",
         sessionId,
@@ -214,6 +216,8 @@ export function parseSessionFrame(
         ...(options !== undefined ? { options } : {}),
         ...(prefill !== undefined ? { prefill } : {}),
         ...(placeholder !== undefined ? { placeholder } : {}),
+        ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
+        ...(remainingMs !== undefined ? { remainingMs } : {}),
       };
     }
     case "commands": {
