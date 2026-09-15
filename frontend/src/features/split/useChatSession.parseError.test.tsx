@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext, translate, type I18nValue } from "../../i18n";
-import type { ChatConnector } from "../../lib/chatWs";
+import type { ChatConnector, ChatServerFrame } from "../../lib/chatWs";
 import { useChatSession } from "./useChatSession";
 
 const session = {
@@ -28,6 +28,7 @@ function i18nFor(lang: "en" | "ko"): I18nValue {
 interface SocketHandlers {
 	onOpen: (() => void) | undefined;
 	onClose: ((code: number) => void) | undefined;
+	onFrame: ((frame: ChatServerFrame) => void) | undefined;
 	onParseError: ((raw: string) => void) | undefined;
 }
 
@@ -62,6 +63,7 @@ describe("useChatSession parse-error surfacing", () => {
 		socket = {
 			onOpen: handlers.onOpen,
 			onClose: handlers.onClose,
+			onFrame: handlers.onFrame,
 			onParseError: handlers.onParseError,
 		};
 		handlers.onOpen?.();
@@ -139,8 +141,26 @@ describe("useChatSession parse-error surfacing", () => {
 		expect(current?.error).toBe("");
 	});
 
-	it("does not clear an unrelated error when the socket closes", () => {
+	// Independent of the close-then-reopen case above: there the error was
+	// already empty when onOpen fired, so markOpen's reset was never exercised
+	// against a live banner. Here the banner is nonempty when the socket
+	// reopens, so removing markOpen's error reset leaves it stale and fails.
+	it("clears a live malformed-frame banner when the socket reopens without an intervening close", () => {
 		mount("en");
+		act(() => socket?.onParseError?.("{bad"));
+		expect(current?.error).toBe(translate("en", "chat.malformedFrame"));
+		expect(current?.error).not.toBe("");
+		act(() => socket?.onOpen?.());
+		expect(current?.error).toBe("");
+	});
+
+	// Ownership first: the banner starts parse-owned, then a real failing
+	// control action replaces the message through applyError, which must
+	// revoke parse ownership so the close cannot clear the replacement.
+	it("keeps a replacement control error when the socket closes after a parse error", () => {
+		mount("en");
+		act(() => socket?.onParseError?.("{bad"));
+		expect(current?.error).toBe(translate("en", "chat.malformedFrame"));
 		sendSucceeds = false;
 		act(() => {
 			current?.disconnect();
@@ -148,5 +168,17 @@ describe("useChatSession parse-error surfacing", () => {
 		expect(current?.error).toBe("Failed to disconnect the session.");
 		act(() => socket?.onClose?.(1006));
 		expect(current?.error).toBe("Failed to disconnect the session.");
+	});
+
+	// Same ownership handoff, but the replacement arrives as a server error
+	// frame through the frame-handler binding rather than a local action.
+	it("keeps a replacement server error frame when the socket closes after a parse error", () => {
+		mount("en");
+		act(() => socket?.onParseError?.("{bad"));
+		expect(current?.error).toBe(translate("en", "chat.malformedFrame"));
+		act(() => socket?.onFrame?.({ type: "error", message: "route failed" }));
+		expect(current?.error).toBe("route failed");
+		act(() => socket?.onClose?.(1006));
+		expect(current?.error).toBe("route failed");
 	});
 });
