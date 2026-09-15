@@ -1,0 +1,17 @@
+{
+  "contextsClosed": 1,
+  "serverPid": 56057,
+  "killZeroFails": true,
+  "portEmpty": true,
+  "tempGone": true,
+  "chromePids": [
+    56058,
+    56067,
+    56068,
+    56070,
+    56073,
+    56075,
+    56076
+  ],
+  "chromePidsGone": true
+}

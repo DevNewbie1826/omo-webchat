@@ -1,0 +1,23 @@
+ok  	github.com/DevNewbie1826/omo-webchat/internal/adoptcopy	1.778s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/api	50.156s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/auth	3.064s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/coldhistory	1.940s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/config	2.286s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/cursorstore	4.705s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/daemon	11.097s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/dirsync	3.468s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileid	2.630s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileio	2.813s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc	43.585s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest	3.010s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/idlefixture	3.664s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/todofixture	3.399s
+?   	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/internal/procexec	2.221s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/sendqueue	3.610s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/session	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/internal/testfs	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wsbridge	180.590s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wscontract	1.769s
+
+EXIT_CODE=0

@@ -1,0 +1,13 @@
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vitest' run
+
+ RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-error-visibility/frontend
+
+
+ Test Files  256 passed (256)
+      Tests  2716 passed (2716)
+   Start at  19:09:13
+   Duration  56.38s (transform 14.26s, setup 4.47s, import 78.85s, tests 91.90s, environment 181.20s)
+
+
+EXIT_CODE=0

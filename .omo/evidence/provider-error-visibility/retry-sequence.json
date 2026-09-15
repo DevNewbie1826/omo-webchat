@@ -1,0 +1,275 @@
+{
+  "scenario": "retry-sequence",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "run.started",
+      "sessionId": "qa-session"
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [],
+        "ts": 1000,
+        "errorMessage": "Provider overloaded: first attempt failed.",
+        "stopReason": "error"
+      }
+    },
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "auto_retry_start",
+      "payload": {
+        "message": "Retrying request (attempt 1 of 1).",
+        "attempt": 1,
+        "maxAttempts": 1
+      },
+      "at": "1970-01-01T00:00:02.000Z",
+      "nid": "auto_retry_start"
+    },
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "auto_retry_end",
+      "payload": {
+        "message": "Retry failed: no attempts remain.",
+        "success": false
+      },
+      "at": "1970-01-01T00:00:03.000Z",
+      "nid": "auto_retry_end"
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [],
+        "ts": 4000,
+        "errorMessage": "Provider overloaded: final attempt failed.",
+        "stopReason": "error"
+      }
+    },
+    {
+      "type": "run.done",
+      "sessionId": "qa-session",
+      "reason": "stop"
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [
+      "Provider overloaded: first attempt failed.",
+      "Provider overloaded: final attempt failed."
+    ],
+    "noticeRows": [
+      "Retrying request (attempt 1 of 1).",
+      "Retry failed: no attempts remain."
+    ],
+    "transcript": "Provider overloaded: first attempt failed.\nRetrying request (attempt 1 of 1).\n09:00:02\nRetry failed: no attempts remain.\n09:00:03\nProvider overloaded: final attempt failed.\nDone",
+    "assistantRows": [
+      "Provider overloaded: first attempt failed.",
+      "Provider overloaded: final attempt failed."
+    ],
+    "ordered": [
+      "Provider overloaded: first attempt failed.",
+      "Retrying request (attempt 1 of 1).",
+      "Retry failed: no attempts remain.",
+      "Provider overloaded: final attempt failed."
+    ],
+    "stages": [
+      {
+        "sent": {
+          "type": "run.started",
+          "sessionId": "qa-session"
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [],
+          "noticeRows": [],
+          "transcript": "",
+          "assistantRows": [],
+          "ordered": []
+        }
+      },
+      {
+        "sent": {
+          "type": "message",
+          "sessionId": "qa-session",
+          "message": {
+            "role": "assistant",
+            "blocks": [],
+            "ts": 1000,
+            "errorMessage": "Provider overloaded: first attempt failed.",
+            "stopReason": "error"
+          }
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "noticeRows": [],
+          "transcript": "Provider overloaded: first attempt failed.",
+          "assistantRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "ordered": [
+            "Provider overloaded: first attempt failed."
+          ]
+        }
+      },
+      {
+        "sent": {
+          "type": "notice",
+          "sessionId": "qa-session",
+          "kind": "auto_retry_start",
+          "payload": {
+            "message": "Retrying request (attempt 1 of 1).",
+            "attempt": 1,
+            "maxAttempts": 1
+          },
+          "at": "1970-01-01T00:00:02.000Z",
+          "nid": "auto_retry_start"
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "noticeRows": [
+            "Retrying request (attempt 1 of 1)."
+          ],
+          "transcript": "Provider overloaded: first attempt failed.\nRetrying request (attempt 1 of 1).\n09:00:02",
+          "assistantRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "ordered": [
+            "Provider overloaded: first attempt failed.",
+            "Retrying request (attempt 1 of 1)."
+          ]
+        }
+      },
+      {
+        "sent": {
+          "type": "notice",
+          "sessionId": "qa-session",
+          "kind": "auto_retry_end",
+          "payload": {
+            "message": "Retry failed: no attempts remain.",
+            "success": false
+          },
+          "at": "1970-01-01T00:00:03.000Z",
+          "nid": "auto_retry_end"
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "noticeRows": [
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain."
+          ],
+          "transcript": "Provider overloaded: first attempt failed.\nRetrying request (attempt 1 of 1).\n09:00:02\nRetry failed: no attempts remain.\n09:00:03",
+          "assistantRows": [
+            "Provider overloaded: first attempt failed."
+          ],
+          "ordered": [
+            "Provider overloaded: first attempt failed.",
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain."
+          ]
+        }
+      },
+      {
+        "sent": {
+          "type": "message",
+          "sessionId": "qa-session",
+          "message": {
+            "role": "assistant",
+            "blocks": [],
+            "ts": 4000,
+            "errorMessage": "Provider overloaded: final attempt failed.",
+            "stopReason": "error"
+          }
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [
+            "Provider overloaded: first attempt failed.",
+            "Provider overloaded: final attempt failed."
+          ],
+          "noticeRows": [
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain."
+          ],
+          "transcript": "Provider overloaded: first attempt failed.\nRetrying request (attempt 1 of 1).\n09:00:02\nRetry failed: no attempts remain.\n09:00:03\nProvider overloaded: final attempt failed.",
+          "assistantRows": [
+            "Provider overloaded: first attempt failed.",
+            "Provider overloaded: final attempt failed."
+          ],
+          "ordered": [
+            "Provider overloaded: first attempt failed.",
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain.",
+            "Provider overloaded: final attempt failed."
+          ]
+        }
+      },
+      {
+        "sent": {
+          "type": "run.done",
+          "sessionId": "qa-session",
+          "reason": "stop"
+        },
+        "dom": {
+          "viewport": {
+            "width": 390,
+            "height": 844
+          },
+          "errorRows": [
+            "Provider overloaded: first attempt failed.",
+            "Provider overloaded: final attempt failed."
+          ],
+          "noticeRows": [
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain."
+          ],
+          "transcript": "Provider overloaded: first attempt failed.\nRetrying request (attempt 1 of 1).\n09:00:02\nRetry failed: no attempts remain.\n09:00:03\nProvider overloaded: final attempt failed.\nDone",
+          "assistantRows": [
+            "Provider overloaded: first attempt failed.",
+            "Provider overloaded: final attempt failed."
+          ],
+          "ordered": [
+            "Provider overloaded: first attempt failed.",
+            "Retrying request (attempt 1 of 1).",
+            "Retry failed: no attempts remain.",
+            "Provider overloaded: final attempt failed."
+          ]
+        }
+      }
+    ]
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36"
+}
