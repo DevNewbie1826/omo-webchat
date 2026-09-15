@@ -593,6 +593,43 @@ describe("ChatTranscript image zoom modal", () => {
 		expect(document.activeElement).toBe(trigger);
 	});
 
+	it("returns focus to the SECOND of two identical inline images when its zoom closes", async () => {
+		// Two messages carrying byte-identical inline images: the triggers share
+		// their <img> src, so any close-time re-resolution keyed on the raw src
+		// picks the FIRST match. The originating trigger is still connected
+		// here, so the modal's own focus restoration must win and land on the
+		// SECOND trigger.
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript
+						{...baseProps}
+						items={[
+							messageItem([{ kind: "image", data: PNG_DATA, mimeType: "image/png" }]),
+							messageItem([{ kind: "image", data: PNG_DATA, mimeType: "image/png" }]),
+						]}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+		const triggers = container.querySelectorAll<HTMLButtonElement>(".th-chat-image-button");
+		expect(triggers).toHaveLength(2);
+		expect(triggers[0]?.querySelector("img")?.getAttribute("src")).toBe(
+			triggers[1]?.querySelector("img")?.getAttribute("src"),
+		);
+		const second = triggers[1]!;
+		second.focus();
+		await act(async () => {
+			second.click();
+		});
+		expect(dialog()).not.toBeNull();
+		await act(async () => {
+			document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+		});
+		expect(dialog()).toBeNull();
+		expect(document.activeElement).toBe(second);
+	});
+
 	it("issues no additional media request across repeated open/close of the zoom", async () => {
 		renderBlocks([
 			{
