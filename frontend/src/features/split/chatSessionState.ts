@@ -1,5 +1,5 @@
 import type { ChatClientFrame, ChatServerFrame, ContentBlock, ToolPayload } from "../../lib/chatWs";
-import type { ApprovalRequest } from "./ApprovalModal";
+import type { ApprovalRequest } from "./ApprovalDock";
 import type { UiMessage } from "./chatEntries";
 import { messageText, parseEntries } from "./chatEntries";
 import type { ChatDraft, ToolEntry, ToolResultImage } from "./chatSessionTypes";
@@ -142,7 +142,7 @@ export function mergeToolResultMedia(
   return changed ? next : null;
 }
 
-/** Map a server approval frame onto the modal request, keeping defined fields only. */
+/** Map a server approval frame onto the dock request, keeping defined fields only. */
 export function approvalRequestOf(frame: ApprovalFrame): ApprovalRequest {
   return {
     id: frame.id,
@@ -152,6 +152,8 @@ export function approvalRequestOf(frame: ApprovalFrame): ApprovalRequest {
     ...(frame.options ? { options: frame.options } : {}),
     ...(frame.prefill ? { prefill: frame.prefill } : {}),
     ...(frame.placeholder ? { placeholder: frame.placeholder } : {}),
+    ...(frame.deadlineAtMs !== undefined ? { deadlineAtMs: frame.deadlineAtMs } : {}),
+    ...(frame.remainingMs !== undefined ? { remainingMs: frame.remainingMs } : {}),
   };
 }
 

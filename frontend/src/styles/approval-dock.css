@@ -1,0 +1,160 @@
+/* Inline approval/question dock: replaces the modal presentation. Lives in
+   the chat column like .th-queue — never portalled, never fixed, never
+   overlaying the viewport. Width and gutters follow .th-chat-controls. */
+.th-approval-dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-1) auto 0;
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  font-size: var(--th-type-micro-size);
+}
+
+.th-approval-dock-header {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-approval-dock-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+
+.th-approval-dock-countdown {
+  flex: none;
+  padding: 0 var(--th-space-1);
+  border: 1px solid var(--th-border-raised);
+  border-radius: var(--th-radius-pill);
+  color: var(--th-warning);
+  font-family: var(--th-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-approval-dock-toggle {
+  flex: none;
+  padding: 0 var(--th-space-1);
+  border: 0;
+  border-radius: var(--th-radius-sm);
+  background: none;
+  color: var(--th-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.th-approval-dock-toggle:hover {
+  background: var(--th-hover);
+  color: var(--th-text);
+}
+
+/* Bounded scrollport: a long message or many options scroll internally
+   instead of pushing the composer past the column. */
+.th-approval-dock-body {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--th-queue-body-max, 240px);
+  overflow: auto;
+  padding: 0 var(--th-space-2) var(--th-space-2);
+}
+
+.th-approval-dock-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) var(--th-space-2);
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-approval-dock-summary-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.th-approval-dock-summary-pending {
+  flex: none;
+  color: var(--th-muted);
+}
+
+/* Shared approval body primitives (formerly approval-modal.css; the modal
+   presentation is retired, the dock reuses these verbatim). */
+.th-approval-message {
+  margin-bottom: var(--th-space-3);
+  color: var(--th-text-dim);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  letter-spacing: var(--th-type-body-tracking);
+  white-space: pre-wrap;
+}
+
+.th-approval-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--th-space-2);
+}
+
+.th-approval-options .th-btn {
+  padding: var(--th-space-2) var(--th-space-3);
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-options .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+.th-approval-form {
+  display: flex;
+  gap: var(--th-space-2);
+}
+
+.th-approval-input {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: var(--th-space-2) var(--th-space-3);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-bg);
+  color: var(--th-text);
+  font-size: var(--th-type-input-size);
+  line-height: var(--th-type-input-line);
+  letter-spacing: var(--th-type-input-tracking);
+}
+
+.th-approval-editor {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.th-approval-input:focus {
+  border-color: var(--th-border-strong);
+}
+
+@media (max-width: 420px) {
+  .th-approval-form {
+    flex-wrap: wrap;
+  }
+
+  .th-approval-input {
+    flex-basis: 100%;
+  }
+}

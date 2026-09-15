@@ -27,7 +27,7 @@ import "./styles/chat-pane.css";
 import "./styles/chat-transcript.css";
 import "./styles/chat-composer.css";
 import "./styles/tool-card.css";
-import "./styles/approval-modal.css";
+import "./styles/approval-dock.css";
 import "./styles/activity-shelf.css";
 
 const rootEl = document.getElementById("root");
