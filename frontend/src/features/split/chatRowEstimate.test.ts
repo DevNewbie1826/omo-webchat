@@ -53,6 +53,19 @@ describe("estimateRowHeight", () => {
 		expect(height).toBeLessThan(80);
 	});
 
+	it("estimates a 51-character user row at bubble width, not the full lane", () => {
+		const metrics: RowMetrics = {
+			laneWidth: 390,
+			bodyLineHeight: 22.4,
+			secondaryLineHeight: 22.4,
+			charWidth: 6.29,
+			monoCharWidth: 6.29,
+		};
+		const height = estimateRowHeight(userRow("x".repeat(51)), metrics);
+		expect(height).toBeGreaterThanOrEqual(85);
+		expect(height).toBeLessThanOrEqual(95);
+	});
+
 	it("estimates a 3-paragraph assistant row between 250px and 700px", () => {
 		const height = estimateRowHeight(assistantRow(THREE_PARAGRAPHS), readRowMetrics(null));
 		expect(height).toBeGreaterThan(250);

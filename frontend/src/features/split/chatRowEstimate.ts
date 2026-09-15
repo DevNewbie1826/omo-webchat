@@ -14,8 +14,13 @@ const ROW_PAD_TOP = 8;
 const ROW_PAD_BOTTOM = 8;
 // .th-chat-row--turn-start adds 20px padding-top
 const TURN_START_PAD_TOP = 20;
-// .th-chat-msg padding 8px vertical and 12px horizontal
+// .th-chat-msg max-width: 80% (assistant overrides this to 100%)
+const USER_MSG_MAX_WIDTH_RATIO = 0.8;
+// .th-chat-msg padding: var(--th-space-2) var(--th-space-3) → 8px vertical, 12px horizontal
 const MSG_PAD_Y = 8;
+const MSG_PAD_X = 12;
+// .th-chat-msg--user border: 1px solid → 1px top + 1px bottom
+const USER_MSG_BORDER_Y = 1 + 1;
 // .th-chat-markdown p margin-bottom 12px
 const PARAGRAPH_GAP = 12;
 // .th-chat-markdown pre padding 8px/12px plus a 1px border
@@ -166,7 +171,7 @@ function wrapLines(
   return height;
 }
 
-function estimateMarkdownHeight(text: string, metrics: RowMetrics): number {
+function estimateMarkdownHeight(text: string, metrics: RowMetrics, wrapWidth: number): number {
   if (text.length === 0) return metrics.bodyLineHeight;
   const lines = text.split("\n");
   let height = 0;
@@ -182,14 +187,14 @@ function estimateMarkdownHeight(text: string, metrics: RowMetrics): number {
     if (inCode) {
       height += line.length === 0
         ? metrics.secondaryLineHeight
-        : wrapLines(line, metrics.secondaryLineHeight, metrics.monoCharWidth, metrics.laneWidth, metrics.secondaryLineHeight);
+        : wrapLines(line, metrics.secondaryLineHeight, metrics.monoCharWidth, wrapWidth, metrics.secondaryLineHeight);
       continue;
     }
     if (line.length === 0) {
       height += PARAGRAPH_GAP;
       continue;
     }
-    height += wrapLines(line, metrics.bodyLineHeight, metrics.charWidth, metrics.laneWidth, PARAGRAPH_GAP);
+    height += wrapLines(line, metrics.bodyLineHeight, metrics.charWidth, wrapWidth, PARAGRAPH_GAP);
   }
   return height + fenceBlocks * CODE_FENCE_CHROME;
 }
@@ -206,15 +211,21 @@ function estimateNoticeHeight(notice: ChatNotice, metrics: RowMetrics): number {
     payloadString(notice.payload, "text") ||
     payloadString(notice.payload, "title") ||
     notice.kind;
-  return estimateMarkdownHeight(text, metrics);
+  return estimateMarkdownHeight(text, metrics, metrics.laneWidth);
+}
+
+function userBubbleWrapWidth(laneWidth: number): number {
+  return Math.max(1, laneWidth * USER_MSG_MAX_WIDTH_RATIO - MSG_PAD_X * 2);
 }
 
 export function estimateRowHeight(item: TranscriptItem, metrics: RowMetrics): number {
   const isUser = item.kind === "message" && item.message.role === "user";
   let height = ROW_PAD_TOP + ROW_PAD_BOTTOM;
+  const wrapWidth = isUser ? userBubbleWrapWidth(metrics.laneWidth) : metrics.laneWidth;
   if (isUser) {
     height += TURN_START_PAD_TOP - ROW_PAD_TOP;
     height += MSG_PAD_Y + MSG_PAD_Y;
+    height += USER_MSG_BORDER_Y;
   }
 
   if (item.kind === "notice") {
@@ -240,7 +251,7 @@ export function estimateRowHeight(item: TranscriptItem, metrics: RowMetrics): nu
       height += metrics.bodyLineHeight;
       continue;
     }
-    height += estimateMarkdownHeight(block.text ?? "", metrics);
+    height += estimateMarkdownHeight(block.text ?? "", metrics, wrapWidth);
   }
 
   return Math.ceil(height);
