@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
-import { messageText } from "./chatEntries";
+import { messageText, type UiMessage } from "./chatEntries";
 import {
 	ControlledResizeObserver,
 	chatSession,
@@ -70,6 +70,12 @@ function reconciledUserTurns(): readonly {
 	});
 }
 
+function liveUser(text: string, ts: number, id?: string): UiMessage {
+	return id === undefined
+		? { role: "user", blocks: [{ kind: "text", text }], ts }
+		: { id, role: "user", blocks: [{ kind: "text", text }], ts };
+}
+
 describe("ChatPane optimistic prompt reconciliation", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -121,11 +127,7 @@ describe("ChatPane optimistic prompt reconciliation", () => {
 			deliver({
 				type: "message",
 				sessionId: "chat-1",
-				message: {
-					role: "user",
-					blocks: [{ kind: "text", text: prompt }],
-					ts: 1,
-				},
+				message: liveUser(prompt, 1, snapshotId),
 			});
 			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
 		});
@@ -133,6 +135,13 @@ describe("ChatPane optimistic prompt reconciliation", () => {
 		act(() => setTextareaValue(textarea(), prompt));
 		act(() => pressKey(textarea(), "Enter"));
 		act(() => {
+			// Current turn has no snapshot id, so it must survive. The older live
+			// echo shares snapshotId; dropping the id filter duplicates that row.
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: liveUser(prompt, 1),
+			});
 			deliver({
 				type: "entries",
 				sessionId: "chat-1",
@@ -155,31 +164,48 @@ describe("ChatPane optimistic prompt reconciliation", () => {
 
 	it("reconciles identical prompts independently after completion", () => {
 		const prompt = "repeat";
-		const submitAndEcho = (ts: number): void => {
+		const firstId = "live-repeat-1";
+		const secondId = "live-repeat-2";
+		const submitAndEcho = (ts: number, id: string): void => {
 			act(() => setTextareaValue(textarea(), prompt));
 			act(() => pressKey(textarea(), "Enter"));
 			act(() => {
 				deliver({
 					type: "message",
 					sessionId: "chat-1",
-					message: {
-						role: "user",
-						blocks: [{ kind: "text", text: prompt }],
-						ts,
-					},
+					message: liveUser(prompt, ts, id),
 				});
 				deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
 			});
 		};
 
-		submitAndEcho(1);
-		submitAndEcho(2);
+		submitAndEcho(1, firstId);
+		submitAndEcho(2, secondId);
+
+		act(() => {
+			deliver({
+				type: "entries",
+				sessionId: "chat-1",
+				entries: [
+					{
+						type: "message",
+						id: firstId,
+						message: { role: "user", content: prompt, timestamp: 1 },
+					},
+					{
+						type: "message",
+						id: secondId,
+						message: { role: "user", content: prompt, timestamp: 2 },
+					},
+				],
+			});
+		});
 
 		expect(chatSends()).toHaveLength(2);
 		expect(transcriptRowCount()).toBe(2);
 		expect(reconciledUserTurns()).toEqual([
-			{ text: prompt, ts: 1 },
-			{ text: prompt, ts: 2 },
+			{ id: firstId, text: prompt, ts: 1 },
+			{ id: secondId, text: prompt, ts: 2 },
 		]);
 	});
 });
