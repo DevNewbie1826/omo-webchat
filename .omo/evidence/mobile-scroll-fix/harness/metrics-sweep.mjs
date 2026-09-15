@@ -8,14 +8,23 @@ const frontend = resolve(root, 'frontend');
 const { createServer } = await import(resolve(frontend, 'node_modules/vite/dist/node/index.js'));
 const output = resolve(evidence, 'after');
 const cacheDir = resolve(evidence, 'metrics-vite-cache');
-const results = { recordedAt: new Date().toISOString(), widths: [390, 600], fontSizes: [10, 13, 17, 24], rows: [], pass: false, method: 'Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.' };
+const results = { recordedAt: new Date().toISOString(), widths: [390, 600], fontSizes: [10, 13, 17, 24], rows: [], pass: false, method: 'Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.', sampleEquality: { byteIdentical: false } };
 const sampleSource = resolve(frontend, 'src/features/split/chatRowEstimate.ts');
 const sampleSourceText = await readFile(sampleSource, 'utf8').catch((error) => {
   throw new Error(`Unable to read estimator sample from ${sampleSource}: ${error.message}`, { cause: error });
 });
 const sampleMatch = sampleSourceText.match(/const SAMPLE\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*;/s);
 if (!sampleMatch) throw new Error(`Unable to find SAMPLE in estimator source: ${sampleSource}`);
-const SAMPLE = JSON.parse(sampleMatch[1][0] === '"' ? sampleMatch[1] : JSON.stringify(sampleMatch[1].slice(1, -1)));
+const sampleLiteral = sampleMatch[1];
+if (sampleLiteral[0] === "'" && /\\/.test(sampleLiteral.slice(1, -1))) {
+  throw new Error('Unable to decode SAMPLE: single-quoted JavaScript escapes are rejected');
+}
+const SAMPLE = JSON.parse(sampleLiteral[0] === '"' ? sampleLiteral : JSON.stringify(sampleLiteral.slice(1, -1)));
+const independentlyResolvedSample = Function(`return (${sampleLiteral})`)();
+if (SAMPLE !== independentlyResolvedSample) {
+  throw new Error('SAMPLE derivation mismatch: resolved values are not byte-identical');
+}
+results.sampleEquality = { byteIdentical: Buffer.byteLength(SAMPLE) === Buffer.byteLength(independentlyResolvedSample) && SAMPLE === independentlyResolvedSample, bytes: Buffer.byteLength(SAMPLE) };
 let server;
 let view;
 const evaluate = (fn, ...args) => view.evaluate(`(${fn.toString()})(...${JSON.stringify(args)})`);
