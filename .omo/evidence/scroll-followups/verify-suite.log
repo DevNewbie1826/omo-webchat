@@ -1,0 +1,13 @@
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vitest' run
+
+ RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-scroll-followups/frontend
+
+
+ Test Files  254 passed (254)
+      Tests  2703 passed (2703)
+   Start at  19:06:55
+   Duration  65.64s (transform 13.20s, setup 3.78s, import 86.36s, tests 96.93s, environment 232.54s)
+
+
+EXIT_CODE=0

@@ -1,0 +1,6 @@
+ M .omo/evidence/mobile-scroll-fix/harness/metrics-sweep.mjs
+ M frontend/src/features/split/ChatPane.behavior.optimistic.test.tsx
+ M frontend/src/features/split/ChatTranscript.tsx
+?? frontend/src/features/split/ChatTranscript.estimateSizeMiss.test.tsx
+
+EXIT_CODE=0

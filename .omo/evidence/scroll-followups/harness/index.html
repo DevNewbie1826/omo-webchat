@@ -1,0 +1,4 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chat switch QA</title><script>
+window.__audit={ calls:{}, nonFinite:[], phase:'initial', instances:[], samples:[] };
+window.__qaSize=(kind,index,size,instance)=>{ const a=window.__audit; a.calls[kind]=(a.calls[kind]||0)+1; if(!a.instances.includes(instance)) a.instances.push(instance); if(!Number.isFinite(size)) a.nonFinite.push({phase:a.phase,kind,index,size:String(size)}); return size; };
+</script></head><body><div id="root"></div><script type="module" src="./main.tsx"></script></body></html>
