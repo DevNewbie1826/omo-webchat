@@ -1,13 +1,14 @@
-import { useId, useRef, useState } from "react";
+import { useId, useRef } from "react";
 import { useT } from "../../i18n";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { ApprovalFrame, QuestionAnswer } from "../../lib/contract/types_gen";
+import { questionDraftResponse, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 
 export interface QuestionBarProps {
 	/** A non-blocking question request (method "question"): it never takes
 	 *  over the composer and is answered only through this widget. */
 	readonly request: ApprovalFrame;
-	readonly onAnswer: (answers: Record<string, QuestionAnswer>) => void;
+	readonly onAnswer: (answers: Record<string, QuestionAnswer>, comment?: string) => void;
 }
 
 /** After an answer leaves, hand focus to the owning pane's composer so the
@@ -28,9 +29,8 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const { t } = useT();
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
-	const [requestId, setRequestId] = useState(request.id);
-	const [activeIndex, setActiveIndex] = useState(0);
-	const [answers, setAnswers] = useState<Record<string, QuestionAnswer>>({});
+	const [draft, setDraft] = useApprovalQuestionDraft(request.id);
+	const activeIndex = Math.min(draft.activeIndex, Math.max((request.questions?.length ?? 0) - 1, 0));
 	const question = request.questions?.[activeIndex];
 	const questionId = questionKey(question, activeIndex);
 	const options = (question?.options ?? []).filter(
@@ -38,44 +38,33 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 			option.label !== undefined,
 	);
 	const multiSelect = question?.multiSelect === true;
-	// The expanded answer row is keyed by request id: a new request must never
-	// inherit an open input or a stale multi-select draft.
-	const [answeringForId, setAnsweringForId] = useState<string | null>(null);
-	const answering = answeringForId === request.id;
-	const [text, setText] = useState("");
-	const [picked, setPicked] = useState<readonly string[]>([]);
-
-	if (requestId !== request.id) {
-		setRequestId(request.id);
-		setActiveIndex(0);
-		setAnswers({});
-		setAnsweringForId(null);
-		setText("");
-		setPicked([]);
-	}
+	const entry = draft.answers.get(questionId) ?? { selected: [], text: "" };
+	const { text, selected: picked } = entry;
+	const answering = options.length === 0 && draft.answering;
 
 	const answer = (value: QuestionAnswer): void => {
-		const completed = { ...answers, [questionId]: value };
+		const completed = { ...draft, answers: new Map(draft.answers).set(questionId, {
+			selected: value.selected ?? entry.selected,
+			text: value.text ?? entry.text,
+			// Explicitly sending blank text differs from leaving a question unanswered.
+			textAnswered: value.text !== undefined,
+		}) };
 		// Sequence inside the one-line band; settle only after every question
 		// has an answer so an unseen remainder can never be discarded.
 		if (activeIndex + 1 < (request.questions?.length ?? 0)) {
-			setAnswers(completed);
-			setActiveIndex(activeIndex + 1);
-			setAnsweringForId(null);
-			setText("");
-			setPicked([]);
+			setDraft({ ...completed, activeIndex: activeIndex + 1, answering: false });
 		} else {
-			onAnswer(completed);
+			const response = questionDraftResponse(completed, request.questions ?? []);
+			onAnswer(response.answers, response.comment);
 		}
 		focusPaneComposer(sectionRef.current);
 	};
 
 	const togglePick = (label: string): void => {
-		setPicked((current) =>
-			current.includes(label)
-				? current.filter((item) => item !== label)
-				: [...current, label],
-		);
+		setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
+			...entry,
+			selected: picked.includes(label) ? picked.filter((item) => item !== label) : [...picked, label],
+		}) });
 	};
 
 	return (
@@ -86,7 +75,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 			onKeyDown={(event) => {
 				if (event.key !== "Escape" || !answering) return;
 				event.preventDefault();
-				setAnsweringForId(null);
+				setDraft({ ...draft, answering: false });
 				focusPaneComposer(event.currentTarget);
 			}}
 		>
@@ -144,7 +133,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 					type="button"
 					className="th-btn th-btn--ghost"
 					onClick={() => {
-						setAnsweringForId(request.id);
+						setDraft({ ...draft, answering: true });
 						// Explicit user gesture: focus moves into the answer field.
 						requestAnimationFrame(() => {
 							sectionRef.current
@@ -169,7 +158,9 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 						className="th-approval-input th-question-bar-input"
 						placeholder={t("question.placeholder")}
 						value={text}
-						onChange={(event) => setText(event.target.value)}
+						onChange={(event) => setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
+							...entry, text: event.target.value,
+						}) })}
 					/>
 					<button type="submit" className="th-btn">
 						{t("question.submit")}

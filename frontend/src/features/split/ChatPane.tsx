@@ -8,6 +8,7 @@ import type { ChatConnector } from "../../lib/chatWs";
 import { FileBrowser } from "../terminal/FileBrowser";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { ApprovalDock } from "./ApprovalDock";
+import { QuestionDraftProvider } from "./ApprovalDockQuestions";
 import { approvalRequestOf } from "./chatSessionState";
 import { QuestionBar } from "./QuestionBar";
 import { ActivityShelf } from "./ActivityShelf";
@@ -347,8 +348,8 @@ export function ChatPane({
            Enter still send normal chat messages and leave the question
            pending; only the widget's own controls answer it. It stacks with
            the approval dock when both are pending. */}
-        {chat.pendingQuestion &&
-          (chat.pendingQuestion.nonBlocking !== true ? (
+        {chat.pendingQuestion && <QuestionDraftProvider key={chat.pendingQuestion.id} requestId={chat.pendingQuestion.id}>
+          {chat.pendingQuestion.nonBlocking !== true ? (
             /* Absent or false flag: today's blocking behaviour, unchanged —
                the dock takes over the space above the composer. */
             <ApprovalDock
@@ -358,9 +359,10 @@ export function ChatPane({
           ) : (
             <QuestionBar
               request={chat.pendingQuestion}
-              onAnswer={(answers) => chat.respondQuestion({ answers })}
+              onAnswer={(answers, comment) => chat.respondQuestion({ answers, ...(comment !== undefined ? { comment } : {}) })}
             />
-          ))}
+          )}
+        </QuestionDraftProvider>}
         <ChatComposer
           session={chatSession}
           commands={chat.commands}

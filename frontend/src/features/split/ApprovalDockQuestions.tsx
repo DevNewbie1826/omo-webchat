@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useT } from "../../i18n";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 
 export interface ApprovalQuestionPanelProps {
-	/** Owned by the dock so collapsing the body preserves the draft. */
+	/** Owned by the request, or by a standalone dock while collapsed. */
 	readonly draftState: ReturnType<typeof useApprovalQuestionDraft>;
 	readonly questions: readonly Question[];
 	readonly onSubmit: (response: {
@@ -21,9 +22,38 @@ interface QuestionDraft {
 	readonly requestId: string;
 	readonly activeIndex: number;
 	readonly answers: ReadonlyMap<
-		string, { readonly selected: readonly string[]; readonly text: string }
+		string, { readonly selected: readonly string[]; readonly text: string; readonly textAnswered?: boolean }
 	>;
 	readonly comment: string;
+	readonly answering: boolean;
+}
+
+type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
+const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
+
+/** This owner stays mounted when the same request changes presentation. */
+export function QuestionDraftProvider({ requestId, children }: {
+	readonly requestId: string;
+	readonly children: ReactNode;
+}) {
+	const draftState = useApprovalQuestionDraft(requestId);
+	return <QuestionDraftContext.Provider value={draftState}>{children}</QuestionDraftContext.Provider>;
+}
+
+/** Both presentations send the same per-question draft, including its comment. */
+export function questionDraftResponse(draft: QuestionDraft, questions: readonly Question[]) {
+	const answers = new Map<string, QuestionAnswer>();
+	questions.forEach((question, index) => {
+		const key = questionKey(question, index);
+		const entry = draft.answers.get(key);
+		if (!entry) return;
+		const answer = {
+			...(entry.selected.length > 0 ? { selected: entry.selected } : {}),
+			...(entry.textAnswered || entry.text.trim() !== "" ? { text: entry.text } : {}),
+		};
+		if (answer.selected !== undefined || answer.text !== undefined) answers.set(key, answer);
+	});
+	return { answers: Object.fromEntries(answers), ...(draft.comment.trim() !== "" ? { comment: draft.comment } : {}) };
 }
 
 /** Tabbed panel for a structured multi-question request: one tab per
@@ -33,18 +63,20 @@ interface QuestionDraft {
  *  sends a single response with answers keyed by question id. Every
  *  question's draft lives in one record, so switching tabs never loses
  *  selections already made. */
-export function useApprovalQuestionDraft(requestId: string) {
+export function useApprovalQuestionDraft(requestId: string): QuestionDraftState {
+	const owned = useContext(QuestionDraftContext);
 	const [draft, setDraft] = useState<QuestionDraft>({
 		requestId,
 		activeIndex: 0,
 		answers: new Map(),
 		comment: "",
+		answering: false,
 	});
 	if (draft.requestId !== requestId) {
-		setDraft({ requestId, activeIndex: 0, answers: new Map(), comment: "" });
+		setDraft({ requestId, activeIndex: 0, answers: new Map(), comment: "", answering: false });
 	}
 
-	return [draft, setDraft] as const;
+	return owned ?? [draft, setDraft];
 }
 
 export function ApprovalQuestionPanel({
@@ -66,7 +98,9 @@ export function ApprovalQuestionPanel({
 		const previous = draft.answers.get(key) ?? { selected: [], text: "" };
 		setDraft({
 			...draft,
+			answering: patch.text !== undefined ? true : draft.answering,
 			answers: new Map(draft.answers).set(key, {
+				...previous,
 				selected: patch.selected ?? previous.selected,
 				text: patch.text ?? previous.text,
 			}),
@@ -89,21 +123,7 @@ export function ApprovalQuestionPanel({
 		}
 	};
 
-	const submit = (): void => {
-		const answers = new Map<string, QuestionAnswer>();
-		questions.forEach((question, index) => {
-			const entry = draft.answers.get(questionKey(question, index));
-			if (!entry) return;
-			const answer: { selected?: readonly string[]; text?: string } = {};
-			if (entry.selected.length > 0) answer.selected = entry.selected;
-			if (entry.text.trim() !== "") answer.text = entry.text;
-			if (answer.selected !== undefined || answer.text !== undefined) {
-				answers.set(questionKey(question, index), answer);
-			}
-		});
-		const comment = draft.comment.trim();
-		onSubmit({ answers: Object.fromEntries(answers), ...(comment !== "" ? { comment: draft.comment } : {}) });
-	};
+	const submit = (): void => onSubmit(questionDraftResponse(draft, questions));
 
 	return (
 		<div className="th-approval-question">
