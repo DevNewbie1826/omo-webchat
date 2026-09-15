@@ -139,6 +139,11 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
   });
 }
 
+const MISSING_ROW: TranscriptItem = {
+  kind: "message",
+  message: { role: "assistant", blocks: [] },
+};
+
 /** Inline image carried on a preserved block: bytes already inline as base64. */
 function InlineImage({ data, mimeType, alt }: {
   readonly data: string;
@@ -519,7 +524,23 @@ export function ChatTranscript({
     count: rows.length,
     getItemKey,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => estimateCache.get(keys[index]!)!,
+    // Total: the virtualizer can ask about an index after the row list
+    // shrinks (chat switch). A miss still returns a content-derived
+    // estimate — never undefined, never a magic constant.
+    estimateSize: (index) => {
+      const key = keys[index];
+      if (key !== undefined) {
+        const cached = estimateCache.get(key);
+        if (cached !== undefined) return cached;
+        const item = rows[index];
+        if (item !== undefined) {
+          const size = estimateRowHeight(item, rowMetrics);
+          estimateCache.set(key, size);
+          return size;
+        }
+      }
+      return estimateRowHeight(MISSING_ROW, rowMetrics);
+    },
     overscan: 8,
     // virtual-core passes `adjustments` ONLY for measurement-driven
     // corrections; every explicit scrollToIndex/scrollToOffset passes
