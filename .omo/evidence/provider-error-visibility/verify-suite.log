@@ -1,3 +1,4 @@
+$ npx vitest run
 npm notice run omo-webchat-frontend@0.1.0 npx
 npm notice run 'vitest' run
 
@@ -6,8 +7,8 @@ npm notice run 'vitest' run
 
  Test Files  256 passed (256)
       Tests  2716 passed (2716)
-   Start at  19:09:13
-   Duration  56.38s (transform 14.26s, setup 4.47s, import 78.85s, tests 91.90s, environment 181.20s)
+   Start at  19:49:12
+   Duration  76.46s (transform 14.94s, setup 4.58s, import 98.75s, tests 122.52s, environment 265.15s)
 
 
 EXIT_CODE=0

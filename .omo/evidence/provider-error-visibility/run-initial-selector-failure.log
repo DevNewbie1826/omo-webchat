@@ -1,4 +1,4 @@
-CLEANUP RECEIPT {"contextsClosed":1,"serverPid":2311,"killZeroFails":true,"portEmpty":true,"tempGone":true,"chromePids":[2312,2418,2419,2420,2424,2425,2426],"chromePidsGone":true}
+CLEANUP RECEIPT {"contextsClosed":1,"serverPid":406,"killZeroFails":true,"portEmpty":true,"tempGone":true,"chromePids":[408,416,417,419,422,425,426],"chromePidsGone":true}
 | Scenario | What was sent | What was observed | Result |
 |---|---|---|---|
 | failure-visible | errorMessage + stopReason:error | Exact failure text in error row | PASS |
@@ -6,8 +6,17 @@ CLEANUP RECEIPT {"contextsClosed":1,"serverPid":2311,"killZeroFails":true,"portE
 | absent-error | No errorMessage; stopReason:"error" | Exact row: error; full transcript: error; Turn failed absent | PASS |
 | legacy | Neither errorMessage nor stopReason | Ordinary legacy answer.; zero error rows | PASS |
 | retry-sequence | Failure; auto_retry_start; auto_retry_end(success:false); final failure | Failure -> retrying -> retry failed -> final failure, in order | PASS |
-| retry-fallback | All four retry_fallback_* kinds with messages | All four wire messages exact | PASS |
-| continuation-error | continuation_error with message | Transcript notice carries exact message | PASS |
+| retry-fallback | All four retry_fallback_* kinds with messages | All four wire messages exact | FAIL |
+| continuation-error | continuation_error with message | Transcript notice carries exact message | FAIL |
 | no-false-alarm | User-cancelled stopReason:aborted; successful tool-only turn | Cancellation: 0 error rows; tool-only: 0 error rows | PASS |
 | backward-compat | Text completion and empty completion without either new field | Original answer; 0 error rows; 0 empty placeholders | PASS |
 
+file:///Volumes/storage/workspace/cli-webchat-error-visibility/.omo/evidence/provider-error-visibility/run-browser.mjs:18
+function check(ok,description){if(!ok)throw new Error(description);}
+                                            ^
+
+Error: Scenario verification failed
+    at check (file:///Volumes/storage/workspace/cli-webchat-error-visibility/.omo/evidence/provider-error-visibility/run-browser.mjs:18:45)
+    at file:///Volumes/storage/workspace/cli-webchat-error-visibility/.omo/evidence/provider-error-visibility/run-browser.mjs:78:1
+
+Node.js v24.15.0

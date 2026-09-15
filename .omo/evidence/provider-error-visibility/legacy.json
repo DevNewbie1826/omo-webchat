@@ -1,16 +1,20 @@
 {
-  "scenario": "continuation-error",
+  "scenario": "legacy",
   "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
   "sent": [
     {
-      "type": "notice",
+      "type": "message",
       "sessionId": "qa-session",
-      "kind": "continuation_error",
-      "payload": {
-        "message": "Continuation failed: provider connection closed."
-      },
-      "at": "1970-01-01T00:00:01.000Z",
-      "nid": "continuation_error"
+      "message": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "kind": "text",
+            "text": "Ordinary legacy answer."
+          }
+        ],
+        "ts": 1000
+      }
     }
   ],
   "observed": {
@@ -19,11 +23,11 @@
       "height": 844
     },
     "errorRows": [],
-    "noticeRows": [
-      "Continuation failed: provider connection closed."
+    "noticeRows": [],
+    "transcript": "Ordinary legacy answer.",
+    "assistantRows": [
+      "Ordinary legacy answer."
     ],
-    "transcript": "continuation_error\n09:00:01\nContinuation failed: provider connection closed.",
-    "assistantRows": [],
     "ordered": []
   },
   "pass": true,

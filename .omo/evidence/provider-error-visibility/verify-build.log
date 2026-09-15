@@ -1,3 +1,4 @@
+$ npm run build
 npm notice run omo-webchat-frontend@0.1.0 build
 npm notice run tsc --noEmit && vite build
 vite v6.4.3 building for production...
@@ -66,12 +67,12 @@ dist/assets/KaTeX_Main-Bold-waoOVXN0.ttf               51.34 kB
 dist/assets/KaTeX_Main-Regular-ypZvNtVU.ttf            53.58 kB
 dist/assets/KaTeX_AMS-Regular-DRggAlZN.ttf             63.63 kB
 dist/assets/index-DZmUca8Y.css                        143.60 kB │ gzip:  23.87 kB
-dist/assets/index-dJwI_tId.js                         960.77 kB │ gzip: 287.14 kB
+dist/assets/index-D0juFE7Z.js                         960.75 kB │ gzip: 287.13 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.31s
+✓ built in 5.03s
 
 EXIT_CODE=0

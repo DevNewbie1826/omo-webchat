@@ -1,11 +1,9 @@
-npm notice run omo-webchat-frontend@0.1.0 npx
-npm notice run 'vite' build --config ../.omo/evidence/provider-error-visibility/vite.config.mjs
 vite v6.4.3 building for production...
 transforming...
 ✓ 372 modules transformed.
 rendering chunks...
 computing gzip size...
-temporary/harness-dist/index.html                                         0.33 kB │ gzip:   0.25 kB
+temporary/harness-dist/index.html                                         0.33 kB │ gzip:   0.24 kB
 temporary/harness-dist/assets/KaTeX_Size3-Regular-CTq5MqoE.woff           4.42 kB
 temporary/harness-dist/assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2          4.93 kB
 temporary/harness-dist/assets/KaTeX_Size2-Regular-Dy4dx90m.woff2          5.21 kB
@@ -66,10 +64,10 @@ temporary/harness-dist/assets/KaTeX_Main-Bold-waoOVXN0.ttf               51.34 k
 temporary/harness-dist/assets/KaTeX_Main-Regular-ypZvNtVU.ttf            53.58 kB
 temporary/harness-dist/assets/KaTeX_AMS-Regular-DRggAlZN.ttf             63.63 kB
 temporary/harness-dist/assets/index-CoUcA_Mk.css                         66.63 kB │ gzip:  14.75 kB
-temporary/harness-dist/assets/index-GgxSznN0.js                         759.38 kB │ gzip: 228.01 kB
+temporary/harness-dist/assets/index-Sals8ayl.js                         759.36 kB │ gzip: 227.98 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 1.88s
+✓ built in 5.34s

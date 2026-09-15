@@ -16,8 +16,8 @@ const frame=(type,fields={})=>({type,sessionId:'qa-session',...fields});
 const message=(text,extra={},ts=1000)=>frame('message',{message:{role:'assistant',blocks:text?[{kind:'text',text}]:[],ts,...extra}});
 const notice=(kind,payload,at)=>frame('notice',{kind,payload,at:new Date(at).toISOString(),nid:kind});
 function check(ok,description){if(!ok)throw new Error(description);}
-async function snapshot(page){return page.evaluate(()=>({viewport:{width:innerWidth,height:innerHeight},errorRows:[...document.querySelectorAll('.th-chat-error')].map(e=>e.textContent),noticeRows:[...document.querySelectorAll('.th-notice-status-text,.th-chat-notice-content')].map(e=>e.textContent),transcript:document.querySelector('.th-chat-body')?.innerText,assistantRows:[...document.querySelectorAll('.th-chat-row--assistant')].map(e=>e.textContent),ordered:[...document.querySelectorAll('.th-chat-turn-error,.th-notice-status-text')].map(e=>e.textContent)}));}
-async function deliver(page,raw){return page.evaluate(async raw=>{const parsed=window.qaDeliver(raw);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));return parsed;},raw);}
+async function snapshot(page){return page.evaluate(()=>({viewport:{width:innerWidth,height:innerHeight},errorRows:[...document.querySelectorAll('.th-chat-error')].map(e=>e.textContent),noticeRows:[...document.querySelectorAll('.th-notice-status-text,.th-chat-notice-content > .th-notice-line')].map(e=>e.textContent),transcript:document.querySelector('.th-chat-body')?.innerText,assistantRows:[...document.querySelectorAll('.th-chat-row--assistant')].map(e=>e.textContent),ordered:[...document.querySelectorAll('.th-chat-turn-error,.th-notice-status-text')].map(e=>e.textContent)}));}
+async function deliver(page,raw){return page.evaluate(raw=>window.qaDeliver(raw),raw);}
 async function fresh(){const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));await page.goto('http://127.0.0.1:18219/');await page.evaluate(()=>new Promise((resolve,reject)=>{if(window.qaReady)return resolve();const timer=setTimeout(()=>reject(new Error('QA readiness timeout')),10000);window.addEventListener('qa-ready',()=>{clearTimeout(timer);resolve();},{once:true});}));return page;}
 async function record(name,page,sent,observed,pass,what,found){await page.screenshot({path:resolve(dir,name+'.png')});await save(name+'.json',{scenario:name,scope,sent,observed,pass,browser:await page.evaluate(()=>navigator.userAgent)});verdict.push([name,what,found,pass?'PASS':'FAIL']);await page.close();}
 try{
@@ -33,14 +33,28 @@ try{
   let observed=await snapshot(page);observed.textSent=failure;observed.textFound=observed.errorRows[0];
   await record('failure-visible',page,sent,observed,observed.textFound===failure,'errorMessage + stopReason:error','Exact failure text in error row');
 
+  const wording=[{scenario:'nonempty-error',sent:sent[1],observed,assertions:{exactWireText:observed.textFound===failure},pass:observed.textFound===failure}];
+  for(const [name,extra] of [['empty-error',{errorMessage:'',stopReason:'error'}],['absent-error',{stopReason:'error'}],['legacy',{ }]]){
+    page=await fresh();const raw=message(name==='legacy'?'Ordinary legacy answer.':'',extra);const parsed=await deliver(page,raw);const dom=await snapshot(page);
+    const assertions={removedLabelAbsent:!dom.transcript.includes('Turn failed'),wireOnlyErrorRows:JSON.stringify(dom.errorRows)===JSON.stringify(name==='legacy'?[]:['error']),legacyUnchanged:name!=='legacy'||dom.transcript==='Ordinary legacy answer.'};
+    const pass=Object.values(assertions).every(Boolean);
+    wording.push({scenario:name,sent:raw,parsed,observed:dom,wireValueShown:name==='legacy'?null:'error',assertions,pass});
+    await record(name,page,[raw],dom,pass,name==='legacy'?'Neither errorMessage nor stopReason':name==='empty-error'?'errorMessage:""; stopReason:"error"':'No errorMessage; stopReason:"error"',name==='legacy'?'Ordinary legacy answer.; zero error rows':'Exact row: error; full transcript: error; Turn failed absent');
+  }
+  await save('wire-only-wording.json',{scope,removedLabel:'Turn failed',frames:wording,pass:wording.every(item=>item.pass)});
+
   page=await fresh();const initial='Provider overloaded: first attempt failed.';const retry='Retrying request (attempt 1 of 1).';const ended='Retry failed: no attempts remain.';const final='Provider overloaded: final attempt failed.';
   sent=[frame('run.started'),message('',{errorMessage:initial,stopReason:'error'},1000),notice('auto_retry_start',{message:retry,attempt:1,maxAttempts:1},2000),notice('auto_retry_end',{message:ended,success:false},3000),message('',{errorMessage:final,stopReason:'error'},4000),frame('run.done',{reason:'stop'})];
   const stages=[];for(const raw of sent){await deliver(page,raw);stages.push({sent:raw,dom:await snapshot(page)});}
   observed=await snapshot(page);observed.stages=stages;
   await record('retry-sequence',page,sent,observed,JSON.stringify(observed.ordered)===JSON.stringify([initial,retry,ended,final]),'Failure; auto_retry_start; auto_retry_end(success:false); final failure','Failure -> retrying -> retry failed -> final failure, in order');
 
+  page=await fresh();sent=['retry_fallback_applied','retry_fallback_reverted','retry_fallback_succeeded','retry_fallback_exhausted'].map((kind,index)=>notice(kind,{message:'Wire notice: '+kind},1000+index*1000));
+  for(const raw of sent)await deliver(page,raw);observed=await snapshot(page);
+  await record('retry-fallback',page,sent,observed,sent.every(raw=>observed.noticeRows.includes(raw.payload.message)),'All four retry_fallback_* kinds with messages','All four wire messages exact');
+
   page=await fresh();const continuation='Continuation failed: provider connection closed.';sent=[notice('continuation_error',{message:continuation},1000)];await deliver(page,sent[0]);observed=await snapshot(page);
-  await record('continuation-error',page,sent,observed,observed.noticeRows.some(text=>text.includes(continuation)),'continuation_error with message','Transcript notice carries exact message');
+  await record('continuation-error',page,sent,observed,observed.noticeRows.includes(continuation),'continuation_error with message','Transcript notice carries exact message');
 
   page=await fresh();const cancelled=[frame('run.started'),message('Partial answer before user cancellation.',{stopReason:'aborted'}),frame('run.done',{reason:'aborted'})];for(const raw of cancelled)await deliver(page,raw);const cancelledDom=await snapshot(page);
   const toolOnly=[frame('run.started'),frame('tool',{phase:'start',toolCallId:'qa-tool',toolName:'bash',args:{command:'printf tool-output'}}),frame('tool',{phase:'end',toolCallId:'qa-tool',toolName:'bash',isError:false,result:{content:[{text:'tool-output'}]}}),message('',{stopReason:'toolUse'},2000),frame('run.done',{reason:'stop'})];for(const raw of toolOnly)await deliver(page,raw);const toolDom=await snapshot(page);
@@ -61,5 +75,5 @@ try{
   const table='| Scenario | What was sent | What was observed | Result |\n|---|---|---|---|\n'+verdict.map(row=>'| '+row.join(' | ')+' |').join('\n')+'\n';
   await writeFile(resolve(dir,'verdict.md'),table);console.log(table);
 }
-check(verdict.length===5&&verdict.every(row=>row[3]==='PASS'),'Scenario verification failed');
+check(verdict.length===9&&verdict.every(row=>row[3]==='PASS'),'Scenario verification failed');
 check(receipt.killZeroFails&&receipt.portEmpty&&receipt.tempGone&&receipt.chromePidsGone,'Cleanup verification failed');

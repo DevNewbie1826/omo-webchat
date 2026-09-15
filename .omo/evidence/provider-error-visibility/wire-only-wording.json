@@ -1,0 +1,191 @@
+{
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "removedLabel": "Turn failed",
+  "frames": [
+    {
+      "scenario": "nonempty-error",
+      "sent": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [],
+          "ts": 1000,
+          "errorMessage": "Provider quota exhausted: requested 8192 tokens; remaining 0.",
+          "stopReason": "error"
+        }
+      },
+      "observed": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [
+          "Provider quota exhausted: requested 8192 tokens; remaining 0."
+        ],
+        "noticeRows": [],
+        "transcript": "Provider quota exhausted: requested 8192 tokens; remaining 0.\nDone",
+        "assistantRows": [
+          "Provider quota exhausted: requested 8192 tokens; remaining 0."
+        ],
+        "ordered": [
+          "Provider quota exhausted: requested 8192 tokens; remaining 0."
+        ],
+        "textSent": "Provider quota exhausted: requested 8192 tokens; remaining 0.",
+        "textFound": "Provider quota exhausted: requested 8192 tokens; remaining 0."
+      },
+      "assertions": {
+        "exactWireText": true
+      },
+      "pass": true
+    },
+    {
+      "scenario": "empty-error",
+      "sent": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [],
+          "ts": 1000,
+          "errorMessage": "",
+          "stopReason": "error"
+        }
+      },
+      "parsed": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [],
+          "ts": 1000,
+          "errorMessage": "",
+          "stopReason": "error"
+        }
+      },
+      "observed": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [
+          "error"
+        ],
+        "noticeRows": [],
+        "transcript": "error",
+        "assistantRows": [
+          "error"
+        ],
+        "ordered": [
+          "error"
+        ]
+      },
+      "wireValueShown": "error",
+      "assertions": {
+        "removedLabelAbsent": true,
+        "wireOnlyErrorRows": true,
+        "legacyUnchanged": true
+      },
+      "pass": true
+    },
+    {
+      "scenario": "absent-error",
+      "sent": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [],
+          "ts": 1000,
+          "stopReason": "error"
+        }
+      },
+      "parsed": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [],
+          "ts": 1000,
+          "stopReason": "error"
+        }
+      },
+      "observed": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [
+          "error"
+        ],
+        "noticeRows": [],
+        "transcript": "error",
+        "assistantRows": [
+          "error"
+        ],
+        "ordered": [
+          "error"
+        ]
+      },
+      "wireValueShown": "error",
+      "assertions": {
+        "removedLabelAbsent": true,
+        "wireOnlyErrorRows": true,
+        "legacyUnchanged": true
+      },
+      "pass": true
+    },
+    {
+      "scenario": "legacy",
+      "sent": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "Ordinary legacy answer."
+            }
+          ],
+          "ts": 1000
+        }
+      },
+      "parsed": {
+        "type": "message",
+        "sessionId": "qa-session",
+        "message": {
+          "role": "assistant",
+          "blocks": [
+            {
+              "kind": "text",
+              "text": "Ordinary legacy answer."
+            }
+          ],
+          "ts": 1000
+        }
+      },
+      "observed": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [],
+        "noticeRows": [],
+        "transcript": "Ordinary legacy answer.",
+        "assistantRows": [
+          "Ordinary legacy answer."
+        ],
+        "ordered": []
+      },
+      "wireValueShown": null,
+      "assertions": {
+        "removedLabelAbsent": true,
+        "wireOnlyErrorRows": true,
+        "legacyUnchanged": true
+      },
+      "pass": true
+    }
+  ],
+  "pass": true
+}

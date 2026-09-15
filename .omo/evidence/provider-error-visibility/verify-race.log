@@ -1,23 +1,150 @@
-ok  	github.com/DevNewbie1826/omo-webchat/internal/adoptcopy	1.778s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/api	50.156s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/auth	3.064s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/coldhistory	1.940s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/config	2.286s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/cursorstore	4.705s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/daemon	11.097s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/dirsync	3.468s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/fileid	2.630s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/fileio	2.813s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc	43.585s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest	3.010s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/idlefixture	3.664s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/todofixture	3.399s
+$ go test -race ./internal/...
+ok  	github.com/DevNewbie1826/omo-webchat/internal/adoptcopy	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/api	72.179s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/auth	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/coldhistory	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/config	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/cursorstore	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/daemon	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/dirsync	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileid	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileio	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/idlefixture	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/todofixture	(cached)
 ?   	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport	[no test files]
-ok  	github.com/DevNewbie1826/omo-webchat/internal/procexec	2.221s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/sendqueue	3.610s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/procexec	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/sendqueue	(cached)
 ok  	github.com/DevNewbie1826/omo-webchat/internal/session	(cached)
 ?   	github.com/DevNewbie1826/omo-webchat/internal/testfs	[no test files]
-ok  	github.com/DevNewbie1826/omo-webchat/internal/wsbridge	180.590s
-ok  	github.com/DevNewbie1826/omo-webchat/internal/wscontract	1.769s
+2026/09/15 19:49:22 WARN failed to resume provider session chat_id=create-failure-message error=invalid_path
+2026/09/15 19:49:22 WARN opening v2 chat session chat_id=create-failure-message error="could not resume the saved session"
+2026/09/15 19:49:22 WARN failed to resume provider session chat_id=create-open-failed-detail error="open_failed: QA_CONTEXT_LIMIT 311799 > 272000"
+2026/09/15 19:49:22 WARN opening v2 chat session chat_id=create-open-failed-detail error="could not resume the saved session"
+2026/09/15 19:49:23 WARN failed to resume provider session chat_id=create-open-failed-wire-no-space error="open_failed:no-space detail"
+2026/09/15 19:49:23 WARN opening v2 chat session chat_id=create-open-failed-wire-no-space error="could not resume the saved session"
+2026/09/15 19:49:23 WARN failed to resume provider session chat_id=create-open-failed-wire-multiple-leading-space error="open_failed:  multiple-space detail"
+2026/09/15 19:49:23 WARN opening v2 chat session chat_id=create-open-failed-wire-multiple-leading-space error="could not resume the saved session"
+2026/09/15 19:49:23 WARN failed to resume provider session chat_id=create-open-failed-ws-empty-suffix error=open_failed:
+2026/09/15 19:49:23 WARN opening v2 chat session chat_id=create-open-failed-ws-empty-suffix error="could not resume the saved session"
+2026/09/15 19:49:24 WARN failed to resume provider session chat_id=create-open-failed-ws-spaces error="open_failed:   "
+2026/09/15 19:49:24 WARN opening v2 chat session chat_id=create-open-failed-ws-spaces error="could not resume the saved session"
+2026/09/15 19:49:24 WARN failed to resume provider session chat_id=create-open-failed-ws-tab error="open_failed:\t"
+2026/09/15 19:49:24 WARN opening v2 chat session chat_id=create-open-failed-ws-tab error="could not resume the saved session"
+2026/09/15 19:49:24 WARN failed to resume provider session chat_id=create-open-failed-long error="open_failed: QA_CONTEXT_LIMIT 311799 > 272000\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT\n<img src=x onerror=alert(1)>"
+2026/09/15 19:49:24 WARN opening v2 chat session chat_id=create-open-failed-long error="could not resume the saved session"
+2026/09/15 19:49:25 WARN failed to resume provider session chat_id=create-arbitrary-error error="sensitive internal boom"
+2026/09/15 19:49:25 WARN opening v2 chat session chat_id=create-arbitrary-error error="could not resume the saved session"
+2026/09/15 19:49:32 WARN opening v2 chat session chat_id=checked-large-history error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestCheckedBindingActivatesAfterTerminalHistoryValidation405553281/001/checked-large-history.jsonl\": context canceled"
+--- FAIL: TestCheckedBindingActivatesAfterTerminalHistoryValidation (6.70s)
+    bridge_test.go:888: checked acquisition did not reach history hydration
+2026/09/15 19:49:33 WARN opening v2 chat session chat_id=send-idle-resume error="context canceled"
+2026/09/15 19:49:34 WARN failed to resume provider session chat_id=resume-failure-cursor-unusable error=invalid_path
+2026/09/15 19:49:34 WARN resuming v2 chat session chat_id=resume-failure-cursor-unusable error="could not resume the saved session"
+2026/09/15 19:49:35 WARN resuming v2 chat session chat_id=resume-failure-adoption-required error="cursor store: session adoption required: adoptcopy: validate session \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestChatSendResumeFailuresKeepTypedCorrelationAndDoNotRetryadop3361685377/001/resume-failure-adoption-required.jsonl\": invalid adoption source\ncoldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/.adopt-validate-3532364897.jsonl\": invalid session header at line 1 (byte 0): invalid character 'o' in literal null (expecting 'u')"
+2026/09/15 19:49:35 WARN failed to resume provider session chat_id=resume-failure-session-active error=session_path_in_use
+2026/09/15 19:49:35 WARN resuming v2 chat session chat_id=resume-failure-session-active error="could not resume the saved session"
+2026/09/15 19:49:41 WARN resuming v2 chat session chat_id=hydration-revalidation error="chat was deleted while opening"
+2026/09/15 19:49:41 WARN resuming v2 chat session chat_id=hydration-quarantine error="external write detected: session file disappeared (daemon leaf \"\", disk leaf \"\")"
+2026/09/15 19:49:43 WARN opening v2 chat session chat_id=send-detached-disconnect error="context canceled"
+2026/09/15 19:49:44 WARN opening v2 chat session chat_id=send-full-ledger error="context canceled"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=send-error-replay error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestChatSendCompletionErrorReplaysAfterDisconnect2843567077/001/send-error-replay.jsonl\": page callback: context canceled"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=missing-source error="external write detected: session file disappeared (daemon leaf \"\", disk leaf \"\")\nadoptcopy: stat activity source \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestChatCreateMissingInPlaceSourceReportsExternalWrite718617035/001/missing-source.jsonl\": adoption I/O failure\nlstat /var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestChatCreateMissingInPlaceSourceReportsExternalWrite718617035/001/missing-source.jsonl: no such file or directory"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=gate-active error=session-active
+2026/09/15 19:49:45 WARN failed to resume provider session chat_id=provider-active error=session_path_in_use
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=provider-active error="could not resume the saved session"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=gate-force error="context canceled"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=gate-force-retry error=session-active
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=gate-force-retry error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestChatCreateSessionActiveConflictsUseContractCodeforce_flag_r2354563466/001/gate-force-retry.jsonl\": page callback: session: subscriber detached"
+2026/09/15 19:49:45 WARN opening v2 chat session chat_id=force-live-attach error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-live-attach error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-failed-create error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-failed-create error="chat was deleted while opening"
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-failed-create error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-vs-rest error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-vs-rest error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-persistent-check error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-persistent-check error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-persistent-sibling error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-unrelated-consumer error=session-active
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-newer-cancel error="context canceled"
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=force-rest-before-ws error="context canceled"
+2026/09/15 19:49:46 WARN opening v2 chat session chat_id=external-recovery error="external write detected: disk leaf is not the daemon session leaf (daemon leaf \"root\", disk leaf \"external-leaf\")"
+2026/09/15 19:49:47 WARN opening v2 chat session chat_id=canonical-ack error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestCanonicalCompletedAckLiveAndReplayprompt52992803/001/canonical-ack.jsonl\": page callback: session: subscriber detached"
+2026/09/15 19:49:47 WARN opening v2 chat session chat_id=canonical-ack error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestCanonicalCompletedAckLiveAndReplaysteer1535174959/001/canonical-ack.jsonl\": page callback: context canceled"
+2026/09/15 19:49:47 WARN opening v2 chat session chat_id=canonical-ack error="context canceled"
+2026/09/15 19:49:55 WARN failed to resume provider session chat_id=heartbeat error="context canceled"
+2026/09/15 19:50:46 WARN reconciling send queue dispatch chat_id=notice-queue-uncertain item_id=287407dda5983277b8ba462510909043 error="omorpc: transport disconnected: epoch 3: client closed"
+2026/09/15 19:50:46 WARN reconciling send queue dispatch chat_id=notice-queue-uncertain item_id=287407dda5983277b8ba462510909043 error="session: closed"
+2026/09/15 19:50:46 WARN failed to resume provider session chat_id=open-disconnect-retry error="omorpc: transport disconnected: epoch 1: peer closed the socket"
+2026/09/15 19:50:47 WARN opening v2 chat session chat_id=open-disconnect-retry error="session: manager closed"
+2026/09/15 19:50:52 WARN failed to resume provider session chat_id=open-disconnect-exhausted error="omorpc: transport disconnected: epoch 1: peer closed the socket"
+2026/09/15 19:50:54 WARN opening v2 chat session chat_id=open-disconnect-exhausted error="could not resume the saved session"
+2026/09/15 19:50:55 WARN opening v2 chat session chat_id=open-deleted-no-retry error="chat was deleted while opening"
+2026/09/15 19:50:55 WARN reconciling send queue dispatch chat_id=queue-external-write item_id=626659ca65f7f72be15d20794869aedb error="external write detected: queue history authority unavailable: Entry not found: external-end (daemon leaf \"\", disk leaf \"\")"
+2026/09/15 19:50:55 WARN opening v2 chat session chat_id=queue-external-write error="external write detected: queue history authority unavailable: Entry not found: external-end (daemon leaf \"\", disk leaf \"\")"
+2026/09/15 19:50:56 WARN reconciling send queue dispatch chat_id=queue-external-write item_id=5ced3eacac784df8fd9a09a19fb9775c error="external write detected: queue history authority unavailable: Entry not found: external-end (daemon leaf \"\", disk leaf \"\")"
+2026/09/15 19:50:56 WARN opening v2 chat session chat_id=queue-external-write error="external write detected: queue history authority unavailable: Entry not found: external-end (daemon leaf \"\", disk leaf \"\")"
+2026/09/15 19:51:29 WARN proactive transport recovery failed error="omorpc: transport disconnected: reconnect exhausted after 8 attempts: omorpc: transport disconnected: dial /var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/wsbridge-inplace-676581874/d.sock: dial unix /var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/wsbridge-inplace-676581874/d.sock: connect: no such file or directory"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:40 WARN opening v2 chat session chat_id=saved-conversation error="could not resume the saved session"
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error=session_path_in_use
+2026/09/15 19:51:40 WARN failed to resume provider session chat_id=saved-conversation error="durable session id mismatch: provider \"rejected-identity\", stored \"durable-saved-conversation\""
+2026/09/15 19:51:42 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: QA_CONTEXT_LIMIT 311799 > 272000"
+2026/09/15 19:51:42 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:44 WARN failed to resume provider session chat_id=rpc46-a error="open_failed:  preserve spacing  "
+2026/09/15 19:51:44 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:45 WARN failed to resume provider session chat_id=rpc46-a error="open_failed:<img src=x onerror=alert(1)>\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+2026/09/15 19:51:45 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:46 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: no such saved session"
+2026/09/15 19:51:46 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:47 WARN failed to resume provider session chat_id=rpc46-a error="sensitive internal detail"
+2026/09/15 19:51:47 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:48 WARN failed to resume provider session chat_id=rpc46-a error=open_failed:
+2026/09/15 19:51:48 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:49 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: \t\n "
+2026/09/15 19:51:49 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:50 WARN failed to resume provider session chat_id=rpc46-a error=session_path_in_use
+2026/09/15 19:51:50 WARN resuming v2 chat session chat_id=rpc46-a error="could not resume the saved session"
+2026/09/15 19:51:51 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: QA_CONTEXT_LIMIT 311799 > 272000"
+2026/09/15 19:51:52 WARN failed to resume provider session chat_id=rpc46-a error="open_failed:  preserve spacing  "
+2026/09/15 19:51:53 WARN failed to resume provider session chat_id=rpc46-a error="open_failed:<img src=x onerror=alert(1)>\nTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+2026/09/15 19:51:54 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: no such saved session"
+2026/09/15 19:51:55 WARN failed to resume provider session chat_id=rpc46-a error="sensitive internal detail"
+2026/09/15 19:51:56 WARN failed to resume provider session chat_id=rpc46-a error=open_failed:
+2026/09/15 19:51:57 WARN failed to resume provider session chat_id=rpc46-a error="open_failed: \t\n "
+2026/09/15 19:51:58 WARN failed to resume provider session chat_id=rpc46-a error=session_path_in_use
+2026/09/15 19:52:00 WARN resuming v2 chat session chat_id=automatic-use error="context canceled"
+2026/09/15 19:52:00 WARN opening v2 chat session chat_id=todo-startup error="context canceled"
+2026/09/15 19:52:01 WARN opening v2 chat session chat_id=todo-start-order error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestTodoAuthorityStartsBeforeAttachControlQueriesFinish993513796/001/todo-start-order.jsonl\": page callback: context canceled"
+2026/09/15 19:52:01 WARN opening v2 chat session chat_id=todo-replace error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestTodoAuthorityOldReadCannotPublishAfterReplacementrebind2588686452/001/todo-replace.jsonl\": page callback: session: subscriber detached"
+2026/09/15 19:52:02 WARN resuming v2 chat session chat_id=todo-replace error="coldhistory: read \"/var/folders/v0/g2h4nhxd64j63j7tnr3rc87c0000gn/T/TestTodoAuthorityOldReadCannotPublishAfterReplacementsend-recov1174688389/001/todo-replace.jsonl\": page callback: session: subscriber detached"
+2026/09/15 19:52:07 WARN failed to resume provider session chat_id=bounded-resume-failure error=session_path_in_use
+2026/09/15 19:52:07 WARN opening v2 chat session chat_id=bounded-resume-failure error="could not resume the saved session"
+FAIL
+FAIL	github.com/DevNewbie1826/omo-webchat/internal/wsbridge	169.159s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wscontract	(cached)
+FAIL
 
-EXIT_CODE=0
+EXIT_CODE=1

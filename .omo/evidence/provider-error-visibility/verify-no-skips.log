@@ -1,0 +1,3 @@
+$ git diff main -- frontend/src internal | grep skip patterns
+NO_MATCHES
+EXIT_CODE=0
