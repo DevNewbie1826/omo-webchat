@@ -66,12 +66,12 @@ dist/assets/KaTeX_Main-Bold-waoOVXN0.ttf               51.34 kB
 dist/assets/KaTeX_Main-Regular-ypZvNtVU.ttf            53.58 kB
 dist/assets/KaTeX_AMS-Regular-DRggAlZN.ttf             63.63 kB
 dist/assets/index-BFocqO0q.css                        143.55 kB │ gzip:  23.86 kB
-dist/assets/index-DcNYVxg5.js                         958.26 kB │ gzip: 286.32 kB
+dist/assets/index-ge2KHlQb.js                         958.97 kB │ gzip: 286.54 kB
 
 (!) Some chunks are larger than 500 kB after minification. Consider:
 - Using dynamic import() to code-split the application
 - Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
 - Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
-✓ built in 3.55s
+✓ built in 3.58s
 
-[exit code: 0]
+EXIT_CODE=0

@@ -1,8 +1,7 @@
 npm notice run omo-webchat-frontend@0.1.0 npx
 npm notice run 'vite' --port 5211 --strictPort
 
-  VITE v6.4.3  ready in 98 ms
+  VITE v6.4.3  ready in 103 ms
 
   ➜  Local:   http://localhost:5211/
   ➜  Network: use --host to expose
-

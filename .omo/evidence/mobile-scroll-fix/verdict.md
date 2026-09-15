@@ -1,39 +1,41 @@
 # Mobile transcript scroll verdict
 
-Overall: FAIL (C4 and C5). Completed with Bun 1.4.2 WebView at 390x844 CSS pixels, using the existing harness against the fixed production code. Distances below are CSS pixels. Baseline numbers are from the saved baseline/*.json, not the differing background summary.
+Overall: FAIL (C4 only). The existing harness was read and run unchanged once with `--mode after`, against the corrected code. Run recorded at 2026-09-15T05:52:35.324Z; Bun 1.4.2 WebView, 390x844 CSS pixels. All distances below are CSS pixels.
 
-| Criterion | Baseline | After | Threshold | Verdict |
+| Criterion | Baseline | New after | Threshold | Verdict |
 |---|---|---|---|---|
-| C1 travel | 1,705px short | 0px error; travelled -4,000px | Absolute landed-target <= 200px | PASS |
-| C2 iOS path | Travel/maxJump by hop: 8k -580/300px; 16k -2,452/56px; 24k -2,111/390px | 8k -2,995/18px; 16k -2,909/32px; 24k -2,972/45px | Every hop travel <= -2,400px and maxJump <= 200px | PASS |
-| C3 follow | Away bottom distance 6,000 -> 0px (position not recorded); bottom append distance 0px | Away position movement 0px; bottom append distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
-| C4 image shift | 0px | +2,063px | Absolute anchor shift <= 8px | FAIL |
-| C5 estimator accuracy | Median 23.810%; p90 83.740% (constant 80, 300 rows) | Median 25.556%; p90 25.556% (real estimator, 300 rows) | Median absolute percentage error <= 25%; p90 <= 35% | FAIL |
+| C1 travel error | 1,705px | 60px | abs(landed - target) <= 200px | PASS |
+| C2 iOS travel/maxJump, hops 8k; 16k; 24k | -580/300px; -2,452/56px; -2,111/390px | -3,140/70px; -3,077/67px; -3,096/77px | Every hop: negative travel, magnitude >= 2,400px; maxJump <= 200px | PASS |
+| C3 follow intent | Away bottom distance 6,000 -> 0px; position not recorded. Bottom append distance 0px | Away position movement 0px; bottom append distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
+| C4 image anchor shift | 0px | +2,063px | abs(shift) <= 8px | FAIL |
+| C5 estimator median/p90 absolute percentage error | 23.809524% / 83.739837% (300 rows) | 1.111111% / 10.385757% (300 rows) | Median <= 25%; p90 <= 35% | PASS |
 
-## Exact failures
+## Exact failure
 
-- C4: anchor row 295 moved from top -420px to 1,643px, a +2,063px shift (limit 8px), when image row 293 changed. scrollTop moved from 65,293px to 65,306px. The image remained mounted and complete, with natural width 363 and row height 720.65625px. See after/image-shift.json.
-- C5: median absolute percentage error is 25.555555555555554%, exceeding 25% by 0.555555555555554 percentage points. p90 is 25.555555555555554%, which passes its 35% limit. See after/estimator-accuracy.json, including every row's measured height, estimate, errors, and live metrics.
+C4 remains unchanged at +2063px, exceeding the absolute 8px limit. Anchor row 295 moved from -420px to 1643px when images were introduced above the viewport. Image row 293 remained mounted, its image was complete with natural width 363, and its height was 720.65625px. scrollTop changed from 68581px to 68498px. This is a failed visible-anchor measurement, not a passing result inferred from scrollTop. See `after/image-shift.json`.
 
-## Evidence and measurement changes
+## Sources and interpretation
 
-- C1 uses after/scroll-travel.json: start 53,293, target 49,293, landed 49,293.
-- C2 uses after/ios-path.json. As in baseline, this forces virtual-core's iOS branch in desktop WebKit; it is not physical iOS gesture testing.
-- C3 uses after/follow-intent.json: scrollTop 59,293 before and after away append; bottom append distance 0.
-- C4 reuses the existing image-swap experiment unchanged. It measures the visible anchor, not merely scrollTop, and swaps all pending fixture images.
-- C5 imports the actual /src/features/split/chatRowEstimate.ts inside the browser page and invokes estimateRowHeight(makeRow(index, true), readRowMetrics(scrollElement)) for each measured row. Absolute percentage error = abs(measured - estimated) / measured * 100; median averages the middle pair and p90 uses nearest rank. Saved baseline percentage statistics were computed by the same formula from its 300 measured heights and constant 80.
-- Corrected two incomplete harness measurements only: after mode previously still scored constant 80, and follow-intent omitted scrollTop. Added screenshot capture. No production files were edited.
-- Screenshots: after/transcript-390x844.png (latest messages) and after/transcript-older-history-390x844.png (older history around question 122). Both were visually inspected. WebView captures 780x1688 device pixels for the verified 390x844 CSS viewport.
-- The first invocation stopped before experiments because screenshot() returns a Blob, not an ArrayBuffer. Its cleanup succeeded; the screenshot writer was corrected to Bun.write and the next invocation completed all measurements. There were no result-driven reruns.
+Each baseline column comes from the corresponding saved `baseline/*.json`, not the prior task summary:
 
-## Cleanup and verification
+- C1: `scroll-travel.json`; baseline target 17614, landed 19319. New target 52582, landed 52522 (signed error -60; travel -4060).
+- C2: `ios-path.json`, ordered by hops 8000, 16000, 24000. The unchanged experiment forces virtual-core's iOS branch in desktop WebKit; it does not verify physical iOS gesture hardware.
+- C3: `follow-intent.json`. The baseline omitted scrollTop, so exact baseline position movement cannot be reconstructed; its recorded distance-from-bottom change is stated instead. New away scrollTop is 62512 before and after append; final bottom distance is 0.
+- C4: `image-shift.json`. The unchanged experiment swaps all pending fixture images and measures the same visible anchor. No measurement was changed or discounted in this run.
+- C5: `estimator-accuracy.json`. Recomputed independently from all 300 unique measured rows in each run as `abs(height - estimate) / height * 100`, using constant 80 for baseline and each row's actual estimate for after. Median averages the middle pair; p90 is nearest rank (270th sorted value). Exact baseline median/p90: 23.80952380952381% / 83.73983739837398%. Exact after: 1.1111111111111112% / 10.385756676557865%.
 
-Completed harness receipt (also after/cleanup.json):
+The baseline C3 missing position fields are a retained evidence limitation, not silently replaced measurements. C6/build was outside this five-criterion rerun and was not rerun.
+
+## Screenshots and cleanup
+
+Both requested screenshots were regenerated by the unchanged harness and visually inspected: `after/transcript-390x844.png` shows latest questions 149-150; `after/transcript-older-history-390x844.png` shows older history around question 124 and the return-to-bottom button. They capture a verified 390x844 CSS viewport at 780x1688 device pixels.
+
+All after JSON files exist, are non-empty and parse successfully. The five measurement files are present; both estimator datasets contain all 300 distinct indices. No frontend/src files or harness measurements were edited, and no git add, commit, or push was run.
+
+`after/cleanup.json` reports:
 
 ```json
 {"mode":"after","viteStopped":true,"temporaryRemoved":true,"coreRestored":true,"cmpExitCode":0,"portFree":true}
 ```
 
-All five measurement JSON files and both screenshots were checked for non-empty content. All 300 estimator indices are present exactly once. git status --short shows only the six pre-existing frontend/src changes from other nodes; their SHA-1 hashes match those recorded before this run. Evidence is ignored by git. frontend/.qa-harness does not exist and lsof -i :5211 prints nothing. No git add, commit, or push was run.
-
-Harness language-server diagnostics were unavailable because the tool could not locate TypeScript; JavaScript syntax was checked separately with node --check. Browser execution completed successfully. See after/verification.json for the final artifact and syntax-check receipt.
+Independent cleanup checks: `ls /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend/.qa-harness` failed with exit 1 (No such file or directory), and `lsof -i :5211` printed nothing (exit 1). See refreshed `after/verification.json` for artifact checks.
