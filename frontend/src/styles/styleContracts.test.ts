@@ -989,4 +989,29 @@ describe("pinned live-session section contracts", () => {
     const meta = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-meta");
     expect(declarationValue(meta, "font-size")).toBe("var(--th-type-micro-size)");
   });
+
+  it("gives every compact live card one token-based minimum height independent of optional content", () => {
+    // The meta line renders only when a session has work, so a card's natural
+    // height used to depend on which optional spans it carried. The compact
+    // card rule must instead pin one minimum height, expressed purely from
+    // --th-* tokens, that exceeds the head row's tallest content (the running
+    // pill at calc(micro size * micro line + 2px)) — a card with the pill and
+    // a card without it then measure identical heights.
+    const card = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-open");
+    expect(card, "compact live card rule").not.toBe("");
+    const minHeight = declarationValue(card, "min-height");
+    expect(minHeight, "min-height declaration").toMatch(/^calc\(/);
+    expect(containsVarToken(minHeight, "--th-type-micro-size")).toBe(true);
+    expect(containsVarToken(minHeight, "--th-type-micro-line")).toBe(true);
+    // No bare px height beyond a single additive correction term.
+    const bareLengths = minHeight.replace(/var\(\s*--th-[\w-]+\s*\)/g, "").match(/\d+(?:\.\d+)?px/g) ?? [];
+    expect(bareLengths.length, `bare px terms in min-height: ${minHeight}`).toBeLessThanOrEqual(1);
+    // Block-direction padding steps up from --th-space-1 to at least --th-space-2.
+    const blockPadding = declarationValue(card, "padding").split(/\s+/)[0] ?? "";
+    const blockToken = wholeVarToken(blockPadding);
+    expect(blockToken, "block padding must be a spacing token").toMatch(/^--th-space-/);
+    expect(Number.parseFloat(tokenValue(blockToken))).toBeGreaterThanOrEqual(
+      Number.parseFloat(tokenValue("--th-space-2")),
+    );
+  });
 });

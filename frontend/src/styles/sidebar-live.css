@@ -44,9 +44,18 @@
 
 /* Compact density for the overview card markup inside the 264px shell: tighter
    activation padding, and name/metadata rows that stay on one ellipsized line
-   (name at Label, metadata demoted to Micro). */
+   (name at Label, metadata demoted to Micro). Every card pins one minimum
+   height — block padding (2 x --th-space-2) plus the head row's tallest
+   content (the running pill: micro line box + 2px border) plus one
+   --th-space-1 step — so a card's height never depends on which optional
+   content (running pill, meta line) it carries, and each card sits one
+   spacing step taller than the old title-only row. */
 .th-sidebar-live-list .th-overview-card-open {
-  padding: var(--th-space-1) var(--th-space-2);
+  padding: var(--th-space-2);
+  min-height: calc(
+    var(--th-space-2) + var(--th-space-2) + var(--th-type-micro-size) * var(--th-type-micro-line) +
+      var(--th-space-1)
+  );
 }
 
 .th-sidebar-live-list .th-overview-card-name {
