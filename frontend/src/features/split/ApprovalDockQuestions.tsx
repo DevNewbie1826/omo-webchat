@@ -1,5 +1,5 @@
-import { createContext, useContext, useState } from "react";
-import type { Dispatch, ReactNode, SetStateAction } from "react";
+import { createContext, useContext, useLayoutEffect, useState } from "react";
+import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
@@ -15,17 +15,41 @@ export interface ApprovalQuestionPanelProps {
 	readonly onCancel: () => void;
 }
 
+type QuestionDraftAnswer = {
+	readonly selected: readonly string[];
+	readonly text: string;
+	readonly textAnswered?: boolean;
+};
+
 /** Draft state for a structured multi-question request: one entry per
  *  question id, plus the optional overall comment. Keyed by request id so a
  *  new request never inherits the previous request's answers. */
 interface QuestionDraft {
 	readonly requestId: string;
 	readonly activeIndex: number;
-	readonly answers: ReadonlyMap<
-		string, { readonly selected: readonly string[]; readonly text: string; readonly textAnswered?: boolean }
-	>;
+	readonly answers: ReadonlyMap<string, QuestionDraftAnswer>;
 	readonly comment: string;
 	readonly answering: boolean;
+}
+
+/** Reconcile at refresh, not merely at submission: retired values must not revive. */
+function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): QuestionDraft {
+	const answers = new Map<string, QuestionDraftAnswer>();
+	questions.forEach((question, index) => {
+		const key = questionKey(question, index);
+		const entry = draft.answers.get(key);
+		if (!entry) return;
+		const options = question.options ?? [];
+		const valid = entry.selected.filter(label => options.some(option => option.label === label));
+		const selected = question.multiSelect ? valid : valid.slice(0, 1);
+		const text = options.length === 0 ? entry.text : "";
+		const textAnswered = options.length === 0 ? entry.textAnswered : undefined;
+		answers.set(key, selected.length === entry.selected.length && text === entry.text && textAnswered === entry.textAnswered
+			? entry : { selected, text, ...(textAnswered !== undefined ? { textAnswered } : {}) });
+	});
+	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
+	return activeIndex === draft.activeIndex && answers.size === draft.answers.size && [...answers].every(([key, entry]) => draft.answers.get(key) === entry)
+		? draft : { ...draft, activeIndex, answers };
 }
 
 type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
@@ -34,9 +58,9 @@ const QuestionDraftContext = createContext<QuestionDraftState | null>(null);
 /** This owner stays mounted when the same request changes presentation. */
 export function QuestionDraftProvider({ requestId, children }: {
 	readonly requestId: string;
-	readonly children: ReactNode;
+	readonly children: ReactElement<{ readonly request: { readonly questions?: readonly Question[] } }>;
 }) {
-	const draftState = useApprovalQuestionDraft(requestId);
+	const draftState = useApprovalQuestionDraft(requestId, children.props.request.questions ?? []);
 	return <QuestionDraftContext.Provider value={draftState}>{children}</QuestionDraftContext.Provider>;
 }
 
@@ -63,7 +87,7 @@ export function questionDraftResponse(draft: QuestionDraft, questions: readonly 
  *  sends a single response with answers keyed by question id. Every
  *  question's draft lives in one record, so switching tabs never loses
  *  selections already made. */
-export function useApprovalQuestionDraft(requestId: string): QuestionDraftState {
+export function useApprovalQuestionDraft(requestId: string, questions?: readonly Question[]): QuestionDraftState {
 	const owned = useContext(QuestionDraftContext);
 	const [draft, setDraft] = useState<QuestionDraft>({
 		requestId,
@@ -72,20 +96,25 @@ export function useApprovalQuestionDraft(requestId: string): QuestionDraftState 
 		comment: "",
 		answering: false,
 	});
-	if (draft.requestId !== requestId) {
-		setDraft({ requestId, activeIndex: 0, answers: new Map(), comment: "", answering: false });
-	}
+	const current = draft.requestId !== requestId
+		? { requestId, activeIndex: 0, answers: new Map(), comment: "", answering: false }
+		: questions ? reconcileDraft(draft, questions) : draft;
+	if (current !== draft) setDraft(current);
 
-	return owned ?? [draft, setDraft];
+	return owned ?? [current, setDraft];
 }
 
 export function ApprovalQuestionPanel({
-	draftState: [draft, setDraft],
+	draftState: [storedDraft, setDraft],
 	questions,
 	onSubmit,
 	onCancel,
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
+	const draft = reconcileDraft(storedDraft, questions);
+	useLayoutEffect(() => {
+		if (draft !== storedDraft) setDraft(draft);
+	}, [draft, storedDraft, setDraft]);
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
 
 	const patchDraft = (
