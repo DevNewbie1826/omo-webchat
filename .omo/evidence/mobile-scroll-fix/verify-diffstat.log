@@ -1,12 +1,12 @@
  .../split/ChatPane.behavior.optimistic.test.tsx    |  35 ++-
- .../ChatTranscript.estimateInvalidation.test.tsx   | 207 +++++++++++++++
+ .../ChatTranscript.estimateInvalidation.test.tsx   | 207 ++++++++++++++
  .../ChatTranscript.estimateStability.test.tsx      | 109 ++++++++
  .../split/ChatTranscript.focusRestore.test.tsx     | 141 ++++++++++
  .../split/ChatTranscript.followIntent.test.tsx     | 187 +++++++++++++
- .../split/ChatTranscript.scrollAdjust.test.tsx     | 251 ++++++++++++++++++
- frontend/src/features/split/ChatTranscript.tsx     | 175 ++++++++++++-
- .../src/features/split/chatRowEstimate.test.ts     | 243 +++++++++++++++++
- frontend/src/features/split/chatRowEstimate.ts     | 289 +++++++++++++++++++++
+ .../split/ChatTranscript.scrollAdjust.test.tsx     | 251 +++++++++++++++++
+ frontend/src/features/split/ChatTranscript.tsx     | 175 +++++++++++-
+ .../ChatTranscript.unmountedEstimate.test.tsx      | 115 ++++++++
+ .../src/features/split/chatRowEstimate.test.ts     | 303 +++++++++++++++++++++
+ frontend/src/features/split/chatRowEstimate.ts     | 296 ++++++++++++++++++++
  frontend/src/features/split/useChatScroll.ts       |  16 +-
- 10 files changed, 1634 insertions(+), 19 deletions(-)
-
+ 11 files changed, 1816 insertions(+), 19 deletions(-)

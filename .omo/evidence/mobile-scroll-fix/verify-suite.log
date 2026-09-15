@@ -5,9 +5,9 @@ npm notice run 'vitest' run
 
 
  Test Files  253 passed (253)
-      Tests  2701 passed (2701)
-   Start at  16:58:21
-   Duration  43.91s (transform 10.89s, setup 3.65s, import 65.98s, tests 66.81s, environment 134.62s)
+      Tests  2702 passed (2702)
+   Start at  17:29:11
+   Duration  42.67s (transform 11.14s, setup 3.88s, import 65.96s, tests 64.15s, environment 129.44s)
 
 
-[exit code] 0
+[exit code: 0]

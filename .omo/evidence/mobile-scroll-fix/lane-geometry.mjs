@@ -1,14 +1,14 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeFile, rm, access } from 'node:fs/promises';
-const harness = dirname(fileURLToPath(import.meta.url));
+const harness = resolve(dirname(fileURLToPath(import.meta.url)), 'harness');
 const evidence = dirname(harness);
 const root = resolve(evidence, '../../..');
 const frontend = resolve(root, 'frontend');
 const { createServer } = await import(resolve(frontend, 'node_modules/vite/dist/node/index.js'));
 const output = resolve(evidence, 'after');
-const cacheDir = resolve(evidence, 'metrics-vite-cache');
-const results = { recordedAt: new Date().toISOString(), widths: [390, 600], fontSizes: [10, 13, 17, 24], rows: [], pass: false, method: 'Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.' };
+const cacheDir = resolve(evidence, 'lane-vite-cache');
+const results = { recordedAt: new Date().toISOString(), widths: [390, 600], fontSizes: [10, 13, 17, 24], rows: [], pass: false, geometryTolerancePx: 1 / 64, probeCapture: 'Intercept actual estimator probe append, synchronously read its layout, restore append in finally. Compare against an already mounted assistant row, not a duplicate probe.', method: 'Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.' };
 // Keep this in sync with chatRowEstimate.ts's SAMPLE.
 const SAMPLE = 'The transcript keeps a complete record of the discussion. Each message has a stable identity, and the browser measures its rendered height as it enters the visible region. This example includes enough detail to wrap naturally on a narrow mobile screen.';
 let server;
@@ -33,8 +33,20 @@ try {
       }), fontSize);
       const row = await evaluate(async (fontSize, sample) => {
         const el = document.querySelector('.th-chat-body');
-        const { readRowMetrics, estimateRowHeight } = await import('/src/features/split/chatRowEstimate.ts');
-        const metrics = readRowMetrics(el);
+        const { readRowMetrics, estimateRowHeight } = await import('/src/features/split/chatRowEstimate.ts?lane-geometry=' + fontSize);
+        let probeGeometry;
+        const originalAppend = Element.prototype.append;
+        Element.prototype.append = function (...nodes) {
+          originalAppend.apply(this, nodes);
+          for (const node of nodes) {
+            if (node instanceof HTMLElement && node.matches('.th-chat-row[aria-hidden="true"]')) {
+              probeGeometry = { laneWidth: node.getBoundingClientRect().width, bubbleWidth: node.querySelector('.th-chat-msg').getBoundingClientRect().width, hostClass: this.className };
+            }
+          }
+        };
+        let metrics;
+        try { metrics = readRowMetrics(el); } finally { Element.prototype.append = originalAppend; }
+        if (!probeGeometry) throw new Error('Actual estimator probe was not captured');
         const mounted = el.querySelector('[data-index]');
         if (!mounted) throw new Error('No reference row mounted');
         let fiber = el[Object.keys(el).find(key => key.startsWith('__reactFiber$'))];
@@ -59,9 +71,23 @@ try {
         span.remove();
         const text = mounted.querySelector('.th-chat-markdown').textContent;
         const freshEstimate = estimateRowHeight({ kind: 'message', message: { role: 'assistant', ts: 1, blocks: [{ kind: 'text', text }] } }, metrics);
-        return { viewportWidth: innerWidth, scrollportWidth: el.clientWidth, fontSize, appliedFontSize: parseFloat(getComputedStyle(el).fontSize), metrics, intrinsicAdvance, glyphError: Math.abs(metrics.charWidth - intrinsicAdvance), unmeasuredRow: 40, measuredCacheContainsRow, estimate: item.size, freshEstimate, browserMeasuredRow: Number(mounted.dataset.index), browserHeight: mounted.getBoundingClientRect().height };
+        const mountedGeometry = { laneWidth: mounted.getBoundingClientRect().width, bubbleWidth: mounted.querySelector('.th-chat-msg').getBoundingClientRect().width, rowIndex: Number(mounted.dataset.index), hostClass: mounted.parentElement.className };
+        const laneDelta = probeGeometry.laneWidth - mountedGeometry.laneWidth;
+        const bubbleDelta = probeGeometry.bubbleWidth - mountedGeometry.bubbleWidth;
+        const geometryPass = Math.abs(laneDelta) <= 1 / 64 && Math.abs(bubbleDelta) <= 1 / 64 && Math.abs(metrics.laneWidth - mountedGeometry.laneWidth) <= 1 / 64;
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        const mono = document.createElement('span');
+        mono.textContent = sample;
+        mono.style.whiteSpace = 'pre';
+        code.append(mono); pre.append(code); mounted.querySelector('.th-chat-markdown').append(pre);
+        const monoRange = document.createRange(); monoRange.selectNodeContents(mono);
+        const intrinsicMonoAdvance = monoRange.getBoundingClientRect().width / sample.length;
+        pre.remove();
+        const monoGlyphError = Math.abs(metrics.monoCharWidth - intrinsicMonoAdvance);
+        return { probeGeometry, mountedGeometry, laneDelta, bubbleDelta, geometryPass, intrinsicMonoAdvance, monoGlyphError, viewportWidth: innerWidth, scrollportWidth: el.clientWidth, fontSize, appliedFontSize: parseFloat(getComputedStyle(el).fontSize), metrics, intrinsicAdvance, glyphError: Math.abs(metrics.charWidth - intrinsicAdvance), unmeasuredRow: 40, measuredCacheContainsRow, estimate: item.size, freshEstimate, browserMeasuredRow: Number(mounted.dataset.index), browserHeight: mounted.getBoundingClientRect().height };
       }, fontSize, SAMPLE);
-      row.pass = row.appliedFontSize === fontSize && row.glyphError <= 0.05 && !row.measuredCacheContainsRow && row.estimate === row.freshEstimate;
+      row.pass = row.geometryPass && row.monoGlyphError <= 0.05 && row.appliedFontSize === fontSize && row.glyphError <= 0.05 && !row.measuredCacheContainsRow && row.estimate === row.freshEstimate;
       results.rows.push(row);
     }
     view.close(); view = undefined;
@@ -89,7 +115,7 @@ try {
   let temporaryRemoved = false;
   try { await access(resolve(frontend, '.qa-harness')); } catch (error) { if (error.code !== 'ENOENT') throw error; temporaryRemoved = true; }
   results.cleanup = { viteStopped: true, temporaryRemoved, coreRestored: cmpExitCode === 0, cmpExitCode, portFree: !portOutput.trim(), sweepCacheRemoved: true };
-  await writeFile(resolve(output, 'metrics-sweep.json'), JSON.stringify(results, null, 2) + '\n');
+  await writeFile(resolve(output, 'lane-geometry.json'), JSON.stringify(results, null, 2) + '\n');
   console.log(JSON.stringify(results, null, 2));
 }
 if (!results.pass) process.exitCode = 1;

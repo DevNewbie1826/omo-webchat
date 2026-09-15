@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-15T07:55:33.976Z",
+  "recordedAt": "2026-09-15T08:24:01.120Z",
   "widths": [
     390,
     600
@@ -17,21 +17,21 @@
       "fontSize": 10,
       "appliedFontSize": 10,
       "metrics": {
-        "laneWidth": 378,
+        "laneWidth": 366,
         "bodyLineHeight": 16,
         "secondaryLineHeight": 13.464701,
         "charWidth": 4.782738095238095,
         "monoCharWidth": 5.740327380952381
       },
-      "intrinsicAdvance": 6.091487761466734,
-      "glyphError": 1.308749666228639,
+      "intrinsicAdvance": 4.782706608847966,
+      "glyphError": 0.000031486390128954156,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 80,
       "freshEstimate": 80,
       "browserMeasuredRow": 282,
       "browserHeight": 80,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 390,
@@ -39,21 +39,21 @@
       "fontSize": 13,
       "appliedFontSize": 13,
       "metrics": {
-        "laneWidth": 378,
+        "laneWidth": 366,
         "bodyLineHeight": 20.799999,
         "secondaryLineHeight": 17.50411,
         "charWidth": 5.9890252976190474,
         "monoCharWidth": 7.462363591269841
       },
-      "intrinsicAdvance": 7.690400154359879,
-      "glyphError": 1.7013748567408316,
+      "intrinsicAdvance": 5.989004952566964,
+      "glyphError": 0.000020345052083037274,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
-      "estimate": 100,
-      "freshEstimate": 100,
-      "browserMeasuredRow": 230,
+      "estimate": 120,
+      "freshEstimate": 120,
+      "browserMeasuredRow": 193,
       "browserHeight": 116,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 390,
@@ -61,21 +61,21 @@
       "fontSize": 17,
       "appliedFontSize": 17,
       "metrics": {
-        "laneWidth": 378,
+        "laneWidth": 366,
         "bodyLineHeight": 27.200001,
         "secondaryLineHeight": 22.88999,
         "charWidth": 7.499751984126984,
         "monoCharWidth": 9.758494543650794
       },
-      "intrinsicAdvance": 9.724627094884072,
-      "glyphError": 2.224875110757088,
+      "intrinsicAdvance": 7.499742296006945,
+      "glyphError": 0.000009688120039541559,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 180,
       "freshEstimate": 180,
-      "browserMeasuredRow": 138,
+      "browserMeasuredRow": 137,
       "browserHeight": 178,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 390,
@@ -83,21 +83,21 @@
       "fontSize": 24,
       "appliedFontSize": 24,
       "metrics": {
-        "laneWidth": 378,
+        "laneWidth": 366,
         "bodyLineHeight": 38.400002,
         "secondaryLineHeight": 32.315281,
         "charWidth": 10.059275793650794,
         "monoCharWidth": 13.776661706349206
       },
-      "intrinsicAdvance": 13.470838977444556,
-      "glyphError": 3.4115631837937617,
+      "intrinsicAdvance": 10.059238978794642,
+      "glyphError": 0.00003681485615203428,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 285,
       "freshEstimate": 285,
-      "browserMeasuredRow": 90,
+      "browserMeasuredRow": 89,
       "browserHeight": 320,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 600,
@@ -105,21 +105,21 @@
       "fontSize": 10,
       "appliedFontSize": 10,
       "metrics": {
-        "laneWidth": 564,
+        "laneWidth": 552,
         "bodyLineHeight": 16,
         "secondaryLineHeight": 13.464701,
         "charWidth": 4.782738095238095,
         "monoCharWidth": 5.740327380952381
       },
-      "intrinsicAdvance": 6.091487761466734,
-      "glyphError": 1.308749666228639,
+      "intrinsicAdvance": 4.782706608847966,
+      "glyphError": 0.000031486390128954156,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 64,
       "freshEstimate": 64,
       "browserMeasuredRow": 279,
       "browserHeight": 64,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 600,
@@ -127,21 +127,21 @@
       "fontSize": 13,
       "appliedFontSize": 13,
       "metrics": {
-        "laneWidth": 564,
+        "laneWidth": 552,
         "bodyLineHeight": 20.799999,
         "secondaryLineHeight": 17.50411,
         "charWidth": 5.9890252976190474,
         "monoCharWidth": 7.462363591269841
       },
-      "intrinsicAdvance": 7.690400154359879,
-      "glyphError": 1.7013748567408316,
+      "intrinsicAdvance": 5.989004952566964,
+      "glyphError": 0.000020345052083037274,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 79,
       "freshEstimate": 79,
       "browserMeasuredRow": 230,
       "browserHeight": 76,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 600,
@@ -149,21 +149,21 @@
       "fontSize": 17,
       "appliedFontSize": 17,
       "metrics": {
-        "laneWidth": 564,
+        "laneWidth": 552,
         "bodyLineHeight": 27.200001,
         "secondaryLineHeight": 22.88999,
         "charWidth": 7.499751984126984,
         "monoCharWidth": 9.758494543650794
       },
-      "intrinsicAdvance": 9.724627094884072,
-      "glyphError": 2.224875110757088,
+      "intrinsicAdvance": 7.499742296006945,
+      "glyphError": 0.000009688120039541559,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 125,
       "freshEstimate": 125,
       "browserMeasuredRow": 157,
       "browserHeight": 124,
-      "pass": false
+      "pass": true
     },
     {
       "viewportWidth": 600,
@@ -171,24 +171,24 @@
       "fontSize": 24,
       "appliedFontSize": 24,
       "metrics": {
-        "laneWidth": 564,
+        "laneWidth": 552,
         "bodyLineHeight": 38.400002,
         "secondaryLineHeight": 32.315281,
         "charWidth": 10.059275793650794,
         "monoCharWidth": 13.776661706349206
       },
-      "intrinsicAdvance": 13.470838977444556,
-      "glyphError": 3.4115631837937617,
+      "intrinsicAdvance": 10.059238978794642,
+      "glyphError": 0.00003681485615203428,
       "unmeasuredRow": 40,
       "measuredCacheContainsRow": false,
       "estimate": 209,
       "freshEstimate": 209,
-      "browserMeasuredRow": 107,
+      "browserMeasuredRow": 98,
       "browserHeight": 206,
-      "pass": false
+      "pass": true
     }
   ],
-  "pass": false,
+  "pass": true,
   "method": "Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.",
   "tracking": [
     {
