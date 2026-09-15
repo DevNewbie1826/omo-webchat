@@ -703,3 +703,107 @@ func TestFailedWorkspaceScanPreservesDiscoveredObservation(t *testing.T) {
 		t.Fatalf("failed scan must preserve the prior sighting so the restored session becomes stable: %+v", page.Items)
 	}
 }
+
+func TestMergeSessionHistoryMarksLiveMissingFilePreparing(t *testing.T) {
+	chat := cursorstore.Chat{
+		ID:          "chat-live",
+		CWD:         t.TempDir(),
+		SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"),
+		Name:        "live",
+	}
+	live := map[string]struct{}{chat.ID: {}}
+	items := mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one stored row", items)
+	}
+	if item := items[0]; item.Dangling || !item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want preparing stored row (dangling=false preparing=true)", item)
+	}
+}
+
+func TestMergeSessionHistoryMarksMissingFileDanglingWhenNotLive(t *testing.T) {
+	chat := cursorstore.Chat{
+		ID:          "chat-gone",
+		CWD:         t.TempDir(),
+		SessionFile: filepath.Join(t.TempDir(), "missing.jsonl"),
+		Name:        "gone",
+	}
+	live := map[string]struct{}{chat.ID: {}}
+	items := mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one stored row", items)
+	}
+	if item := items[0]; item.Dangling || !item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want preparing stored row (dangling=false preparing=true)", item)
+	}
+	delete(live, chat.ID)
+	items = mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
+	if len(items) != 1 {
+		t.Fatalf("items = %+v, want one stored row", items)
+	}
+	if item := items[0]; !item.Dangling || item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want dangling stored row (dangling=true preparing=false)", item)
+	}
+}
+
+func TestMergeSessionHistoryMarksDeletedLiveFilePreparing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chat := cursorstore.Chat{
+		ID:          "chat-deleted-while-live",
+		CWD:         dir,
+		SessionFile: path,
+		Name:        "deleted-live",
+	}
+	live := map[string]struct{}{chat.ID: {}}
+	present := mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
+	if len(present) != 1 {
+		t.Fatalf("items = %+v, want one stored row", present)
+	}
+	if item := present[0]; item.Dangling || item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want settled stored row while the file is present", item)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	// A live session is resumable by definition: the conversation lives in
+	// the running engine, which writes the session file on the next persist.
+	// A missing file under a live chat therefore means pending persistence,
+	// never "the original is gone".
+	gone := mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
+	if len(gone) != 1 {
+		t.Fatalf("items = %+v, want one stored row", gone)
+	}
+	if item := gone[0]; item.Dangling || !item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want preparing stored row after deletion while live", item)
+	}
+}
+
+func TestMergeSessionHistoryGatesFreshDiscoveredRowsWhileStoredChatPreparing(t *testing.T) {
+	fixedNow := time.Unix(1_800_000_000, 0)
+	stubSessionClock(t, fixedNow)
+	sameCWD := t.TempDir()
+	preparingChat := cursorstore.Chat{
+		ID:          "chat-preparing",
+		CWD:         sameCWD,
+		SessionFile: filepath.Join(t.TempDir(), "pending.jsonl"),
+	}
+	young := diskSession{
+		ID:      "disk-young",
+		Path:    "/catalog/young.jsonl",
+		CWD:     sameCWD,
+		Name:    "Fresh",
+		ModTime: fixedNow.Add(-time.Second),
+	}
+	live := map[string]struct{}{preparingChat.ID: {}}
+	items := mergeSessionHistoryLive([]cursorstore.Chat{preparingChat}, []diskSession{young}, live)
+	if len(items) != 1 || items[0].ID != preparingChat.ID || items[0].Dangling || !items[0].Preparing {
+		t.Fatalf("preparing stored row missing or misclassified: %+v", items)
+	}
+	if got := discoveredSessionIDs(items); len(got) != 0 {
+		t.Fatalf("young disk session must stay hidden while the stored chat is preparing: %+v", items)
+	}
+}

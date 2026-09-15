@@ -96,6 +96,8 @@ export interface WorkspaceSession {
   readonly resumeIdentity?: string;
   /** Stored rows only: the session's stored identity file no longer exists. */
   readonly dangling?: boolean;
+  /** Live rows only: the row's stored session file has not been written yet. */
+  readonly preparing?: boolean;
 }
 
 export interface WorkspaceSessionPage {

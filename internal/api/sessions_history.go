@@ -80,6 +80,11 @@ type sessionHistoryItem struct {
 	// Dangling flags a stored row whose owned session copy is gone. Source
 	// catalog rows never set it.
 	Dangling bool `json:"dangling,omitempty"`
+	// Preparing flags a live stored chat whose session file is missing. A
+	// live chat's file is written on the next persist, so absence under a
+	// live session is pending persistence; "missing original" is reserved
+	// for a chat with no file and no live session.
+	Preparing bool `json:"preparing,omitempty"`
 }
 
 type sessionHistoryPage struct {
@@ -349,6 +354,10 @@ func sessionMatchesChat(sess diskSession, chat cursorstore.Chat) bool {
 }
 
 func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCWD ...string) []sessionHistoryItem {
+	return mergeSessionHistoryLive(chats, disk, nil, scannedCWD...)
+}
+
+func mergeSessionHistoryLive(chats []cursorstore.Chat, disk []diskSession, liveChatIDs map[string]struct{}, scannedCWD ...string) []sessionHistoryItem {
 	items := make([]sessionHistoryItem, 0, len(chats)+len(disk))
 	danglingCWDs := make(map[string]struct{})
 	scanDirs := make(map[string]struct{})
@@ -358,10 +367,12 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 		}
 	}
 	for _, ch := range chats {
-		danglingRow := storedIdentityDangling(ch.SessionFile)
-		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); danglingRow && ok {
+		missingFile := storedIdentityDangling(ch.SessionFile)
+		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); missingFile && ok {
 			danglingCWDs[canonicalCWD] = struct{}{}
 		}
+		_, live := liveChatIDs[ch.ID]
+		preparing := missingFile && live
 		items = append(items, sessionHistoryItem{
 			ID:        ch.ID,
 			Name:      ch.Name,
@@ -369,7 +380,8 @@ func mergeSessionHistory(chats []cursorstore.Chat, disk []diskSession, scannedCW
 			RecencyMs: chatRecencyMs(ch, disk),
 			// A cheap Stat per stored row flags an owned copy that vanished.
 			// Never a branch scan — that is recovery-time work.
-			Dangling: danglingRow,
+			Dangling:  missingFile && !preparing,
+			Preparing: preparing,
 		})
 	}
 	present := make(map[string]struct{}, len(disk))
@@ -616,7 +628,15 @@ func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Requ
 	if scanned {
 		scannedCWD = []string{ws.Path}
 	}
-	items := mergeSessionHistory(chats, disk, scannedCWD...)
+	var live map[string]struct{}
+	if s.manager != nil {
+		summaries := s.manager.LiveSummaries()
+		live = make(map[string]struct{}, len(summaries))
+		for _, summary := range summaries {
+			live[summary.ChatID] = struct{}{}
+		}
+	}
+	items := mergeSessionHistoryLive(chats, disk, live, scannedCWD...)
 	page, err := paginateSessionHistory(items, limit, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid cursor")
