@@ -1,36 +1,51 @@
 # Mobile transcript scroll verdict
 
-Overall: FAIL (C4 only). The existing harness was read and run unchanged once with `--mode after`, against the corrected code. Run recorded at 2026-09-15T05:52:35.324Z; Bun 1.4.2 WebView, 390x844 CSS pixels. All distances below are CSS pixels.
+Overall: PASS. All five measured criteria pass against the estimate-stability fix. C4 improved from the previous +2063px failure to 0px using the unchanged harness.
+
+The harness was run unchanged once, successfully (exit 0):
+
+```sh
+bun /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs --mode after
+```
+
+Run recorded at 2026-09-15T06:00:51.061Z; Bun 1.4.2 WebView; viewport 390x844 CSS pixels. Source SHA256: `94f56486a0d31b16151611fed8a6c59cbb0aad946c9ae4be3009576b8c5540c5`.
+
+Harness SHA256 (from `shasum -a 256 /Volumes/storage/workspace/cli-webchat-scroll-fix/.omo/evidence/mobile-scroll-fix/harness/run-scroll-qa.mjs`):
+
+```text
+eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556
+```
+
+Pre/post SHA256 checks also confirm `harness/main.tsx` and `harness/index.html` were unchanged. The pre-run hashes are retained in `after/harness-before.sha256`; execution output is in `after/rerun.log`.
+
+All distances below are CSS pixels. Baselines come from the corresponding `baseline/*.json`.
 
 | Criterion | Baseline | New after | Threshold | Verdict |
 |---|---|---|---|---|
-| C1 travel error | 1,705px | 60px | abs(landed - target) <= 200px | PASS |
-| C2 iOS travel/maxJump, hops 8k; 16k; 24k | -580/300px; -2,452/56px; -2,111/390px | -3,140/70px; -3,077/67px; -3,096/77px | Every hop: negative travel, magnitude >= 2,400px; maxJump <= 200px | PASS |
-| C3 follow intent | Away bottom distance 6,000 -> 0px; position not recorded. Bottom append distance 0px | Away position movement 0px; bottom append distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
-| C4 image anchor shift | 0px | +2,063px | abs(shift) <= 8px | FAIL |
-| C5 estimator median/p90 absolute percentage error | 23.809524% / 83.739837% (300 rows) | 1.111111% / 10.385757% (300 rows) | Median <= 25%; p90 <= 35% | PASS |
+| C1 travel error | 1705px | 60px | abs(landed - target) <= 200px | PASS |
+| C2 iOS travel/maxJump, hops 8k; 16k; 24k | -580/300px; -2452/56px; -2111/390px | -3140/70px; -3077/67px; -3096/77px | Every hop: negative travel, magnitude >= 2400px; maxJump <= 200px | PASS |
+| C3 follow intent | Away bottom distance 6000 -> 0px; position not recorded. Bottom append distance 0px | Away position movement 0px; bottom append distance 0px | Away movement <= 100px; bottom distance <= 40px | PASS |
+| C4 image anchor shift | 0px | 0px (previous after: +2063px) | abs(shift) <= 8px | PASS |
+| C5 estimator median/p90 absolute percentage error | 23.809524% / 83.739837% | 1.111111% / 10.385757% | Median <= 25%; p90 <= 35% | PASS |
 
-## Exact failure
+## Measurement details and limitations
 
-C4 remains unchanged at +2063px, exceeding the absolute 8px limit. Anchor row 295 moved from -420px to 1643px when images were introduced above the viewport. Image row 293 remained mounted, its image was complete with natural width 363, and its height was 720.65625px. scrollTop changed from 68581px to 68498px. This is a failed visible-anchor measurement, not a passing result inferred from scrollTop. See `after/image-shift.json`.
+- C1: `scroll-travel.json`. Baseline target 17614, landed 19319. New target 52582, landed 52522; signed error -60px, travel -4060px.
+- C2: `ios-path.json`, ordered by hops 8000, 16000, 24000. The unchanged experiment forces the iOS virtual-core branch in desktop WebKit; it does not verify physical iOS gestures.
+- C3: `follow-intent.json`. New away scrollTop is 62512 before and after append; final bottom distance is 0. Baseline omitted scrollTop, so exact baseline position movement cannot be reconstructed; its recorded bottom-distance change is stated instead.
+- C4: `image-shift.json`. The same anchor row 295 stayed at -420px before and after the pending-image swap. Image row 293 remained mounted; the image was complete, natural width 363, row height 720.65625px. scrollTop changed from 68581 to 68808 while the visible anchor stayed fixed. No measurement was changed or discounted.
+- C5: `estimator-accuracy.json`. Independently recomputed from all 300 unique rows in each dataset as `abs(height - estimate) / height * 100`, with constant 80 for baseline and each row's estimate for after. Median averages the middle pair; p90 is nearest rank (270th sorted value). Exact baseline median/p90: 23.80952380952381% / 83.73983739837398%. Exact after: 1.1111111111111112% / 10.385756676557865%.
 
-## Sources and interpretation
-
-Each baseline column comes from the corresponding saved `baseline/*.json`, not the prior task summary:
-
-- C1: `scroll-travel.json`; baseline target 17614, landed 19319. New target 52582, landed 52522 (signed error -60; travel -4060).
-- C2: `ios-path.json`, ordered by hops 8000, 16000, 24000. The unchanged experiment forces virtual-core's iOS branch in desktop WebKit; it does not verify physical iOS gesture hardware.
-- C3: `follow-intent.json`. The baseline omitted scrollTop, so exact baseline position movement cannot be reconstructed; its recorded distance-from-bottom change is stated instead. New away scrollTop is 62512 before and after append; final bottom distance is 0.
-- C4: `image-shift.json`. The unchanged experiment swaps all pending fixture images and measures the same visible anchor. No measurement was changed or discounted in this run.
-- C5: `estimator-accuracy.json`. Recomputed independently from all 300 unique measured rows in each run as `abs(height - estimate) / height * 100`, using constant 80 for baseline and each row's actual estimate for after. Median averages the middle pair; p90 is nearest rank (270th sorted value). Exact baseline median/p90: 23.80952380952381% / 83.73983739837398%. Exact after: 1.1111111111111112% / 10.385756676557865%.
-
-The baseline C3 missing position fields are a retained evidence limitation, not silently replaced measurements. C6/build was outside this five-criterion rerun and was not rerun.
+C6/tests/build were outside this five-criterion rerun and were not rerun. No frontend/src files were edited by this verification task. No git add, commit, push, or PR merge was performed.
 
 ## Screenshots and cleanup
 
-Both requested screenshots were regenerated by the unchanged harness and visually inspected: `after/transcript-390x844.png` shows latest questions 149-150; `after/transcript-older-history-390x844.png` shows older history around question 124 and the return-to-bottom button. They capture a verified 390x844 CSS viewport at 780x1688 device pixels.
+Both screenshots were refreshed by the unchanged harness and visually inspected:
 
-All after JSON files exist, are non-empty and parse successfully. The five measurement files are present; both estimator datasets contain all 300 distinct indices. No frontend/src files or harness measurements were edited, and no git add, commit, or push was run.
+- `after/transcript-390x844.png`: latest questions 149-150.
+- `after/transcript-older-history-390x844.png`: older history around question 124, with return-to-bottom button.
+
+Both capture the verified 390x844 CSS viewport at 780x1688 device pixels. All after JSON files are refreshed, non-empty, and parse successfully. Artifact timestamps, sizes, dimensions, harness hash, and independent cleanup checks are recorded in refreshed `after/verification.json`.
 
 `after/cleanup.json` reports:
 
@@ -38,4 +53,4 @@ All after JSON files exist, are non-empty and parse successfully. The five measu
 {"mode":"after","viteStopped":true,"temporaryRemoved":true,"coreRestored":true,"cmpExitCode":0,"portFree":true}
 ```
 
-Independent cleanup checks: `ls /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend/.qa-harness` failed with exit 1 (No such file or directory), and `lsof -i :5211` printed nothing (exit 1). See refreshed `after/verification.json` for artifact checks.
+Independent cleanup verification: virtual-core matches `virtual-core-index.original.js` (`cmp` exit 0); `ls /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend/.qa-harness` fails with exit 1 and No such file or directory; `lsof -i :5211` prints nothing (exit 1).

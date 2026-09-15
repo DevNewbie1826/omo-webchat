@@ -1,12 +1,12 @@
 {
   "mode": "after",
-  "recordedAt": "2026-09-15T05:52:35.324Z",
+  "recordedAt": "2026-09-15T06:00:51.061Z",
   "viewport": {
     "width": 390,
     "height": 844
   },
   "bun": "1.4.2",
-  "sourceSha256": "fe7871258a09103a00d2bb87f0c4cf96508b624c73ff8b842f1813d25072c732",
+  "sourceSha256": "94f56486a0d31b16151611fed8a6c59cbb0aad946c9ae4be3009576b8c5540c5",
   "constantEstimate80Present": false,
   "fixture": "300 rows; assistant ordinal controls paragraph/list/code/image cadence; unloaded image is a text placeholder"
 }

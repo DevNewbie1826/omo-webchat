@@ -1,8 +1,8 @@
  .../split/ChatPane.behavior.optimistic.test.tsx    |  35 ++-
  .../split/ChatTranscript.followIntent.test.tsx     | 187 +++++++++++++++
  .../split/ChatTranscript.scrollAdjust.test.tsx     | 101 ++++++++
- frontend/src/features/split/ChatTranscript.tsx     | 117 +++++++++-
+ frontend/src/features/split/ChatTranscript.tsx     | 146 +++++++++++-
  .../src/features/split/chatRowEstimate.test.ts     | 121 ++++++++++
  frontend/src/features/split/chatRowEstimate.ts     | 258 +++++++++++++++++++++
  frontend/src/features/split/useChatScroll.ts       |   4 +
- 7 files changed, 810 insertions(+), 13 deletions(-)
+ 7 files changed, 839 insertions(+), 13 deletions(-)

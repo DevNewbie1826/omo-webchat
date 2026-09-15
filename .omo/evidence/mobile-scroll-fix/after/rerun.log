@@ -1,0 +1,47 @@
+M1 -60
+{
+  "M1": -60,
+  "M2": [
+    {
+      "hop": 8000,
+      "travelled": -3140,
+      "maxJump": 70
+    },
+    {
+      "hop": 16000,
+      "travelled": -3077,
+      "maxJump": 67
+    },
+    {
+      "hop": 24000,
+      "travelled": -3096,
+      "maxJump": 77
+    }
+  ],
+  "M3": {
+    "beforeAppend": {
+      "scrollTop": 62512,
+      "scrollHeight": 69259,
+      "distanceFromBottom": 5903,
+      "buttonPresent": true
+    },
+    "afterAppendAway": {
+      "scrollTop": 62512,
+      "scrollHeight": 69387,
+      "distanceFromBottom": 6031,
+      "buttonPresent": true
+    },
+    "afterAppendBottom": {
+      "scrollTop": 68667,
+      "scrollHeight": 69511,
+      "distanceFromBottom": 0,
+      "buttonPresent": false
+    }
+  },
+  "M4": 0,
+  "M5": {
+    "median": 1.5,
+    "p90": 64
+  }
+}
+Cleanup receipt: {"mode":"after","viteStopped":true,"temporaryRemoved":true,"coreRestored":true,"cmpExitCode":0,"portFree":true}

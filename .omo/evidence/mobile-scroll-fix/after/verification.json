@@ -1,20 +1,50 @@
 {
-  "recordedAt": "2026-09-15T05:54:19.876297+00:00",
-  "harnessUnchanged": true,
-  "harnessExitCode": 0,
-  "jsonBytes": {
-    "browser.json": 143,
-    "cleanup.json": 137,
-    "estimator-accuracy.json": 122056,
-    "follow-intent.json": 411,
-    "image-shift.json": 289,
-    "ios-path.json": 246162,
-    "metadata.json": 390,
-    "scroll-travel.json": 3188
-  },
-  "screenshots": {
+  "verifiedAt": "2026-09-15T06:02:05.268071+00:00",
+  "harnessSha256": "eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556",
+  "files": {
+    "estimator-accuracy.json": {
+      "bytes": 122056,
+      "refreshed": true,
+      "validJson": true
+    },
+    "ios-path.json": {
+      "bytes": 245395,
+      "refreshed": true,
+      "validJson": true
+    },
+    "metadata.json": {
+      "bytes": 390,
+      "refreshed": true,
+      "validJson": true
+    },
+    "cleanup.json": {
+      "bytes": 137,
+      "refreshed": true,
+      "validJson": true
+    },
+    "scroll-travel.json": {
+      "bytes": 3231,
+      "refreshed": true,
+      "validJson": true
+    },
+    "follow-intent.json": {
+      "bytes": 411,
+      "refreshed": true,
+      "validJson": true
+    },
+    "browser.json": {
+      "bytes": 143,
+      "refreshed": true,
+      "validJson": true
+    },
+    "image-shift.json": {
+      "bytes": 286,
+      "refreshed": true,
+      "validJson": true
+    },
     "transcript-390x844.png": {
       "bytes": 215035,
+      "refreshed": true,
       "devicePixels": [
         780,
         1688
@@ -26,6 +56,7 @@
     },
     "transcript-older-history-390x844.png": {
       "bytes": 239177,
+      "refreshed": true,
       "devicePixels": [
         780,
         1688
@@ -36,25 +67,21 @@
       ]
     }
   },
-  "verdictCriteria": [
-    "C1 PASS",
-    "C2 PASS",
-    "C3 PASS",
-    "C4 FAIL",
-    "C5 PASS"
-  ],
-  "cleanup": {
-    "mode": "after",
-    "viteStopped": true,
-    "temporaryRemoved": true,
-    "coreRestored": true,
-    "cmpExitCode": 0,
-    "portFree": true
-  },
-  "independentCleanup": {
-    "lsExitCode": 1,
-    "lsStderr": "ls: frontend/.qa-harness: No such file or directory\n",
-    "lsofExitCode": 1,
-    "lsofStdout": ""
+  "cleanupChecks": {
+    "temporary": {
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "ls: frontend/.qa-harness: No such file or directory\n"
+    },
+    "port": {
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    "core": {
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    }
   }
 }
