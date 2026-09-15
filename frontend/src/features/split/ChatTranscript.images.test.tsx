@@ -574,3 +574,177 @@ describe("ChatTranscript collapsed-card result images", () => {
 		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
 	});
 });
+
+// The viewport gate in RefImage is load-bearing: a real IntersectionObserver
+// delivers a non-intersecting notification for every offscreen element it
+// watches, so these tests hand the stub explicit isIntersecting=false
+// notifications and require the request count to stay at ZERO — collapsed and
+// expanded — before intersecting exactly one image and requiring exactly one
+// request scoped to that image's own coordinates. Removing the
+// isIntersecting guard in ChatTranscript.tsx RefImage must fail these tests.
+describe("ChatTranscript viewport-gated image_ref requests", () => {
+	let root: Root;
+	let container: HTMLDivElement;
+	let fetchMock: ReturnType<typeof vi.fn>;
+
+	beforeEach(() => {
+		vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+		clearChatMediaCache();
+		fetchMock = vi.fn(async () => okImageResponse());
+		vi.stubGlobal("fetch", fetchMock);
+		URL.createObjectURL = vi.fn(() => "blob:mock-media");
+		MockIntersectionObserver.instances.length = 0;
+		vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+		container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+	});
+
+	afterEach(async () => {
+		await act(async () => {
+			root.unmount();
+		});
+		container.remove();
+		vi.unstubAllGlobals();
+	});
+
+	function renderBlocks(blocks: readonly ContentBlock[]): void {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript {...baseProps} items={[messageItem(blocks)]} />
+				</I18nContext.Provider>,
+			);
+		});
+	}
+
+	async function toggleCard(): Promise<void> {
+		await act(async () => {
+			container.querySelector<HTMLButtonElement>(".th-tool-head")?.click();
+		});
+	}
+
+	function cardExpanded(): string | null {
+		return container.querySelector<HTMLButtonElement>(".th-tool-head")?.getAttribute("aria-expanded") ?? null;
+	}
+
+	/** The observer instance currently watching a given element. */
+	function observerWatching(element: Element): MockIntersectionObserver {
+		const instance = MockIntersectionObserver.instances.find((observer) => observer.observed.includes(element));
+		if (instance === undefined) throw new Error("no IntersectionObserver observes this element");
+		return instance;
+	}
+
+	it("issues zero media requests for an image_ref that only ever receives non-intersecting notifications, collapsed and expanded", async () => {
+		renderBlocks([
+			{
+				kind: "tool",
+				id: "t-quiet",
+				name: "screenshot",
+				text: "captured",
+				mimeType: "image/png",
+				byteLength: 12595,
+				ref: { toolCallId: "t-quiet", contentIndex: 0 },
+			},
+		]);
+		const pending = () => container.querySelector(".th-chat-image-pending");
+		expect(pending()).not.toBeNull();
+
+		// Offscreen while collapsed: the observer holds the pending frame and is
+		// told, explicitly, that it does NOT intersect — no request may follow.
+		await act(async () => {
+			observerWatching(pending()!).intersect(false);
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(container.querySelector("img.th-chat-image")).toBeNull();
+
+		// Expanding the card must not sneak a request past the gate either:
+		// deliver another non-intersecting notification in the expanded state.
+		await toggleCard();
+		expect(cardExpanded()).toBe("true");
+		expect(pending()).not.toBeNull();
+		await act(async () => {
+			observerWatching(pending()!).intersect(false);
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		// Collapsed again: still zero requests, still only a pending frame.
+		await toggleCard();
+		expect(cardExpanded()).toBe("false");
+		await act(async () => {
+			observerWatching(pending()!).intersect(false);
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		expect(pending()).not.toBeNull();
+	});
+
+	it("intersects exactly one of two same-page images into exactly one scoped request while the other stays at zero", async () => {
+		// One invocation whose folded first image (contentIndex 0) and extra
+		// second image (contentIndex 1) share the page: same toolCallId, so only
+		// the URL's contentIndex distinguishes the two coordinates.
+		const blocks: readonly ContentBlock[] = [
+			{
+				kind: "tool",
+				id: "t-scope",
+				name: "screenshot",
+				text: "two shots",
+				mimeType: "image/png",
+				byteLength: 12595,
+				ref: { toolCallId: "t-scope", contentIndex: 0 },
+			},
+			{
+				kind: "image_ref",
+				mimeType: "image/jpeg",
+				byteLength: 2048,
+				ref: { toolCallId: "t-scope", contentIndex: 1 },
+			},
+		];
+		renderBlocks(blocks);
+		const pendings = () => container.querySelectorAll(".th-chat-image-pending");
+		expect(pendings()).toHaveLength(2);
+
+		// Both images are told they do NOT intersect: zero requests while the
+		// card is collapsed…
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(false));
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		// …and while it is expanded.
+		await toggleCard();
+		expect(cardExpanded()).toBe("true");
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(false));
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(0);
+
+		// Exactly one image enters the viewport: exactly ONE request, and its
+		// URL carries that image's own (wsId, chatId, toolCallId, contentIndex)
+		// — contentIndex 0, not its neighbour's 1.
+		await act(async () => {
+			observerWatching(pendings()[0]!).intersect(true);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-scope&contentIndex=0",
+		);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+		expect(pendings()).toHaveLength(1);
+
+		// The second image never intersects — collapsed again, it keeps
+		// receiving non-intersecting notifications and stays at zero requests.
+		await toggleCard();
+		expect(cardExpanded()).toBe("false");
+		const second = observerWatching(pendings()[0]!);
+		await act(async () => {
+			second.intersect(false);
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"/api/workspaces/ws-1/chats/chat-1/media?toolCallId=t-scope&contentIndex=0",
+		);
+		expect(pendings()).toHaveLength(1);
+	});
+});

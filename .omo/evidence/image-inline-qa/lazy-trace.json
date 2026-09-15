@@ -1,0 +1,251 @@
+{
+  "source": "r2 browser laziness observations",
+  "proof": "offscreen 0 -> entry 1 -> toggles 1",
+  "checks": {
+    "afterTurnA": {
+      "contentIndex": 1,
+      "file": "img-a.png",
+      "at": 1789439114601,
+      "mounted": true,
+      "rect": {
+        "x": 472,
+        "y": -3991.40625,
+        "width": 760,
+        "height": 378.0625,
+        "top": -3991.40625,
+        "right": 1232,
+        "bottom": -3613.34375,
+        "left": 472
+      },
+      "imageRect": {
+        "x": 472,
+        "y": -3933.34375,
+        "width": 513.0625,
+        "height": 320,
+        "top": -3933.34375,
+        "right": 985.0625,
+        "bottom": -3613.34375,
+        "left": 472
+      },
+      "count": 1,
+      "scroll": {
+        "scrollTop": 4457,
+        "scrollHeight": 5285,
+        "clientHeight": 828
+      },
+      "verdict": "FAIL"
+    },
+    "afterTurnB": {
+      "contentIndex": 1,
+      "file": "img-b.png",
+      "at": 1789439114620,
+      "mounted": true,
+      "rect": {
+        "x": 472,
+        "y": 350.625,
+        "width": 760,
+        "height": 378.0625,
+        "top": 350.625,
+        "right": 1232,
+        "bottom": 728.6875,
+        "left": 472
+      },
+      "imageRect": {
+        "x": 472,
+        "y": 408.6875,
+        "width": 513.0625,
+        "height": 320,
+        "top": 408.6875,
+        "right": 985.0625,
+        "bottom": 728.6875,
+        "left": 472
+      },
+      "count": 1,
+      "scroll": {
+        "scrollTop": 4457,
+        "scrollHeight": 5285,
+        "clientHeight": 828
+      },
+      "verdict": "PASS"
+    },
+    "enteredA": {
+      "contentIndex": 1,
+      "file": "img-a.png",
+      "at": 1789439114869,
+      "mounted": true,
+      "rect": {
+        "x": 472,
+        "y": 268.59375,
+        "width": 760,
+        "height": 378.0625,
+        "top": 268.59375,
+        "right": 1232,
+        "bottom": 646.65625,
+        "left": 472
+      },
+      "imageRect": {
+        "x": 472,
+        "y": 326.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 326.65625,
+        "right": 985.0625,
+        "bottom": 646.65625,
+        "left": 472
+      },
+      "count": 1,
+      "scroll": {
+        "scrollTop": 197,
+        "scrollHeight": 5285,
+        "clientHeight": 828
+      },
+      "decoded": {
+        "naturalWidth": 900,
+        "naturalHeight": 560,
+        "srcScheme": "blob"
+      },
+      "verdict": "PASS",
+      "firstFetchTriggeredByThisEntry": false
+    },
+    "afterToggleA": {
+      "contentIndex": 1,
+      "file": "img-a.png",
+      "at": 1789439115367,
+      "mounted": true,
+      "rect": {
+        "x": 472,
+        "y": 268.59375,
+        "width": 760,
+        "height": 378.0625,
+        "top": 268.59375,
+        "right": 1232,
+        "bottom": 646.65625,
+        "left": 472
+      },
+      "imageRect": {
+        "x": 472,
+        "y": 326.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 326.65625,
+        "right": 985.0625,
+        "bottom": 646.65625,
+        "left": 472
+      },
+      "count": 1,
+      "scroll": {
+        "scrollTop": 197,
+        "scrollHeight": 5285,
+        "clientHeight": 828
+      },
+      "interactions": {
+        "away": {
+          "contentIndex": 1,
+          "file": "img-a.png",
+          "at": 1789439114986,
+          "mounted": true,
+          "rect": {
+            "x": 472,
+            "y": -931.40625,
+            "width": 760,
+            "height": 378.0625,
+            "top": -931.40625,
+            "right": 1232,
+            "bottom": -553.34375,
+            "left": 472
+          },
+          "imageRect": {
+            "x": 472,
+            "y": -873.34375,
+            "width": 513.0625,
+            "height": 320,
+            "top": -873.34375,
+            "right": 985.0625,
+            "bottom": -553.34375,
+            "left": 472
+          },
+          "count": 1,
+          "scroll": {
+            "scrollTop": 1397,
+            "scrollHeight": 5285,
+            "clientHeight": 828
+          }
+        },
+        "virtualizedAway": false,
+        "originalNodeDisconnected": false,
+        "disclosure": {
+          "before": "false",
+          "toggled": "true",
+          "after": "false"
+        },
+        "shortScroll": {
+          "contentIndex": 1,
+          "file": "img-a.png",
+          "at": 1789439115264,
+          "mounted": true,
+          "rect": {
+            "x": 472,
+            "y": 208.59375,
+            "width": 760,
+            "height": 378.0625,
+            "top": 208.59375,
+            "right": 1232,
+            "bottom": 586.65625,
+            "left": 472
+          },
+          "imageRect": {
+            "x": 472,
+            "y": 266.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 266.65625,
+            "right": 985.0625,
+            "bottom": 586.65625,
+            "left": 472
+          },
+          "count": 1,
+          "scroll": {
+            "scrollTop": 257,
+            "scrollHeight": 5285,
+            "clientHeight": 828
+          }
+        }
+      },
+      "verdict": "PASS"
+    },
+    "afterToggleB": {
+      "contentIndex": 1,
+      "file": "img-b.png",
+      "at": 1789439115405,
+      "mounted": true,
+      "rect": {
+        "x": 472,
+        "y": 4610.625,
+        "width": 760,
+        "height": 378.0625,
+        "top": 4610.625,
+        "right": 1232,
+        "bottom": 4988.6875,
+        "left": 472
+      },
+      "imageRect": {
+        "x": 472,
+        "y": 4668.6875,
+        "width": 513.0625,
+        "height": 320,
+        "top": 4668.6875,
+        "right": 985.0625,
+        "bottom": 4988.6875,
+        "left": 472
+      },
+      "count": 1,
+      "scroll": {
+        "scrollTop": 197,
+        "scrollHeight": 5285,
+        "clientHeight": 828
+      },
+      "verdict": "PASS"
+    }
+  },
+  "D2": "NOT PROVEN"
+}

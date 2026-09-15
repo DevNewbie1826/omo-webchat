@@ -1,32 +1,42 @@
-# Real Chrome inline-image QA: NEEDS WORK
+# Real Chrome inline-image QA (sanitized)
 
-All paths below are relative to /tmp/webchat-inline-qa/. Tested real Google Chrome 152 headless against the real omo provider, with a fresh context per check. No mock engine, substituted transcript, repository edit, or commit was used.
+Chrome 152 against the live provider, fresh context per check. This directory keeps only media-verification fields: media-endpoint URLs and query, request counts, rects, verdicts, and timestamps.
 
-| Check | Verdict | Evidence |
-|---|---|---|
-| 1. Collapsed visibility | PASS | collapsed.png; collapsed-network.json; results.json. Completed real image-read turn, untouched card aria-expanded=false, image naturalWidth=900 and naturalHeight=560. Tool toolu_01X7EjHLgMKBgmvbAyCgTF72, contentIndex=1: exactly one HTTP 200 media fetch. |
-| 2. Viewport laziness | FAIL (evidence incomplete, not a demonstrated product defect) | viewport-before.png; viewport-lazy-network.json; viewport-attempt.log. Restored history rendered inline image bytes, not lazy media references. Live attempts auto-followed the new result into view before the zero-request checkpoint. No valid never-visible-row -> one-fetch proof was obtained. |
-| 3. No refetch | FAIL (evidence identity mismatch) | expanded.png; no-refetch.png; no-refetch-network.json; results.json. One request remained after interactions, but audit found that request was for toolu_019N4ek16A4c3SV3bt2b1f23/contentIndex=1 while the toggled/scrolled last DOM card was toolu_01NfjDs7gApXDxaNfRGAAdUW. This does NOT prove the required same-pair invariant. The script's preliminary PASS in checks.log is superseded by this report and corrected results.json. |
-| 4. Plain text | PASS (content and traffic) | text-only.png; text-only-network.json ([]). Exact assistant text TEXT_ONLY_QA_7419 rendered, no tool-image wrappers, zero media requests. No pre-change screenshot was provided or captured, so pixel-identical baseline rendering is not verified. |
+## What each remaining artifact proves
 
-## RED then GREEN observations
+| Artifact | Proves |
+|---|---|
+| collapsed.png | Crop of the transcript image area only (decoded 900x560 cartoon). UI chrome and notices removed. |
+| collapsed-network.json | Exactly one media GET for `toolCallId=toolu_01X7EjHLgMKBgmvbAyCgTF72&contentIndex=1` with HTTP 200. |
+| collapsed-frames.json | Observed engine contract for that same pair: `image_ref`, `mimeType=image/png`, `byteLength=8073`. |
+| results.json | Collapsed PASS (closed card, 900x560, rect, one 200); text-only PASS (`TEXT_ONLY_QA_7419`, zero media requests); laziness/no-refetch marked SUPERSEDED. |
+| text-only-network.json | Empty array: zero media requests on the plain-text turn. |
+| GREEN-observations.log | Collapsed PASS and text-only PASS from this run. |
+| RED-harness.log | First selector attempt timed out on a hidden sidebar label (harness, not product). |
+| cleanup-receipt.json | QA server PID 7932 was gone after SIGTERM. |
+| browser-cleanup.json | Browsers launched for this run were closed. |
 
-RED-harness.log: initial browser selector failed because it selected a hidden sidebar chat label: `locator.click: Timeout 30000ms exceeded`, `element is not visible`. This was a harness error, not a product regression. The selector was corrected in the /tmp script only.
+## Checks
 
-GREEN-observations.log: collapsed visibility passed with a decoded 900x560 image under a closed card; exact plain text passed with zero media traffic. Overall GREEN was NOT achieved. No pre-change product RED build was run, and none is claimed.
+1. Collapsed visibility — PASS. Closed card (`aria-expanded=false`) showed a 900x560 image; exactly one scoped media request for `(ws-2a10f82a, chat-e82447d2, toolu_01X7EjHLgMKBgmvbAyCgTF72, contentIndex=1)`.
+2. Viewport laziness — SUPERSEDED. The capture in this directory auto-followed the row into view before a zero-request checkpoint, so it cannot prove offscreen=zero. Replaced by the r2 trace (produced separately): `lazy-trace.json`, `offscreen.png`, `entered.png`, `after-toggle.png`.
+3. No refetch — SUPERSEDED. The capture in this directory mixed identities (requested `toolu_019N4ek16A4c3SV3bt2b1f23` vs toggled card `toolu_01NfjDs7gApXDxaNfRGAAdUW`). Replaced by the same r2 trace, which keeps one `(workspace, chat, toolCallId, contentIndex)` through offscreen, viewport entry, disclosure toggles, and remount.
+4. Plain text — PASS. Assistant text `TEXT_ONLY_QA_7419`; zero media requests. Pixel-identical pre-change baseline was not captured.
 
-Additional failed harness attempts are documented in viewport-attempt.log. Runtime streaming/history reconciliation and automatic scrolling prevented the attempted viewport proof. The no-refetch identity mismatch was caught during final evidence audit rather than being silently approved.
+## RED then GREEN (this run)
 
-## Setup and scope
+RED: `RED-harness.log` — `locator.click` timed out because the sidebar label was not visible. Harness-only; selector was corrected outside the product tree.
 
-The requested `bun install` and `make build` succeeded in source/, an rsync copy of the current dedicated worktree, to honor the more restrictive write-only-under-/tmp requirement. See install.log and build.log. Build emitted the existing Vite large-chunk warning. The server bound 127.0.0.1:60316 with development authentication and temporary root/state directories under this evidence directory. The real provider was available and answered.
+GREEN: collapsed visibility (one media 200, 900x560 under a closed card) and plain text (exact string, zero media). Viewport laziness and no-refetch are not certified here; they are owned by the r2 files named above.
 
-Existing uncommitted inline-image changes were present before QA. No source fix was attempted. PNG signatures and dimensions were checked; collapsed/text captures are 1440x1000 and no-refetch is 1440x500. Screenshots were opened directly for inspection. Independent dual-oracle review was unavailable because this child has no delegation tool; no visual completion gate is claimed.
+## Removed (confidentiality / not media-verification)
 
-## Cleanup receipt
+- `state/state-v2.json` and `state/notices/*` — debug dumps (engine session file paths and identifiers). Not media-verification.
+- `collapsed-chat.json`, `text-only-chat.json` — workspace metadata with absolute working-directory paths. Not media-verification.
+- Original `collapsed-frames.json`, `text-only-frames.json`, `no-refetch-frames.json`, `viewport-lazy-frames.json` — full turn logs with internal notices and prompt text. Value does not survive sanitisation except the collapsed `image_ref` extract kept above.
+- `check1.log`, `checks.log`, `probe.log`, `viewport-attempt.log`, `server.log`, `build.log` — harness/setup dumps, including notices and engine session paths. Not media-verification.
+- `text-only.png` — full-page capture contained internal notices and has no transcript image area to crop to. Plain-text proof is `text-only-network.json` plus `results.json`.
+- `expanded.png`, `no-refetch.png`, `viewport-before.png`, `initial.png` — full-page captures with notices and/or no media proof; laziness/no-refetch screenshots superseded by r2.
+- `no-refetch-network.json`, `viewport-lazy-network.json` — incomplete/mismatched traces superseded by r2.
 
-Server PID 7932 received SIGTERM and `os.kill(pid, 0)` confirmed ProcessLookupError. Every browser launched by the scripts was closed in finally; no task-owned browser remained. The only remaining Playwright Chrome tree (PID 24896) started September 13, two days before this task, and was deliberately preserved. No workspace roots outside /tmp were created. See cleanup-receipt.json and browser-cleanup.json.
-
-## Remaining gaps
-
-Checks 2 and 3 need valid real-browser evidence tied to the same toolCallId/contentIndex throughout the observation. This report does not certify viewport laziness or no-refetch, and does not classify the failed evidence as a confirmed product defect.
+`collapsed.png` was cropped in place from 1440x1000 to the image rect (522x330) so only the transcript image remains.
