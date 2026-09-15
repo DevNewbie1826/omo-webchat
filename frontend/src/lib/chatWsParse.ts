@@ -1,4 +1,5 @@
 import type { ChatServerFrame } from "./chatWs";
+import { parseFallbackApprovalFrame } from "./chatWsParseFallback";
 import { parseConversationFrame } from "./chatWsParseConversation";
 import { isRecord, reqString } from "./chatWsParseFields";
 import { parseLifecycleFrame } from "./chatWsParseLifecycle";
@@ -14,6 +15,10 @@ export { sanitizeJson } from "./chatWsParseFields";
  * frame whose UI-dereferenced fields are missing or malformed, returning null
  * so a stale or hostile frame is dropped instead of mutating chat state (R1:
  * unknown frames are forward-compatible and dropped silently, never an error).
+ * One exception, the safety net: a request frame (an approval carrying an id)
+ * whose method or shape is not recognised is returned as the minimal
+ * FallbackApprovalFrame instead of dropped — a request the user must answer
+ * never vanishes (chatWsParseFallback).
  * Each frame is rebuilt field-by-field rather than cast; nested structures are
  * validated by the parsers in chatWsParseFields.
  *
@@ -31,9 +36,15 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
   // by passing the original object to the notice seam; never fabricate a
   // schema-valid replacement and mistake rewritten input for validation.
   const validated = generated ?? (isRecord(msg) && msg["type"] === "notice" ? msg : null);
-  if (validated === null || !isRecord(validated)) return null;
+  if (validated === null || !isRecord(validated)) {
+    // Safety net: a request frame the schema rejected (e.g. a method this
+    // contract does not know) must not vanish — surface the minimal fallback.
+    return parseFallbackApprovalFrame(msg);
+  }
   const type = validated["type"];
-  if (typeof type !== "string" || !SESSION_FRAME_TYPES.has(type)) return null;
+  if (typeof type !== "string" || !SESSION_FRAME_TYPES.has(type)) {
+    return parseFallbackApprovalFrame(msg);
+  }
   // ack/error may omit sessionId; every other frame is session-scoped.
   const sessionOptional = type === "ack" || type === "error";
   const sessionId = reqString(validated, "sessionId");
@@ -52,12 +63,15 @@ export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
     case "chat.goal":
     case "extensionEvent":
     case "sessions.activity":
-    case "approval":
     case "commands":
     case "models":
     case "entries":
     case "queue":
       return parseSessionFrame(type, validated, sessionId);
+    case "approval":
+      // Safety net: a request whose shape the strict approval parser rejects
+      // still lands in the dock as the minimal fallback, never dropped.
+      return parseSessionFrame(type, validated, sessionId) ?? parseFallbackApprovalFrame(msg);
     case "compaction.started":
     case "compaction.done":
     case "run.started":

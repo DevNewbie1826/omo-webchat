@@ -4,6 +4,7 @@ import { notifyUnauthorized } from "./api";
 import { sessionExpired } from "../features/auth/auth";
 import { parseChatServerFrame } from "./chatWsParse";
 import { sanitizeJson } from "./chatWsParseFields";
+import type { FallbackApprovalFrame } from "./chatWsParseFallback";
 import { frameTypeOf, parseServerFrame } from "./contract/types_gen";
 import type * as ct from "./contract/types_gen";
 
@@ -154,6 +155,7 @@ export type ChatServerFrame =
   | ct.ChatGoalFrame
   | ct.ChatTodoFrame
   | ct.ApprovalFrame
+  | FallbackApprovalFrame
   | ct.CommandsFrame
   | ct.ModelsFrame
   | ct.QueueFrame
