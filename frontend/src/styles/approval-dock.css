@@ -2,7 +2,23 @@
    the chat column like .th-queue — never portalled, never fixed, never
    overlaying the viewport. Width and gutters follow .th-chat-controls. */
 .th-approval-dock {
-  flex: none;
+  /* Shrink contract (matches .th-goal-panel): the dock yields height when the
+     chat column is short — flex shrink plus min-height: 0 let the column
+     squeeze it, and the cqh ceiling (the chat-column size container, falling
+     back to the small viewport height outside it) caps the whole panel
+     relative to the available column height, so the composer always stays
+     inside the column. The question content scrolls inside the body.
+     Once the shared column measurement runs, an inline max-height (the
+     column's real available space, bounded by this cap) and flex-shrink: 0
+     take over: the deficit lands on the transcript scrollport alone, and
+     below a readable body floor the dock swaps to its one-line summary
+     instead of rendering a sliver. overflow: hidden pairs with the shrink:
+     a dock squeezed below its content height clips instead of painting over
+     the bands that follow in the column. */
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 60cqh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
@@ -14,6 +30,7 @@
 }
 
 .th-approval-dock-header {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--th-space-2);
@@ -59,13 +76,29 @@
   color: var(--th-text);
 }
 
+/* Floor-forced collapse: expansion cannot work, so the control reads as
+   unavailable (aria-disabled keeps it keyboard-focusable; the reason is in
+   its accessible name and tooltip). */
+.th-approval-dock-toggle--disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.th-approval-dock-toggle--disabled:hover {
+  background: none;
+  color: var(--th-muted);
+}
+
 /* Bounded scrollport: a long message or many options scroll internally
    instead of pushing the composer past the column. */
 .th-approval-dock-body {
+  flex: 0 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   max-height: var(--th-queue-body-max, 240px);
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 var(--th-space-2) var(--th-space-2);
 }
 
@@ -101,6 +134,7 @@
   line-height: var(--th-type-body-line);
   letter-spacing: var(--th-type-body-tracking);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .th-approval-options {
@@ -110,6 +144,15 @@
 }
 
 .th-approval-options .th-btn {
+  /* Long labels (paths, URLs) wrap instead of overflowing the dock: the
+     button may shrink below its content width, breaks anywhere, and grows
+     past the base 34px height as lines wrap. */
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 34px;
+  overflow-wrap: anywhere;
+  text-align: left;
   padding: var(--th-space-2) var(--th-space-3);
   background: var(--th-accent);
   color: var(--th-accent-fg);

@@ -294,6 +294,7 @@
   "approval.submit": "제출",
   "approval.collapse": "접기",
   "approval.expand": "펼치기",
+  "approval.noSpace": "펼칠 공간이 부족합니다",
   "approval.pending": "대기 중",
   "approval.remaining": "{seconds}초 남음",
   "activity.resize": "활동 패널 크기 조절",

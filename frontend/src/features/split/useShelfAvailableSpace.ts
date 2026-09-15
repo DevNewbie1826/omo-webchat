@@ -12,13 +12,15 @@ function outerHeight(element: Element): number {
   return element.getBoundingClientRect().height + verticalMargins(element);
 }
 
-/** Both panel boxes are outputs, never fixed-band inputs. */
-export function computeShelfAvailableSpace(column: HTMLElement, _selfPanel?: Element | null): number {
+/** Both panel boxes are outputs, never fixed-band inputs: the band under
+ *  measurement (selfPanel) is skipped, so its own size cannot move its own
+ *  budget and the measurement cannot oscillate with the panel it clamps. */
+export function computeShelfAvailableSpace(column: HTMLElement, selfPanel?: Element | null): number {
   let fixed = 0;
   const content = column.querySelector(":scope > .th-chat-main-content");
   const bands = [...column.children, ...(content?.children ?? [])];
   for (const child of bands) {
-    if (child === content || child.matches(".th-chat-scrollport, .th-goal-shelf, .th-activity-shelf, .th-goal-panel, .th-activity-panel")) continue;
+    if (child === selfPanel || child === content || child.matches(".th-chat-scrollport, .th-goal-shelf, .th-activity-shelf, .th-goal-panel, .th-activity-panel")) continue;
     // A nested shelf mount is structural, not a fixed band.
     if (child.querySelector(".th-goal-shelf, .th-activity-shelf")) continue;
     fixed += outerHeight(child);

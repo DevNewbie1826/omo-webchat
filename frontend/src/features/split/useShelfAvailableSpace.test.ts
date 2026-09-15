@@ -81,7 +81,24 @@ describe("computeShelfAvailableSpace", () => {
     expect(computeShelfAvailableSpace(column, null)).toBe(800 - 24 - 100 - TRANSCRIPT_MIN_BAND_PX);
   });
 
-  it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
+	it("excludes the panel under measurement from the fixed bands", () => {
+		const column = measured("th-chat-main", 800);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60);
+		column.append(composer, dock);
+		document.body.appendChild(column);
+
+		// A band measuring itself must not see its own box: 800 − 100 − 120.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+		// Growing or shrinking the measured band cannot move its own budget —
+		// otherwise the measurement oscillates with the panel it clamps.
+		mockHeight(dock, 200);
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+		mockHeight(dock, 20);
+		expect(computeShelfAvailableSpace(column, dock)).toBe(580);
+	});
+
+	it("subtracts the queue slot as a fixed band, collapsed or expanded", () => {
     const column = measured("th-chat-main", 800);
     const composer = measured("th-chat-input", 120);
     const status = measured("th-chat-status", 24);

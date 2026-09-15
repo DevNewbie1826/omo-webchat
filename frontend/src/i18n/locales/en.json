@@ -294,6 +294,7 @@
   "approval.submit": "Submit",
   "approval.collapse": "Collapse",
   "approval.expand": "Expand",
+  "approval.noSpace": "Not enough space to expand",
   "approval.pending": "Pending",
   "approval.remaining": "{seconds}s left",
   "activity.resize": "Resize activity panel",

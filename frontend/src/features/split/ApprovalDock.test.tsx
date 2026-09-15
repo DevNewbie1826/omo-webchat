@@ -405,4 +405,222 @@ describe("ApprovalDock inline panel", () => {
 		act(() => allow?.click());
 		expect(onRespond).toHaveBeenCalledWith({ confirmed: true });
 	});
+
+	describe("space floor inside a measured chat column", () => {
+		class ControlledResizeObserver {
+			static instances: ControlledResizeObserver[] = [];
+			private readonly cb: ResizeObserverCallback;
+			readonly targets = new Set<Element>();
+			constructor(cb: ResizeObserverCallback) {
+				this.cb = cb;
+				ControlledResizeObserver.instances.push(this);
+			}
+			observe(target: Element): void {
+				this.targets.add(target);
+			}
+			unobserve(target: Element): void {
+				this.targets.delete(target);
+			}
+			disconnect(): void {
+				this.targets.clear();
+			}
+			trigger(): void {
+				this.cb(
+					[...this.targets].map(
+						(target) =>
+							({
+								target,
+								contentRect: target.getBoundingClientRect(),
+							}) as unknown as ResizeObserverEntry,
+					),
+					this as unknown as ResizeObserver,
+				);
+			}
+		}
+
+		const columns: HTMLElement[] = [];
+
+		beforeEach(() => {
+			ControlledResizeObserver.instances = [];
+			vi.stubGlobal("ResizeObserver", ControlledResizeObserver);
+		});
+
+		afterEach(() => {
+			for (const column of columns.splice(0)) column.remove();
+			vi.restoreAllMocks();
+		});
+
+		function mockHeight(element: Element, height: number): void {
+			vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+				height,
+				width: 600,
+				top: 0,
+				bottom: height,
+				left: 0,
+				right: 600,
+				x: 0,
+				y: 0,
+				toJSON: () => ({}),
+			} as DOMRect);
+		}
+
+		function triggerResize(): void {
+			act(() => {
+				for (const observer of ControlledResizeObserver.instances) observer.trigger();
+			});
+		}
+
+		// Mounts the dock as a band in a minimal .th-chat-main column:
+		// content shell (with the transcript scrollport), the controls row,
+		// the dock, then the composer — the same sibling order as ChatPane.
+		function renderDockInColumn(
+			request: ApprovalRequest,
+			heights: { column: number; dock: number; controls?: number; composer?: number },
+			onRespond = vi.fn(),
+		): { column: HTMLElement } {
+			const column = document.createElement("div");
+			column.className = "th-chat-main";
+			const content = document.createElement("div");
+			content.className = "th-chat-main-content";
+			const scrollport = document.createElement("div");
+			scrollport.className = "th-chat-scrollport";
+			content.appendChild(scrollport);
+			const controls = document.createElement("div");
+			controls.className = "th-chat-controls";
+			const composer = document.createElement("div");
+			composer.className = "th-chat-input";
+			column.append(content, controls, container, composer);
+			document.body.appendChild(column);
+			columns.push(column);
+			mockHeight(column, heights.column);
+			mockHeight(controls, heights.controls ?? 24);
+			mockHeight(composer, heights.composer ?? 100);
+			mockHeight(container, heights.dock);
+			renderDock(request, onRespond);
+			return { column };
+		}
+
+		it("falls back to the collapsed summary when the column cannot fit the header plus one option row", () => {
+			// Budget: 300 − 24 controls − 100 composer − 60 dock − 120 transcript
+			// reserve = −4 — below the 48px body floor.
+			renderDockInColumn(
+				{ id: "select-1", method: "select", title: "Proceed?", options: ["Allow", "Block"] },
+				{ column: 300, dock: 60 },
+			);
+
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+			const summary = container.querySelector(".th-approval-dock-summary");
+			expect(summary).not.toBeNull();
+			expect(summary?.textContent).toContain("Proceed?");
+			expect(summary?.textContent).toContain("approval.pending");
+			expect(
+				summary?.querySelector(".th-approval-dock-toggle"),
+			).not.toBeNull();
+			// The collapsed summary is a fixed one-line band: it must never be
+			// squeezed into a sliver of itself.
+			expect(dock()?.style.flexShrink).toBe("0");
+		});
+
+		it("marks the expand toggle unavailable while the floor forces collapse, so it never invites a click that cannot work", () => {
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 300, dock: 60 },
+			);
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			// Keyboard-reachable (not `disabled`, which would drop it from the tab
+			// order) but announced as unavailable, with the reason in its name.
+			const expand = container.querySelector<HTMLButtonElement>(
+				".th-approval-dock-summary .th-approval-dock-toggle",
+			);
+			expect(expand).not.toBeNull();
+			expect(expand?.getAttribute("aria-disabled")).toBe("true");
+			expect(expand?.getAttribute("aria-label")).toContain("approval.noSpace");
+
+			// Clicking it changes nothing: no expand, no state churn.
+			act(() => expand?.click());
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+			expect(
+				container.querySelector(".th-approval-dock-summary .th-approval-dock-toggle"),
+			).not.toBeNull();
+		});
+
+		it("keeps the expand toggle operable in a manual collapse with space available", () => {
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 800, dock: 60 },
+			);
+			const collapse = container.querySelector<HTMLButtonElement>(
+				'button[aria-label="approval.collapse"]',
+			);
+			act(() => collapse?.click());
+			const expand = container.querySelector<HTMLButtonElement>(
+				".th-approval-dock-summary .th-approval-dock-toggle",
+			);
+			expect(expand?.getAttribute("aria-disabled")).toBeNull();
+			act(() => expand?.click());
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+		});
+
+		it("clamps the expanded dock to the measured budget and refuses to shrink below it", () => {
+			// Budget: 500 − 24 − 100 − 200 − 120 = 56 — above the 48px floor.
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 500, dock: 200 },
+			);
+
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+			const section = dock();
+			expect(section?.style.flexShrink).toBe("0");
+			expect(section?.style.maxHeight).toBe("56px");
+		});
+
+		it("keeps expand intent under the floor and re-expands on its own when space returns", () => {
+			const { column } = renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow"] },
+				{ column: 300, dock: 60 },
+			);
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			// Asking to expand under the floor is a guarded no-op: the toggle is
+			// aria-disabled there, and `collapsed` is never set.
+			const expand = container.querySelector<HTMLButtonElement>(
+				".th-approval-dock-summary .th-approval-dock-toggle",
+			);
+			act(() => expand?.click());
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			// Space returns: the panel comes back without another gesture.
+			mockHeight(column, 800);
+			triggerResize();
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+		});
+
+		it("keeps a manual collapse collapsed when the column gains space", () => {
+			const { column } = renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow"] },
+				{ column: 800, dock: 60 },
+			);
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+
+			act(() => {
+				dock()?.dispatchEvent(
+					new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+				);
+			});
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			mockHeight(column, 1000);
+			triggerResize();
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+			expect(container.querySelector(".th-approval-dock-summary")).not.toBeNull();
+		});
+
+		it("does not move focus into an unrendered body when the floor collapses the dock", () => {
+			renderDockInColumn({ id: "confirm-1", method: "confirm" }, { column: 300, dock: 60 });
+
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+			expect(document.activeElement?.closest(".th-approval-dock-body")).toBeNull();
+		});
+	});
 });
