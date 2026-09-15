@@ -194,11 +194,24 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			? Math.max(columnSpace.clampPx, effectiveMinDockPx)
 			: null;
 
-	// Countdown target: an absolute deadline, or remainingMs anchored to the
-	// moment this request arrived. Re-anchored when a new request id shows up.
-	const anchorRef = useRef<{ id: string; atMs: number } | null>(null);
-	if (anchorRef.current?.id !== request.id) {
-		anchorRef.current = { id: request.id, atMs: Date.now() };
+	// Countdown target: an absolute deadline, or remainingMs measured from the
+	// moment the update that carried it arrived. `remainingMs` is relative to
+	// its own delivery, so the anchor follows the delivery rather than the
+	// request id: a refresh of the SAME request that moves remainingMs — or
+	// repeats the same value — restarts the countdown from that value. An
+	// absolute deadlineAtMs ignores the anchor and stays fixed to the wall clock.
+	//
+	// The delivery's mark is the request's own options/questions array when it
+	// has one, and otherwise the request object. Every delivery is parsed into
+	// fresh objects, so both change exactly once per update; but a caller may
+	// rebuild the request wrapper on every render (the structured-question dock
+	// is assembled from the pending frame each time) while passing the delivered
+	// array straight through, and re-anchoring on those rebuilds would peg the
+	// countdown at its full value instead of letting it descend.
+	const delivery: object = request.questions ?? request.options ?? request;
+	const anchorRef = useRef<{ delivery: object; atMs: number } | null>(null);
+	if (anchorRef.current?.delivery !== delivery) {
+		anchorRef.current = { delivery, atMs: Date.now() };
 	}
 	const targetMs =
 		request.deadlineAtMs ??
