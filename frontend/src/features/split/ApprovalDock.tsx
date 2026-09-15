@@ -1,10 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
+import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
+import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
+import { ApprovalQuestionPanel } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ApprovalRequest {
 	readonly id: string;
-	readonly method: "select" | "confirm" | "input" | "editor";
+	readonly method: "select" | "confirm" | "input" | "editor" | "question" | "fallback";
 	readonly title?: string;
 	readonly message?: string;
 	readonly options?: readonly string[];
@@ -12,15 +15,20 @@ export interface ApprovalRequest {
 	readonly placeholder?: string;
 	readonly deadlineAtMs?: number;
 	readonly remainingMs?: number;
+	readonly questions?: readonly Question[];
+}
+
+export interface ApprovalResponse {
+	value?: string;
+	confirmed?: boolean;
+	cancelled?: boolean;
+	answers?: Record<string, QuestionAnswer>;
+	comment?: string;
 }
 
 export interface ApprovalDockProps {
 	readonly request: ApprovalRequest;
-	readonly onRespond: (response: {
-		value?: string;
-		confirmed?: boolean;
-		cancelled?: boolean;
-	}) => void;
+	readonly onRespond: (response: ApprovalResponse) => void;
 }
 
 const COUNTDOWN_TICK_MS = 1_000;
@@ -304,6 +312,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const submitConfirm = (confirmed: boolean): void => onRespond({ confirmed });
 	const cancel = (): void => onRespond({ cancelled: true });
 
+	// Structured multi-question requests render as one tabbed panel owned by
+	// ApprovalDockQuestions.tsx (a tab per question, one structured response).
+	const questionPanel = request.method === "question" && (request.questions?.length ?? 0) > 0 && (
+		<ApprovalQuestionPanel
+			requestId={request.id}
+			questions={request.questions ?? []}
+			onSubmit={onRespond}
+			onCancel={cancel}
+		/>
+	);
+
 	const countdown = countdownSeconds !== undefined && (
 		<span className="th-approval-dock-countdown">
 			{t("approval.remaining", { seconds: countdownSeconds })}
@@ -367,6 +386,15 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 							    primary actions as a compact row. No expand toggle —
 							    a toggle that could only produce an overflowing
 							    panel would be a lie. */}
+							{request.method === "question" && questionPanel}
+							{/* The unsupported fallback keeps its answerable compact row
+							    (rendering lives in ApprovalFallback). */}
+							{request.method === "fallback" && (
+								<ApprovalFallbackSummaryActions
+									onConfirm={() => submitConfirm(true)}
+									onCancel={cancel}
+								/>
+							)}
 							{request.method === "select" && (
 								<div className="th-approval-dock-summary-actions">
 									{(request.options ?? []).map((opt, index) => (
@@ -492,9 +520,12 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 						</button>
 					</div>
 					<div className="th-approval-dock-body">
+						{request.method === "fallback" && <ApprovalFallbackNote />}
 						{request.message && (
 							<p className="th-approval-message">{request.message}</p>
 						)}
+
+						{request.method === "question" && questionPanel}
 
 						{request.method === "select" && (
 							<div className="th-approval-options">
@@ -585,7 +616,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 								>
 									{t("approval.cancel")}
 								</button>
-							</form>
+								</form>
+						)}
+						{request.method === "fallback" && (
+							<ApprovalFallbackForm
+								placeholder={request.placeholder}
+								value={text}
+								onValueChange={setText}
+								onSubmitValue={submitValue}
+								onConfirm={() => submitConfirm(true)}
+								onCancel={cancel}
+							/>
 						)}
 					</div>
 				</>
