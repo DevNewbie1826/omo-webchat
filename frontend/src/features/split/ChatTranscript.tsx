@@ -292,6 +292,18 @@ export function ChatTranscript({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [laneWidth, fontSize],
   );
+  // Stable per-row estimates, keyed by the virtual row key: a row's estimate
+  // is computed ONCE and never changes afterwards, so content arriving for
+  // rows the reader has never seen cannot shift the scroll position (the
+  // virtualizer compensates only for MEASURED changes, never for a changed
+  // estimate of an unmeasured row). Once a row actually renders, the
+  // virtualizer's own measurement supersedes the frozen estimate.
+  const estimateCacheRef = useRef(new Map<string, number>());
+  // New metrics (font size or lane width changed) stale every estimate by
+  // definition: drop the whole cache.
+  useEffect(() => {
+    estimateCacheRef.current.clear();
+  }, [rowMetrics]);
   // USER CHOICES only: presence in the map means the user toggled that card
   // (the value is their frozen choice). Absent ids are untouched and pass no
   // `open`, so ToolCard derives the disclosure from the card's CURRENT live
@@ -468,6 +480,16 @@ export function ChatTranscript({
       rows.push(item);
       keys.push(allKeys[index] ?? `missing:${index}`);
     });
+    // Bound the estimate cache: drop entries whose keys left the transcript.
+    // Done here, where the key list recomputes, so estimateSize itself stays
+    // a pure lookup.
+    const cache = estimateCacheRef.current;
+    if (cache.size > 0) {
+      const live = new Set(keys);
+      for (const key of cache.keys()) {
+        if (!live.has(key)) cache.delete(key);
+      }
+    }
     return { rows, keys };
   }, [items]);
   // Measurement corrections dropped while a user scroll gesture is in flight
@@ -483,8 +505,15 @@ export function ChatTranscript({
     getItemKey: (index) => keys[index] ?? `missing:${index}`,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
+      const key = keys[index];
+      if (key !== undefined) {
+        const cached = estimateCacheRef.current.get(key);
+        if (cached !== undefined) return cached;
+      }
       const item = rows[index];
-      return item === undefined ? 80 : estimateRowHeight(item, rowMetrics);
+      const estimate = item === undefined ? 80 : estimateRowHeight(item, rowMetrics);
+      if (key !== undefined) estimateCacheRef.current.set(key, estimate);
+      return estimate;
     },
     overscan: 8,
     // virtual-core passes `adjustments` ONLY for measurement-driven
