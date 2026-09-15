@@ -17,7 +17,8 @@
         "compaction_error",
         "queue_delivery_uncertain",
         "extension_notify",
-        "engine_notify"
+        "engine_notify",
+        "continuation_error"
       ]
     }
   }

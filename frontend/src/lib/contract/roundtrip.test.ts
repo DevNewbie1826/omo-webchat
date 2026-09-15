@@ -142,7 +142,7 @@ describe("contract requirements pinned by fixtures", () => {
     }
   });
 
-  it("notice.at is RFC3339Nano and the fixture kind is one of the durable twelve (invariant 14)", () => {
+  it("notice.at is RFC3339Nano and the fixture kind is one of the durable thirteen (invariant 14)", () => {
     const rfc3339Nano = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
     expect(DURABLE_NOTICE_KIND).toEqual([
       "retry_fallback_applied",
@@ -157,6 +157,7 @@ describe("contract requirements pinned by fixtures", () => {
       "queue_delivery_uncertain",
       "extension_notify",
       "engine_notify",
+      "continuation_error",
     ]);
     const notices = fixtures.filter((f) => typeOf(f) === "notice");
     expect(notices.length).toBeGreaterThanOrEqual(1);
