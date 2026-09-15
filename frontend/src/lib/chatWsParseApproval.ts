@@ -1,6 +1,11 @@
 import type { ApprovalFrame, Question, QuestionOption } from "./contract/types_gen";
 import { mapRecords, optBoolean, optNumber, optString, optStringArray, reqString } from "./chatWsParseFields";
 
+/** Both question surfaces use one-based positional keys for omitted ids. */
+export function questionKey(question: Question | undefined, index: number): string {
+  return question?.id ?? `q${index + 1}`;
+}
+
 function parseQuestionOption(record: Record<string, unknown>): QuestionOption | null {
   const label = optString(record, "label");
   const description = optString(record, "description");
@@ -42,6 +47,8 @@ export function parseApprovalFrame(msg: Record<string, unknown>, sessionId: stri
   const questions = msg["questions"] === undefined ? undefined : mapRecords(msg["questions"], parseQuestion);
   // A question without controls must use the cancellable unsupported-request fallback.
   if (method === "question" && (questions?.length ?? 0) === 0) return null;
+  // Ambiguous keys would overwrite a prior answer; retain the cancellable fallback.
+  if (questions && new Set(questions.map(questionKey)).size !== questions.length) return null;
   const nonBlocking = optBoolean(msg, "nonBlocking");
   if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null || questions === null || nonBlocking === null) return null;
   return {

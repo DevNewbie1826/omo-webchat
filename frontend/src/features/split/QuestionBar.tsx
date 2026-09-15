@@ -1,5 +1,6 @@
 import { useId, useRef, useState } from "react";
 import { useT } from "../../i18n";
+import { questionKey } from "../../lib/chatWsParseApproval";
 import type { ApprovalFrame, QuestionAnswer } from "../../lib/contract/types_gen";
 
 export interface QuestionBarProps {
@@ -31,7 +32,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const [activeIndex, setActiveIndex] = useState(0);
 	const [answers, setAnswers] = useState<Record<string, QuestionAnswer>>({});
 	const question = request.questions?.[activeIndex];
-	const questionId = question?.id ?? `q${activeIndex + 1}`;
+	const questionId = questionKey(question, activeIndex);
 	const options = (question?.options ?? []).filter(
 		(option): option is typeof option & { readonly label: string } =>
 			option.label !== undefined,

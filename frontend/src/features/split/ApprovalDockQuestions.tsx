@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useT } from "../../i18n";
+import { questionKey } from "../../lib/chatWsParseApproval";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 
 export interface ApprovalQuestionPanelProps {
@@ -23,10 +24,6 @@ interface QuestionDraft {
 		string, { readonly selected: readonly string[]; readonly text: string }
 	>;
 	readonly comment: string;
-}
-
-function questionKey(question: Question, index: number): string {
-	return question.id ?? `q${index}`;
 }
 
 /** Tabbed panel for a structured multi-question request: one tab per
