@@ -1,74 +1,85 @@
 {
-  "recordedAt": "2026-09-15T06:56:23.884165+00:00",
-  "harnessUnchanged": true,
-  "harnessSha256": "eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556",
-  "cmpExitCode": 0,
-  "temporaryRemoved": true,
-  "lsofOutput": "",
-  "lsofExitCode": 1,
-  "artifacts": [
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/browser.json",
-      "bytes": 143,
-      "modifiedAt": "2026-09-15T06:49:17.370256+00:00"
+  "recordedAt": "2026-09-15T07:56:20.401632+00:00",
+  "harnessExitCode": 0,
+  "sweepExitCode": 1,
+  "hashCmpExitCode": 0,
+  "runnerSha256": "eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556",
+  "jsonArtifacts": {
+    "metrics-sweep.json": {
+      "refreshed": true,
+      "bytes": 5836
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/cleanup.json",
-      "bytes": 137,
-      "modifiedAt": "2026-09-15T06:49:48.239901+00:00"
+    "estimator-accuracy.json": {
+      "refreshed": true,
+      "bytes": 123566
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/estimator-accuracy.json",
-      "bytes": 123337,
-      "modifiedAt": "2026-09-15T06:49:35.539574+00:00"
+    "ios-path.json": {
+      "refreshed": true,
+      "bytes": 245571
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/follow-intent.json",
-      "bytes": 411,
-      "modifiedAt": "2026-09-15T06:49:25.312837+00:00"
+    "metadata.json": {
+      "refreshed": true,
+      "bytes": 390
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/image-shift.json",
-      "bytes": 286,
-      "modifiedAt": "2026-09-15T06:49:26.272847+00:00"
+    "cleanup.json": {
+      "refreshed": true,
+      "bytes": 137
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/ios-path.json",
-      "bytes": 245332,
-      "modifiedAt": "2026-09-15T06:49:48.172490+00:00"
+    "scroll-travel.json": {
+      "refreshed": true,
+      "bytes": 3217
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/metadata.json",
-      "bytes": 390,
-      "modifiedAt": "2026-09-15T06:49:16.132920+00:00"
+    "follow-intent.json": {
+      "refreshed": true,
+      "bytes": 411
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/metrics-sweep.json",
-      "bytes": 5856,
-      "modifiedAt": "2026-09-15T06:54:51.606462+00:00"
+    "browser.json": {
+      "refreshed": true,
+      "bytes": 143
     },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/scroll-travel.json",
-      "bytes": 3272,
-      "modifiedAt": "2026-09-15T06:49:21.167985+00:00"
-    },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/transcript-390x844.png",
-      "bytes": 220104,
-      "modifiedAt": "2026-09-15T06:49:17.407887+00:00",
-      "pixelDimensions": [
-        780,
-        1688
-      ]
-    },
-    {
-      "path": ".omo/evidence/mobile-scroll-fix/after/transcript-older-history-390x844.png",
-      "bytes": 234987,
-      "modifiedAt": "2026-09-15T06:49:19.659426+00:00",
-      "pixelDimensions": [
-        780,
-        1688
-      ]
+    "image-shift.json": {
+      "refreshed": true,
+      "bytes": 286
     }
-  ]
+  },
+  "screenshots": {
+    "transcript-older-history-390x844.png": {
+      "pixels": [
+        780,
+        1688
+      ],
+      "refreshed": true
+    },
+    "transcript-390x844.png": {
+      "pixels": [
+        780,
+        1688
+      ],
+      "refreshed": true
+    }
+  },
+  "cleanup": {
+    "cmpExitCode": 0,
+    "coreRestored": true,
+    "temporaryRemoved": true,
+    "sweepCacheRemoved": true,
+    "portFree": true,
+    "lsofExitCode": 1
+  },
+  "harnessCleanup": {
+    "mode": "after",
+    "viteStopped": true,
+    "temporaryRemoved": true,
+    "coreRestored": true,
+    "cmpExitCode": 0,
+    "portFree": true
+  },
+  "sweepCleanup": {
+    "viteStopped": true,
+    "temporaryRemoved": true,
+    "coreRestored": true,
+    "cmpExitCode": 0,
+    "portFree": true,
+    "sweepCacheRemoved": true
+  }
 }

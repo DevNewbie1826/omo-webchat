@@ -4,10 +4,10 @@ npm notice run 'vitest' run
  RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend
 
 
- Test Files  252 passed (252)
-      Tests  2699 passed (2699)
-   Start at  15:57:23
-   Duration  42.24s (transform 11.30s, setup 3.68s, import 65.44s, tests 63.30s, environment 128.40s)
+ Test Files  253 passed (253)
+      Tests  2701 passed (2701)
+   Start at  16:58:21
+   Duration  43.91s (transform 10.89s, setup 3.65s, import 65.98s, tests 66.81s, environment 134.62s)
 
 
-EXIT_CODE=0
+[exit code] 0
