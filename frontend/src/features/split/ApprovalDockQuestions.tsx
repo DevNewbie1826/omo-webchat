@@ -19,8 +19,8 @@ export interface ApprovalQuestionPanelProps {
 interface QuestionDraft {
 	readonly requestId: string;
 	readonly activeIndex: number;
-	readonly answers: Readonly<
-		Record<string, { readonly selected: readonly string[]; readonly text: string }>
+	readonly answers: ReadonlyMap<
+		string, { readonly selected: readonly string[]; readonly text: string }
 	>;
 	readonly comment: string;
 }
@@ -48,11 +48,11 @@ export function ApprovalQuestionPanel({
 	const [draft, setDraft] = useState<QuestionDraft>({
 		requestId,
 		activeIndex: 0,
-		answers: {},
+		answers: new Map(),
 		comment: "",
 	});
 	if (draft.requestId !== requestId) {
-		setDraft({ requestId, activeIndex: 0, answers: {}, comment: "" });
+		setDraft({ requestId, activeIndex: 0, answers: new Map(), comment: "" });
 	}
 
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
@@ -64,16 +64,13 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers[key] ?? { selected: [], text: "" };
+		const previous = draft.answers.get(key) ?? { selected: [], text: "" };
 		setDraft({
 			...draft,
-			answers: {
-				...draft.answers,
-				[key]: {
-					selected: patch.selected ?? previous.selected,
-					text: patch.text ?? previous.text,
-				},
-			},
+			answers: new Map(draft.answers).set(key, {
+				selected: patch.selected ?? previous.selected,
+				text: patch.text ?? previous.text,
+			}),
 		});
 	};
 
@@ -81,7 +78,7 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers[key] ?? { selected: [], text: "" };
+		const previous = draft.answers.get(key) ?? { selected: [], text: "" };
 		if (question.multiSelect) {
 			patchDraft(index, {
 				selected: previous.selected.includes(label)
@@ -94,19 +91,19 @@ export function ApprovalQuestionPanel({
 	};
 
 	const submit = (): void => {
-		const answers: Record<string, QuestionAnswer> = {};
+		const answers = new Map<string, QuestionAnswer>();
 		questions.forEach((question, index) => {
-			const entry = draft.answers[questionKey(question, index)];
+			const entry = draft.answers.get(questionKey(question, index));
 			if (!entry) return;
 			const answer: { selected?: readonly string[]; text?: string } = {};
 			if (entry.selected.length > 0) answer.selected = entry.selected;
 			if (entry.text.trim() !== "") answer.text = entry.text;
 			if (answer.selected !== undefined || answer.text !== undefined) {
-				answers[questionKey(question, index)] = answer;
+				answers.set(questionKey(question, index), answer);
 			}
 		});
 		const comment = draft.comment.trim();
-		onSubmit({ answers, ...(comment !== "" ? { comment: draft.comment } : {}) });
+		onSubmit({ answers: Object.fromEntries(answers), ...(comment !== "" ? { comment: draft.comment } : {}) });
 	};
 
 	return (
@@ -130,7 +127,7 @@ export function ApprovalQuestionPanel({
 			</div>
 			{questions.map((question, index) => {
 				if (index !== activeIndex) return null;
-				const entry = draft.answers[questionKey(question, index)] ?? {
+				const entry = draft.answers.get(questionKey(question, index)) ?? {
 					selected: [],
 					text: "",
 				};
