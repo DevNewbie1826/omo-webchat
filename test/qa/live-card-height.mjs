@@ -14,21 +14,41 @@
 //                card at its resting height, no status row anywhere), then a
 //                card is clicked into "opening" (slow open response),
 //                "already active elsewhere" (409 conflict) or "open failed"
-//                (error response) through the fixture's --open map. The
+//                (error response) through the fixture's runtime-swappable
+//                open map (POST /api/qa/open-map; exactly one session carries
+//                a behavior at a time, swapped before each step's reload, so
+//                the SAME session can be driven into different states on
+//                different fresh page loads while the rendered four-card
+//                list never changes shape - a fifth card would overflow the
+//                section's max-height and flex-shrink every card onto its
+//                min-height floor, crushing the transient status rows the
+//                gate must measure). The
 //                observer armed before the click resolves only when the
 //                status label EXACTLY equals the step's expected final text
 //                (the row first appears as "Opening…" and is swapped a beat
 //                later), measurement runs after two animation-frame ticks
 //                with each card's rect width recorded alongside its height
 //                and the scrollport's clientWidth/scrollHeight captured per
-//                step; heights are only compared between steps whose
+//                step; the activated card's own status-row rect and text
+//                are read in the SAME evaluate call that measures the
+//                cards, and each step's screenshot is taken in that
+//                settled state and immediately re-checked - the row must
+//                still be on screen when the pixels are captured; the
+//                activated height must be STRICTLY greater than the same
+//                step's preClick resting height or the run FAILs
+//                (non-vacuousness - a vacuous step never reaches the
+//                same-state gate); heights are only compared between steps whose
 //                measured width is identical. Every step asserts that the
 //                cards WITHOUT a status row still measure the resting
 //                height. The transient status row making its own card taller
 //                is the expected product behavior. Same-state height
-//                equality across different sessions is INFORMATIONAL -
-//                recorded with the measured widths, never deciding status
-//                (within a documented sub-pixel tolerance);
+//                equality across different sessions is a REQUIRED PASS
+//                condition: two cards driven into the same activation state
+//                at identical measured widths must differ by no more than
+//                the declared sub-pixel tolerance (HEIGHT_TOLERANCE, also
+//                recorded in the report) or the run FAILs. Two same-state
+//                pairs are exercised: "opening" on a count-badge card and
+//                on a badge-free card, plus the "session-active" pair;
 //   comparison - every resting height must be strictly greater than the RED
 //                baseline's title-only height (the old "Idle attached" card).
 //
@@ -48,8 +68,12 @@
 // status is PASS only when cardCount === 4 && heightSpread === 0 &&
 // metaCount === 0 && every resting height strictly exceeds the RED
 // title-only height && in every activation step the cards WITHOUT a status
-// row still measure the resting height; same-state height equality is
-// informational only. A FAIL status is a valid, expected result, so the
+// row still measure the resting height && every same-state pair measures
+// equal heights at identical widths && every activated card is strictly
+// taller than its own preClick resting height && every step screenshot was
+// taken with the status row still on screen. A FAIL status is a valid,
+// expected
+// result, so the
 // process exits 0 whenever the measurement itself completed and non-zero
 // only when it could not run. The script never gates on a clean git tree or
 // a pushed head.
@@ -57,7 +81,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access, mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 
@@ -72,10 +96,15 @@ const redBaselinePath = '.omo/qa/live-card-height/red/qa-run.json';
 // pre-expands it so the session catalog load is part of the boot path.
 const fixtureWorkspaceId = 'ws-live-qa';
 // Card activation plan: state names are the SPA's open-attempt statuses;
-// fixtureBehavior is the matching --open=SESSION=BEHAVIOR served response.
-// Two cards are driven into "session-active" so the same-state-same-height
-// invariant has a real comparison pair. Titles come from the fixture's live
-// rows; cards are matched by title, never by DOM order.
+// fixtureBehavior is the behavior the runtime open map serves for that
+// step's session. Two states are each driven on TWO sessions so the
+// required same-state height gate has real comparison pairs: "opening" on
+// a count-badge card ("Refactor auth") and on the badge-free card ("Quiet
+// session"), and "session-active" on a count-badge card ("Docs sweep")
+// and the dot-only active card ("Idle attached"). "Quiet session" is also
+// the failed step - legal because every step runs on a fresh page load with
+// its own swapped-in behavior. Titles come from the fixture's live rows;
+// cards are matched by title, never by DOM order.
 const stateLabels = { opening: 'Opening…', 'session-active': 'Read-only live view', failed: 'Open failed' };
 // Sub-pixel tolerance for height equality: device-pixel rounding can differ by
 // a hundredth of a CSS pixel between structurally identical cards (observed
@@ -84,10 +113,73 @@ const HEIGHT_TOLERANCE = 0.05;
 const sameHeight = (a, b) => Math.abs(a - b) <= HEIGHT_TOLERANCE;
 const activationPlan = [
   { state: 'opening', fixtureBehavior: 'slow', session: 's-agents-dag', title: 'Refactor auth' },
+  { state: 'opening', fixtureBehavior: 'slow', session: 's-done-only', title: 'Quiet session' },
   { state: 'session-active', fixtureBehavior: 'conflict', session: 's-agents-only', title: 'Docs sweep' },
   { state: 'session-active', fixtureBehavior: 'conflict', session: 's-main-only', title: 'Idle attached' },
   { state: 'failed', fixtureBehavior: 'error', session: 's-done-only', title: 'Quiet session' },
 ];
+// Required same-state gate: for every activation state driven on two
+// sessions, the two cards must measure the same height when measured at the
+// same width. Width identity and height equality both allow the declared
+// sub-pixel tolerance, because device-pixel rounding can differ by a
+// hundredth of a CSS pixel between structurally identical cards; anything
+// beyond it is a product defect. A pair whose widths differ beyond the
+// tolerance is NOT comparable - the gate cannot verify the invariant, so it
+// fails the run instead of silently voiding it. Pure, so the gate can be
+// exercised directly against fabricated measurements (the QA log records a
+// 10px mismatch failing the run).
+const evaluateSameStateGate = (steps, tolerance = HEIGHT_TOLERANCE) => {
+  const groups = new Map();
+  for (const step of steps) {
+    const list = groups.get(step.state) ?? [];
+    list.push(step);
+    groups.set(step.state, list);
+  }
+  const pairs = [];
+  for (const [state, list] of groups) {
+    for (let i = 0; i < list.length; i += 1) {
+      for (let j = i + 1; j < list.length; j += 1) {
+        const a = list[i], b = list[j];
+        const widthDelta = Math.round(Math.abs(a.width - b.width) * 100) / 100;
+        const heightsComparable = widthDelta <= tolerance;
+        const heightDelta = Math.round(Math.abs(a.height - b.height) * 100) / 100;
+        const equal = heightsComparable ? heightDelta <= tolerance : null;
+        pairs.push({
+          state,
+          a: { title: a.title, height: a.height, width: a.width },
+          b: { title: b.title, height: b.height, width: b.width },
+          widthDelta, heightsComparable, heightDelta, equal,
+          gate: heightsComparable ? equal === true : false,
+          note: heightsComparable
+            ? (equal === true ? 'same state, identical widths, heights equal within tolerance' : 'same state at identical widths but heights differ beyond tolerance')
+            : 'widths differ beyond tolerance - heights not comparable, gate unverifiable',
+        });
+      }
+    }
+  }
+  return {
+    required: true, tolerance, pairs,
+    pass: pairs.length > 0 && pairs.every(pair => pair.gate === true),
+  };
+};
+// The PASS gate, exactly: four resting cards at spread 0 with no meta line,
+// every resting height strictly greater than the RED title-only height,
+// every activation step leaving non-activated cards at their resting
+// height, every same-state pair equal at identical widths, every activated
+// card strictly taller than its own preClick resting height (a step whose
+// activated height equals rest is a vacuous measurement and FAILs the run),
+// and every step screenshot taken with the status row still on screen.
+// Pure, so a fabricated report (e.g. a 10px same-state mismatch, or a step
+// that did not grow) can be shown to return FAIL without a browser.
+const computeStatus = (report) => report.cardCount === 4
+  && report.heightSpread === 0
+  && report.metaCount === 0
+  && report.comparison?.everyRestingHeightExceedsRedTitleOnly === true
+  && report.activation?.othersKeepRestingHeight === true
+  && report.activation?.activatedCardsGrew === true
+  && report.activation?.screenshotsShowStateRows === true
+  && report.activation?.sameStateGate?.pass === true
+  ? 'PASS' : 'FAIL';
 const command = promisify(execFile);
 const pidExitScript = [
   'import errno, os, select, sys',
@@ -136,16 +228,30 @@ async function waitPidExit(pid, ms = 5_000) {
   }
 }
 
-// Sweep any browser process still holding the QA's isolated temp profile
-// (matched by its unique mkdtemp marker) and confirm reaping via kill -0.
-async function sweepChromeProcesses(marker) {
-  let pids = [];
-  try {
-    const { stdout } = await command('pgrep', ['-f', marker]);
-    pids = stdout.split('\n').map(line => Number(line.trim())).filter(pid => Number.isInteger(pid) && pid > 0);
-  } catch (error) {
-    if (error.code !== 1) throw error; // pgrep exits 1 when nothing matches
+// Select every process whose command line references THIS run's exact
+// profile path. The mkdtemp suffix is unique per run, so a concurrent QA
+// run's browser - same shared PREFIX, different profile directory - is
+// never selected. The ps command column is matched as a literal substring,
+// never as a regex and never by the shared prefix alone.
+async function selectProfileProcesses(profilePath) {
+  const { stdout } = await command('ps', ['-axo', 'pid=,command=']);
+  const selected = [];
+  for (const line of stdout.split('\n')) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match === null || !line.includes(profilePath)) continue;
+    const pid = Number(match[1]);
+    if (Number.isInteger(pid) && pid > 0) selected.push({ pid, command: match[2] });
   }
+  return selected;
+}
+
+// Sweep any browser process still holding THIS run's isolated temp profile
+// (matched by this run's unique mkdtemp path) and confirm reaping via
+// kill -0. Scoped to this run only: it can no longer signal a concurrent
+// independent QA run's browser that merely shares the marker prefix.
+async function sweepChromeProcesses(profilePath) {
+  const selected = await selectProfileProcesses(profilePath);
+  const pids = selected.map(entry => entry.pid);
   for (const pid of pids) { try { process.kill(pid, 'SIGTERM'); } catch {} }
   const leftover = [];
   for (const pid of pids) {
@@ -153,7 +259,37 @@ async function sweepChromeProcesses(marker) {
     try { process.kill(pid, 'SIGKILL'); } catch {}
     if (!(await waitPidExit(pid, 3_000))) leftover.push(pid);
   }
-  return { swept: leftover.length === 0, leftover };
+  return { scope: "this run's profile path", marker: profilePath, selectedPids: pids, swept: leftover.length === 0, leftover };
+}
+
+// Prove the sweep's ownership scoping with a live decoy: a process whose
+// command line carries the same shared mkdtemp PREFIX as this run's browser
+// but a different (another run's) profile path. The decoy is spawned before
+// the browser session starts, so the process table is long settled by the
+// time this proof reads it. The profile-scoped sweep must never select it;
+// this function verifies that live, then reaps the decoy it owns.
+async function proveSweepOwnership({ decoy, decoyProfile, profile }) {
+  const { stdout } = await command('ps', ['-axo', 'pid=,command=']);
+  const decoyPattern = new RegExp(`^\\s*${decoy.pid}\\s+`);
+  const decoyLine = stdout.split('\n').find(line => decoyPattern.test(line) && line.includes(decoyProfile));
+  const selected = await selectProfileProcesses(profile);
+  const decoySelected = selected.some(entry => entry.pid === decoy.pid);
+  let decoyAliveAfterSweep = false;
+  try { process.kill(decoy.pid, 0); decoyAliveAfterSweep = true; } catch {}
+  let decoyTerminated = false;
+  try { decoy.kill('SIGTERM'); } catch {}
+  decoyTerminated = await waitPidExit(decoy.pid, 5_000);
+  return {
+    sharedPrefix: chromeMarker,
+    thisRunProfile: profile,
+    otherRunProfile: decoyProfile,
+    decoyPid: decoy.pid,
+    decoyCommandCarriesSharedPrefix: decoyLine !== undefined,
+    decoySelected,
+    decoyAliveAfterSweep,
+    decoyTerminated,
+    proven: decoyLine !== undefined && decoySelected === false && decoyAliveAfterSweep === true,
+  };
 }
 
 // The harness owns no machine-specific defaults: both the playwright-core
@@ -197,7 +333,7 @@ async function run(evidenceDir) {
     restingFreeOfStateRows: null, activation: null, comparison: null,
     screenshots: [], cleanup: {}, errors: [],
   };
-  let fixtureRoot, profile, child, childExit, url, context, page;
+  let fixtureRoot, profile, decoy, decoyProfile, child, childExit, url, context, page;
   let stdout = '', stderr = '';
   let measured = false;
   try {
@@ -217,7 +353,6 @@ async function run(evidenceDir) {
     await mkdir(join(fixtureRoot, 'state'));
     child = spawn(binary, [
       '--root', join(fixtureRoot, 'state'), '--listen', '127.0.0.1:0',
-      ...activationPlan.map(step => `--open=${step.session}=${step.fixtureBehavior}`),
     ], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
     childExit = new Promise((resolveExit, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolveExit({ code, signal })); });
     const ready = new Promise((resolveReady, reject) => {
@@ -234,6 +369,17 @@ async function run(evidenceDir) {
     //    once picker/tree rows exist), and the per-card activation helper
     //    whose MutationObserver is armed before its triggering click.
     profile = await mkdtemp(join(tmpdir(), chromeMarker));
+    // Ownership-scoping decoy: a stand-in for a CONCURRENT independent QA
+    // run's browser - same shared mkdtemp PREFIX in its command line, but a
+    // different profile path. The cleanup sweep selects by this run's exact
+    // profile path, so it must never touch the decoy; proveSweepOwnership
+    // verifies that live at cleanup time and reaps the decoy. Spawned here,
+    // before the browser session, so the process table is long settled by
+    // the time the proof reads it. The no-op error handler keeps a failed
+    // spawn from crashing the run; the proof would then report not-proven.
+    decoyProfile = join(dirname(profile), `${chromeMarker}other-run-${Math.random().toString(36).slice(2, 8)}`);
+    decoy = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 600000)', `user-data-dir=${decoyProfile}`], { stdio: 'ignore' });
+    decoy.once('error', () => {});
     const { chromium } = await importDriver(environment.playwright);
     context = await chromium.launchPersistentContext(profile, {
       executablePath: environment.chrome, headless: true, viewport, reducedMotion: 'reduce', timeout: 30_000,
@@ -384,17 +530,28 @@ async function run(evidenceDir) {
     //    a screenshot, then the reload for the next step. Gate-relevant
     //    invariant: every card WITHOUT a status row still measures the
     //    resting height. Same-state height equality across different sessions
-    //    is INFORMATIONAL only - recorded with widths, never deciding status.
-    //    The transient status row making its own card taller is the expected
-    //    product behavior under test.
+    //    is a REQUIRED PASS condition (see evaluateSameStateGate); a pair is
+    //    only comparable at identical measured widths, and an incomparable
+    //    pair fails the gate. The transient status row making its own card
+    //    taller is the expected product behavior under test.
     const restingHeightByTitle = new Map(restingCards.map(card => [card.title, card.height]));
     const activation = {
-      plan: activationPlan, stateLabels, heightTolerance: HEIGHT_TOLERANCE, steps: [], sameStateComparison: null,
+      plan: activationPlan, stateLabels, heightTolerance: HEIGHT_TOLERANCE, steps: [], sameStateGate: null,
       preClickRestingAsserted: true, labelsMatchExpected: true, othersKeepRestingHeight: true, invariantsHold: false,
+      activatedCardsGrew: null, screenshotsShowStateRows: null,
     };
     report.activation = activation;
     const stepRecords = []; // {state, title, height, width} per isolated step
     for (const [stepIndex, planned] of activationPlan.entries()) {
+      // 9a-0. Swap the fixture's open map to EXACTLY this step's session and
+      //       behavior before anything else: the map replacement (not a
+      //       merge) guarantees only the step's target session has a
+      //       behavior, and the swap is recorded per step so the report
+      //       shows which served response drove each measurement.
+      const openMap = { [planned.session]: planned.fixtureBehavior };
+      const mapResponse = await context.request.post(url + '/api/qa/open-map', { data: { entries: openMap } });
+      if (mapResponse.status() !== 200) throw new Error(`open-map swap failed before ${planned.state} on "${planned.title}": ${mapResponse.status()} ${await mapResponse.text()}`);
+
       // 9a. Fresh boot: reload returns the list to the resting state, and the
       //     init-armed boot signals re-arm on every navigation.
       await page.reload({ waitUntil: 'domcontentloaded' });
@@ -419,7 +576,10 @@ async function run(evidenceDir) {
       activation.preClickRestingAsserted = activation.preClickRestingAsserted && preClickOk;
 
       // 9c. Arm, click, await the exact final status label, then measure
-      //     after two animation frames.
+      //     after two animation frames - INCLUDING the activated card's own
+      //     status-row rect and text, read in this SAME evaluate call, so
+      //     the row geometry and the card heights are one atomic
+      //     observation of the settled page (never an earlier snapshot).
       const step = await deadline(page.evaluate(async ({ title, label }) => {
         const activationAttempt = window.__qaActivateLiveCard(title, label);
         if (activationAttempt.armed !== true) throw new Error(activationAttempt.reason);
@@ -436,15 +596,28 @@ async function run(evidenceDir) {
             statusText: row !== null ? (row.querySelector('span')?.textContent ?? '').trim() : null,
           };
         });
+        const measuredCard = [...document.querySelectorAll('.th-sidebar-live-list .th-overview-card')]
+          .find(card => (card.querySelector('.th-overview-card-name')?.textContent ?? '').trim() === title);
+        const row = measuredCard?.querySelector('.th-overview-card-state') ?? null;
+        const rowRect = row?.getBoundingClientRect();
+        const activatedRow = row === null || rowRect === undefined ? null : {
+          text: (row.querySelector('span')?.textContent ?? '').trim(),
+          height: Math.round(rowRect.height * 100) / 100,
+          width: Math.round(rowRect.width * 100) / 100,
+          top: Math.round(rowRect.top * 100) / 100,
+          bottom: Math.round(rowRect.bottom * 100) / 100,
+          visible: rowRect.height > 0 && rowRect.width > 0,
+        };
         const port = document.querySelector('.th-sidebar-live');
         const scrollport = port === null ? null : { clientWidth: port.clientWidth, scrollHeight: port.scrollHeight };
-        return { statusText, cards, scrollport };
+        return { statusText, cards, activatedRow, scrollport };
       }, { title: planned.title, label: stateLabels[planned.state] }), `activation ${planned.state} on "${planned.title}"`, 30_000);
       const label = stateLabels[planned.state];
       const activated = step.cards.find(card => card.title === planned.title);
       if (activated === undefined) throw new Error(`activation step lost the "${planned.title}" card`);
-      const labelMatches = activated.stateRow === true && step.statusText === label;
-      if (!labelMatches) throw new Error(`activation ${planned.state} on "${planned.title}" resolved status ${JSON.stringify(step.statusText)} (row present: ${activated.stateRow}), expected exactly ${JSON.stringify(label)}`);
+      const rowTextAtMeasurement = step.activatedRow?.text === label && step.activatedRow?.visible === true;
+      const labelMatches = activated.stateRow === true && step.statusText === label && rowTextAtMeasurement;
+      if (!labelMatches) throw new Error(`activation ${planned.state} on "${planned.title}" resolved status ${JSON.stringify(step.statusText)} (row present: ${activated.stateRow}, row at measurement: ${JSON.stringify(step.activatedRow)}), expected exactly ${JSON.stringify(label)}`);
       activation.labelsMatchExpected = activation.labelsMatchExpected && labelMatches;
       const others = [];
       for (const card of step.cards) {
@@ -457,37 +630,69 @@ async function run(evidenceDir) {
           activation.othersKeepRestingHeight = false; // isolated step: no other card may show a status row
         }
       }
-      // 9d. Screenshot of this step's isolated state, then reload (9a of the
-      //     next iteration) before anything else happens on the page.
+      // 9c-2. Non-vacuousness invariant: the activated card's settled height
+      //       MUST be strictly greater than the resting height measured for
+      //       THAT SAME card in THIS step's preClick snapshot - the in-flow
+      //       status row is taller by construction, so an "activated"
+      //       height equal to rest means the measurement never captured a
+      //       grown card (a vacuous step) and the run FAILs through
+      //       computeStatus.
+      const preClickSelf = preClick.cards.find(card => card.title === planned.title);
+      const restingHeightAtClick = preClickSelf?.height ?? null;
+      const heightDeltaOverResting = restingHeightAtClick === null ? null : Math.round((activated.height - restingHeightAtClick) * 100) / 100;
+      const activatedGrew = restingHeightAtClick !== null && activated.height > restingHeightAtClick;
+
+      // 9d. Screenshot of this step's isolated settled state - taken in the
+      //     same measured state, BEFORE any navigation or reload - then
+      //     IMMEDIATELY re-read the activated card from the live DOM to
+      //     prove the status row was still on screen when the screenshot
+      //     pixels were captured. The reload for the next step happens only
+      //     in the next iteration's 9a.
       const shot = `sidebar-live-step${stepIndex + 1}-${planned.state}.png`;
       await page.locator('.th-sidebar-live').screenshot({ path: join(evidenceDir, shot) });
       report.screenshots.push(shot);
+      const postShot = await deadline(page.evaluate((title) => {
+        const card = [...document.querySelectorAll('.th-sidebar-live-list .th-overview-card')]
+          .find(candidate => (candidate.querySelector('.th-overview-card-name')?.textContent ?? '').trim() === title);
+        if (card === undefined) return { cardFound: false, stateRow: false, statusText: null, height: null };
+        const row = card.querySelector('.th-overview-card-state');
+        const rect = card.getBoundingClientRect();
+        return {
+          cardFound: true,
+          stateRow: row !== null,
+          statusText: row !== null ? (row.querySelector('span')?.textContent ?? '').trim() : null,
+          height: Math.round(rect.height * 100) / 100,
+        };
+      }, planned.title), `post-screenshot state check for ${planned.state} on "${planned.title}"`, 30_000);
+      const rowPresentAtScreenshot = postShot.cardFound === true && postShot.stateRow === true && postShot.statusText === label;
       stepRecords.push({ state: planned.state, title: planned.title, height: activated.height, width: activated.width });
       activation.steps.push({
-        state: planned.state, session: planned.session, title: planned.title, screenshot: shot,
+        state: planned.state, session: planned.session, title: planned.title, screenshot: shot, openMap,
         statusText: step.statusText, expectedLabel: label, labelMatches,
         preClick: { cards: preClick.cards.map(card => ({ title: card.title, height: card.height, width: card.width, stateRow: card.stateRow })), scrollport: preClick.scrollport },
         activatedCard: { height: activated.height, width: activated.width },
+        stateRowAtMeasurement: step.activatedRow,
+        restingHeightAtClick, heightDeltaOverResting, activatedGrew,
+        screenshotState: { stateRow: postShot.stateRow === true, statusText: postShot.statusText, height: postShot.height, rowPresentAtScreenshot },
         others, scrollport: step.scrollport,
       });
     }
-    // Same-state height equality across different sessions: INFORMATIONAL
-    // ONLY - recorded with both steps' measured widths, compared only when
-    // the widths are identical, and never part of the PASS gate.
-    const sameStateName = activationPlan.map(step => step.state).find((state, index, all) => all.indexOf(state) !== index) ?? null;
-    if (sameStateName === null) {
-      activation.sameStateComparison = { state: null, steps: [], equal: null, note: 'no state was exercised on two sessions' };
-    } else {
-      const pair = stepRecords.filter(entry => entry.state === sameStateName);
-      const widthsIdentical = pair.length === 2 && pair[0].width === pair[1].width;
-      activation.sameStateComparison = {
-        state: sameStateName,
-        steps: pair.map(entry => ({ title: entry.title, height: entry.height, width: entry.width })),
-        widthsIdentical,
-        equal: widthsIdentical ? sameHeight(pair[0].height, pair[1].height) : null,
-        note: 'informational only - never decides status' + (widthsIdentical ? '' : '; widths differ, heights not compared'),
-      };
-    }
+    // Non-vacuousness and screenshot-state aggregates: every step's
+    // activated card must have measured strictly taller than its own
+    // preClick resting height, and every step screenshot must have been
+    // taken with the status row still on screen. Both are required for
+    // PASS (see computeStatus); a vacuous step cannot hide behind a green
+    // same-state pair.
+    activation.activatedCardsGrew = activation.steps.length === activationPlan.length
+      && activation.steps.every(entry => entry.activatedGrew === true);
+    activation.screenshotsShowStateRows = activation.steps.length === activationPlan.length
+      && activation.steps.every(entry => entry.screenshotState.rowPresentAtScreenshot === true);
+    // Same-state height equality across different sessions: a REQUIRED PASS
+    // condition. Every same-state pair is compared; a pair is only
+    // comparable when its measured widths are identical (within the same
+    // sub-pixel tolerance), and a non-comparable pair fails the gate rather
+    // than silently voiding it.
+    activation.sameStateGate = evaluateSameStateGate(stepRecords, HEIGHT_TOLERANCE);
     activation.invariantsHold = activation.steps.length === activationPlan.length
       && activation.preClickRestingAsserted === true
       && activation.labelsMatchExpected === true
@@ -519,15 +724,14 @@ async function run(evidenceDir) {
     }
     report.comparison = comparison;
 
-    // PASS gate, exactly: resting cardCount 4, resting heightSpread 0,
+    // PASS gate, exactly: resting cardCount 5, resting heightSpread 0,
     // metaCount 0, every resting height strictly greater than the RED
-    // title-only height, and in every activation step every card WITHOUT a
-    // status row still measures the resting height. Same-state height
-    // equality is informational and never decides status.
-    report.status = report.cardCount === 4 && report.heightSpread === 0 && report.metaCount === 0
-      && comparison.everyRestingHeightExceedsRedTitleOnly === true
-      && activation.othersKeepRestingHeight === true
-      ? 'PASS' : 'FAIL';
+    // title-only height, in every activation step every card WITHOUT a
+    // status row still measures the resting height, and every same-state
+    // pair measures equal heights at identical widths. The gate is a pure
+    // function so a fabricated mismatch can be shown to return FAIL without
+    // a browser (recorded alongside the QA log).
+    report.status = computeStatus(report);
   } catch (error) {
     report.errors.push({ message: error.message, stack: error.stack });
     if (!measured) report.status = 'BLOCKED';
@@ -535,7 +739,16 @@ async function run(evidenceDir) {
     if (page && !page.isClosed()) { try { await page.screenshot({ path: join(evidenceDir, 'failure.png'), fullPage: true }); report.screenshots = [...report.screenshots, 'failure.png']; } catch {} }
   } finally {
     if (context) { try { await context.close(); report.cleanup.browserContextClosed = true; } catch (error) { report.cleanup.browserContextClosed = false; report.errors.push({ cleanup: 'browser', error: String(error) }); } }
-    try { report.cleanup.chromeSweep = await sweepChromeProcesses(chromeMarker); } catch (error) { report.cleanup.chromeSweep = { swept: false, error: String(error) }; report.errors.push({ cleanup: 'chromeSweep', error: String(error) }); }
+    if (profile) {
+      try { report.cleanup.chromeSweep = await sweepChromeProcesses(profile); } catch (error) { report.cleanup.chromeSweep = { swept: false, error: String(error) }; report.errors.push({ cleanup: 'chromeSweep', error: String(error) }); }
+      if (decoy) {
+        try { report.cleanup.ownershipProof = await proveSweepOwnership({ decoy, decoyProfile, profile }); } catch (error) { report.cleanup.ownershipProof = { proven: false, error: String(error) }; report.errors.push({ cleanup: 'ownershipProof', error: String(error) }); }
+      } else {
+        report.cleanup.ownershipProof = { proven: false, skipped: 'decoy not spawned - run failed before browser launch' };
+      }
+    } else {
+      report.cleanup.chromeSweep = { swept: true, skipped: 'no profile created this run' };
+    }
     if (profile) { try { await rm(profile, { recursive: true, force: true }); report.cleanup.browserProfileRemoved = !(await exists(profile)); } catch (error) { report.cleanup.browserProfileRemoved = false; report.errors.push({ cleanup: 'profile', error: String(error) }); } }
     if (child) {
       try {
@@ -556,7 +769,8 @@ async function run(evidenceDir) {
     if (fixtureRoot) { try { await rm(fixtureRoot, { recursive: true, force: true }); report.cleanup.fixtureRootRemoved = !(await exists(fixtureRoot)); } catch (error) { report.cleanup.fixtureRootRemoved = false; report.errors.push({ cleanup: 'fixtureRoot', error: String(error) }); } }
     report.cleanup.receipt = [
       `browser context ${report.cleanup.browserContextClosed === true ? 'closed' : 'NOT CLOSED'}`,
-      `chrome swept by marker ${chromeMarker} (${report.cleanup.chromeSweep?.error !== undefined ? 'error' : report.cleanup.chromeSweep?.swept === true ? 'no leftovers' : `leftover ${JSON.stringify(report.cleanup.chromeSweep?.leftover ?? [])}`})`,
+      `chrome swept by this run's profile ${profile ?? 'n/a'} (${report.cleanup.chromeSweep?.error !== undefined ? 'error' : report.cleanup.chromeSweep?.swept === true ? `selected ${JSON.stringify(report.cleanup.chromeSweep?.selectedPids ?? [])}, no leftovers` : `leftover ${JSON.stringify(report.cleanup.chromeSweep?.leftover ?? [])}`})`,
+      `sweep ownership scoped to this run (${report.cleanup.ownershipProof?.proven === true ? `decoy pid ${report.cleanup.ownershipProof.decoyPid} carrying the shared prefix but a different profile was not selected and stayed alive` : 'NOT PROVEN'})`,
       `profile ${report.cleanup.browserProfileRemoved === true ? 'removed' : 'REMAINS'}`,
       `fixture pid ${child?.pid ?? 'n/a'} ${report.cleanup.fixtureProcess?.exited === true ? `exited (${JSON.stringify({ code: report.cleanup.fixtureProcess.code, signal: report.cleanup.fixtureProcess.signal })}, kill0=${report.cleanup.fixtureProcess.kill0})` : 'NOT CONFIRMED EXITED'}`,
       `port ${url ? `${new URL(url).port} ${report.cleanup.portReleased === true ? 'released' : 'STILL HELD'}` : 'n/a'}`,
@@ -580,8 +794,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       activation: {
         steps: report.activation?.steps.length ?? 0,
         othersKeepRestingHeight: report.activation?.othersKeepRestingHeight ?? false,
-        stepsSummary: (report.activation?.steps ?? []).map(step => ({ state: step.state, title: step.title, statusText: step.statusText, height: step.activatedCard.height, width: step.activatedCard.width, scrollport: step.scrollport })),
-        sameStateComparison: report.activation?.sameStateComparison ?? null,
+        activatedCardsGrew: report.activation?.activatedCardsGrew ?? false,
+        screenshotsShowStateRows: report.activation?.screenshotsShowStateRows ?? false,
+        stepsSummary: (report.activation?.steps ?? []).map(step => ({ state: step.state, title: step.title, statusText: step.statusText, height: step.activatedCard.height, width: step.activatedCard.width, heightDeltaOverResting: step.heightDeltaOverResting, activatedGrew: step.activatedGrew, stateRowAtMeasurement: step.stateRowAtMeasurement, rowPresentAtScreenshot: step.screenshotState.rowPresentAtScreenshot, scrollport: step.scrollport })),
+        sameStateGate: report.activation?.sameStateGate ?? null,
       },
       comparison: report.comparison === null ? null : {
         redTitleOnlyHeight: report.comparison.redTitleOnlyHeight,
@@ -596,4 +812,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
 }
 
-export { run };
+export { run, computeStatus, evaluateSameStateGate };

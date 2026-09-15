@@ -5,9 +5,11 @@
 // `npm run build`) behind a loopback-only stub of the API surface the SPA
 // needs on boot. It needs no real omo engine: GET /api/sessions/live answers
 // exactly four fixed lean rows (shape mirrored from
-// internal/session/live_summary.go) chosen so three cards render the
-// conditional .th-overview-card-meta line and one ("Idle attached") has no
-// work at all — the height divergence under test.
+// internal/session/live_summary.go) chosen so the list covers every head-row
+// variant at a shape that fits the sidebar section's max-height: two cards
+// with the running count badge ("Refactor auth", "Docs sweep"), one
+// dot-only active row ("Idle attached") and one badge-free row ("Quiet
+// session").
 //
 // It also serves the session-catalog endpoints the SPA needs to resolve a
 // live row into an openable session (GET /api/workspaces and
@@ -15,7 +17,13 @@
 // discovered rows), plus POST /api/workspaces/{wsId}/sessions/open whose
 // behavior is selected per session id through --open=ID=BEHAVIOR flags so the
 // harness can drive the "opening" (slow response), "session-active"
-// (conflict response) and "open failed" (error response) card states.
+// (conflict response) and "open failed" (error response) card states. The
+// map is also swappable at runtime through POST /api/qa/open-map, so the QA
+// harness can drive the SAME session into different behaviors on different
+// fresh page loads - keeping the rendered list at four cards (the section's
+// max-height would flex-shrink a fifth card onto its min-height floor and
+// crush the transient status rows) while still exercising every same-state
+// pair.
 package main
 
 import (
@@ -38,6 +46,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -430,6 +439,26 @@ func (l *openBehaviorList) Set(value string) error {
 	return nil
 }
 
+// openBehaviorStore is the per-session open-behavior map behind a mutex:
+// the QA harness swaps it at runtime through POST /api/qa/open-map while an
+// earlier slow-open request may still be in flight.
+type openBehaviorStore struct {
+	mu    sync.Mutex
+	rules map[string]string
+}
+
+func (s *openBehaviorStore) set(rules map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules = rules
+}
+
+func (s *openBehaviorStore) behavior(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rules[id]
+}
+
 // parseOpenBehaviors parses repeatable --open=SESSION=BEHAVIOR flags (also
 // accepting comma-separated lists) into the per-session-id map the open
 // endpoint consults. Unknown behavior names fail startup loudly.
@@ -460,6 +489,43 @@ func parseOpenBehaviors(specs []string) (map[string]string, error) {
 	return behaviors, nil
 }
 
+// handleQAOpenMap REPLACES the per-session open-behavior map at runtime:
+// POST /api/qa/open-map {"entries":{"SESSION":"BEHAVIOR"}}. The QA
+// harness drives one activation state per fresh page load; runtime switching
+// lets the same session be slow in one step and error in a later one without
+// a second fixture boot, while the rendered four-card list never changes
+// shape. Unknown behavior names fail loudly; an empty entries map is
+// rejected so a swap can never silently disable every behavior.
+func handleQAOpenMap(behaviors *openBehaviorStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Entries map[string]string `json:"entries"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Entries) == 0 {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		next := make(map[string]string, len(req.Entries))
+		for id, behavior := range req.Entries {
+			valid := false
+			for _, name := range openBehaviorNames {
+				if behavior == name {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid behavior %q for %q (want SESSION=%s)", behavior, id, strings.Join(openBehaviorNames, "|")))
+				return
+			}
+			next[id] = behavior
+		}
+		behaviors.set(next)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "open": next})
+	}
+}
+
 // handleSessionsOpen implements POST /api/workspaces/{wsId}/sessions/open
 // with the fixture-selected per-session behavior:
 //   - slow: hold the response until the client goes away (or the cap),
@@ -467,7 +533,7 @@ func parseOpenBehaviors(specs []string) (map[string]string, error) {
 //   - conflict: 409 {"state":"session-active"} - "already active elsewhere";
 //   - error: 500 - "open failed";
 //   - ok (default): the opened Terminal identity.
-func handleSessionsOpen(behaviors map[string]string) http.HandlerFunc {
+func handleSessionsOpen(behaviors *openBehaviorStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID             string  `json:"id"`
@@ -479,7 +545,7 @@ func handleSessionsOpen(behaviors map[string]string) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		behavior := behaviors[req.ID]
+		behavior := behaviors.behavior(req.ID)
 		if behavior == "" {
 			behavior = openOK
 		}
@@ -521,10 +587,11 @@ func run() error {
 	if err != nil || host != "127.0.0.1" {
 		return errors.New("loopback listen address required")
 	}
-	openBehaviors, err := parseOpenBehaviors(openSpecs)
+	openRules, err := parseOpenBehaviors(openSpecs)
 	if err != nil {
 		return err
 	}
+	openBehaviors := &openBehaviorStore{rules: openRules}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -548,6 +615,7 @@ func run() error {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": catalogSessions(), "nextCursor": ""})
 	})
+	protected.HandleFunc("POST /api/qa/open-map", handleQAOpenMap(openBehaviors))
 	protected.HandleFunc("POST /api/workspaces/{wsId}/sessions/open", func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("wsId") != workspaceID {
 			writeError(w, http.StatusNotFound, "unknown workspace")
