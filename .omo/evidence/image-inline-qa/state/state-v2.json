@@ -1,0 +1,124 @@
+{
+  "workspaces": [
+    {
+      "id": "ws-c5d79059",
+      "name": "Inline QA",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-8f22f302",
+      "name": "Inline QA",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-cffab8a3",
+      "name": "collapsed",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-2a10f82a",
+      "name": "collapsed-1789435322458",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-ceddf9d8",
+      "name": "lazy-seed-1789435337260",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-55233605",
+      "name": "lazy-seed-1789435561285",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    },
+    {
+      "id": "ws-aeed4969",
+      "name": "text-only-1789435852674",
+      "path": "/private/tmp/webchat-inline-qa/root"
+    }
+  ],
+  "chats": {
+    "chat-18493a6d": {
+      "id": "chat-18493a6d",
+      "workspaceId": "ws-55233605",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-26-01-928Z_9f9dfaa6-6d98-4a74-9ffd-e57c03583c07.jsonl",
+      "durableSessionId": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "sessionProvenance": "native",
+      "name": "lazy-seed-1789435561285-chat",
+      "nameSource": "auto",
+      "createdAt": 1789435561308,
+      "lastUsedAt": 1789435561476
+    },
+    "chat-206ce3d5": {
+      "id": "chat-206ce3d5",
+      "workspaceId": "ws-ceddf9d8",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-22-17-938Z_9bfe9d5d-fb6f-42b1-a40e-5f6fd6d859a7.jsonl",
+      "durableSessionId": "01a0a2a8-5cd4-7a26-bc8b-42698d13d711",
+      "sessionProvenance": "native",
+      "name": "lazy-seed-1789435337260-chat",
+      "nameSource": "auto",
+      "createdAt": 1789435337276,
+      "lastUsedAt": 1789435337452
+    },
+    "chat-2d08bc2b": {
+      "id": "chat-2d08bc2b",
+      "workspaceId": "ws-c5d79059",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-19-17-511Z_5ec54395-e313-4888-8b83-96577826ba53.jsonl",
+      "durableSessionId": "01a0a2a5-9c09-773b-95cb-d003730ac3ab",
+      "sessionProvenance": "native",
+      "name": "Collapsed image QA",
+      "nameSource": "auto",
+      "createdAt": 1789435100942,
+      "lastUsedAt": 1789435156632
+    },
+    "chat-4d06f1d1": {
+      "id": "chat-4d06f1d1",
+      "workspaceId": "ws-8f22f302",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionProvenance": "native",
+      "name": "Collapsed image QA",
+      "nameSource": "auto",
+      "createdAt": 1789435156527
+    },
+    "chat-836ef95f": {
+      "id": "chat-836ef95f",
+      "workspaceId": "ws-aeed4969",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-30-53-344Z_ab2a35a7-2838-4759-85f1-9db24345b931.jsonl",
+      "durableSessionId": "01a0a2b0-3a22-7a86-ac52-f2d286cb2b8e",
+      "sessionProvenance": "native",
+      "name": "text-only-1789435852674-chat",
+      "nameSource": "auto",
+      "createdAt": 1789435852696,
+      "lastUsedAt": 1789435852883
+    },
+    "chat-cd2623c3": {
+      "id": "chat-cd2623c3",
+      "workspaceId": "ws-cffab8a3",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionProvenance": "native",
+      "name": "collapsed",
+      "nameSource": "auto",
+      "createdAt": 1789435254572
+    },
+    "chat-e82447d2": {
+      "id": "chat-e82447d2",
+      "workspaceId": "ws-2a10f82a",
+      "cwd": "/private/tmp/webchat-inline-qa/root",
+      "sessionFile": "/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-22-03-344Z_3db9cfef-be64-4c34-83f2-fb8bb7446a4d.jsonl",
+      "durableSessionId": "01a0a2a8-23d3-73a5-b8d4-1682c02f8811",
+      "sessionProvenance": "native",
+      "name": "collapsed-1789435322458-chat",
+      "nameSource": "auto",
+      "createdAt": 1789435322489,
+      "lastUsedAt": 1789435322666
+    }
+  },
+  "layout": {
+    "kind": "leaf",
+    "id": "pane-9e5e262a-99bf-481e-a697-8d41118dbcf2",
+    "sessionId": "chat-836ef95f"
+  }
+}

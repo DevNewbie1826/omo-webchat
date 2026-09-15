@@ -1,0 +1,30 @@
+{
+  "seq": 1,
+  "entries": [
+    {
+      "kind": "notice",
+      "session_id": "01a0a2b0-3a22-7a86-ac52-f2d286cb2b8e",
+      "data": {
+        "at": "2026-09-15T01:30:58.370351Z",
+        "kind": "engine_notify",
+        "message": "TPS 50.2 tok/s. Cache hit 99.3%, 0.3s",
+        "nid": "chat-836ef95f:g1789435034909623000:1",
+        "notifyType": "info"
+      }
+    }
+  ],
+  "derivations": {
+    "transcript:4925bd14c0576e14eebf3242150a3ce8a643498ff4b3bff22d3aea9c6ee8e4c2": true
+  },
+  "transcripts": {
+    "01a0a2b0-3a22-7a86-ac52-f2d286cb2b8e": {
+      "previous": {
+        "promptTokens": 44566,
+        "modelKey": "ccapi/claude-opus-5",
+        "timestamp": 1789435854147,
+        "reportedCache": true
+      },
+      "source": "message:c4644dcb9e7f299604ad06ff457d732a2c58f7162e17b882bc37a54e8d05d00f"
+    }
+  }
+}

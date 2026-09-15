@@ -1,0 +1,123 @@
+{
+  "seq": 9,
+  "entries": [
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:26:23.005941Z",
+        "kind": "engine_notify",
+        "message": "TPS 136.3 tok/s. Cache hit 28.1%, 11.6s",
+        "nid": "chat-18493a6d:g1789435034909623000:1",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:27:34.275187Z",
+        "kind": "cache_miss",
+        "nid": "chat-18493a6d:g1789435034909623000:2",
+        "text": "Cache miss: 21K tokens re-billed(~$0.12)"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:27:38.077593Z",
+        "kind": "engine_notify",
+        "message": "TPS 68.0 tok/s. Cache hit 75.4%, 2.8s",
+        "nid": "chat-18493a6d:g1789435034909623000:3",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:28:27.834624Z",
+        "kind": "cache_miss",
+        "nid": "chat-18493a6d:g1789435034909623000:4",
+        "text": "Cache miss: 23K tokens re-billed(~$0.13)"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:28:34.070871Z",
+        "kind": "cache_miss",
+        "nid": "chat-18493a6d:g1789435034909623000:5",
+        "text": "Cache miss: 23K tokens re-billed(~$0.14)"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:28:34.095828Z",
+        "kind": "engine_notify",
+        "message": "TPS 173.8 tok/s. Cache hit 50.6%, 1.0s",
+        "nid": "chat-18493a6d:g1789435034909623000:6",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:29:28.951044Z",
+        "kind": "cache_miss",
+        "nid": "chat-18493a6d:g1789435034909623000:7",
+        "text": "Cache miss: 24K tokens re-billed(~$0.14)"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:29:41.629841Z",
+        "kind": "engine_notify",
+        "message": "TPS 126.4 tok/s. Cache hit 74.2%, 10.8s",
+        "nid": "chat-18493a6d:g1789435034909623000:8",
+        "notifyType": "info"
+      }
+    },
+    {
+      "kind": "notice",
+      "session_id": "01a0a2ab-c7ca-78ae-882b-c3938e40a649",
+      "data": {
+        "at": "2026-09-15T01:30:51.442112Z",
+        "kind": "engine_notify",
+        "message": "TPS 53.2 tok/s. Cache hit 95.9%, 3.0s",
+        "nid": "chat-18493a6d:g1789435034909623000:9",
+        "notifyType": "info"
+      }
+    }
+  ],
+  "derivations": {
+    "transcript:034d474993bb92ce6f0662a2dd085680a74d3e6da155ab3a0a9b055a96e76d8d": true,
+    "transcript:0ffa86ae601f9def88a28262283bc681428a1e1583a1fc7cd1511ac2aad6ca3e": true,
+    "transcript:3ed32df935806e965d6369d4f30fc3f24dd132dc52780e31994b86010463eb0f": true,
+    "transcript:54f84314726fdb35f530f98f24f0fea1300fdf35af6ade11b192e3a0496c6a75": true,
+    "transcript:5dff503142639a05d55697e96f8f6e4d8398fa5e680add2712cc5e40bf535a96": true,
+    "transcript:7a6b52a3b9da83bef678a742f224491a88209561c6a4f6da024db56b5c218b9b": true,
+    "transcript:afce9ecdb8b782d56586b6461a88423f61b772bb548ee7446dd3b4cc03803d58": true,
+    "transcript:b65caa10b6a05398ab6e9dec0d738c3169458171e29fe47a9a05d8ecf398976c": true,
+    "transcript:e34fc316c85025676de3a7bd2e2d0b9246659c470b21876eef1e5c875bbcfac3": true,
+    "transcript:f5f2f7492f21a288ac3a7d9af5320c93a6110214d863e2a83eab9ae2401f6af5": true
+  },
+  "transcripts": {
+    "01a0a2ab-c7ca-78ae-882b-c3938e40a649": {
+      "previous": {
+        "promptTokens": 51798,
+        "modelKey": "ccapi/claude-opus-5",
+        "timestamp": 1789435847103,
+        "reportedCache": true
+      },
+      "source": "message:cb349a7e3d9c09c0123c4bc77ad13e90e2d09f7dcd04918807fb97e45522ecb6"
+    }
+  }
+}

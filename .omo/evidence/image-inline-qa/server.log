@@ -1,0 +1,6 @@
+# Source: /tmp/webchat-inline-qa/server.log
+time=2026-09-15T10:17:14.913+09:00 level=INFO msg=listening addr=127.0.0.1:60316 root=/private/tmp/webchat-inline-qa/root
+time=2026-09-15T10:26:01.338+09:00 level=WARN msg="opening v2 chat session" chat_id=chat-206ce3d5 error="context canceled"
+time=2026-09-15T10:27:28.910+09:00 level=WARN msg="opening v2 chat session" chat_id=chat-18493a6d error="coldhistory: read \"/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-26-01-928Z_9f9dfaa6-6d98-4a74-9ffd-e57c03583c07.jsonl\": page callback: context canceled"
+time=2026-09-15T10:28:23.125+09:00 level=WARN msg="opening v2 chat session" chat_id=chat-18493a6d error="context canceled"
+time=2026-09-15T10:30:52.716+09:00 level=WARN msg="opening v2 chat session" chat_id=chat-18493a6d error="coldhistory: read \"/Users/mirage/.omo/agent/sessions/--private-tmp-webchat-inline-qa-root--/2026-09-15T01-26-01-928Z_9f9dfaa6-6d98-4a74-9ffd-e57c03583c07.jsonl\": page callback: context canceled"

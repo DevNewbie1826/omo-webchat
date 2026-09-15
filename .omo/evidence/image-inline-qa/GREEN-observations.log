@@ -1,0 +1,3 @@
+COLLAPSED PASS: aria-expanded=false, naturalWidth=900, naturalHeight=560, one media request HTTP 200
+TEXT CONTENT PASS: exact assistant text TEXT_ONLY_QA_7419, zero media requests
+OVERALL GREEN: NOT ACHIEVED. Viewport laziness and same-pair no-refetch evidence incomplete.

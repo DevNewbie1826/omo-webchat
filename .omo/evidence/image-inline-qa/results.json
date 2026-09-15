@@ -1,0 +1,150 @@
+{
+  "collapsed": {
+    "verdict": "PASS",
+    "measurements": [
+      {
+        "toolCallId": "toolu_01X7EjHLgMKBgmvbAyCgTF72",
+        "expanded": "false",
+        "images": [
+          {
+            "naturalWidth": 900,
+            "naturalHeight": 560,
+            "rect": {
+              "x": 472,
+              "y": 328.6875,
+              "width": 513.0625,
+              "height": 320,
+              "top": 328.6875,
+              "right": 985.0625,
+              "bottom": 648.6875,
+              "left": 472
+            }
+          }
+        ]
+      }
+    ],
+    "requests": [
+      {
+        "event": "request",
+        "url": "http://127.0.0.1:60316/api/workspaces/ws-2a10f82a/chats/chat-e82447d2/media?toolCallId=toolu_01X7EjHLgMKBgmvbAyCgTF72&contentIndex=1",
+        "time": 1789435329598
+      },
+      {
+        "event": "response",
+        "url": "http://127.0.0.1:60316/api/workspaces/ws-2a10f82a/chats/chat-e82447d2/media?toolCallId=toolu_01X7EjHLgMKBgmvbAyCgTF72&contentIndex=1",
+        "status": 200,
+        "time": 1789435329601
+      }
+    ]
+  },
+  "viewportLazy": {
+    "verdict": "FAIL",
+    "reason": "Live result could not be held offscreen: auto-follow exposed the row before the zero-request checkpoint. Restored history uses inline data, so that zero-request check does not prove lazy HTTP behavior. See viewport-attempt.log."
+  },
+  "noRefetch": {
+    "verdict": "FAIL",
+    "away": [
+      {
+        "toolCallId": "toolu_01Pm8sER3JkqUHCgYyzY18EN",
+        "expanded": "false",
+        "images": [
+          {
+            "naturalWidth": 900,
+            "naturalHeight": 560,
+            "rect": {
+              "x": 472,
+              "y": 287.65625,
+              "width": 513.0625,
+              "height": 320,
+              "top": 287.65625,
+              "right": 985.0625,
+              "bottom": 607.65625,
+              "left": 472
+            }
+          }
+        ]
+      },
+      {
+        "toolCallId": "toolu_01NfjDs7gApXDxaNfRGAAdUW",
+        "expanded": "false",
+        "images": [
+          {
+            "naturalWidth": 900,
+            "naturalHeight": 560,
+            "rect": {
+              "x": 472,
+              "y": 3426.65625,
+              "width": 513.0625,
+              "height": 320,
+              "top": 3426.65625,
+              "right": 985.0625,
+              "bottom": 3746.65625,
+              "left": 472
+            }
+          }
+        ]
+      }
+    ],
+    "after": [
+      {
+        "toolCallId": "toolu_01Pm8sER3JkqUHCgYyzY18EN",
+        "expanded": "false",
+        "images": [
+          {
+            "naturalWidth": 900,
+            "naturalHeight": 560,
+            "rect": {
+              "x": 472,
+              "y": -3062.34375,
+              "width": 513.0625,
+              "height": 320,
+              "top": -3062.34375,
+              "right": 985.0625,
+              "bottom": -2742.34375,
+              "left": 472
+            }
+          }
+        ]
+      },
+      {
+        "toolCallId": "toolu_01NfjDs7gApXDxaNfRGAAdUW",
+        "expanded": "false",
+        "images": [
+          {
+            "naturalWidth": 900,
+            "naturalHeight": 560,
+            "rect": {
+              "x": 472,
+              "y": 76.65625,
+              "width": 513.0625,
+              "height": 320,
+              "top": 76.65625,
+              "right": 985.0625,
+              "bottom": 396.65625,
+              "left": 472
+            }
+          }
+        ]
+      }
+    ],
+    "requests": [
+      {
+        "event": "request",
+        "url": "http://127.0.0.1:60316/api/workspaces/ws-55233605/chats/chat-18493a6d/media?toolCallId=toolu_019N4ek16A4c3SV3bt2b1f23&contentIndex=1",
+        "time": 1789435847106
+      },
+      {
+        "event": "response",
+        "url": "http://127.0.0.1:60316/api/workspaces/ws-55233605/chats/chat-18493a6d/media?toolCallId=toolu_019N4ek16A4c3SV3bt2b1f23&contentIndex=1",
+        "status": 200,
+        "time": 1789435847107
+      }
+    ],
+    "reason": "Evidence identity mismatch: the one requested toolCallId was toolu_019N4ek16A4c3SV3bt2b1f23, but the toggled/scrolled last DOM card was toolu_01NfjDs7gApXDxaNfRGAAdUW. The requested pair was not proven to survive the interactions; previous script PASS was invalid."
+  },
+  "textOnly": {
+    "verdict": "PASS",
+    "text": "TEXT_ONLY_QA_7419",
+    "requests": []
+  }
+}

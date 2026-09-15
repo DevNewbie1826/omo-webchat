@@ -1,0 +1,14 @@
+{
+  "serverPid": 7932,
+  "serverPidGone": true,
+  "browserClosed": true,
+  "remainingQAProcesses": [],
+  "temporaryRootsOutsideTmpCreated": [],
+  "temporaryRootsOutsideTmpToRemove": [],
+  "timestamp": "2026-09-15T10:31:42.146036",
+  "unrelatedBrowserPreserved": {
+    "pid": 24896,
+    "started": "2026-09-13 00:42:19",
+    "reason": "Predates this QA session by two days; not owned by this task."
+  }
+}
