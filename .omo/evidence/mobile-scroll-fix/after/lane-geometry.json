@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-15T08:24:30.798Z",
+  "recordedAt": "2026-09-15T08:35:29.211Z",
   "widths": [
     390,
     600
@@ -96,7 +96,7 @@
       "mountedGeometry": {
         "laneWidth": 366,
         "bubbleWidth": 366,
-        "rowIndex": 135,
+        "rowIndex": 129,
         "hostClass": "th-chat-history"
       },
       "laneDelta": 0,
@@ -121,7 +121,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 180,
       "freshEstimate": 180,
-      "browserMeasuredRow": 135,
+      "browserMeasuredRow": 129,
       "browserHeight": 178,
       "pass": true
     },
@@ -134,7 +134,7 @@
       "mountedGeometry": {
         "laneWidth": 366,
         "bubbleWidth": 366,
-        "rowIndex": 99,
+        "rowIndex": 84,
         "hostClass": "th-chat-history"
       },
       "laneDelta": 0,
@@ -159,7 +159,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 285,
       "freshEstimate": 285,
-      "browserMeasuredRow": 99,
+      "browserMeasuredRow": 84,
       "browserHeight": 320,
       "pass": true
     },
@@ -210,7 +210,7 @@
       "mountedGeometry": {
         "laneWidth": 552,
         "bubbleWidth": 552,
-        "rowIndex": 228,
+        "rowIndex": 230,
         "hostClass": "th-chat-history"
       },
       "laneDelta": 0,
@@ -235,7 +235,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 79,
       "freshEstimate": 79,
-      "browserMeasuredRow": 228,
+      "browserMeasuredRow": 230,
       "browserHeight": 76,
       "pass": true
     },
@@ -248,7 +248,7 @@
       "mountedGeometry": {
         "laneWidth": 552,
         "bubbleWidth": 552,
-        "rowIndex": 148,
+        "rowIndex": 157,
         "hostClass": "th-chat-history"
       },
       "laneDelta": 0,
@@ -273,7 +273,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 125,
       "freshEstimate": 125,
-      "browserMeasuredRow": 148,
+      "browserMeasuredRow": 157,
       "browserHeight": 124,
       "pass": true
     },
@@ -286,7 +286,7 @@
       "mountedGeometry": {
         "laneWidth": 552,
         "bubbleWidth": 552,
-        "rowIndex": 93,
+        "rowIndex": 98,
         "hostClass": "th-chat-history"
       },
       "laneDelta": 0,
@@ -311,7 +311,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 209,
       "freshEstimate": 209,
-      "browserMeasuredRow": 93,
+      "browserMeasuredRow": 98,
       "browserHeight": 206,
       "pass": true
     }

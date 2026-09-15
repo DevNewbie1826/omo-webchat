@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-09-15T08:24:01.120Z",
+  "recordedAt": "2026-09-15T08:35:28.004Z",
   "widths": [
     390,
     600
@@ -95,7 +95,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 285,
       "freshEstimate": 285,
-      "browserMeasuredRow": 89,
+      "browserMeasuredRow": 100,
       "browserHeight": 320,
       "pass": true
     },
@@ -183,7 +183,7 @@
       "measuredCacheContainsRow": false,
       "estimate": 209,
       "freshEstimate": 209,
-      "browserMeasuredRow": 98,
+      "browserMeasuredRow": 107,
       "browserHeight": 206,
       "pass": true
     }
