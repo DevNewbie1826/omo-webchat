@@ -137,6 +137,29 @@ describe("ChatTranscript preserved image blocks", () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
+	it("gives the open image zoom dialog an accessible name", () => {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ChatTranscript
+						{...baseProps}
+						items={[messageItem([{ kind: "image", data: PNG_DATA, mimeType: "image/png" }])]}
+					/>
+				</I18nContext.Provider>,
+			);
+		});
+		act(() => {
+			container.querySelector<HTMLButtonElement>(".th-chat-image-button")?.click();
+		});
+		const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+		expect(dialog).not.toBeNull();
+		const labelledBy = dialog?.getAttribute("aria-labelledby");
+		expect(labelledBy).not.toBeNull();
+		expect(labelledBy).toEqual(expect.any(String));
+		const title = document.getElementById(labelledBy as string);
+		expect(title?.textContent).toBe(translate("en", "chat.imageZoomTitle"));
+	});
+
 	it("fetches a collapsed card's image_ref on viewport entry and caches it across collapse, expand, and remount", async () => {
 		const block: ContentBlock = {
 			kind: "tool",

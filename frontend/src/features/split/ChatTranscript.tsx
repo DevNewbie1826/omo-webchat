@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -282,6 +282,7 @@ export function ChatTranscript({
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize, font } = useT();
+  const imageZoomTitleId = useId();
   // Measurement corrections dropped while a user scroll gesture is in flight
   // accumulate here and replay once the gesture ends (scrollend listener /
   // debounced-scroll fallback below). Declared before useChatScroll so an
@@ -352,6 +353,31 @@ export function ChatTranscript({
   // modal renders through a portal, so virtualized row unmounts never tear
   // it down, and reusing the same data:/object URL never refetches.
   const [zoomedSrc, setZoomedSrc] = useState<string | null>(null);
+  // modalStack restores focus to the element that was active when the modal
+  // opened — but a live row finalizing underneath the open zoom replaces
+  // that trigger node, so the saved element is disconnected and focus falls
+  // through to <body>. On close, re-resolve the CURRENT trigger for the same
+  // image (its src is stable: data: bytes are identical and ref object URLs
+  // are cached per media coordinate) and focus it after the modal's own
+  // restore has run (passive-effect destroys all flush before creates).
+  const zoomFocusSrcRef = useRef<string | null>(null);
+  const closeZoom = useCallback(() => {
+    setZoomedSrc((current) => {
+      zoomFocusSrcRef.current = current;
+      return null;
+    });
+  }, []);
+  useEffect(() => {
+    if (zoomedSrc !== null) return;
+    const src = zoomFocusSrcRef.current;
+    if (src === null) return;
+    zoomFocusSrcRef.current = null;
+    const root = scrollRef.current;
+    if (root === null) return;
+    const trigger = Array.from(root.querySelectorAll<HTMLElement>(".th-chat-image-button"))
+      .find((button) => button.querySelector("img")?.getAttribute("src") === src);
+    trigger?.focus();
+  }, [zoomedSrc, scrollRef]);
   const renderMedia = (media: ToolResultImage, key: string) => {
     if (media.data !== undefined) {
       return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} onZoom={setZoomedSrc} />;
@@ -761,10 +787,12 @@ export function ChatTranscript({
       )}
       <ModalDialog
         open={zoomedSrc !== null}
-        onClose={() => setZoomedSrc(null)}
+        onClose={closeZoom}
         variant="media"
         closeLabel={t("common.close")}
+        labelledBy={imageZoomTitleId}
       >
+        <h2 id={imageZoomTitleId} className="th-visually-hidden">{t("chat.imageZoomTitle")}</h2>
         {zoomedSrc !== null && (
           <img className="th-modal-media-image" src={zoomedSrc} alt={t("chat.image")} />
         )}
