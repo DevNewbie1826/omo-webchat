@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Virtualizer } from "@tanstack/react-virtual";
 import {
 	ControlledResizeObserver,
 	chatSession,
@@ -8,6 +9,32 @@ import {
 	renderChatPane,
 	setTextareaValue,
 } from "./chatPaneTestHarness";
+
+// Reconciliation is a claim about ROW IDENTITY: an optimistic prompt and its
+// echo must collapse into ONE transcript row. JSDOM has no layout engine, so
+// the virtualizer renders no row elements to count; its `count` option is the
+// authoritative row total and is layout-independent. Reading it also keeps the
+// assertion free of the row-height estimator, whose pixel totals are not a
+// statement about reconciliation.
+const observed = vi.hoisted(() => {
+	const state: { current?: Virtualizer<Element, Element> } = {};
+	return state;
+});
+vi.mock("@tanstack/react-virtual", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@tanstack/react-virtual")>();
+	return {
+		...actual,
+		useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
+			const instance = actual.useVirtualizer(...args);
+			observed.current = instance;
+			return instance;
+		},
+	};
+});
+
+const transcriptRowCount = (): number | undefined =>
+	observed.current?.options.count;
 
 describe("ChatPane optimistic prompt reconciliation", () => {
 	let container: HTMLDivElement;
@@ -81,9 +108,7 @@ describe("ChatPane optimistic prompt reconciliation", () => {
 			});
 		});
 
-		expect(
-			container.querySelector<HTMLElement>(".th-chat-history")?.style.height,
-		).toBe("160px");
+		expect(transcriptRowCount()).toBe(2);
 	});
 
 	it("reconciles identical prompts independently after completion", () => {
@@ -108,8 +133,6 @@ describe("ChatPane optimistic prompt reconciliation", () => {
 		submitAndEcho(2);
 
 		expect(chatSends()).toHaveLength(2);
-		expect(
-			container.querySelector<HTMLElement>(".th-chat-history")?.style.height,
-		).toBe("160px");
+		expect(transcriptRowCount()).toBe(2);
 	});
 });

@@ -23,6 +23,7 @@ import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
+import { estimateRowHeight, readRowMetrics } from "./chatRowEstimate";
 import type { TranscriptItem } from "./useChatFrameState";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
@@ -269,8 +270,28 @@ export function ChatTranscript({
   historyLoaded,
   mediaSource,
 }: ChatTranscriptProps) {
-  const { t } = useT();
+  const { t, fontSize } = useT();
   const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
+  // Lane width feeding the row-height estimator. Tracked via ResizeObserver
+  // so metrics recompute only on an actual width change, never per render.
+  const [laneWidth, setLaneWidth] = useState(0);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    const update = () => setLaneWidth(element.clientWidth);
+    update();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [scrollRef]);
+  // Content-derived row metrics: recomputed only when the scrollport width
+  // or the resolved font size changes (readRowMetrics also caches on those).
+  const rowMetrics = useMemo(
+    () => readRowMetrics(scrollRef.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [laneWidth, fontSize],
+  );
   // USER CHOICES only: presence in the map means the user toggled that card
   // (the value is their frozen choice). Absent ids are untouched and pass no
   // `open`, so ToolCard derives the disclosure from the card's CURRENT live
@@ -453,8 +474,23 @@ export function ChatTranscript({
     count: rows.length,
     getItemKey: (index) => keys[index] ?? `missing:${index}`,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 80,
-    overscan: 4,
+    estimateSize: (index) => {
+      const item = rows[index];
+      return item === undefined ? 80 : estimateRowHeight(item, rowMetrics);
+    },
+    overscan: 8,
+    // virtual-core passes `adjustments` ONLY for measurement-driven
+    // corrections; every explicit scrollToIndex/scrollToOffset passes
+    // undefined. Drop those corrections while a user scroll is in flight:
+    // any programmatic scroll write cancels the browser's in-flight scroll
+    // animation, so a mid-gesture correction would kill the fling dead.
+    scrollToFn: (offset, { adjustments, behavior }, instance) => {
+      if (adjustments !== undefined && instance.isScrolling) return;
+      const element = instance.scrollElement;
+      if (element === null) return;
+      const top = offset + (adjustments ?? 0);
+      element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
+    },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
     useScrollendEvent: true,
