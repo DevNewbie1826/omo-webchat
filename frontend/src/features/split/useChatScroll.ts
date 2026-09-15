@@ -15,7 +15,14 @@ export interface ChatScrollState {
   readonly isFollowing: () => boolean;
 }
 
-export function useChatScroll(restoreVersion: number, focused: boolean): ChatScrollState {
+export function useChatScroll(
+  restoreVersion: number,
+  focused: boolean,
+  // Explicit "jump to bottom" intent (button, focus gain, restore): any
+  // measurement compensation queued for replay is moot once the viewport is
+  // deliberately sent to the end, so the owner discards it here.
+  onScrollToBottomIntent?: (() => void) | undefined,
+): ChatScrollState {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
@@ -28,12 +35,13 @@ export function useChatScroll(restoreVersion: number, focused: boolean): ChatScr
   const scrollToBottom = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
+    onScrollToBottomIntent?.();
     const target = element.scrollHeight - element.clientHeight;
     if (element.scrollTop !== target) programmaticRef.current = true;
     followRef.current = true;
     element.scrollTop = element.scrollHeight;
     setShowScrollToBottom(false);
-  }, []);
+  }, [onScrollToBottomIntent]);
 
   const updateIntent = useCallback(() => {
     const element = scrollRef.current;
