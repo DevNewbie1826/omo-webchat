@@ -304,13 +304,14 @@ export function ChatTranscript({
   // virtualizer compensates only for MEASURED changes, never for a changed
   // estimate of an unmeasured row). Once a row actually renders, the
   // virtualizer's own measurement supersedes the frozen estimate.
-  const estimateCacheRef = useRef(new Map<string, number>());
+  // Replace the cache only in the render that installs changed metrics. A
+  // repeated metrics read can return the same object and cause no render.
+  const estimateCache = useMemo(() => new Map<string, number>(), [rowMetrics]);
   useEffect(() => {
     let cancelled = false;
     const syncMetrics = (): void => {
       if (cancelled) return;
       const next = readRowMetrics(scrollRef.current);
-      estimateCacheRef.current.clear();
       setRowMetrics(next);
     };
     queueMicrotask(syncMetrics);
@@ -490,22 +491,22 @@ export function ChatTranscript({
     const rows: TranscriptItem[] = [];
     const keys: string[] = [];
     items.forEach((item, index) => {
+      const key = allKeys[index] ?? `missing:${index}`;
+      // Freeze at first key appearance, not at the virtualizer's first request.
+      if (!estimateCache.has(key)) estimateCache.set(key, estimateRowHeight(item, rowMetrics));
       if (item.kind === "message" && !hasRenderableContent(item.message)) return;
       rows.push(item);
-      keys.push(allKeys[index] ?? `missing:${index}`);
+      keys.push(key);
     });
     // Bound the estimate cache: drop entries whose keys left the transcript.
     // Done here, where the key list recomputes, so estimateSize itself stays
     // a pure lookup.
-    const cache = estimateCacheRef.current;
-    if (cache.size > 0) {
-      const live = new Set(keys);
-      for (const key of cache.keys()) {
-        if (!live.has(key)) cache.delete(key);
-      }
+    const live = new Set(allKeys);
+    for (const key of estimateCache.keys()) {
+      if (!live.has(key)) estimateCache.delete(key);
     }
     return { rows, keys };
-  }, [items]);
+  }, [items, rowMetrics, estimateCache]);
   // Include rowMetrics so a typography/width update rebuilds measurements
   // in the same render that installs the new estimates. Content-only
   // updates still hit the frozen per-key estimate cache; measured sizes
@@ -518,17 +519,7 @@ export function ChatTranscript({
     count: rows.length,
     getItemKey,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => {
-      const key = keys[index];
-      if (key !== undefined) {
-        const cached = estimateCacheRef.current.get(key);
-        if (cached !== undefined) return cached;
-      }
-      const item = rows[index];
-      const estimate = item === undefined ? 80 : estimateRowHeight(item, rowMetrics);
-      if (key !== undefined) estimateCacheRef.current.set(key, estimate);
-      return estimate;
-    },
+    estimateSize: (index) => estimateCache.get(keys[index]!)!,
     overscan: 8,
     // virtual-core passes `adjustments` ONLY for measurement-driven
     // corrections; every explicit scrollToIndex/scrollToOffset passes
