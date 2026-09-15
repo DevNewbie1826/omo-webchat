@@ -1,0 +1,121 @@
+[
+  {
+    "url": "http://127.0.0.1:61898/api/workspaces/ws-c771ddc7/chats/chat-4b2d6eb6/media?toolCallId=toolu_01WShf3ZGxHt6aR9WzwefEx3&contentIndex=1",
+    "method": "GET",
+    "at": 1789439077617,
+    "responseStatus": 200,
+    "domSampleAfterRequestEvent": {
+      "at": 1789439077619,
+      "rows": [
+        {
+          "toolCallId": "toolu_01WShf3ZGxHt6aR9WzwefEx3",
+          "rect": {
+            "x": 472,
+            "y": 465.59375,
+            "width": 760,
+            "height": 60.0625,
+            "top": 465.59375,
+            "right": 1232,
+            "bottom": 525.65625,
+            "left": 472
+          },
+          "imageRects": [
+            {
+              "rect": {
+                "x": 472,
+                "y": 523.65625,
+                "width": 2,
+                "height": 2,
+                "top": 523.65625,
+                "right": 474,
+                "bottom": 525.65625,
+                "left": 472
+              },
+              "tag": "IMG",
+              "naturalWidth": 0
+            }
+          ]
+        }
+      ],
+      "scroll": {
+        "scrollTop": 0,
+        "scrollHeight": 828,
+        "clientHeight": 828
+      }
+    }
+  },
+  {
+    "url": "http://127.0.0.1:61898/api/workspaces/ws-c771ddc7/chats/chat-4b2d6eb6/media?toolCallId=toolu_0187eZ51cUv1xpaJhwTBiAQ4&contentIndex=1",
+    "method": "GET",
+    "at": 1789439109965,
+    "domSampleAfterRequestEvent": {
+      "at": 1789439109966,
+      "rows": [
+        {
+          "toolCallId": "toolu_01WShf3ZGxHt6aR9WzwefEx3",
+          "rect": {
+            "x": 472,
+            "y": -3667.40625,
+            "width": 760,
+            "height": 378.0625,
+            "top": -3667.40625,
+            "right": 1232,
+            "bottom": -3289.34375,
+            "left": 472
+          },
+          "imageRects": [
+            {
+              "rect": {
+                "x": 472,
+                "y": -3609.34375,
+                "width": 513.0625,
+                "height": 320,
+                "top": -3609.34375,
+                "right": 985.0625,
+                "bottom": -3289.34375,
+                "left": 472
+              },
+              "tag": "IMG",
+              "naturalWidth": 900
+            }
+          ]
+        },
+        {
+          "toolCallId": "toolu_0187eZ51cUv1xpaJhwTBiAQ4",
+          "rect": {
+            "x": 472,
+            "y": 674.625,
+            "width": 760,
+            "height": 122.0625,
+            "top": 674.625,
+            "right": 1232,
+            "bottom": 796.6875,
+            "left": 472
+          },
+          "imageRects": [
+            {
+              "rect": {
+                "x": 472,
+                "y": 732.6875,
+                "width": 96,
+                "height": 64,
+                "top": 732.6875,
+                "right": 568,
+                "bottom": 796.6875,
+                "left": 472
+              },
+              "tag": "DIV",
+              "naturalWidth": 0
+            }
+          ]
+        }
+      ],
+      "scroll": {
+        "scrollTop": 4133,
+        "scrollHeight": 4961,
+        "clientHeight": 828
+      }
+    },
+    "responseStatus": 200
+  }
+]
