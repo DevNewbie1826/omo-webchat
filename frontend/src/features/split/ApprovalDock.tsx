@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
-import { ApprovalQuestionPanel } from "./ApprovalDockQuestions";
+import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ApprovalRequest {
@@ -65,6 +65,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
+	const questionDraft = useApprovalQuestionDraft(request.id);
 	// Manual collapse is keyed by request id: it is the user's intent about
 	// THAT request. A new request id must never inherit it (a collapsed
 	// one-line summary would hide the arrival), while a replay of the same
@@ -316,7 +317,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// ApprovalDockQuestions.tsx (a tab per question, one structured response).
 	const questionPanel = request.method === "question" && (request.questions?.length ?? 0) > 0 && (
 		<ApprovalQuestionPanel
-			requestId={request.id}
+			draftState={questionDraft}
 			questions={request.questions ?? []}
 			onSubmit={onRespond}
 			onCancel={cancel}

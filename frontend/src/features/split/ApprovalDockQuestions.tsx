@@ -3,8 +3,8 @@ import { useT } from "../../i18n";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 
 export interface ApprovalQuestionPanelProps {
-	/** Request id: a new request must never inherit the previous draft. */
-	readonly requestId: string;
+	/** Owned by the dock so collapsing the body preserves the draft. */
+	readonly draftState: ReturnType<typeof useApprovalQuestionDraft>;
 	readonly questions: readonly Question[];
 	readonly onSubmit: (response: {
 		answers: Record<string, QuestionAnswer>;
@@ -36,15 +36,7 @@ function questionKey(question: Question, index: number): string {
  *  sends a single response with answers keyed by question id. Every
  *  question's draft lives in one record, so switching tabs never loses
  *  selections already made. */
-export function ApprovalQuestionPanel({
-	requestId,
-	questions,
-	onSubmit,
-	onCancel,
-}: ApprovalQuestionPanelProps) {
-	const { t } = useT();
-	// Draft keyed by request id (adjusted during render): a new request id
-	// starts a fresh draft.
+export function useApprovalQuestionDraft(requestId: string) {
 	const [draft, setDraft] = useState<QuestionDraft>({
 		requestId,
 		activeIndex: 0,
@@ -55,6 +47,16 @@ export function ApprovalQuestionPanel({
 		setDraft({ requestId, activeIndex: 0, answers: new Map(), comment: "" });
 	}
 
+	return [draft, setDraft] as const;
+}
+
+export function ApprovalQuestionPanel({
+	draftState: [draft, setDraft],
+	questions,
+	onSubmit,
+	onCancel,
+}: ApprovalQuestionPanelProps) {
+	const { t } = useT();
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
 
 	const patchDraft = (

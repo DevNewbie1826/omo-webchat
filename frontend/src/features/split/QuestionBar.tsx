@@ -27,8 +27,11 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const { t } = useT();
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
-	const question = request.questions?.[0];
-	const questionId = question?.id ?? "q1";
+	const [requestId, setRequestId] = useState(request.id);
+	const [activeIndex, setActiveIndex] = useState(0);
+	const [answers, setAnswers] = useState<Record<string, QuestionAnswer>>({});
+	const question = request.questions?.[activeIndex];
+	const questionId = question?.id ?? `q${activeIndex + 1}`;
 	const options = (question?.options ?? []).filter(
 		(option): option is typeof option & { readonly label: string } =>
 			option.label !== undefined,
@@ -41,8 +44,28 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const [text, setText] = useState("");
 	const [picked, setPicked] = useState<readonly string[]>([]);
 
+	if (requestId !== request.id) {
+		setRequestId(request.id);
+		setActiveIndex(0);
+		setAnswers({});
+		setAnsweringForId(null);
+		setText("");
+		setPicked([]);
+	}
+
 	const answer = (value: QuestionAnswer): void => {
-		onAnswer({ [questionId]: value });
+		const completed = { ...answers, [questionId]: value };
+		// Sequence inside the one-line band; settle only after every question
+		// has an answer so an unseen remainder can never be discarded.
+		if (activeIndex + 1 < (request.questions?.length ?? 0)) {
+			setAnswers(completed);
+			setActiveIndex(activeIndex + 1);
+			setAnsweringForId(null);
+			setText("");
+			setPicked([]);
+		} else {
+			onAnswer(completed);
+		}
 		focusPaneComposer(sectionRef.current);
 	};
 
