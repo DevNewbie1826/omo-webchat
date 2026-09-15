@@ -28,7 +28,10 @@ const CODE_FENCE_CHROME = 8 + 8 + 1 + 1;
 // .th-chat-image has max-height 320px plus 8px margin-block-start
 const IMAGE_BLOCK_HEIGHT = 320 + 8;
 
-const SAMPLE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+// Lowercase-dominant English with spaces and punctuation, matching the prose
+// the transcript wraps. An A-Z/0-9 mix over-weights wide capitals and digits.
+const SAMPLE =
+  "The transcript keeps a complete record of the discussion. Each message has a stable identity, and the browser measures its rendered height as it enters the visible region. This example includes enough detail to wrap naturally on a narrow mobile screen.";
 
 // Fallback ratios from tokens.css when jsdom (or a hidden node) yields 0 layout.
 const BODY_LINE_RATIO = 1.6;

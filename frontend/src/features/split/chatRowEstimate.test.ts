@@ -126,8 +126,8 @@ describe("readRowMetrics", () => {
 			expect(small.charWidth).toBeGreaterThan(0);
 			expect(large.charWidth).toBeGreaterThan(small.charWidth);
 			expect(large.charWidth / small.charWidth).toBeCloseTo(24 / 10, 1);
-			expect(small.charWidth).not.toBeCloseTo(STRETCH_LANE / 62, 3);
-			expect(large.charWidth).not.toBeCloseTo(STRETCH_LANE / 62, 3);
+			expect(small.charWidth).not.toBeCloseTo(STRETCH_LANE / 252, 3);
+			expect(large.charWidth).not.toBeCloseTo(STRETCH_LANE / 252, 3);
 		} finally {
 			scrollElement.remove();
 			restore();
@@ -224,5 +224,20 @@ describe("estimateRowHeight", () => {
 		const big = estimateRowHeight(item, larger);
 		expect(big).toBeGreaterThan(small);
 		expect(big / small).toBeGreaterThan(1.2);
+	});
+
+	it("estimates a 252-character assistant paragraph within 10% of 126px when charWidth reflects prose", () => {
+		const paragraph =
+			"The transcript keeps a complete record of the discussion. Each message has a stable identity, and the browser measures its rendered height as it enters the visible region. This example includes enough detail to wrap naturally on a narrow mobile screen.";
+		expect(paragraph.length).toBe(252);
+		const metrics: RowMetrics = {
+			laneWidth: 378,
+			bodyLineHeight: 22.4,
+			secondaryLineHeight: 18.85058,
+			charWidth: 6.4,
+			monoCharWidth: 8.036542338709678,
+		};
+		const height = estimateRowHeight(assistantRow(paragraph), metrics);
+		expect(Math.abs(height - 126) / 126).toBeLessThanOrEqual(0.1);
 	});
 });
