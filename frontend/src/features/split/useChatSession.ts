@@ -84,7 +84,12 @@ export function useChatSession(
           clientRef.current?.send({ type: "chat.stats", sessionId: session.id });
         }
       },
-      onParseError: () => frameState.reportError("Received a malformed server frame."),
+      onParseError: (raw) => {
+        // WebKit delivers a truncated payload to JS as a message right before
+        // the close fires; keep the dropped text diagnosable in the console.
+        console.warn("[chatWs] non-JSON frame dropped", raw.slice(0, 500));
+        frameState.reportParseError(t("chat.malformedFrame"));
+      },
       onClose: () => markCloseRef.current(),
     });
     clientRef.current = client;
@@ -193,11 +198,11 @@ export function useChatSession(
 
   const compact = (): boolean => {
     if (frameState.running) {
-      frameState.reportError("Cannot compact while the assistant is responding.");
+      frameState.reportError(t("chat.compactWhileResponding"));
       return false;
     }
     if (frameState.isCompacting) {
-      frameState.reportError("Compaction is already in progress.");
+      frameState.reportError(t("chat.compactInProgress"));
       return false;
     }
     return sendControl({ type: "chat.compact", sessionId: session.id }, "Failed to start compaction.");

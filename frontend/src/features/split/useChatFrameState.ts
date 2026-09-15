@@ -203,10 +203,24 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // True while a socket generation is open; a close only starts a recovery
   // cycle when a live connection was actually lost.
   const socketOpenRef = useRef(false);
+  // True while the bannered error came from a malformed inbound frame: that
+  // banner is a symptom of the transport, and the disconnect surface owns the
+  // story once the socket is gone.
+  const parseErrorRef = useRef(false);
   const applyRecovery = (next: RecoveryState | null): void => {
     if (next === recoveryRef.current) return;
     recoveryRef.current = next;
     setRecovery(next);
+  };
+  // Every error surface except the parse reporter revokes parse-error
+  // ownership, so a close can never clear a banner it does not own.
+  const applyError: typeof setError = (message) => {
+    parseErrorRef.current = false;
+    setError(message);
+  };
+  const reportParseError = (message: string): void => {
+    parseErrorRef.current = true;
+    setError(message);
   };
 
   const replaceMessages = (next: readonly UiMessage[]): void => {
@@ -346,7 +360,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyLoadedRef.current = false;
     pageBuffer.reset();
     setHistoryStatus("loading");
-    setError("");
+    applyError("");
     setResyncBusy(true);
   };
   const endResync = (generation: number, terminal = false): void => {
@@ -450,7 +464,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setThinking,
     setRunning,
     setDoneReason,
-    setError,
+    setError: applyError,
     setMissingOriginal,
     setExternalWriteDetected,
     setSessionActive,
@@ -580,7 +594,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
         ? { type: "chat.send", sessionId, requestId, run: { kind: "steer", message: text } }
         : chatState.queuedSendFrame({ text, image: draft.image }, requestId, sessionId));
     } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
+      applyError(error instanceof Error ? error.message : String(error));
     } finally {
       submitLatchRef.current = false;
     }
@@ -617,6 +631,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
     setHistoryStatus("loading");
+    // A new socket makes a previous transport error stale — the same
+    // reasoning beginResync already applies to its own reset.
+    applyError("");
     setSessionActive(false);
     setConnected(true);
     pageBuffer.reset();
@@ -643,6 +660,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       setResyncBusy(false);
     }
     setHistoryStatus((current) => current === "loading" ? "failed" : current);
+    // The malformed-frame banner belongs to the transport that just died;
+    // any other error survives for its own surface to resolve.
+    if (parseErrorRef.current) applyError("");
     setConnected(false);
   };
 
@@ -654,7 +674,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     historyLoadedRef.current = false;
     pageBuffer.reset();
     setHistoryStatus("loading");
-    setError("");
+    applyError("");
   };
 
   const failExternalWriteRecovery = (): void => {
@@ -727,7 +747,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setThinkingLevel: controls.setThinkingLevel,
     setCurrentModelKey: controls.setCurrentModelKey,
     setPendingApproval,
-    reportError: setError,
+    reportError: applyError,
+    reportParseError,
     beginExternalWriteRecovery,
     failExternalWriteRecovery,
     beginResync,
