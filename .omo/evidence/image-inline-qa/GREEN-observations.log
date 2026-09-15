@@ -1,3 +1,0 @@
-COLLAPSED PASS: aria-expanded=false, naturalWidth=900, naturalHeight=560, one media request HTTP 200
-TEXT CONTENT PASS: exact assistant text TEXT_ONLY_QA_7419, zero media requests
-VIEWPORT LAZINESS / NO-REFETCH: SUPERSEDED by r2 lazy-trace.json, offscreen.png, entered.png, after-toggle.png
