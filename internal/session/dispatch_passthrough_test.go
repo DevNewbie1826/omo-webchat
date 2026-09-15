@@ -200,6 +200,7 @@ func TestDispatchListedNoticeKindsStillPublish(t *testing.T) {
 		"auto_retry_start",
 		"auto_retry_end",
 		"extension_notify",
+		"continuation_error",
 	}
 	for _, kind := range kinds {
 		t.Run(kind, func(t *testing.T) {

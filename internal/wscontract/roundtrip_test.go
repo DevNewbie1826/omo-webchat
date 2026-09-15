@@ -386,3 +386,57 @@ func TestNoticeRFC3339NanoShape(t *testing.T) {
 		}
 	}
 }
+
+func TestAssistantMessageFailureFieldsRoundtrip(t *testing.T) {
+	data := []byte(`{"role":"assistant","content":"partial","errorMessage":"provider rejected the request","stopReason":"error"}`)
+	var msg AssistantMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	// Reflection keeps RED executable against the pre-addition DTO: ExtraFields
+	// would otherwise round-trip these keys without typed fields existing.
+	errorMessage := reflect.ValueOf(msg).FieldByName("ErrorMessage")
+	if !errorMessage.IsValid() || errorMessage.Kind() != reflect.Pointer || errorMessage.IsNil() || errorMessage.Elem().Kind() != reflect.String || errorMessage.Elem().String() != "provider rejected the request" {
+		t.Fatalf("typed errorMessage lost at decode boundary: %+v", msg)
+	}
+	stopReason := reflect.ValueOf(msg).FieldByName("StopReason")
+	if !stopReason.IsValid() || stopReason.Kind() != reflect.Pointer || stopReason.IsNil() || stopReason.Elem().Kind() != reflect.String || stopReason.Elem().String() != "error" {
+		t.Fatalf("typed stopReason lost at decode boundary: %+v", msg)
+	}
+	if _, ok := msg.ExtraFields["errorMessage"]; ok {
+		t.Fatalf("errorMessage leaked into ExtraFields: %+v", msg.ExtraFields)
+	}
+	if _, ok := msg.ExtraFields["stopReason"]; ok {
+		t.Fatalf("stopReason leaked into ExtraFields: %+v", msg.ExtraFields)
+	}
+	assertRoundtrip(t, "assistant-failure-fields", data, msg, nil)
+}
+
+func TestAssistantMessageOmitsAbsentFailureFields(t *testing.T) {
+	data := []byte(`{"role":"assistant","content":"ok"}`)
+	var msg AssistantMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatal(err)
+	}
+	assertRoundtrip(t, "assistant-without-failure-fields", data, msg, nil)
+	remarshaled, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(remarshaled, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["errorMessage"]; ok {
+		t.Fatalf("errorMessage present on the wire without a value: %s", remarshaled)
+	}
+	if _, ok := got["stopReason"]; ok {
+		t.Fatalf("stopReason present on the wire without a value: %s", remarshaled)
+	}
+	if em := reflect.ValueOf(msg).FieldByName("ErrorMessage"); em.IsValid() && !(em.Kind() == reflect.Pointer && em.IsNil()) {
+		t.Fatalf("ErrorMessage must be absent, got %+v", em)
+	}
+	if sr := reflect.ValueOf(msg).FieldByName("StopReason"); sr.IsValid() && !(sr.Kind() == reflect.Pointer && sr.IsNil()) {
+		t.Fatalf("StopReason must be absent, got %+v", sr)
+	}
+}

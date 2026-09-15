@@ -15,7 +15,7 @@ import {
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
-import { hasRenderableContent } from "./chatEntries";
+import { hasRenderableContent, isFailedTurn } from "./chatEntries";
 import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
@@ -58,6 +58,14 @@ function messageText(message: UiMessage): string {
 }
 
 const STOP_ERROR_REASONS = new Set(["max_tokens", "length", "content_filter", "refusal", "error"]);
+
+/** Wire-provided wording for a failed turn: the failure text exactly as it
+ * arrived, else the wire stopReason value itself; null when the wire carried
+ * neither (nothing to show — never synthesize a label). */
+function failedTurnText(message: UiMessage): string | null {
+  if (message.errorMessage !== undefined && message.errorMessage.length > 0) return message.errorMessage;
+  return message.stopReason ?? null;
+}
 
 function isStopError(reason: string): boolean {
   return STOP_ERROR_REASONS.has(reason);
@@ -703,7 +711,20 @@ export function ChatTranscript({
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
-                    ) : renderMessageBlocks(message)}
+                    ) : (
+                      <>
+                        {renderMessageBlocks(message)}
+                        {isFailedTurn(message) && failedTurnText(message) !== null && (
+                          // Wire-only wording: the failure text exactly as it
+                          // arrived; when the turn carries no text, the
+                          // wire-provided stopReason value itself, so a failed
+                          // turn is never silent and nothing is fabricated.
+                          <div className="th-chat-error th-chat-turn-error" role="alert">
+                            {failedTurnText(message)}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );

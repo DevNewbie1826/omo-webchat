@@ -1,0 +1,47 @@
+{
+  "scenario": "failure-visible",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "run.started",
+      "sessionId": "qa-session"
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [],
+        "ts": 1000,
+        "errorMessage": "Provider quota exhausted: requested 8192 tokens; remaining 0.",
+        "stopReason": "error"
+      }
+    },
+    {
+      "type": "run.done",
+      "sessionId": "qa-session",
+      "reason": "stop"
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [
+      "Provider quota exhausted: requested 8192 tokens; remaining 0."
+    ],
+    "noticeRows": [],
+    "transcript": "Provider quota exhausted: requested 8192 tokens; remaining 0.\nDone",
+    "assistantRows": [
+      "Provider quota exhausted: requested 8192 tokens; remaining 0."
+    ],
+    "ordered": [
+      "Provider quota exhausted: requested 8192 tokens; remaining 0."
+    ],
+    "textSent": "Provider quota exhausted: requested 8192 tokens; remaining 0.",
+    "textFound": "Provider quota exhausted: requested 8192 tokens; remaining 0."
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}

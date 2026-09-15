@@ -225,6 +225,10 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 		entry, _ := raw["entry"].(map[string]any)
 		s.deriveEntryNoticeLocked(entry)
 		s.publishShownCustomEntryLocked(ev)
+	case "continuation_error":
+		// Observed wire event: the engine's continuation failure text is the
+		// event payload. Publish it as a durable notice, verbatim.
+		s.publishVerbatimNoticeLocked(ev)
 	default:
 		// Strict engine-UI mirror: only the known shown notice kinds publish.
 		// Unmapped engine events stay silent.
@@ -244,7 +248,8 @@ func transcriptNoticeKind(eventType string) bool {
 		"server_fallback_aborted",
 		"auto_retry_start",
 		"auto_retry_end",
-		"extension_notify":
+		"extension_notify",
+		"continuation_error":
 		return true
 	default:
 		return false

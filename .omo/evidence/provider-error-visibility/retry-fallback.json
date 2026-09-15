@@ -1,0 +1,64 @@
+{
+  "scenario": "retry-fallback",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "retry_fallback_applied",
+      "payload": {
+        "message": "Wire notice: retry_fallback_applied"
+      },
+      "at": "1970-01-01T00:00:01.000Z",
+      "nid": "retry_fallback_applied"
+    },
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "retry_fallback_reverted",
+      "payload": {
+        "message": "Wire notice: retry_fallback_reverted"
+      },
+      "at": "1970-01-01T00:00:02.000Z",
+      "nid": "retry_fallback_reverted"
+    },
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "retry_fallback_succeeded",
+      "payload": {
+        "message": "Wire notice: retry_fallback_succeeded"
+      },
+      "at": "1970-01-01T00:00:03.000Z",
+      "nid": "retry_fallback_succeeded"
+    },
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "retry_fallback_exhausted",
+      "payload": {
+        "message": "Wire notice: retry_fallback_exhausted"
+      },
+      "at": "1970-01-01T00:00:04.000Z",
+      "nid": "retry_fallback_exhausted"
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [],
+    "noticeRows": [
+      "Wire notice: retry_fallback_applied",
+      "Wire notice: retry_fallback_reverted",
+      "Wire notice: retry_fallback_succeeded",
+      "Wire notice: retry_fallback_exhausted"
+    ],
+    "transcript": "retry_fallback_applied\n09:00:01\nWire notice: retry_fallback_applied\nretry_fallback_reverted\n09:00:02\nWire notice: retry_fallback_reverted\nretry_fallback_succeeded\n09:00:03\nWire notice: retry_fallback_succeeded\nretry_fallback_exhausted\n09:00:04\nWire notice: retry_fallback_exhausted",
+    "assistantRows": [],
+    "ordered": []
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}

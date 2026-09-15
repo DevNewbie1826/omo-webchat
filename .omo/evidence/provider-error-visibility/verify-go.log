@@ -1,0 +1,33 @@
+$ go test ./...
+ok  	github.com/DevNewbie1826/omo-webchat/cmd/server	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/contract	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/frontend	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/internal/adoptcopy	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/api	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/auth	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/coldhistory	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/config	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/cursorstore	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/daemon	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/dirsync	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileid	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/fileio	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc	18.768s
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/idlefixture	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/todofixture	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/internal/omorpc/omorpctest/transport	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/internal/procexec	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/sendqueue	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/session	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/internal/testfs	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wsbridge	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/internal/wscontract	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/test/cutover	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/test/nativefixture	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/test/npm_argv_probe	[no test files]
+ok  	github.com/DevNewbie1826/omo-webchat/test/smoke	(cached)
+ok  	github.com/DevNewbie1826/omo-webchat/test/windowsprobe	(cached)
+?   	github.com/DevNewbie1826/omo-webchat/test/windowsprobe/profile	[no test files]
+
+EXIT_CODE=0

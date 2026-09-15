@@ -1,0 +1,35 @@
+{
+  "scenario": "legacy",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "kind": "text",
+            "text": "Ordinary legacy answer."
+          }
+        ],
+        "ts": 1000
+      }
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [],
+    "noticeRows": [],
+    "transcript": "Ordinary legacy answer.",
+    "assistantRows": [
+      "Ordinary legacy answer."
+    ],
+    "ordered": []
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}

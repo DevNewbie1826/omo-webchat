@@ -1,0 +1,54 @@
+{
+  "scenario": "backward-compat",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "run.started",
+      "sessionId": "qa-session"
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "kind": "text",
+            "text": "Ordinary legacy answer."
+          }
+        ],
+        "ts": 1000
+      }
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [],
+        "ts": 2000
+      }
+    },
+    {
+      "type": "run.done",
+      "sessionId": "qa-session",
+      "reason": "stop"
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [],
+    "noticeRows": [],
+    "transcript": "Ordinary legacy answer.\n\nDone",
+    "assistantRows": [
+      "Ordinary legacy answer."
+    ],
+    "ordered": [],
+    "emptyAssistantRows": 0
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}
