@@ -456,6 +456,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "approval":
+        // A new shape replaces the same identity across both surfaces. Distinct
+        // identities remain independent; React batches these frame updates.
+        bindings.setPendingApproval((current) => current?.id === frame.id ? null : current);
+        bindings.setPendingQuestion((current) => current?.id === frame.id ? null : current);
         // Safety net: an unrecognised method or shape lands in the dock as a
         // minimal fallback entry (method "fallback") instead of vanishing.
         if (isFallbackApprovalFrame(frame)) {
