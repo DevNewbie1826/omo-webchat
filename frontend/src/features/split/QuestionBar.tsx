@@ -6,7 +6,7 @@ export interface QuestionBarProps {
 	/** A non-blocking question request (method "question"): it never takes
 	 *  over the composer and is answered only through this widget. */
 	readonly request: ApprovalFrame;
-	readonly onAnswer: (questionId: string, answer: QuestionAnswer) => void;
+	readonly onAnswer: (answers: Record<string, QuestionAnswer>) => void;
 }
 
 /** After an answer leaves, hand focus to the owning pane's composer so the
@@ -42,7 +42,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const [picked, setPicked] = useState<readonly string[]>([]);
 
 	const answer = (value: QuestionAnswer): void => {
-		onAnswer(questionId, value);
+		onAnswer({ [questionId]: value });
 		focusPaneComposer(sectionRef.current);
 	};
 

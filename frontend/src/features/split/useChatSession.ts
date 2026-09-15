@@ -336,17 +336,17 @@ export function useChatSession(
     return true;
   };
 
-  const respondApproval = (response: ApprovalResponse): boolean => {
-    const approval = frameState.pendingApproval;
-    const question = frameState.pendingQuestion;
+  const respondRequest = (id: string | undefined, response: ApprovalResponse): boolean => {
+    const approval = frameState.pendingApproval?.id === id ? frameState.pendingApproval : null;
+    const question = frameState.pendingQuestion?.id === id ? frameState.pendingQuestion : null;
     if (!approval && !question) return false;
     const requestId = nextRequestId();
     if (!frameState.armControl(
       requestId,
-      "extension_ui_response",
+      `extension_ui_response:${id}`,
       () => {
-        if (approval) frameState.setPendingApproval(approval);
-        if (question) frameState.setPendingQuestion(question);
+        if (approval) frameState.setPendingApproval((current) => current ?? approval);
+        if (question) frameState.setPendingQuestion((current) => current ?? question);
       },
       () => undefined,
     )) return false;
@@ -421,6 +421,7 @@ export function useChatSession(
     resyncDisabled: frameState.resyncDisabled,
     changeThinkingLevel,
     changeModel,
-    respondApproval,
+    respondApproval: (response: ApprovalResponse) => respondRequest(frameState.pendingApproval?.id, response),
+    respondQuestion: (response: ApprovalResponse) => respondRequest(frameState.pendingQuestion?.id, response),
   };
 }

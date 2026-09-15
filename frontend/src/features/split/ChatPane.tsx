@@ -353,12 +353,12 @@ export function ChatPane({
                the dock takes over the space above the composer. */
             <ApprovalDock
               request={approvalRequestOf({ ...chat.pendingQuestion, method: "question" })}
-              onRespond={chat.respondApproval}
+              onRespond={chat.respondQuestion}
             />
           ) : (
             <QuestionBar
               request={chat.pendingQuestion}
-              onAnswer={(questionId, answer) => chat.respondApproval({ answers: { [questionId]: answer } })}
+              onAnswer={(answers) => chat.respondQuestion({ answers })}
             />
           ))}
         <ChatComposer
