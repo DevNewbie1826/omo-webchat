@@ -964,6 +964,22 @@ describe("pinned live-session section contracts", () => {
   const sidebarLive = readStyle("sidebar-live");
   const overview = readStyle("overview");
 
+  // Resolve any --th-* token to a number: plain px/unitless values parse
+  // directly, calc() expressions are substituted recursively and evaluated.
+  const numericToken = (name: string): number => {
+    const raw = tokenValue(name);
+    const expression = raw
+      .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+      .replace(/calc|px/g, "");
+    return Function(`"use strict"; return (${expression});`)() as number;
+  };
+  const evaluateCalc = (value: string): number =>
+    Function(
+      `"use strict"; return (${value
+        .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
+        .replace(/calc|px/g, "")});`,
+    )() as number;
+
   it("pins the section with flex none and a bounded internal scrollport", () => {
     const section = ruleBody(sidebarLive, ".th-sidebar-live");
     expect(declarationValue(section, "flex")).toBe("none");
@@ -985,39 +1001,33 @@ describe("pinned live-session section contracts", () => {
   });
 
   it("pins the card's minimum height geometrically above the head row's tallest content", () => {
-    // Resolve any --th-* token to a number: plain px/Unitless values parse
-    // directly, calc() expressions are substituted recursively and evaluated.
-    const numericToken = (name: string): number => {
-      const raw = tokenValue(name);
-      const expression = raw
-        .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
-        .replace(/calc|px/g, "");
-      return Function(`"use strict"; return (${expression});`)() as number;
-    };
-    const evaluateCalc = (value: string): number =>
-      Function(
-        `"use strict"; return (${value
-          .replace(/var\(\s*(--[\w-]+)\s*\)/g, (_match, ref: string) => String(numericToken(ref)))
-          .replace(/calc|px/g, "")});`,
-      )() as number;
-
     // The head row's tallest natural content is the running pill: the micro
     // line box plus its 2px of border (overview.css .th-overview-card-running).
     const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
     const blockStep = numericToken("--th-space-2");
-    const requiredMin = pillHeight + 2 * blockStep;
+
+    // The required floor is the COMPLETE card box: the pill plus both block
+    // padding steps plus the card's own top and bottom border widths, read
+    // from the card rule that declares them rather than assumed. A min-height
+    // that covers content but forgets the border renders the card short by
+    // exactly that border (border-box sizing), so the floor must include it.
+    const baseCard = ruleBody(overview, ".th-overview-card");
+    const borderWidth = Number.parseFloat(
+      declarationValue(baseCard, "border").match(/(\d+(?:\.\d+)?)px/)?.[1] ?? "NaN",
+    );
+    expect(borderWidth, "card border width readable from the card rule").not.toBeNaN();
+    const requiredMin = pillHeight + 2 * blockStep + 2 * borderWidth;
 
     // The height contract lives on the card element, not the inner button, so
-    // the row geometry belongs to the card. It must compute to strictly more
-    // than the pill plus both block padding steps — a rule even a few tenths
-    // of a pixel short fails here.
+    // the row geometry belongs to the card. It must compute to at least the
+    // complete card box — a rule even a few tenths of a pixel short fails here.
     const card = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card");
     expect(card, "compact live card rule").not.toBe("");
     const minHeight = declarationValue(card, "min-height");
     expect(minHeight, "min-height declaration").toMatch(/^calc\(/);
     expect(containsVarToken(minHeight, "--th-type-micro-size")).toBe(true);
     expect(containsVarToken(minHeight, "--th-type-micro-line")).toBe(true);
-    expect(evaluateCalc(minHeight)).toBeGreaterThan(requiredMin);
+    expect(evaluateCalc(minHeight)).toBeGreaterThanOrEqual(requiredMin);
 
     // The button keeps its block padding step-up to at least --th-space-2 and
     // carries no min-height of its own.
@@ -1027,5 +1037,22 @@ describe("pinned live-session section contracts", () => {
     const blockToken = wholeVarToken(blockPadding);
     expect(blockToken, "block padding must be a spacing token").toMatch(/^--th-space-/);
     expect(numericToken(blockToken)).toBeGreaterThanOrEqual(blockStep);
+  });
+
+  it("pins the compact head row to the running pill's height", () => {
+    // Once activation content grows a card past its pinned minimum, the card
+    // min-height stops normalizing anything; the head row must then carry its
+    // own floor so a card with the running pill, a card with the dot-only
+    // marker, and a card with neither keep the same head height. The floor is
+    // the pill's full height: the micro line box plus its 2px of border.
+    const head = ruleBody(sidebarLive, ".th-sidebar-live-list .th-overview-card-head");
+    expect(head, "compact head row rule").not.toBe("");
+    const minHeight = declarationValue(head, "min-height");
+    expect(minHeight).toMatch(/^calc\(/);
+    expect(containsVarToken(minHeight, "--th-type-micro-size")).toBe(true);
+    expect(containsVarToken(minHeight, "--th-type-micro-line")).toBe(true);
+    expect(minHeight).toContain("2px");
+    const pillHeight = numericToken("--th-type-micro-size") * numericToken("--th-type-micro-line") + 2;
+    expect(evaluateCalc(minHeight)).toBe(pillHeight);
   });
 });

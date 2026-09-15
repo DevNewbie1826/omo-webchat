@@ -58,6 +58,15 @@
   );
 }
 
+/* The head row is pinned to the height of its tallest possible content — the
+   running pill (micro line box + 2px border) — so a card with the badge, a
+   card with the dot-only marker, and a card with neither share one head
+   height at every card height, including transient states that grow the card
+   past its pinned minimum. */
+.th-sidebar-live-list .th-overview-card-head {
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
+}
+
 .th-sidebar-live-list .th-overview-card-open {
   padding: var(--th-space-2);
 }
