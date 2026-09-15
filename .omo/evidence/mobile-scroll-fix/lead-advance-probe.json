@@ -1,0 +1,28 @@
+{
+  "recordedAt": "2026-09-15T07:12:41.510Z",
+  "purpose": "Lead's INDEPENDENT measurement of the glyph-advance calibration, taken while the r5 node worked, so the node's fix can be checked against a number it did not produce.",
+  "viewport": {
+    "width": 390,
+    "height": 844
+  },
+  "measured": {
+    "fontSize": "14px",
+    "lineHeight": "22.4px",
+    "fontFamily": "-apple-system, BlinkMacSystemFont, \"Segoe UI\", \"Noto Sans KR\", ... (the SANS stack, i.e. PROPORTIONAL, which is why uppercase and digits are wider than prose)",
+    "advanceProse": 6.3813360305059526,
+    "advanceAlpha": 8.213605326990928,
+    "alphaOverProsePercent": 28.71,
+    "assistantLaneBareProbe": 390,
+    "assistantRowHeight252Chars": 126,
+    "userBubbleOuter": 312,
+    "userInner": 286,
+    "userRowHeight": 78
+  },
+  "arithmetic": {
+    "withProseAdvance": "390 / 6.3813 = 61.1 chars per line -> ceil(252/61.1) = 5 lines -> 5*22.4 + 16 padding = 128px vs 126px measured",
+    "withAlphabetAdvance": "390 / 8.2136 = 47.5 chars per line -> ceil(252/47.5) = 6 lines -> 6*22.4 + 16 padding = 150px vs the 151px the estimator actually produced",
+    "conclusion": "The alphabet-and-digits sample adds exactly one wrapped line to a 252-character paragraph, which is the +19.8% assistant over-estimate and therefore the C1/C2 regression."
+  },
+  "note": "This bare probe reads lane 390; the frozen harness reads 378 because .th-chat-body carries scrollbar-gutter: stable both-edges (12px). The conclusion is unaffected.",
+  "cleanup": "vite on 5213 killed, frontend/.qa-probe removed, WebView closed"
+}

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -23,6 +23,7 @@ import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
+import { estimateRowHeight, readRowMetrics } from "./chatRowEstimate";
 import type { TranscriptItem } from "./useChatFrameState";
 
 function blockKey(block: NonNullable<UiMessage["blocks"]>[number]): string {
@@ -269,8 +270,55 @@ export function ChatTranscript({
   historyLoaded,
   mediaSource,
 }: ChatTranscriptProps) {
-  const { t } = useT();
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
+  const { t, fontSize, font } = useT();
+  // Measurement corrections dropped while a user scroll gesture is in flight
+  // accumulate here and replay once the gesture ends (scrollend listener /
+  // debounced-scroll fallback below). Declared before useChatScroll so an
+  // explicit scroll-to-bottom intent can discard a queued replay.
+  const deferredAdjustmentRef = useRef(0);
+  const clearDeferredAdjustment = useCallback(() => {
+    deferredAdjustmentRef.current = 0;
+  }, []);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  // Lane width feeding the row-height estimator. Tracked via ResizeObserver
+  // so metrics recompute only on an actual width change, never per render.
+  const [laneWidth, setLaneWidth] = useState(0);
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    const update = () => setLaneWidth(element.clientWidth);
+    update();
+    if (typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [scrollRef]);
+  // Row metrics must be read AFTER useAppConfig writes --th-font-size /
+  // --th-font-mono in its effect. Child effects run first, so wait for the
+  // rest of this commit's effects via a microtask, then replace estimates
+  // and re-render so the virtualizer rebuilds from the new geometry.
+  const [rowMetrics, setRowMetrics] = useState(() => readRowMetrics(null));
+  // Stable per-row estimates, keyed by the virtual row key: a row's estimate
+  // is computed ONCE and never changes afterwards, so content arriving for
+  // rows the reader has never seen cannot shift the scroll position (the
+  // virtualizer compensates only for MEASURED changes, never for a changed
+  // estimate of an unmeasured row). Once a row actually renders, the
+  // virtualizer's own measurement supersedes the frozen estimate.
+  // Replace the cache only in the render that installs changed metrics. A
+  // repeated metrics read can return the same object and cause no render.
+  const estimateCache = useMemo(() => new Map<string, number>(), [rowMetrics]);
+  useEffect(() => {
+    let cancelled = false;
+    const syncMetrics = (): void => {
+      if (cancelled) return;
+      const next = readRowMetrics(scrollRef.current);
+      setRowMetrics(next);
+    };
+    queueMicrotask(syncMetrics);
+    return () => {
+      cancelled = true;
+    };
+  }, [laneWidth, fontSize, font]);
   // USER CHOICES only: presence in the map means the user toggled that card
   // (the value is their frozen choice). Absent ids are untouched and pass no
   // `open`, so ToolCard derives the disclosure from the card's CURRENT live
@@ -443,28 +491,133 @@ export function ChatTranscript({
     const rows: TranscriptItem[] = [];
     const keys: string[] = [];
     items.forEach((item, index) => {
+      const key = allKeys[index] ?? `missing:${index}`;
+      // Freeze at first key appearance, not at the virtualizer's first request.
+      if (!estimateCache.has(key)) estimateCache.set(key, estimateRowHeight(item, rowMetrics));
       if (item.kind === "message" && !hasRenderableContent(item.message)) return;
       rows.push(item);
-      keys.push(allKeys[index] ?? `missing:${index}`);
+      keys.push(key);
     });
+    // Bound the estimate cache: drop entries whose keys left the transcript.
+    // Done here, where the key list recomputes, so estimateSize itself stays
+    // a pure lookup.
+    const live = new Set(allKeys);
+    for (const key of estimateCache.keys()) {
+      if (!live.has(key)) estimateCache.delete(key);
+    }
     return { rows, keys };
-  }, [items]);
+  }, [items, rowMetrics, estimateCache]);
+  // Include rowMetrics so a typography/width update rebuilds measurements
+  // in the same render that installs the new estimates. Content-only
+  // updates still hit the frozen per-key estimate cache; measured sizes
+  // in the virtualizer's itemSizeCache continue to win.
+  const getItemKey = useCallback(
+    (index: number) => keys[index] ?? `missing:${index}`,
+    [keys, rowMetrics],
+  );
   const virtualizer = useVirtualizer({
     count: rows.length,
-    getItemKey: (index) => keys[index] ?? `missing:${index}`,
+    getItemKey,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 80,
-    overscan: 4,
+    estimateSize: (index) => estimateCache.get(keys[index]!)!,
+    overscan: 8,
+    // virtual-core passes `adjustments` ONLY for measurement-driven
+    // corrections; every explicit scrollToIndex/scrollToOffset passes
+    // undefined. Drop those corrections while a user scroll is in flight:
+    // any programmatic scroll write cancels the browser's in-flight scroll
+    // animation, so a mid-gesture correction would kill the fling dead.
+    scrollToFn: (offset, { adjustments, behavior }, instance) => {
+      const element = instance.scrollElement;
+      if (element === null) return;
+      if (adjustments === undefined) {
+        // Genuine scroll intent (scrollToIndex/scrollToOffset): the viewport
+        // is being moved deliberately, so any deferred compensation is moot.
+        deferredAdjustmentRef.current = 0;
+        element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
+        return;
+      }
+      // virtual-core 3.17.6 hands over the PER-CALL delta on every path, never
+      // a running total: the non-iOS applyScrollAdjustment resets its internal
+      // scrollAdjustments counter to 0 immediately after each call, the iOS
+      // deferred flush starts from a counter zeroed by the touch-end scroll
+      // events, and every observed scroll event zeroes it as well. Apply each
+      // delta exactly once — do NOT diff against a remembered previous value.
+      if (instance.isScrolling) {
+        // Dropped while the gesture is in flight — never written now, but
+        // accumulated so it replays once the gesture ends.
+        deferredAdjustmentRef.current += adjustments;
+        return;
+      }
+      const top = offset + adjustments;
+      element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
+    },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
     useScrollendEvent: true,
   });
 
+  // Replay the compensation dropped during a scroll gesture once that
+  // gesture ends. `scrollend` is the precise signal where supported;
+  // elsewhere a debounce on `scroll` stands in (virtual-core's own
+  // isScrollingResetDelay default is 150ms).
   useEffect(() => {
-    if (focused && rows.length > 0) {
-      virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    const element = scrollRef.current;
+    if (element === null) return;
+    const flush = (): void => {
+      const pending = deferredAdjustmentRef.current;
+      if (pending === 0) return;
+      deferredAdjustmentRef.current = 0;
+      element.scrollTop += pending;
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onScrollDebounce = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(flush, 150);
+    };
+    const supportsScrollend = "onscrollend" in window;
+    if (supportsScrollend) {
+      // Watchdog: a gesture whose scrollend never arrives would otherwise
+      // leave the compensation queued forever. Re-armed per scroll event, so
+      // a genuinely ongoing gesture keeps deferring; once events stop, flush
+      // anyway after a bounded wait.
+      const armFallback = (): void => {
+        if (deferredAdjustmentRef.current === 0) return;
+        if (timer !== undefined) clearTimeout(timer);
+        timer = setTimeout(flush, 400);
+      };
+      element.addEventListener("scrollend", flush);
+      element.addEventListener("scroll", armFallback);
+      return () => {
+        element.removeEventListener("scrollend", flush);
+        element.removeEventListener("scroll", armFallback);
+        if (timer !== undefined) clearTimeout(timer);
+      };
     }
-  }, [focused, restoreVersion, rows.length, virtualizer]);
+    element.addEventListener("scroll", onScrollDebounce);
+    return () => {
+      element.removeEventListener("scroll", onScrollDebounce);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [scrollRef]);
+
+  // Focus GAIN / session-restore pin to the end regardless of follow intent.
+  // Losing focus must NOT move the viewport: the reader keeps their parked
+  // position. Row-count growth only follows when already at the bottom.
+  const prevRestoreVersionRef = useRef(restoreVersion);
+  useEffect(() => {
+    const restoreChanged = prevRestoreVersionRef.current !== restoreVersion;
+    prevRestoreVersionRef.current = restoreVersion;
+    if (rows.length === 0) return;
+    if (!focused && !restoreChanged) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    // rows.length is read for the target index, not as a trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focused, restoreVersion, virtualizer]);
+
+  useEffect(() => {
+    if (rows.length === 0 || !isFollowing()) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+  }, [rows.length, isFollowing, virtualizer]);
 
   return (
     <div className="th-chat-scrollport">

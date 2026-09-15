@@ -1,0 +1,27 @@
+Pre-existing assertion pinned the virtualizer's pixel total (160px = 2 rows x the old constant 80px estimate).
+The content-derived estimator makes that number meaningless, so the assertion was rewritten to state the
+reconciliation claim directly: the transcript holds exactly two rows.
+
+RED (before the rewrite, with the estimator already wired):
+AssertionError: expected '130px' to be '160px'   x2   (see red-optimistic-height.log)
+
+GREEN (after the rewrite):
+RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-scroll-fix/frontend
+
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  14:44:54
+   Duration  1.10s (transform 391ms, setup 22ms, import 567ms, tests 77ms, environment 352ms)
+
+MUTATION (assertion forced to claim 3 rows - it must fail, proving it reads the real count):
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+AssertionError: expected 2 to be 3 // Object.is equality
+AssertionError: expected 2 to be 3 // Object.is equality
+      Tests  2 failed (2)
+
+RESTORED:
+Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  14:44:57
+   Duration  1.11s (transform 403ms, setup 25ms, import 581ms, tests 76ms, environment 354ms)

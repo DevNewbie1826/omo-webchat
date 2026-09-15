@@ -1,0 +1,20 @@
+{
+  "beforeAppend": {
+    "scrollTop": 62135,
+    "scrollHeight": 68903,
+    "distanceFromBottom": 5924,
+    "buttonPresent": true
+  },
+  "afterAppendAway": {
+    "scrollTop": 62135,
+    "scrollHeight": 69031,
+    "distanceFromBottom": 6052,
+    "buttonPresent": true
+  },
+  "afterAppendBottom": {
+    "scrollTop": 68311,
+    "scrollHeight": 69155,
+    "distanceFromBottom": 0,
+    "buttonPresent": false
+  }
+}

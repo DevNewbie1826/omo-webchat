@@ -1,0 +1,73 @@
+{
+  "recordedAt": "2026-09-15T08:27:43.728954+00:00",
+  "runnerExitCode": 0,
+  "sweepExitCode": 0,
+  "geometryExitCode": 0,
+  "frozenHashesMatch": true,
+  "runnerSha256": "eed669df264cd1ae77346b5db2cf570945d2214985c2df08a6592f2c5a5ad556",
+  "independentlyRecomputedMaxResiduals": [
+    68,
+    48,
+    63.0
+  ],
+  "cleanup": {
+    "viteStopped": true,
+    "temporaryRemoved": true,
+    "coreRestored": true,
+    "cmpExitCode": 0,
+    "portFree": true,
+    "lsofExitCode": 1,
+    "sweepCacheRemoved": true,
+    "laneCacheRemoved": true
+  },
+  "artifacts": {
+    "transcript-older-history-390x844.png": {
+      "bytes": 245672,
+      "modifiedAt": "2026-09-15T08:23:24.224351+00:00"
+    },
+    "metrics-sweep.json": {
+      "bytes": 5868,
+      "modifiedAt": "2026-09-15T08:24:02.159887+00:00"
+    },
+    "estimator-accuracy.json": {
+      "bytes": 123566,
+      "modifiedAt": "2026-09-15T08:23:40.010432+00:00"
+    },
+    "ios-path.json": {
+      "bytes": 246431,
+      "modifiedAt": "2026-09-15T08:23:52.673349+00:00"
+    },
+    "lane-geometry.json": {
+      "bytes": 9714,
+      "modifiedAt": "2026-09-15T08:24:31.862739+00:00"
+    },
+    "metadata.json": {
+      "bytes": 390,
+      "modifiedAt": "2026-09-15T08:23:20.724201+00:00"
+    },
+    "cleanup.json": {
+      "bytes": 137,
+      "modifiedAt": "2026-09-15T08:23:52.741961+00:00"
+    },
+    "transcript-390x844.png": {
+      "bytes": 215035,
+      "modifiedAt": "2026-09-15T08:23:21.982265+00:00"
+    },
+    "scroll-travel.json": {
+      "bytes": 3289,
+      "modifiedAt": "2026-09-15T08:23:25.725991+00:00"
+    },
+    "follow-intent.json": {
+      "bytes": 411,
+      "modifiedAt": "2026-09-15T08:23:29.854391+00:00"
+    },
+    "browser.json": {
+      "bytes": 143,
+      "modifiedAt": "2026-09-15T08:23:21.951049+00:00"
+    },
+    "image-shift.json": {
+      "bytes": 286,
+      "modifiedAt": "2026-09-15T08:23:30.779070+00:00"
+    }
+  }
+}

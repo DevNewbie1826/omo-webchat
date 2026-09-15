@@ -1,0 +1,14 @@
+{
+  "beforeAppend": {
+    "distanceFromBottom": 6000,
+    "buttonPresent": true
+  },
+  "afterAppendAway": {
+    "distanceFromBottom": 0,
+    "buttonPresent": false
+  },
+  "afterAppendBottom": {
+    "distanceFromBottom": 0,
+    "buttonPresent": false
+  }
+}
