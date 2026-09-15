@@ -40,6 +40,15 @@ describe("unknown approval request safety net", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
+  it.each([{}, { questions: [] }])("falls back when question controls cannot render: %j", (shape) => {
+    // Given a request with no renderable question list.
+    const raw = { type: "approval", sessionId: "s", id: "empty-question", method: "question", title: "Deploy settings", ...shape };
+    // When the transport parses the request.
+    const parsed = parseChatServerFrame(raw);
+    // Then its identity survives on the existing cancellable fallback route.
+    expect(parsed).toMatchObject({ type: "approval", fallback: true, id: raw.id, title: raw.title });
+  });
+
   it("logs each distinct unknown method once", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 

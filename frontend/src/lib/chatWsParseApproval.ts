@@ -40,6 +40,8 @@ export function parseApprovalFrame(msg: Record<string, unknown>, sessionId: stri
   const deadlineAtMs = optNumber(msg, "deadlineAtMs");
   const remainingMs = optNumber(msg, "remainingMs");
   const questions = msg["questions"] === undefined ? undefined : mapRecords(msg["questions"], parseQuestion);
+  // A question without controls must use the cancellable unsupported-request fallback.
+  if (method === "question" && (questions?.length ?? 0) === 0) return null;
   const nonBlocking = optBoolean(msg, "nonBlocking");
   if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null || questions === null || nonBlocking === null) return null;
   return {
