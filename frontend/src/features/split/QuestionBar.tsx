@@ -29,9 +29,15 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const { t } = useT();
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
-	const [draft, setDraft] = useApprovalQuestionDraft(request.id);
-	const activeIndex = Math.min(draft.activeIndex, Math.max((request.questions?.length ?? 0) - 1, 0));
-	const question = request.questions?.[activeIndex];
+	const questions = request.questions ?? [];
+	const [storedDraft, setDraft] = useApprovalQuestionDraft(request.id, questions);
+	const { answers } = questionDraftResponse(storedDraft, questions);
+	const firstUnanswered = questions.findIndex((question, index) => !Object.hasOwn(answers, questionKey(question, index)));
+	// Keep the current input active while editing, but never skip an earlier
+	// question whose answer disappeared during reconciliation.
+	const activeIndex = Math.min(storedDraft.activeIndex, firstUnanswered < 0 ? Math.max(questions.length - 1, 0) : firstUnanswered);
+	const draft = activeIndex === storedDraft.activeIndex ? storedDraft : { ...storedDraft, activeIndex, answering: false };
+	const question = questions[activeIndex];
 	const questionId = questionKey(question, activeIndex);
 	const options = (question?.options ?? []).filter(
 		(option): option is typeof option & { readonly label: string } =>
@@ -51,10 +57,11 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 		}) };
 		// Sequence inside the one-line band; settle only after every question
 		// has an answer so an unseen remainder can never be discarded.
-		if (activeIndex + 1 < (request.questions?.length ?? 0)) {
-			setDraft({ ...completed, activeIndex: activeIndex + 1, answering: false });
+		const response = questionDraftResponse(completed, questions);
+		const nextUnanswered = questions.findIndex((question, index) => !Object.hasOwn(response.answers, questionKey(question, index)));
+		if (nextUnanswered >= 0) {
+			setDraft({ ...completed, activeIndex: nextUnanswered, answering: false });
 		} else {
-			const response = questionDraftResponse(completed, request.questions ?? []);
 			onAnswer(response.answers, response.comment);
 		}
 		focusPaneComposer(sectionRef.current);
