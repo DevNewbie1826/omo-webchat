@@ -1,0 +1,9 @@
+$ hash idempotence around go generate ./contract
+BEFORE_GO=2447202099b3f2666041a355555fcbd262fc876b  internal/wscontract/types_gen.go
+BEFORE_TS=99f9fea25c95f92536be1451fd1f85660891572f  frontend/src/lib/contract/types_gen.ts
+gen_go: wrote /Volumes/storage/workspace/cli-webchat-error-visibility/internal/wscontract/types_gen.go (74 structs)
+gen_ts: wrote /Volumes/storage/workspace/cli-webchat-error-visibility/frontend/src/lib/contract/types_gen.ts
+AFTER_GO=2447202099b3f2666041a355555fcbd262fc876b  internal/wscontract/types_gen.go
+AFTER_TS=99f9fea25c95f92536be1451fd1f85660891572f  frontend/src/lib/contract/types_gen.ts
+GEN_EXIT_CODE=0
+EXIT_CODE=0

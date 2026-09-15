@@ -1,0 +1,80 @@
+$ npx vitest run src/features/split/ChatTranscript.images.test.tsx -t "SECOND of two identical"
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vitest' run src/features/split/ChatTranscript.images.test.tsx -t SECOND of two identical
+
+ RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-image-zoom/frontend
+
+ ❯ src/features/split/ChatTranscript.images.test.tsx (18 tests | 1 failed | 17 skipped) 85ms
+     × returns focus to the SECOND of two identical inline images when its zoom closes 84ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/features/split/ChatTranscript.images.test.tsx > ChatTranscript image zoom modal > returns focus to the SECOND of two identical inline images when its zoom closes
+AssertionError: expected <button type="button" …(2)>…(1)</button> to be <button type="button" …(2)>…(1)</button> // Object.is equality
+
+If it should pass with deep equality, replace "toBe" with "toStrictEqual"
+
+Expected: <button type="button" …(2)>…(1)</button>
+Received: serializes to the same string
+
+
+Compared values have no visual difference.
+
+ ❯ src/features/split/ChatTranscript.images.test.tsx:630:34
+    628|   });
+    629|   expect(dialog()).toBeNull();
+    630|   expect(document.activeElement).toBe(second);
+       |                                  ^
+    631|  });
+    632|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 skipped (18)
+   Start at  20:19:00
+   Duration  759ms (transform 126ms, setup 20ms, import 226ms, tests 85ms, environment 348ms)
+
+exit=1
+
+--- fix disabled (ChatTranscript.tsx stashed at b768bd2) ---
+$ npx vitest run src/features/split/ChatTranscript.images.test.tsx -t "SECOND of two identical"
+npm notice run omo-webchat-frontend@0.1.0 npx
+npm notice run 'vitest' run src/features/split/ChatTranscript.images.test.tsx -t SECOND of two identical
+
+ RUN  v4.1.11 /Volumes/storage/workspace/cli-webchat-image-zoom/frontend
+
+ ❯ src/features/split/ChatTranscript.images.test.tsx (18 tests | 1 failed | 17 skipped) 198ms
+     × returns focus to the SECOND of two identical inline images when its zoom closes 197ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/features/split/ChatTranscript.images.test.tsx > ChatTranscript image zoom modal > returns focus to the SECOND of two identical inline images when its zoom closes
+AssertionError: expected <button type="button" …(2)>…(1)</button> to be <button type="button" …(2)>…(1)</button> // Object.is equality
+
+If it should pass with deep equality, replace "toBe" with "toStrictEqual"
+
+Expected: <button type="button" …(2)>…(1)</button>
+Received: serializes to the same string
+
+
+Compared values have no visual difference.
+
+ ❯ src/features/split/ChatTranscript.images.test.tsx:630:34
+    628|   });
+    629|   expect(dialog()).toBeNull();
+    630|   expect(document.activeElement).toBe(second);
+       |                                  ^
+    631|  });
+    632|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 17 skipped (18)
+   Start at  20:19:47
+   Duration  1.96s (transform 489ms, setup 52ms, import 683ms, tests 198ms, environment 860ms)
+
+exit=1

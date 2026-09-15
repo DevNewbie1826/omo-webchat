@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -15,7 +15,7 @@ import {
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
-import { hasRenderableContent } from "./chatEntries";
+import { hasRenderableContent, isFailedTurn } from "./chatEntries";
 import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
@@ -23,6 +23,7 @@ import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
+import { ModalDialog } from "../../components/ModalDialog";
 import { estimateRowHeight, readRowMetrics } from "./chatRowEstimate";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -36,6 +37,11 @@ function sameMedia(a: ToolResultImage, b: ToolResultImage): boolean {
     return a.ref?.toolCallId === b.ref?.toolCallId && a.ref?.contentIndex === b.ref?.contentIndex;
   }
   return a.data === b.data;
+}
+
+/** Zoom identity of a referenced image: its shared media coordinate. */
+function refZoomKey(toolCallId: string, contentIndex: number): string {
+  return `ref:${toolCallId}:${contentIndex}`;
 }
 
 /** The image carried by an image/image_ref block, if the block is well-formed. */
@@ -58,6 +64,14 @@ function messageText(message: UiMessage): string {
 }
 
 const STOP_ERROR_REASONS = new Set(["max_tokens", "length", "content_filter", "refusal", "error"]);
+
+/** Wire-provided wording for a failed turn: the failure text exactly as it
+ * arrived, else the wire stopReason value itself; null when the wire carried
+ * neither (nothing to show — never synthesize a label). */
+function failedTurnText(message: UiMessage): string | null {
+  if (message.errorMessage !== undefined && message.errorMessage.length > 0) return message.errorMessage;
+  return message.stopReason ?? null;
+}
 
 function isStopError(reason: string): boolean {
   return STOP_ERROR_REASONS.has(reason);
@@ -139,19 +153,37 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
   });
 }
 
+const MISSING_ROW: TranscriptItem = {
+  kind: "message",
+  message: { role: "assistant", blocks: [] },
+};
+
 /** Inline image carried on a preserved block: bytes already inline as base64. */
-function InlineImage({ data, mimeType, alt }: {
+/** Stable logical identity of a zoomed image's trigger, threaded onto the
+ * button as data-zoom-key so a close-time re-resolution never has to match
+ * on the raw <img> src (ambiguous when two images share bytes). Referenced
+ * images resolve by their media coordinate; inline images by the block/media
+ * key already used as the React key. */
+type ZoomOpen = (src: string, trigger: HTMLElement) => void;
+
+function InlineImage({ data, mimeType, alt, zoomKey, onZoom }: {
   readonly data: string;
   readonly mimeType: string | undefined;
   readonly alt: string;
+  readonly zoomKey: string;
+  readonly onZoom: ZoomOpen;
 }) {
+  const { t } = useT();
+  const src = `data:${mimeType ?? "image/png"};base64,${data}`;
   return (
-    <img
-      className="th-chat-image"
-      src={`data:${mimeType ?? "image/png"};base64,${data}`}
-      alt={alt}
-      loading="lazy"
-    />
+    <button type="button" className="th-chat-image-button" data-zoom-key={zoomKey} aria-label={t("chat.imageZoom")} onClick={(event) => onZoom(src, event.currentTarget)}>
+      <img
+        className="th-chat-image"
+        src={src}
+        alt={alt}
+        loading="lazy"
+      />
+    </button>
   );
 }
 
@@ -179,12 +211,13 @@ function ImageUnavailable({ mimeType, byteLength }: {
  * chatMedia.ts, so re-renders, disclosure toggles, and virtualized-row or full
  * remounts never refetch; a rejection stays cached too, leaving the fallback.
  */
-function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
+function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength, onZoom }: {
   readonly source: ChatMediaSource | undefined;
   readonly toolCallId: string;
   readonly contentIndex: number;
   readonly mimeType: string | undefined;
   readonly byteLength: number | undefined;
+  readonly onZoom: ZoomOpen;
 }) {
   const { t } = useT();
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -235,7 +268,11 @@ function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
     };
   }, [wsId, chatId, toolCallId, contentIndex]);
   if (objectUrl !== null) {
-    return <img ref={observeElement} className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
+    return (
+      <button type="button" className="th-chat-image-button" data-zoom-key={refZoomKey(toolCallId, contentIndex)} aria-label={t("chat.imageZoom")} onClick={(event) => onZoom(objectUrl, event.currentTarget)}>
+        <img ref={observeElement} className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />
+      </button>
+    );
   }
   if (failed) return <ImageUnavailable mimeType={mimeType} byteLength={byteLength} />;
   // Pending frame: reserves the thumbnail box until the image enters the
@@ -271,6 +308,7 @@ export function ChatTranscript({
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize, font } = useT();
+  const imageZoomTitleId = useId();
   // Measurement corrections dropped while a user scroll gesture is in flight
   // accumulate here and replay once the gesture ends (scrollend listener /
   // debounced-scroll fallback below). Declared before useChatScroll so an
@@ -337,9 +375,44 @@ export function ChatTranscript({
       }}
     />
   );
-  const renderMedia = (media: ToolResultImage, key: string) => {
+  // Zoomed image source for the media modal. Only the src is kept: the
+  // modal renders through a portal, so virtualized row unmounts never tear
+  // it down, and reusing the same data:/object URL never refetches.
+  const [zoomedSrc, setZoomedSrc] = useState<string | null>(null);
+  // The originating trigger element plus its stable logical identity,
+  // captured when the zoom opens. modalStack restores focus to the element
+  // that was active when the modal opened, so while that element is still
+  // connected the close path does NOTHING extra — re-resolving by <img> src
+  // would both override the correct restoration and mis-target the first of
+  // two byte-identical images. Only a live row finalizing underneath the
+  // open zoom replaces the trigger node; then the saved element is
+  // disconnected and the CURRENT trigger is re-resolved by its data-zoom-key
+  // (never by the ambiguous raw src) after the modal's own restore has run
+  // (passive-effect destroys all flush before creates).
+  const zoomOriginRef = useRef<{ element: HTMLElement; key: string } | null>(null);
+  const openZoom = useCallback((src: string, trigger: HTMLElement) => {
+    zoomOriginRef.current = { element: trigger, key: trigger.dataset["zoomKey"] ?? "" };
+    setZoomedSrc(src);
+  }, []);
+  const closeZoom = useCallback(() => {
+    setZoomedSrc(null);
+  }, []);
+  useEffect(() => {
+    if (zoomedSrc !== null) return;
+    const origin = zoomOriginRef.current;
+    if (origin === null) return;
+    zoomOriginRef.current = null;
+    // Normal case: the opener survived, modalStack already restored focus.
+    if (origin.element.isConnected) return;
+    const root = scrollRef.current;
+    if (root === null || origin.key === "") return;
+    const trigger = Array.from(root.querySelectorAll<HTMLElement>(".th-chat-image-button"))
+      .find((button) => button.dataset["zoomKey"] === origin.key);
+    trigger?.focus();
+  }, [zoomedSrc, scrollRef]);
+  const renderMedia = (media: ToolResultImage, key: string, inlineZoomKey: string) => {
     if (media.data !== undefined) {
-      return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} />;
+      return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} zoomKey={inlineZoomKey} onZoom={openZoom} />;
     }
     if (media.ref !== undefined) {
       return (
@@ -350,6 +423,7 @@ export function ChatTranscript({
           contentIndex={media.ref.contentIndex}
           mimeType={media.mimeType}
           byteLength={media.byteLength}
+          onZoom={openZoom}
         />
       );
     }
@@ -360,7 +434,7 @@ export function ChatTranscript({
   // tool's media wrapper as soon as the row mounts, whether the card is open
   // or collapsed. Laziness lives in RefImage's viewport gate, not in the
   // disclosure state, so a collapsed card still shows its result image.
-  const renderMessageBlocks = (message: UiMessage): ReactNode[] => {
+  const renderMessageBlocks = (message: UiMessage, rowKey: string): ReactNode[] => {
     const blocks = message.blocks ?? [];
     const groupedResultImages = new Set<number>();
     return blocks.map((block, blockIndex) => {
@@ -380,6 +454,8 @@ export function ChatTranscript({
             data={block.data}
             mimeType={block.mimeType}
             alt={t("chat.image")}
+            zoomKey={`block:${rowKey}:${blockIndex}`}
+            onZoom={openZoom}
           />
         );
       }
@@ -392,6 +468,7 @@ export function ChatTranscript({
             contentIndex={block.ref.contentIndex}
             mimeType={block.mimeType}
             byteLength={block.byteLength}
+            onZoom={openZoom}
           />
         );
       }
@@ -443,7 +520,7 @@ export function ChatTranscript({
         return (
           <div key={mediaKey} className="th-chat-tool-media">
             {card}
-            {media.map((image, mediaIndex) => renderMedia(image, `${mediaKey}:${mediaIndex}`))}
+            {media.map((image, mediaIndex) => renderMedia(image, `${mediaKey}:${mediaIndex}`, `media:${block.id ?? mediaKey}:${mediaIndex}`))}
           </div>
         );
       }
@@ -519,7 +596,23 @@ export function ChatTranscript({
     count: rows.length,
     getItemKey,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => estimateCache.get(keys[index]!)!,
+    // Total: the virtualizer can ask about an index after the row list
+    // shrinks (chat switch). A miss still returns a content-derived
+    // estimate — never undefined, never a magic constant.
+    estimateSize: (index) => {
+      const key = keys[index];
+      if (key !== undefined) {
+        const cached = estimateCache.get(key);
+        if (cached !== undefined) return cached;
+        const item = rows[index];
+        if (item !== undefined) {
+          const size = estimateRowHeight(item, rowMetrics);
+          estimateCache.set(key, size);
+          return size;
+        }
+      }
+      return estimateRowHeight(MISSING_ROW, rowMetrics);
+    },
     overscan: 8,
     // virtual-core passes `adjustments` ONLY for measurement-driven
     // corrections; every explicit scrollToIndex/scrollToOffset passes
@@ -682,7 +775,20 @@ export function ChatTranscript({
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
-                    ) : renderMessageBlocks(message)}
+                    ) : (
+                      <>
+                        {renderMessageBlocks(message, String(virtualItem.key))}
+                        {isFailedTurn(message) && failedTurnText(message) !== null && (
+                          // Wire-only wording: the failure text exactly as it
+                          // arrived; when the turn carries no text, the
+                          // wire-provided stopReason value itself, so a failed
+                          // turn is never silent and nothing is fabricated.
+                          <div className="th-chat-error th-chat-turn-error" role="alert">
+                            {failedTurnText(message)}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );
@@ -716,7 +822,7 @@ export function ChatTranscript({
                 return (
                   <div key={id} className="th-chat-tool-media">
                     {card}
-                    {media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`))}
+                    {media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`, `media:${id}:${mediaIndex}`))}
                   </div>
                 );
               })}
@@ -741,6 +847,18 @@ export function ChatTranscript({
           ↓
         </button>
       )}
+      <ModalDialog
+        open={zoomedSrc !== null}
+        onClose={closeZoom}
+        variant="media"
+        closeLabel={t("common.close")}
+        labelledBy={imageZoomTitleId}
+      >
+        <h2 id={imageZoomTitleId} className="th-visually-hidden">{t("chat.imageZoomTitle")}</h2>
+        {zoomedSrc !== null && (
+          <img className="th-modal-media-image" src={zoomedSrc} alt={t("chat.image")} />
+        )}
+      </ModalDialog>
     </div>
   );
 }

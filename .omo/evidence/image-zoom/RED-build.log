@@ -1,0 +1,6 @@
+npm notice run omo-webchat-frontend@0.1.0 build
+npm notice run tsc --noEmit && vite build
+src/features/split/ChatTranscript.tsx(381,70): error TS4111: Property 'zoomKey' comes from an index signature, so it must be accessed with ['zoomKey'].
+src/features/split/ChatTranscript.tsx(397,40): error TS4111: Property 'zoomKey' comes from an index signature, so it must be accessed with ['zoomKey'].
+
+EXIT_CODE=2

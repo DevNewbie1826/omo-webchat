@@ -316,6 +316,13 @@
   user-select: text;
 }
 
+/* Failure text attached to its transcript turn: same error ink as the live
+ * region's .th-chat-error, spaced off the turn's own blocks by the system
+ * scale. */
+.th-chat-turn-error {
+  margin-top: var(--th-space-1);
+}
+
 .th-chat-scroll-bottom {
   position: absolute;
   right: max(var(--th-chat-gutter), calc((100% - var(--th-chat-max)) / 2 + 8px));
@@ -491,6 +498,17 @@
 
 
 /* Preserved image blocks (inline data or lazily fetched image_ref). */
+/* Zoom trigger: a real button wrapping the thumbnail so keyboard users get
+   Enter/Space activation for the zoom modal. */
+.th-chat-image-button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
 .th-chat-image {
   display: block;
   max-width: 100%;

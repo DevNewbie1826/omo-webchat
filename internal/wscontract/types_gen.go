@@ -25,11 +25,15 @@ type AssistantDelta struct {
 }
 
 type AssistantMessage struct {
-	Blocks     []ContentBlock  `json:"blocks,omitempty"`
-	Content    *string         `json:"content,omitempty"`
-	CustomType *string         `json:"customType,omitempty"`
-	Model      *string         `json:"model,omitempty"`
-	Role       string          `json:"role"`
+	Blocks     []ContentBlock `json:"blocks,omitempty"`
+	Content    *string        `json:"content,omitempty"`
+	CustomType *string        `json:"customType,omitempty"`
+	// Failure text observed on the wire when an assistant turn ends unsuccessfully
+	ErrorMessage *string `json:"errorMessage,omitempty"`
+	Model        *string `json:"model,omitempty"`
+	Role         string  `json:"role"`
+	// Stop reason observed on the wire for a completed assistant turn
+	StopReason *string         `json:"stopReason,omitempty"`
 	Timestamp  *float64        `json:"timestamp,omitempty"`
 	Ts         *float64        `json:"ts,omitempty"`
 	Usage      json.RawMessage `json:"usage,omitempty"`
@@ -817,7 +821,7 @@ func (v *AssistantMessage) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"blocks", "content", "customType", "model", "role", "timestamp", "ts", "usage"}, []string{}, []string{"blocks"})
+	extra, err := captureExtraFields(data, []string{"blocks", "content", "customType", "errorMessage", "model", "role", "stopReason", "timestamp", "ts", "usage"}, []string{}, []string{"blocks"})
 	if err != nil {
 		return err
 	}
@@ -2394,6 +2398,7 @@ const (
 	DurableNoticeKindQueueDeliveryUncertain DurableNoticeKind = "queue_delivery_uncertain"
 	DurableNoticeKindExtensionNotify        DurableNoticeKind = "extension_notify"
 	DurableNoticeKindEngineNotify           DurableNoticeKind = "engine_notify"
+	DurableNoticeKindContinuationError      DurableNoticeKind = "continuation_error"
 )
 
 // ApprovalMethod values, from shared-types.json.
@@ -2556,7 +2561,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "message":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "byteLength": validationSchema{Type: "integer"}, "data": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "ref": validationSchema{Type: "object", Properties: map[string]validationSchema{"contentIndex": validationSchema{Type: "integer"}, "toolCallId": validationSchema{Type: "string"}}, Required: []string{"toolCallId", "contentIndex"}}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "content": validationSchema{Type: "string"}, "customType": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "timestamp": validationSchema{Type: "number"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"message": validationSchema{Type: "object", Properties: map[string]validationSchema{"blocks": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"arguments": validationSchema{}, "byteLength": validationSchema{Type: "integer"}, "data": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "isError": validationSchema{Type: "boolean"}, "kind": validationSchema{Type: "string"}, "mimeType": validationSchema{Type: "string"}, "name": validationSchema{Type: "string"}, "ref": validationSchema{Type: "object", Properties: map[string]validationSchema{"contentIndex": validationSchema{Type: "integer"}, "toolCallId": validationSchema{Type: "string"}}, Required: []string{"toolCallId", "contentIndex"}}, "text": validationSchema{Type: "string"}, "thinking": validationSchema{Type: "string"}}, Required: []string{"kind"}}}, "content": validationSchema{Type: "string"}, "customType": validationSchema{Type: "string"}, "errorMessage": validationSchema{Type: "string"}, "model": validationSchema{Type: "string"}, "role": validationSchema{Type: "string"}, "stopReason": validationSchema{Type: "string"}, "timestamp": validationSchema{Type: "number"}, "ts": validationSchema{Type: "number"}, "usage": validationSchema{}}, Required: []string{"role"}}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "message"}}, Required: []string{"type", "sessionId", "message"}}); err != nil {
 				return nil, err
 			}
 		case "tool":

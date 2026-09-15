@@ -119,7 +119,7 @@ describe("LiveSessionList", () => {
     });
   }
 
-  it("renders one card per summary with counts, dag progress, and last line", () => {
+  it("renders one card per summary with running badge and last line, and no meta line", () => {
     renderList();
 
     const first = card(0);
@@ -128,21 +128,42 @@ describe("LiveSessionList", () => {
     expect(running?.textContent).toBe("2");
     expect(running?.getAttribute("aria-label")).toBe("overview.runningAria 2");
     expect(running?.querySelector(".th-overview-card-running-dot")).not.toBeNull();
-    expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done 1");
-    expect(first.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.dag 2/3");
+    // The done/dag meta line is gone from the render even though the summary
+    // still carries doneCount 1, dagDone 2, dagTotal 3.
+    expect(first.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(first.textContent).not.toContain("overview.done");
+    expect(first.textContent).not.toContain("overview.dag");
     expect(first.querySelector(".th-overview-card-line")?.textContent).toBe("ls -la /work");
     expect(first.tagName).toBe("DIV");
     expect(first.querySelector(".th-overview-card-open")?.tagName).toBe("BUTTON");
 
     const second = card(1);
-    // No running agents, nothing done, no dag, no line: the card degrades to
-    // title only ("Done 0" would be noise), and an empty title falls back to
-    // the session id.
+    // An empty title falls back to the session id; with no running agents and
+    // no last line the card renders title only.
     expect(second.querySelector(".th-overview-card-name")?.textContent).toBe("disk-9");
     expect(second.querySelector(".th-overview-card-running")).toBeNull();
     expect(second.querySelector(".th-overview-card-meta")).toBeNull();
     expect(second.textContent).not.toContain("overview.done");
     expect(second.querySelector(".th-overview-card-line")).toBeNull();
+  });
+
+  it("renders no meta line even when done and dag counts are present", () => {
+    // The done/dag meta line is removed from the card render so every card
+    // keeps a uniform height; the underlying summary fields stay intact.
+    const withWork: LiveSessionSummary = {
+      ...summaries[0]!,
+      doneCount: 1,
+      dagDone: 2,
+      dagTotal: 3,
+    };
+    renderList({ summaries: [withWork] });
+
+    const first = card(0);
+    expect(first.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(first.textContent).not.toContain("overview.done");
+    expect(first.textContent).not.toContain("overview.dag");
+    expect(first.querySelector(".th-overview-card-name")?.textContent).toBe("Refactor auth");
+    expect(first.querySelector(".th-overview-card-running")?.textContent).toBe("2");
   });
 
   it("renders a large running count with an interpolated aria-label and no tooltip", () => {

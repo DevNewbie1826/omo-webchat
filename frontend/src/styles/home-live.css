@@ -46,9 +46,8 @@
 }
 
 /* Picker-column density for the overview card markup: tighter activation
-   padding, the name at Label and metadata demoted to Micro, and every row
-   held to one ellipsized line - including the last-output line the sidebar
-   variant does not show. */
+   padding, the name at Label held to one ellipsized line - and the
+   last-output line the sidebar variant does not show clamped the same way. */
 .th-home-live-list .th-overview-card-open {
   padding: var(--th-space-1) var(--th-space-2);
 }
@@ -57,16 +56,6 @@
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-}
-
-.th-home-live-list .th-overview-card-meta {
-  font-size: var(--th-type-micro-size);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-}
-
-.th-home-live-list .th-overview-card-name,
-.th-home-live-list .th-overview-card-meta {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
