@@ -45,6 +45,13 @@ interface MetricsCache {
 
 let cache: MetricsCache | undefined;
 
+function sizeToGlyphAdvance(el: HTMLElement): void {
+  el.style.display = "inline-block";
+  el.style.width = "max-content";
+  el.style.maxWidth = "none";
+  el.style.whiteSpace = "pre";
+}
+
 function fallbackMetrics(): RowMetrics {
   const fontSize = FONT_SIZE_DEFAULT;
   return {
@@ -102,25 +109,30 @@ export function readRowMetrics(scrollElement: HTMLElement | null): RowMetrics {
   probe.style.position = "absolute";
   probe.style.visibility = "hidden";
   probe.style.pointerEvents = "none";
-  probe.style.left = "0";
-  probe.style.right = "0";
   probe.style.top = "0";
-  probe.style.width = "100%";
+  // Inherit .th-chat-row { width: min(var(--th-chat-max), calc(100% + 2*var(--th-chat-scrollbar) - 2*var(--th-chat-gutter))) }
+  // and .th-chat-msg / .th-chat-msg--assistant box rules. Do not force left/right/width.
 
   const msg = document.createElement("div");
   msg.className = "th-chat-msg th-chat-msg--assistant";
 
+  const markdown = document.createElement("div");
+  markdown.className = "th-chat-markdown";
+
   const bodySpan = document.createElement("span");
   bodySpan.textContent = SAMPLE;
-  bodySpan.style.whiteSpace = "pre";
+  sizeToGlyphAdvance(bodySpan);
 
+  const pre = document.createElement("pre");
   const code = document.createElement("code");
   const monoSpan = document.createElement("span");
   monoSpan.textContent = SAMPLE;
-  monoSpan.style.whiteSpace = "pre";
+  sizeToGlyphAdvance(monoSpan);
   code.append(monoSpan);
+  pre.append(code);
 
-  msg.append(bodySpan, code);
+  markdown.append(bodySpan, pre);
+  msg.append(markdown);
   probe.append(msg);
   scrollElement.append(probe);
 
