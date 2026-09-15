@@ -156,8 +156,6 @@
   "settings.systemStats": "System status",
   "settings.engineRestart": "Restart omo engine",
   "stats.title": "System status",
-  "overview.done": "Done",
-  "overview.dag": "DAG",
   "overview.runningAria": "{n} agent(s) running",
   "overview.readOnlyLive": "Read-only live view",
   "stats.error": "Failed to load system stats.",

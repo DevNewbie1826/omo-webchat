@@ -156,8 +156,6 @@
   "settings.systemStats": "시스템 상태",
   "settings.engineRestart": "omo 엔진 다시 시작",
   "stats.title": "시스템 상태",
-  "overview.done": "완료",
-  "overview.dag": "DAG",
   "overview.runningAria": "에이전트 {n}개 실행 중",
   "overview.readOnlyLive": "읽기 전용 라이브 보기",
   "stats.error": "시스템 통계를 불러오지 못했습니다.",

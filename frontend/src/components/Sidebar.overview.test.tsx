@@ -241,11 +241,12 @@ describe("Sidebar pinned running sessions", () => {
     expect(cards[1]?.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[2]?.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[0]?.querySelector(".th-overview-card-running")).not.toBeNull();
-    // The working row keeps its meta line; idle rows with no task and no DAG
-    // render no meta line at all (no meaningless "Done 0").
-    expect(cards[0]?.querySelector(".th-overview-card-meta")?.textContent).toContain("overview.done");
+    // No card renders a meta line anymore: the done/dag counts were removed
+    // from the card render so every card keeps a uniform height.
+    expect(cards[0]?.querySelector(".th-overview-card-meta")).toBeNull();
     expect(cards[1]?.querySelector(".th-overview-card-meta")).toBeNull();
     expect(cards[2]?.querySelector(".th-overview-card-meta")).toBeNull();
+    expect(cards[0]?.textContent).not.toContain("overview.done");
     expect(cards[1]?.textContent).not.toContain("overview.done");
     expect(cards[2]?.textContent).not.toContain("overview.done");
   });
