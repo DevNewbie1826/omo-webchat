@@ -2,8 +2,19 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatClientFrame, ChatConnector, ChatServerFrame } from "../../lib/chatWs";
+import { I18nContext, translate, type I18nValue } from "../../i18n";
 import { COMPACT_COMMAND } from "./curatedCommands";
 import { useChatSession } from "./useChatSession";
+
+const i18n: I18nValue = {
+  lang: "en",
+  setLang: () => undefined,
+  font: "system",
+  setFont: () => undefined,
+  fontSize: 13,
+  setFontSize: () => undefined,
+  t: (key) => translate("en", key),
+};
 
 const session = {
   id: "chat-1",
@@ -41,7 +52,11 @@ describe("useChatSession manual compaction", () => {
       current = useChatSession(session, connect);
       return null;
     }
-    act(() => root.render(<Probe />));
+    act(() => root.render(
+      <I18nContext.Provider value={i18n}>
+        <Probe />
+      </I18nContext.Provider>,
+    ));
   });
 
   afterEach(async () => {
@@ -215,7 +230,7 @@ describe("useChatSession manual compaction", () => {
 
     expect(accepted).toBe(false);
     expect(compactFrames()).toHaveLength(0);
-    expect(current?.error).toContain("already in progress");
+    expect(current?.error).toBe(translate("en", "chat.compactInProgress"));
   });
 
   it("rejects a compact while a run is active and allows it once the run ends", () => {
