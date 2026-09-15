@@ -271,7 +271,7 @@ export function ChatTranscript({
   mediaSource,
 }: ChatTranscriptProps) {
   const { t, fontSize } = useT();
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom } = useChatScroll(restoreVersion, focused);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing } = useChatScroll(restoreVersion, focused);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -496,11 +496,19 @@ export function ChatTranscript({
     useScrollendEvent: true,
   });
 
+  // Focus / session-restore pin to the end regardless of follow intent.
+  // Row-count growth only follows when the reader is already at the bottom.
   useEffect(() => {
-    if (focused && rows.length > 0) {
-      virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
-    }
-  }, [focused, restoreVersion, rows.length, virtualizer]);
+    if (rows.length === 0) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+    // rows.length is read for the target index, not as a trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focused, restoreVersion, virtualizer]);
+
+  useEffect(() => {
+    if (rows.length === 0 || !isFollowing()) return;
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+  }, [rows.length, isFollowing, virtualizer]);
 
   return (
     <div className="th-chat-scrollport">

@@ -12,6 +12,7 @@ export interface ChatScrollState {
   readonly showScrollToBottom: boolean;
   readonly onScroll: UIEventHandler<HTMLDivElement>;
   readonly scrollToBottom: () => void;
+  readonly isFollowing: () => boolean;
 }
 
 export function useChatScroll(restoreVersion: number, focused: boolean): ChatScrollState {
@@ -21,6 +22,8 @@ export function useChatScroll(restoreVersion: number, focused: boolean): ChatScr
   const programmaticRef = useRef(false);
   const restoredVersionRef = useRef<number | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+
+  const isFollowing = useCallback(() => followRef.current, []);
 
   const scrollToBottom = useCallback(() => {
     const element = scrollRef.current;
@@ -75,5 +78,6 @@ export function useChatScroll(restoreVersion: number, focused: boolean): ChatScr
     showScrollToBottom,
     onScroll: updateIntent,
     scrollToBottom,
+    isFollowing,
   };
 }
