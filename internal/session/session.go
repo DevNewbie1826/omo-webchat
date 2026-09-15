@@ -28,8 +28,10 @@ const (
 	busyAgentErrorPrefix = "Agent is already processing"
 )
 
-var activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
-var streamSessionHistory = coldhistory.Stream
+var (
+	activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
+	streamSessionHistory  = coldhistory.Stream
+)
 
 type closeTransaction struct {
 	done chan struct{}
@@ -147,12 +149,14 @@ func newSession(m *Manager, chatID, cwd string, data omorpc.OpenSessionData, res
 	if nameSource == "" {
 		nameSource = NameSourceAuto
 	}
-	s := &Session{manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
+	s := &Session{
+		manager: m, client: m.cfg.Client, chatID: chatID, cwd: cwd,
 		durableID: data.State.SessionID, routingID: data.SessionID, sessionFile: data.State.SessionFile,
 		resumed: resumed, queueSize: m.cfg.QueueSize, idleAfter: m.cfg.IdleAfter, epoch: epoch,
 		title: name, nameSource: nameSource,
 		engineQueue:          engineQueueFromState(data.State),
-		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool)}
+		completedCompactions: make(map[string]struct{}), activitySnapshots: make(map[string]json.RawMessage), activityOversized: make(map[string]bool),
+	}
 	s.sendOwner = &sendOperationOwner{operations: make(map[string]sendOperation), sessions: map[*Session]struct{}{s: {}}}
 	// Remember even native file identity before the first queue inspection.
 	// An initially absent native path is different from later disappearance.
@@ -1157,11 +1161,13 @@ func (s *Session) SetModel(ctx context.Context, provider, modelID, requestID str
 		return omorpc.SetModel{SessionID: route, Provider: provider, ModelID: modelID}
 	})
 }
+
 func (s *Session) SetThinking(ctx context.Context, level, requestID string) error {
 	return s.control(ctx, "set_thinking", requestID, func(route string) omorpc.Command {
 		return omorpc.SetThinkingLevel{SessionID: route, Level: level}
 	})
 }
+
 func (s *Session) control(ctx context.Context, command, requestID string, build func(string) omorpc.Command) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
@@ -1275,6 +1281,7 @@ func (s *Session) Models(ctx context.Context) ([]Model, error) {
 	}
 	return out, nil
 }
+
 func (s *Session) Commands(ctx context.Context) ([]CommandInfo, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
@@ -1309,6 +1316,7 @@ func decodeCommands(data []byte) ([]CommandInfo, error) {
 	}
 	return out, nil
 }
+
 func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 	s.lifecycleMu.Lock()
 	route, err := s.routeLocked()
@@ -1329,6 +1337,7 @@ func (s *Session) Stats(ctx context.Context) (*Stats, error) {
 	}
 	return &out, nil
 }
+
 func (s *Session) SetSessionName(ctx context.Context, name string) error {
 	if err := s.prepareWrite(ctx); err != nil {
 		return err
@@ -1472,24 +1481,7 @@ func (s *Session) respondApproval(id, requestID string, value json.RawMessage, c
 }
 
 func (s *Session) respondApprovalContext(ctx context.Context, id, requestID string, value json.RawMessage, confirmed *bool, cancelled bool) error {
-	if err := s.prepareWrite(ctx); err != nil {
-		return err
-	}
-	s.lifecycleMu.Lock()
-	route, err := s.routeLocked()
-	// The responding client's dismissal settles the ask for every subscriber:
-	// clear it before the ack so replayed and live views agree the request is gone.
-	if s.pendingApproval != nil && s.pendingApproval.ApprovalID == id {
-		s.pendingApproval = nil
-	}
-	if err == nil {
-		s.publishLocked(Frame{Kind: FrameAck, SessionID: s.durableID, Command: omorpc.CmdExtensionUIResponse, RequestID: requestID, ApprovalID: id})
-	}
-	s.lifecycleMu.Unlock()
-	if err != nil {
-		return err
-	}
-	return s.client.Notify(ctx, omorpc.ExtensionUIResponse{SessionID: route, ID: id, Value: value, Confirmed: confirmed, Cancelled: cancelled})
+	return s.respondExtensionUI(ctx, requestID, omorpc.ExtensionUIResponse{ID: id, Value: value, Confirmed: confirmed, Cancelled: cancelled})
 }
 
 func (s *Session) Attach(sub Subscriber) func() {
@@ -1757,6 +1749,7 @@ func (s *Session) completeClose(txn *closeTransaction, route string, callErr err
 		s.releaseSendOperations()
 	}
 }
+
 func definitiveCloseFailure(err error) bool {
 	if err == nil {
 		return true
@@ -1773,6 +1766,7 @@ func (s *Session) retireReplaced() {
 	s.broadcast.retireAll(ErrSubscriberSessionEnd)
 	s.releaseSendOperations()
 }
+
 func (s *Session) publishError(info ErrorInfo) {
 	s.lifecycleMu.Lock()
 	if !s.closed {
@@ -1839,6 +1833,7 @@ func (s *Session) notifyActivityLocked() {
 func (s *Session) activeLocked() bool {
 	return s.promptInFlight || s.providerRunActive || s.compactionActive || s.localCommandActive
 }
+
 func (s *Session) summary() (Summary, bool) {
 	s.lifecycleMu.Lock()
 	defer s.lifecycleMu.Unlock()
@@ -1864,6 +1859,7 @@ func (s *Session) publishLocked(f Frame) {
 	}
 	s.broadcast.publish(f)
 }
+
 func (s *Session) invalidate(code, message string) {
 	s.lifecycleMu.Lock()
 	if s.closed || s.invalidated {
@@ -1884,12 +1880,14 @@ func (s *Session) invalidate(code, message string) {
 	s.publishLocked(Frame{Kind: FrameError, SessionID: s.durableID, Data: ErrorInfo{Code: code, Message: message}})
 	s.lifecycleMu.Unlock()
 }
+
 func (s *Session) cancelIdleLocked() {
 	if s.idleTimer != nil {
 		s.idleTimer.Stop()
 		s.idleTimer = nil
 	}
 }
+
 func (s *Session) scheduleIdleLocked() {
 	if s.closed || s.closing || s.resumable || s.quarantineErr != nil || s.activeLocked() || s.recoveryWorkLocked() || s.broadcast.count() != 0 ||
 		(s.sendOwner != nil && s.sendOwner.activeDetached.Load() != 0) {
@@ -1923,6 +1921,7 @@ func chunkEntries(arr []json.RawMessage) [][]json.RawMessage {
 	flush()
 	return pages
 }
+
 func (s *Session) publishEntriesPageLocked(entries []json.RawMessage, leaf string, final bool) {
 	pages := chunkEntries(entries)
 	if len(pages) == 0 {

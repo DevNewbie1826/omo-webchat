@@ -377,6 +377,7 @@ func (h *Handler) OnMessage(sock *gws.Conn, msg *gws.Message) {
 		}
 	}
 }
+
 func (h *Handler) OnClose(sock *gws.Conn, err error) {
 	if raw, ok := h.conns.LoadAndDelete(sock); ok {
 		raw.(*connection).shutdown()
@@ -520,6 +521,7 @@ func (c *connection) shutdown() {
 		_ = nc.Close()
 	}
 }
+
 func (c *connection) unbind() (string, *session.Session) {
 	c.stopGoalWatch()
 	c.stateMu.Lock()
@@ -533,6 +535,7 @@ func (c *connection) unbind() (string, *session.Session) {
 	}
 	return id, s
 }
+
 func (c *connection) binding() (string, *session.Session) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -737,11 +740,7 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 			}
 		}
 	case *wscontract.ApprovalRespondFrame:
-		value := ""
-		if f.Value != nil {
-			value = *f.Value
-		}
-		if err := sess.RespondApprovalRequest(ctx, f.ID, deref(f.RequestID), value, f.Confirmed, f.Cancelled != nil && *f.Cancelled); err != nil {
+		if err := sess.RespondApprovalFrame(ctx, *f); err != nil {
 			c.sendSessionError(err, "approval.respond", deref(f.RequestID))
 		}
 	case *wscontract.ChatCommandsFrame:
@@ -776,8 +775,10 @@ func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFram
 }
 
 func (c *connection) handleChatSend(ctx context.Context, workspaceID, chatID string, generation uint64, f *wscontract.ChatSendFrame) {
-	op := &chatSendOperation{bridge: c.bridge, conn: c, workspaceID: workspaceID, chatID: chatID,
-		bindingGeneration: generation, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID)}
+	op := &chatSendOperation{
+		bridge: c.bridge, conn: c, workspaceID: workspaceID, chatID: chatID,
+		bindingGeneration: generation, kind: string(f.Run.Kind), message: f.Run.Message, requestID: deref(f.RequestID),
+	}
 	op.images = make([]map[string]string, len(f.Run.Images))
 	for i, image := range f.Run.Images {
 		op.images[i] = map[string]string{"data": image.Data, "mimeType": image.MimeType}
@@ -904,6 +905,7 @@ func (s *operationSubscriber) BeginReplay() {
 		s.subscriber.BeginReplay()
 	}
 }
+
 func (s *operationSubscriber) EndReplay() {
 	s.subscriber.EndReplay()
 }
@@ -1642,6 +1644,7 @@ func (c *connection) sendAck(command, requestID string) {
 	}
 	_ = c.write(f)
 }
+
 func (c *connection) sendError(code, message, command, requestID string) {
 	sid, _ := c.binding()
 	m := map[string]any{"type": "error", "code": code, "message": message}
@@ -1656,6 +1659,7 @@ func (c *connection) sendError(code, message, command, requestID string) {
 	}
 	_ = c.write(m)
 }
+
 func (c *connection) sendExternalWriteError(drift *session.ExternalWriteError, command, requestID string) {
 	sid, _ := c.binding()
 	frame := map[string]any{
@@ -1676,6 +1680,7 @@ func (c *connection) sendExternalWriteError(drift *session.ExternalWriteError, c
 	}
 	_ = c.write(frame)
 }
+
 func (c *connection) sendSessionError(err error, command, requestID string) {
 	var drift *session.ExternalWriteError
 	if errors.As(err, &drift) {
@@ -1931,12 +1936,14 @@ func commandEntry(x session.CommandInfo) wscontract.CommandEntry {
 	}
 	return out
 }
+
 func deref(x *string) string {
 	if x == nil {
 		return ""
 	}
 	return *x
 }
+
 func clientSessionID(f wscontract.ClientFrame) string {
 	switch x := f.(type) {
 	case *wscontract.ChatSendFrame:
@@ -1972,6 +1979,7 @@ func clientSessionID(f wscontract.ClientFrame) string {
 	}
 	return ""
 }
+
 func requestID(f wscontract.ClientFrame) string {
 	switch x := f.(type) {
 	case *wscontract.ChatSendFrame:
@@ -2072,6 +2080,7 @@ func (s *CursorStore) CursorFor(_ context.Context, id string) (session.Cursor, e
 	}
 	return sessionCursor(c), nil
 }
+
 func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Cursor) error {
 	st := (*cursorstore.Store)(s)
 	c, err := st.GetChat(id)
@@ -2083,9 +2092,11 @@ func (s *CursorStore) SaveCursor(_ context.Context, id string, cur session.Curso
 	c.TitleIsPlaceholder = cur.TitleIsPlaceholder
 	return st.SaveChat(c)
 }
+
 func (s *CursorStore) UpdateIdentity(_ context.Context, id, sessionFile, durableID string) error {
 	return (*cursorstore.Store)(s).UpdateIdentity(id, sessionFile, durableID)
 }
+
 func (s *CursorStore) PrepareWrite(ctx context.Context, id string) error {
 	store := (*cursorstore.Store)(s)
 	chat, err := store.GetChat(id)
@@ -2119,5 +2130,7 @@ func (s *CursorStore) UpdateName(_ context.Context, id, name, source string) err
 	return (*cursorstore.Store)(s).UpdateName(id, name, source)
 }
 
-var _ session.CursorStore = (*CursorStore)(nil)
-var _ http.Handler = (*Handler)(nil)
+var (
+	_ session.CursorStore = (*CursorStore)(nil)
+	_ http.Handler        = (*Handler)(nil)
+)
