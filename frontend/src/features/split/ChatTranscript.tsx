@@ -59,6 +59,14 @@ function messageText(message: UiMessage): string {
 
 const STOP_ERROR_REASONS = new Set(["max_tokens", "length", "content_filter", "refusal", "error"]);
 
+/** Wire-provided wording for a failed turn: the failure text exactly as it
+ * arrived, else the wire stopReason value itself; null when the wire carried
+ * neither (nothing to show — never synthesize a label). */
+function failedTurnText(message: UiMessage): string | null {
+  if (message.errorMessage !== undefined && message.errorMessage.length > 0) return message.errorMessage;
+  return message.stopReason ?? null;
+}
+
 function isStopError(reason: string): boolean {
   return STOP_ERROR_REASONS.has(reason);
 }
@@ -685,14 +693,13 @@ export function ChatTranscript({
                     ) : (
                       <>
                         {renderMessageBlocks(message)}
-                        {isFailedTurn(message) && (
-                          // Failure text observed on the wire, attached to its
-                          // turn; an empty text falls back to a generic label
-                          // rather than hiding the failure.
+                        {isFailedTurn(message) && failedTurnText(message) !== null && (
+                          // Wire-only wording: the failure text exactly as it
+                          // arrived; when the turn carries no text, the
+                          // wire-provided stopReason value itself, so a failed
+                          // turn is never silent and nothing is fabricated.
                           <div className="th-chat-error th-chat-turn-error" role="alert">
-                            {message.errorMessage !== undefined && message.errorMessage.length > 0
-                              ? message.errorMessage
-                              : t("chat.turnFailed")}
+                            {failedTurnText(message)}
                           </div>
                         )}
                       </>

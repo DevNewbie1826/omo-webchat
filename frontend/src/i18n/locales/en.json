@@ -192,7 +192,6 @@
   "toast.copiedSelection": "Selection copied",
   "chat.done": "Done",
   "chat.stoppedError": "Stopped",
-  "chat.turnFailed": "Turn failed",
   "chat.loading": "Loading…",
   "chat.reconnecting": "Reconnecting…",
   "chat.recoveryResuming": "Resuming session…",

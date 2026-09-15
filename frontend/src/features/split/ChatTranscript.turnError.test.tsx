@@ -62,21 +62,27 @@ describe("ChatTranscript failed-turn error rendering", () => {
     expect(row?.textContent).toContain("partial answer");
   });
 
-  it("falls back to a generic label when the failed turn carries no text", () => {
+  it("renders the wire stopReason, never fabricated wording, when the failure text is empty", () => {
     renderMessages([
       { id: "a1", role: "assistant", blocks: [], ts: 2, errorMessage: "", stopReason: "error" },
     ]);
     const error = container.querySelector(".th-chat-row--assistant .th-chat-error");
-    expect(error, "generic label for an empty failure text").not.toBeNull();
-    expect(error?.textContent).toBe("chat.turnFailed");
+    expect(error, "a failed turn must not be silent").not.toBeNull();
+    // Wire-only wording: the stopReason value itself, exactly as it arrived.
+    expect(error?.textContent).toBe("error");
+    expect(error?.textContent).not.toContain("Turn failed");
+    expect(error?.textContent).not.toContain("turnFailed");
   });
 
-  it("shows the generic label when stopReason reports failure and errorMessage is absent", () => {
+  it("renders the wire stopReason, never fabricated wording, when errorMessage is absent", () => {
     renderMessages([
       { id: "a1", role: "assistant", blocks: [{ kind: "text", text: "cut off" }], ts: 2, stopReason: "error" },
     ]);
     const error = container.querySelector(".th-chat-row--assistant .th-chat-error");
-    expect(error?.textContent).toBe("chat.turnFailed");
+    expect(error, "a failed turn must not be silent").not.toBeNull();
+    expect(error?.textContent).toBe("error");
+    expect(error?.textContent).not.toContain("Turn failed");
+    expect(error?.textContent).not.toContain("turnFailed");
   });
 
   it("renders no error row for a user-cancelled turn (stopReason aborted, no errorMessage)", () => {
