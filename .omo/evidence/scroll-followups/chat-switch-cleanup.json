@@ -1,0 +1,17 @@
+{
+  "serverPid": 56415,
+  "serverClosed": true,
+  "chromePid": 56430,
+  "chromeExited": true,
+  "browserContextClosed": true,
+  "webSocketClosed": true,
+  "temporaryRemoved": true,
+  "portsFree": true,
+  "debugPort": 57399,
+  "chromeExit": {
+    "code": 0,
+    "signal": null
+  },
+  "servePort": 5237,
+  "sourceUnchangedDuringRun": true
+}
