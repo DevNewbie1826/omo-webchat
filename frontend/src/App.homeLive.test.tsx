@@ -318,13 +318,15 @@ describe("App home running sessions", () => {
     // Shipped-copy equality with the exact numeric parameter: any other
     // count (10, 11, 21, ...) fails, whatever the shipped phrasing is.
     expect(count?.getAttribute("aria-label")).toBe(translate("en", "overview.runningAria", { n: 1 }));
-    // Only the working card carries the badge and a meta line; idle cards
-    // with no work render title only - no meaningless "Done 0".
+    // No card renders the removed done/DAG metadata; the last-output line
+    // remains the only supplemental content on the resting cards.
     expect(cards[1]!.querySelector(".th-overview-card-running")).toBeNull();
     expect(cards[0]!.querySelector(".th-overview-card-running")).not.toBeNull();
-    expect(cards[0]!.querySelector(".th-overview-card-meta")).not.toBeNull();
-    expect(cards[1]!.querySelector(".th-overview-card-meta")).toBeNull();
-    expect(cards[2]!.querySelector(".th-overview-card-meta")).toBeNull();
+    for (const card of cards) {
+      expect(card.querySelector(".th-overview-card-meta")).toBeNull();
+      expect(card.textContent).not.toContain("Done");
+      expect(card.textContent).not.toContain("DAG");
+    }
   });
 
   it("lists a session whose only activity is the main agent (active flag, no agent tasks)", async () => {
