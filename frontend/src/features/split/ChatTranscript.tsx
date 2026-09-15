@@ -470,6 +470,14 @@ export function ChatTranscript({
     });
     return { rows, keys };
   }, [items]);
+  // Measurement corrections dropped while a user scroll gesture is in flight
+  // accumulate here and replay once the gesture ends (scrollend listener /
+  // debounced-scroll fallback below). `prevAdjustments` tracks the last
+  // cumulative `adjustments` value virtual-core reported: it resets its
+  // internal counter on every observed scroll event, so an incoming value
+  // SMALLER than the previous one is itself the increment.
+  const deferredAdjustmentRef = useRef(0);
+  const prevAdjustmentsRef = useRef(0);
   const virtualizer = useVirtualizer({
     count: rows.length,
     getItemKey: (index) => keys[index] ?? `missing:${index}`,
@@ -485,16 +493,67 @@ export function ChatTranscript({
     // any programmatic scroll write cancels the browser's in-flight scroll
     // animation, so a mid-gesture correction would kill the fling dead.
     scrollToFn: (offset, { adjustments, behavior }, instance) => {
-      if (adjustments !== undefined && instance.isScrolling) return;
       const element = instance.scrollElement;
       if (element === null) return;
-      const top = offset + (adjustments ?? 0);
+      if (adjustments === undefined) {
+        // Genuine scroll intent (scrollToIndex/scrollToOffset): the viewport
+        // is being moved deliberately, so any deferred compensation is moot.
+        deferredAdjustmentRef.current = 0;
+        prevAdjustmentsRef.current = 0;
+        element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
+        return;
+      }
+      const increment = adjustments < prevAdjustmentsRef.current
+        ? adjustments
+        : adjustments - prevAdjustmentsRef.current;
+      prevAdjustmentsRef.current = adjustments;
+      if (instance.isScrolling) {
+        // Dropped while the gesture is in flight — never written now, but
+        // accumulated so it replays once the gesture ends.
+        deferredAdjustmentRef.current += increment;
+        return;
+      }
+      const top = offset + adjustments;
       element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
     },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
     useScrollendEvent: true,
   });
+
+  // Replay the compensation dropped during a scroll gesture once that
+  // gesture ends. `scrollend` is the precise signal where supported;
+  // elsewhere a debounce on `scroll` stands in (virtual-core's own
+  // isScrollingResetDelay default is 150ms).
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    const flush = (): void => {
+      const pending = deferredAdjustmentRef.current;
+      if (pending === 0) return;
+      deferredAdjustmentRef.current = 0;
+      element.scrollTop += pending;
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onScrollDebounce = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(flush, 150);
+    };
+    const supportsScrollend = "onscrollend" in window;
+    if (supportsScrollend) {
+      element.addEventListener("scrollend", flush);
+    } else {
+      element.addEventListener("scroll", onScrollDebounce);
+    }
+    return () => {
+      if (supportsScrollend) {
+        element.removeEventListener("scrollend", flush);
+      } else {
+        element.removeEventListener("scroll", onScrollDebounce);
+      }
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [scrollRef]);
 
   // Focus / session-restore pin to the end regardless of follow intent.
   // Row-count growth only follows when the reader is already at the bottom.
