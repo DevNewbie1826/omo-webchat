@@ -22,7 +22,7 @@ func TestStoredFileActivity(t *testing.T) {
 			}
 			chat := cursorstore.Chat{ID: "stored", SessionFile: path, DurableSessionID: durableID, CreatedAt: created.UnixMilli()}
 			// When
-			items := mergeSessionHistory([]cursorstore.Chat{chat}, nil, nil)
+			items := mergeSessionHistory([]cursorstore.Chat{chat}, nil)
 			// Then: matching owned activity counts; a same-path replacement does not.
 			want := created.UnixMilli()
 			if durableID == "file-id" {

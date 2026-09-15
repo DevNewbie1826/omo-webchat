@@ -61,7 +61,7 @@ func TestExplicitUsePrecedesFileCreationFallback(t *testing.T) {
 	}
 	chat := cursorstore.Chat{ID: "wrapper", SessionFile: path, DurableSessionID: "logical", CreatedAt: 1772323200000, LastUsedAt: 1768132800000}
 	// When
-	items := mergeSessionHistory([]cursorstore.Chat{chat}, nil, nil)
+	items := mergeSessionHistory([]cursorstore.Chat{chat}, nil)
 	// Then: neither file nor wrapper creation is activity when explicit use exists.
 	if len(items) != 1 || items[0].RecencyMs != chat.LastUsedAt {
 		t.Fatalf("items=%+v want use=%d", items, chat.LastUsedAt)
