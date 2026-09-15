@@ -43,14 +43,11 @@ const (
 	clientInfoResponseBudget = 5 * time.Second
 )
 
-// clientHandshakeCapabilities is the capability list every set_client_info
-// handshake record carries — the same set the spawn environment injects
-// (see EnsureExtensionEventsCapability), so both advertisement paths are
-// identical. The record REPLACES the connection's capability view, so it
-// must include every capability the client relies on: omitting
-// extension_events here would silently disable it on the daemon path.
+// clientHandshakeCapabilities is the single source of client capabilities for
+// set_client_info and the spawn environment. The handshake replaces the
+// connection's capability view, so both paths must advertise the full set.
 func clientHandshakeCapabilities() []string {
-	return []string{capExtensionEvents, capMediaPlaceholders}
+	return []string{capExtensionEvents, capMediaPlaceholders, "question"}
 }
 
 // Config tunes the client. Zero-valued fields are replaced field-wise by

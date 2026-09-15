@@ -471,6 +471,9 @@ func (g *gen) goType(node schema, ctxFile, suggest string) string {
 		elem := g.goType(items, ctxFile, suggest+"Item")
 		return "[]" + elem
 	case "object":
+		if additional, ok := node["additionalProperties"].(map[string]any); ok && node["properties"] == nil {
+			return "map[string]" + g.goType(additional, ctxFile, suggest+"Value")
+		}
 		g.emitStruct(node, ctxFile, suggest, "")
 		return suggest
 	default:
@@ -821,6 +824,9 @@ func (g *gen) validationLiteral(node schema, ctxFile string) string {
 	if items, ok := node["items"].(map[string]any); ok {
 		parts = append(parts, "Items:&"+g.validationLiteral(items, ctxFile))
 	}
+	if additional, ok := node["additionalProperties"].(map[string]any); ok {
+		parts = append(parts, "AdditionalProperties:&"+g.validationLiteral(additional, ctxFile))
+	}
 	return "validationSchema{" + strings.Join(parts, ",") + "}"
 }
 
@@ -841,6 +847,7 @@ func (g *gen) emitValidationRuntime(b *strings.Builder) {
 	Properties map[string]validationSchema
 	Required []string
 	Items *validationSchema
+	AdditionalProperties *validationSchema
 }
 
 func validateFrameJSON(data []byte, spec validationSchema) error {
@@ -876,6 +883,13 @@ func validateValue(value any, spec validationSchema, path string) error {
 		object, ok := value.(map[string]any); if !ok { return fmt.Errorf("%s must be an object", path) }
 		for _, key := range spec.Required { if _, exists := object[key]; !exists { return fmt.Errorf("%s.%s is required", path, key) } }
 		for key, child := range spec.Properties { if item, exists := object[key]; exists { if err := validateValue(item, child, path+"."+key); err != nil { return err } } }
+		if spec.AdditionalProperties != nil {
+			for key, item := range object {
+				if _, known := spec.Properties[key]; !known {
+					if err := validateValue(item, *spec.AdditionalProperties, path+"."+key); err != nil { return err }
+				}
+			}
+		}
 		if !validTodoFormat(object, spec.Format) { return fmt.Errorf("%s has invalid %s field combinations", path, spec.Format) }
 	}
 	return nil

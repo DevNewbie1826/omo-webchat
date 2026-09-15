@@ -145,6 +145,7 @@ function tsType(node, ctxFile) {
     case "array":
       return `readonly ${tsType(node.items ?? {}, ctxFile)}[]`;
     case "object":
+      if (typeof node.additionalProperties === "object" && !node.properties) return `Readonly<Record<string, ${tsType(node.additionalProperties, ctxFile)}>>`;
       return tsObjectLiteral(node, ctxFile);
     default:
       return "JsonValue";
@@ -171,6 +172,7 @@ function validationSchema(node, ctxFile) {
   if (node.anyOf) out.anyOf = node.anyOf.map((child) => validationSchema(child, ctxFile));
   if (node.properties) out.properties = Object.fromEntries(Object.entries(node.properties).map(([key, child]) => [key, validationSchema(child, ctxFile)]));
   if (node.items) out.items = validationSchema(node.items, ctxFile);
+  if (typeof node.additionalProperties === "object") out.additionalProperties = validationSchema(node.additionalProperties, ctxFile);
   return out;
 }
 
@@ -262,7 +264,7 @@ async function main() {
   b.push("  return typeof t === \"string\" ? t : null;");
   b.push("}");
   b.push("");
-  b.push("type ValidationSchema = { readonly json?: true; readonly type?: string; readonly const?: string; readonly enum?: readonly string[]; readonly required?: readonly string[]; readonly format?: string; readonly anyOf?: readonly ValidationSchema[]; readonly properties?: Readonly<Record<string, ValidationSchema>>; readonly items?: ValidationSchema };");
+  b.push("type ValidationSchema = { readonly json?: true; readonly type?: string; readonly const?: string; readonly enum?: readonly string[]; readonly required?: readonly string[]; readonly format?: string; readonly anyOf?: readonly ValidationSchema[]; readonly properties?: Readonly<Record<string, ValidationSchema>>; readonly items?: ValidationSchema; readonly additionalProperties?: ValidationSchema };");
   b.push(`const SERVER_SCHEMAS: Readonly<Record<string, ValidationSchema>> = ${JSON.stringify(Object.fromEntries(server.map((d) => [d.wireConst, d.validation])))};`);
   b.push(`const CLIENT_SCHEMAS: Readonly<Record<string, ValidationSchema>> = ${JSON.stringify(Object.fromEntries(client.map((d) => [d.wireConst, d.validation])))};`);
   b.push("function isJsonValue(value: unknown): boolean {");
@@ -318,6 +320,8 @@ function validTodoFormat(object: Record<string, unknown>, format: string | undef
   b.push("      if (typeof value !== \"object\" || value === null || Array.isArray(value)) return false;");
   b.push("      const object = value as Record<string, unknown>;");
   b.push("      if (spec.required?.some((key) => !Object.prototype.hasOwnProperty.call(object, key))) return false;");
+  b.push("      const additional = spec.additionalProperties;");
+  b.push("      if (additional && !Object.entries(object).every(([key, item]) => Object.prototype.hasOwnProperty.call(spec.properties ?? {}, key) || validates(item, additional))) return false;");
   b.push("      return Object.entries(spec.properties ?? {}).every(([key, child]) => !Object.prototype.hasOwnProperty.call(object, key) || validates(object[key], child)) && validTodoFormat(object, spec.format);");
   b.push("    }");
   b.push("    default: return true;");

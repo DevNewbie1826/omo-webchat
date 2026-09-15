@@ -6,6 +6,30 @@
     "JsonValue": {
       "description": "Any JSON value. Generators map this to json.RawMessage / JsonValue."
     },
+    "QuestionOption": {
+      "type": "object",
+      "properties": {
+        "label": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "Question": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "header": { "type": "string" },
+        "question": { "type": "string" },
+        "multiSelect": { "type": "boolean" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/QuestionOption" } }
+      }
+    },
+    "QuestionAnswer": {
+      "type": "object",
+      "properties": {
+        "selected": { "type": "array", "items": { "type": "string" } },
+        "text": { "type": "string" }
+      }
+    },
     "TokenUsage": {
       "type": "object",
       "additionalProperties": false,
@@ -163,7 +187,7 @@
     },
     "ApprovalMethod": {
       "type": "string",
-      "enum": ["select", "confirm", "input", "editor"]
+      "enum": ["select", "confirm", "input", "editor", "question"]
     },
     "RunKind": {
       "type": "string",

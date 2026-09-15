@@ -409,20 +409,20 @@ func TestEnsureDaemonSupervisorDiesWithoutSocket(t *testing.T) {
 	}
 }
 
-func TestEnsureExtensionEventsCapabilityNilInheritsEnvironment(t *testing.T) {
-	if got := EnsureExtensionEventsCapability(nil); got != nil {
-		t.Fatalf("EnsureExtensionEventsCapability(nil) = %#v, want nil for os/exec inheritance", got)
+func TestEnsureClientCapabilitiesNilInheritsEnvironment(t *testing.T) {
+	if got := EnsureClientCapabilities(nil); got != nil {
+		t.Fatalf("EnsureClientCapabilities(nil) = %#v, want nil for os/exec inheritance", got)
 	}
 }
 
-func TestEnsureExtensionEventsCapabilityNormalizesValues(t *testing.T) {
-	env := EnsureExtensionEventsCapability([]string{
+func TestEnsureClientCapabilitiesNormalizesValues(t *testing.T) {
+	env := EnsureClientCapabilities([]string{
 		"SENPI_RPC_CLIENT_CAPABILITIES= native_only, ,native_only, extension_events,",
 		"OMO_RPC_CLIENT_CAPABILITIES=custom_only,, custom_only ",
 	})
 	for key, want := range map[string]string{
-		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events,media_placeholders",
-		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events,media_placeholders",
+		"SENPI_RPC_CLIENT_CAPABILITIES": "native_only,extension_events,media_placeholders,question",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_only,extension_events,media_placeholders,question",
 	} {
 		if got, _ := lookupEnv(env, key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)

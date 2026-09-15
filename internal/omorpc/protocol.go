@@ -28,6 +28,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/DevNewbie1826/omo-webchat/internal/wscontract"
 )
 
 const defaultMaxLineBytes = 4 << 20
@@ -357,11 +359,13 @@ func (ExtensionRequest) commandName() string { return CmdExtensionRequest }
 // sent unchanged — never replaced with a client correlation id. Send it
 // with EncodeNotification.
 type ExtensionUIResponse struct {
-	SessionID string          `json:"sessionId"`
-	ID        string          `json:"id"`
-	Value     json.RawMessage `json:"value,omitempty"`
-	Confirmed *bool           `json:"confirmed,omitempty"`
-	Cancelled bool            `json:"cancelled,omitempty"`
+	SessionID string                                `json:"sessionId"`
+	ID        string                                `json:"id"`
+	Value     json.RawMessage                       `json:"value,omitempty"`
+	Answers   *map[string]wscontract.QuestionAnswer `json:"answers,omitempty"`
+	Comment   *string                               `json:"comment,omitempty"`
+	Confirmed *bool                                 `json:"confirmed,omitempty"`
+	Cancelled bool                                  `json:"cancelled,omitempty"`
 }
 
 func (ExtensionUIResponse) commandName() string { return CmdExtensionUIResponse }
