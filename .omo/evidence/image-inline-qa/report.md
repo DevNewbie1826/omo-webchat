@@ -8,8 +8,8 @@ The image renders decoded while the tool card is collapsed. On the live media pa
 
 The state “image never seen -> zero scoped media requests” is UNREACHABLE on this surface for two independent, mechanically demonstrated reasons:
 
-1. Live arrival: the transcript auto-follows, scrolling the newly arrived image row through the viewport, so its IntersectionObserver reports an intersection during streaming. Attempt 2 recorded `top=118.65625`, `scrollTop=4225`, and `isIntersecting=true`.
-2. Unmounted arrival / return: when the chat is re-entered or reloaded, history re-hydrates the result as an inline `data:` image, so no media endpoint request exists. Both unmounted-arrival traces recorded counts `0 -> 0 -> 0 -> 0 -> 0`.
+1. Live arrival: the transcript auto-follows, scrolling the newly arrived image row through the viewport, so its IntersectionObserver reports an intersection during streaming. `lazy-trace.json:10835-10847` records `phase=streaming`, `source=product`, `isIntersecting=true`, and `top=60.453125`; its single scoped HTTP-200 request is recorded at `lazy-trace.json:26424-26432` (`method=GET`, `status=200`).
+2. Unmounted arrival / return: when the chat is re-entered or reloaded, history re-hydrates the result as an inline `data:` image, so no media endpoint request exists. The returned inline history observation at `results.json:2573-2585` records `top=118.65625`, `scrollTop=4225`, `isIntersecting=true`, and `srcScheme=data`; both unmounted-arrival traces recorded counts `0 -> 0 -> 0 -> 0 -> 0`.
 
 ## Component-seam coverage
 
