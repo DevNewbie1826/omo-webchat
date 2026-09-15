@@ -21,11 +21,9 @@ func stubSessionClock(t *testing.T, at time.Time) {
 	previous := now
 	now = func() time.Time { return at }
 	resetDiscoveredObservations()
-	resetStoredSessionObservations()
 	t.Cleanup(func() {
 		now = previous
 		resetDiscoveredObservations()
-		resetStoredSessionObservations()
 	})
 }
 
@@ -707,8 +705,6 @@ func TestFailedWorkspaceScanPreservesDiscoveredObservation(t *testing.T) {
 }
 
 func TestMergeSessionHistoryMarksLiveMissingFilePreparing(t *testing.T) {
-	resetStoredSessionObservations()
-	t.Cleanup(resetStoredSessionObservations)
 	chat := cursorstore.Chat{
 		ID:          "chat-live",
 		CWD:         t.TempDir(),
@@ -726,8 +722,6 @@ func TestMergeSessionHistoryMarksLiveMissingFilePreparing(t *testing.T) {
 }
 
 func TestMergeSessionHistoryMarksMissingFileDanglingWhenNotLive(t *testing.T) {
-	resetStoredSessionObservations()
-	t.Cleanup(resetStoredSessionObservations)
 	chat := cursorstore.Chat{
 		ID:          "chat-gone",
 		CWD:         t.TempDir(),
@@ -752,9 +746,7 @@ func TestMergeSessionHistoryMarksMissingFileDanglingWhenNotLive(t *testing.T) {
 	}
 }
 
-func TestMergeSessionHistoryMarksDeletedLiveFileDangling(t *testing.T) {
-	resetStoredSessionObservations()
-	t.Cleanup(resetStoredSessionObservations)
+func TestMergeSessionHistoryMarksDeletedLiveFilePreparing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
@@ -777,12 +769,16 @@ func TestMergeSessionHistoryMarksDeletedLiveFileDangling(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
+	// A live session is resumable by definition: the conversation lives in
+	// the running engine, which writes the session file on the next persist.
+	// A missing file under a live chat therefore means pending persistence,
+	// never "the original is gone".
 	gone := mergeSessionHistoryLive([]cursorstore.Chat{chat}, nil, live)
 	if len(gone) != 1 {
 		t.Fatalf("items = %+v, want one stored row", gone)
 	}
-	if item := gone[0]; !item.Dangling || item.Preparing || item.Source != sessionHistorySourceStored {
-		t.Fatalf("row = %+v, want dangling stored row after deletion while live", item)
+	if item := gone[0]; item.Dangling || !item.Preparing || item.Source != sessionHistorySourceStored {
+		t.Fatalf("row = %+v, want preparing stored row after deletion while live", item)
 	}
 }
 

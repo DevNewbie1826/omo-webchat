@@ -71,27 +71,6 @@ var discoveredObservations = struct {
 	m  map[string]discoveredSighting
 }{m: make(map[string]discoveredSighting)}
 
-// storedSessionObservationMaxEntries bounds the tracking state: at most one
-// entry per stored chat whose session file this process has observed present.
-// Beyond the cap the least recently seen entries are evicted and simply
-// re-observe from zero.
-const storedSessionObservationMaxEntries = 4096
-
-// storedSessionSighting records that this process has observed a stored chat's
-// session file existing. lastSeen is the most recent scan that found the file.
-type storedSessionSighting struct {
-	lastSeen time.Time
-}
-
-// storedSessionObservations remembers, per chat id, whether this process has
-// ever observed that chat's session file existing. A missing file on a live
-// chat is preparing only when it has never been seen present; a file that was
-// present and later vanished is dangling even while the chat stays live.
-var storedSessionObservations = struct {
-	mu sync.Mutex
-	m  map[string]storedSessionSighting
-}{m: make(map[string]storedSessionSighting)}
-
 type sessionHistoryItem struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -101,10 +80,10 @@ type sessionHistoryItem struct {
 	// Dangling flags a stored row whose owned session copy is gone. Source
 	// catalog rows never set it.
 	Dangling bool `json:"dangling,omitempty"`
-	// Preparing flags a live stored chat whose session file has never been
-	// observed present in this process. Observed engine behavior: jsonl
-	// appears on first persist. A file that was present and later vanished
-	// is dangling even while the chat stays live.
+	// Preparing flags a live stored chat whose session file is missing. A
+	// live chat's file is written on the next persist, so absence under a
+	// live session is pending persistence; "missing original" is reserved
+	// for a chat with no file and no live session.
 	Preparing bool `json:"preparing,omitempty"`
 }
 
@@ -389,15 +368,11 @@ func mergeSessionHistoryLive(chats []cursorstore.Chat, disk []diskSession, liveC
 	}
 	for _, ch := range chats {
 		missingFile := storedIdentityDangling(ch.SessionFile)
-		if !missingFile && filepath.IsAbs(strings.TrimSpace(ch.SessionFile)) {
-			observeStoredSession(ch.ID)
-		}
 		if canonicalCWD, ok := canonicalSessionCWD(ch.CWD); missingFile && ok {
 			danglingCWDs[canonicalCWD] = struct{}{}
 		}
 		_, live := liveChatIDs[ch.ID]
-		seenPresent := storedSessionWasSeen(ch.ID)
-		preparing := missingFile && live && !seenPresent
+		preparing := missingFile && live
 		items = append(items, sessionHistoryItem{
 			ID:        ch.ID,
 			Name:      ch.Name,
@@ -634,56 +609,6 @@ func resetDiscoveredObservations() {
 	discoveredObservations.mu.Lock()
 	discoveredObservations.m = make(map[string]discoveredSighting)
 	discoveredObservations.mu.Unlock()
-}
-
-func observeStoredSession(chatID string) {
-	chatID = strings.TrimSpace(chatID)
-	if chatID == "" {
-		return
-	}
-	stamp := now()
-	storedSessionObservations.mu.Lock()
-	defer storedSessionObservations.mu.Unlock()
-	storedSessionObservations.m[chatID] = storedSessionSighting{lastSeen: stamp}
-	pruneStoredSessionObservationsLocked()
-}
-
-func storedSessionWasSeen(chatID string) bool {
-	chatID = strings.TrimSpace(chatID)
-	if chatID == "" {
-		return false
-	}
-	storedSessionObservations.mu.Lock()
-	defer storedSessionObservations.mu.Unlock()
-	_, ok := storedSessionObservations.m[chatID]
-	return ok
-}
-
-// pruneStoredSessionObservationsLocked evicts least-recently-seen entries once
-// the tracking map exceeds its bound.
-func pruneStoredSessionObservationsLocked() {
-	over := len(storedSessionObservations.m) - storedSessionObservationMaxEntries
-	if over <= 0 {
-		return
-	}
-	type aged struct {
-		key      string
-		lastSeen time.Time
-	}
-	ages := make([]aged, 0, len(storedSessionObservations.m))
-	for key, sighting := range storedSessionObservations.m {
-		ages = append(ages, aged{key: key, lastSeen: sighting.lastSeen})
-	}
-	sort.Slice(ages, func(i, j int) bool { return ages[i].lastSeen.Before(ages[j].lastSeen) })
-	for _, entry := range ages[:over] {
-		delete(storedSessionObservations.m, entry.key)
-	}
-}
-
-func resetStoredSessionObservations() {
-	storedSessionObservations.mu.Lock()
-	storedSessionObservations.m = make(map[string]storedSessionSighting)
-	storedSessionObservations.mu.Unlock()
 }
 
 func (s *Server) handleListWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
