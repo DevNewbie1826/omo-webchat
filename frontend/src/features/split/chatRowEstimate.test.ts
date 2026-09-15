@@ -134,6 +134,23 @@ describe("readRowMetrics", () => {
 		}
 	});
 
+	it("does not reuse cached metrics when font family changes at the same size and width", () => {
+		const restore = installGlyphLayout();
+		const scrollElement = document.createElement("div");
+		scrollElement.style.fontSize = "13px";
+		scrollElement.style.fontFamily = "ui-monospace";
+		Object.defineProperty(scrollElement, "clientWidth", { configurable: true, value: 390 });
+		document.body.append(scrollElement);
+		try {
+			const first = readRowMetrics(scrollElement);
+			expect(readRowMetrics(scrollElement)).toBe(first);
+			scrollElement.style.fontFamily = '"JetBrains Mono", monospace';
+			expect(readRowMetrics(scrollElement)).not.toBe(first);
+		} finally {
+			scrollElement.remove();
+			restore();
+		}
+	});
 });
 
 describe("estimateRowHeight", () => {

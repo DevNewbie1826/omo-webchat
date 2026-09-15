@@ -270,7 +270,7 @@ export function ChatTranscript({
   historyLoaded,
   mediaSource,
 }: ChatTranscriptProps) {
-  const { t, fontSize } = useT();
+  const { t, fontSize, font } = useT();
   // Measurement corrections dropped while a user scroll gesture is in flight
   // accumulate here and replay once the gesture ends (scrollend listener /
   // debounced-scroll fallback below). Declared before useChatScroll so an
@@ -293,13 +293,11 @@ export function ChatTranscript({
     observer.observe(element);
     return () => observer.disconnect();
   }, [scrollRef]);
-  // Content-derived row metrics: recomputed only when the scrollport width
-  // or the resolved font size changes (readRowMetrics also caches on those).
-  const rowMetrics = useMemo(
-    () => readRowMetrics(scrollRef.current),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [laneWidth, fontSize],
-  );
+  // Row metrics must be read AFTER useAppConfig writes --th-font-size /
+  // --th-font-mono in its effect. Child effects run first, so wait for the
+  // rest of this commit's effects via a microtask, then replace estimates
+  // and re-render so the virtualizer rebuilds from the new geometry.
+  const [rowMetrics, setRowMetrics] = useState(() => readRowMetrics(null));
   // Stable per-row estimates, keyed by the virtual row key: a row's estimate
   // is computed ONCE and never changes afterwards, so content arriving for
   // rows the reader has never seen cannot shift the scroll position (the
@@ -307,11 +305,19 @@ export function ChatTranscript({
   // estimate of an unmeasured row). Once a row actually renders, the
   // virtualizer's own measurement supersedes the frozen estimate.
   const estimateCacheRef = useRef(new Map<string, number>());
-  // New metrics (font size or lane width changed) stale every estimate by
-  // definition: drop the whole cache.
   useEffect(() => {
-    estimateCacheRef.current.clear();
-  }, [rowMetrics]);
+    let cancelled = false;
+    const syncMetrics = (): void => {
+      if (cancelled) return;
+      const next = readRowMetrics(scrollRef.current);
+      estimateCacheRef.current.clear();
+      setRowMetrics(next);
+    };
+    queueMicrotask(syncMetrics);
+    return () => {
+      cancelled = true;
+    };
+  }, [laneWidth, fontSize, font]);
   // USER CHOICES only: presence in the map means the user toggled that card
   // (the value is their frozen choice). Absent ids are untouched and pass no
   // `open`, so ToolCard derives the disclosure from the card's CURRENT live
@@ -500,9 +506,17 @@ export function ChatTranscript({
     }
     return { rows, keys };
   }, [items]);
+  // Include rowMetrics so a typography/width update rebuilds measurements
+  // in the same render that installs the new estimates. Content-only
+  // updates still hit the frozen per-key estimate cache; measured sizes
+  // in the virtualizer's itemSizeCache continue to win.
+  const getItemKey = useCallback(
+    (index: number) => keys[index] ?? `missing:${index}`,
+    [keys, rowMetrics],
+  );
   const virtualizer = useVirtualizer({
     count: rows.length,
-    getItemKey: (index) => keys[index] ?? `missing:${index}`,
+    getItemKey,
     getScrollElement: () => scrollRef.current,
     estimateSize: (index) => {
       const key = keys[index];

@@ -40,6 +40,7 @@ const FALLBACK_LANE_WIDTH = 390;
 interface MetricsCache {
   readonly lane: number;
   readonly font: number;
+  readonly family: string;
   readonly metrics: RowMetrics;
 }
 
@@ -86,20 +87,35 @@ function lineHeightPx(style: CSSStyleDeclaration, fontSize: number, fallback: nu
   return fontSize > 0 ? unitless * fontSize : fallback;
 }
 
+function metricsFamilyKey(scrollElement: HTMLElement): string {
+  const computed = getComputedStyle(scrollElement).fontFamily;
+  const applied = document.documentElement.style.getPropertyValue("--th-font-mono").trim();
+  return applied.length > 0 ? `${computed}\n${applied}` : computed;
+}
+
 /**
  * Live lane / type metrics for the transcript virtualizer. Appends an offscreen
  * probe with the real row classes, then removes it. Cached by rounded lane
- * width and resolved font-size; falls back when layout is missing (jsdom).
+ * width, resolved font-size, and font family (computed plus the applied
+ * --th-font-mono stack); falls back when layout is missing (jsdom).
  */
 export function readRowMetrics(scrollElement: HTMLElement | null): RowMetrics {
   const fallback = fallbackMetrics();
   if (scrollElement === null) return fallback;
 
   const fontHint = parsePx(getComputedStyle(scrollElement).fontSize);
+  const familyHint = metricsFamilyKey(scrollElement);
   const laneHint = scrollElement.clientWidth;
   const keyLane = Math.round(laneHint);
   const keyFont = Math.round(fontHint);
-  if (cache !== undefined && cache.lane === keyLane && cache.font === keyFont && keyLane > 0 && keyFont > 0) {
+  if (
+    cache !== undefined
+    && cache.lane === keyLane
+    && cache.font === keyFont
+    && cache.family === familyHint
+    && keyLane > 0
+    && keyFont > 0
+  ) {
     return cache.metrics;
   }
 
@@ -156,7 +172,7 @@ export function readRowMetrics(scrollElement: HTMLElement | null): RowMetrics {
       monoCharWidth: monoCharWidth > 0 ? monoCharWidth : fallback.monoCharWidth,
     };
     if (keyLane > 0 && keyFont > 0) {
-      cache = { lane: keyLane, font: keyFont, metrics };
+      cache = { lane: keyLane, font: keyFont, family: familyHint, metrics };
     }
     return metrics;
   } finally {
