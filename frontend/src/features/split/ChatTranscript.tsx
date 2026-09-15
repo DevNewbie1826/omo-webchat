@@ -15,7 +15,7 @@ import {
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
-import { hasRenderableContent } from "./chatEntries";
+import { hasRenderableContent, isFailedTurn } from "./chatEntries";
 import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
@@ -682,7 +682,21 @@ export function ChatTranscript({
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
-                    ) : renderMessageBlocks(message)}
+                    ) : (
+                      <>
+                        {renderMessageBlocks(message)}
+                        {isFailedTurn(message) && (
+                          // Failure text observed on the wire, attached to its
+                          // turn; an empty text falls back to a generic label
+                          // rather than hiding the failure.
+                          <div className="th-chat-error th-chat-turn-error" role="alert">
+                            {message.errorMessage !== undefined && message.errorMessage.length > 0
+                              ? message.errorMessage
+                              : t("chat.turnFailed")}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );

@@ -316,6 +316,13 @@
   user-select: text;
 }
 
+/* Failure text attached to its transcript turn: same error ink as the live
+ * region's .th-chat-error, spaced off the turn's own blocks by the system
+ * scale. */
+.th-chat-turn-error {
+  margin-top: var(--th-space-1);
+}
+
 .th-chat-scroll-bottom {
   position: absolute;
   right: max(var(--th-chat-gutter), calc((100% - var(--th-chat-max)) / 2 + 8px));

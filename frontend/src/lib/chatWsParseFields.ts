@@ -174,7 +174,15 @@ export function parseAssistantMessage(record: Record<string, unknown>): Assistan
   const explicitTs = optNumber(record, "ts");
   const timestamp = optNumber(record, "timestamp");
   const content = optString(record, "content");
-  if (customType === null || model === null || explicitTs === null || timestamp === null || content === null) return null;
+  // Optional failure fields observed on the wire when an assistant turn ends
+  // unsuccessfully: absent on healthy turns, so older and replayed frames
+  // without them parse exactly as before.
+  const errorMessage = optString(record, "errorMessage");
+  const stopReason = optString(record, "stopReason");
+  if (
+    customType === null || model === null || explicitTs === null || timestamp === null || content === null
+    || errorMessage === null || stopReason === null
+  ) return null;
   const ts = explicitTs ?? timestamp;
   const rawBlocks = record["blocks"];
   const blocks = rawBlocks === undefined
@@ -196,6 +204,8 @@ export function parseAssistantMessage(record: Record<string, unknown>): Assistan
     ...(model !== undefined ? { model } : {}),
     ...(ts !== undefined ? { ts } : {}),
     ...(toolCallId !== undefined ? { toolCallId } : {}),
+    ...(errorMessage !== undefined ? { errorMessage } : {}),
+    ...(stopReason !== undefined ? { stopReason } : {}),
     ...(usage !== undefined ? { usage: sanitizeJson(usage) } : {}),
   };
   return parsed;
