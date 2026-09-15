@@ -516,6 +516,14 @@
   letter-spacing: var(--th-type-secondary-tracking);
 }
 
+/* Pending image_ref frame: reserves a compact thumbnail box while the image
+   is out of the viewport or its (cached) bytes are still arriving, so the
+   collapsed card stays a fixed small size instead of collapsing to zero. */
+.th-chat-image-pending {
+  width: 96px;
+  height: 64px;
+}
+
 .th-chat-image-meta {
   font-family: var(--th-font-mono);
   color: var(--th-text-dim);

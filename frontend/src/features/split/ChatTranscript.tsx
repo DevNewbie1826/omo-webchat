@@ -171,10 +171,12 @@ function ImageUnavailable({ mimeType, byteLength }: {
 }
 
 /**
- * Referenced image: bytes live server-side, so they are fetched lazily — the
- * component mounts only when its disclosure is expanded (or the block is
- * standalone-visible) — and the object URL is cached per (toolCallId,
- * contentIndex) so remounts never refetch.
+ * Referenced image: bytes live server-side, so the fetch is deferred until the
+ * image element actually enters the viewport (IntersectionObserver) — mounting
+ * inside a collapsed card's media wrapper alone never requests anything. The
+ * object URL is cached per (wsId, chatId, toolCallId, contentIndex) in
+ * chatMedia.ts, so re-renders, disclosure toggles, and virtualized-row or full
+ * remounts never refetch; a rejection stays cached too, leaving the fallback.
  */
 function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
   readonly source: ChatMediaSource | undefined;
@@ -186,31 +188,58 @@ function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
   const { t } = useT();
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  // Whichever element currently represents the image (pending frame, loaded
+  // <img>, or fallback) — the observer needs a real element at effect time.
+  const observedRef = useRef<HTMLElement | null>(null);
+  const observeElement = (element: HTMLElement | null): void => {
+    observedRef.current = element;
+  };
   const wsId = source?.wsId;
   const chatId = source?.chatId;
   useEffect(() => {
-    if (wsId === undefined || chatId === undefined) {
-      setFailed(true);
-      return;
-    }
+    const element = observedRef.current;
+    if (element === null) return;
     let active = true;
-    fetchChatMediaObjectUrl({ wsId, chatId }, { toolCallId, contentIndex }).then(
-      (url) => {
-        if (active) setObjectUrl(url);
-      },
-      () => {
-        if (active) setFailed(true);
-      },
-    );
+    const fetchWhenVisible = (): void => {
+      if (wsId === undefined || chatId === undefined) {
+        setFailed(true);
+        return;
+      }
+      fetchChatMediaObjectUrl({ wsId, chatId }, { toolCallId, contentIndex }).then(
+        (url) => {
+          if (active) setObjectUrl(url);
+        },
+        () => {
+          if (active) setFailed(true);
+        },
+      );
+    };
+    if (typeof IntersectionObserver !== "function") {
+      // No viewport signal available: the row is mounted, so treat it as
+      // visible rather than never showing the image.
+      fetchWhenVisible();
+      return () => {
+        active = false;
+      };
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      fetchWhenVisible();
+    });
+    observer.observe(element);
     return () => {
       active = false;
+      observer.disconnect();
     };
   }, [wsId, chatId, toolCallId, contentIndex]);
   if (objectUrl !== null) {
-    return <img className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
+    return <img ref={observeElement} className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
   }
   if (failed) return <ImageUnavailable mimeType={mimeType} byteLength={byteLength} />;
-  return null;
+  // Pending frame: reserves the thumbnail box until the image enters the
+  // viewport and its (cached) bytes arrive. It is the observed element.
+  return <div ref={observeElement} className="th-chat-image th-chat-image-pending" />;
 }
 
 interface ChatTranscriptProps {
@@ -279,10 +308,10 @@ export function ChatTranscript({
     return null;
   };
   // Per-message block rendering. Result images that immediately follow a tool
-  // block belong to that invocation's disclosure: they never mount as
-  // standalone rows — whose image_ref fetches would fire while the card is
-  // collapsed — and instead render inside the tool's media wrapper, gated on
-  // the disclosure being open.
+  // block belong to that invocation's disclosure: they render inside the
+  // tool's media wrapper as soon as the row mounts, whether the card is open
+  // or collapsed. Laziness lives in RefImage's viewport gate, not in the
+  // disclosure state, so a collapsed card still shows its result image.
   const renderMessageBlocks = (message: UiMessage): ReactNode[] => {
     const blocks = message.blocks ?? [];
     const groupedResultImages = new Set<number>();
@@ -336,9 +365,8 @@ export function ChatTranscript({
         });
         // Every result image of this call — the one folded onto the tool
         // block plus the additional ones stored after it — renders inside
-        // the disclosure and mounts only while the card is open, which is
-        // what keeps the image_ref fetches lazy. The open derivation mirrors
-        // ToolCard's (user choice, else error auto-open).
+        // the disclosure regardless of its open/closed state. An image_ref
+        // requests bytes only once its element enters the viewport.
         const extras: ToolResultImage[] = [];
         for (let next = blockIndex + 1; next < blocks.length; next += 1) {
           const extra = blockMedia(blocks[next]!);
@@ -363,12 +391,11 @@ export function ChatTranscript({
         const liveMedia = (live?.media ?? []).filter((image) => !blockList.some((existing) => sameMedia(existing, image)));
         const media: readonly ToolResultImage[] = [...blockList, ...liveMedia];
         if (media.length === 0) return card;
-        const open = toolDisclosureRef.current.get(cardId) ?? isError;
         const mediaKey = blockKey(block);
         return (
           <div key={mediaKey} className="th-chat-tool-media">
             {card}
-            {open && media.map((image, mediaIndex) => renderMedia(image, `${mediaKey}:${mediaIndex}`))}
+            {media.map((image, mediaIndex) => renderMedia(image, `${mediaKey}:${mediaIndex}`))}
           </div>
         );
       }
@@ -528,15 +555,15 @@ export function ChatTranscript({
                   args: entry.args,
                 });
                 // Live result media rides inside the invocation's disclosure
-                // like the finalized card's: it mounts only while open, so a
-                // collapsed card never fetches its image_ref coordinates.
+                // like the finalized card's: it renders while the card is
+                // collapsed too, and an image_ref fetches only when its
+                // element enters the viewport.
                 const media = entry.media ?? [];
                 if (media.length === 0) return card;
-                const open = toolDisclosureRef.current.get(id) ?? entry.isError;
                 return (
                   <div key={id} className="th-chat-tool-media">
                     {card}
-                    {open && media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`))}
+                    {media.map((image, mediaIndex) => renderMedia(image, `live:${id}:${mediaIndex}`))}
                   </div>
                 );
               })}

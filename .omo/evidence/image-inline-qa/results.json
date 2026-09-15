@@ -1,0 +1,2610 @@
+{
+  "harnessNote": "Supersedes continuous-setup-failure.json: initial setup sampled enabled composer before the selected chat ready frame. Corrected selection to await matching ready plus DOM removal before submitting; no product changes.",
+  "task": "Expanded continuous unmounted-arrival trace",
+  "viewport": {
+    "width": 900,
+    "height": 700
+  },
+  "attempts": [
+    {
+      "number": 1,
+      "chatId": "chat-7fabb6e2",
+      "wsId": "ws-5b6b3191",
+      "timing": "Switch immediately after Enter; scroll top immediately after image attaches on return",
+      "steps": {
+        "unseen": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "noIntersectingEntry": false,
+          "verdict": "FAIL",
+          "capture": {
+            "file": "attempt1-unseen.png",
+            "width": 636,
+            "height": 528,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:14.190Z"
+          }
+        },
+        "entered": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "verdict": "FAIL",
+          "capture": {
+            "file": "attempt1-entered.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:14.334Z"
+          }
+        },
+        "toggled": {
+          "rect": {
+            "x": 288,
+            "y": 260.21875,
+            "width": 513.0625,
+            "height": 320,
+            "top": 260.21875,
+            "right": 801.0625,
+            "bottom": 580.21875,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4769,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "true",
+          "transitions": [
+            {
+              "cycle": 1,
+              "state": "collapsed",
+              "rect": {
+                "x": 288,
+                "y": 340.65625,
+                "width": 513.0625,
+                "height": 320,
+                "top": 340.65625,
+                "right": 801.0625,
+                "bottom": 660.65625,
+                "left": 288
+              },
+              "scrollTop": 4003,
+              "scrollHeight": 4894,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "false"
+            },
+            {
+              "cycle": 1,
+              "state": "expanded",
+              "rect": {
+                "x": 288,
+                "y": 260.21875,
+                "width": 513.0625,
+                "height": 320,
+                "top": 260.21875,
+                "right": 801.0625,
+                "bottom": 580.21875,
+                "left": 288
+              },
+              "scrollTop": 4225,
+              "scrollHeight": 4769,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "true"
+            },
+            {
+              "cycle": 2,
+              "state": "collapsed",
+              "rect": {
+                "x": 288,
+                "y": 340.65625,
+                "width": 513.0625,
+                "height": 320,
+                "top": 340.65625,
+                "right": 801.0625,
+                "bottom": 660.65625,
+                "left": 288
+              },
+              "scrollTop": 4003,
+              "scrollHeight": 4894,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "false"
+            },
+            {
+              "cycle": 2,
+              "state": "expanded",
+              "rect": {
+                "x": 288,
+                "y": 260.21875,
+                "width": 513.0625,
+                "height": 320,
+                "top": 260.21875,
+                "right": 801.0625,
+                "bottom": 580.21875,
+                "left": 288
+              },
+              "scrollTop": 4225,
+              "scrollHeight": 4769,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "true"
+            }
+          ],
+          "verdict": "FAIL",
+          "capture": {
+            "file": "attempt1-toggled.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:14.707Z"
+          }
+        },
+        "unmount": {
+          "originalNodeDisconnected": true,
+          "originalCollected": false,
+          "originalTranscriptDisconnected": true,
+          "timedOut": false,
+          "otherTranscriptMarkerVisible": true,
+          "scopedRequestCount": 0,
+          "verdict": "FAIL",
+          "domVerdict": "PASS"
+        },
+        "remounted": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "originalNodeDisconnected": true,
+          "originalCollected": false,
+          "originalTranscriptDisconnected": true,
+          "timedOut": false,
+          "newDomNode": true,
+          "originalNodeStillDisconnected": true,
+          "newTranscriptNode": true,
+          "verdict": "FAIL",
+          "capture": {
+            "file": "attempt1-remounted.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:15.016Z"
+          },
+          "domVerdict": "PASS"
+        },
+        "collapsed": {
+          "cycle": 2,
+          "state": "collapsed",
+          "rect": {
+            "x": 288,
+            "y": 340.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 340.65625,
+            "right": 801.0625,
+            "bottom": 660.65625,
+            "left": 288
+          },
+          "scrollTop": 4003,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "capture": {
+            "file": "attempt1-collapsed.png",
+            "width": 588,
+            "height": 379,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:14.536Z"
+          },
+          "verdict": "PASS",
+          "meaning": "Image visible while disclosure is collapsed; independent of unmet media request gate."
+        }
+      },
+      "sentAt": 1789441384787,
+      "switchedAwayAt": 1789441384888,
+      "transcriptDisconnectedDuringTurn": true,
+      "completedWhileAwayAt": 1789441394001,
+      "activityCompletion": [
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": false,
+          "last_activity_ms": 1789441384737,
+          "receivedAt": 1789441384788
+        },
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": true,
+          "last_activity_ms": 1789441384792,
+          "receivedAt": 1789441384811
+        },
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": false,
+          "last_activity_ms": 1789441393999,
+          "receivedAt": 1789441394001
+        }
+      ],
+      "mediaRequestsWhileAway": [],
+      "initialTopScroll": {
+        "at": 15144,
+        "scrollTop": 0
+      },
+      "returnedMediaBlocks": [
+        {
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ],
+      "identity": {
+        "wsId": "ws-5b6b3191",
+        "chatId": "chat-7fabb6e2",
+        "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+        "contentIndex": 1
+      },
+      "intersectionTrail": [
+        {
+          "phase": "return-unseen",
+          "attempt": 1,
+          "at": 15140.600000023842,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 436.65625,
+            "width": 2,
+            "height": 2,
+            "top": 436.65625,
+            "right": 290,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 3907,
+          "scrollHeight": 4435,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 15139.900000095367,
+          "entryRect": {
+            "x": 288,
+            "y": 436.65625,
+            "width": 2,
+            "height": 2,
+            "top": 436.65625,
+            "right": 290,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        },
+        {
+          "phase": "unmount",
+          "attempt": 1,
+          "at": 15823.200000047684,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "innerHeight": 700,
+          "scrollTop": 0,
+          "scrollHeight": 0,
+          "clientHeight": 0,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": false,
+          "intersectionRatio": 0,
+          "entryTime": 15822.100000023842,
+          "entryRect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          }
+        },
+        {
+          "phase": "remount",
+          "attempt": 1,
+          "at": 15939.5,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 15939.200000047684,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        }
+      ],
+      "scrollWrites": [
+        {
+          "attempt": 1,
+          "phase": "setup",
+          "at": 4994.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 1,
+          "phase": "setup",
+          "at": 4995,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 1,
+          "phase": "setup",
+          "at": 5006.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "setup",
+          "at": 5800.800000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 1,
+          "phase": "setup",
+          "at": 5804.800000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5849.700000047684,
+          "from": 0,
+          "requested": 405,
+          "scrollHeight": 405,
+          "clientHeight": 405,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5857,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5888.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5927.900000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5928.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5938,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5969,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 1,
+          "phase": "send-unmounted-arrival",
+          "at": 5971,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15094.200000047684,
+          "from": 0,
+          "requested": 518,
+          "scrollHeight": 518,
+          "clientHeight": 518,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15094.5,
+          "from": 0,
+          "requested": 518,
+          "scrollHeight": 518,
+          "clientHeight": 518,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15104.100000023842,
+          "from": 0,
+          "requested": 518,
+          "scrollHeight": 518,
+          "clientHeight": 518,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15121.5,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15134.600000023842,
+          "from": 0,
+          "requested": 4184,
+          "scrollHeight": 4184,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15139.200000047684,
+          "from": 3907,
+          "requested": 4435,
+          "scrollHeight": 4435,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "return-unseen",
+          "at": 15143.600000023842,
+          "from": 3907,
+          "requested": 0,
+          "scrollHeight": 4628,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at eval (eval at evaluate (:311:30), <anonymous>:1:16)\n    at UtilityScript.evaluate (<anonymous>:313:16)\n    at UtilityScript.<anonymous> (<anonymous>:1:44)"
+        },
+        {
+          "attempt": 1,
+          "phase": "toggles",
+          "at": 15456,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "toggles",
+          "at": 15487.5,
+          "from": 4003,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "toggles",
+          "at": 15521.100000023842,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "toggles",
+          "at": 15554.300000071526,
+          "from": 4003,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "toggles",
+          "at": 15654,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "unmount",
+          "at": 15813.300000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 1,
+          "phase": "unmount",
+          "at": 15813.600000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 1,
+          "phase": "unmount",
+          "at": 15821.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "unmount",
+          "at": 15849.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 1,
+          "phase": "unmount",
+          "at": 15854.100000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "remount",
+          "at": 15893.200000047684,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 1,
+          "phase": "remount",
+          "at": 15893.600000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 1,
+          "phase": "remount",
+          "at": 15904.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 1,
+          "phase": "remount",
+          "at": 15930.5,
+          "from": 0,
+          "requested": 4184,
+          "scrollHeight": 4184,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 1,
+          "phase": "remount",
+          "at": 15938.5,
+          "from": 4225,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        }
+      ],
+      "scopedRequests": [],
+      "collapsedCapture": {
+        "file": "attempt1-collapsed.png",
+        "width": 588,
+        "height": 379,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:14.536Z"
+      },
+      "counts": {
+        "unseen": 0,
+        "entered": 0,
+        "toggled": 0,
+        "afterUnmount": 0,
+        "remounted": 0
+      },
+      "verdict": "FAIL",
+      "identityIntersectionTrail": [
+        {
+          "phase": "return-unseen",
+          "attempt": 1,
+          "at": 15140.600000023842,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 436.65625,
+            "width": 2,
+            "height": 2,
+            "top": 436.65625,
+            "right": 290,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 3907,
+          "scrollHeight": 4435,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 15139.900000095367,
+          "entryRect": {
+            "x": 288,
+            "y": 436.65625,
+            "width": 2,
+            "height": 2,
+            "top": 436.65625,
+            "right": 290,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        },
+        {
+          "phase": "unmount",
+          "attempt": 1,
+          "at": 15823.200000047684,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "innerHeight": 700,
+          "scrollTop": 0,
+          "scrollHeight": 0,
+          "clientHeight": 0,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": false,
+          "intersectionRatio": 0,
+          "entryTime": 15822.100000023842,
+          "entryRect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          }
+        },
+        {
+          "phase": "remount",
+          "attempt": 1,
+          "at": 15939.5,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 15939.200000047684,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        }
+      ]
+    },
+    {
+      "number": 2,
+      "chatId": "chat-1a39cbdb",
+      "wsId": "ws-5b6b3191",
+      "timing": "Switch after run.started acknowledgement, before tool completion; pre-arm one-shot scroll-top on first image DOM attachment",
+      "steps": {
+        "unseen": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "noIntersectingEntry": false,
+          "verdict": "FAIL",
+          "capture": {
+            "file": "unseen.png",
+            "width": 636,
+            "height": 528,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:26.590Z"
+          }
+        },
+        "entered": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "verdict": "FAIL",
+          "capture": {
+            "file": "entered.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:26.739Z"
+          }
+        },
+        "toggled": {
+          "rect": {
+            "x": 288,
+            "y": 260.21875,
+            "width": 513.0625,
+            "height": 320,
+            "top": 260.21875,
+            "right": 801.0625,
+            "bottom": 580.21875,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4769,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "true",
+          "transitions": [
+            {
+              "cycle": 1,
+              "state": "collapsed",
+              "rect": {
+                "x": 288,
+                "y": 340.65625,
+                "width": 513.0625,
+                "height": 320,
+                "top": 340.65625,
+                "right": 801.0625,
+                "bottom": 660.65625,
+                "left": 288
+              },
+              "scrollTop": 4003,
+              "scrollHeight": 4894,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "false"
+            },
+            {
+              "cycle": 1,
+              "state": "expanded",
+              "rect": {
+                "x": 288,
+                "y": 260.21875,
+                "width": 513.0625,
+                "height": 320,
+                "top": 260.21875,
+                "right": 801.0625,
+                "bottom": 580.21875,
+                "left": 288
+              },
+              "scrollTop": 4225,
+              "scrollHeight": 4769,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "true"
+            },
+            {
+              "cycle": 2,
+              "state": "collapsed",
+              "rect": {
+                "x": 288,
+                "y": 340.65625,
+                "width": 513.0625,
+                "height": 320,
+                "top": 340.65625,
+                "right": 801.0625,
+                "bottom": 660.65625,
+                "left": 288
+              },
+              "scrollTop": 4003,
+              "scrollHeight": 4894,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "false"
+            },
+            {
+              "cycle": 2,
+              "state": "expanded",
+              "rect": {
+                "x": 288,
+                "y": 260.21875,
+                "width": 513.0625,
+                "height": 320,
+                "top": 260.21875,
+                "right": 801.0625,
+                "bottom": 580.21875,
+                "left": 288
+              },
+              "scrollTop": 4225,
+              "scrollHeight": 4769,
+              "clientHeight": 528,
+              "innerHeight": 700,
+              "srcScheme": "data",
+              "naturalWidth": 900,
+              "naturalHeight": 560,
+              "scopedRequestCount": 0,
+              "ariaExpanded": "true"
+            }
+          ],
+          "verdict": "FAIL",
+          "capture": {
+            "file": "toggled.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:27.119Z"
+          }
+        },
+        "unmount": {
+          "originalNodeDisconnected": true,
+          "originalCollected": false,
+          "originalTranscriptDisconnected": true,
+          "timedOut": false,
+          "otherTranscriptMarkerVisible": true,
+          "scopedRequestCount": 0,
+          "verdict": "FAIL",
+          "domVerdict": "PASS"
+        },
+        "remounted": {
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "originalNodeDisconnected": true,
+          "originalCollected": false,
+          "originalTranscriptDisconnected": true,
+          "timedOut": false,
+          "newDomNode": true,
+          "originalNodeStillDisconnected": true,
+          "newTranscriptNode": true,
+          "verdict": "FAIL",
+          "capture": {
+            "file": "remounted.png",
+            "width": 514,
+            "height": 321,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:27.438Z"
+          },
+          "domVerdict": "PASS"
+        },
+        "collapsed": {
+          "cycle": 2,
+          "state": "collapsed",
+          "rect": {
+            "x": 288,
+            "y": 340.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 340.65625,
+            "right": 801.0625,
+            "bottom": 660.65625,
+            "left": 288
+          },
+          "scrollTop": 4003,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false",
+          "capture": {
+            "file": "collapsed.png",
+            "width": 588,
+            "height": 379,
+            "pngSignatureValid": true,
+            "at": "2026-09-15T03:03:26.953Z"
+          },
+          "verdict": "PASS",
+          "meaning": "Image visible while disclosure is collapsed; independent of unmet media request gate."
+        }
+      },
+      "sentAt": 1789441395897,
+      "switchedAwayAt": 1789441396289,
+      "transcriptDisconnectedDuringTurn": true,
+      "completedWhileAwayAt": 1789441406393,
+      "activityCompletion": [
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": false,
+          "last_activity_ms": 1789441395855,
+          "receivedAt": 1789441395900
+        },
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": true,
+          "last_activity_ms": 1789441395903,
+          "receivedAt": 1789441395912
+        },
+        {
+          "type": "sessions.activity",
+          "sessionId": "REDACTED",
+          "active": false,
+          "last_activity_ms": 1789441406391,
+          "receivedAt": 1789441406393
+        }
+      ],
+      "mediaRequestsWhileAway": [],
+      "initialTopScroll": {
+        "at": 27531.300000071526,
+        "scrollTop": 0,
+        "rect": {
+          "x": 288,
+          "y": 4343.65625,
+          "width": 513.0625,
+          "height": 320,
+          "top": 4343.65625,
+          "right": 801.0625,
+          "bottom": 4663.65625,
+          "left": 288
+        }
+      },
+      "returnedMediaBlocks": [
+        {
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ],
+      "identity": {
+        "wsId": "ws-5b6b3191",
+        "chatId": "chat-1a39cbdb",
+        "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+        "contentIndex": 1
+      },
+      "intersectionTrail": [
+        {
+          "phase": "remount",
+          "attempt": 2,
+          "at": 16122.900000095367,
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "innerHeight": 700,
+          "scrollTop": 0,
+          "scrollHeight": 0,
+          "clientHeight": 0,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": false,
+          "intersectionRatio": 0,
+          "entryTime": 16122,
+          "entryRect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          }
+        },
+        {
+          "phase": "return-unseen",
+          "attempt": 2,
+          "at": 27538.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 27538.5,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        },
+        {
+          "phase": "unmount",
+          "attempt": 2,
+          "at": 28239.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "innerHeight": 700,
+          "scrollTop": 0,
+          "scrollHeight": 0,
+          "clientHeight": 0,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": false,
+          "intersectionRatio": 0,
+          "entryTime": 28238.800000071526,
+          "entryRect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          }
+        },
+        {
+          "phase": "remount",
+          "attempt": 2,
+          "at": 28355.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 28355.600000023842,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        }
+      ],
+      "scrollWrites": [
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 16109.300000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 16109.600000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 16121.100000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 16917.900000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 16921,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 16958.400000095367,
+          "from": 0,
+          "requested": 405,
+          "scrollHeight": 405,
+          "clientHeight": 405,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 16971,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 16988,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17304.600000023842,
+          "from": 3824,
+          "requested": 4352,
+          "scrollHeight": 4352,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17328.600000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17329,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17339.300000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17368.200000047684,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 2,
+          "phase": "send-unmounted-arrival",
+          "at": 17371.300000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27495.900000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27496.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27504.400000095367,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27530.900000095367,
+          "from": 0,
+          "requested": 4184,
+          "scrollHeight": 4184,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27531.100000023842,
+          "from": 3656,
+          "requested": 0,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at MutationObserver.eval (eval at evaluate (:311:30), <anonymous>:1:207)"
+        },
+        {
+          "attempt": 2,
+          "phase": "return-unseen",
+          "at": 27537.900000095367,
+          "from": 4225,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "toggles",
+          "at": 27871,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "toggles",
+          "at": 27904.300000071526,
+          "from": 4003,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "toggles",
+          "at": 27937.600000023842,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "toggles",
+          "at": 27971.800000071526,
+          "from": 4003,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "toggles",
+          "at": 28071.800000071526,
+          "from": 4225,
+          "requested": 4894,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "unmount",
+          "at": 28227.300000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 2,
+          "phase": "unmount",
+          "at": 28227.800000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 2,
+          "phase": "unmount",
+          "at": 28238.100000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "unmount",
+          "at": 28265.600000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 2,
+          "phase": "unmount",
+          "at": 28272,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 28309.5,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 28309.800000071526,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4277\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at ka (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:43066)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41803)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at T1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:37359)\n    at Ii (http://127.0.0.1:63504/assets/index-muENtPeS.js:38:3273)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:40:34711"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 28321.100000023842,
+          "from": 0,
+          "requested": 528,
+          "scrollHeight": 528,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 28346.600000023842,
+          "from": 0,
+          "requested": 4184,
+          "scrollHeight": 4184,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4244\n    at su (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:24549)\n    at k1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:32037)\n    at w1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31881)\n    at x6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:31423)\n    at C6 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:41487)\n    at ks (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:40829)\n    at C1 (http://127.0.0.1:63504/assets/index-muENtPeS.js:40:36200)"
+        },
+        {
+          "attempt": 2,
+          "phase": "remount",
+          "at": 28354.800000071526,
+          "from": 4225,
+          "requested": 4753,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "stack": "Error\n    at HTMLDivElement.set [as scrollTop] (<anonymous>:9:407)\n    at http://127.0.0.1:63504/assets/index-muENtPeS.js:347:3977\n    at ResizeObserver.<anonymous> (http://127.0.0.1:63504/assets/index-muENtPeS.js:347:4395)"
+        }
+      ],
+      "scopedRequests": [],
+      "collapsedCapture": {
+        "file": "collapsed.png",
+        "width": 588,
+        "height": 379,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:26.953Z"
+      },
+      "counts": {
+        "unseen": 0,
+        "entered": 0,
+        "toggled": 0,
+        "afterUnmount": 0,
+        "remounted": 0
+      },
+      "verdict": "FAIL",
+      "identityIntersectionTrail": [
+        {
+          "phase": "return-unseen",
+          "attempt": 2,
+          "at": 27538.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 27538.5,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        },
+        {
+          "phase": "unmount",
+          "attempt": 2,
+          "at": 28239.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          },
+          "innerHeight": 700,
+          "scrollTop": 0,
+          "scrollHeight": 0,
+          "clientHeight": 0,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": false,
+          "intersectionRatio": 0,
+          "entryTime": 28238.800000071526,
+          "entryRect": {
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0,
+            "top": 0,
+            "right": 0,
+            "bottom": 0,
+            "left": 0
+          }
+        },
+        {
+          "phase": "remount",
+          "attempt": 2,
+          "at": 28355.900000095367,
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "className": "th-chat-image",
+          "rect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          },
+          "innerHeight": 700,
+          "scrollTop": 4225,
+          "scrollHeight": 4753,
+          "clientHeight": 528,
+          "srcScheme": "data",
+          "observer": "qa-read-only",
+          "isIntersecting": true,
+          "intersectionRatio": 1,
+          "entryTime": 28355.600000023842,
+          "entryRect": {
+            "x": 288,
+            "y": 118.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 118.65625,
+            "right": 801.0625,
+            "bottom": 438.65625,
+            "left": 288
+          }
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "browser": {
+      "allContextsClosed": true,
+      "browserDisconnected": true,
+      "at": "2026-09-15T03:03:27.599Z"
+    },
+    "server": {
+      "pid": 91155,
+      "signal": "SIGTERM",
+      "exitEventObserved": true,
+      "pidGone": true
+    },
+    "temporaryDirectories": {
+      "rootRemoved": true,
+      "stateRemoved": true
+    },
+    "completedAt": "2026-09-15T03:05:48.559496+00:00"
+  },
+  "reloadsDuringMeasurement": 0,
+  "build": "Same previously built unchanged temporary source copy; no repository writes",
+  "priorSlice": "remount-slice-results.json",
+  "identity": {
+    "wsId": "ws-5b6b3191",
+    "chatId": "chat-1a39cbdb",
+    "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+    "contentIndex": 1
+  },
+  "counts": {
+    "unseen": 0,
+    "entered": 0,
+    "toggled": 0,
+    "afterUnmount": 0,
+    "remounted": 0
+  },
+  "verdict": "FAIL",
+  "steps": {
+    "unseen": {
+      "rect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      },
+      "scrollTop": 4225,
+      "scrollHeight": 4753,
+      "clientHeight": 528,
+      "innerHeight": 700,
+      "srcScheme": "data",
+      "naturalWidth": 900,
+      "naturalHeight": 560,
+      "scopedRequestCount": 0,
+      "ariaExpanded": "false",
+      "noIntersectingEntry": false,
+      "verdict": "FAIL",
+      "capture": {
+        "file": "unseen.png",
+        "width": 636,
+        "height": 528,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:26.590Z"
+      }
+    },
+    "entered": {
+      "rect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      },
+      "scrollTop": 4225,
+      "scrollHeight": 4753,
+      "clientHeight": 528,
+      "innerHeight": 700,
+      "srcScheme": "data",
+      "naturalWidth": 900,
+      "naturalHeight": 560,
+      "scopedRequestCount": 0,
+      "ariaExpanded": "false",
+      "verdict": "FAIL",
+      "capture": {
+        "file": "entered.png",
+        "width": 514,
+        "height": 321,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:26.739Z"
+      }
+    },
+    "toggled": {
+      "rect": {
+        "x": 288,
+        "y": 260.21875,
+        "width": 513.0625,
+        "height": 320,
+        "top": 260.21875,
+        "right": 801.0625,
+        "bottom": 580.21875,
+        "left": 288
+      },
+      "scrollTop": 4225,
+      "scrollHeight": 4769,
+      "clientHeight": 528,
+      "innerHeight": 700,
+      "srcScheme": "data",
+      "naturalWidth": 900,
+      "naturalHeight": 560,
+      "scopedRequestCount": 0,
+      "ariaExpanded": "true",
+      "transitions": [
+        {
+          "cycle": 1,
+          "state": "collapsed",
+          "rect": {
+            "x": 288,
+            "y": 340.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 340.65625,
+            "right": 801.0625,
+            "bottom": 660.65625,
+            "left": 288
+          },
+          "scrollTop": 4003,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false"
+        },
+        {
+          "cycle": 1,
+          "state": "expanded",
+          "rect": {
+            "x": 288,
+            "y": 260.21875,
+            "width": 513.0625,
+            "height": 320,
+            "top": 260.21875,
+            "right": 801.0625,
+            "bottom": 580.21875,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4769,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "true"
+        },
+        {
+          "cycle": 2,
+          "state": "collapsed",
+          "rect": {
+            "x": 288,
+            "y": 340.65625,
+            "width": 513.0625,
+            "height": 320,
+            "top": 340.65625,
+            "right": 801.0625,
+            "bottom": 660.65625,
+            "left": 288
+          },
+          "scrollTop": 4003,
+          "scrollHeight": 4894,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "false"
+        },
+        {
+          "cycle": 2,
+          "state": "expanded",
+          "rect": {
+            "x": 288,
+            "y": 260.21875,
+            "width": 513.0625,
+            "height": 320,
+            "top": 260.21875,
+            "right": 801.0625,
+            "bottom": 580.21875,
+            "left": 288
+          },
+          "scrollTop": 4225,
+          "scrollHeight": 4769,
+          "clientHeight": 528,
+          "innerHeight": 700,
+          "srcScheme": "data",
+          "naturalWidth": 900,
+          "naturalHeight": 560,
+          "scopedRequestCount": 0,
+          "ariaExpanded": "true"
+        }
+      ],
+      "verdict": "FAIL",
+      "capture": {
+        "file": "toggled.png",
+        "width": 514,
+        "height": 321,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:27.119Z"
+      }
+    },
+    "unmount": {
+      "originalNodeDisconnected": true,
+      "originalCollected": false,
+      "originalTranscriptDisconnected": true,
+      "timedOut": false,
+      "otherTranscriptMarkerVisible": true,
+      "scopedRequestCount": 0,
+      "verdict": "FAIL",
+      "domVerdict": "PASS"
+    },
+    "remounted": {
+      "rect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      },
+      "scrollTop": 4225,
+      "scrollHeight": 4753,
+      "clientHeight": 528,
+      "innerHeight": 700,
+      "srcScheme": "data",
+      "naturalWidth": 900,
+      "naturalHeight": 560,
+      "scopedRequestCount": 0,
+      "ariaExpanded": "false",
+      "originalNodeDisconnected": true,
+      "originalCollected": false,
+      "originalTranscriptDisconnected": true,
+      "timedOut": false,
+      "newDomNode": true,
+      "originalNodeStillDisconnected": true,
+      "newTranscriptNode": true,
+      "verdict": "FAIL",
+      "capture": {
+        "file": "remounted.png",
+        "width": 514,
+        "height": 321,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:27.438Z"
+      },
+      "domVerdict": "PASS"
+    },
+    "collapsed": {
+      "cycle": 2,
+      "state": "collapsed",
+      "rect": {
+        "x": 288,
+        "y": 340.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 340.65625,
+        "right": 801.0625,
+        "bottom": 660.65625,
+        "left": 288
+      },
+      "scrollTop": 4003,
+      "scrollHeight": 4894,
+      "clientHeight": 528,
+      "innerHeight": 700,
+      "srcScheme": "data",
+      "naturalWidth": 900,
+      "naturalHeight": 560,
+      "scopedRequestCount": 0,
+      "ariaExpanded": "false",
+      "capture": {
+        "file": "collapsed.png",
+        "width": 588,
+        "height": 379,
+        "pngSignatureValid": true,
+        "at": "2026-09-15T03:03:26.953Z"
+      },
+      "verdict": "PASS",
+      "meaning": "Image visible while disclosure is collapsed; independent of unmet media request gate."
+    }
+  },
+  "intersectionTrail": [
+    {
+      "phase": "return-unseen",
+      "attempt": 2,
+      "at": 27538.900000095367,
+      "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+      "className": "th-chat-image",
+      "rect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      },
+      "innerHeight": 700,
+      "scrollTop": 4225,
+      "scrollHeight": 4753,
+      "clientHeight": 528,
+      "srcScheme": "data",
+      "observer": "qa-read-only",
+      "isIntersecting": true,
+      "intersectionRatio": 1,
+      "entryTime": 27538.5,
+      "entryRect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      }
+    },
+    {
+      "phase": "unmount",
+      "attempt": 2,
+      "at": 28239.900000095367,
+      "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+      "className": "th-chat-image",
+      "rect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      },
+      "innerHeight": 700,
+      "scrollTop": 0,
+      "scrollHeight": 0,
+      "clientHeight": 0,
+      "srcScheme": "data",
+      "observer": "qa-read-only",
+      "isIntersecting": false,
+      "intersectionRatio": 0,
+      "entryTime": 28238.800000071526,
+      "entryRect": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0
+      }
+    },
+    {
+      "phase": "remount",
+      "attempt": 2,
+      "at": 28355.900000095367,
+      "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+      "className": "th-chat-image",
+      "rect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      },
+      "innerHeight": 700,
+      "scrollTop": 4225,
+      "scrollHeight": 4753,
+      "clientHeight": 528,
+      "srcScheme": "data",
+      "observer": "qa-read-only",
+      "isIntersecting": true,
+      "intersectionRatio": 1,
+      "entryTime": 28355.600000023842,
+      "entryRect": {
+        "x": 288,
+        "y": 118.65625,
+        "width": 513.0625,
+        "height": 320,
+        "top": 118.65625,
+        "right": 801.0625,
+        "bottom": 438.65625,
+        "left": 288
+      }
+    }
+  ],
+  "originalNodeDisconnected": true,
+  "network": [],
+  "frameSummary": [
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": true,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": true,
+      "media": []
+    },
+    {
+      "type": "run.started",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "run.done",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": true,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "entries",
+      "sessionId": "REDACTED",
+      "media": [
+        {
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ]
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "entries",
+      "sessionId": "REDACTED",
+      "media": [
+        {
+          "toolCallId": "toolu_01RzRrBrhAbLTB7CnSpSaHWZ",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ]
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": true,
+      "media": []
+    },
+    {
+      "type": "run.started",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "sessions.activity",
+      "sessionId": "REDACTED",
+      "active": false,
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "entries",
+      "sessionId": "REDACTED",
+      "media": [
+        {
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ]
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "ready",
+      "sessionId": "REDACTED",
+      "media": []
+    },
+    {
+      "type": "entries",
+      "sessionId": "REDACTED",
+      "media": [
+        {
+          "toolCallId": "toolu_01R9e36m8D2EJM8aprRP7uin",
+          "contentIndex": 1,
+          "kind": "image",
+          "hasData": true,
+          "dataLength": 10764
+        }
+      ]
+    }
+  ],
+  "expectedCounts": {
+    "unseen": 0,
+    "entered": 1,
+    "toggled": 1,
+    "afterUnmount": 1,
+    "remounted": 1
+  },
+  "gateStatus": "FAIL: neither attempt achieved non-intersection with no prior intersecting entry; hydrated inline image never made a scoped media request at any step.",
+  "constraint": {
+    "inlineHydration": "Both unmounted-arrival attempts received kind=image, hasData=true, dataLength=10764 on return; all image sources were data:. Thus zero media requests does not establish reference-image laziness, and first entry cannot produce one media request on this path.",
+    "autoFollow": "Returning to focused history triggers useChatScroll layout restoration and ChatTranscript virtualizer.scrollToIndex(last, align=end); ResizeObserver maintains bottom-follow. A one-shot top scroll does not survive these effects.",
+    "sources": [
+      {
+        "file": "frontend/src/features/split/useChatScroll.ts",
+        "lines": "20,25-33,49-65",
+        "proof": "followRef starts true; restoreVersion layout effect and focus effect call scrollToBottom; ResizeObserver calls scrollToBottom while following."
+      },
+      {
+        "file": "frontend/src/features/split/ChatTranscript.tsx",
+        "lines": "463-467",
+        "proof": "if (focused && rows.length > 0) virtualizer.scrollToIndex(rows.length - 1, { align: \"end\" }); effect depends on focused, restoreVersion, rows.length and virtualizer."
+      },
+      {
+        "file": "frontend/src/features/split/useChatSession.ts",
+        "lines": "39,45-46,92-96",
+        "proof": "Reattachment sends chat.create; unmount closes old client."
+      },
+      {
+        "file": "frontend/src/features/split/ChatTranscript.tsx",
+        "lines": "141-154,292-304",
+        "proof": "renderMedia chooses InlineImage when data exists; InlineImage uses data: MIME/base64 src, bypassing RefImage and its media fetch."
+      }
+    ],
+    "observerCaveat": "The trail is a real additional read-only native IntersectionObserver, tagged qa-read-only. Product RefImage observer has zero entries because these restored blocks render InlineImage. No product observer entries are fabricated.",
+    "firstIntersectionQuotes": [
+      {
+        "attempt": 1,
+        "phase": "return-unseen",
+        "observer": "qa-read-only",
+        "at": 15140.600000023842,
+        "entryTime": 15139.900000095367,
+        "isIntersecting": true,
+        "intersectionRatio": 1,
+        "scrollTop": 3907,
+        "scrollHeight": 4435,
+        "clientHeight": 528,
+        "srcScheme": "data",
+        "top": 436.65625,
+        "innerHeight": 700
+      },
+      {
+        "attempt": 2,
+        "phase": "return-unseen",
+        "observer": "qa-read-only",
+        "at": 27538.900000095367,
+        "entryTime": 27538.5,
+        "isIntersecting": true,
+        "intersectionRatio": 1,
+        "scrollTop": 4225,
+        "scrollHeight": 4753,
+        "clientHeight": 528,
+        "srcScheme": "data",
+        "top": 118.65625,
+        "innerHeight": 700
+      }
+    ]
+  },
+  "srcSchemes": {
+    "unseen": "data",
+    "entered": "data",
+    "toggled": "data",
+    "remounted": "data",
+    "collapsed": "data"
+  },
+  "visualReview": {
+    "enumeratedPrimaryCaptures": [
+      "unseen.png",
+      "entered.png",
+      "toggled.png",
+      "remounted.png",
+      "collapsed.png"
+    ],
+    "openedPrimaryCaptures": 5,
+    "openedSupportingAttemptCaptures": 5,
+    "captureHygiene": "All opened and fully composited valid PNGs. Crops contain only transcript or tool/media content, without sidebars, notices, absolute paths, or unrelated chats. unseen.png intentionally documents the failed unseen state (image visible), not a PASS.",
+    "independentReview": "Unavailable: no delegation tool exposed; no independent visual-QA approval claimed.",
+    "comparison": "continuous-image-diff.json"
+  }
+}

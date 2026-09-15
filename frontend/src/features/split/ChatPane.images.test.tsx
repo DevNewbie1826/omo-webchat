@@ -33,6 +33,40 @@ const chatSession = {
 
 const PNG_DATA = "iVBORw0KGgo=";
 
+/** Manually-driven IntersectionObserver: tests decide when an element "enters
+ * the viewport" by calling intersect(true) on the instances they care about. */
+class MockIntersectionObserver {
+	static instances: MockIntersectionObserver[] = [];
+
+	readonly observed: Element[] = [];
+	private readonly callback: IntersectionObserverCallback;
+
+	constructor(callback: IntersectionObserverCallback) {
+		this.callback = callback;
+		MockIntersectionObserver.instances.push(this);
+	}
+
+	observe(target: Element): void {
+		this.observed.push(target);
+	}
+
+	unobserve(target: Element): void {
+		const index = this.observed.indexOf(target);
+		if (index >= 0) this.observed.splice(index, 1);
+	}
+
+	disconnect(): void {
+		this.observed.splice(0, this.observed.length);
+	}
+
+	intersect(isIntersecting: boolean): void {
+		this.callback(
+			this.observed.map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+			this as unknown as IntersectionObserver,
+		);
+	}
+}
+
 describe("ChatPane tool result images (production media wiring)", () => {
 	let container: HTMLDivElement;
 	let root: Root;
@@ -51,6 +85,8 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		);
 		vi.stubGlobal("fetch", fetchMock);
 		URL.createObjectURL = vi.fn(() => "blob:mock-media");
+		MockIntersectionObserver.instances.length = 0;
+		vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
 		container = document.createElement("div");
 		document.body.appendChild(container);
 		root = createRoot(container);
@@ -161,20 +197,27 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		});
 
 		// The live card exists; untouched and completed it stays collapsed, and
-		// a collapsed card must not fetch the referenced media.
+		// a collapsed card fetches nothing until its image enters the viewport.
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-1']")).toHaveLength(1);
 		expect(cardHead("call-1").getAttribute("aria-expanded")).toBe("false");
 		expect(mediaUrls()).toEqual([]);
 		expect(container.querySelector("img.th-chat-image")).toBeNull();
 
-		await clickHead("call-1");
-		expect(cardHead("call-1").getAttribute("aria-expanded")).toBe("true");
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		expect(mediaUrls()).toEqual([
 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-1&contentIndex=0",
 		]);
 		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
 			"blob:mock-media",
 		);
+
+		await clickHead("call-1");
+		expect(cardHead("call-1").getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-1']")).toHaveLength(1);
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
+		expect(mediaUrls()).toHaveLength(1);
 
 		await act(async () => {
 			deliver({
@@ -187,8 +230,12 @@ describe("ChatPane tool result images (production media wiring)", () => {
 
 		// Finalization keeps exactly one card for the logical call (no duplicate
 		// from the live region), and the image survives inside it without
-		// refetching.
+		// refetching — a remounted image re-enters the viewport and is served
+		// from the cache.
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-1']")).toHaveLength(1);
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
 		expect(mediaUrls()).toHaveLength(1);
 	});
@@ -241,19 +288,26 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		});
 
 		// One card for the logical call; untouched and completed it stays
-		// collapsed and must not fetch the referenced media.
+		// collapsed and fetches nothing until the image is visible.
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
 		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("false");
 		expect(mediaUrls()).toEqual([]);
 
-		// Expanding the anchored card must issue the media request an
-		// unanchored live card would have issued.
-		await clickHead("call-anchored");
-		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("true");
+		// The image entering the viewport issues the media request an unanchored
+		// live card would have issued.
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		expect(mediaUrls()).toEqual([
 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-anchored&contentIndex=0",
 		]);
 		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+
+		// Expanding keeps exactly one card and one image, without refetching.
+		await clickHead("call-anchored");
+		expect(cardHead("call-anchored").getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
+		expect(mediaUrls()).toHaveLength(1);
 
 		await act(async () => {
 			deliver({
@@ -268,6 +322,9 @@ describe("ChatPane tool result images (production media wiring)", () => {
 			// anchored block is replaced in place, never duplicated), and the
 			// image survives inside it without refetching.
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-anchored']")).toHaveLength(1);
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
 		expect(mediaUrls()).toHaveLength(1);
 	});
@@ -301,14 +358,19 @@ describe("ChatPane tool result images (production media wiring)", () => {
 			});
 		});
 
-		// Collapsed: no image rendered, nothing fetched.
+		// Collapsed: the inline image renders immediately from its bytes, and
+		// nothing is ever fetched.
 		expect(cardHead("call-inline").getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
+			`data:image/png;base64,${PNG_DATA}`,
+		);
 		expect(mediaUrls()).toEqual([]);
 
 		await clickHead("call-inline");
-		const img = container.querySelector<HTMLImageElement>("img.th-chat-image");
-		expect(img?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_DATA}`);
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
+			`data:image/png;base64,${PNG_DATA}`,
+		);
 		expect(mediaUrls()).toEqual([]);
 	});
 
@@ -359,10 +421,14 @@ describe("ChatPane tool result images (production media wiring)", () => {
 
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-multi']")).toHaveLength(1);
 		expect(cardHead("call-multi").getAttribute("aria-expanded")).toBe("false");
-		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		// Collapsed: the inline image renders from its bytes, the two refs wait
+		// as pending frames, and nothing has been fetched.
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
 		expect(mediaUrls()).toEqual([]);
 
-		await clickHead("call-multi");
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		const images = container.querySelectorAll<HTMLImageElement>("img.th-chat-image");
 		expect(images).toHaveLength(3);
 		expect(images[0]?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_DATA}`);
@@ -374,11 +440,14 @@ describe("ChatPane tool result images (production media wiring)", () => {
 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-multi&contentIndex=2",
 		]);
 
-		// Collapsing the disclosure unmounts every result image of the call.
 		await clickHead("call-multi");
-		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		expect(cardHead("call-multi").getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(3);
 
-		// Re-expanding remounts all of them from the cache: no additional fetch.
+		// Collapsing the disclosure keeps every result image of the call in
+		// place and never refetches; re-expanding changes nothing either.
+		await clickHead("call-multi");
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(3);
 		await clickHead("call-multi");
 		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(3);
 		expect(mediaUrls()).toEqual([
@@ -427,12 +496,97 @@ describe("ChatPane tool result images (production media wiring)", () => {
 		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-restored']")).toHaveLength(1);
 		expect(mediaUrls()).toEqual([]);
 
-		await clickHead("call-restored");
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
 		expect(mediaUrls()).toEqual([
 			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-restored&contentIndex=0",
 		]);
 		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
 			"blob:mock-media",
 		);
+
+		// Expanding the card never refetches the already-visible image.
+		await clickHead("call-restored");
+		expect(mediaUrls()).toHaveLength(1);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe(
+			"blob:mock-media",
+		);
+	});
+
+	it("renders a collapsed live card's result image and fetches it exactly once on viewport entry", async () => {
+		const { deliver } = renderWithFakeConnect();
+		act(() => {
+			deliver({ type: "run.started", sessionId: "chat-1" });
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-collapsed",
+				toolName: "read",
+				phase: "start",
+			});
+			deliver({
+				type: "tool",
+				sessionId: "chat-1",
+				toolCallId: "call-collapsed",
+				toolName: "read",
+				phase: "end",
+				result: { content: [{ text: "read done" }] },
+				isError: false,
+			});
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: {
+					role: "toolResult",
+					blocks: [{
+						kind: "image_ref",
+						mimeType: "image/png",
+						byteLength: 12595,
+						ref: { toolCallId: "call-collapsed", contentIndex: 0 },
+					}],
+				},
+			});
+		});
+
+		// Collapsed and untouched: the pending image is mounted and observes the
+		// viewport, but nothing has been fetched yet.
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-collapsed']")).toHaveLength(1);
+		expect(cardHead("call-collapsed").getAttribute("aria-expanded")).toBe("false");
+		expect(container.querySelector("img.th-chat-image")).toBeNull();
+		expect(mediaUrls()).toEqual([]);
+
+		// Entering the viewport fetches exactly once and materializes the image.
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
+		expect(mediaUrls()).toEqual([
+			"/api/workspaces/workspace-1/chats/chat-1/media?toolCallId=call-collapsed&contentIndex=0",
+		]);
+		expect(container.querySelector<HTMLImageElement>("img.th-chat-image")?.getAttribute("src")).toBe("blob:mock-media");
+
+		// Expanding the card adds no second card, no duplicate image, no refetch.
+		await clickHead("call-collapsed");
+		expect(cardHead("call-collapsed").getAttribute("aria-expanded")).toBe("true");
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-collapsed']")).toHaveLength(1);
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
+		expect(mediaUrls()).toHaveLength(1);
+
+		// run.done finalization keeps one card and one image; remounts are served
+		// from the cache once the image re-enters the viewport, never refetching.
+		await act(async () => {
+			deliver({
+				type: "message",
+				sessionId: "chat-1",
+				message: { role: "assistant", blocks: [{ kind: "text", text: "here is the shot" }] },
+				});
+			deliver({ type: "run.done", sessionId: "chat-1", reason: "stop" });
+		});
+		expect(container.querySelectorAll(".th-tool[data-tool-call-id='call-collapsed']")).toHaveLength(1);
+		await act(async () => {
+			MockIntersectionObserver.instances.forEach((observer) => observer.intersect(true));
+		});
+		expect(container.querySelectorAll("img.th-chat-image")).toHaveLength(1);
+		expect(mediaUrls()).toHaveLength(1);
 	});
 });
