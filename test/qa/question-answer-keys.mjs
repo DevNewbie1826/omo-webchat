@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { chromium } from '/Users/mirage/.bun/install/cache/playwright-core@1.63.0@@@1/index.mjs';
+assert.ok(process.env.QA_PLAYWRIGHT, 'QA_PLAYWRIGHT must identify an installed playwright-core driver');
+const { chromium } = await import(process.env.QA_PLAYWRIGHT);
 import { startComposerFixture, transition } from './ui-composer-fixture.mjs';
 import { installSignals } from './design-workbench-fixture.mjs';
 

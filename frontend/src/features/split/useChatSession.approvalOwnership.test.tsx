@@ -36,7 +36,33 @@ beforeEach(() => {
   root = createRoot(document.createElement("div"));
   act(() => root.render(<Probe />));
 });
-afterEach(() => { act(() => root.unmount()); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it.each([false, true])("bounds live restore maps when 30 responses settle, structured=%s", structured => {
+  // Given real ledger maps observed without replacing their implementation.
+  const writes = vi.spyOn(Map.prototype, "set");
+  const restoreMaps = new Set<Map<unknown, unknown>>();
+  let latest: ReturnType<typeof answer> | undefined;
+  // When successive generations are answered and acknowledged.
+  for (let index = 0; index < 30; index++) {
+    deliver(structured ? question(`bounded-${index}`) : fallback(`bounded-${index}`));
+    latest = answer(structured);
+    deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: latest.id, requestId: latest.requestId });
+    writes.mock.calls.forEach(([key, value], call) => {
+      if (key === latest?.requestId || value === latest?.requestId) {
+        const map = writes.mock.contexts[call];
+        if (map instanceof Map) restoreMaps.add(map);
+      }
+    });
+    writes.mockClear();
+  }
+  // Then live map sizes are bounded, while the latest ACK still permits late recovery.
+  expect(restoreMaps.size).toBeGreaterThanOrEqual(2);
+  for (const map of restoreMaps) expect(map.size).toBeLessThanOrEqual(1);
+  if (latest?.type !== "approval.respond") throw new Error("Missing latest response");
+  reject(latest.requestId);
+  expect((structured ? state.pendingQuestion : state.pendingApproval)?.id).toBe("bounded-29");
+});
 
 it.each([false, true])("restores only the latest request when both sends fail, structured=%s", structured => {
   // Given two successive answered requests on the same surface.
@@ -87,6 +113,20 @@ it.each([false, true])("keeps a replacement answerable while its obsolete shape 
   // Then only the latest shape returns and can be answered again.
   expect(structuredFirst ? state.pendingQuestion : state.pendingApproval).toBeNull();
   expect(answer(!structuredFirst).id).toBe("same");
+});
+
+it.each([false, true])("preserves latest late-error recovery when an obsolete ACK arrives last, structured=%s", structured => {
+  // Given two answered generations, with the latest already acknowledged.
+  deliver(structured ? question("old") : fallback("old"));
+  const old = answer(structured);
+  deliver(structured ? question("latest") : fallback("latest"));
+  const latest = answer(structured);
+  deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: latest.id, requestId: latest.requestId });
+  // When the obsolete response settles before a late error for the latest.
+  deliver({ type: "ack", sessionId: session.id, command: "extension_ui_response", id: old.id, requestId: old.requestId });
+  reject(latest.requestId);
+  // Then the latest owner remains recoverable.
+  expect((structured ? state.pendingQuestion : state.pendingApproval)?.id).toBe("latest");
 });
 
 it.each([false, true])("rolls back distinct surfaces independently, structuredFails=%s", structuredFails => {

@@ -358,7 +358,12 @@ export function useChatSession(
     const requestId = nextRequestId();
     if (!frameState.armControl(
       requestId,
-      `extension_ui_response:${id}:${(approval ? approvalOwner : questionOwner)?.generation}`,
+      {
+        key: `extension_ui_response:${id}:${(approval ? approvalOwner : questionOwner)?.generation}`,
+        ownsRestore: () => approval
+          ? requestOwners.current.approval === approvalOwner
+          : requestOwners.current.question === questionOwner,
+      },
       () => {
         if (approval && requestOwners.current.approval === approvalOwner) frameState.setPendingApproval(approval);
         if (question && requestOwners.current.question === questionOwner) frameState.setPendingQuestion(question);
