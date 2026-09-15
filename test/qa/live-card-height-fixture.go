@@ -8,6 +8,14 @@
 // internal/session/live_summary.go) chosen so three cards render the
 // conditional .th-overview-card-meta line and one ("Idle attached") has no
 // work at all — the height divergence under test.
+//
+// It also serves the session-catalog endpoints the SPA needs to resolve a
+// live row into an openable session (GET /api/workspaces and
+// GET /api/workspaces/{wsId}/sessions publish the same four ids as
+// discovered rows), plus POST /api/workspaces/{wsId}/sessions/open whose
+// behavior is selected per session id through --open=ID=BEHAVIOR flags so the
+// harness can drive the "opening" (slow response), "session-active"
+// (conflict response) and "open failed" (error response) card states.
 package main
 
 import (
@@ -74,6 +82,65 @@ type liveSessionRow struct {
 
 func int64Ptr(v int64) *int64 { return &v }
 
+// workspaceID is the single catalog workspace this fixture publishes. The
+// four live sessions are exposed as discovered rows of that workspace so the
+// SPA's live cards can resolve an open target for activation-state QA.
+const workspaceID = "ws-live-qa"
+
+type workspaceRow struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Path  string `json:"path"`
+	Chats []any  `json:"chats"`
+}
+
+func workspaceRows() []workspaceRow {
+	return []workspaceRow{{
+		ID:    workspaceID,
+		Name:  "Live QA",
+		Path:  "/tmp/live-card-height-qa",
+		Chats: []any{},
+	}}
+}
+
+// catalogSessionRow mirrors the GET /api/workspaces/{wsId}/sessions item
+// shape (source "discovered" so activation goes through the real
+// POST sessions/open request instead of the local select path).
+type catalogSessionRow struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Source         string `json:"source"`
+	RecencyMS      int64  `json:"recencyMs"`
+	ResumeIdentity string `json:"resumeIdentity"`
+}
+
+func catalogSessions() []catalogSessionRow {
+	rows := make([]catalogSessionRow, 0, len(liveRows()))
+	for _, live := range liveRows() {
+		recency := int64(0)
+		if live.LastActivityMS != nil {
+			recency = *live.LastActivityMS
+		}
+		rows = append(rows, catalogSessionRow{
+			ID:             live.ID,
+			Name:           live.Title,
+			Source:         "discovered",
+			RecencyMS:      recency,
+			ResumeIdentity: "/qa/live-" + live.ID + ".jsonl",
+		})
+	}
+	return rows
+}
+
+func liveTitle(id string) string {
+	for _, row := range liveRows() {
+		if row.ID == id {
+			return row.Title
+		}
+	}
+	return id
+}
+
 // liveRows are the EXACT sessions this fixture publishes. Distinct
 // last_activity_ms stamps make the rendered order deterministic (working
 // sessions first, newest first; the done-only row sorts last).
@@ -106,6 +173,10 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func terminalResponse(id string) map[string]any {
+	return map[string]any{"id": id, "name": liveTitle(id), "provider": "omo"}
 }
 
 func clientIP(r *http.Request) string {
@@ -334,9 +405,110 @@ func writeWSFrame(w *bufio.Writer, op byte, payload []byte) error {
 	return w.Flush()
 }
 
+// Open behaviors selectable per session id through --open=ID=BEHAVIOR.
+const (
+	openOK       = "ok"
+	openSlow     = "slow"
+	openConflict = "conflict"
+	openError    = "error"
+)
+
+// slowOpenCap bounds the "opening" state's hanging response. The QA run
+// finishes well before it; the cap only guarantees the handler cannot pin a
+// strayed server forever.
+const slowOpenCap = 10 * time.Minute
+
+var openBehaviorNames = []string{openOK, openSlow, openConflict, openError}
+
+// openBehaviorList collects repeatable --open=SESSION=BEHAVIOR flag values.
+type openBehaviorList []string
+
+func (l *openBehaviorList) String() string { return strings.Join(*l, ",") }
+
+func (l *openBehaviorList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// parseOpenBehaviors parses repeatable --open=SESSION=BEHAVIOR flags (also
+// accepting comma-separated lists) into the per-session-id map the open
+// endpoint consults. Unknown behavior names fail startup loudly.
+func parseOpenBehaviors(specs []string) (map[string]string, error) {
+	behaviors := map[string]string{}
+	for _, spec := range specs {
+		for _, part := range strings.Split(spec, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, behavior, found := strings.Cut(part, "=")
+			id = strings.TrimSpace(id)
+			behavior = strings.TrimSpace(behavior)
+			valid := false
+			for _, name := range openBehaviorNames {
+				if behavior == name {
+					valid = true
+					break
+				}
+			}
+			if !found || id == "" || !valid {
+				return nil, fmt.Errorf("invalid --open entry %q (want SESSION=%s)", part, strings.Join(openBehaviorNames, "|"))
+			}
+			behaviors[id] = behavior
+		}
+	}
+	return behaviors, nil
+}
+
+// handleSessionsOpen implements POST /api/workspaces/{wsId}/sessions/open
+// with the fixture-selected per-session behavior:
+//   - slow: hold the response until the client goes away (or the cap),
+//     keeping the card in its "opening" state for measurement;
+//   - conflict: 409 {"state":"session-active"} - "already active elsewhere";
+//   - error: 500 - "open failed";
+//   - ok (default): the opened Terminal identity.
+func handleSessionsOpen(behaviors map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID             string  `json:"id"`
+			ResumeIdentity *string `json:"resumeIdentity,omitempty"`
+			Force          bool    `json:"force,omitempty"`
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		behavior := behaviors[req.ID]
+		if behavior == "" {
+			behavior = openOK
+		}
+		switch behavior {
+		case openSlow:
+			timer := time.NewTimer(slowOpenCap)
+			defer timer.Stop()
+			select {
+			case <-r.Context().Done():
+				// The QA browser context closed the connection; nothing to write.
+				return
+			case <-timer.C:
+				writeJSON(w, http.StatusOK, terminalResponse(req.ID))
+			}
+		case openConflict:
+			writeJSON(w, http.StatusConflict, map[string]string{"state": "session-active"})
+		case openError:
+			writeError(w, http.StatusInternalServerError, "stub fixture: session open rejected for QA")
+		default:
+			writeJSON(w, http.StatusOK, terminalResponse(req.ID))
+		}
+	}
+}
+
 func run() error {
 	root := flag.String("root", "", "fresh empty owned root")
 	address := flag.String("listen", "127.0.0.1:0", "loopback listen address")
+	var openSpecs openBehaviorList
+	flag.Var(&openSpecs, "open", "per-session open behavior: --open=SESSION=ok|slow|conflict|error (repeatable or comma-separated)")
 	flag.Parse()
 	if !filepath.IsAbs(*root) {
 		return errors.New("absolute --root required")
@@ -348,6 +520,10 @@ func run() error {
 	host, _, err := net.SplitHostPort(*address)
 	if err != nil || host != "127.0.0.1" {
 		return errors.New("loopback listen address required")
+	}
+	openBehaviors, err := parseOpenBehaviors(openSpecs)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -363,10 +539,21 @@ func run() error {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	protected.HandleFunc("GET /api/workspaces", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, []any{})
+		writeJSON(w, http.StatusOK, workspaceRows())
 	})
-	protected.HandleFunc("GET /api/workspaces/{wsId}/sessions", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "nextCursor": ""})
+	protected.HandleFunc("GET /api/workspaces/{wsId}/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("wsId") != workspaceID {
+			writeError(w, http.StatusNotFound, "unknown workspace")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": catalogSessions(), "nextCursor": ""})
+	})
+	protected.HandleFunc("POST /api/workspaces/{wsId}/sessions/open", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("wsId") != workspaceID {
+			writeError(w, http.StatusNotFound, "unknown workspace")
+			return
+		}
+		handleSessionsOpen(openBehaviors)(w, r)
 	})
 	protected.HandleFunc("GET /api/layout", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"layout": nil})
