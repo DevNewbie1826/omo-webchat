@@ -109,15 +109,6 @@
   }
 }
 
-.th-overview-card-meta {
-  display: flex;
-  gap: var(--th-space-3);
-  font-size: var(--th-type-label-size);
-  line-height: var(--th-type-label-line);
-  letter-spacing: var(--th-type-label-tracking);
-  color: var(--th-muted);
-}
-
 .th-overview-card-line {
   font-family: var(--th-font-mono);
   font-size: var(--th-type-micro-size);

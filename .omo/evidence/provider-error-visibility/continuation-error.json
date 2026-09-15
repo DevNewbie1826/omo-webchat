@@ -1,0 +1,31 @@
+{
+  "scenario": "continuation-error",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "notice",
+      "sessionId": "qa-session",
+      "kind": "continuation_error",
+      "payload": {
+        "message": "Continuation failed: provider connection closed."
+      },
+      "at": "1970-01-01T00:00:01.000Z",
+      "nid": "continuation_error"
+    }
+  ],
+  "observed": {
+    "viewport": {
+      "width": 390,
+      "height": 844
+    },
+    "errorRows": [],
+    "noticeRows": [
+      "Continuation failed: provider connection closed."
+    ],
+    "transcript": "continuation_error\n09:00:01\nContinuation failed: provider connection closed.",
+    "assistantRows": [],
+    "ordered": []
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}

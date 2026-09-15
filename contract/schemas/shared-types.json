@@ -95,7 +95,9 @@
         "model": { "type": "string" },
         "usage": { "$ref": "#/$defs/JsonValue" },
         "ts": { "type": "number" },
-        "timestamp": { "type": "number" }
+        "timestamp": { "type": "number" },
+        "errorMessage": { "type": "string", "description": "Failure text observed on the wire when an assistant turn ends unsuccessfully" },
+        "stopReason": { "type": "string", "description": "Stop reason observed on the wire for a completed assistant turn" }
       }
     },
     "ChatImage": {

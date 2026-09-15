@@ -186,13 +186,30 @@ function mergeToolResultMessage(messages: UiMessage[], message: Readonly<Record<
   });
 }
 
+/**
+ * True when the assistant turn ended unsuccessfully: it carries failure text
+ * (errorMessage present, even empty — the renderer falls back to a generic
+ * label) or its stopReason reports a genuine error. A bare "aborted" with no
+ * failure text is a user stop (observed engine contract: the user-stop path
+ * stamps stopReason "aborted" alongside ordinary text), never a failure, so
+ * a cancelled turn renders no error row. The failure must render attached to
+ * its turn, matching the observed reference behavior of never hiding it.
+ */
+export function isFailedTurn(message: AssistantMessage): boolean {
+  if (message.role !== "assistant") return false;
+  if (message.errorMessage !== undefined) return true;
+  return message.stopReason === "error";
+}
+
 /** Zero-renderable-block assistant messages are omitted from rendering.
  * Presentation-seam predicate only: transcript state keeps them — live and
  * restored alike — because they anchor current-turn tool results when
  * run.done materializes them; ChatTranscript hides their blank rows only
  * after row identity is assigned. Any message with blocks — including one
- * made non-empty by tool-result folding — counts as renderable. */
+ * made non-empty by tool-result folding — counts as renderable, as does a
+ * failed turn: its failure row must never be hidden with the blank row. */
 export function hasRenderableContent(message: AssistantMessage): boolean {
+  if (message.role === "assistant" && isFailedTurn(message)) return true;
   return !(message.role === "assistant" && (message.blocks ?? []).length === 0);
 }
 
@@ -281,12 +298,19 @@ export function parseEntries(entries: unknown): UiMessage[] {
     const timestamp = message["timestamp"];
     const model = message["model"];
     const id = entry["id"];
+    // Failure fields observed on the wire for turns that ended
+    // unsuccessfully; persisted entries carry them beside content, and they
+    // must survive hydration so the failure renders attached to its turn.
+    const errorMessage = message["errorMessage"];
+    const stopReason = message["stopReason"];
     const parsed: UiMessage = {
       ...(typeof id === "string" ? { id } : {}),
       role,
       blocks: parseBlocks(message["content"]),
       ts: typeof timestamp === "number" ? timestamp : 0,
       ...(typeof model === "string" ? { model } : {}),
+      ...(typeof errorMessage === "string" ? { errorMessage } : {}),
+      ...(typeof stopReason === "string" ? { stopReason } : {}),
     };
     // Kept in state even with zero blocks: an empty restored completion
     // anchors current-turn tool results exactly like the live path, so

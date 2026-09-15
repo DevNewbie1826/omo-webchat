@@ -22,6 +22,20 @@ describe("hasRenderableContent", () => {
 			blocks: [{ kind: "text", text: "hook" }],
 		})).toBe(true);
 	});
+
+	it("keeps a failed assistant turn renderable even with zero blocks", () => {
+		expect(hasRenderableContent({ role: "assistant", blocks: [], errorMessage: "provider overloaded" })).toBe(true);
+		expect(hasRenderableContent({ role: "assistant", blocks: [], errorMessage: "" })).toBe(true);
+		expect(hasRenderableContent({ role: "assistant", blocks: [], stopReason: "error" })).toBe(true);
+		// A bare abort with no failure text is a user stop (observed engine
+		// contract: the user-stop path stamps stopReason "aborted" with
+		// ordinary text), not a failure — no error row, and a blank cancelled
+		// turn stays hidden like any zero-block row.
+		expect(hasRenderableContent({ role: "assistant", blocks: [], stopReason: "aborted" })).toBe(false);
+		expect(hasRenderableContent({ role: "assistant", blocks: [{ kind: "text", text: "partial" }], stopReason: "aborted" })).toBe(true);
+		// A successful stop reason alone does not make a blank row renderable.
+		expect(hasRenderableContent({ role: "assistant", blocks: [], stopReason: "stop" })).toBe(false);
+	});
 });
 
 describe("parseEntries", () => {
@@ -141,5 +155,46 @@ describe("parseEntries", () => {
 			{ kind: "tool", id: "t2", name: "screenshot", text: "shot", data: "iVBORw0KGgo=", mimeType: "image/png" },
 			{ kind: "image_ref", mimeType: "image/jpeg", byteLength: 2048, ref: { toolCallId: "t2", contentIndex: 1 } },
 		]);
+	});
+
+	it("carries errorMessage and stopReason through restored history", () => {
+		const messages = parseEntries([
+			{
+				type: "message",
+				id: "e1",
+				message: {
+					role: "assistant",
+					timestamp: 42,
+					content: "partial",
+					errorMessage: "provider overloaded",
+					stopReason: "error",
+				},
+			},
+			{ type: "message", id: "e2", message: { role: "assistant", content: "fine" } },
+		]);
+		expect(messages[0]).toEqual({
+			id: "e1",
+			role: "assistant",
+			blocks: [{ kind: "text", text: "partial" }],
+			ts: 42,
+			errorMessage: "provider overloaded",
+			stopReason: "error",
+		});
+		// Entries without the fields restore exactly as before.
+		expect(messages[1]).toEqual({
+			id: "e2",
+			role: "assistant",
+			blocks: [{ kind: "text", text: "fine" }],
+			ts: 0,
+		});
+	});
+
+	it("keeps an empty restored errorMessage so the renderer can fall back to a generic label", () => {
+		const messages = parseEntries([
+			{ type: "message", id: "e1", message: { role: "assistant", content: [], errorMessage: "", stopReason: "error" } },
+		]);
+		expect(messages[0]?.errorMessage).toBe("");
+		expect(messages[0]?.stopReason).toBe("error");
+		expect(messages.filter(hasRenderableContent).map((message) => message.id)).toEqual(["e1"]);
 	});
 });

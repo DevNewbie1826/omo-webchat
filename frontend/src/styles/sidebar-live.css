@@ -43,26 +43,38 @@
 }
 
 /* Compact density for the overview card markup inside the 264px shell: tighter
-   activation padding, and name/metadata rows that stay on one ellipsized line
-   (name at Label, metadata demoted to Micro). */
+   activation padding, and the name row held to one ellipsized line at Label.
+   Every card pins one minimum height on the card element itself — the card's
+   2px border plus the button's block padding (2 x --th-space-2) plus the head
+   row's tallest content (the running pill: micro line box + 2px border) plus
+   one --th-space-1 step — so the row geometry belongs to the card and never
+   depends on which optional content (running pill, transient status row) it
+   carries, and each card sits one spacing step taller than the old title-only
+   row. */
+.th-sidebar-live-list .th-overview-card {
+  min-height: calc(
+    2px + var(--th-space-2) + var(--th-space-2) + var(--th-type-micro-size) * var(--th-type-micro-line) +
+      var(--th-space-1)
+  );
+}
+
+/* The head row is pinned to the height of its tallest possible content — the
+   running pill (micro line box + 2px border) — so a card with the badge, a
+   card with the dot-only marker, and a card with neither share one head
+   height at every card height, including transient states that grow the card
+   past its pinned minimum. */
+.th-sidebar-live-list .th-overview-card-head {
+  min-height: calc(var(--th-type-micro-size) * var(--th-type-micro-line) + 2px);
+}
+
 .th-sidebar-live-list .th-overview-card-open {
-  padding: var(--th-space-1) var(--th-space-2);
+  padding: var(--th-space-2);
 }
 
 .th-sidebar-live-list .th-overview-card-name {
   font-size: var(--th-type-label-size);
   line-height: var(--th-type-label-line);
   letter-spacing: var(--th-type-label-tracking);
-}
-
-.th-sidebar-live-list .th-overview-card-meta {
-  font-size: var(--th-type-micro-size);
-  line-height: var(--th-type-micro-line);
-  letter-spacing: var(--th-type-micro-tracking);
-}
-
-.th-sidebar-live-list .th-overview-card-name,
-.th-sidebar-live-list .th-overview-card-meta {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

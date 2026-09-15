@@ -15,7 +15,7 @@ import {
 import type { Paragraph, Root } from "mdast";
 import type {} from "mdast-util-math";
 import type { UiMessage } from "./chatEntries";
-import { hasRenderableContent } from "./chatEntries";
+import { hasRenderableContent, isFailedTurn } from "./chatEntries";
 import type { ToolEntry, ToolResultImage } from "./chatSessionTypes";
 import { HookCard } from "./HookCard";
 import { remarkBackslashMath } from "./mathDelimiters";
@@ -64,6 +64,14 @@ function messageText(message: UiMessage): string {
 }
 
 const STOP_ERROR_REASONS = new Set(["max_tokens", "length", "content_filter", "refusal", "error"]);
+
+/** Wire-provided wording for a failed turn: the failure text exactly as it
+ * arrived, else the wire stopReason value itself; null when the wire carried
+ * neither (nothing to show — never synthesize a label). */
+function failedTurnText(message: UiMessage): string | null {
+  if (message.errorMessage !== undefined && message.errorMessage.length > 0) return message.errorMessage;
+  return message.stopReason ?? null;
+}
 
 function isStopError(reason: string): boolean {
   return STOP_ERROR_REASONS.has(reason);
@@ -144,6 +152,11 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
     return `message-ordinal:${fallback}`;
   });
 }
+
+const MISSING_ROW: TranscriptItem = {
+  kind: "message",
+  message: { role: "assistant", blocks: [] },
+};
 
 /** Inline image carried on a preserved block: bytes already inline as base64. */
 /** Stable logical identity of a zoomed image's trigger, threaded onto the
@@ -583,7 +596,23 @@ export function ChatTranscript({
     count: rows.length,
     getItemKey,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (index) => estimateCache.get(keys[index]!)!,
+    // Total: the virtualizer can ask about an index after the row list
+    // shrinks (chat switch). A miss still returns a content-derived
+    // estimate — never undefined, never a magic constant.
+    estimateSize: (index) => {
+      const key = keys[index];
+      if (key !== undefined) {
+        const cached = estimateCache.get(key);
+        if (cached !== undefined) return cached;
+        const item = rows[index];
+        if (item !== undefined) {
+          const size = estimateRowHeight(item, rowMetrics);
+          estimateCache.set(key, size);
+          return size;
+        }
+      }
+      return estimateRowHeight(MISSING_ROW, rowMetrics);
+    },
     overscan: 8,
     // virtual-core passes `adjustments` ONLY for measurement-driven
     // corrections; every explicit scrollToIndex/scrollToOffset passes
@@ -746,7 +775,20 @@ export function ChatTranscript({
                       />
                     ) : message.role === "custom" ? (
                       <HookCard hookType={message.customType ?? "hook"} text={messageText(message)} />
-                    ) : renderMessageBlocks(message, String(virtualItem.key))}
+                    ) : (
+                      <>
+                        {renderMessageBlocks(message, String(virtualItem.key))}
+                        {isFailedTurn(message) && failedTurnText(message) !== null && (
+                          // Wire-only wording: the failure text exactly as it
+                          // arrived; when the turn carries no text, the
+                          // wire-provided stopReason value itself, so a failed
+                          // turn is never silent and nothing is fabricated.
+                          <div className="th-chat-error th-chat-turn-error" role="alert">
+                            {failedTurnText(message)}
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
                 </div>
               );

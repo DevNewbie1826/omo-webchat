@@ -1,0 +1,112 @@
+{
+  "scenario": "no-false-alarm",
+  "scope": "Real Google Chrome; built production parser -> useChatFrameState -> ChatTranscript, with injected server-contract frames. No Go dispatch or real provider exercised.",
+  "sent": [
+    {
+      "type": "run.started",
+      "sessionId": "qa-session"
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [
+          {
+            "kind": "text",
+            "text": "Partial answer before user cancellation."
+          }
+        ],
+        "ts": 1000,
+        "stopReason": "aborted"
+      }
+    },
+    {
+      "type": "run.done",
+      "sessionId": "qa-session",
+      "reason": "aborted"
+    },
+    {
+      "type": "run.started",
+      "sessionId": "qa-session"
+    },
+    {
+      "type": "tool",
+      "sessionId": "qa-session",
+      "phase": "start",
+      "toolCallId": "qa-tool",
+      "toolName": "bash",
+      "args": {
+        "command": "printf tool-output"
+      }
+    },
+    {
+      "type": "tool",
+      "sessionId": "qa-session",
+      "phase": "end",
+      "toolCallId": "qa-tool",
+      "toolName": "bash",
+      "isError": false,
+      "result": {
+        "content": [
+          {
+            "text": "tool-output"
+          }
+        ]
+      }
+    },
+    {
+      "type": "message",
+      "sessionId": "qa-session",
+      "message": {
+        "role": "assistant",
+        "blocks": [],
+        "ts": 2000,
+        "stopReason": "toolUse"
+      }
+    },
+    {
+      "type": "run.done",
+      "sessionId": "qa-session",
+      "reason": "stop"
+    }
+  ],
+  "observed": {
+    "cancelled": {
+      "rowCount": 0,
+      "dom": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [],
+        "noticeRows": [],
+        "transcript": "Partial answer before user cancellation.\n\nDone",
+        "assistantRows": [
+          "Partial answer before user cancellation."
+        ],
+        "ordered": []
+      }
+    },
+    "toolOnly": {
+      "rowCount": 0,
+      "dom": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "errorRows": [],
+        "noticeRows": [],
+        "transcript": "Partial answer before user cancellation.\n\nbash\nDone\nprintf tool-output\n·\ntool-output\nDone",
+        "assistantRows": [
+          "Partial answer before user cancellation.",
+          "bashDoneprintf tool-output · tool-output"
+        ],
+        "ordered": []
+      }
+    },
+    "rowCount": 0
+  },
+  "pass": true,
+  "browser": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36"
+}
