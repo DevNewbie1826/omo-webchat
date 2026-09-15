@@ -76,17 +76,39 @@
   color: var(--th-text);
 }
 
-/* Floor-forced collapse: expansion cannot work, so the control reads as
-   unavailable (aria-disabled keeps it keyboard-focusable; the reason is in
-   its accessible name and tooltip). */
-.th-approval-dock-toggle--disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
+/* Tight density: only when the user explicitly expands while the column is
+   below the readability floor. Vertical chrome sheds to the smallest spacing
+   tokens and the body leads with the options (the message follows and
+   scrolls), so the header plus one complete clickable option row fit
+   whatever band the column can give — a pending question stays answerable. */
+.th-approval-dock--tight {
+  margin-top: 0;
 }
 
-.th-approval-dock-toggle--disabled:hover {
-  background: none;
-  color: var(--th-muted);
+.th-approval-dock--tight .th-approval-dock-header {
+  padding: 0 var(--th-space-2);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock--tight .th-approval-dock-body {
+  padding-bottom: 0;
+}
+
+.th-approval-dock--tight .th-approval-options {
+  order: -1;
+  gap: var(--th-space-1);
+}
+
+.th-approval-dock--tight .th-approval-options .th-btn {
+  min-height: 0;
+  padding: 0 var(--th-space-2);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-dock--tight .th-approval-message {
+  margin-bottom: var(--th-space-1);
+  font-size: var(--th-type-micro-size);
 }
 
 /* Bounded scrollport: a long message or many options scroll internally

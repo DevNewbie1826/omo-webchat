@@ -26,13 +26,31 @@ export interface ApprovalDockProps {
 const COUNTDOWN_TICK_MS = 1_000;
 
 /** Expanded body below this many CSS pixels would render as an unreadable
- *  sliver: the dock falls back to its collapsed one-line summary instead
- *  (the goal shelf's GOAL_PANEL_FLOOR_PX pattern) until the column has room
- *  again. */
+ *  sliver: the dock opens in its collapsed one-line summary instead (the
+ *  goal shelf's GOAL_PANEL_FLOOR_PX pattern) until the column has room
+ *  again. The summary's expand toggle stays operable even there — a pending
+ *  question must always be answerable. */
 const APPROVAL_BODY_FLOOR_PX = 48;
 
 /** Mirrors the `.th-approval-dock` max-height cap in approval-dock.css. */
 const APPROVAL_DOCK_COLUMN_RATIO = 0.6;
+
+/** Usable minimum of the tight density (explicit expansion under the floor):
+ *  header plus one complete option row plus the dock's borders. The clamp
+ *  never goes below this while expanded — a pending question always keeps a
+ *  visible, clickable box; the transcript reserve goes to zero first and the
+ *  composer is the only hard floor. */
+const APPROVAL_TIGHT_MIN_DOCK_PX = 32;
+
+/** The composer is the focus handoff target for every dock exit (answered,
+ *  cancelled, collapsed, floor-collapsed). It lives inside `.th-chat-input`;
+ *  a pane-wide `textarea` query would find the dock's own editor first. */
+function focusPaneComposer(section: HTMLElement | null): void {
+	section
+		?.closest(".th-chat-pane")
+		?.querySelector<HTMLElement>(".th-chat-input textarea")
+		?.focus();
+}
 
 export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const { t } = useT();
@@ -40,13 +58,23 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const sectionRef = useRef<HTMLElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
 	const [collapsed, setCollapsed] = useState(false);
-	const [columnClampPx, setColumnClampPx] = useState<number | null>(null);
+	// Explicit user expansion, keyed by request id: overrides the space floor
+	// so the toggle always works. A new request resets to the automatic
+	// presentation.
+	const [expandOverrideForId, setExpandOverrideForId] = useState<string | null>(null);
+	const [columnSpace, setColumnSpace] = useState<{
+		readonly clampPx: number | null;
+		readonly minDockPx: number;
+	}>({ clampPx: null, minDockPx: APPROVAL_BODY_FLOOR_PX });
 	const headerHeightRef = useRef(0);
 
 	// Measured clamp (the goal shelf's pattern): the column budgets the dock
 	// like any other fixed band, excluding the dock itself so the measurement
 	// cannot oscillate with the dock's own size. The transcript keeps its
-	// reserve and scrolls; the dock yields only below the readability floor.
+	// reserve and scrolls — but the reserve yields to the dock's minimum
+	// (header + borders + body floor) while a request is pending: the dock is
+	// transient and urgent, transcript history can scroll, and the composer
+	// band is the only hard floor.
 	useEffect(() => {
 		const section = sectionRef.current;
 		const column = section?.closest<HTMLElement>(".th-chat-main");
@@ -55,15 +83,33 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			const columnHeight = column.getBoundingClientRect().height;
 			// A hidden/unlaid-out column has no usable measurement yet.
 			if (columnHeight === 0) {
-				setColumnClampPx(null);
+				setColumnSpace((previous) =>
+					previous.clampPx === null ? previous : { ...previous, clampPx: null },
+				);
 				return;
 			}
-			const header = section.querySelector(".th-approval-dock-header");
-			if (header) headerHeightRef.current = header.getBoundingClientRect().height;
-			const budget = computeShelfAvailableSpace(column, section);
+			// The expanded header and the collapsed summary are the same
+			// one-line band; measure whichever is rendered so the floor holds
+			// in both states.
+			const band =
+				section.querySelector(".th-approval-dock-header") ??
+				section.querySelector(".th-approval-dock-summary");
+			if (band) headerHeightRef.current = band.getBoundingClientRect().height;
+			// The floor and the budget both price the whole dock box: the
+			// borders come out of the body, so they count against the minimum.
+			const style = getComputedStyle(section);
+			const borders =
+				(Number.parseFloat(style.borderTopWidth) || 0) +
+				(Number.parseFloat(style.borderBottomWidth) || 0);
+			const minDockPx = headerHeightRef.current + borders + APPROVAL_BODY_FLOOR_PX;
+			const budget = computeShelfAvailableSpace(column, section, { minSelfPx: minDockPx });
 			const cap = Math.round(columnHeight * APPROVAL_DOCK_COLUMN_RATIO);
-			const next = Math.min(budget, cap);
-			setColumnClampPx((previous) => (previous === next ? previous : next));
+			const clampPx = Math.min(budget, cap);
+			setColumnSpace((previous) =>
+				previous.clampPx === clampPx && previous.minDockPx === minDockPx
+					? previous
+					: { clampPx, minDockPx },
+			);
 		};
 		const observer = new ResizeObserver(measure);
 		const watch = (): void => {
@@ -87,14 +133,32 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		};
 	}, []);
 
-	// Expansion floor: clamped below a usable minimum (header plus one
-	// complete option row), show the summary bar only — never a sliver.
-	// `collapsed` keeps the user's intent, so the panel returns on its own
-	// when the column gains space again.
+	// Expansion floor: clamped below a usable minimum (header plus borders
+	// plus one complete option row), the dock opens as the summary bar only —
+	// never a sliver. `collapsed` keeps the user's intent, so the panel
+	// returns on its own when the column gains space again; an explicit
+	// toggle click overrides the floor, because a pending question must
+	// always be answerable.
 	const floorCollapsed =
-		columnClampPx !== null &&
-		columnClampPx < headerHeightRef.current + APPROVAL_BODY_FLOOR_PX;
-	const expanded = !collapsed && !floorCollapsed;
+		columnSpace.clampPx !== null && columnSpace.clampPx < columnSpace.minDockPx;
+	const expanded =
+		!collapsed && (!floorCollapsed || expandOverrideForId === request.id);
+	// An explicit expansion under the floor trades padding for answerability:
+	// the tight density sheds vertical chrome so the header plus one complete
+	// clickable option row fit whatever the column can give.
+	const tight = expanded && floorCollapsed;
+
+	// The dock must never render a zero-height or unusable box. When the
+	// measured clamp is below the tight density's usable minimum, the tight
+	// density's own floor (header + one complete option row + borders)
+	// becomes the effective minimum.
+	const effectiveMinDockPx = tight
+		? APPROVAL_TIGHT_MIN_DOCK_PX
+		: columnSpace.minDockPx;
+	const effectiveClampPx =
+		columnSpace.clampPx !== null
+			? Math.max(columnSpace.clampPx, effectiveMinDockPx)
+			: null;
 
 	// Countdown target: an absolute deadline, or remainingMs anchored to the
 	// moment this request arrived. Re-anchored when a new request id shows up.
@@ -117,36 +181,56 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const countdownSeconds =
 		targetMs === undefined ? undefined : Math.max(0, Math.ceil((targetMs - nowMs) / 1000));
 
-	// Move focus to the primary control so a keyboard user can answer at once,
-	// both on arrival and when a collapsed panel expands again.
+	// Focus discipline: only a newly arrived request or an explicit user
+	// expansion (clicking or keying the expand control) moves focus to the
+	// primary control. A space-driven expansion — the column grew, the floor
+	// stopped forcing the summary — leaves existing focus untouched.
 	// No trap: Tab leaves the panel freely.
+	const arrivalFocusConsumedForRef = useRef<string | null>(null);
+	const userExpandPendingRef = useRef(false);
+	useEffect(() => {
+		if (!expanded) {
+			// A request that arrives collapsed is consumed: its later
+			// space-driven expansion must not steal focus.
+			arrivalFocusConsumedForRef.current = request.id;
+			return;
+		}
+		const userRequested = userExpandPendingRef.current;
+		userExpandPendingRef.current = false;
+		const arrival = arrivalFocusConsumedForRef.current !== request.id;
+		arrivalFocusConsumedForRef.current = request.id;
+		if (!userRequested && !arrival) return;
+		sectionRef.current
+			?.querySelector<HTMLElement>("[data-approval-primary]")
+			?.focus();
+	}, [expanded, request.id]);
+
+	// Keep the focused control fully inside the clamped body — after the
+	// first measurement and after every re-measure (a resize changes the
+	// clamp and with it the visible slice), not only on expansion.
 	useEffect(() => {
 		if (!expanded) return;
-		const primary =
-			sectionRef.current?.querySelector<HTMLElement>("[data-approval-primary]");
-		if (!primary) return;
-		primary.focus();
-		// A height-clamped body opens at its scroll top; a long message would
-		// leave the focused primary control below the visible slice.
-		const body = sectionRef.current?.querySelector<HTMLElement>(
-			".th-approval-dock-body",
-		);
-		if (!body) return;
+		const section = sectionRef.current;
+		const body = section?.querySelector<HTMLElement>(".th-approval-dock-body");
+		if (!section || !body) return;
+		const active = document.activeElement;
+		const target =
+			active instanceof HTMLElement && body.contains(active)
+				? active
+				: section.querySelector<HTMLElement>("[data-approval-primary]");
+		if (!target) return;
 		const bodyRect = body.getBoundingClientRect();
-		const rect = primary.getBoundingClientRect();
+		const rect = target.getBoundingClientRect();
 		if (rect.bottom > bodyRect.bottom) body.scrollTop += rect.bottom - bodyRect.bottom;
-		else if (rect.top < bodyRect.top) body.scrollTop -= bodyRect.top - rect.top;
-	}, [request.id, expanded]);
+		if (rect.top < bodyRect.top) body.scrollTop -= bodyRect.top - rect.top;
+	}, [expanded, columnSpace.clampPx, request.id]);
 
 	// A floor collapse unmounts the body without a user gesture; focus inside
 	// it drops to <body>. Hand it to the composer rather than losing it.
 	useEffect(() => {
 		if (!floorCollapsed) return;
 		if (document.activeElement !== document.body) return;
-		sectionRef.current
-			?.closest(".th-chat-pane")
-			?.querySelector<HTMLElement>("textarea")
-			?.focus();
+		focusPaneComposer(sectionRef.current);
 	}, [floorCollapsed]);
 
 	// A new request id starts a fresh draft; the previous request's typed text
@@ -158,10 +242,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// Collapsing hands focus back to the pane's composer textarea when present.
 	useEffect(() => {
 		if (!collapsed) return;
-		sectionRef.current
-			?.closest(".th-chat-pane")
-			?.querySelector<HTMLElement>("textarea")
-			?.focus();
+		focusPaneComposer(sectionRef.current);
 	}, [collapsed]);
 
 	// Unmounting (answered, or resolved by another client) must not drop focus
@@ -173,10 +254,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		const section = sectionRef.current;
 		return () => {
 			if (!section?.contains(document.activeElement)) return;
-			section
-				.closest(".th-chat-pane")
-				?.querySelector<HTMLElement>("textarea")
-				?.focus();
+			focusPaneComposer(section);
 		};
 	}, []);
 
@@ -194,7 +272,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		<section
 			ref={sectionRef}
 			role="region"
-			className="th-approval-dock"
+			className={tight ? "th-approval-dock th-approval-dock--tight" : "th-approval-dock"}
 			aria-labelledby={titleId}
 			// While the clamp is measured, hold the yield with flex-shrink: 0 so a
 			// long transcript's deficit lands on the transcript alone, and bound
@@ -203,8 +281,8 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			// is a fixed band: never let the column squeeze it into a sliver.
 			style={
 				expanded
-					? columnClampPx !== null
-						? { flexShrink: 0, maxHeight: `${Math.max(Math.round(columnClampPx), 0)}px` }
+					? effectiveClampPx !== null
+						? { flexShrink: 0, maxHeight: `${Math.max(Math.round(effectiveClampPx), 0)}px` }
 						: undefined
 					: { flexShrink: 0 }
 			}
@@ -223,26 +301,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 						{t("approval.pending")}
 					</span>
 					{countdown}
-					{/* While the floor forces the collapse, expanding cannot work:
-					    say so instead of inviting a click that changes nothing.
-					    aria-disabled (not `disabled`) keeps the control in the tab
-					    order so keyboard users can discover it and its reason. */}
+					{/* Always operable, even under the space floor: a pending
+					    question must always be answerable. An explicit click
+					    overrides the floor and moves focus to the primary
+					    control; space-driven re-expansion never does. */}
 					<button
 						type="button"
-						className={
-							floorCollapsed
-								? "th-approval-dock-toggle th-approval-dock-toggle--disabled"
-								: "th-approval-dock-toggle"
-						}
-						aria-label={
-							floorCollapsed
-								? `${t("approval.expand")} — ${t("approval.noSpace")}`
-								: t("approval.expand")
-						}
-						aria-disabled={floorCollapsed || undefined}
-						title={floorCollapsed ? t("approval.noSpace") : undefined}
+						className="th-approval-dock-toggle"
+						aria-label={t("approval.expand")}
 						onClick={() => {
-							if (floorCollapsed) return;
+							userExpandPendingRef.current = true;
+							setExpandOverrideForId(request.id);
 							setCollapsed(false);
 						}}
 					>

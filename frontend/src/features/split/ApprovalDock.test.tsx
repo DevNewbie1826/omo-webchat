@@ -206,13 +206,26 @@ describe("ApprovalDock inline panel", () => {
 		expect(document.activeElement).toBe(last);
 	});
 
-	it("restores focus to the pane composer textarea when unmounted while focused", async () => {
+	// Production layout: the dock band comes first in the pane, the composer
+	// after it, and the composer textarea lives inside the .th-chat-input
+	// wrapper. A fixture that places a bare textarea before the dock hides
+	// focus restoration bugs by making "the first textarea in the pane" the
+	// right answer for the wrong reason.
+	function mountPaneWithComposer(): { pane: HTMLElement; composer: HTMLTextAreaElement } {
 		const pane = document.createElement("div");
 		pane.className = "th-chat-pane";
-		const composer = document.createElement("textarea");
-		pane.appendChild(composer);
 		pane.appendChild(container);
+		const composerWrap = document.createElement("div");
+		composerWrap.className = "th-chat-input";
+		const composer = document.createElement("textarea");
+		composerWrap.appendChild(composer);
+		pane.appendChild(composerWrap);
 		document.body.appendChild(pane);
+		return { pane, composer };
+	}
+
+	it("restores focus to the composer inside .th-chat-input when unmounted while focused", async () => {
+		const { pane, composer } = mountPaneWithComposer();
 
 		renderDock({ id: "confirm-1", method: "confirm" });
 		expect(document.activeElement?.closest(".th-approval-dock")).not.toBeNull();
@@ -224,6 +237,23 @@ describe("ApprovalDock inline panel", () => {
 		pane.remove();
 
 		// Re-create for afterEach's unmount.
+		root = createRoot(container);
+	});
+
+	it("restores focus to the composer, not the dock's own editor, when an editor request unmounts", async () => {
+		const { pane, composer } = mountPaneWithComposer();
+
+		renderDock({ id: "editor-1", method: "editor", prefill: "draft" });
+		const editor = container.querySelector("textarea");
+		expect(editor).not.toBeNull();
+		expect(document.activeElement).toBe(editor);
+
+		await act(async () => {
+			root.unmount();
+		});
+		expect(document.activeElement).toBe(composer);
+		pane.remove();
+
 		root = createRoot(container);
 	});
 
@@ -245,13 +275,8 @@ describe("ApprovalDock inline panel", () => {
 		root = createRoot(container);
 	});
 
-	it("returns focus to the pane composer textarea when collapsing", () => {
-		const pane = document.createElement("div");
-		pane.className = "th-chat-pane";
-		const composer = document.createElement("textarea");
-		pane.appendChild(composer);
-		pane.appendChild(container);
-		document.body.appendChild(pane);
+	it("returns focus to the composer inside .th-chat-input when collapsing", () => {
+		const { pane, composer } = mountPaneWithComposer();
 
 		renderDock({ id: "confirm-1", method: "confirm" });
 		expect(document.activeElement).not.toBe(composer);
@@ -500,12 +525,27 @@ describe("ApprovalDock inline panel", () => {
 			return { column };
 		}
 
+		function mockRect(element: Element, top: number, height: number): void {
+			vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+				height,
+				width: 600,
+				top,
+				bottom: top + height,
+				left: 0,
+				right: 600,
+				x: 0,
+				y: top,
+				toJSON: () => ({}),
+			} as DOMRect);
+		}
+
 		it("falls back to the collapsed summary when the column cannot fit the header plus one option row", () => {
-			// Budget: 300 − 24 controls − 100 composer − 60 dock − 120 transcript
-			// reserve = −4 — below the 48px body floor.
+			// Even with the transcript reserve fully yielded, a 160px column
+			// leaves 160 − 24 controls − 100 composer = 36 — below the 48px
+			// body floor.
 			renderDockInColumn(
 				{ id: "select-1", method: "select", title: "Proceed?", options: ["Allow", "Block"] },
-				{ column: 300, dock: 60 },
+				{ column: 160, dock: 0 },
 			);
 
 			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
@@ -521,34 +561,44 @@ describe("ApprovalDock inline panel", () => {
 			expect(dock()?.style.flexShrink).toBe("0");
 		});
 
-		it("marks the expand toggle unavailable while the floor forces collapse, so it never invites a click that cannot work", () => {
+		it("always answers: a toggle click expands even under the floor, and an option responds", () => {
+			const onRespond = vi.fn();
 			renderDockInColumn(
 				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
-				{ column: 300, dock: 60 },
+				{ column: 160, dock: 0 },
+				onRespond,
 			);
 			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
 
-			// Keyboard-reachable (not `disabled`, which would drop it from the tab
-			// order) but announced as unavailable, with the reason in its name.
+			// A pending question is always answerable: the toggle is never
+			// inert, no matter how short the column is.
 			const expand = container.querySelector<HTMLButtonElement>(
 				".th-approval-dock-summary .th-approval-dock-toggle",
 			);
 			expect(expand).not.toBeNull();
-			expect(expand?.getAttribute("aria-disabled")).toBe("true");
-			expect(expand?.getAttribute("aria-label")).toContain("approval.noSpace");
+			expect(expand?.getAttribute("aria-disabled")).toBeNull();
+			expect(expand?.getAttribute("aria-label")).toBe("approval.expand");
 
-			// Clicking it changes nothing: no expand, no state churn.
 			act(() => expand?.click());
-			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
-			expect(
-				container.querySelector(".th-approval-dock-summary .th-approval-dock-toggle"),
-			).not.toBeNull();
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+			// Clamped to the measured budget (160 − 24 − 100 = 36, reserve fully
+			// yielded) with the content scrolling inside the body, rendered in
+			// the tight density that trades padding for answerability.
+			expect(dock()?.style.maxHeight).toBe("36px");
+			expect(dock()?.className).toContain("th-approval-dock--tight");
+
+			const allow = Array.from(
+				container.querySelectorAll<HTMLButtonElement>(".th-approval-options button"),
+			).find((button) => button.textContent === "Allow");
+			act(() => allow?.click());
+			expect(onRespond).toHaveBeenCalledTimes(1);
+			expect(onRespond).toHaveBeenCalledWith({ value: "Allow" });
 		});
 
 		it("keeps the expand toggle operable in a manual collapse with space available", () => {
 			renderDockInColumn(
 				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
-				{ column: 800, dock: 60 },
+				{ column: 800, dock: 0 },
 			);
 			const collapse = container.querySelector<HTMLButtonElement>(
 				'button[aria-label="approval.collapse"]',
@@ -563,31 +613,24 @@ describe("ApprovalDock inline panel", () => {
 		});
 
 		it("clamps the expanded dock to the measured budget and refuses to shrink below it", () => {
-			// Budget: 500 − 24 − 100 − 200 − 120 = 56 — above the 48px floor.
+			// Budget: 500 − 24 controls − 100 composer − 120 transcript reserve
+			// = 256 (the reserve holds: the dock minimum already fits).
 			renderDockInColumn(
 				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
-				{ column: 500, dock: 200 },
+				{ column: 500, dock: 0 },
 			);
 
 			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
 			const section = dock();
 			expect(section?.style.flexShrink).toBe("0");
-			expect(section?.style.maxHeight).toBe("56px");
+			expect(section?.style.maxHeight).toBe("256px");
 		});
 
-		it("keeps expand intent under the floor and re-expands on its own when space returns", () => {
+		it("re-expands on its own when space returns after a floor collapse", () => {
 			const { column } = renderDockInColumn(
 				{ id: "select-1", method: "select", options: ["Allow"] },
-				{ column: 300, dock: 60 },
+				{ column: 160, dock: 0 },
 			);
-			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
-
-			// Asking to expand under the floor is a guarded no-op: the toggle is
-			// aria-disabled there, and `collapsed` is never set.
-			const expand = container.querySelector<HTMLButtonElement>(
-				".th-approval-dock-summary .th-approval-dock-toggle",
-			);
-			act(() => expand?.click());
 			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
 
 			// Space returns: the panel comes back without another gesture.
@@ -599,7 +642,7 @@ describe("ApprovalDock inline panel", () => {
 		it("keeps a manual collapse collapsed when the column gains space", () => {
 			const { column } = renderDockInColumn(
 				{ id: "select-1", method: "select", options: ["Allow"] },
-				{ column: 800, dock: 60 },
+				{ column: 800, dock: 0 },
 			);
 			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
 
@@ -617,10 +660,108 @@ describe("ApprovalDock inline panel", () => {
 		});
 
 		it("does not move focus into an unrendered body when the floor collapses the dock", () => {
-			renderDockInColumn({ id: "confirm-1", method: "confirm" }, { column: 300, dock: 60 });
+			renderDockInColumn({ id: "confirm-1", method: "confirm" }, { column: 160, dock: 0 });
 
 			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
 			expect(document.activeElement?.closest(".th-approval-dock-body")).toBeNull();
 		});
+
+		it("leaves outside focus untouched when space-driven expansion opens the panel", () => {
+			const { column } = renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow"] },
+				{ column: 160, dock: 0 },
+			);
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			const outside = document.createElement("button");
+			outside.type = "button";
+			document.body.appendChild(outside);
+			outside.focus();
+			expect(document.activeElement).toBe(outside);
+
+			// The column grows; the dock expands by itself. No user gesture, so
+			// no focus move.
+			mockHeight(column, 800);
+			triggerResize();
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+			expect(document.activeElement).toBe(outside);
+			outside.remove();
+		});
+
+		it("re-scrolls the focused control fully into view after the measured clamp shrinks the body", () => {
+			const { column } = renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 800, dock: 0 },
+			);
+			const body = container.querySelector<HTMLElement>(".th-approval-dock-body");
+			const primary = container.querySelector<HTMLElement>("[data-approval-primary]");
+			expect(body).not.toBeNull();
+			expect(document.activeElement).toBe(primary);
+
+			// After the shrink the focused row hangs 30px below the visible
+			// body slice; the re-measure must scroll it fully inside.
+			mockRect(body as Element, 100, 100);
+			mockRect(primary as Element, 190, 40);
+			mockHeight(column, 400);
+			triggerResize();
+			expect(body?.scrollTop).toBe(30);
+
+			// And again when a later re-measure leaves it clipped above.
+			mockRect(primary as Element, 80, 20);
+			mockHeight(column, 420);
+			triggerResize();
+			expect(body?.scrollTop).toBe(10);
+		});
+
+		it("counts the dock's own borders in the expansion floor", () => {
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow"] },
+				{ column: 172, dock: 0 },
+			);
+			// 172 − 24 − 100 = 48 for the dock: exactly the body floor with a
+			// zero-height header and no borders, so borderless math expands.
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+
+			const section = dock();
+			expect(section).not.toBeNull();
+			(section as HTMLElement).style.borderTopWidth = "1px";
+			(section as HTMLElement).style.borderBottomWidth = "1px";
+			triggerResize();
+			// With 2px of borders the body would be 46 — below the floor.
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+		});
+
+		it.each([
+			["zero", 124], // 124 − 24 controls − 100 composer = 0
+			["a few pixels of", 129], // budget 5
+		])(
+			"never renders an unusable dock after an explicit expand with %s budget",
+			(_label, columnHeight) => {
+				renderDockInColumn(
+					{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+					{ column: columnHeight, dock: 0 },
+				);
+				expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+				const expand = container.querySelector<HTMLButtonElement>(
+					".th-approval-dock-summary .th-approval-dock-toggle",
+				);
+				act(() => expand?.click());
+
+				const section = dock();
+				expect(section).not.toBeNull();
+				// The tight density is what keeps the box usable here.
+				expect(section?.className).toContain("th-approval-dock--tight");
+				expect(
+					container.querySelector(".th-approval-dock-body"),
+				).not.toBeNull();
+				// The clamp can never produce an unusable panel: never "0px",
+				// never below the tight usable minimum (header + one complete
+				// option row + borders = 32px).
+				const maxHeight = section?.style.maxHeight;
+				expect(maxHeight).not.toBe("0px");
+				expect(Number.parseInt(maxHeight ?? "0", 10)).toBeGreaterThanOrEqual(32);
+			},
+		);
 	});
 });

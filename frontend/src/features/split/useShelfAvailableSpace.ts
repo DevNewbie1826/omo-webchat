@@ -12,10 +12,22 @@ function outerHeight(element: Element): number {
   return element.getBoundingClientRect().height + verticalMargins(element);
 }
 
+interface ShelfSpaceOptions {
+  /** Minimum height the measured panel needs to stay usable. The yieldable
+   *  bands — the transcript reserve and the shelf auxiliary rows, which the
+   *  scrolling content shell can hide in a deficit — give way to it: a
+   *  pending panel is transient and urgent while transcript history can
+   *  scroll. The core fixed bands (composer included) are the only hard
+   *  floor. */
+  readonly minSelfPx?: number;
+}
+
 /** Both panel boxes are outputs, never fixed-band inputs: the band under
  *  measurement (selfPanel) is skipped, so its own size cannot move its own
- *  budget and the measurement cannot oscillate with the panel it clamps. */
-export function computeShelfAvailableSpace(column: HTMLElement, selfPanel?: Element | null): number {
+ *  budget and the measurement cannot oscillate with the panel it clamps. The
+ *  panel's own margins still come out of its budget — they consume column
+ *  height the transcript reserve must never pay for. */
+export function computeShelfAvailableSpace(column: HTMLElement, selfPanel?: Element | null, options?: ShelfSpaceOptions): number {
   let fixed = 0;
   const content = column.querySelector(":scope > .th-chat-main-content");
   const bands = [...column.children, ...(content?.children ?? [])];
@@ -25,11 +37,25 @@ export function computeShelfAvailableSpace(column: HTMLElement, selfPanel?: Elem
     if (child.querySelector(".th-goal-shelf, .th-activity-shelf")) continue;
     fixed += outerHeight(child);
   }
+  // Shelf auxiliary rows live inside the scrolling content shell: preserved
+  // when space permits, yieldable (they scroll away) when a panel minimum is
+  // at stake.
+  let aux = 0;
   for (const shelf of column.querySelectorAll(".th-goal-shelf, .th-activity-shelf")) {
-    fixed += verticalMargins(shelf);
-    for (const band of shelf.querySelectorAll(".th-activity-bar-row, .th-activity-tabs, .th-activity-resize")) fixed += outerHeight(band);
+    aux += verticalMargins(shelf);
+    for (const band of shelf.querySelectorAll(".th-activity-bar-row, .th-activity-tabs, .th-activity-resize")) aux += outerHeight(band);
   }
-  return column.getBoundingClientRect().height - fixed - TRANSCRIPT_MIN_BAND_PX;
+  const selfMargins = selfPanel ? verticalMargins(selfPanel) : 0;
+  const height = column.getBoundingClientRect().height;
+  if (options?.minSelfPx === undefined) {
+    return height - fixed - aux - selfMargins - TRANSCRIPT_MIN_BAND_PX;
+  }
+  const available = height - fixed - selfMargins;
+  const reserve = Math.min(
+    TRANSCRIPT_MIN_BAND_PX + aux,
+    Math.max(0, available - options.minSelfPx),
+  );
+  return available - reserve;
 }
 
 /** Deterministic goal-first allocation, retaining one usable activity row. */

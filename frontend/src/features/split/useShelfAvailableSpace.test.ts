@@ -81,6 +81,41 @@ describe("computeShelfAvailableSpace", () => {
     expect(computeShelfAvailableSpace(column, null)).toBe(800 - 24 - 100 - TRANSCRIPT_MIN_BAND_PX);
   });
 
+	it("counts the measured panel's own margins against its budget", () => {
+		const column = measured("th-chat-main", 800);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60, "4px");
+		dock.style.marginBottom = "2px";
+		column.append(dock, composer);
+		document.body.appendChild(column);
+
+		// 800 − 100 composer − 120 reserve − 6 dock margins: the panel's own
+		// gutters come out of its budget, never out of the transcript reserve.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(574);
+	});
+
+	it("yields the transcript reserve to the measured panel's minimum when the column is tight", () => {
+		const column = measured("th-chat-main", 300);
+		const controls = measured("th-chat-controls", 24);
+		const composer = measured("th-chat-input", 100);
+		const dock = measured("th-approval-dock", 60);
+		column.append(controls, dock, composer);
+		document.body.appendChild(column);
+
+		// Without a minimum the full reserve holds: 300 − 24 − 100 − 120 = 56.
+		expect(computeShelfAvailableSpace(column, dock)).toBe(56);
+		// A 74px panel minimum (header + borders + body floor) yields the
+		// reserve down to what is left: 300 − 24 − 100 − 102 = 74.
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(74);
+		// Below the minimum the reserve is gone entirely and the panel takes
+		// what remains — the composer band is the only hard floor.
+		mockHeight(column, 160);
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(36);
+		// Space permits again: the reserve is intact — 800 − 24 − 100 − 120.
+		mockHeight(column, 800);
+		expect(computeShelfAvailableSpace(column, dock, { minSelfPx: 74 })).toBe(556);
+	});
+
 	it("excludes the panel under measurement from the fixed bands", () => {
 		const column = measured("th-chat-main", 800);
 		const composer = measured("th-chat-input", 100);
