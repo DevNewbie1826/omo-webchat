@@ -4,6 +4,7 @@ import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
 import type { ChatDraft } from "./chatSessionTypes";
+import type { ApprovalResponse } from "./ApprovalDock";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
@@ -335,22 +336,27 @@ export function useChatSession(
     return true;
   };
 
-  const respondApproval = (response: { value?: string; confirmed?: boolean; cancelled?: boolean }): boolean => {
-    const request = frameState.pendingApproval;
-    if (!request) return false;
+  const respondApproval = (response: ApprovalResponse): boolean => {
+    const approval = frameState.pendingApproval;
+    const question = frameState.pendingQuestion;
+    if (!approval && !question) return false;
     const requestId = nextRequestId();
     if (!frameState.armControl(
       requestId,
       "extension_ui_response",
-      () => frameState.setPendingApproval(request),
+      () => {
+        if (approval) frameState.setPendingApproval(approval);
+        if (question) frameState.setPendingQuestion(question);
+      },
       () => undefined,
     )) return false;
-    frameState.setPendingApproval(null);
+    if (approval) frameState.setPendingApproval(null);
+    if (question) frameState.setPendingQuestion(null);
     if (!sendControl({
       type: "approval.respond",
       sessionId: session.id,
       requestId,
-      id: request.id,
+      id: (approval ?? question)?.id ?? "",
       ...response,
     }, "Failed to send approval response.")) {
       frameState.rejectControl(requestId);
@@ -385,6 +391,7 @@ export function useChatSession(
     models: frameState.models,
     currentModelKey: frameState.currentModelKey,
     pendingApproval: frameState.pendingApproval,
+    pendingQuestion: frameState.pendingQuestion,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
     failedDrafts: frameState.failedDrafts,

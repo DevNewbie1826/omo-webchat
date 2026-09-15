@@ -1,6 +1,8 @@
 import type { Translate } from "../../i18n";
 import type { ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
+import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
 import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import type { HistoryStatus, MissingOriginal } from "./useChatFrameState";
 import { applyActivityEvent, applyRunFlight, validatedActivityEvent } from "./activityState";
 import type { ActivityState } from "./activityTypes";
@@ -70,6 +72,7 @@ interface ChatFrameHandlerBindings {
   readonly setCommands: StateSetter<readonly CommandEntry[]>;
   readonly setModels: StateSetter<ModelsFrame["models"]>;
   readonly setPendingApproval: StateSetter<ApprovalRequest | null>;
+  readonly setPendingQuestion: StateSetter<ApprovalFrame | null>;
   readonly setRestoreVersion: StateSetter<number>;
   readonly setSendError: StateSetter<JsonObject | null>;
   readonly pushNotice: (kind: string, payload: JsonObject | null, at?: number, nid?: string) => void;
@@ -322,6 +325,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           // responding client's control id.
           if (frame.command === "extension_ui_response" && frame.id) {
             bindings.setPendingApproval((current) => current !== null && current.id === frame.id ? null : current);
+            bindings.setPendingQuestion((current) => current !== null && current.id === frame.id ? null : current);
           }
           if (frame.requestId) {
             bindings.controls.ledger.commit(frame.requestId);
@@ -397,6 +401,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           clearLiveSurfaces();
           bindings.setIsCompacting(false);
           bindings.setPendingApproval(null);
+          bindings.setPendingQuestion(null);
           bindings.setError("");
           return;
         }
@@ -451,7 +456,34 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         return;
       }
       case "approval":
-        bindings.setPendingApproval(chatState.approvalRequestOf(frame));
+        // Safety net: an unrecognised method or shape lands in the dock as a
+        // minimal fallback entry (method "fallback") instead of vanishing.
+        if (isFallbackApprovalFrame(frame)) {
+          bindings.setPendingApproval({
+            id: frame.id,
+            method: "fallback",
+            ...(frame.title !== undefined ? { title: frame.title } : {}),
+            ...(frame.message !== undefined ? { message: frame.message } : {}),
+            ...(frame.prefill !== undefined ? { prefill: frame.prefill } : {}),
+            ...(frame.placeholder !== undefined ? { placeholder: frame.placeholder } : {}),
+            ...(frame.deadlineAtMs !== undefined ? { deadlineAtMs: frame.deadlineAtMs } : {}),
+            ...(frame.remainingMs !== undefined ? { remainingMs: frame.remainingMs } : {}),
+          });
+          return;
+        }
+        switch (frame.method) {
+          case "question":
+            bindings.setPendingQuestion(frame);
+            return;
+          case "select":
+          case "confirm":
+          case "input":
+          case "editor":
+            break;
+          default:
+            return frame satisfies never;
+        }
+        bindings.setPendingApproval(chatState.approvalRequestOf({ ...frame, method: frame.method }));
         return;
       case "commands":
         bindings.setCommands(frame.commands);

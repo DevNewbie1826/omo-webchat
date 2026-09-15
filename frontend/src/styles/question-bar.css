@@ -1,0 +1,62 @@
+/* Non-blocking question bar: a single-line band directly above the composer,
+   laid out like the dock (same width and gutters as .th-chat-controls) but
+   never expanded into a panel — the composer keeps its band and its focus.
+
+   Overflow policy (chosen over wrapping chips or a scrollable row): the
+   question text flexes and truncates with an ellipsis while the option chips
+   keep their own space — the chips are the widget's affordance and must
+   never be clipped, and a one-line widget must not grow a second line or
+   hide options behind a scroll gesture. The text keeps a floor
+   (min-width: 4ch) so the pending question stays identifiable; only if the
+   chips genuinely cannot fit beside that floor does flex-wrap move them
+   onto a second line as the last resort — clipping is never the answer.
+   The chips are pushed to the row's far end (margin-left: auto) so the
+   desktop-width row reads as label-left / actions-right, not a run-on line
+   with a dead hole after the chips. */
+.th-question-bar {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--th-space-1) var(--th-space-2);
+  width: min(var(--th-chat-max), calc(100% - var(--th-chat-gutter) - var(--th-chat-gutter)));
+  margin: var(--th-space-1) auto 0;
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-surface);
+  font-size: var(--th-type-micro-size);
+}
+
+.th-question-bar-text {
+  flex: 1 1 auto;
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--th-text-dim);
+  font-weight: var(--th-weight-emphasize);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+.th-question-bar-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  margin-left: auto;
+}
+
+.th-question-bar-form {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  margin-left: auto;
+}
+
+.th-question-bar-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
