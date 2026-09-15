@@ -71,6 +71,9 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 			</span>
 			{!answering && options.length > 0 && (
 				<span className="th-question-bar-actions">
+					{/* Chips live in their own scroll lane so a narrow pane clips the
+					 *  lane — never the row; Send stays pinned outside it. */}
+					<span className="th-question-bar-options">
 					{options.map((option) =>
 						multiSelect ? (
 							<button
@@ -99,10 +102,11 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 							</button>
 						),
 					)}
+					</span>
 					{multiSelect && (
 						<button
 							type="button"
-							className="th-btn"
+							className="th-btn th-question-bar-send"
 							disabled={picked.length === 0}
 							onClick={() => answer({ selected: picked })}
 						>

@@ -2,17 +2,22 @@
    laid out like the dock (same width and gutters as .th-chat-controls) but
    never expanded into a panel — the composer keeps its band and its focus.
 
-   Overflow policy (chosen over wrapping chips or a scrollable row): the
-   question text flexes and truncates with an ellipsis while the option chips
-   keep their own space — the chips are the widget's affordance and must
-   never be clipped, and a one-line widget must not grow a second line or
-   hide options behind a scroll gesture. The text keeps a floor
-   (min-width: 4ch) so the pending question stays identifiable; only if the
-   chips genuinely cannot fit beside that floor does flex-wrap move them
-   onto a second line as the last resort — clipping is never the answer.
-   The chips are pushed to the row's far end (margin-left: auto) so the
-   desktop-width row reads as label-left / actions-right, not a run-on line
-   with a dead hole after the chips. */
+   Overflow policy: the question text flexes and truncates with an
+   ellipsis, and the actions row shrinks with it — the option chips scroll
+   horizontally inside their own lane (.th-question-bar-options) with a
+   visible scrollbar as the affordance, while Send stays pinned outside the
+   lane (flex: none) so it can never be the control that leaves the row.
+   Truncating the chips was rejected: the chip label IS the answer value
+   and an ellipsis would make distinct options indistinguishable. Wrapping
+   was rejected: a one-line widget must not grow a second line of chrome
+   above the composer. Clipping the whole row was measured to push Send
+   past the viewport on phone widths, which is the one outcome this policy
+   exists to prevent. The text keeps a floor (min-width: 4ch) so the
+   pending question stays identifiable; only if the pinned Send plus the
+   text floor genuinely cannot fit does flex-wrap move the actions onto a
+   second line as the last resort. The actions are pushed to the row's far
+   end (margin-left: auto) so the desktop-width row reads as label-left /
+   actions-right, not a run-on line with a dead hole after the chips. */
 .th-question-bar {
   flex: none;
   display: flex;
@@ -40,11 +45,47 @@
 }
 
 .th-question-bar-actions {
-  flex: none;
+  /* 0 1 auto + min-width: 0: the row may shrink below its content width;
+     the lane inside absorbs the overflow instead of the pane. */
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--th-space-1);
   margin-left: auto;
+}
+
+.th-question-bar-options {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--th-space-1);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--th-border) transparent;
+}
+
+/* Visible affordance that the lane scrolls (WebKit keeps scrollbars
+   overlay-thin by default; an explicit track makes the gesture discoverable). */
+.th-question-bar-options::-webkit-scrollbar {
+  height: var(--th-space-1);
+}
+
+.th-question-bar-options::-webkit-scrollbar-thumb {
+  background: var(--th-border);
+  border-radius: var(--th-radius-sm);
+}
+
+.th-question-bar-options .th-btn {
+  /* A chip is the answer value: it keeps its full label and never shrinks. */
+  flex: none;
+}
+
+.th-question-bar-send {
+  /* Pinned outside the scroll lane: Send must always stay visible. */
+  flex: none;
 }
 
 .th-question-bar-form {
