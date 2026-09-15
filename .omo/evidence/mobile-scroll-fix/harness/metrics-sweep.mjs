@@ -1,6 +1,6 @@
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeFile, rm, access } from 'node:fs/promises';
+import { writeFile, rm, access, readFile } from 'node:fs/promises';
 const harness = dirname(fileURLToPath(import.meta.url));
 const evidence = dirname(harness);
 const root = resolve(evidence, '../../..');
@@ -9,8 +9,13 @@ const { createServer } = await import(resolve(frontend, 'node_modules/vite/dist/
 const output = resolve(evidence, 'after');
 const cacheDir = resolve(evidence, 'metrics-vite-cache');
 const results = { recordedAt: new Date().toISOString(), widths: [390, 600], fontSizes: [10, 13, 17, 24], rows: [], pass: false, method: 'Real ChatTranscript and useAppConfig in Bun.WebView. Unmeasured row 40 is read from the real virtualizer; an identical mounted row supplies browser height. Settings completion uses effect/layout signals, not delays. Intrinsic glyph advance independently measured with Range.' };
-// Keep this in sync with chatRowEstimate.ts's SAMPLE.
-const SAMPLE = 'The transcript keeps a complete record of the discussion. Each message has a stable identity, and the browser measures its rendered height as it enters the visible region. This example includes enough detail to wrap naturally on a narrow mobile screen.';
+const sampleSource = resolve(frontend, 'src/features/split/chatRowEstimate.ts');
+const sampleSourceText = await readFile(sampleSource, 'utf8').catch((error) => {
+  throw new Error(`Unable to read estimator sample from ${sampleSource}: ${error.message}`, { cause: error });
+});
+const sampleMatch = sampleSourceText.match(/const SAMPLE\s*=\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')\s*;/s);
+if (!sampleMatch) throw new Error(`Unable to find SAMPLE in estimator source: ${sampleSource}`);
+const SAMPLE = JSON.parse(sampleMatch[1][0] === '"' ? sampleMatch[1] : JSON.stringify(sampleMatch[1].slice(1, -1)));
 let server;
 let view;
 const evaluate = (fn, ...args) => view.evaluate(`(${fn.toString()})(...${JSON.stringify(args)})`);
