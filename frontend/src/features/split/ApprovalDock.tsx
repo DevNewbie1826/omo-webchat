@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
 
 export interface ApprovalRequest {
@@ -74,6 +74,22 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			?.querySelector<HTMLElement>("textarea")
 			?.focus();
 	}, [collapsed]);
+
+	// Unmounting (answered, or resolved by another client) must not drop focus
+	// to document.body: if the dock still holds focus, hand it to the owning
+	// pane's composer. Focus elsewhere is left untouched — never steal it.
+	// Layout effect: its cleanup runs before the node leaves the DOM, while
+	// document.activeElement still points inside the dock.
+	useLayoutEffect(() => {
+		const section = sectionRef.current;
+		return () => {
+			if (!section?.contains(document.activeElement)) return;
+			section
+				.closest(".th-chat-pane")
+				?.querySelector<HTMLElement>("textarea")
+				?.focus();
+		};
+	}, []);
 
 	const submitValue = (value: string): void => onRespond({ value });
 	const submitConfirm = (confirmed: boolean): void => onRespond({ confirmed });
@@ -178,6 +194,13 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 									onClick={() => submitConfirm(false)}
 								>
 									{t("approval.deny")}
+								</button>
+								<button
+									type="button"
+									className="th-btn th-btn--ghost"
+									onClick={cancel}
+								>
+									{t("approval.cancel")}
 								</button>
 							</div>
 						)}

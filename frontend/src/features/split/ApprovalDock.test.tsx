@@ -92,12 +92,28 @@ describe("ApprovalDock inline panel", () => {
 		expect(buttons.map((button) => button.textContent)).toEqual([
 			"approval.confirm",
 			"approval.deny",
+			"approval.cancel",
 		]);
 
 		act(() => buttons[0]?.click());
 		expect(onRespond).toHaveBeenLastCalledWith({ confirmed: true });
 		act(() => buttons[1]?.click());
 		expect(onRespond).toHaveBeenLastCalledWith({ confirmed: false });
+	});
+
+	it("offers an explicit cancel on confirm requests, distinct from deny", () => {
+		const onRespond = vi.fn();
+		renderDock({ id: "confirm-1", method: "confirm" }, onRespond);
+
+		const cancel = Array.from(
+			container.querySelectorAll<HTMLButtonElement>(".th-approval-options button"),
+		).find((button) => button.textContent === "approval.cancel");
+		expect(cancel).not.toBeUndefined();
+		expect(cancel?.className).toContain("th-btn--ghost");
+
+		act(() => cancel?.click());
+		expect(onRespond).toHaveBeenCalledTimes(1);
+		expect(onRespond).toHaveBeenCalledWith({ cancelled: true });
 	});
 
 	it.each(["input", "editor"] as const)("submits the %s text value", (method) => {
@@ -157,12 +173,76 @@ describe("ApprovalDock inline panel", () => {
 		expect(container.querySelector(".th-approval-options")).not.toBeNull();
 	});
 
-	it("moves focus to the primary control on arrival without trapping Tab", () => {
+	it("moves focus to the primary control on arrival", () => {
 		renderDock({ id: "confirm-1", method: "confirm" });
 
 		const primary = container.querySelector("[data-approval-primary]");
 		expect(document.activeElement).toBe(primary);
 		expect(primary?.closest(".th-approval-dock")).not.toBeNull();
+	});
+
+	it("does not trap Tab on the last focusable control", () => {
+		renderDock({ id: "confirm-1", method: "confirm" });
+
+		const focusables = Array.from(
+			container.querySelectorAll<HTMLElement>(".th-approval-dock button"),
+		);
+		const last = focusables.at(-1);
+		expect(last).toBeDefined();
+		last?.focus();
+
+		const event = new KeyboardEvent("keydown", {
+			key: "Tab",
+			bubbles: true,
+			cancelable: true,
+		});
+		act(() => {
+			last?.dispatchEvent(event);
+		});
+
+		// The dock must not preventDefault the Tab (which would trap focus)
+		// and must not force focus back to the first control (no wrap).
+		expect(event.defaultPrevented).toBe(false);
+		expect(document.activeElement).toBe(last);
+	});
+
+	it("restores focus to the pane composer textarea when unmounted while focused", async () => {
+		const pane = document.createElement("div");
+		pane.className = "th-chat-pane";
+		const composer = document.createElement("textarea");
+		pane.appendChild(composer);
+		pane.appendChild(container);
+		document.body.appendChild(pane);
+
+		renderDock({ id: "confirm-1", method: "confirm" });
+		expect(document.activeElement?.closest(".th-approval-dock")).not.toBeNull();
+
+		await act(async () => {
+			root.unmount();
+		});
+		expect(document.activeElement).toBe(composer);
+		pane.remove();
+
+		// Re-create for afterEach's unmount.
+		root = createRoot(container);
+	});
+
+	it("does not steal focus on unmount when focus is outside the dock", async () => {
+		const outside = document.createElement("button");
+		outside.type = "button";
+		document.body.appendChild(outside);
+
+		renderDock({ id: "confirm-1", method: "confirm" });
+		outside.focus();
+		expect(document.activeElement).toBe(outside);
+
+		await act(async () => {
+			root.unmount();
+		});
+		expect(document.activeElement).toBe(outside);
+		outside.remove();
+
+		root = createRoot(container);
 	});
 
 	it("returns focus to the pane composer textarea when collapsing", () => {
