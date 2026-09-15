@@ -378,7 +378,7 @@ export function ChatTranscript({
   // (passive-effect destroys all flush before creates).
   const zoomOriginRef = useRef<{ element: HTMLElement; key: string } | null>(null);
   const openZoom = useCallback((src: string, trigger: HTMLElement) => {
-    zoomOriginRef.current = { element: trigger, key: trigger.dataset.zoomKey ?? "" };
+    zoomOriginRef.current = { element: trigger, key: trigger.dataset["zoomKey"] ?? "" };
     setZoomedSrc(src);
   }, []);
   const closeZoom = useCallback(() => {
@@ -394,7 +394,7 @@ export function ChatTranscript({
     const root = scrollRef.current;
     if (root === null || origin.key === "") return;
     const trigger = Array.from(root.querySelectorAll<HTMLElement>(".th-chat-image-button"))
-      .find((button) => button.dataset.zoomKey === origin.key);
+      .find((button) => button.dataset["zoomKey"] === origin.key);
     trigger?.focus();
   }, [zoomedSrc, scrollRef]);
   const renderMedia = (media: ToolResultImage, key: string, inlineZoomKey: string) => {
