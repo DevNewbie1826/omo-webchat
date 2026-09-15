@@ -57,7 +57,12 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
-	const [collapsed, setCollapsed] = useState(false);
+	// Manual collapse is keyed by request id: it is the user's intent about
+	// THAT request. A new request id must never inherit it (a collapsed
+	// one-line summary would hide the arrival), while a replay of the same
+	// id still honours it.
+	const [collapsedForId, setCollapsedForId] = useState<string | null>(null);
+	const collapsed = collapsedForId === request.id;
 	// Explicit user expansion, keyed by request id: overrides the space floor
 	// so the toggle always works. A new request resets to the automatic
 	// presentation.
@@ -88,13 +93,21 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 				);
 				return;
 			}
-			// The expanded header and the collapsed summary are the same
-			// one-line band; measure whichever is rendered so the floor holds
-			// in both states.
+			// The floor must be decided from a density-INDEPENDENT input: the
+			// tight density sheds header chrome, so measuring the header while
+			// tight feeds the density decision's own output back in as its
+			// input — the floor moves, the decision flips, and the loop
+			// oscillates every frame. Only measure in a fixed density (the
+			// normal header, or the collapsed summary, which is the same
+			// one-line band); the tight density never updates the floor. The
+			// first measurement always runs untight: `tight` requires a
+			// measured clamp, which starts null.
 			const band =
 				section.querySelector(".th-approval-dock-header") ??
 				section.querySelector(".th-approval-dock-summary");
-			if (band) headerHeightRef.current = band.getBoundingClientRect().height;
+			if (band && !section.classList.contains("th-approval-dock--tight")) {
+				headerHeightRef.current = band.getBoundingClientRect().height;
+			}
 			// The floor and the budget both price the whole dock box: the
 			// borders come out of the body, so they count against the minimum.
 			const style = getComputedStyle(section);
@@ -289,7 +302,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			onKeyDown={(event) => {
 				if (event.key !== "Escape" || collapsed) return;
 				event.preventDefault();
-				setCollapsed(true);
+				setCollapsedForId(request.id);
 			}}
 		>
 			{!expanded ? (
@@ -312,7 +325,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 						onClick={() => {
 							userExpandPendingRef.current = true;
 							setExpandOverrideForId(request.id);
-							setCollapsed(false);
+							setCollapsedForId(null);
 						}}
 					>
 						{t("approval.expand")}
@@ -329,7 +342,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 							type="button"
 							className="th-approval-dock-toggle"
 							aria-label={t("approval.collapse")}
-							onClick={() => setCollapsed(true)}
+							onClick={() => setCollapsedForId(request.id)}
 						>
 							{t("approval.collapse")}
 						</button>

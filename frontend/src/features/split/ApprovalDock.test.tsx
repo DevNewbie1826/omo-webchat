@@ -419,6 +419,53 @@ describe("ApprovalDock inline panel", () => {
 		expect(field()?.value).toBe("second");
 	});
 
+	function rerender(request: ApprovalRequest, onRespond = vi.fn()): void {
+		act(() => {
+			root.render(
+				<I18nContext.Provider value={i18n}>
+					<ApprovalDock request={request} onRespond={onRespond} />
+				</I18nContext.Provider>,
+			);
+		});
+	}
+
+	it("opens a NEW request expanded and focuses its primary control after the previous one was manually collapsed", () => {
+		renderDock({ id: "confirm-a", method: "confirm" });
+		act(() => {
+			dock()?.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+		});
+		expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+		expect(container.querySelector(".th-approval-dock-summary")).not.toBeNull();
+
+		// A's acknowledgement and B's arrival landing in the same React batch
+		// is exactly this: a single re-render with a different request id.
+		rerender({ id: "confirm-b", method: "confirm" });
+
+		// The manual collapse belonged to A; B must not inherit it.
+		expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+		expect(container.querySelector(".th-approval-dock-summary")).toBeNull();
+		const primary = container.querySelector("[data-approval-primary]");
+		expect(primary).not.toBeNull();
+		expect(document.activeElement).toBe(primary);
+	});
+
+	it("still honours the manual collapse when the SAME request id is replayed", () => {
+		renderDock({ id: "confirm-a", method: "confirm" });
+		act(() => {
+			dock()?.dispatchEvent(
+				new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+			);
+		});
+		expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+		// A replay/redelivery of the same id keeps the user's collapse intent.
+		rerender({ id: "confirm-a", method: "confirm" });
+		expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+		expect(container.querySelector(".th-approval-dock-summary")).not.toBeNull();
+	});
+
 	it("renders no countdown without deadline fields and still answers", () => {
 		const onRespond = vi.fn();
 		renderDock({ id: "confirm-1", method: "confirm" }, onRespond);
@@ -763,5 +810,86 @@ describe("ApprovalDock inline panel", () => {
 				expect(Number.parseInt(maxHeight ?? "0", 10)).toBeGreaterThanOrEqual(32);
 			},
 		);
+
+		it("converges to a stable density after an explicit expand under the floor (no sizing feedback loop)", () => {
+			// Chrome-measured geometry: the tight density sheds header chrome,
+			// so the tight header (20px) is shorter than the normal one (28px);
+			// the collapsed summary is the same one-line band as the normal
+			// header. If the floor measurement reads the tight header back in,
+			// the density decision alternates on every re-measure — an infinite
+			// relayout loop.
+			const rectFor = (height: number): DOMRect =>
+				({
+					height,
+					width: 600,
+					top: 0,
+					bottom: height,
+					left: 0,
+					right: 600,
+					x: 0,
+					y: 0,
+					toJSON: () => ({}),
+				}) as DOMRect;
+			// Instance spies on the rendered band (a prototype spy conflicts with
+			// the per-element mockHeight spies above): the tight header reads
+			// 20px, the normal header and the summary 28px, resolved live so a
+			// density flip changes the next measurement.
+			const attachBandSpies = (): void => {
+				for (const el of container.querySelectorAll<HTMLElement>(
+					".th-approval-dock-header, .th-approval-dock-summary",
+				)) {
+					vi.spyOn(el, "getBoundingClientRect").mockImplementation(() =>
+						rectFor(
+							el.classList.contains("th-approval-dock-summary")
+								? 28
+								: el.closest(".th-approval-dock--tight")
+									? 20
+									: 28,
+						),
+					);
+				}
+			};
+
+			// Column 194: budget = 194 − 24 controls − 100 composer = 70. The
+			// normal floor is 28 + 48 = 76 (> 70, floor-collapsed) while the
+			// tight floor would be 20 + 48 = 68 (≤ 70) — the exact band where a
+			// density-dependent measurement oscillates forever.
+			renderDockInColumn(
+				{ id: "select-1", method: "select", options: ["Allow", "Block"] },
+				{ column: 194, dock: 0 },
+			);
+			attachBandSpies();
+			triggerResize();
+			expect(container.querySelector(".th-approval-dock-body")).toBeNull();
+
+			const expand = container.querySelector<HTMLButtonElement>(
+				".th-approval-dock-summary .th-approval-dock-toggle",
+			);
+			act(() => expand?.click());
+			attachBandSpies();
+			expect(container.querySelector(".th-approval-dock-body")).not.toBeNull();
+
+			// Sample the geometry across many consecutive re-measures with no
+			// further input: every sample must be identical. A feedback loop
+			// alternates tight/normal (and with it the clamp) on every pass.
+			const sample = (): string => {
+				const section = dock();
+				return [
+					section?.className,
+					section?.style.maxHeight,
+					container.querySelector(".th-approval-dock-body") ? "body" : "no-body",
+				].join("|");
+			};
+			const samples: string[] = [];
+			for (let i = 0; i < 8; i += 1) {
+				attachBandSpies();
+				triggerResize();
+				samples.push(sample());
+			}
+			expect(new Set(samples).size).toBe(1);
+			// The stable state is the tight, answerable dock.
+			expect(samples[0]).toContain("th-approval-dock--tight");
+			expect(samples[0]).toContain("body");
+		});
 	});
 });

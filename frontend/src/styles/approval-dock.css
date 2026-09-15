@@ -81,9 +81,13 @@
    tokens and the body leads with the options (the message follows and
    scrolls), so the header plus one complete clickable option row fit
    whatever band the column can give — a pending question stays answerable. */
-.th-approval-dock--tight {
-  margin-top: 0;
-}
+/* The tight density must NOT change the dock's own box geometry that the
+   column measurement prices (margins, borders): computeShelfAvailableSpace
+   subtracts the dock's computed margins from its budget, so a density that
+   moved them would feed the density decision's own output back in as its
+   input — an every-frame relayout loop. Only interior chrome (header
+   padding, body padding, option gaps) sheds here; the header is likewise
+   never re-measured while tight (see ApprovalDock.tsx). */
 
 .th-approval-dock--tight .th-approval-dock-header {
   padding: 0 var(--th-space-2);
