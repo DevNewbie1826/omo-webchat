@@ -491,6 +491,17 @@
 
 
 /* Preserved image blocks (inline data or lazily fetched image_ref). */
+/* Zoom trigger: a real button wrapping the thumbnail so keyboard users get
+   Enter/Space activation for the zoom modal. */
+.th-chat-image-button {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+}
+
 .th-chat-image {
   display: block;
   max-width: 100%;

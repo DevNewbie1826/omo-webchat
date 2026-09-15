@@ -66,3 +66,17 @@
   height: auto;
   min-height: 44px;
 }
+
+/* Media variant: a wide photo viewer instead of the 480px dialog column. */
+.th-modal--media {
+  width: auto;
+  max-width: min(96vw, 1400px);
+}
+
+.th-modal--media .th-modal-media-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100dvh - 120px);
+  object-fit: contain;
+  border-radius: var(--th-radius);
+}

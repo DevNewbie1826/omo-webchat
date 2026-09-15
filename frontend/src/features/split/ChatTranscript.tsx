@@ -23,6 +23,7 @@ import { ToolCard, type ToolCardProps } from "./ToolCard";
 import { TranscriptNoticeRow } from "./TranscriptNoticeRow";
 import { SummaryNoticeBox } from "./SummaryNoticeBox";
 import { useChatScroll } from "./useChatScroll";
+import { ModalDialog } from "../../components/ModalDialog";
 import { estimateRowHeight, readRowMetrics } from "./chatRowEstimate";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -140,18 +141,23 @@ export function transcriptItemKeys(items: readonly TranscriptItem[]): readonly s
 }
 
 /** Inline image carried on a preserved block: bytes already inline as base64. */
-function InlineImage({ data, mimeType, alt }: {
+function InlineImage({ data, mimeType, alt, onZoom }: {
   readonly data: string;
   readonly mimeType: string | undefined;
   readonly alt: string;
+  readonly onZoom: (src: string) => void;
 }) {
+  const { t } = useT();
+  const src = `data:${mimeType ?? "image/png"};base64,${data}`;
   return (
-    <img
-      className="th-chat-image"
-      src={`data:${mimeType ?? "image/png"};base64,${data}`}
-      alt={alt}
-      loading="lazy"
-    />
+    <button type="button" className="th-chat-image-button" aria-label={t("chat.imageZoom")} onClick={() => onZoom(src)}>
+      <img
+        className="th-chat-image"
+        src={src}
+        alt={alt}
+        loading="lazy"
+      />
+    </button>
   );
 }
 
@@ -179,12 +185,13 @@ function ImageUnavailable({ mimeType, byteLength }: {
  * chatMedia.ts, so re-renders, disclosure toggles, and virtualized-row or full
  * remounts never refetch; a rejection stays cached too, leaving the fallback.
  */
-function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
+function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength, onZoom }: {
   readonly source: ChatMediaSource | undefined;
   readonly toolCallId: string;
   readonly contentIndex: number;
   readonly mimeType: string | undefined;
   readonly byteLength: number | undefined;
+  readonly onZoom: (src: string) => void;
 }) {
   const { t } = useT();
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -235,7 +242,11 @@ function RefImage({ source, toolCallId, contentIndex, mimeType, byteLength }: {
     };
   }, [wsId, chatId, toolCallId, contentIndex]);
   if (objectUrl !== null) {
-    return <img ref={observeElement} className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />;
+    return (
+      <button type="button" className="th-chat-image-button" aria-label={t("chat.imageZoom")} onClick={() => onZoom(objectUrl)}>
+        <img ref={observeElement} className="th-chat-image" src={objectUrl} alt={t("chat.image")} loading="lazy" />
+      </button>
+    );
   }
   if (failed) return <ImageUnavailable mimeType={mimeType} byteLength={byteLength} />;
   // Pending frame: reserves the thumbnail box until the image enters the
@@ -337,9 +348,13 @@ export function ChatTranscript({
       }}
     />
   );
+  // Zoomed image source for the media modal. Only the src is kept: the
+  // modal renders through a portal, so virtualized row unmounts never tear
+  // it down, and reusing the same data:/object URL never refetches.
+  const [zoomedSrc, setZoomedSrc] = useState<string | null>(null);
   const renderMedia = (media: ToolResultImage, key: string) => {
     if (media.data !== undefined) {
-      return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} />;
+      return <InlineImage key={key} data={media.data} mimeType={media.mimeType} alt={t("chat.image")} onZoom={setZoomedSrc} />;
     }
     if (media.ref !== undefined) {
       return (
@@ -350,6 +365,7 @@ export function ChatTranscript({
           contentIndex={media.ref.contentIndex}
           mimeType={media.mimeType}
           byteLength={media.byteLength}
+          onZoom={setZoomedSrc}
         />
       );
     }
@@ -380,6 +396,7 @@ export function ChatTranscript({
             data={block.data}
             mimeType={block.mimeType}
             alt={t("chat.image")}
+            onZoom={setZoomedSrc}
           />
         );
       }
@@ -392,6 +409,7 @@ export function ChatTranscript({
             contentIndex={block.ref.contentIndex}
             mimeType={block.mimeType}
             byteLength={block.byteLength}
+            onZoom={setZoomedSrc}
           />
         );
       }
@@ -741,6 +759,16 @@ export function ChatTranscript({
           ↓
         </button>
       )}
+      <ModalDialog
+        open={zoomedSrc !== null}
+        onClose={() => setZoomedSrc(null)}
+        variant="media"
+        closeLabel={t("common.close")}
+      >
+        {zoomedSrc !== null && (
+          <img className="th-modal-media-image" src={zoomedSrc} alt={t("chat.image")} />
+        )}
+      </ModalDialog>
     </div>
   );
 }
