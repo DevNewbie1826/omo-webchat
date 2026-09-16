@@ -31,6 +31,9 @@ const SESSION_FRAME_TYPES: ReadonlySet<string> = new Set(
 );
 
 export function parseChatServerFrame(msg: unknown): ChatServerFrame | null {
+  // Server-classified announcements must bypass both strict and fallback asks.
+  // Only explicit false suppresses a frame; legacy and unknown requests survive.
+  if (isRecord(msg) && msg["type"] === "approval" && msg["awaitsAnswer"] === false) return null;
   const generated = parseServerFrame(msg);
   // Established notice producers may omit `at`. Preserve that compatibility
   // by passing the original object to the notice seam; never fabricate a
