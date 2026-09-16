@@ -4,6 +4,7 @@ import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
 import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
+import { useVisualViewport } from "../../lib/useVisualViewport";
 
 export interface ApprovalRequest {
 	readonly id: string;
@@ -60,6 +61,11 @@ function focusPaneComposer(section: HTMLElement | null): void {
 		?.focus();
 }
 
+/** A visual viewport shrink this large is a covering keyboard (the boot
+ *  script's data-th-keyboard-open threshold); smaller wobbles are URL-bar
+ *  and pinch-zoom noise. */
+const KEYBOARD_SHRINK_PX = 100;
+
 export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const { t } = useT();
 	const titleId = useId();
@@ -72,6 +78,22 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// id still honours it.
 	const [collapsedForId, setCollapsedForId] = useState<string | null>(null);
 	const collapsed = collapsedForId === request.id;
+	// Keyboard awareness: the visual viewport is the only geometry that sees
+	// a covering keyboard (iOS never shrinks the layout viewport). The
+	// session's tallest observed viewport is the unobscured baseline; a
+	// shrink beyond KEYBOARD_SHRINK_PX is keyboard-like however it was caused
+	// (a genuinely smaller window has the same spatial problem).
+	const viewportBox = useVisualViewport();
+	const viewportBaselineRef = useRef<number>(Number.NaN);
+	if (viewportBox) {
+		viewportBaselineRef.current = Number.isNaN(viewportBaselineRef.current)
+			? Math.max(window.innerHeight, viewportBox.height)
+			: Math.max(viewportBaselineRef.current, viewportBox.height);
+	}
+	const keyboardLike =
+		viewportBox !== null &&
+		!Number.isNaN(viewportBaselineRef.current) &&
+		viewportBaselineRef.current - viewportBox.height > KEYBOARD_SHRINK_PX;
 	// Explicit user expansion, keyed by request id: overrides the space floor
 	// so the toggle always works. A new request resets to the automatic
 	// presentation.
@@ -289,6 +311,89 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		if (rect.top < bodyRect.top) body.scrollTop -= bodyRect.top - rect.top;
 	}, [expanded, columnSpace.clampPx, request.id]);
 
+	// Keyboard-aware height: the dock's bottom must stay inside the visual
+	// viewport even in the frame before the column's ResizeObserver re-clamps
+	// the measured budget. The cap is measured per viewport change (the dock's
+	// top is laid out by the bands above it), floored at the same usable
+	// minimum as the measured clamp — a pending question always keeps a
+	// visible, clickable box — and never applied without a measurement.
+	const [viewportCapPx, setViewportCapPx] = useState<number | null>(null);
+	useLayoutEffect(() => {
+		const section = sectionRef.current;
+		if (!expanded || !viewportBox || !section) {
+			setViewportCapPx((previous) => (previous === null ? previous : null));
+			return;
+		}
+		const viewportBottom = viewportBox.offsetTop + viewportBox.height;
+		const cap = Math.round(viewportBottom - section.getBoundingClientRect().top);
+		setViewportCapPx((previous) =>
+			previous !== null && Math.abs(previous - cap) < 1 ? previous : Math.max(cap, 0),
+		);
+	}, [expanded, viewportBox]);
+
+	// Keyboard-aware scroll discipline: while an input inside the body holds
+	// focus and the visual viewport changes (the keyboard opening or closing
+	// reshapes the visible slice), keep BOTH the focused input and the actions
+	// row (Next/Submit/Cancel) inside the visible slice. When the actions row
+	// is pinned (sticky under the keyboard), the input only has to clear the
+	// pinned row; when both cannot fit in flow, the focused input wins — it
+	// is the control being typed into.
+	useLayoutEffect(() => {
+		if (!expanded || !viewportBox) return;
+		const section = sectionRef.current;
+		const body = section?.querySelector<HTMLElement>(".th-approval-dock-body");
+		if (!body) return;
+		const active = document.activeElement;
+		if (!(active instanceof HTMLElement) || !body.contains(active)) return;
+		if (!active.matches("input, textarea")) return;
+		const actions = body.querySelector<HTMLElement>(".th-approval-question-actions");
+		const bodyRect = body.getBoundingClientRect();
+		const inputRect = active.getBoundingClientRect();
+		const actionsRect = actions?.getBoundingClientRect();
+		const pinned =
+			!!actions &&
+			actionsRect !== undefined &&
+			getComputedStyle(actions).position === "sticky" &&
+			actionsRect.bottom <= bodyRect.bottom + 0.5;
+		const viewBottom = pinned && actionsRect ? actionsRect.top : bodyRect.bottom;
+		const inputDelta =
+			inputRect.bottom > viewBottom
+				? inputRect.bottom - viewBottom
+				: inputRect.top < bodyRect.top
+					? inputRect.top - bodyRect.top
+					: 0;
+		let delta = inputDelta;
+		if (!pinned && actionsRect) {
+			const actionsDelta = Math.max(actionsRect.bottom - bodyRect.bottom, 0);
+			// Scrolling past (inputTop - bodyTop) would push the focused input
+			// above the slice: cap the actions pull-in there.
+			const cap = Math.max(inputRect.top - bodyRect.top, inputDelta);
+			delta = Math.max(inputDelta, Math.min(actionsDelta, cap));
+		}
+		if (delta !== 0) body.scrollTop += delta;
+	}, [expanded, viewportBox, columnSpace.clampPx]);
+
+	// scrollIntoView on focus: the browser's native focus scroll does not
+	// reserve the pinned footer's band; scroll-padding-bottom on the body
+	// does, so an explicit nearest-scroll keeps a focused field clear of the
+	// actions row it would otherwise be scrolled under.
+	useEffect(() => {
+		const section = sectionRef.current;
+		if (!expanded || !section) return;
+		const onFocusIn = (event: FocusEvent): void => {
+			const target = event.target;
+			if (
+				target instanceof HTMLElement &&
+				target.matches("input, textarea") &&
+				typeof target.scrollIntoView === "function"
+			) {
+				target.scrollIntoView({ block: "nearest" });
+			}
+		};
+		section.addEventListener("focusin", onFocusIn);
+		return () => section.removeEventListener("focusin", onFocusIn);
+	}, [expanded]);
+
 	// A floor collapse unmounts the body without a user gesture; focus inside
 	// it drops to <body>. Hand it to the composer rather than losing it.
 	useEffect(() => {
@@ -343,6 +448,22 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		</span>
 	);
 
+	// The expanded dock's inline ceiling: the measured column budget, further
+	// bounded by the visual viewport's remaining space below the dock's top
+	// when a viewport measurement exists. Both are floored at the same usable
+	// minimum — a pending question always keeps a visible, clickable box.
+	const viewportCeilingPx =
+		viewportCapPx === null ? null : Math.max(viewportCapPx, effectiveMinDockPx);
+	const expandedMaxPx =
+		effectiveClampPx !== null || viewportCeilingPx !== null
+			? Math.ceil(
+					Math.min(
+						effectiveClampPx ?? Number.POSITIVE_INFINITY,
+						viewportCeilingPx ?? Number.POSITIVE_INFINITY,
+					),
+				)
+			: null;
+
 	return (
 		<section
 			ref={sectionRef}
@@ -352,7 +473,9 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 					? "th-approval-dock th-approval-dock--tight"
 					: !expanded && expansionImpossible
 						? "th-approval-dock th-approval-dock--compact"
-						: "th-approval-dock"
+						: keyboardLike
+							? "th-approval-dock th-approval-dock--keyboard"
+							: "th-approval-dock"
 			}
 			aria-labelledby={titleId}
 			// While the clamp is measured, hold the yield with flex-shrink: 0 so a
@@ -362,13 +485,13 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			// is a fixed band: never let the column squeeze it into a sliver.
 			style={
 				expanded
-					? effectiveClampPx !== null
-						? // Round UP: rounding the fractional minimum down (74.34375 →
+				? expandedMaxPx !== null
+					? // Round UP: rounding the fractional minimum down (74.34375 →
 						  // 74) leaves the rendered body at 47.65625px — under the
 						  // 48px floor. Ceil guarantees body >= floor; the
 						  // sub-pixel difference comes out of the transcript
 						  // reserve, never out of the composer.
-							{ flexShrink: 0, maxHeight: `${Math.max(Math.ceil(effectiveClampPx), 0)}px` }
+							{ flexShrink: 0, maxHeight: `${Math.max(expandedMaxPx, 0)}px` }
 						: undefined
 					: // The collapsed summary is a fixed band (never squeezed);
 					  // when expansion is impossible the band is also bounded by
