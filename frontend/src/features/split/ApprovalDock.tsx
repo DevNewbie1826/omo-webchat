@@ -61,6 +61,15 @@ function focusPaneComposer(section: HTMLElement | null): void {
 		?.focus();
 }
 
+/** Deferred focus handoffs, keyed by request id. An unmount alone is NOT
+ *  evidence of an exit: the same request id can be re-presented in one
+ *  commit (a re-keyed wrapper, a pendingApproval -> pendingQuestion
+ *  reclassification), which unmounts and remounts the dock without the
+ *  user ever answering. A same-id mount cancels the pending handoff, so
+ *  focus is only handed to the composer when the request really went away
+ *  (an external resolution - local exits hand off synchronously). */
+const pendingFocusHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
+
 /** A visual viewport shrink this large is a covering keyboard (the boot
  *  script's data-th-keyboard-open threshold); smaller wobbles are URL-bar
  *  and pinch-zoom noise. */
@@ -78,6 +87,11 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// id still honours it.
 	const [collapsedForId, setCollapsedForId] = useState<string | null>(null);
 	const collapsed = collapsedForId === request.id;
+	// True from the moment a respond callback fires until the unmount cleanup
+	// consumes it: an exit the DOCK initiated hands focus to the composer
+	// synchronously (no task-queue hop that drops focus to <body> for a tick,
+	// which on iOS dismisses the keyboard mid-handoff).
+	const exitedRef = useRef(false);
 	// Keyboard awareness: the visual viewport is the only geometry that sees
 	// a covering keyboard (iOS never shrinks the layout viewport). The
 	// session's tallest observed viewport is the unobscured baseline; a
@@ -414,30 +428,80 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		focusPaneComposer(sectionRef.current);
 	}, [collapsed]);
 
-	// Unmounting (answered, or resolved by another client) must not drop focus
-	// to document.body: if the dock still holds focus, hand it to the owning
-	// pane's composer. Focus elsewhere is left untouched — never steal it.
-	// Layout effect: its cleanup runs before the node leaves the DOM, while
+	// Unmounting with focus inside must not drop focus to document.body — but
+	// an unmount alone is not an exit (see pendingFocusHandoffs). Layout
+	// effect: its cleanup runs before the node leaves the DOM, while
 	// document.activeElement still points inside the dock.
 	useLayoutEffect(() => {
 		const section = sectionRef.current;
+		// A same-id mount after this instance's unmount is a remount, not an
+		// exit: cancel any handoff a previous unmount of this request deferred.
+		const cancelPending = (): void => {
+			const timer = pendingFocusHandoffs.get(request.id);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				pendingFocusHandoffs.delete(request.id);
+			}
+		};
+		cancelPending();
 		return () => {
 			if (!section?.contains(document.activeElement)) return;
-			focusPaneComposer(section);
+			if (exitedRef.current) {
+				// Answered or cancelled from this dock: hand off synchronously.
+				focusPaneComposer(section);
+				return;
+			}
+			// No local exit — an external resolution would still deserve the
+			// composer, but a remount must not steal focus. Defer by one task:
+			// a same-id mount (same commit or later tick) cancels it.
+			const id = request.id;
+			const paneComposer =
+				section
+					?.closest(".th-chat-pane")
+					?.querySelector<HTMLElement>(".th-chat-input textarea") ?? null;
+			const stale = pendingFocusHandoffs.get(id);
+			if (stale !== undefined) clearTimeout(stale);
+			const timer = setTimeout(() => {
+				pendingFocusHandoffs.delete(id);
+				// Only catch focus that actually died on <body>: if anything
+				// else already took it (a replacement request's arrival focus,
+				// a remounted control), it owns focus now — never steal it.
+				if (document.activeElement !== document.body) return;
+				// The pane may itself have gone away (route change): only hand
+				// off to a composer that is still connected.
+				if (paneComposer?.isConnected) paneComposer.focus();
+			}, 0);
+			pendingFocusHandoffs.set(id, timer);
 		};
-	}, []);
+		// request.id is read through the closure; the effect runs once per
+		// mount and the latest id is what a remount cancels against.
+	}, [request.id]);
 
-	const submitValue = (value: string): void => onRespond({ value });
-	const submitConfirm = (confirmed: boolean): void => onRespond({ confirmed });
-	const cancel = (): void => onRespond({ cancelled: true });
+	const submitValue = (value: string): void => {
+		exitedRef.current = true;
+		onRespond({ value });
+	};
+	const submitConfirm = (confirmed: boolean): void => {
+		exitedRef.current = true;
+		onRespond({ confirmed });
+	};
+	const cancel = (): void => {
+		exitedRef.current = true;
+		onRespond({ cancelled: true });
+	};
 
 	// Structured multi-question requests render as one tabbed panel owned by
 	// ApprovalDockQuestions.tsx (a tab per question, one structured response).
+	// The panel's own submit routes through the same exit discipline as every
+	// other respond path.
 	const questionPanel = request.method === "question" && (request.questions?.length ?? 0) > 0 && (
 		<ApprovalQuestionPanel
 			draftState={questionDraft}
 			questions={request.questions ?? []}
-			onSubmit={onRespond}
+			onSubmit={(response) => {
+				exitedRef.current = true;
+				onRespond(response);
+			}}
 			onCancel={cancel}
 		/>
 	);
