@@ -191,6 +191,139 @@ describe("ApprovalDock keyboard-aware layout", () => {
 		expect(maxHeight).toBeGreaterThan(0);
 	});
 
+	it("caps the pinned-footer scroll at the slice top when the input cannot fully fit above the pinned row", () => {
+		renderDockInColumn(QUESTION);
+		const input = answerInput();
+		act(() => input?.focus());
+
+		// Body slice [300, 400]; the actions row pins to the bottom as [352,
+		// 392]: the visible slice for content ends at 352. The focused input
+		// [330, 390] is 60px tall — taller than the 52px slice above the pinned
+		// row — so it cannot fully fit: the scroll pulls its bottom up to the
+		// pinned row's top but AT MOST until its top reaches the slice top
+		// (300). Scrolling the full 38px would strand the input's top above
+		// the slice it must be visible in (the R1 defect).
+		const actions = actionsRow();
+		expect(actions).not.toBeNull();
+		mockRect(body() as Element, 300, 100);
+		mockRect(input as Element, 330, 60);
+		mockRect(actions as Element, 352, 40);
+		const realGetComputedStyle = window.getComputedStyle.bind(window);
+		vi.spyOn(window, "getComputedStyle").mockImplementation(
+			(element) =>
+				(element === actions
+					? ({ ...realGetComputedStyle(element), position: "sticky" } as CSSStyleDeclaration)
+					: realGetComputedStyle(element)) as CSSStyleDeclaration,
+		);
+
+		act(() => viewport.shrinkTo(500));
+
+		expect(body()?.scrollTop).toBe(30);
+	});
+
+	it("pulls an input that scrolled above the slice back down below the pinned TAB band, not merely inside the body", () => {
+		renderDockInColumn(QUESTION);
+		const input = answerInput();
+		act(() => input?.focus());
+
+		// The tab strip pins to the slice top [300, 330] and the actions row
+		// pins to the slice bottom [380, 420]: content is only visible in
+		// [330, 380]. The focused input sits entirely above that (the R1
+		// geometry at a 400px window): the scroll must pull it down until its
+		// top clears the pinned TAB band (330) — stopping at the body top
+		// (300) leaves it hidden under the pinned strip.
+		const tabs = container.querySelector<HTMLElement>(".th-approval-question-tabs");
+		const actions = actionsRow();
+		expect(tabs).not.toBeNull();
+		mockRect(body() as Element, 300, 120);
+		mockRect(tabs as Element, 300, 30);
+		mockRect(input as Element, 290, 44);
+		mockRect(actions as Element, 380, 40);
+		const realGetComputedStyle = window.getComputedStyle.bind(window);
+		vi.spyOn(window, "getComputedStyle").mockImplementation(
+			(element) =>
+				(element === tabs || element === actions)
+					? ({ ...realGetComputedStyle(element), position: "sticky" } as CSSStyleDeclaration)
+					: realGetComputedStyle(element) as CSSStyleDeclaration,
+		);
+
+		act(() => viewport.shrinkTo(500));
+
+		expect(body()?.scrollTop).toBe(-40);
+	});
+
+	it("reserves the pinned tab band when pulling the actions row into the slice", () => {
+		renderDockInColumn(QUESTION);
+		const input = answerInput();
+		act(() => input?.focus());
+
+		// Tabs pinned [300, 330]; the actions row is NOT pinned and sits far
+		// below: pulling its bottom (510) to the slice bottom (420) wants
+		// 90px, but the input's top (405) may not cross the pinned tab band's
+		// bottom (330): the pull-in caps at 75, not at the body top's 105.
+		const tabs = container.querySelector<HTMLElement>(".th-approval-question-tabs");
+		const actions = actionsRow();
+		expect(tabs).not.toBeNull();
+		mockRect(body() as Element, 300, 120);
+		mockRect(tabs as Element, 300, 30);
+		mockRect(input as Element, 405, 44);
+		mockRect(actions as Element, 460, 50);
+		const realGetComputedStyle = window.getComputedStyle.bind(window);
+		vi.spyOn(window, "getComputedStyle").mockImplementation(
+			(element) =>
+				(element === tabs
+					? ({ ...realGetComputedStyle(element), position: "sticky" } as CSSStyleDeclaration)
+					: realGetComputedStyle(element)) as CSSStyleDeclaration,
+		);
+
+		act(() => viewport.shrinkTo(500));
+
+		expect(body()?.scrollTop).toBe(75);
+	});
+
+	it("yields the pinned tab band when tabs + input + actions cannot all fit the slice", () => {
+		renderDockInColumn(QUESTION);
+		const input = answerInput();
+		act(() => input?.focus());
+
+		// Starved slice (the R1 geometry at a 400px window): the pinned tab
+		// band [300, 330] and the pinned actions band [360, 400] leave only 30px
+		// between them — less than the 44px input — while the input DOES fit
+		// once the tab band yields ([300, 360] = 60px). The tab band must yield
+		// (the dock carries the input-priority modifier) so the focused input
+		// can own the slice above the pinned actions row.
+		const section = container.querySelector<HTMLElement>(".th-approval-dock");
+		const tabs = container.querySelector<HTMLElement>(".th-approval-question-tabs");
+		const actions = actionsRow();
+		expect(tabs).not.toBeNull();
+		mockRect(body() as Element, 300, 100);
+		mockRect(tabs as Element, 300, 30);
+		mockRect(input as Element, 280, 44);
+		mockRect(actions as Element, 360, 40);
+		const realGetComputedStyle = window.getComputedStyle.bind(window);
+		vi.spyOn(window, "getComputedStyle").mockImplementation(
+			(element) =>
+				(element === tabs || element === actions)
+					? ({ ...realGetComputedStyle(element), position: "sticky" } as CSSStyleDeclaration)
+					: realGetComputedStyle(element) as CSSStyleDeclaration,
+		);
+
+		act(() => viewport.shrinkTo(500));
+
+		expect(section?.classList.contains("th-approval-dock--input-priority")).toBe(true);
+
+		// Room returns: tabs + input + actions fit the slice again, so the tab
+		// band re-pins (modifier off) — recovery must not stick in the
+		// fallback.
+		mockRect(body() as Element, 300, 200);
+		mockRect(tabs as Element, 300, 30);
+		mockRect(input as Element, 360, 44);
+		mockRect(actions as Element, 460, 40);
+		act(() => viewport.shrinkTo(400));
+
+		expect(section?.classList.contains("th-approval-dock--input-priority")).toBe(false);
+	});
+
 	it("clears the focused input above a pinned (sticky) actions row instead of scrolling past it", () => {
 		renderDockInColumn(QUESTION);
 		const input = answerInput();

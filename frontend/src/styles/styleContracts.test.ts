@@ -989,6 +989,16 @@ describe("approval question panel contracts", () => {
     // against the keyboard rule by never matching it in the first place.
     const tight = ruleBody(approvalDock, ".th-approval-dock--tight .th-approval-question-actions");
     expect(declarationValue(tight, "position")).toBe("static");
+    // Input-priority fallback: when the body slice cannot seat the pinned
+    // tab band + the focused input + the pinned action row, the tab band
+    // yields (static — scrolls with the content); the action row keeps its
+    // pin. Higher specificity than the tabs' own sticky rule.
+    const yieldBlock = ruleBody(
+      approvalDock,
+      ".th-approval-dock--input-priority .th-approval-question-tabs",
+    );
+    expect(yieldBlock, "input-priority tab-yield rule exists").not.toBe("");
+    expect(declarationValue(yieldBlock, "position")).toBe("static");
   });
 });
 

@@ -108,6 +108,10 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		viewportBox !== null &&
 		!Number.isNaN(viewportBaselineRef.current) &&
 		viewportBaselineRef.current - viewportBox.height > KEYBOARD_SHRINK_PX;
+	// The column clamp's measure() closure outlives renders; the keyboard
+	// floor below must price the budget with the CURRENT viewport regime.
+	const keyboardLikeRef = useRef(false);
+	keyboardLikeRef.current = keyboardLike;
 	// Explicit user expansion, keyed by request id: overrides the space floor
 	// so the toggle always works. A new request resets to the automatic
 	// presentation.
@@ -160,7 +164,32 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 				(Number.parseFloat(style.borderTopWidth) || 0) +
 				(Number.parseFloat(style.borderBottomWidth) || 0);
 			const minDockPx = headerHeightRef.current + borders + APPROVAL_BODY_FLOOR_PX;
-			const budget = computeShelfAvailableSpace(column, section, { minSelfPx: minDockPx });
+			// Input-priority floor: while the keyboard holds the viewport short,
+			// the transcript reserve yields further — enough body for the pinned
+			// tab strip + the focused answer input + the pinned actions row — so
+			// the slice the focused input must be visible in actually exists.
+			// This raises the budget's reserve-yield minimum ONLY: the collapse
+			// decision (floorCollapsed) and the inline ceilings keep pricing
+			// minDockPx, and the budget is still capped by the column's real
+			// available space, so an unachievable band floor merely yields the
+			// whole reserve — it can never push the composer out or collapse
+			// the dock to its summary.
+			let minSelfPx = minDockPx;
+			const bandTabs = section.querySelector<HTMLElement>(".th-approval-question-tabs");
+			const bandAnswer = section.querySelector<HTMLElement>(".th-approval-question-text");
+			const bandActions = section.querySelector<HTMLElement>(".th-approval-question-actions");
+			const bandBody = section.querySelector<HTMLElement>(".th-approval-dock-body");
+			if (keyboardLikeRef.current && bandTabs && bandAnswer && bandActions && bandBody) {
+				const bandPadBottom = Number.parseFloat(getComputedStyle(bandBody).paddingBottom) || 0;
+				minSelfPx =
+					headerHeightRef.current +
+					borders +
+					bandTabs.offsetHeight +
+					bandAnswer.offsetHeight +
+					bandActions.offsetHeight +
+					bandPadBottom;
+			}
+			const budget = computeShelfAvailableSpace(column, section, { minSelfPx });
 			const cap = Math.round(columnHeight * APPROVAL_DOCK_COLUMN_RATIO);
 			const clampPx = Math.min(budget, cap);
 			setColumnSpace((previous) =>
@@ -347,45 +376,75 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 
 	// Keyboard-aware scroll discipline: while an input inside the body holds
 	// focus and the visual viewport changes (the keyboard opening or closing
-	// reshapes the visible slice), keep BOTH the focused input and the actions
-	// row (Next/Submit/Cancel) inside the visible slice. When the actions row
-	// is pinned (sticky under the keyboard), the input only has to clear the
-	// pinned row; when both cannot fit in flow, the focused input wins — it
-	// is the control being typed into.
+	// reshapes the visible slice), keep the focused input inside the body's
+	// ACTUAL visible slice — the band between the pinned tab strip and the
+	// pinned actions row (either edge falls back to the body's own edge when
+	// that band is not pinned). When the bands plus the input cannot all
+	// fit, the focused input wins (it is the control being typed into): it
+	// scrolls at most until its top reaches the slice top — never above it.
+	// Input-priority fallback: when even that cannot seat the input above the
+	// pinned actions row, the TAB band yields (position: static via the dock's
+	// --input-priority modifier, so it scrolls with the content) — a pinned
+	// strip must never cover the focused input that owns the slice. The
+	// actions row keeps its pin (the documented secondary: Next/Submit stay
+	// reachable under the input's priority). Both regime checks read pinned
+	// offsets only (scroll-independent), so the decision cannot oscillate.
+	const [tabsYield, setTabsYield] = useState(false);
 	useLayoutEffect(() => {
 		if (!expanded || !viewportBox) return;
 		const section = sectionRef.current;
 		const body = section?.querySelector<HTMLElement>(".th-approval-dock-body");
-		if (!body) return;
+		if (!section || !body) return;
 		const active = document.activeElement;
 		if (!(active instanceof HTMLElement) || !body.contains(active)) return;
 		if (!active.matches("input, textarea")) return;
+		const tabs = body.querySelector<HTMLElement>(".th-approval-question-tabs");
 		const actions = body.querySelector<HTMLElement>(".th-approval-question-actions");
 		const bodyRect = body.getBoundingClientRect();
 		const inputRect = active.getBoundingClientRect();
 		const actionsRect = actions?.getBoundingClientRect();
-		const pinned =
+		const tabsRect = tabs?.getBoundingClientRect();
+		const actionsPinned =
 			!!actions &&
 			actionsRect !== undefined &&
 			getComputedStyle(actions).position === "sticky" &&
 			actionsRect.bottom <= bodyRect.bottom + 0.5;
-		const viewBottom = pinned && actionsRect ? actionsRect.top : bodyRect.bottom;
-		const inputDelta =
-			inputRect.bottom > viewBottom
-				? inputRect.bottom - viewBottom
-				: inputRect.top < bodyRect.top
-					? inputRect.top - bodyRect.top
-					: 0;
-		let delta = inputDelta;
-		if (!pinned && actionsRect) {
+		const tabsSticky = !!tabs && tabsRect !== undefined && getComputedStyle(tabs).position === "sticky";
+		const tabsPinned = tabsSticky && tabsRect.top <= bodyRect.top + 0.5;
+		// The slice reserves BOTH pinned bands: content scrolled beneath the
+		// sticky tab strip is as invisible as content under the pinned actions.
+		const sliceTop = tabsPinned ? tabsRect.bottom : bodyRect.top;
+		const sliceBottom = actionsPinned && actionsRect ? actionsRect.top : bodyRect.bottom;
+		const inputFits = inputRect.height <= sliceBottom - sliceTop + 0.5;
+		if (tabsSticky && !tabsYield) {
+			if (!inputFits && inputRect.height <= sliceBottom - bodyRect.top + 0.5) {
+				// The slice cannot seat the input below the pinned tab band but
+				// can without it: yield the tab band and re-run — the re-render
+				// applies the modifier before this effect scrolls.
+				setTabsYield(true);
+				return;
+			}
+		} else if (
+			tabsYield &&
+			inputRect.height <= sliceBottom - (bodyRect.top + (tabsRect?.height ?? 0)) + 0.5
+		) {
+			setTabsYield(false);
+			return;
+		}
+		const overBottom = inputRect.bottom - sliceBottom;
+		const overTop = inputRect.top - sliceTop;
+		let delta = 0;
+		if (overTop < -0.5) delta = overTop;
+		else if (overBottom > 0.5) delta = Math.min(overBottom, overTop);
+		if (!actionsPinned && actionsRect) {
 			const actionsDelta = Math.max(actionsRect.bottom - bodyRect.bottom, 0);
-			// Scrolling past (inputTop - bodyTop) would push the focused input
-			// above the slice: cap the actions pull-in there.
-			const cap = Math.max(inputRect.top - bodyRect.top, inputDelta);
-			delta = Math.max(inputDelta, Math.min(actionsDelta, cap));
+			// Scrolling past the input's top would push it above the slice:
+			// cap the actions pull-in at the slice top.
+			const cap = Math.max(overTop, delta);
+			delta = Math.max(delta, Math.min(actionsDelta, cap));
 		}
 		if (delta !== 0) body.scrollTop += delta;
-	}, [expanded, viewportBox, columnSpace.clampPx]);
+	}, [expanded, viewportBox, columnSpace.clampPx, tabsYield, request.id]);
 
 	// scrollIntoView on focus: the browser's native focus scroll does not
 	// reserve the pinned footer's band; scroll-padding-bottom on the body
@@ -538,7 +597,9 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 					: !expanded && expansionImpossible
 						? "th-approval-dock th-approval-dock--compact"
 						: keyboardLike
-							? "th-approval-dock th-approval-dock--keyboard"
+							? tabsYield
+								? "th-approval-dock th-approval-dock--keyboard th-approval-dock--input-priority"
+								: "th-approval-dock th-approval-dock--keyboard"
 							: "th-approval-dock"
 			}
 			aria-labelledby={titleId}
