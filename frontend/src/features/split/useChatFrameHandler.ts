@@ -35,6 +35,10 @@ interface ChatFrameHandlerBindings {
   readonly submitLatchRef: Current<boolean>;
   readonly sends: ChatSendStore;
   readonly offerFailedDraft: (request: ChatSendRequest) => void;
+  /** Record retained steer occurrences once the branch root is known. */
+  readonly settlePendingSteers: (sessionId: string) => void;
+  /** Drop a retained steer occurrence whose send was rejected. */
+  readonly dropPendingSteer: (requestId: string) => void;
   readonly cancelQueuedRecovery: (requestIds: ReadonlySet<string>) => void;
   readonly messageVersionRef: Current<number>;
   readonly snapshotVersionRef: Current<number>;
@@ -197,6 +201,9 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.replaceMessages(reconciliation.history.messages);
     // A committed snapshot is not another live receipt on a repeated terminal.
     bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
+    // Steer occurrences retained while the client held only a bounded tail
+    // resolve their root-relative ordinals once the branch root is known.
+    if (bindings.pageBuffer.historyRootKnown()) bindings.settlePendingSteers(sessionId);
   };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
@@ -329,9 +336,15 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         const finalized = bindings.toolCallsRef.current;
         // Only marks attached to canonical occurrences survive a run boundary.
         // A no-message steer must not decorate an unrelated later same-text turn.
-        const userCount = bindings.messagesRef.current.filter(message => message.role === "user").length;
-        for (const mark of steerMarks(frame.sessionId)) {
-          if (mark.ordinal > userCount) forgetSteerMark(frame.sessionId, mark.requestId);
+        // Ordinals count from the branch root: while the client holds only a
+        // bounded tail, a mark addressed into the not-yet-loaded head
+        // outnumbers the loaded user messages without being stale, so pruning
+        // waits until the branch is held from its root.
+        if (bindings.pageBuffer.historyRootKnown()) {
+          const userCount = bindings.messagesRef.current.filter(message => message.role === "user").length;
+          for (const mark of steerMarks(frame.sessionId)) {
+            if (mark.ordinal > userCount) forgetSteerMark(frame.sessionId, mark.requestId);
+          }
         }
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
@@ -382,7 +395,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         if (frame.requestId && (owned || receipt === "queued")) {
           const failed = bindings.sends.fail(frame.requestId);
           if (failed) {
-            if (failed.kind === "steer") forgetSteerMark(frame.sessionId ?? "", failed.requestId);
+            if (failed.kind === "steer") {
+            forgetSteerMark(frame.sessionId ?? "", failed.requestId);
+            bindings.dropPendingSteer(failed.requestId);
+          }
             bindings.offerFailedDraft(failed);
           }
         } else if (frame.requestId && frame.command === "chat.send") {

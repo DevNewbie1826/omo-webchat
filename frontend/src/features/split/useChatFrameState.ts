@@ -200,6 +200,14 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   // task-count delivery must not replace it, and a later-arriving older
   // hydration response can never lower it.
   const dagRunCountAdmissionRef = useRef<LiveCountAdmission | null>(null);
+  // Steers accepted while the client holds only a bounded tail: a
+  // root-relative ordinal cannot be computed from the loaded tail, so the
+  // occurrence waits here and is recorded once the branch root is known.
+  const pendingSteersRef = useRef<Array<{
+    readonly requestId: string;
+    readonly text: string;
+    readonly sessionId: string;
+  }>>([]);
   const noticeIdRef = useRef(0);
   const recoveryRef = useRef<RecoveryState | null>(null);
   // True while a socket generation is open; a close only starts a recovery
@@ -361,6 +369,9 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     snapshotMessagesRef.current = messagesRef.current;
     historyLoadedRef.current = false;
     pageBuffer.reset();
+    // A reloaded branch already contains any accepted steer, so a retained
+    // occurrence from the replaced load must never resolve against it.
+    pendingSteersRef.current = [];
     setHistoryStatus("loading");
     applyError("");
     setResyncBusy(true);
@@ -404,6 +415,24 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }, HISTORY_STALL_MS);
   };
 
+  // Resolve retained steer occurrences in send order with the same
+  // root-relative rule used when the whole branch is already held. Reached
+  // from reconciliation only once the page buffer holds the branch from its
+  // root, so the loaded user-message count is the canonical one.
+  const settlePendingSteers = (sessionId: string): void => {
+    const pending = pendingSteersRef.current;
+    if (pending.length === 0) return;
+    pendingSteersRef.current = [];
+    for (const steer of pending) {
+      const marks = steerMarks(steer.sessionId);
+      const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+      recordSteerMark(steer.sessionId, { requestId: steer.requestId, text: steer.text, ordinal });
+    }
+  };
+  const dropPendingSteer = (requestId: string): void => {
+    pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+  };
+
   const baseHandleFrame = createChatFrameHandler({
     t,
     controls,
@@ -414,6 +443,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     submitLatchRef,
     sends,
     offerFailedDraft,
+    settlePendingSteers,
+    dropPendingSteer,
     cancelQueuedRecovery,
     messageVersionRef,
     snapshotVersionRef,
@@ -587,9 +618,15 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
       replaceToolCalls({});
     }
     if (kind === "steer") {
-      const marks = steerMarks(sessionId);
-      const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
-      recordSteerMark(sessionId, { requestId, text, ordinal });
+      if (pageBuffer.historyRootKnown()) {
+        const marks = steerMarks(sessionId);
+        const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+        recordSteerMark(sessionId, { requestId, text, ordinal });
+      } else {
+        // A bounded tail cannot resolve the root-relative ordinal; retain the
+        // occurrence and resolve it when the history completes.
+        pendingSteersRef.current = [...pendingSteersRef.current, { requestId, text, sessionId }];
+      }
     }
     let accepted = false;
     try {
@@ -606,7 +643,10 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     if (sends.terminal(requestId)) return true;
     if (!accepted) {
       sends.rollback(requestId);
-      if (kind === "steer") forgetSteerMark(sessionId, requestId);
+      if (kind === "steer") {
+        forgetSteerMark(sessionId, requestId);
+        pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
+      }
     }
     return accepted;
   };
@@ -640,6 +680,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setSessionActive(false);
     setConnected(true);
     pageBuffer.reset();
+    pendingSteersRef.current = [];
     return connectionGeneration;
   };
   const markClose = (): void => {
@@ -676,6 +717,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     externalRecoveryHistoryRef.current = false;
     historyLoadedRef.current = false;
     pageBuffer.reset();
+    pendingSteersRef.current = [];
     setHistoryStatus("loading");
     applyError("");
   };
