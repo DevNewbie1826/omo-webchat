@@ -204,10 +204,19 @@ type ResumeError struct {
 func (e *ResumeError) Error() string { return e.Info.Message }
 func (e *ResumeError) Unwrap() error { return e.Cause }
 
+// EntriesFrame streams one bounded page of branch history. Segment marks a
+// backward warm chunk of earlier branch history (the only value is "head"),
+// emitted after the terminal page for progressive clients. HistoryComplete
+// is tri-state on progressive attaches: the terminal page carries an explicit
+// value - false while head chunks still follow, true when the emitted tail
+// already begins at the branch root - and the final head page carries true;
+// nil omits the field. Absent values keep the legacy whole-stream meaning.
 type EntriesFrame struct {
-	Entries []json.RawMessage
-	LeafID  string
-	Final   bool
+	Entries         []json.RawMessage
+	LeafID          string
+	Final           bool
+	Segment         string
+	HistoryComplete *bool
 }
 
 type RunInfo struct{ Reason string }
@@ -235,6 +244,14 @@ type Subscriber interface {
 // attach-time replay before Manager.Acquire returns.
 type SynchronousAttachHook interface {
 	SynchronousAttach()
+}
+
+// ProgressiveHistorySubscriber marks subscribers whose client negotiated a
+// contract version that accepts segmented head pages after the terminal tail
+// page. Hydration consults it to pick progressive delivery; subscribers that
+// do not implement it keep the complete root-to-leaf stream.
+type ProgressiveHistorySubscriber interface {
+	ProgressiveHistory() bool
 }
 
 // Stats preserves provider statistics verbatim so structured token/cache data

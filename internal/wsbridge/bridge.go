@@ -26,7 +26,11 @@ import (
 )
 
 const (
-	ContractVersion     = 3
+	ContractVersion = 3
+	// MinContractVersion is the oldest client dialect this server serves. A
+	// version-2 client keeps the complete root-to-leaf stream: only clients at
+	// ContractVersion or newer receive segmented head pages.
+	MinContractVersion  = 2
 	defaultWriteTimeout = 10 * time.Second
 	controlFrameTimeout = 15 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum
@@ -425,6 +429,7 @@ type connection struct {
 	activityMu        sync.Mutex
 	activity          *activitySubscription
 	hello             bool
+	helloVersion      int
 	work              chan []byte
 	queueWork         chan queuePublication
 	closed            atomic.Bool
@@ -548,6 +553,14 @@ func (c *connection) bindingSnapshot() (string, string, uint64, *session.Session
 	return c.wsID, c.chatID, c.bindingGeneration, c.sess
 }
 
+// clientHelloVersion returns the wire contract version the client chose in
+// its hello frame; zero when the hello has not been accepted yet.
+func (c *connection) clientHelloVersion() int {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	return c.helloVersion
+}
+
 func (c *connection) sessionForBinding(chatID string, generation uint64) (*session.Session, bool) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -656,12 +669,13 @@ func (c *connection) routeContext(frame wscontract.ClientFrame) (context.Context
 
 func (c *connection) routeFrame(ctx context.Context, frame wscontract.ClientFrame, typ string) {
 	if f, ok := frame.(*wscontract.ClientHelloFrame); ok {
-		if f.Version != ContractVersion {
+		if f.Version < MinContractVersion || f.Version > ContractVersion {
 			c.sendError("bad_frame", "wire contract version mismatch", "", "")
 			return
 		}
 		c.stateMu.Lock()
 		c.hello = true
+		c.helloVersion = int(f.Version)
 		c.stateMu.Unlock()
 		return
 	}
