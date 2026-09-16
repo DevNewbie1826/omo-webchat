@@ -3,6 +3,7 @@ import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
+import { _resetIOSDetectionForTests } from "@tanstack/virtual-core";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
 
@@ -222,6 +223,49 @@ it.each([false, true])("rejects an old bottom-index reconciliation after parking
     expect.soft(viewportOffset(h, "tail row 13")).toBe(jump ? visible - 400 : visible);
   } finally {
     unmount(h);
+  }
+});
+
+it.each([false, true])("preserves iOS deferred measurement on reader follow retirement (already parked=%s)", async (alreadyParked) => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15");
+  _resetIOSDetectionForTests();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // Hold reconciliation explicitly so no frame depends on wall-clock timing.
+  vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+  const h = mountTranscript(rows("tail", TAIL_ROWS));
+  const signal = async (name: string): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event(name)); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await signal("scroll");
+    await signal("scrollend");
+    if (alreadyParked) park(h, h.getTop() - 200);
+    await signal("touchstart");
+    const before = h.getTop();
+    const above = h.instance.measurementsCache[0];
+    if (!above) throw new Error("missing measured row above fold");
+    await act(async () => h.instance.resizeItem(0, above.size + 30));
+    expect(h.getTop()).toBe(before);
+    h.body.scrollTop = before - 400;
+    await signal("scroll");
+    const parked = h.getTop();
+    const distance = distanceFromBottom(h);
+    const offset = viewportOffset(h, "tail row 13");
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+    await signal("touchend");
+    // Time is the behavior: expire virtual-core's exact touch-end grace gate.
+    await act(async () => { vi.advanceTimersByTime(150); });
+    await signal("scrollend");
+    expect(h.instance.isScrolling).toBe(false);
+    expect.soft(h.getTop()).toBe(parked + 30);
+    expect.soft(distanceFromBottom(h)).toBe(distance - 30);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(offset - 30);
+  } finally {
+    unmount(h);
+    vi.useRealTimers();
+    _resetIOSDetectionForTests();
   }
 });
 

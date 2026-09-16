@@ -782,7 +782,9 @@ export function ChatTranscript({
       // Retire the old numeric-index target through the public API. The
       // scrollToFn ownership check makes this a write-free cancellation;
       // otherwise a later jump could reauthorize that old reconciliation.
-      virtualizer.scrollToOffset(event.currentTarget.scrollTop);
+      // Unlike absolute commands, scrollBy replaces scrollState.index with
+      // null without clearing virtual-core's deferred iOS measurement delta.
+      virtualizer.scrollBy(0);
     }
     if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
   };
