@@ -70,6 +70,16 @@ describe("parseChatServerFrame", () => {
     expect(parseChatServerFrame({ ...base, final: true, entries: "nope" })).toBeNull();
   });
 
+  it("parses optional progressive history entries properties and rejects invalid values", () => {
+    const base = { type: "entries", sessionId: "c1", entries: [], final: false };
+    expect(parseChatServerFrame(base)).toEqual({ type: "entries", sessionId: "c1", entries: [], final: false });
+    expect(parseChatServerFrame({ ...base, segment: "head" })).toMatchObject({ segment: "head" });
+    expect(parseChatServerFrame({ ...base, historyComplete: true })).toMatchObject({ historyComplete: true });
+    expect(parseChatServerFrame({ ...base, segment: "tail" })).toBeNull();
+    expect(parseChatServerFrame({ ...base, segment: 5 })).toBeNull();
+    expect(parseChatServerFrame({ ...base, historyComplete: "yes" })).toBeNull();
+  });
+
   it("keeps the real Omo command fields (syntax, sourceInfo) and drops location", () => {
     const frame = parseChatServerFrame({
       type: "commands",

@@ -74,6 +74,8 @@ type NoticeFrameSeam = Omit<ct.NoticeFrame, "at" | "payload"> & {
 type EntriesFrameSeam = Omit<ct.EntriesFrame, "entries" | "final"> & {
   readonly entries: unknown;
   readonly final?: boolean;
+  readonly segment?: "head";
+  readonly historyComplete?: boolean;
 };
 
 /**

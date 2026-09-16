@@ -175,6 +175,29 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     bindings.clearLiveSurfaces();
     bindings.applyActivities(applyRunFlight(bindings.activitiesRef.current, false));
   };
+  /**
+   * Reconcile this binding's ordered entry list into the transcript, keeping
+   * the live messages received since the last committed snapshot after it.
+   * Steer marks address a canonical user message by its ordinal FROM THE
+   * BRANCH ROOT, so they are applied only while the client holds the branch
+   * from its root — never over a bounded tail, where the same ordinal names a
+   * different turn.
+   */
+  const reconcileEntries = (entries: unknown, sessionId: string): void => {
+    const preserveCurrent = bindings.messageVersionRef.current > bindings.snapshotVersionRef.current;
+    const suffix = preserveCurrent
+      ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
+      : [];
+    const reconciliation = reconcileFrameHistory({
+      entries,
+      current: suffix,
+      preserveCurrent,
+      steerMarks: bindings.pageBuffer.historyRootKnown() ? steerMarks(sessionId) : [],
+    });
+    bindings.replaceMessages(reconciliation.history.messages);
+    // A committed snapshot is not another live receipt on a repeated terminal.
+    bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
+  };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
       || !bindings.externalRecoveryReadyRef.current
@@ -283,7 +306,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         }
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(
-          [...bindings.messagesRef.current, frame.message], steerMarks(frame.sessionId),
+          [...bindings.messagesRef.current, frame.message],
+          // Ordinals count from the branch root: a bounded tail cannot resolve
+          // them, so the mark waits for the rest of the branch to arrive.
+          bindings.pageBuffer.historyRootKnown() ? steerMarks(frame.sessionId) : [],
         ));
         bindings.streaming.clear();
         bindings.setThinking("");
@@ -527,6 +553,19 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         bindings.setModels(frame.models);
         return;
       case "entries": {
+        // A backward warm chunk of earlier history: it never opens the pane,
+        // never ends a replay, and never re-pins the viewport. Its entries
+        // join the front of this binding's ordered list, which reconciles as
+        // a whole so the rendered branch stays [head..., tail...].
+        if (frame.segment === "head") {
+          const generation = bindings.claimHistoryGeneration(connectionGeneration, false);
+          if (bindings.resyncGenerationRef.current !== null
+            && bindings.resyncGenerationRef.current !== generation) return;
+          const warmed = bindings.pageBuffer.prepend(frame.entries, frame.historyComplete);
+          if (warmed === null) return;
+          reconcileEntries(warmed, frame.sessionId);
+          return;
+        }
         const terminal = frame.final !== false;
         const generation = bindings.claimHistoryGeneration(connectionGeneration, terminal);
         if (bindings.resyncGenerationRef.current !== null
@@ -546,20 +585,7 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
         // the matching terminal page also proves the replay landed and closes
         // its page-buffer fence.
         bindings.endResync(generation, true);
-        const entries = bindings.pageBuffer.consume(frame.entries);
-        const preserveCurrent = bindings.messageVersionRef.current > bindings.snapshotVersionRef.current;
-        const suffix = preserveCurrent
-          ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
-          : [];
-        const reconciliation = reconcileFrameHistory({
-          entries,
-          current: suffix,
-          preserveCurrent,
-          steerMarks: steerMarks(frame.sessionId),
-        });
-        bindings.replaceMessages(reconciliation.history.messages);
-        // A committed snapshot is not another live receipt on a repeated terminal.
-        bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
+        reconcileEntries(bindings.pageBuffer.consume(frame.entries, frame.historyComplete), frame.sessionId);
         bindings.setRestoreVersion((version) => version + 1);
         return;
       }

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
@@ -556,6 +556,16 @@ export function ChatTranscript({
     }
   }, [historyToolIds, toolCalls]);
 
+  // Anchor for rows arriving at the FRONT of the list (a backward warm chunk
+  // of earlier history). It names the first row that is NOT part of that
+  // chunk, with the row's index and the height of everything above it as of
+  // the last compensation; the effect below holds that row still while the
+  // block above it grows. Null whenever no warm chunk is settling.
+  const leadingKeyRef = useRef<string | undefined>(undefined);
+  const anchorRef = useRef<{ readonly key: string; readonly index: number; readonly start: number } | null>(null);
+  // The offset our own compensation last wrote. A scroll event reporting
+  // exactly that offset is our echo, not the reader taking the viewport over.
+  const anchorWriteRef = useRef<number | null>(null);
   // Row identity is assigned over the FULL merged list before any hiding:
   // an empty assistant completion (invisible but state-retained as a
   // current-turn tool anchor) permanently occupies its message ordinal, so
@@ -581,6 +591,26 @@ export function ChatTranscript({
     const live = new Set(allKeys);
     for (const key of estimateCache.keys()) {
       if (!live.has(key)) estimateCache.delete(key);
+    }
+    // A changed leading key whose predecessor is still in the list means rows
+    // were inserted in front of it; a leading key whose predecessor is gone is
+    // a replaced transcript (chat switch, re-sync), which prepends nothing.
+    // The predecessor is the anchor: it sat at offset 0 before this chunk.
+    const leading = keys[0];
+    if (leading !== leadingKeyRef.current) {
+      const previous = leadingKeyRef.current;
+      const seam = previous === undefined ? -1 : keys.indexOf(previous);
+      if (seam > 0 && previous !== undefined && anchorRef.current === null) {
+        anchorRef.current = { key: previous, index: seam, start: 0 };
+      }
+      leadingKeyRef.current = leading;
+    }
+    // Keep the armed anchor addressed by the CURRENT row list: hidden rows and
+    // later chunks move its index, and a replaced transcript retires it.
+    const anchor = anchorRef.current;
+    if (anchor !== null) {
+      const index = keys.indexOf(anchor.key);
+      anchorRef.current = index < 0 ? null : { ...anchor, index };
     }
     return { rows, keys };
   }, [items, rowMetrics, estimateCache]);
@@ -649,6 +679,56 @@ export function ChatTranscript({
     useScrollendEvent: true,
   });
 
+  // virtual-core 3.17.6 corrects the scroll offset whenever a measured row
+  // above the fold turns out taller or shorter than its estimate, so the
+  // content the reader is looking at stays put. While a warm chunk settles,
+  // everything above the anchor belongs to the effect below instead — one
+  // owner for that block, so its growth is never compensated twice.
+  // Supplying this hook replaces the library's own rule, so that rule is
+  // restated here for every other row: a first measurement compensates when
+  // the row's top is above the fold, a re-measurement only when the whole row
+  // is and the reader is not scrolling backward.
+  useLayoutEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
+      const anchor = anchorRef.current;
+      if (anchor !== null && item.index < anchor.index) return false;
+      const element = scrollRef.current;
+      if (element === null) return false;
+      // The offset the reader will end up at: what the scrollport shows now
+      // plus any compensation held back until the current gesture ends.
+      const fold = element.scrollTop + deferredAdjustmentRef.current;
+      if (!instance.itemSizeCache.has(item.key)) return item.start < fold;
+      return item.start + item.size <= fold && instance.scrollDirection !== "backward";
+    };
+  }, [virtualizer, scrollRef]);
+
+  // A warm chunk lands ABOVE the reader, so every row already on screen moves
+  // down by the height it inserts — first the chunk's estimated block, then
+  // each row's measurement correction. Holding the scroll offset still would
+  // throw the reader back by that entire height (63 chunks of a long session
+  // move ~189,000px), so the offset moves WITH the block: the anchor row keeps
+  // its place in the viewport and the reader's distance from the end of the
+  // transcript does not change. Runs after every commit while armed; the
+  // anchor's start only ever changes when the block above it does.
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const element = scrollRef.current;
+    if (anchor === null || element === null) return;
+    const start = virtualizer.measurementsCache[anchor.index]?.start;
+    if (start === undefined || start === anchor.start) return;
+    anchorRef.current = { ...anchor, start };
+    element.scrollTop += start - anchor.start;
+    anchorWriteRef.current = element.scrollTop;
+  });
+
+  // The reader moving the viewport themselves retires the anchor: from here
+  // their own position, not the pre-chunk one, is what later rows are held
+  // against. Our own compensation write is not that signal.
+  const onTranscriptScroll: typeof onScroll = (event) => {
+    if (scrollRef.current?.scrollTop !== anchorWriteRef.current) anchorRef.current = null;
+    onScroll(event);
+  };
+
   // Replay the compensation dropped during a scroll gesture once that
   // gesture ends. `scrollend` is the precise signal where supported;
   // elsewhere a debounce on `scroll` stands in (virtual-core's own
@@ -714,7 +794,7 @@ export function ChatTranscript({
 
   return (
     <div className="th-chat-scrollport">
-      <div className="th-chat-body" ref={scrollRef} onScroll={onScroll}>
+      <div className="th-chat-body" ref={scrollRef} onScroll={onTranscriptScroll}>
         <div className="th-chat-content" ref={contentRef}>
           {!historyLoaded && rows.length === 0 && !streaming && Object.keys(toolCalls).length === 0 && !error && !doneReason && (
             <div className="th-chat-loading" role="status">{t("chat.loading")}</div>
