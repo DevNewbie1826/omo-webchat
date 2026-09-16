@@ -575,6 +575,13 @@
         "method": {
           "$ref": "shared-types.json#/$defs/ApprovalMethod"
         },
+        "questions": {
+          "type": "array",
+          "items": { "$ref": "shared-types.json#/$defs/Question" }
+        },
+        "nonBlocking": {
+          "type": "boolean"
+        },
         "title": {
           "type": "string"
         },

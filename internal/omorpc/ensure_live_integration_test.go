@@ -41,7 +41,7 @@ func TestNodeFallbackMatchesLauncherExtensionCommands(t *testing.T) {
 	env = setEnv(env, "OMO_CODING_AGENT_DIR", agentDir)
 	env = setEnv(env, "SENPI_CODING_AGENT_DIR", agentDir)
 	env = setEnv(env, "OMO_RPC_CLIENT_CAPABILITIES", "custom_only")
-	env = EnsureExtensionEventsCapability(env)
+	env = EnsureClientCapabilities(env)
 
 	automaticSocket := filepath.Join(shortEnsureTempDir(t), "automatic.sock")
 	automatic, automaticSupervisorPID, automaticProfile := startLauncherHost(t, binary, automaticSocket, workDir, env)
@@ -126,7 +126,7 @@ exec "$OMORPC_ENSURE_TEST_BINARY" -test.run='^TestEnsureHelperProcess$'
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrapper, err := writeNativeChildWrapper(cfg, child, testLauncherBrandProfileJSON(), EnsureExtensionEventsCapability(cfg.Env))
+	wrapper, err := writeNativeChildWrapper(cfg, child, testLauncherBrandProfileJSON(), EnsureClientCapabilities(cfg.Env))
 	if err != nil {
 		t.Fatal(err)
 	}

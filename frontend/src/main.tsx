@@ -28,6 +28,7 @@ import "./styles/chat-transcript.css";
 import "./styles/chat-composer.css";
 import "./styles/tool-card.css";
 import "./styles/approval-dock.css";
+import "./styles/question-bar.css";
 import "./styles/activity-shelf.css";
 
 const rootEl = document.getElementById("root");

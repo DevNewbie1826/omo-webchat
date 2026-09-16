@@ -217,7 +217,8 @@
   "queue.moveDown": "대기열에서 아래로 이동",
   "queue.clearAll": "전체 비우기",
   "chat.steerPending": "스티어 대기: {text}",
-  "chat.statusDetails": "상세",  "chat.resync": "다시 불러오기",
+  "chat.statusDetails": "상세",
+  "chat.resync": "다시 불러오기",
   "chat.resyncBusy": "다시 불러오는 중…",
   "chat.resyncBusyResponding": "어시스턴트가 응답하는 동안에는 다시 불러올 수 없습니다.",
   "chat.resyncBusyCompacting": "대화를 압축하는 동안에는 다시 불러올 수 없습니다.",
@@ -296,6 +297,12 @@
   "approval.expand": "펼치기",
   "approval.pending": "대기 중",
   "approval.remaining": "{seconds}초 남음",
+  "approval.unsupportedNote": "이 요청 유형은 이 클라이언트에서 완전히 지원되지 않습니다.",
+  "approval.unsupportedPlaceholder": "답변을 입력하세요",
+  "question.label": "질문",
+  "question.answer": "답변하기",
+  "question.submit": "보내기",
+  "question.placeholder": "답변을 입력하세요",
   "activity.resize": "활동 패널 크기 조절",
   "activity.panel": "활동",
   "activity.viewToggle": "DAG 보기",
@@ -343,5 +350,9 @@
   "activity.subagents": "하위 에이전트",
   "activity.emptyTodo": "아직 할 일 목록이 없습니다",
   "activity.emptyAgents": "아직 에이전트 작업이 없습니다",
-  "activity.emptyDag": "아직 DAG 실행이 없습니다"
+  "activity.emptyDag": "아직 DAG 실행이 없습니다",
+  "approval.question.tab": "질문 {index}",
+  "approval.question.invalidated": "{question}: 질문이 업데이트되어 이전 답변이 삭제되었습니다. 확인 후 다시 선택해 주세요.",
+  "approval.question.answerPlaceholder": "답변을 입력하세요",
+  "approval.question.commentPlaceholder": "코멘트 추가 (선택 사항)"
 }

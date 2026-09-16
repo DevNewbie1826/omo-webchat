@@ -117,6 +117,30 @@ type ModelRef struct {
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
 
+type Question struct {
+	Header      *string          `json:"header,omitempty"`
+	ID          *string          `json:"id,omitempty"`
+	MultiSelect *bool            `json:"multiSelect,omitempty"`
+	Options     []QuestionOption `json:"options,omitempty"`
+	Question    *string          `json:"question,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type QuestionAnswer struct {
+	Selected []string `json:"selected,omitempty"`
+	Text     *string  `json:"text,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
+type QuestionOption struct {
+	Description *string `json:"description,omitempty"`
+	Label       *string `json:"label,omitempty"`
+	// ExtraFields preserves unknown properties for forward-compatible round trips.
+	ExtraFields map[string]json.RawMessage `json:"-"`
+}
+
 type ResumeCandidate struct {
 	HostPath *string `json:"hostPath,omitempty"`
 	ID       string  `json:"id"`
@@ -192,9 +216,11 @@ type ApprovalFrame struct {
 	ID           string         `json:"id"`
 	Message      *string        `json:"message,omitempty"`
 	Method       ApprovalMethod `json:"method"`
+	NonBlocking  *bool          `json:"nonBlocking,omitempty"`
 	Options      []string       `json:"options,omitempty"`
 	Placeholder  *string        `json:"placeholder,omitempty"`
 	Prefill      *string        `json:"prefill,omitempty"`
+	Questions    []Question     `json:"questions,omitempty"`
 	RemainingMs  *int64         `json:"remainingMs,omitempty"`
 	SessionID    string         `json:"sessionId"`
 	Timeout      *int64         `json:"timeout,omitempty"`
@@ -593,13 +619,15 @@ type ActivityRefreshFrame struct {
 }
 
 type ApprovalRespondFrame struct {
-	Cancelled *bool   `json:"cancelled,omitempty"`
-	Confirmed *bool   `json:"confirmed,omitempty"`
-	ID        string  `json:"id"`
-	RequestID *string `json:"requestId,omitempty"`
-	SessionID string  `json:"sessionId"`
-	Type      string  `json:"type"`
-	Value     *string `json:"value,omitempty"`
+	Answers   *map[string]QuestionAnswer `json:"answers,omitempty"`
+	Cancelled *bool                      `json:"cancelled,omitempty"`
+	Comment   *string                    `json:"comment,omitempty"`
+	Confirmed *bool                      `json:"confirmed,omitempty"`
+	ID        string                     `json:"id"`
+	RequestID *string                    `json:"requestId,omitempty"`
+	SessionID string                     `json:"sessionId"`
+	Type      string                     `json:"type"`
+	Value     *string                    `json:"value,omitempty"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
 	ExtraFields map[string]json.RawMessage `json:"-"`
 }
@@ -978,6 +1006,60 @@ func (v ModelRef) MarshalJSON() ([]byte, error) {
 	return marshalWithExtra(plain(v), v.ExtraFields)
 }
 
+func (v *Question) UnmarshalJSON(data []byte) error {
+	type plain Question
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"header", "id", "multiSelect", "options", "question"}, []string{}, []string{"options"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v Question) MarshalJSON() ([]byte, error) {
+	type plain Question
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *QuestionAnswer) UnmarshalJSON(data []byte) error {
+	type plain QuestionAnswer
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"selected", "text"}, []string{}, []string{"selected"})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QuestionAnswer) MarshalJSON() ([]byte, error) {
+	type plain QuestionAnswer
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
+func (v *QuestionOption) UnmarshalJSON(data []byte) error {
+	type plain QuestionOption
+	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
+		return err
+	}
+	extra, err := captureExtraFields(data, []string{"description", "label"}, []string{}, []string{})
+	if err != nil {
+		return err
+	}
+	v.ExtraFields = extra
+	return nil
+}
+
+func (v QuestionOption) MarshalJSON() ([]byte, error) {
+	type plain QuestionOption
+	return marshalWithExtra(plain(v), v.ExtraFields)
+}
+
 func (v *ResumeCandidate) UnmarshalJSON(data []byte) error {
 	type plain ResumeCandidate
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
@@ -1127,7 +1209,7 @@ func (v *ApprovalFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"deadlineAtMs", "id", "message", "method", "options", "placeholder", "prefill", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options"})
+	extra, err := captureExtraFields(data, []string{"deadlineAtMs", "id", "message", "method", "nonBlocking", "options", "placeholder", "prefill", "questions", "remainingMs", "sessionId", "timeout", "title", "type"}, []string{}, []string{"options", "questions"})
 	if err != nil {
 		return err
 	}
@@ -1811,7 +1893,7 @@ func (v *ApprovalRespondFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"cancelled", "confirmed", "id", "requestId", "sessionId", "type", "value"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"answers", "cancelled", "comment", "confirmed", "id", "requestId", "sessionId", "type", "value"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2131,14 +2213,15 @@ func (v SessionsSubscribeFrame) MarshalJSON() ([]byte, error) {
 }
 
 type validationSchema struct {
-	Type       string
-	Format     string
-	Const      string
-	Enum       []string
-	AnyOf      []validationSchema
-	Properties map[string]validationSchema
-	Required   []string
-	Items      *validationSchema
+	Type                 string
+	Format               string
+	Const                string
+	Enum                 []string
+	AnyOf                []validationSchema
+	Properties           map[string]validationSchema
+	Required             []string
+	Items                *validationSchema
+	AdditionalProperties *validationSchema
 }
 
 func validateFrameJSON(data []byte, spec validationSchema) error {
@@ -2235,6 +2318,15 @@ func validateValue(value any, spec validationSchema, path string) error {
 			if item, exists := object[key]; exists {
 				if err := validateValue(item, child, path+"."+key); err != nil {
 					return err
+				}
+			}
+		}
+		if spec.AdditionalProperties != nil {
+			for key, item := range object {
+				if _, known := spec.Properties[key]; !known {
+					if err := validateValue(item, *spec.AdditionalProperties, path+"."+key); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -2405,10 +2497,11 @@ const (
 type ApprovalMethod = string
 
 const (
-	ApprovalMethodSelect  ApprovalMethod = "select"
-	ApprovalMethodConfirm ApprovalMethod = "confirm"
-	ApprovalMethodInput   ApprovalMethod = "input"
-	ApprovalMethodEditor  ApprovalMethod = "editor"
+	ApprovalMethodSelect   ApprovalMethod = "select"
+	ApprovalMethodConfirm  ApprovalMethod = "confirm"
+	ApprovalMethodInput    ApprovalMethod = "input"
+	ApprovalMethodEditor   ApprovalMethod = "editor"
+	ApprovalMethodQuestion ApprovalMethod = "question"
 )
 
 // NameOrigin values, from shared-types.json.
@@ -2585,7 +2678,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "approval":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor"}}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"deadlineAtMs": validationSchema{Type: "integer"}, "id": validationSchema{Type: "string"}, "message": validationSchema{Type: "string"}, "method": validationSchema{Type: "string", Enum: []string{"select", "confirm", "input", "editor", "question"}}, "nonBlocking": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "placeholder": validationSchema{Type: "string"}, "prefill": validationSchema{Type: "string"}, "questions": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"header": validationSchema{Type: "string"}, "id": validationSchema{Type: "string"}, "multiSelect": validationSchema{Type: "boolean"}, "options": validationSchema{Type: "array", Items: &validationSchema{Type: "object", Properties: map[string]validationSchema{"description": validationSchema{Type: "string"}, "label": validationSchema{Type: "string"}}}}, "question": validationSchema{Type: "string"}}}}, "remainingMs": validationSchema{Type: "integer"}, "sessionId": validationSchema{Type: "string"}, "timeout": validationSchema{Type: "integer"}, "title": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval"}}, Required: []string{"type", "sessionId", "id", "method"}}); err != nil {
 				return nil, err
 			}
 		case "commands":
@@ -2779,7 +2872,7 @@ func ParseClientFrame(data []byte) (ClientFrame, error) {
 				return nil, err
 			}
 		case "approval.respond":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"cancelled": validationSchema{Type: "boolean"}, "confirmed": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.respond"}, "value": validationSchema{Type: "string"}}, Required: []string{"type", "sessionId", "id"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"answers": validationSchema{Type: "object", AdditionalProperties: &validationSchema{Type: "object", Properties: map[string]validationSchema{"selected": validationSchema{Type: "array", Items: &validationSchema{Type: "string"}}, "text": validationSchema{Type: "string"}}}}, "cancelled": validationSchema{Type: "boolean"}, "comment": validationSchema{Type: "string"}, "confirmed": validationSchema{Type: "boolean"}, "id": validationSchema{Type: "string"}, "requestId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "approval.respond"}, "value": validationSchema{Type: "string"}}, Required: []string{"type", "sessionId", "id"}}); err != nil {
 				return nil, err
 			}
 		case "chat.commands":

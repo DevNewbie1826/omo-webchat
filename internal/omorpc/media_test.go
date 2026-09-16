@@ -15,13 +15,13 @@ import (
 // advertisement: media_placeholders travels alongside extension_events in
 // BOTH capability variables, after any capabilities the caller pre-seeded.
 func TestEnsureMediaPlaceholdersAdvertisedInBothSpellings(t *testing.T) {
-	env := EnsureExtensionEventsCapability([]string{
+	env := EnsureClientCapabilities([]string{
 		"SENPI_RPC_CLIENT_CAPABILITIES=custom_one",
 		"OMO_RPC_CLIENT_CAPABILITIES=custom_two,extension_events",
 	})
 	for key, want := range map[string]string{
-		"SENPI_RPC_CLIENT_CAPABILITIES": "custom_one,extension_events,media_placeholders",
-		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_two,extension_events,media_placeholders",
+		"SENPI_RPC_CLIENT_CAPABILITIES": "custom_one,extension_events,media_placeholders,question",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "custom_two,extension_events,media_placeholders,question",
 	} {
 		if got, _ := lookupEnv(env, key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)
@@ -29,7 +29,7 @@ func TestEnsureMediaPlaceholdersAdvertisedInBothSpellings(t *testing.T) {
 	}
 
 	// A bare environment still advertises the capability under both spellings.
-	bare := EnsureExtensionEventsCapability([]string{"PATH=/bin"})
+	bare := EnsureClientCapabilities([]string{"PATH=/bin"})
 	for _, key := range []string{"SENPI_RPC_CLIENT_CAPABILITIES", "OMO_RPC_CLIENT_CAPABILITIES"} {
 		got, _ := lookupEnv(bare, key)
 		for _, capability := range []string{"extension_events", "media_placeholders"} {
@@ -44,14 +44,14 @@ func TestEnsureMediaPlaceholdersAdvertisedInBothSpellings(t *testing.T) {
 // the injection twice yields the same environment, and pre-seeded duplicate
 // or padded entries collapse to one occurrence.
 func TestEnsureMediaPlaceholdersIdempotentAndDedupe(t *testing.T) {
-	env := EnsureExtensionEventsCapability([]string{
+	env := EnsureClientCapabilities([]string{
 		"SENPI_RPC_CLIENT_CAPABILITIES=media_placeholders, , media_placeholders,extension_events",
 		"OMO_RPC_CLIENT_CAPABILITIES=media_placeholders",
 	})
-	env = EnsureExtensionEventsCapability(env)
+	env = EnsureClientCapabilities(env)
 	for key, want := range map[string]string{
-		"SENPI_RPC_CLIENT_CAPABILITIES": "media_placeholders,extension_events",
-		"OMO_RPC_CLIENT_CAPABILITIES":   "media_placeholders,extension_events",
+		"SENPI_RPC_CLIENT_CAPABILITIES": "media_placeholders,extension_events,question",
+		"OMO_RPC_CLIENT_CAPABILITIES":   "media_placeholders,extension_events,question",
 	} {
 		if got, _ := lookupEnv(env, key); got != want {
 			t.Fatalf("%s = %q, want %q", key, got, want)

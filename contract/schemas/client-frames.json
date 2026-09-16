@@ -93,6 +93,8 @@
         "requestId": { "type": "string" },
         "id": { "type": "string" },
         "value": { "type": "string" },
+        "answers": { "type": "object", "additionalProperties": { "$ref": "shared-types.json#/$defs/QuestionAnswer" } },
+        "comment": { "type": "string" },
         "confirmed": { "type": "boolean" },
         "cancelled": { "type": "boolean" }
       }

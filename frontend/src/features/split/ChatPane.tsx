@@ -8,6 +8,9 @@ import type { ChatConnector } from "../../lib/chatWs";
 import { FileBrowser } from "../terminal/FileBrowser";
 import type { ChatSessionRef } from "../workspace/workspace";
 import { ApprovalDock } from "./ApprovalDock";
+import { QuestionDraftProvider } from "./ApprovalDockQuestions";
+import { approvalRequestOf } from "./chatSessionState";
+import { QuestionBar } from "./QuestionBar";
 import { ActivityShelf } from "./ActivityShelf";
 import { ChatComposer } from "./ChatComposer";
 import { ExternalWriteBanner } from "./ExternalWriteBanner";
@@ -337,6 +340,29 @@ export function ChatPane({
            above the composer, so computeShelfAvailableSpace budgets it like
            any other column child and the transcript keeps its reserve. */}
         {chat.pendingApproval && <ApprovalDock request={chat.pendingApproval} onRespond={chat.respondApproval} />}
+        {/* A structured question request is an approval-shaped ask: the same
+           inline dock renders it as one tabbed panel (a tab per question) and
+           sends one structured response keyed by question id. */}
+        {/* Non-blocking question: a one-line band directly above the
+           composer. It never takes over the composer — ordinary typing and
+           Enter still send normal chat messages and leave the question
+           pending; only the widget's own controls answer it. It stacks with
+           the approval dock when both are pending. */}
+        {chat.pendingQuestion && <QuestionDraftProvider key={chat.pendingQuestion.id} requestId={chat.pendingQuestion.id}>
+          {chat.pendingQuestion.nonBlocking !== true ? (
+            /* Absent or false flag: today's blocking behaviour, unchanged —
+               the dock takes over the space above the composer. */
+            <ApprovalDock
+              request={approvalRequestOf({ ...chat.pendingQuestion, method: "question" })}
+              onRespond={chat.respondQuestion}
+            />
+          ) : (
+            <QuestionBar
+              request={chat.pendingQuestion}
+              onAnswer={(answers, comment) => chat.respondQuestion({ answers, ...(comment !== undefined ? { comment } : {}) })}
+            />
+          )}
+        </QuestionDraftProvider>}
         <ChatComposer
           session={chatSession}
           commands={chat.commands}

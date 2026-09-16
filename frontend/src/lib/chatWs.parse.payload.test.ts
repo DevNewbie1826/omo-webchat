@@ -269,10 +269,16 @@ describe("parseChatServerFrame", () => {
     expect(
       parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "select", options: ["yes", "no"] }),
     ).toMatchObject({ type: "approval", method: "select" });
-    expect(parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "explode" })).toBeNull();
+    // An unknown method never parses as a strict approval frame, but the
+    // safety net surfaces it as the minimal fallback instead of dropping it.
+    expect(
+      parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "explode" }),
+    ).toMatchObject({ type: "approval", fallback: true, id: "a1", method: "explode" });
+    // Malformed options also reject the strict parse and fall back, dropping
+    // only the malformed field while the request itself stays visible.
     expect(
       parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1", method: "select", options: ["yes", 1] }),
-    ).toBeNull();
+    ).toMatchObject({ type: "approval", fallback: true, id: "a1" });
   });
 
   it("carries optional approval deadlineAtMs and remainingMs when present", () => {
