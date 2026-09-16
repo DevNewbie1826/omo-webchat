@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -7,7 +7,10 @@ import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
 
 const observed = vi.hoisted(() => {
-  const state: { current?: Virtualizer<Element, Element> } = {};
+  const state: {
+    current?: Virtualizer<Element, Element>;
+    beforeCompensation?: (instance: Virtualizer<Element, Element>) => void;
+  } = {};
   // JSDOM needs the browser capability which Chromium supplies in the real-App test.
   Object.defineProperty(window, "onscrollend", { configurable: true, value: null });
   return state;
@@ -19,6 +22,7 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
     useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
       const instance = actual.useVirtualizer(...args);
       observed.current = instance;
+      useLayoutEffect(() => { observed.beforeCompensation?.(instance); });
       return instance;
     },
   };
@@ -113,6 +117,7 @@ function unmount(h: Harness): void {
   act(() => h.root.unmount());
   h.container.remove();
   delete observed.current;
+  delete observed.beforeCompensation;
 }
 
 /** Park the reader at a settled offset: scroll there, gesture ends. */
@@ -157,6 +162,83 @@ it("keeps the reader's distance from the bottom when a warm chunk prepends", () 
     expect(distanceFromBottom(h)).toBe(parkedDistance);
     expect(viewportOffset(h, "tail row 1")).toBe(parkedRow);
     expect(h.getTop()).toBe(1000 + 3 * ROW_HEIGHT);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("anchors a retained row when warming folds away the old leading row", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const distance = distanceFromBottom(h);
+    const visible = viewportOffset(h, "tail row 1");
+    // An orphan tool-result row disappears once its earlier invocation loads.
+    h.render([...rows("head", 3), ...tail.slice(1)]);
+    expect(distanceFromBottom(h)).toBe(distance);
+    expect(viewportOffset(h, "tail row 1")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("replays warm compensation clamped before the DOM sizer catches up", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    let domHeight = TAIL_HEIGHT;
+    Object.defineProperty(h.body, "scrollTop", {
+      configurable: true, get: h.getTop,
+      set: (value: number) => h.setTop(Math.max(0, Math.min(value, domHeight - CLIENT_HEIGHT))),
+    });
+    const next = [...rows("head", 20), ...tail];
+    h.render(next);
+    expect(h.getTop()).toBe(TAIL_HEIGHT - CLIENT_HEIGHT);
+    domHeight = h.body.scrollHeight;
+    // Measurements were current in the first commit, but its DOM height was
+    // not. A second commit publishes the new sizer without changing the rows.
+    h.render(next);
+    expect(distanceFromBottom(h)).toBe(400);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([false, true])("measures against the post-prepend fold before compensation commits (first measurement=%s)", (first) => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    observed.beforeCompensation = (instance) => {
+      delete observed.beforeCompensation;
+      const row = instance.measurementsCache[36];
+      if (!row) throw new Error("missing tail row above the compensated fold");
+      expect(row.start).toBeGreaterThan(h.getTop());
+      if (first) instance.itemSizeCache.delete(row.key);
+      instance.resizeItem(36, row.size + 206);
+    };
+    h.render([...rows("head", 24), ...tail]);
+    expect(distanceFromBottom(h)).toBe(400);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("does not revert warm compensation when a tail measurement precedes its scroll event", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    const row = h.instance.measurementsCache[2];
+    if (!row) throw new Error("missing tail row");
+    // The virtualizer still holds the pre-compensation native scroll offset.
+    // A ResizeObserver delivery can run before the app write's scroll event.
+    act(() => h.instance.resizeItem(2, row.size + 20));
+    expect(h.getTop()).toBe(2556);
   } finally {
     unmount(h);
   }

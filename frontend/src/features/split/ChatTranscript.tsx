@@ -562,6 +562,7 @@ export function ChatTranscript({
   // the last compensation; the effect below holds that row still while the
   // block above it grows. Null whenever no warm chunk is settling.
   const leadingKeyRef = useRef<string | undefined>(undefined);
+  const previousStartsRef = useRef(new Map<string, number>());
   const anchorRef = useRef<{ readonly key: string; readonly index: number; readonly start: number } | null>(null);
   // Row identity is assigned over the FULL merged list before any hiding:
   // an empty assistant completion (invisible but state-retained as a
@@ -589,16 +590,18 @@ export function ChatTranscript({
     for (const key of estimateCache.keys()) {
       if (!live.has(key)) estimateCache.delete(key);
     }
-    // A changed leading key whose predecessor is still in the list means rows
-    // were inserted in front of it; a leading key whose predecessor is gone is
-    // a replaced transcript (chat switch, re-sync), which prepends nothing.
-    // The predecessor is the anchor: it sat at offset 0 before this chunk.
+    // A warm chunk can fold the old leading orphan tool result into its
+    // newly loaded invocation. Anchor the first surviving row instead, using
+    // its committed start (not zero). A replaced chat has no surviving row.
     const leading = keys[0];
     if (leading !== leadingKeyRef.current) {
-      const previous = leadingKeyRef.current;
-      const seam = previous === undefined ? -1 : keys.indexOf(previous);
-      if (seam > 0 && previous !== undefined && anchorRef.current === null) {
-        anchorRef.current = { key: previous, index: seam, start: 0 };
+      if (anchorRef.current === null) {
+        const seam = keys.findIndex((key) => previousStartsRef.current.has(key));
+        const key = keys[seam];
+        const start = key === undefined ? undefined : previousStartsRef.current.get(key);
+        if (seam > 0 && key !== undefined && start !== undefined) {
+          anchorRef.current = { key, index: seam, start };
+        }
       }
       leadingKeyRef.current = leading;
     }
@@ -670,8 +673,12 @@ export function ChatTranscript({
         deferredAdjustmentRef.current += adjustments;
         return;
       }
-      const top = offset + adjustments;
+      // Our warm correction may precede its native scroll notification, so
+      // virtual-core's offset can still describe the pre-chunk viewport.
+      // Measurement adjustments are per-call deltas: apply them to the actual
+      // viewport rather than reverting an already applied warm correction.
       const previous = element.scrollTop;
+      const top = previous + adjustments;
       element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
       if (element.scrollTop !== previous) noteProgrammaticWrite();
     },
@@ -697,7 +704,9 @@ export function ChatTranscript({
       if (element === null) return false;
       // The offset the reader will end up at: what the scrollport shows now
       // plus any compensation held back until the current gesture ends.
-      const fold = element.scrollTop + deferredAdjustmentRef.current;
+      const anchorStart = anchor === null ? undefined : instance.measurementsCache[anchor.index]?.start;
+      const warmAdjustment = anchor !== null && anchorStart !== undefined ? anchorStart - anchor.start : 0;
+      const fold = element.scrollTop + deferredAdjustmentRef.current + warmAdjustment;
       if (!instance.itemSizeCache.has(item.key)) return item.start < fold;
       return item.start + item.size <= fold && instance.scrollDirection !== "backward";
     };
@@ -717,10 +726,22 @@ export function ChatTranscript({
     if (anchor === null || element === null) return;
     const start = virtualizer.measurementsCache[anchor.index]?.start;
     if (start === undefined || start === anchor.start) return;
-    anchorRef.current = { ...anchor, start };
     const previous = element.scrollTop;
     element.scrollTop += start - anchor.start;
+    // Ref measurements can advance before the DOM sizer's next commit. Only
+    // retire the applied delta; browser clamping leaves the rest for that
+    // commit even when the measurement itself no longer changes.
+    anchorRef.current = { ...anchor, start: anchor.start + element.scrollTop - previous };
     if (element.scrollTop !== previous) noteProgrammaticWrite();
+  });
+
+  useLayoutEffect(() => {
+    const starts = new Map<string, number>();
+    keys.forEach((key, index) => {
+      const item = virtualizer.measurementsCache[index];
+      if (item !== undefined) starts.set(key, item.start);
+    });
+    previousStartsRef.current = starts;
   });
 
   // The reader moving the viewport themselves retires the anchor: from here
