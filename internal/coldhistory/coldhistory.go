@@ -131,7 +131,10 @@ func Stream(ctx context.Context, sessionPath string, options Options, emit func(
 
 // StreamTailFirst reads sessionPath once, indexes the active branch, then emits
 // pages covering the last tailEntries entries in ascending order, followed by
-// earlier ranges newest-first in chunks of at most warmChunk entries. Page.Start
+// earlier ranges newest-first in chunks of at most warmChunk entries. A warm
+// range whose entries exceed the page byte or count bound is itself split
+// into several pages; those pages also arrive newest-first, so a consumer
+// that prepends each page rebuilds the branch in arrival order. Page.Start
 // is the absolute branch index of Entries. Page.Final is true on the page that
 // reaches the root. Page.Head is true on backward warm chunks. Zero tailEntries
 // or warmChunk select DefaultTailEntries and DefaultWarmChunk.
@@ -462,6 +465,9 @@ func emitRange(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, 
 		}
 		return nil
 	}
+	if head {
+		return emitHeadRange(ctx, file, opts, metadata, branch, lo, hi, complete, emit)
+	}
 
 	page := make([]json.RawMessage, 0, min(opts.pageEntries, hi-lo))
 	pageBytes := 0
@@ -493,6 +499,57 @@ func emitRange(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, 
 		page = append(page, raw)
 		pageBytes += len(raw)
 		if i == hi-1 {
+			return flush(complete)
+		}
+	}
+	return nil
+}
+
+// emitHeadRange emits one backward warm range [lo, hi) newest-first: it walks
+// from hi-1 down to lo and flushes each byte/count-bounded page as soon as it
+// is full, so a range the bounds split across several pages delivers those
+// pages newest-first too. Entries within a page stay in ascending branch
+// order, so a prepend-style consumer rebuilds the range by stacking pages in
+// arrival order; only the page that reaches lo, the oldest entry of the
+// range, can carry complete.
+func emitHeadRange(ctx context.Context, file io.ReadSeeker, opts normalizedOptions, metadata Metadata, branch []entryRef, lo, hi int, complete bool, emit func(Metadata, Page) error) error {
+	page := make([]json.RawMessage, 0, min(opts.pageEntries, hi-lo))
+	pageBytes := 0
+	pageTop := hi - 1
+	flush := func(final bool) error {
+		start := pageTop - len(page) + 1
+		entries := make([]json.RawMessage, len(page))
+		for i, raw := range page {
+			entries[len(page)-1-i] = raw
+		}
+		if err := emit(metadata, Page{Entries: entries, Start: start, Final: final, Head: true}); err != nil {
+			return fmt.Errorf("page callback: %w", err)
+		}
+		page = make([]json.RawMessage, 0, min(opts.pageEntries, start-lo))
+		pageBytes = 0
+		return nil
+	}
+
+	for i := hi - 1; i >= lo; i-- {
+		ref := branch[i]
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		raw, err := readRecord(file, ref, opts.chunkBytes)
+		if err != nil {
+			return lineError(ErrCorruptLine, ref.line, ref.offset, err)
+		}
+		if len(page) > 0 && (len(page) >= opts.pageEntries || pageBytes+len(raw) > opts.pageBytes) {
+			if err := flush(false); err != nil {
+				return err
+			}
+		}
+		if len(page) == 0 {
+			pageTop = i
+		}
+		page = append(page, raw)
+		pageBytes += len(raw)
+		if i == lo {
 			return flush(complete)
 		}
 	}

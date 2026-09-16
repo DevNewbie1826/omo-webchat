@@ -398,6 +398,170 @@ func branchIndexOf(t *testing.T, id string) int {
 	return n
 }
 
+// writeProgressiveSizedFixture writes a linear active branch whose message
+// bodies vary by branch index, so a fixture can grow exactly the entries
+// that must push a backward range past the reader's own page-byte budget
+// while the rest of the branch stays small.
+func writeProgressiveSizedFixture(t *testing.T, dir, name string, entries int, padFor func(int) int) (path, leafID string) {
+	t.Helper()
+	path = filepath.Join(dir, name)
+	sum := sha256.Sum256([]byte(path))
+	durableID := "durable-" + hex.EncodeToString(sum[:4]) + "-7d24-4b1e-resume"
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := bufio.NewWriterSize(file, 64<<10)
+	encoder := json.NewEncoder(writer)
+	if err := encoder.Encode(map[string]any{
+		"type": "session", "version": 3, "id": durableID,
+		"timestamp": "2026-09-16T00:00:00.000Z", "cwd": dir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	parent := any(nil)
+	for i := 0; i < entries; i++ {
+		id := fmt.Sprintf("entry-%04d", i)
+		entry := map[string]any{
+			"type": "message", "id": id, "parentId": parent,
+			"timestamp": "2026-09-16T00:00:01.000Z",
+			"message": map[string]any{
+				"role":    "user",
+				"content": []any{map[string]any{"type": "text", "text": strings.Repeat("x", padFor(i))}},
+			},
+		}
+		if err := encoder.Encode(entry); err != nil {
+			t.Fatal(err)
+		}
+		parent, leafID = id, id
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path, leafID
+}
+
+// TestProgressiveHeadPagesStayNewestFirstAcrossReaderPageSplits pins the
+// second page boundary: the history reader itself splits one backward warm
+// range across several callbacks once the range's entries exceed its own
+// page-byte budget (4MiB by default; a single line stays under that cap).
+// Head pages must remain strictly newest-first across those callbacks too,
+// and historyComplete may land only on the final head page, the one that
+// starts at branch index 0. The byte-budget split inside a callback is
+// already covered above with 4KiB bodies; these fixtures cross the reader's
+// own budget, which the 4KiB bodies never reach.
+func TestProgressiveHeadPagesStayNewestFirstAcrossReaderPageSplits(t *testing.T) {
+	mib := 1 << 20
+	cases := []struct {
+		name    string
+		entries int
+		padFor  func(int) int
+	}{
+		{
+			// The two 3MiB root entries push the final root-reaching range
+			// (2 entries, ~6MiB) past the reader's page budget, so the reader
+			// emits that one range as one callback per entry.
+			name:    "final head range splits across reader callbacks",
+			entries: 62,
+			padFor: func(i int) int {
+				if i < 2 {
+					return 3 * mib
+				}
+				return 1 << 10
+			},
+		},
+		{
+			// 50KiB bodies push a full 100-entry warm range past the same
+			// budget, splitting mid-range instead of at the branch root.
+			name:    "interior warm range splits across reader callbacks",
+			entries: 162,
+			padFor:  func(int) int { return 50 << 10 },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDaemon(t)
+			client := dial(t, d)
+			store := newMemStore()
+			mgr := testManager(t, client, store, 64)
+			path, leafID := writeProgressiveSizedFixture(t, t.TempDir(), "reader-split-session.jsonl", tc.entries, tc.padFor)
+
+			sess, sub, detach := attachScriptedTail(t, d, mgr, store, "prog-reader-split", path, "", leafID, true)
+			defer detach()
+			pages, _ := collectMarkedHydration(t, sess, sub)
+
+			var tailIDs []string
+			var terminal *EntriesFrame
+			var heads []EntriesFrame
+			for i := range pages {
+				if pages[i].Final {
+					terminal = &pages[i]
+					continue
+				}
+				if pages[i].Segment == "head" {
+					heads = append(heads, pages[i])
+					continue
+				}
+				tailIDs = append(tailIDs, pageEntryIDs(t, pages[i])...)
+			}
+			if terminal == nil {
+				t.Fatalf("no terminal page: %+v", pages)
+			}
+			assertIDs(t, tailIDs, wantIDs(tc.entries-60, tc.entries))
+			if terminal.HistoryComplete == nil || *terminal.HistoryComplete {
+				t.Fatalf("terminal historyComplete = %v, want explicit false while head chunks follow", terminal.HistoryComplete)
+			}
+			warmRanges := (tc.entries - 60 + 99) / 100
+			if len(heads) <= warmRanges {
+				t.Fatalf("%d head pages for %d warm ranges, fixture must split ranges across pages", len(heads), warmRanges)
+			}
+
+			for k, page := range heads {
+				ids := pageEntryIDs(t, page)
+				if len(ids) == 0 {
+					t.Fatalf("head page %d is empty", k)
+				}
+				// Within one wire page entries ascend branch order.
+				first, last := branchIndexOf(t, ids[0]), branchIndexOf(t, ids[len(ids)-1])
+				for j := 1; j < len(ids); j++ {
+					if branchIndexOf(t, ids[j]) != first+j {
+						t.Fatalf("head page %d is not contiguous ascending branch order: %v", k, ids)
+					}
+				}
+				// The next head page must be strictly older: its last entry
+				// directly precedes this page's first entry, page by page.
+				if k > 0 {
+					prevIDs := pageEntryIDs(t, heads[k-1])
+					if want := branchIndexOf(t, prevIDs[0]); last+1 != want {
+						t.Fatalf("head page %d covers [%d..%d], but page %d starts at %d: not strictly newest-first", k, first, last, k-1, want)
+					}
+				}
+				if k < len(heads)-1 && page.HistoryComplete != nil {
+					t.Fatalf("non-final head page %d carries historyComplete: %+v", k, page)
+				}
+			}
+			finalIDs := pageEntryIDs(t, heads[len(heads)-1])
+			if got := branchIndexOf(t, finalIDs[0]); got != 0 {
+				t.Fatalf("final head page starts at branch index %d, want 0 (root)", got)
+			}
+			if page := heads[len(heads)-1]; page.HistoryComplete == nil || !*page.HistoryComplete {
+				t.Fatalf("final head page historyComplete = %v, want true", page.HistoryComplete)
+			}
+
+			// Prepending each head page in arrival order still rebuilds the branch.
+			var rebuilt []string
+			for i := len(heads) - 1; i >= 0; i-- {
+				rebuilt = append(rebuilt, pageEntryIDs(t, heads[i])...)
+			}
+			rebuilt = append(rebuilt, tailIDs...)
+			assertIDs(t, rebuilt, wantIDs(0, tc.entries))
+		})
+	}
+}
+
 // TestProgressiveHeadPagesStayStrictlyNewestFirstWhenRangesSplit pins the
 // wire invariant a prepend-style client depends on: every successive head
 // page is strictly older than the one before it, page by page, even when the

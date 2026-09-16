@@ -132,6 +132,112 @@ func writeLinearBranch(t *testing.T, entries int) string {
 	return writeFixture(t, strings.Join(lines, "\n")+"\n")
 }
 
+func paddedEntryLine(i, pad int) string {
+	parent := "null"
+	if i > 0 {
+		parent = fmt.Sprintf("%q", fmt.Sprintf("e-%d", i-1))
+	}
+	return fmt.Sprintf(`{"type":"message","id":"e-%d","parentId":%s,"pad":"%s"}`, i, parent, strings.Repeat("x", pad))
+}
+
+func writePaddedLinearBranch(t *testing.T, entries, pad int) string {
+	t.Helper()
+	lines := []string{testHeader}
+	for i := 0; i < entries; i++ {
+		lines = append(lines, paddedEntryLine(i, pad))
+	}
+	return writeFixture(t, strings.Join(lines, "\n")+"\n")
+}
+
+// TestStreamTailFirstEmitsSplitHeadRangesNewestFirst pins the reader's own
+// page boundary: when the byte or count bound splits one backward warm range
+// into several pages, those pages must arrive newest-first, so a consumer
+// that prepends each page rebuilds the range in order, and the page that
+// reaches the branch root is the final one. A 7-entry branch with a 3-entry
+// tail leaves the single warm range [e-0..e-3]; each subtest splits that one
+// range across two pages by a different bound.
+func TestStreamTailFirstEmitsSplitHeadRangesNewestFirst(t *testing.T) {
+	const (
+		entries = 7
+		tail    = 3
+		warm    = 4
+		pad     = 100
+	)
+	want := []struct {
+		ids   []string
+		start int
+		head  bool
+		final bool
+	}{
+		{ids: []string{"e-4", "e-5"}, start: 4},
+		{ids: []string{"e-6"}, start: 6},
+		{ids: []string{"e-2", "e-3"}, start: 2, head: true},
+		{ids: []string{"e-0", "e-1"}, start: 0, head: true, final: true},
+	}
+	// Two padded entries fit one page, three never do.
+	twoEntries := 2 * len(paddedEntryLine(1, pad))
+	splitByBytes := Options{MaxLineBytes: twoEntries + 10, PageBytes: twoEntries + 10, PageEntries: 10}
+	splitByCount := Options{PageEntries: 2}
+
+	for _, tc := range []struct {
+		name string
+		opts Options
+	}{
+		{name: "byte bound splits one warm range", opts: splitByBytes},
+		{name: "count bound splits one warm range", opts: splitByCount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writePaddedLinearBranch(t, entries, pad)
+			var pages []Page
+			metadata, err := StreamTailFirst(context.Background(), path, tc.opts, tail, warm, func(_ Metadata, page Page) error {
+				pages = append(pages, page)
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if metadata.LeafID != "e-6" || metadata.Total != entries {
+				t.Fatalf("metadata = %+v, want leaf e-6 total %d", metadata, entries)
+			}
+			if len(pages) != len(want) {
+				t.Fatalf("got %d pages %s, want %d (the warm range must split)", len(pages), summarizePages(t, pages), len(want))
+			}
+			for i, got := range pages {
+				ids := pageIDs(t, []Page{got})
+				if fmt.Sprint(ids) != fmt.Sprint(want[i].ids) {
+					t.Fatalf("page %d ids = %v, want %v (pages must arrive newest-first)", i, ids, want[i].ids)
+				}
+				if got.Start != want[i].start || got.Head != want[i].head || got.Final != want[i].final {
+					t.Fatalf("page %d start/head/final = %d/%v/%v, want %d/%v/%v", i, got.Start, got.Head, got.Final, want[i].start, want[i].head, want[i].final)
+				}
+			}
+			// Successive head pages must be strictly older: the last entry of
+			// each page directly precedes the first entry of the page before it.
+			var headIDs [][]string
+			for _, page := range pages {
+				if page.Head {
+					headIDs = append(headIDs, pageIDs(t, []Page{page}))
+				}
+			}
+			for k := 1; k < len(headIDs); k++ {
+				older, newer := headIDs[k], headIDs[k-1]
+				if branchIDIndex(t, older[len(older)-1])+1 != branchIDIndex(t, newer[0]) {
+					t.Fatalf("head pages %d and %d are not adjacent newest-first: %v then %v", k-1, k, newer, older)
+				}
+			}
+		})
+	}
+}
+
+func branchIDIndex(t *testing.T, id string) int {
+	t.Helper()
+	var n int
+	if _, err := fmt.Sscanf(id, "e-%d", &n); err != nil {
+		t.Fatalf("entry id %q has no index", id)
+	}
+	return n
+}
+
 func summarizePages(t *testing.T, pages []Page) string {
 	t.Helper()
 	parts := make([]string, 0, len(pages))
