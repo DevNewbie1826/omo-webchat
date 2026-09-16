@@ -23,11 +23,24 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
     },
   };
 });
-vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+let notifyContentResize: (() => void) | undefined;
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.spyOn(performance, "now").mockReturnValue(100);
+  notifyContentResize = undefined;
+  const OriginalResizeObserver = ResizeObserver;
+  vi.stubGlobal("ResizeObserver", class extends OriginalResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) { super(callback); }
+    override observe(target: Element, options?: ResizeObserverOptions): void {
+      if (target.matches(".th-chat-content")) notifyContentResize = () => this.callback([], this);
+      super.observe(target, options);
+    }
+  });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 // Same geometry as the scroll-adjust harness: the test ResizeObserver measures
 // every rendered row at 768px, so 15 tail rows total 11520. Unlike that
@@ -303,7 +316,7 @@ it("keeps the warm anchor after a settled measurement correction echo", () => {
   }
 });
 
-it("retires the warm anchor when a held pointer returns to a written position after 400ms", async () => {
+it.each([true, false])("retires the warm anchor for an unreleased contact (pointer moves: %s)", async (moves) => {
   const frames = new Map<number, FrameRequestCallback>();
   let frameId = 0;
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
@@ -337,7 +350,7 @@ it("retires the warm anchor when a held pointer returns to a written position af
     act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
     for (const now of [450, 501]) {
       vi.mocked(performance.now).mockReturnValue(now);
-      act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
+      if (moves) act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
     }
     h.body.scrollTop = 3304;
     await scroll();
@@ -346,6 +359,37 @@ it("retires the warm anchor when a held pointer returns to a written position af
     await act(async () => h.instance.resizeItem(4, warmRow.size + 20));
     expect(h.getTop()).toBe(3304);
     expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each(["outside release", "quiet resize"])("preserves a fresh warm anchor after %s", (transition) => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    if (transition === "outside release") {
+      act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1, bubbles: true })));
+      vi.mocked(performance.now).mockReturnValue(110);
+      act(() => document.body.dispatchEvent(new PointerEvent("pointerup", { buttons: 0, bubbles: true })));
+    }
+    vi.mocked(performance.now).mockReturnValue(450);
+    if (transition === "quiet resize") {
+      const notify = notifyContentResize;
+      if (!notify) throw new Error("missing content resize observer");
+      act(() => notify());
+    }
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    if (transition === "outside release") {
+      act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 0 })));
+    }
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm row");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(2566);
   } finally {
     unmount(h);
   }

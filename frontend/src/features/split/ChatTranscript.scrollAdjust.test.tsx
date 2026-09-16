@@ -151,6 +151,50 @@ it("keeps follow after explicit row positioning and growth before its notificati
   }
 });
 
+it.each(["jump", "restore", "focus"])("hands ownership to explicit %s without scrollend before a growing-content echo", (transition) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: {
+        configurable: true, get: h.getTop,
+        set: (value: number) => h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT))),
+      },
+    });
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: -1000 })));
+    beginGesture(h, 1000);
+    const button = h.container.querySelector<HTMLButtonElement>(".th-chat-scroll-bottom");
+    if (!button) throw new Error("missing jump control");
+    vi.mocked(performance.now).mockReturnValue(150);
+    if (transition === "jump") act(() => button.click());
+    else act(() => h.root.render(<ChatTranscript items={makeItems()} streaming="" thinking="" toolCalls={{}}
+      doneReason={null} error="" restoreVersion={transition === "restore" ? 1 : 0}
+      focused={transition === "focus"} historyLoaded />));
+    expect(h.getTop()).toBe(11120);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.body.scrollHeight).toBe(11620);
+    expect(h.getTop()).toBe(11120);
+    vi.mocked(performance.now).mockReturnValue(160);
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+    h.body.scrollTop = 11020;
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
 it("applies a measurement correction immediately when no gesture is in flight", () => {
   const h = mountTranscript();
   try {

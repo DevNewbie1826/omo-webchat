@@ -727,8 +727,8 @@ export function ChatTranscript({
   // their own position, not the pre-chunk one, is what later rows are held
   // against. Our own compensation write is not that signal.
   const onTranscriptScroll: typeof onScroll = (event) => {
-    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
     onScroll(event);
+    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
   };
 
   // Replay the compensation dropped during a scroll gesture once that
@@ -927,7 +927,7 @@ export function ChatTranscript({
         </div>
       </div>
       {showScrollToBottom && (
-        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={scrollToBottom}>
+        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={() => scrollToBottom({ readerCommand: true })}>
           ↓
         </button>
       )}

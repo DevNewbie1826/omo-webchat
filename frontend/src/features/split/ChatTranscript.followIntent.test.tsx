@@ -314,6 +314,62 @@ it("does not renew reader ownership from quiet app echoes or pointer hover", () 
   expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
 });
 
+it("keeps an unreleased stationary contact active beyond the grace period", () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+  vi.mocked(performance.now).mockReturnValue(501);
+  body.scrollTop = 5600;
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("retains momentum ownership through three cached app coordinates", () => {
+  const body = prepareWarmFollow(6020);
+  let height = 6020;
+  Object.defineProperty(body, "scrollHeight", { configurable: true, get: () => height });
+  // Clamp each real app write against the current content height.
+  let top = body.scrollTop;
+  Object.defineProperty(body, "scrollTop", {
+    configurable: true, get: () => top,
+    set: (value: number) => { top = Math.max(0, Math.min(value, height - 400)); },
+  });
+  for (const version of [2, 3, 4]) {
+    height = 5980 + version * 20;
+    act(() => root.render(
+      <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={version} focused />,
+    ));
+    expect(body.scrollTop).toBe(height - 400);
+    act(() => body.dispatchEvent(new Event("scroll")));
+  }
+  act(() => body.dispatchEvent(new TouchEvent("touchstart")));
+  vi.mocked(performance.now).mockReturnValue(101);
+  act(() => body.dispatchEvent(new TouchEvent("touchend")));
+  for (const [now, position] of [[200, 5650], [300, 5640], [450, 5620], [550, 5600]] as const) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    body.scrollTop = position;
+    act(() => body.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector(".th-chat-scroll-bottom") !== null).toBe(now === 550);
+  }
+});
+
+it.each(["pointerup", "pointercancel"])("ends contact on outside %s so hover cannot own a quiet echo", (release) => {
+  const body = prepareWarmFollow();
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1, bubbles: true })));
+  vi.mocked(performance.now).mockReturnValue(110);
+  act(() => document.body.dispatchEvent(new PointerEvent(release, { buttons: 0, bubbles: true })));
+  vi.mocked(performance.now).mockReturnValue(450);
+  act(() => {
+    body.dispatchEvent(new PointerEvent("pointermove", { buttons: 0 }));
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+});
+
 it("still drops follow when the reader genuinely scrolls up while history warms", () => {
   const body = prepareWarmFollow();
   body.scrollTop = 9000;

@@ -9,13 +9,15 @@ const PROGRAMMATIC_WRITE_WINDOW_MS = 600;
 const PROGRAMMATIC_WRITE_EPSILON = 1;
 const PROGRAMMATIC_WRITE_LIMIT = 16;
 const READER_INPUT_GRACE_MS = 300;
+const MOTION_STREAK_GAP_MS = 250;
+const MOTION_STREAK_DISTANCE = 400;
 
 export interface ChatScrollState {
   readonly scrollRef: RefObject<HTMLDivElement>;
   readonly contentRef: RefObject<HTMLDivElement>;
   readonly showScrollToBottom: boolean;
   readonly onScroll: UIEventHandler<HTMLDivElement>;
-  readonly scrollToBottom: () => void;
+  readonly scrollToBottom: (options?: { readerCommand?: boolean }) => void;
   readonly isFollowing: () => boolean;
   readonly isReaderInputActive: () => boolean;
   readonly noteProgrammaticWrite: () => void;
@@ -35,6 +37,7 @@ export function useChatScroll(
   const followRef = useRef(true);
   const lastReaderSignalRef = useRef(-Infinity);
   const pointerDownRef = useRef(false);
+  const lastScrollEventRef = useRef<{ pos: number; at: number } | null>(null);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
   const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
   const restoredVersionRef = useRef<number | undefined>(undefined);
@@ -42,20 +45,25 @@ export function useChatScroll(
 
   const isFollowing = useCallback(() => followRef.current, []);
   const isReaderInputActive = useCallback(() =>
-    performance.now() - lastReaderSignalRef.current <= READER_INPUT_GRACE_MS, []);
+    pointerDownRef.current || performance.now() - lastReaderSignalRef.current <= READER_INPUT_GRACE_MS, []);
 
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
     const noteSignal = (): void => { lastReaderSignalRef.current = performance.now(); };
     const pointerDown = (): void => { pointerDownRef.current = true; noteSignal(); };
-    const pointerEnd = (): void => { pointerDownRef.current = false; noteSignal(); };
+    const pointerEnd = (): void => {
+      if (!pointerDownRef.current) return;
+      pointerDownRef.current = false;
+      noteSignal();
+    };
     const pointerMove = (): void => { if (pointerDownRef.current) noteSignal(); };
-    const scrollEnd = (): void => { lastReaderSignalRef.current = -Infinity; };
+    const scrollEnd = (): void => {
+      lastReaderSignalRef.current = -Infinity;
+      lastScrollEventRef.current = null;
+    };
     const listeners = [
       ["pointerdown", pointerDown],
-      ["pointerup", pointerEnd],
-      ["pointercancel", pointerEnd],
       ["pointermove", pointerMove],
       ["touchstart", noteSignal],
       ["touchmove", noteSignal],
@@ -64,8 +72,12 @@ export function useChatScroll(
       ["scrollend", scrollEnd],
     ] as const;
     for (const [event, listener] of listeners) element.addEventListener(event, listener, { passive: true });
+    window.addEventListener("pointerup", pointerEnd, { capture: true, passive: true });
+    window.addEventListener("pointercancel", pointerEnd, { capture: true, passive: true });
     return () => {
       for (const [event, listener] of listeners) element.removeEventListener(event, listener);
+      window.removeEventListener("pointerup", pointerEnd, true);
+      window.removeEventListener("pointercancel", pointerEnd, true);
     };
   }, []);
 
@@ -85,7 +97,12 @@ export function useChatScroll(
     );
   }, []);
 
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((options?: { readerCommand?: boolean }) => {
+    if (options?.readerCommand) {
+      lastReaderSignalRef.current = -Infinity;
+      pointerDownRef.current = false;
+      lastScrollEventRef.current = null;
+    }
     const element = scrollRef.current;
     if (!element) return;
     onScrollToBottomIntent?.();
@@ -103,10 +120,7 @@ export function useChatScroll(
     const element = scrollRef.current;
     if (!element) return;
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
-    // Unwritten movement carries reader ownership through native momentum.
-    // App echoes are neutral: they neither renew nor end an active gesture.
     const appOwned = isRecentProgrammaticWrite(element.scrollTop);
-    if (!appOwned) lastReaderSignalRef.current = performance.now();
     if (isReaderInputActive()) {
       followRef.current = atBottom;
       setShowScrollToBottom(!atBottom);
@@ -117,14 +131,30 @@ export function useChatScroll(
     setShowScrollToBottom(!atBottom);
   }, [isReaderInputActive, isRecentProgrammaticWrite]);
 
+  const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const pos = element.scrollTop;
+    const at = performance.now();
+    const previous = lastScrollEventRef.current;
+    const distance = previous === null ? 0 : Math.abs(pos - previous.pos);
+    // Stationary echoes are neutral; moving notifications in a native streak
+    // retain reader ownership even through historical app-write coordinates.
+    const continuingMotion = previous !== null && at - previous.at <= MOTION_STREAK_GAP_MS
+      && distance > 0 && distance <= MOTION_STREAK_DISTANCE;
+    lastScrollEventRef.current = { pos, at };
+    if (continuingMotion || !isRecentProgrammaticWrite(pos)) lastReaderSignalRef.current = at;
+    updateIntent();
+  }, [isRecentProgrammaticWrite, updateIntent]);
+
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
     restoredVersionRef.current = restoreVersion;
-    scrollToBottom();
+    scrollToBottom({ readerCommand: true });
   }, [restoreVersion, scrollToBottom]);
 
   useEffect(() => {
-    if (focused) scrollToBottom();
+    if (focused) scrollToBottom({ readerCommand: true });
   }, [focused, scrollToBottom]);
 
   useEffect(() => {
@@ -144,7 +174,7 @@ export function useChatScroll(
     scrollRef,
     contentRef,
     showScrollToBottom,
-    onScroll: updateIntent,
+    onScroll,
     scrollToBottom,
     isFollowing,
     isReaderInputActive,
