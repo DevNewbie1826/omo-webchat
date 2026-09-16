@@ -1,6 +1,7 @@
 import { createContext, useContext, useLayoutEffect, useState } from "react";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
+import { QuestionDraftNotice } from "./QuestionDraftNotice";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 
@@ -21,6 +22,7 @@ type QuestionDraftAnswer = {
 	readonly textAnswered?: boolean;
 	/** Explicit single-choice activation or inline Send, never draft presence. */
 	readonly completed: boolean;
+	readonly invalidated?: boolean;
 };
 
 /** Draft state for a structured multi-question request: one entry per
@@ -47,7 +49,7 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		const text = options.length === 0 ? entry.text : "";
 		const textAnswered = options.length === 0 ? entry.textAnswered : undefined;
 		answers.set(key, selected.length === entry.selected.length && text === entry.text && textAnswered === entry.textAnswered
-			? entry : { selected, text, completed: false, ...(textAnswered !== undefined ? { textAnswered } : {}) });
+			? entry : { selected, text, completed: false, invalidated: true, ...(textAnswered !== undefined ? { textAnswered } : {}) });
 	});
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
 	return activeIndex === draft.activeIndex && answers.size === draft.answers.size && [...answers].every(([key, entry]) => draft.answers.get(key) === entry)
@@ -132,6 +134,7 @@ export function ApprovalQuestionPanel({
 			answering: patch.text !== undefined ? true : draft.answering,
 			answers: new Map(draft.answers).set(key, {
 				...previous,
+				invalidated: false,
 				selected: patch.selected ?? previous.selected,
 				text: patch.text ?? previous.text,
 				completed: patch.selected !== undefined && !question.multiSelect,
@@ -160,6 +163,7 @@ export function ApprovalQuestionPanel({
 
 	return (
 		<div className="th-approval-question">
+			<QuestionDraftNotice answers={draft.answers} questions={questions} />
 			<div className="th-approval-question-tabs" role="tablist">
 				{questions.map((question, index) => (
 					<button

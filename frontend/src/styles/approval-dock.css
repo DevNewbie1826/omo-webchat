@@ -300,6 +300,21 @@
   min-width: 0;
 }
 
+.th-question-draft-notice {
+  flex: none;
+  min-width: 0;
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  overflow-wrap: anywhere;
+}
+
+.th-question-draft-notice:not(:empty) {
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+
 .th-approval-question-tabs {
   display: flex;
   gap: var(--th-space-1);

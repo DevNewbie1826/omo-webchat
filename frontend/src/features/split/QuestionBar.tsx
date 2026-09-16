@@ -3,6 +3,7 @@ import { useT } from "../../i18n";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { ApprovalFrame, QuestionAnswer } from "../../lib/contract/types_gen";
 import { questionDraftResponse, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
+import { QuestionDraftNotice } from "./QuestionDraftNotice";
 
 export interface QuestionBarProps {
 	/** A non-blocking question request (method "question"): it never takes
@@ -70,12 +71,15 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const togglePick = (label: string): void => {
 		setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
 			...entry,
+			invalidated: false,
 			completed: false,
 			selected: picked.includes(label) ? picked.filter((item) => item !== label) : [...picked, label],
 		}) });
 	};
 
 	return (
+		<>
+		<QuestionDraftNotice answers={draft.answers} questions={questions} />
 		<section
 			ref={sectionRef}
 			className="th-question-bar"
@@ -167,7 +171,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 						placeholder={t("question.placeholder")}
 						value={text}
 						onChange={(event) => setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
-							...entry, text: event.target.value, completed: false, textAnswered: false,
+							...entry, invalidated: false, text: event.target.value, completed: false, textAnswered: false,
 						}) })}
 					/>
 					<button type="submit" className="th-btn">
@@ -176,5 +180,6 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 				</form>
 			)}
 		</section>
+		</>
 	);
 }
