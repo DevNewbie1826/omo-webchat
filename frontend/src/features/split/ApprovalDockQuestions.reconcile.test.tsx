@@ -43,7 +43,7 @@ it("bounds retained entries when a live request replaces its question thirty tim
  function Consumer({ request: current }: { readonly request: { readonly questions: readonly Question[] } }) {
   const [draft, setDraft] = useApprovalQuestionDraft("refresh");
   retained = draft.answers.size;
-  return <button onClick={() => setDraft({ ...draft, answers: new Map(draft.answers).set(current.questions[0]?.id ?? "", { selected: ["Red"], text: "" }) })}>pick</button>;
+  return <button onClick={() => setDraft({ ...draft, answers: new Map(draft.answers).set(current.questions[0]?.id ?? "", { selected: ["Red"], text: "", completed: false }) })}>pick</button>;
  }
  // When only one question remains current through thirty replacements.
  for (let index = 0; index < 30; index++) {

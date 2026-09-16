@@ -31,8 +31,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const sectionRef = useRef<HTMLElement>(null);
 	const questions = request.questions ?? [];
 	const [storedDraft, setDraft] = useApprovalQuestionDraft(request.id, questions);
-	const { answers } = questionDraftResponse(storedDraft, questions);
-	const firstUnanswered = questions.findIndex((question, index) => !Object.hasOwn(answers, questionKey(question, index)));
+	const firstUnanswered = questions.findIndex((question, index) => !storedDraft.answers.get(questionKey(question, index))?.completed);
 	// Keep the current input active while editing, but never skip an earlier
 	// question whose answer disappeared during reconciliation.
 	const activeIndex = Math.min(storedDraft.activeIndex, firstUnanswered < 0 ? Math.max(questions.length - 1, 0) : firstUnanswered);
@@ -44,7 +43,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 			option.label !== undefined,
 	);
 	const multiSelect = question?.multiSelect === true;
-	const entry = draft.answers.get(questionId) ?? { selected: [], text: "" };
+	const entry = draft.answers.get(questionId) ?? { selected: [], text: "", completed: false };
 	const { text, selected: picked } = entry;
 	const answering = options.length === 0 && draft.answering;
 
@@ -53,15 +52,16 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 			selected: value.selected ?? entry.selected,
 			text: value.text ?? entry.text,
 			// Explicitly sending blank text differs from leaving a question unanswered.
-			textAnswered: value.text !== undefined,
+			...(value.text !== undefined ? { textAnswered: true } : {}),
+			completed: true,
 		}) };
 		// Sequence inside the one-line band; settle only after every question
 		// has an answer so an unseen remainder can never be discarded.
-		const response = questionDraftResponse(completed, questions);
-		const nextUnanswered = questions.findIndex((question, index) => !Object.hasOwn(response.answers, questionKey(question, index)));
+		const nextUnanswered = questions.findIndex((question, index) => !completed.answers.get(questionKey(question, index))?.completed);
 		if (nextUnanswered >= 0) {
 			setDraft({ ...completed, activeIndex: nextUnanswered, answering: false });
 		} else {
+			const response = questionDraftResponse(completed, questions);
 			onAnswer(response.answers, response.comment);
 		}
 		focusPaneComposer(sectionRef.current);
@@ -70,6 +70,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 	const togglePick = (label: string): void => {
 		setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
 			...entry,
+			completed: false,
 			selected: picked.includes(label) ? picked.filter((item) => item !== label) : [...picked, label],
 		}) });
 	};
@@ -166,7 +167,7 @@ export function QuestionBar({ request, onAnswer }: QuestionBarProps) {
 						placeholder={t("question.placeholder")}
 						value={text}
 						onChange={(event) => setDraft({ ...draft, answers: new Map(draft.answers).set(questionId, {
-							...entry, text: event.target.value,
+							...entry, text: event.target.value, completed: false, textAnswered: false,
 						}) })}
 					/>
 					<button type="submit" className="th-btn">

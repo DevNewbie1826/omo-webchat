@@ -19,6 +19,8 @@ type QuestionDraftAnswer = {
 	readonly selected: readonly string[];
 	readonly text: string;
 	readonly textAnswered?: boolean;
+	/** Explicit single-choice activation or inline Send, never draft presence. */
+	readonly completed: boolean;
 };
 
 /** Draft state for a structured multi-question request: one entry per
@@ -45,7 +47,7 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		const text = options.length === 0 ? entry.text : "";
 		const textAnswered = options.length === 0 ? entry.textAnswered : undefined;
 		answers.set(key, selected.length === entry.selected.length && text === entry.text && textAnswered === entry.textAnswered
-			? entry : { selected, text, ...(textAnswered !== undefined ? { textAnswered } : {}) });
+			? entry : { selected, text, completed: false, ...(textAnswered !== undefined ? { textAnswered } : {}) });
 	});
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
 	return activeIndex === draft.activeIndex && answers.size === draft.answers.size && [...answers].every(([key, entry]) => draft.answers.get(key) === entry)
@@ -124,7 +126,7 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers.get(key) ?? { selected: [], text: "" };
+		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
 		setDraft({
 			...draft,
 			answering: patch.text !== undefined ? true : draft.answering,
@@ -132,6 +134,8 @@ export function ApprovalQuestionPanel({
 				...previous,
 				selected: patch.selected ?? previous.selected,
 				text: patch.text ?? previous.text,
+				completed: patch.selected !== undefined && !question.multiSelect,
+				...(patch.text !== undefined ? { textAnswered: false } : {}),
 			}),
 		});
 	};
@@ -140,7 +144,7 @@ export function ApprovalQuestionPanel({
 		const question = questions[index];
 		if (!question) return;
 		const key = questionKey(question, index);
-		const previous = draft.answers.get(key) ?? { selected: [], text: "" };
+		const previous = draft.answers.get(key) ?? { selected: [], text: "", completed: false };
 		if (question.multiSelect) {
 			patchDraft(index, {
 				selected: previous.selected.includes(label)
@@ -178,6 +182,7 @@ export function ApprovalQuestionPanel({
 				const entry = draft.answers.get(questionKey(question, index)) ?? {
 					selected: [],
 					text: "",
+					completed: false,
 				};
 				const options = question.options ?? [];
 				return (
