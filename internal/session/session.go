@@ -21,6 +21,12 @@ const (
 	maxActivitySnapshotBytes = 64 << 10
 	entriesPageMaxBytes      = 256 << 10
 	entriesPageMaxCount      = 100
+	// hydrationTailBudget bounds the branch entries streamed before the
+	// terminal live-tail page when the client negotiated progressive history.
+	hydrationTailBudget = 60
+	// hydrationWarmChunk bounds each backward head page that warms the
+	// earlier branch after the terminal page.
+	hydrationWarmChunk = 100
 	// SendOperationLedgerCapacity bounds request outcomes retained for reconnect replay.
 	SendOperationLedgerCapacity = 64
 	// busyAgentErrorPrefix is the observed response prefix when a prompt reaches
@@ -31,6 +37,9 @@ const (
 var (
 	activitySnapshotOrder = [2]string{"omo.task.updated", "omo.dag.updated"}
 	streamSessionHistory  = coldhistory.Stream
+	// streamTailFirstSessionHistory is the progressive seam: tail pages for
+	// the bounded budget, then backward head chunks newest-first.
+	streamTailFirstSessionHistory = coldhistory.StreamTailFirst
 )
 
 type closeTransaction struct {
@@ -1947,6 +1956,10 @@ func (s *Session) LoadEntries(ctx context.Context, since string) {
 
 var errIncompleteHistory = errors.New("incomplete history")
 
+// errProgressiveTerminalSettled stops the warm stream after the progressive
+// terminal page was already handled through the shared publishErr paths.
+var errProgressiveTerminalSettled = errors.New("progressive history terminal settled")
+
 // ExternalWriteError is the typed route state applied when an in-place file
 // diverges from the provider route that opened it. While present, every
 // provider mutation is rejected until recovery closes the stale route.
@@ -2027,14 +2040,30 @@ func (s *Session) quarantineExternalWrite(err *ExternalWriteError, replayTarget 
 // page. onValidated binds a transport after the terminal query is known-good
 // and before streaming starts, so a failed generation cannot leak partial
 // history while successful long transcripts remain page-bounded.
+//
+// A progressive-capable target (ProgressiveHistory) receives the bounded
+// branch tail first, the live engine tail as the terminal page exactly as
+// today, then the earlier branch warmed newest-first in head pages with
+// historyComplete on the final one. Notice and compaction derivation still
+// fold the complete branch root-to-leaf before the terminal commit, so the
+// compaction count a client sees is unchanged.
 func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath string, target *subscription, onValidated func() error) error {
 	compactionCount := 0
 	var noticeCandidate transcriptNoticeReplay
+	progressive := false
+	if target != nil {
+		if capable, ok := target.sub.(ProgressiveHistorySubscriber); ok {
+			progressive = capable.ProgressiveHistory()
+		}
+	}
+	// Tail-first delivery emits pages out of branch order, so page derivation
+	// is suspended until the complete branch has been folded root-to-leaf.
+	deriveSuspended := false
 	emit := func(frame Frame, terminal bool) error {
 		if routeErr := s.acquisitionError(); errors.Is(routeErr, ErrSessionResumable) || errors.Is(routeErr, ErrSessionClosed) {
 			return routeErr
 		}
-		if page, ok := frame.Data.(EntriesFrame); ok {
+		if page, ok := frame.Data.(EntriesFrame); ok && !deriveSuspended {
 			s.lifecycleMu.Lock()
 			if !s.closed && !s.resumable {
 				pageCount := s.deriveReplayPageLocked(page.Entries, &noticeCandidate)
@@ -2142,9 +2171,9 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	var preparationErr error
 	callbackFailed := false
 	prepared := false
-	_, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
-		PageEntries: entriesPageMaxCount,
-	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+	terminalEmitted := false
+	terminalFailure := error(nil)
+	streamCallback := func(metadata coldhistory.Metadata, page coldhistory.Page) error {
 		if metadata.Header.ID != s.durableID {
 			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
 		}
@@ -2182,18 +2211,75 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 				callbackFailed = true
 				return validateErr
 			}
+			if progressive && metadata.Total > hydrationTailBudget {
+				// Pages arrive tail-first; derivation resumes only around the
+				// complete-branch fold that precedes the terminal commit.
+				deriveSuspended = true
+			}
 			prepared = true
 		}
 		if metadata.LeafID == "" {
 			return nil
 		}
-		for _, entries := range chunkEntries(page.Entries) {
+		if progressive && page.Head && !terminalEmitted {
+			// The bounded branch tail is on the wire. Fold the complete branch
+			// root-to-leaf so the terminal commit derives from the whole
+			// transcript, then paint the live engine tail exactly as today.
+			if deriveErr := s.deriveCompleteHistoryBranch(ctx, sessionPath, &noticeCandidate); deriveErr != nil {
+				return deriveErr
+			}
+			compactionCount = persistedCompactions
+			noticeCandidate.replayingTail = true
+			deriveSuspended = false
+			// Head chunks follow this terminal page: the explicit false tells
+			// progressive clients to keep waiting for the root-anchored branch.
+			incomplete := false
+			if tailErr := s.emitTailEntries(tail, emit, &incomplete); tailErr != nil {
+				terminalFailure = publishErr(tailErr)
+				return errProgressiveTerminalSettled
+			}
+			terminalEmitted = true
+			// Head pages were already folded by the complete-branch derivation.
+			deriveSuspended = true
+		}
+		pages := chunkEntries(page.Entries)
+		if progressive && page.Head {
+			// One backward warm range can span several wire pages after the
+			// byte/count bounds split it. Emit those pages newest-first too, so
+			// every successive head page a prepend-style client receives is
+			// strictly older than the one before it, and the page carrying the
+			// branch root is the final one. chunkEntries packs ascending from the
+			// range start, so pages[0] holds the oldest entries of the range and
+			// is emitted last.
+			for i := len(pages) - 1; i >= 0; i-- {
+				frame := EntriesFrame{Entries: pages[i], Segment: "head"}
+				if page.Final && i == 0 {
+					complete := true
+					frame.HistoryComplete = &complete
+				}
+				if emitErr := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: frame}, false); emitErr != nil {
+					return emitErr
+				}
+			}
+			return nil
+		}
+		for _, entries := range pages {
 			if emitErr := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries}}, false); emitErr != nil {
 				return emitErr
 			}
 		}
 		return nil
-	})
+	}
+	var err error
+	if progressive {
+		_, err = streamTailFirstSessionHistory(ctx, sessionPath, coldhistory.Options{
+			PageEntries: entriesPageMaxCount,
+		}, hydrationTailBudget, hydrationWarmChunk, streamCallback)
+	} else {
+		_, err = streamSessionHistory(ctx, sessionPath, coldhistory.Options{
+			PageEntries: entriesPageMaxCount,
+		}, streamCallback)
+	}
 	if err == nil || !errors.Is(err, os.ErrNotExist) {
 		s.lifecycleMu.Lock()
 		s.sessionFileObserved = true
@@ -2203,6 +2289,12 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		err = ctx.Err()
 	}
 	if err != nil {
+		if errors.Is(err, errProgressiveTerminalSettled) {
+			if terminalFailure != nil {
+				return terminalFailure
+			}
+			return nil
+		}
 		if preparationErr != nil {
 			if callbackFailed {
 				return preparationErr
@@ -2228,7 +2320,7 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 		if validateErr := validated(); validateErr != nil {
 			return validateErr
 		}
-		if err := s.emitTailEntries(wire, emit); err != nil {
+		if err := s.emitTailEntries(wire, emit, terminalHistoryComplete(progressive)); err != nil {
 			return publishErr(err)
 		}
 		return nil
@@ -2236,17 +2328,56 @@ func (s *Session) hydrateEntriesValidated(ctx context.Context, sessionPath strin
 	if routeErr := s.acquisitionError(); routeErr != nil {
 		return publishErr(routeErr)
 	}
-	compactionCount = persistedCompactions
-	noticeCandidate.replayingTail = true
-	if err := s.emitTailEntries(tail, emit); err != nil {
-		return publishErr(err)
+	if !terminalEmitted {
+		compactionCount = persistedCompactions
+		noticeCandidate.replayingTail = true
+		// No head page followed: the emitted tail already begins at the root.
+		if err := s.emitTailEntries(tail, emit, terminalHistoryComplete(progressive)); err != nil {
+			return publishErr(err)
+		}
 	}
 	return nil
 }
 
+// deriveCompleteHistoryBranch folds notice derivation over the complete
+// branch root-to-leaf without emitting pages, so progressive delivery's
+// terminal commit matches a whole-stream attach.
+func (s *Session) deriveCompleteHistoryBranch(ctx context.Context, sessionPath string, candidate *transcriptNoticeReplay) error {
+	_, err := streamSessionHistory(ctx, sessionPath, coldhistory.Options{
+		PageEntries: entriesPageMaxCount,
+	}, func(metadata coldhistory.Metadata, page coldhistory.Page) error {
+		if metadata.Header.ID != s.durableID {
+			return fmt.Errorf("%w: disk session id %q does not match durable session %q", errIncompleteHistory, metadata.Header.ID, s.durableID)
+		}
+		if metadata.LeafID == "" {
+			return nil
+		}
+		s.lifecycleMu.Lock()
+		if !s.closed && !s.resumable {
+			s.deriveReplayPageLocked(page.Entries, candidate)
+		}
+		s.lifecycleMu.Unlock()
+		return nil
+	})
+	return err
+}
+
+// terminalHistoryComplete is the terminal page's tri-state marker: a
+// progressive client gets an explicit value (the tail it just received is
+// the whole branch when no head chunk follows it); a legacy client gets the
+// field omitted, preserving today's exact frame shape.
+func terminalHistoryComplete(progressive bool) *bool {
+	if !progressive {
+		return nil
+	}
+	complete := true
+	return &complete
+}
+
 // emitTailEntries emits bounded pages with exactly one final page, including
-// an empty final page when no entries are returned.
-func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error) error {
+// an empty final page when no entries are returned. historyComplete is set
+// only on that final page; nil omits the field.
+func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error, historyComplete *bool) error {
 	pages := chunkEntries(wire.Entries)
 	if len(pages) == 0 {
 		pages = [][]json.RawMessage{{}}
@@ -2254,10 +2385,12 @@ func (s *Session) emitTailEntries(wire entriesTail, emit func(Frame, bool) error
 	for i, entries := range pages {
 		terminal := i == len(pages)-1
 		leaf := ""
+		var complete *bool
 		if terminal {
 			leaf = wire.LeafID
+			complete = historyComplete
 		}
-		if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries, LeafID: leaf, Final: terminal}}, terminal); err != nil {
+		if err := emit(Frame{Kind: FrameEntries, SessionID: s.durableID, Data: EntriesFrame{Entries: entries, LeafID: leaf, Final: terminal, HistoryComplete: complete}}, terminal); err != nil {
 			return err
 		}
 	}

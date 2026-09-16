@@ -254,8 +254,19 @@ export function parseSessionFrame(
       // final is REQUIRED on every entries page (invariant 18); a frame
       // without it is malformed wire data, not a terminal page.
       const final = reqBoolean(msg, "final");
-      if (final === null) return null;
-      return { type: "entries", sessionId, entries, ...(leafId !== undefined ? { leafId } : {}), final };
+      const segment = optString(msg, "segment");
+      const historyComplete = optBoolean(msg, "historyComplete");
+      if (final === null || segment === null || historyComplete === null) return null;
+      if (segment !== undefined && segment !== "head") return null;
+      return {
+        type: "entries",
+        sessionId,
+        entries,
+        ...(leafId !== undefined ? { leafId } : {}),
+        final,
+        ...(segment !== undefined ? { segment } : {}),
+        ...(historyComplete !== undefined ? { historyComplete } : {}),
+      };
     }
   }
 }

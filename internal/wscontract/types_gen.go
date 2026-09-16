@@ -338,8 +338,12 @@ type EntriesFrame struct {
 	Entries []json.RawMessage `json:"entries"`
 	// REQUIRED on every entries frame (invariant 18)
 	Final bool `json:"final"`
+	// True on the last head chunk, meaning the client now holds the branch from its root. Absent keeps today's meaning.
+	HistoryComplete *bool `json:"historyComplete,omitempty"`
 	// Present only on the terminal page
-	LeafID    *string `json:"leafId,omitempty"`
+	LeafID *string `json:"leafId,omitempty"`
+	// Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning.
+	Segment   *string `json:"segment,omitempty"`
 	SessionID string  `json:"sessionId"`
 	Type      string  `json:"type"`
 	// ExtraFields preserves unknown properties for forward-compatible round trips.
@@ -1391,7 +1395,7 @@ func (v *EntriesFrame) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, (*plain)(v)); err != nil {
 		return err
 	}
-	extra, err := captureExtraFields(data, []string{"entries", "final", "leafId", "sessionId", "type"}, []string{}, []string{})
+	extra, err := captureExtraFields(data, []string{"entries", "final", "historyComplete", "leafId", "segment", "sessionId", "type"}, []string{}, []string{})
 	if err != nil {
 		return err
 	}
@@ -2692,7 +2696,7 @@ func ParseServerFrame(data []byte) (ServerFrame, error) {
 				return nil, err
 			}
 		case "entries":
-			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "leafId": validationSchema{Type: "string"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
+			if err := validateFrameJSON(data, validationSchema{Type: "object", Properties: map[string]validationSchema{"entries": validationSchema{Type: "array", Items: &validationSchema{}}, "final": validationSchema{Type: "boolean"}, "historyComplete": validationSchema{Type: "boolean"}, "leafId": validationSchema{Type: "string"}, "segment": validationSchema{Type: "string", Const: "head"}, "sessionId": validationSchema{Type: "string"}, "type": validationSchema{Const: "entries"}}, Required: []string{"type", "sessionId", "entries", "final"}}); err != nil {
 				return nil, err
 			}
 		case "compaction.started":

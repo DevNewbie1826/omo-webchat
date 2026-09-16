@@ -87,6 +87,13 @@ func (s *subscriber) ReplayBackpressure() (<-chan struct{}, bool) {
 	return s.detachSignal, s.replaying
 }
 
+// ProgressiveHistory reports whether the socket's client hello negotiated a
+// contract version that accepts segmented head pages after the terminal tail
+// page.
+func (s *subscriber) ProgressiveHistory() bool {
+	return s.conn.clientHelloVersion() >= ContractVersion
+}
+
 func (s *subscriber) Deliver(f session.Frame) { _ = s.DeliverFrame(f) }
 func (s *subscriber) DeliverFrame(f session.Frame) error {
 	if f.Kind == session.FrameReady {
@@ -238,6 +245,13 @@ func mapFrame(f session.Frame, chatID string, reattach bool) (any, error) {
 		out := wscontract.EntriesFrame{Type: typ, SessionID: chatID, Entries: x.Entries, Final: x.Final}
 		if x.LeafID != "" {
 			out.LeafID = &x.LeafID
+		}
+		if x.Segment != "" {
+			segment := x.Segment
+			out.Segment = &segment
+		}
+		if x.HistoryComplete != nil {
+			out.HistoryComplete = x.HistoryComplete
 		}
 		return out, nil
 	case session.FrameRunDone:
@@ -414,4 +428,5 @@ func normalizedErrorCode(code string) string {
 
 var _ session.Subscriber = (*subscriber)(nil)
 var _ session.SynchronousAttachHook = (*subscriber)(nil)
+var _ session.ProgressiveHistorySubscriber = (*subscriber)(nil)
 var _ interface{ DeliverFrame(session.Frame) error } = (*subscriber)(nil)

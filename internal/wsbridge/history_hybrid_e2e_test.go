@@ -136,7 +136,11 @@ func (h *historyBridgeHarness) connect(t *testing.T, maxRead int) (*gws.Conn, *c
 	go conn.ReadLoop()
 	t.Cleanup(func() { _ = conn.WriteClose(1000, nil) })
 	frames.next(t, "hello")
-	writeClient(t, conn, map[string]any{"type": "hello", "version": ContractVersion})
+	// These scenarios pin the hybrid disk+engine-tail path under the legacy
+	// stream shape - the terminal page is the last entries frame - so the
+	// harness greets with the oldest dialect a stale tab speaks. Progressive
+	// delivery has its own suite in hello_progressive_test.go.
+	writeClient(t, conn, map[string]any{"type": "hello", "version": MinContractVersion})
 	return conn, frames
 }
 

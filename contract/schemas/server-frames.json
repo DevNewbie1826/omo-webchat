@@ -691,6 +691,15 @@
         "final": {
           "type": "boolean",
           "description": "REQUIRED on every entries frame (invariant 18)"
+        },
+        "segment": {
+          "type": "string",
+          "const": "head",
+          "description": "Backward warm chunk of earlier history; the only value is head. Absent keeps today's meaning."
+        },
+        "historyComplete": {
+          "type": "boolean",
+          "description": "True on the last head chunk, meaning the client now holds the branch from its root. Absent keeps today's meaning."
         }
       }
     },
