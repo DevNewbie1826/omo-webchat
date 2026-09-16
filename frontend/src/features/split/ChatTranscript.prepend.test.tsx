@@ -395,6 +395,75 @@ it.each(["outside release", "quiet resize"])("preserves a fresh warm anchor afte
   }
 });
 
+it.each([[16, 1], [16, 30], [250, 30], [250.001, 30]] as const)(
+  "quiet warm echoes preserve the anchor at gap=%s delta=%s", async (gap, delta) => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const id = ++frameId;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+    const tail = rows("tail", TAIL_ROWS);
+    const h = mountTranscript(tail);
+    const scroll = async (): Promise<void> => {
+      await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+      const pending = [...frames.values()];
+      frames.clear();
+      await act(async () => { for (const callback of pending) callback(performance.now()); });
+    };
+    try {
+      await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+      await scroll();
+      expect(frames.size).toBe(0);
+      park(h, 1000);
+      vi.mocked(performance.now).mockReturnValue(450);
+      h.render([...rows("head", 2), ...tail]);
+      expect(h.getTop()).toBe(2536);
+      await scroll();
+      vi.mocked(performance.now).mockReturnValue(450 + gap);
+      const first = h.instance.measurementsCache[0];
+      if (!first) throw new Error("missing first warm row");
+      await act(async () => h.instance.resizeItem(0, first.size + delta));
+      expect(h.getTop()).toBe(2536 + delta);
+      await scroll();
+      const second = h.instance.measurementsCache[1];
+      if (!second) throw new Error("missing second warm row");
+      await act(async () => h.instance.resizeItem(1, second.size + 20));
+      expect(h.getTop()).toBe(2556 + delta);
+    } finally {
+      unmount(h);
+    }
+  },
+);
+
+it("buttonless hover repairs a missing release before a quiet 500ms warm echo", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerType: "mouse", pointerId: 1, buttons: 1, bubbles: true,
+    })));
+    vi.mocked(performance.now).mockReturnValue(450);
+    act(() => h.body.dispatchEvent(new PointerEvent("pointermove", {
+      pointerType: "mouse", pointerId: 1, buttons: 0, bubbles: true,
+    })));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    vi.mocked(performance.now).mockReturnValue(950);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const row = h.instance.measurementsCache[0];
+    if (!row) throw new Error("missing warm row");
+    act(() => h.instance.resizeItem(0, row.size + 30));
+    expect(h.getTop()).toBe(2566);
+  } finally {
+    unmount(h);
+  }
+});
+
 it("still corrects a measured row above the reader that is not a warm chunk", () => {
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);

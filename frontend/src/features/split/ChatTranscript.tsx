@@ -927,7 +927,7 @@ export function ChatTranscript({
         </div>
       </div>
       {showScrollToBottom && (
-        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={() => scrollToBottom({ readerCommand: true })}>
+        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={() => scrollToBottom()}>
           ↓
         </button>
       )}

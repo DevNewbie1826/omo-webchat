@@ -151,6 +151,51 @@ it("keeps follow after explicit row positioning and growth before its notificati
   }
 });
 
+it.each([1, 20])("quiet frame-cadence bottom writes keep the jump control hidden (delta=%s)", async (delta) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: { configurable: true, get: h.getTop, set: (value: number) => {
+        h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT)));
+      } },
+    });
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    await scroll();
+    dispatchScrollend(h);
+    vi.mocked(performance.now).mockReturnValue(450);
+    resizeBy(h, ROW_COUNT - 1, 20);
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(11140);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    vi.mocked(performance.now).mockReturnValue(466);
+    resizeBy(h, ROW_COUNT - 1, delta);
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(11140 + delta);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.getTop()).toBe(11140 + delta);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
 it.each(["jump", "restore", "focus"])("hands ownership to explicit %s without scrollend before a growing-content echo", (transition) => {
   const frames = new Map<number, FrameRequestCallback>();
   let frameId = 0;

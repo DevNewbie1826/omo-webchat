@@ -17,7 +17,7 @@ export interface ChatScrollState {
   readonly contentRef: RefObject<HTMLDivElement>;
   readonly showScrollToBottom: boolean;
   readonly onScroll: UIEventHandler<HTMLDivElement>;
-  readonly scrollToBottom: (options?: { readerCommand?: boolean }) => void;
+  readonly scrollToBottom: (options?: { automatic?: boolean }) => void;
   readonly isFollowing: () => boolean;
   readonly isReaderInputActive: () => boolean;
   readonly noteProgrammaticWrite: () => void;
@@ -36,7 +36,11 @@ export function useChatScroll(
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   const lastReaderSignalRef = useRef(-Infinity);
-  const pointerDownRef = useRef(false);
+  // Physical contacts survive an explicit handoff; only their ownership is
+  // relinquished until genuine movement reclaims it.
+  const contactsRef = useRef(new Map<number, { x: number; y: number; owns: boolean }>());
+  // Only reader-seeded events enter this streak. Quiet app echoes cannot seed
+  // one, and neutral echoes leave its position/time unchanged.
   const lastScrollEventRef = useRef<{ pos: number; at: number } | null>(null);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
   const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
@@ -45,26 +49,47 @@ export function useChatScroll(
 
   const isFollowing = useCallback(() => followRef.current, []);
   const isReaderInputActive = useCallback(() =>
-    pointerDownRef.current || performance.now() - lastReaderSignalRef.current <= READER_INPUT_GRACE_MS, []);
+    [...contactsRef.current.values()].some((contact) => contact.owns)
+      || performance.now() - lastReaderSignalRef.current <= READER_INPUT_GRACE_MS, []);
 
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
     const noteSignal = (): void => { lastReaderSignalRef.current = performance.now(); };
-    const pointerDown = (): void => { pointerDownRef.current = true; noteSignal(); };
-    const pointerEnd = (): void => {
-      if (!pointerDownRef.current) return;
-      pointerDownRef.current = false;
+    const pointerDown = (event: PointerEvent): void => {
+      contactsRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY, owns: true });
       noteSignal();
     };
-    const pointerMove = (): void => { if (pointerDownRef.current) noteSignal(); };
+    const pointerEnd = (event: PointerEvent): void => {
+      const contact = contactsRef.current.get(event.pointerId);
+      contactsRef.current.delete(event.pointerId);
+      if (contact?.owns) noteSignal();
+    };
+    const pointerMove = (event: PointerEvent): void => {
+      if (event.pointerType === "mouse" && event.buttons === 0) {
+        // Conclusive lost-release evidence, not new reader input.
+        contactsRef.current.delete(event.pointerId);
+        return;
+      }
+      const contact = contactsRef.current.get(event.pointerId);
+      if (!contact || (contact.x === event.clientX && contact.y === event.clientY)) return;
+      contact.x = event.clientX;
+      contact.y = event.clientY;
+      contact.owns = true;
+      noteSignal();
+    };
     const scrollEnd = (): void => {
       lastReaderSignalRef.current = -Infinity;
       lastScrollEventRef.current = null;
     };
+    const blur = (): void => {
+      // Window deactivation invalidates contacts whose releases may be lost.
+      contactsRef.current.clear();
+      scrollEnd();
+    };
+    element.addEventListener("pointerdown", pointerDown, { passive: true });
+    element.addEventListener("pointermove", pointerMove, { passive: true });
     const listeners = [
-      ["pointerdown", pointerDown],
-      ["pointermove", pointerMove],
       ["touchstart", noteSignal],
       ["touchmove", noteSignal],
       ["wheel", noteSignal],
@@ -74,7 +99,11 @@ export function useChatScroll(
     for (const [event, listener] of listeners) element.addEventListener(event, listener, { passive: true });
     window.addEventListener("pointerup", pointerEnd, { capture: true, passive: true });
     window.addEventListener("pointercancel", pointerEnd, { capture: true, passive: true });
+    window.addEventListener("blur", blur);
     return () => {
+      element.removeEventListener("pointerdown", pointerDown);
+      element.removeEventListener("pointermove", pointerMove);
+      window.removeEventListener("blur", blur);
       for (const [event, listener] of listeners) element.removeEventListener(event, listener);
       window.removeEventListener("pointerup", pointerEnd, true);
       window.removeEventListener("pointercancel", pointerEnd, true);
@@ -97,10 +126,10 @@ export function useChatScroll(
     );
   }, []);
 
-  const scrollToBottom = useCallback((options?: { readerCommand?: boolean }) => {
-    if (options?.readerCommand) {
+  const scrollToBottom = useCallback((options?: { automatic?: boolean }) => {
+    if (!options?.automatic) {
       lastReaderSignalRef.current = -Infinity;
-      pointerDownRef.current = false;
+      for (const contact of contactsRef.current.values()) contact.owns = false;
       lastScrollEventRef.current = null;
     }
     const element = scrollRef.current;
@@ -138,23 +167,30 @@ export function useChatScroll(
     const at = performance.now();
     const previous = lastScrollEventRef.current;
     const distance = previous === null ? 0 : Math.abs(pos - previous.pos);
-    // Stationary echoes are neutral; moving notifications in a native streak
-    // retain reader ownership even through historical app-write coordinates.
+    // This predecessor exists only for reader-seeded motion. Cached coordinates
+    // may continue that motion, but a pair of app writes alone cannot create it.
     const continuingMotion = previous !== null && at - previous.at <= MOTION_STREAK_GAP_MS
       && distance > 0 && distance <= MOTION_STREAK_DISTANCE;
-    lastScrollEventRef.current = { pos, at };
-    if (continuingMotion || !isRecentProgrammaticWrite(pos)) lastReaderSignalRef.current = at;
+    const unwritten = !isRecentProgrammaticWrite(pos);
+    const readerOwned = isReaderInputActive();
+    if (continuingMotion || unwritten) {
+      lastScrollEventRef.current = { pos, at };
+      lastReaderSignalRef.current = at;
+    } else if (readerOwned && (previous === null
+      || (distance > 0 && at - previous.at > MOTION_STREAK_GAP_MS))) {
+      lastScrollEventRef.current = { pos, at };
+    }
     updateIntent();
-  }, [isRecentProgrammaticWrite, updateIntent]);
+  }, [isReaderInputActive, isRecentProgrammaticWrite, updateIntent]);
 
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
     restoredVersionRef.current = restoreVersion;
-    scrollToBottom({ readerCommand: true });
+    scrollToBottom();
   }, [restoreVersion, scrollToBottom]);
 
   useEffect(() => {
-    if (focused) scrollToBottom({ readerCommand: true });
+    if (focused) scrollToBottom();
   }, [focused, scrollToBottom]);
 
   useEffect(() => {
@@ -162,7 +198,7 @@ export function useChatScroll(
     const content = contentRef.current;
     if (!scrollport || !content) return;
     const observer = new ResizeObserver(() => {
-      if (followRef.current) scrollToBottom();
+      if (followRef.current) scrollToBottom({ automatic: true });
       else updateIntent();
     });
     observer.observe(scrollport);
