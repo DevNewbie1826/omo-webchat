@@ -317,7 +317,7 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, isReaderInputActive, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -562,10 +562,8 @@ export function ChatTranscript({
   // the last compensation; the effect below holds that row still while the
   // block above it grows. Null whenever no warm chunk is settling.
   const leadingKeyRef = useRef<string | undefined>(undefined);
+  const previousStartsRef = useRef(new Map<string, number>());
   const anchorRef = useRef<{ readonly key: string; readonly index: number; readonly start: number } | null>(null);
-  // The offset our own compensation last wrote. A scroll event reporting
-  // exactly that offset is our echo, not the reader taking the viewport over.
-  const anchorWriteRef = useRef<number | null>(null);
   // Row identity is assigned over the FULL merged list before any hiding:
   // an empty assistant completion (invisible but state-retained as a
   // current-turn tool anchor) permanently occupies its message ordinal, so
@@ -592,25 +590,50 @@ export function ChatTranscript({
     for (const key of estimateCache.keys()) {
       if (!live.has(key)) estimateCache.delete(key);
     }
-    // A changed leading key whose predecessor is still in the list means rows
-    // were inserted in front of it; a leading key whose predecessor is gone is
-    // a replaced transcript (chat switch, re-sync), which prepends nothing.
-    // The predecessor is the anchor: it sat at offset 0 before this chunk.
-    const leading = keys[0];
-    if (leading !== leadingKeyRef.current) {
-      const previous = leadingKeyRef.current;
-      const seam = previous === undefined ? -1 : keys.indexOf(previous);
-      if (seam > 0 && previous !== undefined && anchorRef.current === null) {
-        anchorRef.current = { key: previous, index: seam, start: 0 };
-      }
-      leadingKeyRef.current = leading;
-    }
-    // Keep the armed anchor addressed by the CURRENT row list: hidden rows and
-    // later chunks move its index, and a replaced transcript retires it.
+    // Validate an armed anchor before fallback selection. A later warm chunk
+    // can fold its orphan row away too: use the nearest retained row on the
+    // following side of the old seam. A preceding warm row would miss the
+    // removed row's height. Use a predecessor only if no successor survives.
     const anchor = anchorRef.current;
     if (anchor !== null) {
       const index = keys.indexOf(anchor.key);
-      anchorRef.current = index < 0 ? null : { ...anchor, index };
+      if (index >= 0) {
+        anchorRef.current = { ...anchor, index };
+      } else {
+        const committed = previousStartsRef.current.get(anchor.key) ?? anchor.start;
+        const pending = committed - anchor.start;
+        let nearest = Infinity;
+        let foundSuccessor = false;
+        anchorRef.current = null;
+        keys.forEach((key, index) => {
+          const start = previousStartsRef.current.get(key);
+          if (start === undefined) return;
+          const successor = start >= committed;
+          const distance = Math.abs(start - committed);
+          if (foundSuccessor && !successor) return;
+          if (successor === foundSuccessor && distance > nearest) return;
+          nearest = distance;
+          foundSuccessor = successor;
+          // Preserve any correction the old anchor could not apply while the
+          // DOM sizer lagged behind its committed measurement position.
+          anchorRef.current = { key, index, start: start - pending };
+        });
+      }
+    }
+    // A warm chunk can fold the old leading orphan tool result into its
+    // newly loaded invocation. Anchor the first surviving row instead, using
+    // its committed start (not zero). A replaced chat has no surviving row.
+    const leading = keys[0];
+    if (leading !== leadingKeyRef.current) {
+      if (anchorRef.current === null) {
+        const seam = keys.findIndex((key) => previousStartsRef.current.has(key));
+        const key = keys[seam];
+        const start = key === undefined ? undefined : previousStartsRef.current.get(key);
+        if (seam > 0 && key !== undefined && start !== undefined) {
+          anchorRef.current = { key, index: seam, start };
+        }
+      }
+      leadingKeyRef.current = leading;
     }
     return { rows, keys };
   }, [items, rowMetrics, estimateCache]);
@@ -653,10 +676,17 @@ export function ChatTranscript({
       const element = instance.scrollElement;
       if (element === null) return;
       if (adjustments === undefined) {
-        // Genuine scroll intent (scrollToIndex/scrollToOffset): the viewport
-        // is being moved deliberately, so any deferred compensation is moot.
+        // These calls also include later animation-frame reconciliation of
+        // scrollToIndex, not just its initial intent. After a prepend that
+        // saved numeric index addresses an earlier row. The reader may have
+        // parked since the request: only current follow intent authorizes the
+        // write (jump/focus/restore hand that intent back before positioning).
+        // A rejected stale request must not discard measurement compensation.
+        if (!isFollowing()) return;
         deferredAdjustmentRef.current = 0;
+        const previous = element.scrollTop;
         element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
+        if (element.scrollTop !== previous) noteProgrammaticWrite();
         return;
       }
       // virtual-core 3.17.6 hands over the PER-CALL delta on every path, never
@@ -671,8 +701,14 @@ export function ChatTranscript({
         deferredAdjustmentRef.current += adjustments;
         return;
       }
-      const top = offset + adjustments;
+      // Our warm correction may precede its native scroll notification, so
+      // virtual-core's offset can still describe the pre-chunk viewport.
+      // Measurement adjustments are per-call deltas: apply them to the actual
+      // viewport rather than reverting an already applied warm correction.
+      const previous = element.scrollTop;
+      const top = previous + adjustments;
       element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
+      if (element.scrollTop !== previous) noteProgrammaticWrite();
     },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
@@ -696,7 +732,9 @@ export function ChatTranscript({
       if (element === null) return false;
       // The offset the reader will end up at: what the scrollport shows now
       // plus any compensation held back until the current gesture ends.
-      const fold = element.scrollTop + deferredAdjustmentRef.current;
+      const anchorStart = anchor === null ? undefined : instance.measurementsCache[anchor.index]?.start;
+      const warmAdjustment = anchor !== null && anchorStart !== undefined ? anchorStart - anchor.start : 0;
+      const fold = element.scrollTop + deferredAdjustmentRef.current + warmAdjustment;
       if (!instance.itemSizeCache.has(item.key)) return item.start < fold;
       return item.start + item.size <= fold && instance.scrollDirection !== "backward";
     };
@@ -716,17 +754,39 @@ export function ChatTranscript({
     if (anchor === null || element === null) return;
     const start = virtualizer.measurementsCache[anchor.index]?.start;
     if (start === undefined || start === anchor.start) return;
-    anchorRef.current = { ...anchor, start };
+    const previous = element.scrollTop;
     element.scrollTop += start - anchor.start;
-    anchorWriteRef.current = element.scrollTop;
+    // Ref measurements can advance before the DOM sizer's next commit. Only
+    // retire the applied delta; browser clamping leaves the rest for that
+    // commit even when the measurement itself no longer changes.
+    anchorRef.current = { ...anchor, start: anchor.start + element.scrollTop - previous };
+    if (element.scrollTop !== previous) noteProgrammaticWrite();
+  });
+
+  useLayoutEffect(() => {
+    const starts = new Map<string, number>();
+    keys.forEach((key, index) => {
+      const item = virtualizer.measurementsCache[index];
+      if (item !== undefined) starts.set(key, item.start);
+    });
+    previousStartsRef.current = starts;
   });
 
   // The reader moving the viewport themselves retires the anchor: from here
   // their own position, not the pre-chunk one, is what later rows are held
   // against. Our own compensation write is not that signal.
   const onTranscriptScroll: typeof onScroll = (event) => {
-    if (scrollRef.current?.scrollTop !== anchorWriteRef.current) anchorRef.current = null;
+    const wasFollowing = isFollowing();
     onScroll(event);
+    if (wasFollowing && !isFollowing()) {
+      // Retire the old numeric-index target through the public API. The
+      // scrollToFn ownership check makes this a write-free cancellation;
+      // otherwise a later jump could reauthorize that old reconciliation.
+      // Unlike absolute commands, scrollBy replaces scrollState.index with
+      // null without clearing virtual-core's deferred iOS measurement delta.
+      virtualizer.scrollBy(0);
+    }
+    if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
   };
 
   // Replay the compensation dropped during a scroll gesture once that
@@ -740,7 +800,9 @@ export function ChatTranscript({
       const pending = deferredAdjustmentRef.current;
       if (pending === 0) return;
       deferredAdjustmentRef.current = 0;
+      const previous = element.scrollTop;
       element.scrollTop += pending;
+      if (element.scrollTop !== previous) noteProgrammaticWrite();
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScrollDebounce = (): void => {
@@ -771,7 +833,7 @@ export function ChatTranscript({
       element.removeEventListener("scroll", onScrollDebounce);
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [scrollRef]);
+  }, [scrollRef, noteProgrammaticWrite]);
 
   // Focus GAIN / session-restore pin to the end regardless of follow intent.
   // Losing focus must NOT move the viewport: the reader keeps their parked
@@ -923,7 +985,7 @@ export function ChatTranscript({
         </div>
       </div>
       {showScrollToBottom && (
-        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={scrollToBottom}>
+        <button type="button" className="th-chat-scroll-bottom" aria-label={t("chat.scrollToBottom")} onClick={() => scrollToBottom()}>
           ↓
         </button>
       )}

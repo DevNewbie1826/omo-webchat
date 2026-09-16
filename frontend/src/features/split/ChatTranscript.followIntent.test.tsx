@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useChatScroll, type ChatScrollState } from "./useChatScroll";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { ChatTranscript } from "./ChatTranscript";
 import type { ToolEntry } from "./chatSessionTypes";
@@ -93,6 +94,15 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
   observed.scrollToIndexCalls = [];
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -102,6 +112,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
   delete observed.current;
   observed.scrollToIndexCalls = [];
 });
@@ -184,4 +195,447 @@ it("scrolls to the end on restoreVersion even when the reader is not following",
   })).toBe(true);
   expect(body.scrollTop).not.toBe(300);
   expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+});
+
+function prepareWarmFollow(grownHeight = 11000): HTMLDivElement {
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={0} focused />,
+  ));
+  const body = requireBody(container);
+  const metrics = { scrollTop: 5000, scrollHeight: 6000, clientHeight: 400 };
+  installScroll(body, metrics);
+  // Install browser clamping before asking the app to write its bottom position.
+  let top = metrics.scrollTop;
+  Object.defineProperties(body, {
+    scrollTop: {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => { top = Math.max(0, Math.min(value, metrics.scrollHeight - metrics.clientHeight)); },
+    },
+    scrollTo: {
+      configurable: true,
+      value: (options?: ScrollToOptions | number) => {
+        if (typeof options === "number") body.scrollTop = options;
+        else if (typeof options?.top === "number") body.scrollTop = options.top;
+      },
+    },
+  });
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={1} focused />,
+  ));
+  expect(body.scrollTop).toBe(5600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  observed.scrollToIndexCalls = [];
+  metrics.scrollHeight = grownHeight;
+  return body;
+}
+
+it("keeps bottom follow when a late scroll echo of the app's own write arrives after content grows", () => {
+  const body = prepareWarmFollow();
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(41)} restoreVersion={1} focused />,
+  ));
+  expect(observed.scrollToIndexCalls).toContainEqual([40, { align: "end" }]);
+});
+
+it("drops follow when the reader wheels back to a previously written bottom", () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+
+  act(() => {
+    body.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -1000 }));
+    body.scrollTop = 5600;
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("drops follow when a held pointer returns to an earlier written bottom after 400ms", async () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+  for (const now of [450, 501]) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    act(() => body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
+  }
+  body.scrollTop = 5600;
+  await act(async () => { body.dispatchEvent(new Event("scroll")); });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it.each([6050, 6055])("drops follow when continuing touch momentum crosses the bottom threshold after 400ms (height %s)", async (height) => {
+  const body = prepareWarmFollow(height);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(height - 400);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => {
+    body.dispatchEvent(new TouchEvent("touchstart"));
+    body.dispatchEvent(new TouchEvent("touchmove"));
+  });
+  vi.mocked(performance.now).mockReturnValue(101);
+  act(() => body.dispatchEvent(new TouchEvent("touchend")));
+  for (const [now, offset] of [[200, 20], [350, 30]] as const) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    body.scrollTop = height - 400 - offset;
+    act(() => body.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  }
+  vi.mocked(performance.now).mockReturnValue(501);
+  // 5600 is a cached write; 5605 is an unwritten momentum coordinate.
+  body.scrollTop = height - 450;
+  await act(async () => { body.dispatchEvent(new Event("scroll")); });
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("does not renew reader ownership from quiet app echoes or pointer hover", () => {
+  const body = prepareWarmFollow();
+  vi.mocked(performance.now).mockReturnValue(450);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  vi.mocked(performance.now).mockReturnValue(600);
+  act(() => {
+    body.dispatchEvent(new PointerEvent("pointermove"));
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+});
+
+it("keeps an unreleased stationary contact active beyond the grace period", () => {
+  const body = prepareWarmFollow(7000);
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={2} focused />,
+  ));
+  expect(body.scrollTop).toBe(6600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+  vi.mocked(performance.now).mockReturnValue(501);
+  body.scrollTop = 5600;
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+});
+
+it("retains momentum ownership through three cached app coordinates", () => {
+  const body = prepareWarmFollow(6020);
+  let height = 6020;
+  Object.defineProperty(body, "scrollHeight", { configurable: true, get: () => height });
+  // Clamp each real app write against the current content height.
+  let top = body.scrollTop;
+  Object.defineProperty(body, "scrollTop", {
+    configurable: true, get: () => top,
+    set: (value: number) => { top = Math.max(0, Math.min(value, height - 400)); },
+  });
+  for (const version of [2, 3, 4]) {
+    height = 5980 + version * 20;
+    act(() => root.render(
+      <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={version} focused />,
+    ));
+    expect(body.scrollTop).toBe(height - 400);
+    act(() => body.dispatchEvent(new Event("scroll")));
+  }
+  act(() => body.dispatchEvent(new TouchEvent("touchstart")));
+  vi.mocked(performance.now).mockReturnValue(101);
+  act(() => body.dispatchEvent(new TouchEvent("touchend")));
+  for (const [now, position] of [[200, 5650], [300, 5640], [450, 5620], [550, 5600]] as const) {
+    vi.mocked(performance.now).mockReturnValue(now);
+    body.scrollTop = position;
+    act(() => body.dispatchEvent(new Event("scroll")));
+    expect(container.querySelector(".th-chat-scroll-bottom") !== null).toBe(now === 550);
+  }
+});
+
+it.each(["pointerup", "pointercancel"])("ends contact on outside %s so hover cannot own a quiet echo", (release) => {
+  const body = prepareWarmFollow();
+  act(() => body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1, bubbles: true })));
+  vi.mocked(performance.now).mockReturnValue(110);
+  act(() => document.body.dispatchEvent(new PointerEvent(release, { buttons: 0, bubbles: true })));
+  vi.mocked(performance.now).mockReturnValue(450);
+  act(() => {
+    body.dispatchEvent(new PointerEvent("pointermove", { buttons: 0 }));
+    body.dispatchEvent(new Event("scroll"));
+  });
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+});
+
+describe("reader ownership provenance and contacts", () => {
+  let state: ChatScrollState;
+  let body: HTMLDivElement;
+  let top: number;
+  let height: number;
+  let notifyResize: () => void;
+  function Harness({ focused = false }: { focused?: boolean }) {
+    state = useChatScroll(0, focused);
+    return <div ref={state.scrollRef} onScroll={state.onScroll}>
+      <div ref={state.contentRef} />
+      {state.showScrollToBottom && <button onClick={() => state.scrollToBottom()}>jump</button>}
+    </div>;
+  }
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class implements ResizeObserver {
+      constructor(callback: ResizeObserverCallback) { notifyResize = () => callback([], this); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    act(() => root.render(<Harness />));
+    const element = state.scrollRef.current;
+    if (!element) throw new Error("missing hook scrollport");
+    body = element;
+    top = 0;
+    height = 6000;
+    Object.defineProperties(body, {
+      scrollTop: { configurable: true, get: () => top, set: (value: number) => {
+        top = Math.max(0, Math.min(value, height - 400));
+      } },
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 400 },
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const time = (now: number): void => { vi.mocked(performance.now).mockReturnValue(now); };
+  const dispatch = (event: Event): void => { act(() => { body.dispatchEvent(event); }); };
+  const scroll = (): void => dispatch(new Event("scroll"));
+  const automaticBottom = (): void => { act(() => notifyResize()); };
+  const pointer = (type: string, buttons: number, pointerId = 1, pointerType = "mouse", clientY = 0): PointerEvent =>
+    new PointerEvent(type, { pointerId, pointerType, buttons, clientY, bubbles: true });
+  function twoBottoms(): void {
+    automaticBottom();
+    expect(top).toBe(5600);
+    scroll();
+    height = 7000;
+    automaticBottom();
+    expect(top).toBe(6600);
+    scroll();
+  }
+
+  it.each([1, 20])("reader signal alone cannot authorize an app-written streak (delta=%s)", (delta) => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: 10 }));
+    for (const at of [110, 126]) {
+      time(at);
+      height += delta;
+      automaticBottom();
+      expect(top).toBe(height - 400);
+      expect(state.isRecentProgrammaticWrite(top)).toBe(true);
+      scroll();
+    }
+    time(400.001);
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
+  it("a genuine reader predecessor does not authorize a fresh app echo mid-streak", () => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -10 }));
+    time(200);
+    body.scrollTop = 5590;
+    scroll();
+    expect(state.isFollowing()).toBe(true);
+    time(350);
+    height = 6020;
+    automaticBottom();
+    expect(top).toBe(5620);
+    expect(state.isRecentProgrammaticWrite(top)).toBe(true);
+    scroll();
+    time(500.001);
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
+  it.each([251, 300.001])("app writes cannot reseed a broken reader streak inside residual grace (gap=%s)", (gap) => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -10 }));
+    body.scrollTop = 5590;
+    scroll();
+    time(100 + gap);
+    height = 6020;
+    automaticBottom();
+    scroll();
+    time(Math.max(401, 116 + gap));
+    expect(state.isReaderInputActive()).toBe(false);
+    height = 6040;
+    automaticBottom();
+    scroll();
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 100;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+    expect.soft(container.querySelector("button")).toBeNull();
+  });
+
+  it.each([[16, 1], [16, 20], [16, 400], [16, 401], [250, 20], [250.001, 20], [0, 20], [16, 0]] as const)(
+    "quiet automatic echoes cannot seed motion: gap=%s delta=%s", (gap, delta) => {
+      automaticBottom();
+      scroll();
+      expect(top).toBe(5600);
+      expect(state.isReaderInputActive()).toBe(false);
+      time(100 + gap);
+      height = 6000 + delta;
+      automaticBottom();
+      expect(top).toBe(5600 + delta);
+      height += 100;
+      scroll();
+      expect.soft(state.isReaderInputActive()).toBe(false);
+      expect.soft(state.isFollowing()).toBe(true);
+      expect.soft(container.querySelector("button")).toBeNull();
+    },
+  );
+
+  it.each(["buttonless hover", "window blur"])("recovers lost release on %s before a 500ms echo", (recovery) => {
+    automaticBottom();
+    scroll();
+    dispatch(pointer("pointerdown", 1));
+    time(500);
+    if (recovery === "buttonless hover") dispatch(pointer("pointermove", 0));
+    else act(() => { window.dispatchEvent(new Event("blur")); });
+    dispatch(new Event("scrollend"));
+    expect.soft(state.isReaderInputActive()).toBe(false);
+    height += 1000;
+    time(600);
+    scroll();
+    expect.soft(state.isFollowing()).toBe(true);
+  });
+
+  it.each(["outside", "inside"])("releasing a second %s contact preserves the first", (location) => {
+    twoBottoms();
+    dispatch(pointer("pointerdown", 1, 1, "touch"));
+    const target = location === "inside" ? body : document.body;
+    act(() => { target.dispatchEvent(pointer("pointerdown", 1, 2, "touch")); });
+    time(110);
+    act(() => { target.dispatchEvent(pointer("pointerup", 0, 2, "touch")); });
+    time(501);
+    expect.soft(state.isReaderInputActive()).toBe(true);
+    body.scrollTop = 5600;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(false);
+  });
+
+  it.each(["focus", "jump"])("same-contact movement reclaims ownership after %s", (handoff) => {
+    twoBottoms();
+    dispatch(pointer("pointerdown", 1));
+    body.scrollTop = 5600;
+    scroll();
+    time(150);
+    if (handoff === "focus") act(() => root.render(<Harness focused />));
+    else act(() => state.scrollToBottom());
+    expect(top).toBe(6600);
+    expect(state.isReaderInputActive()).toBe(false);
+    time(160);
+    dispatch(pointer("pointermove", 1, 1, "mouse", -100));
+    expect.soft(state.isReaderInputActive()).toBe(true);
+    body.scrollTop = 5600;
+    scroll();
+    expect.soft(state.isFollowing()).toBe(false);
+  });
+
+  it("keeps genuinely held contact through scrollend for a minute", () => {
+    dispatch(pointer("pointerdown", 1));
+    dispatch(new Event("scrollend"));
+    time(60100);
+    expect(state.isReaderInputActive()).toBe(true);
+    dispatch(pointer("pointerup", 0));
+    dispatch(new Event("scrollend"));
+    expect(state.isReaderInputActive()).toBe(false);
+  });
+
+  it("automatic follow writes preserve held contact beyond grace", () => {
+    automaticBottom();
+    scroll();
+    dispatch(pointer("pointerdown", 1));
+    time(501);
+    height = 7000;
+    automaticBottom();
+    expect(top).toBe(6600);
+    expect(state.isReaderInputActive()).toBe(true);
+    body.scrollTop = 5600;
+    scroll();
+    expect(state.isFollowing()).toBe(false);
+  });
+
+  it("automatic writes preserve genuine momentum", () => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: -10 }));
+    body.scrollTop = 5590;
+    scroll();
+    time(250);
+    height = 6020;
+    automaticBottom();
+    expect(state.isReaderInputActive()).toBe(true);
+    body.scrollTop = 5560;
+    scroll();
+    expect(state.isFollowing()).toBe(false);
+  });
+
+  it("stationary app echoes do not extend reader grace", () => {
+    twoBottoms();
+    dispatch(pointer("pointerdown", 1));
+    time(110);
+    dispatch(pointer("pointerup", 0));
+    time(200);
+    body.scrollTop = 5590;
+    scroll();
+    time(350);
+    scroll();
+    state.noteProgrammaticWrite();
+    time(450);
+    scroll();
+    time(500.001);
+    expect(state.isReaderInputActive()).toBe(true);
+    time(650.001);
+    expect(state.isReaderInputActive()).toBe(false);
+  });
+
+  it("an isolated app echo mid-streak does not replace its reader-owned predecessor", () => {
+    twoBottoms();
+    dispatch(new WheelEvent("wheel", { deltaY: -1000 }));
+    time(200);
+    body.scrollTop = 5590;
+    scroll();
+    time(350);
+    body.scrollTop = 6600;
+    scroll(); // cached app echo outside the native streak's distance
+    time(450);
+    body.scrollTop = 5600;
+    scroll(); // still continuous with 5590 at t=200
+    time(600);
+    expect(state.isReaderInputActive()).toBe(true);
+    expect(state.isFollowing()).toBe(false);
+  });
+});
+
+it("still drops follow when the reader genuinely scrolls up while history warms", () => {
+  const body = prepareWarmFollow();
+  body.scrollTop = 9000;
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(41)} restoreVersion={1} focused />,
+  ));
+  expect(observed.scrollToIndexCalls).toEqual([]);
+  expect(body.scrollTop).toBe(9000);
 });

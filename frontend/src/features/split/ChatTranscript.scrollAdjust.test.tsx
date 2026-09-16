@@ -1,7 +1,7 @@
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
@@ -24,6 +24,10 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
   };
 });
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+beforeEach(() => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
+});
+afterEach(() => vi.restoreAllMocks());
 
 // 15 rows: the test ResizeObserver polyfill measures every rendered row at
 // 768px and the whole list fits the initial window plus overscan, so every
@@ -126,6 +130,159 @@ function resizeBy(h: Harness, index: number, delta: number): void {
     h.instance.resizeItem(index, measurement.size + delta);
   });
 }
+
+it("keeps follow after explicit row positioning and growth before its notification", () => {
+  const h = mountTranscript();
+  try {
+    Object.defineProperty(h.body, "scrollHeight", {
+      configurable: true,
+      get: () => Math.round(h.instance.getTotalSize()),
+    });
+    h.setTop(5000);
+    act(() => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(SCROLL_HEIGHT - CLIENT_HEIGHT);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.body.scrollHeight).toBe(SCROLL_HEIGHT + 100);
+    expect(h.getTop()).toBe(SCROLL_HEIGHT - CLIENT_HEIGHT);
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([1, 20])("quiet frame-cadence bottom writes keep the jump control hidden (delta=%s)", async (delta) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: { configurable: true, get: h.getTop, set: (value: number) => {
+        h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT)));
+      } },
+    });
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    await scroll();
+    dispatchScrollend(h);
+    vi.mocked(performance.now).mockReturnValue(450);
+    resizeBy(h, ROW_COUNT - 1, 20);
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(11140);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    vi.mocked(performance.now).mockReturnValue(466);
+    resizeBy(h, ROW_COUNT - 1, delta);
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    expect(h.getTop()).toBe(11140 + delta);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.getTop()).toBe(11140 + delta);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([1, 20])("reader signal plus fresh app writes cannot expose the jump control (delta=%s)", async (delta) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: { configurable: true, get: h.getTop, set: (value: number) => {
+        h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT)));
+      } },
+    });
+    await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: 10 })));
+    for (const at of [110, 126]) {
+      vi.mocked(performance.now).mockReturnValue(at);
+      resizeBy(h, ROW_COUNT - 1, delta);
+      await act(async () => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+      await scroll();
+    }
+    expect(h.getTop()).toBe(11120 + 2 * delta);
+    vi.mocked(performance.now).mockReturnValue(400.001);
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.getTop()).toBe(11120 + 2 * delta);
+    await scroll();
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each(["jump", "restore", "focus"])("hands ownership to explicit %s without scrollend before a growing-content echo", (transition) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  try {
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Math.round(h.instance.getTotalSize()) },
+      scrollTop: {
+        configurable: true, get: h.getTop,
+        set: (value: number) => h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT))),
+      },
+    });
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: -1000 })));
+    beginGesture(h, 1000);
+    const button = h.container.querySelector<HTMLButtonElement>(".th-chat-scroll-bottom");
+    if (!button) throw new Error("missing jump control");
+    vi.mocked(performance.now).mockReturnValue(150);
+    if (transition === "jump") act(() => button.click());
+    else act(() => h.root.render(<ChatTranscript items={makeItems()} streaming="" thinking="" toolCalls={{}}
+      doneReason={null} error="" restoreVersion={transition === "restore" ? 1 : 0}
+      focused={transition === "focus"} historyLoaded />));
+    expect(h.getTop()).toBe(11120);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    resizeBy(h, ROW_COUNT - 1, 100);
+    expect(h.body.scrollHeight).toBe(11620);
+    expect(h.getTop()).toBe(11120);
+    vi.mocked(performance.now).mockReturnValue(160);
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 })));
+    h.body.scrollTop = 11020;
+    dispatchScroll(h);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
 
 it("applies a measurement correction immediately when no gesture is in flight", () => {
   const h = mountTranscript();

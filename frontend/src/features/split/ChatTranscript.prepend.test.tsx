@@ -1,13 +1,17 @@
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import type { Root } from "react-dom/client";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Virtualizer } from "@tanstack/react-virtual";
+import { _resetIOSDetectionForTests } from "@tanstack/virtual-core";
 import { ChatTranscript } from "./ChatTranscript";
 import type { TranscriptItem } from "./useChatFrameState";
 
 const observed = vi.hoisted(() => {
-  const state: { current?: Virtualizer<Element, Element> } = {};
+  const state: {
+    current?: Virtualizer<Element, Element>;
+    beforeCompensation?: (instance: Virtualizer<Element, Element>) => void;
+  } = {};
   // JSDOM needs the browser capability which Chromium supplies in the real-App test.
   Object.defineProperty(window, "onscrollend", { configurable: true, value: null });
   return state;
@@ -19,11 +23,29 @@ vi.mock("@tanstack/react-virtual", async (importOriginal) => {
     useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
       const instance = actual.useVirtualizer(...args);
       observed.current = instance;
+      useLayoutEffect(() => { observed.beforeCompensation?.(instance); });
       return instance;
     },
   };
 });
-vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+let notifyContentResize: (() => void) | undefined;
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(performance, "now").mockReturnValue(100);
+  notifyContentResize = undefined;
+  const OriginalResizeObserver = ResizeObserver;
+  vi.stubGlobal("ResizeObserver", class extends OriginalResizeObserver {
+    constructor(private readonly callback: ResizeObserverCallback) { super(callback); }
+    override observe(target: Element, options?: ResizeObserverOptions): void {
+      if (target.matches(".th-chat-content")) notifyContentResize = () => this.callback([], this);
+      super.observe(target, options);
+    }
+  });
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 // Same geometry as the scroll-adjust harness: the test ResizeObserver measures
 // every rendered row at 768px, so 15 tail rows total 11520. Unlike that
@@ -67,7 +89,9 @@ function mountTranscript(items: readonly TranscriptItem[]): Harness {
   if (!instance) throw new Error("missing virtualizer instance");
   let top = 0;
   Object.defineProperties(body, {
-    scrollTop: { configurable: true, get: () => top, set: (value: number) => { top = value; } },
+    scrollTop: { configurable: true, get: () => top, set: (value: number) => {
+      top = Math.max(0, Math.min(value, Math.round(instance.getTotalSize()) - CLIENT_HEIGHT));
+    } },
     // The scrollport's content is the virtualized row area: it grows with the
     // list, exactly like a real scroll container's scrollHeight.
     scrollHeight: { configurable: true, get: () => Math.round(instance.getTotalSize()) },
@@ -75,7 +99,7 @@ function mountTranscript(items: readonly TranscriptItem[]): Harness {
     scrollTo: {
       configurable: true,
       value: (options?: { top?: number }) => {
-        if (options && typeof options.top === "number") top = options.top;
+        if (options && typeof options.top === "number") body.scrollTop = options.top;
       },
     },
   });
@@ -94,6 +118,7 @@ function unmount(h: Harness): void {
   act(() => h.root.unmount());
   h.container.remove();
   delete observed.current;
+  delete observed.beforeCompensation;
 }
 
 /** Park the reader at a settled offset: scroll there, gesture ends. */
@@ -138,6 +163,214 @@ it("keeps the reader's distance from the bottom when a warm chunk prepends", () 
     expect(distanceFromBottom(h)).toBe(parkedDistance);
     expect(viewportOffset(h, "tail row 1")).toBe(parkedRow);
     expect(h.getTop()).toBe(1000 + 3 * ROW_HEIGHT);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("anchors a retained row when warming folds away the old leading row", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const distance = distanceFromBottom(h);
+    const visible = viewportOffset(h, "tail row 1");
+    // An orphan tool-result row disappears once its earlier invocation loads.
+    h.render([...rows("head", 3), ...tail.slice(1)]);
+    expect(distanceFromBottom(h)).toBe(distance);
+    expect(viewportOffset(h, "tail row 1")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([false, true])("rejects an old bottom-index reconciliation after parking and prepending (jump again=%s)", async (jump) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    park(h, h.body.scrollHeight - CLIENT_HEIGHT - 400);
+    const visible = viewportOffset(h, "tail row 13");
+    h.render([...rows("head", 3), ...tail]);
+    // Unequal row heights change the old numeric index's target, as in Chrome.
+    await act(async () => h.instance.resizeItem(0, ROW_HEIGHT + 20));
+    expect(distanceFromBottom(h)).toBe(400);
+    const height = h.body.scrollHeight;
+    // The old index now addresses an earlier row. Deliver the real library's
+    // pending reconciliation only after warm compensation and its echo.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    if (jump) {
+      const button = h.container.querySelector<HTMLButtonElement>(".th-chat-scroll-bottom");
+      if (!button) throw new Error("missing jump control");
+      act(() => button.click());
+      expect(distanceFromBottom(h)).toBe(0);
+    }
+    const pending = [...frames.values()];
+    frames.clear();
+    expect(pending.length).toBeGreaterThan(0);
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+    expect(h.body.scrollHeight).toBe(height);
+    expect.soft(distanceFromBottom(h)).toBe(jump ? 0 : 400);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(jump ? visible - 400 : visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([false, true])("preserves iOS deferred measurement on reader follow retirement (already parked=%s)", async (alreadyParked) => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15");
+  _resetIOSDetectionForTests();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  // Hold reconciliation explicitly so no frame depends on wall-clock timing.
+  vi.spyOn(window, "requestAnimationFrame").mockReturnValue(1);
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+  const h = mountTranscript(rows("tail", TAIL_ROWS));
+  const signal = async (name: string): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event(name)); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await signal("scroll");
+    await signal("scrollend");
+    if (alreadyParked) park(h, h.getTop() - 200);
+    await signal("touchstart");
+    const before = h.getTop();
+    const above = h.instance.measurementsCache[0];
+    if (!above) throw new Error("missing measured row above fold");
+    await act(async () => h.instance.resizeItem(0, above.size + 30));
+    expect(h.getTop()).toBe(before);
+    h.body.scrollTop = before - 400;
+    await signal("scroll");
+    const parked = h.getTop();
+    const distance = distanceFromBottom(h);
+    const offset = viewportOffset(h, "tail row 13");
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+    await signal("touchend");
+    // Time is the behavior: expire virtual-core's exact touch-end grace gate.
+    await act(async () => { vi.advanceTimersByTime(150); });
+    await signal("scrollend");
+    expect(h.instance.isScrolling).toBe(false);
+    expect.soft(h.getTop()).toBe(parked + 30);
+    expect.soft(distanceFromBottom(h)).toBe(distance - 30);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(offset - 30);
+  } finally {
+    unmount(h);
+    vi.useRealTimers();
+    _resetIOSDetectionForTests();
+  }
+});
+
+it("remaps an armed warm anchor when a later chunk folds its row away", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const distance = distanceFromBottom(h);
+    const visible = viewportOffset(h, "tail row 1");
+    const earlier = rows("earlier", 2);
+    h.render([...earlier, ...tail]);
+    expect(distanceFromBottom(h)).toBe(distance);
+    expect(viewportOffset(h, "tail row 1")).toBe(visible);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("head", 3), ...earlier, ...tail.slice(1)]);
+    expect.soft(distanceFromBottom(h)).toBe(distance);
+    expect.soft(viewportOffset(h, "tail row 1")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("carries a clamped correction across an armed anchor's disappearance", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    const visible = viewportOffset(h, "tail row 13");
+    let lagging = true;
+    Object.defineProperty(h.body, "scrollTop", {
+      configurable: true, get: h.getTop,
+      set: (value: number) => h.setTop(Math.max(0, Math.min(value,
+        (lagging ? TAIL_HEIGHT : h.body.scrollHeight) - CLIENT_HEIGHT))),
+    });
+    const earlier = rows("earlier", 8);
+    h.render([...earlier, ...tail]);
+    expect(h.getTop()).toBe(TAIL_HEIGHT - CLIENT_HEIGHT);
+    expect(distanceFromBottom(h)).toBeGreaterThan(400);
+    lagging = false;
+    h.render([...rows("head", 3), ...earlier, ...tail.slice(1)]);
+    expect.soft(distanceFromBottom(h)).toBe(400);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("replays warm compensation clamped before the DOM sizer catches up", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    let domHeight = TAIL_HEIGHT;
+    Object.defineProperty(h.body, "scrollTop", {
+      configurable: true, get: h.getTop,
+      set: (value: number) => h.setTop(Math.max(0, Math.min(value, domHeight - CLIENT_HEIGHT))),
+    });
+    const next = [...rows("head", 20), ...tail];
+    h.render(next);
+    expect(h.getTop()).toBe(TAIL_HEIGHT - CLIENT_HEIGHT);
+    domHeight = h.body.scrollHeight;
+    // Measurements were current in the first commit, but its DOM height was
+    // not. A second commit publishes the new sizer without changing the rows.
+    h.render(next);
+    expect(distanceFromBottom(h)).toBe(400);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([false, true])("measures against the post-prepend fold before compensation commits (first measurement=%s)", (first) => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    observed.beforeCompensation = (instance) => {
+      delete observed.beforeCompensation;
+      const row = instance.measurementsCache[36];
+      if (!row) throw new Error("missing tail row above the compensated fold");
+      expect(row.start).toBeGreaterThan(h.getTop());
+      if (first) instance.itemSizeCache.delete(row.key);
+      instance.resizeItem(36, row.size + 206);
+    };
+    h.render([...rows("head", 24), ...tail]);
+    expect(distanceFromBottom(h)).toBe(400);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("does not revert warm compensation when a tail measurement precedes its scroll event", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    const row = h.instance.measurementsCache[2];
+    if (!row) throw new Error("missing tail row");
+    // The virtualizer still holds the pre-compensation native scroll offset.
+    // A ResizeObserver delivery can run before the app write's scroll event.
+    act(() => h.instance.resizeItem(2, row.size + 20));
+    expect(h.getTop()).toBe(2556);
   } finally {
     unmount(h);
   }
@@ -204,6 +437,286 @@ it("leaves the viewport alone once the reader has scrolled into the warm history
     act(() => h.instance.resizeItem(2, measurement.size + 20));
 
     expect(h.getTop()).toBe(0);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("keeps compensating later warm chunks when a late echo of a programmatic write arrives between chunks", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("chunk-a", 2), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(1000 + 2 * ROW_HEIGHT);
+
+    // A compensation echo starts the observed scroll interval. A tail-row
+    // measurement queues a separate write, applied when that interval ends.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const tailRow = h.instance.measurementsCache[2];
+    if (!tailRow) throw new Error("missing tail measurement");
+    act(() => h.instance.resizeItem(2, tailRow.size + 20));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    const flushedTop = 1000 + 2 * ROW_HEIGHT + 20;
+    expect(h.getTop()).toBe(flushedTop);
+
+    // The flush's late echo differs from the anchor compensation's write.
+    // Earlier warm rows can still settle while the next chunk arrives.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(flushedTop + 30);
+
+    h.render([...rows("chunk-b", 3), ...first]);
+    expect(h.getTop()).toBe(flushedTop + 30 + 3 * ROW_HEIGHT);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("retires the warm anchor when the reader wheels back to the initial top", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("head", 3), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(3304);
+
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -3304 })));
+    park(h, 0);
+    const warmRow = h.instance.measurementsCache[2];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(2, warmRow.size + 20));
+    expect(h.getTop()).toBe(0);
+
+    const visibleRow = viewportOffset(h, "head row 0");
+    h.render([...rows("next", 2), ...first]);
+    expect(h.getTop()).toBe(2 * ROW_HEIGHT);
+    expect(viewportOffset(h, "head row 0")).toBe(visibleRow);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it("keeps the warm anchor after a settled measurement correction echo", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("chunk-a", 2), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(2536);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    expect(h.instance.isScrolling).toBe(false);
+
+    const tailRow = h.instance.measurementsCache[2];
+    if (!tailRow) throw new Error("missing tail measurement");
+    act(() => h.instance.resizeItem(2, tailRow.size + 20));
+    expect(h.getTop()).toBe(2556);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(2586);
+    h.render([...rows("chunk-b", 3), ...first]);
+    expect(h.getTop()).toBe(4890);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([true, false])("retires the warm anchor for an unreleased contact (pointer moves: %s)", async (moves) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    park(h, 1000);
+    const first = [...rows("head", 3), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(3304);
+    await scroll();
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("next", 2), ...first]);
+    expect(h.getTop()).toBe(4840);
+    await scroll();
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1 })));
+    for (const now of [450, 501]) {
+      vi.mocked(performance.now).mockReturnValue(now);
+      if (moves) act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 1 })));
+    }
+    h.body.scrollTop = 3304;
+    await scroll();
+    const warmRow = h.instance.measurementsCache[4];
+    if (!warmRow) throw new Error("missing warm row straddling the reader");
+    await act(async () => h.instance.resizeItem(4, warmRow.size + 20));
+    expect(h.getTop()).toBe(3304);
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each(["outside release", "quiet resize"])("preserves a fresh warm anchor after %s", (transition) => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    if (transition === "outside release") {
+      act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", { buttons: 1, bubbles: true })));
+      vi.mocked(performance.now).mockReturnValue(110);
+      act(() => document.body.dispatchEvent(new PointerEvent("pointerup", { buttons: 0, bubbles: true })));
+    }
+    vi.mocked(performance.now).mockReturnValue(450);
+    if (transition === "quiet resize") {
+      const notify = notifyContentResize;
+      if (!notify) throw new Error("missing content resize observer");
+      act(() => notify());
+    }
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    if (transition === "outside release") {
+      act(() => h.body.dispatchEvent(new PointerEvent("pointermove", { buttons: 0 })));
+    }
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm row");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(2566);
+  } finally {
+    unmount(h);
+  }
+});
+
+it.each([[16, 1], [16, 30], [250, 30], [250.001, 30]] as const)(
+  "quiet warm echoes preserve the anchor at gap=%s delta=%s", async (gap, delta) => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const id = ++frameId;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+    const tail = rows("tail", TAIL_ROWS);
+    const h = mountTranscript(tail);
+    const scroll = async (): Promise<void> => {
+      await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+      const pending = [...frames.values()];
+      frames.clear();
+      await act(async () => { for (const callback of pending) callback(performance.now()); });
+    };
+    try {
+      await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+      await scroll();
+      expect(frames.size).toBe(0);
+      park(h, 1000);
+      vi.mocked(performance.now).mockReturnValue(450);
+      h.render([...rows("head", 2), ...tail]);
+      expect(h.getTop()).toBe(2536);
+      await scroll();
+      vi.mocked(performance.now).mockReturnValue(450 + gap);
+      const first = h.instance.measurementsCache[0];
+      if (!first) throw new Error("missing first warm row");
+      await act(async () => h.instance.resizeItem(0, first.size + delta));
+      expect(h.getTop()).toBe(2536 + delta);
+      await scroll();
+      const second = h.instance.measurementsCache[1];
+      if (!second) throw new Error("missing second warm row");
+      await act(async () => h.instance.resizeItem(1, second.size + 20));
+      expect(h.getTop()).toBe(2556 + delta);
+    } finally {
+      unmount(h);
+    }
+  },
+);
+
+it.each([false, true])("fresh app writes cannot retire a new warm anchor (reader signal=%s)", async (seed) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  const scroll = async (): Promise<void> => {
+    await act(async () => { h.body.dispatchEvent(new Event("scroll")); });
+    const pending = [...frames.values()];
+    frames.clear();
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+  };
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    await scroll();
+    expect(frames.size).toBe(0);
+    if (seed) act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: 10 })));
+    for (const at of [110, 126]) {
+      vi.mocked(performance.now).mockReturnValue(at);
+      const row = h.instance.measurementsCache[TAIL_ROWS - 1];
+      if (!row) throw new Error("missing last tail row");
+      await act(async () => h.instance.resizeItem(TAIL_ROWS - 1, row.size + 20));
+      await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+      await scroll();
+    }
+    expect(h.getTop()).toBe(11160);
+    vi.mocked(performance.now).mockReturnValue(400.001);
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(11294);
+    await scroll();
+    const row = h.instance.measurementsCache[0];
+    if (!row) throw new Error("missing warm row");
+    await act(async () => h.instance.resizeItem(0, row.size + 30));
+    expect(h.getTop()).toBe(11324);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("buttonless hover repairs a missing release before a quiet 500ms warm echo", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    act(() => h.body.dispatchEvent(new PointerEvent("pointerdown", {
+      pointerType: "mouse", pointerId: 1, buttons: 1, bubbles: true,
+    })));
+    vi.mocked(performance.now).mockReturnValue(450);
+    act(() => h.body.dispatchEvent(new PointerEvent("pointermove", {
+      pointerType: "mouse", pointerId: 1, buttons: 0, bubbles: true,
+    })));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("head", 2), ...tail]);
+    expect(h.getTop()).toBe(2536);
+    vi.mocked(performance.now).mockReturnValue(950);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const row = h.instance.measurementsCache[0];
+    if (!row) throw new Error("missing warm row");
+    act(() => h.instance.resizeItem(0, row.size + 30));
+    expect(h.getTop()).toBe(2566);
   } finally {
     unmount(h);
   }
