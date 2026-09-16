@@ -225,7 +225,7 @@ export type ChatConnector = (handlers: ChatHandlers) => ChatClient;
  * Wire contract version this client speaks. The server's hello must match;
  * a mismatch warns and proceeds (contract: version skew is never fatal).
  */
-export const CHAT_WIRE_VERSION = 2;
+export const CHAT_WIRE_VERSION = 3;
 export const CHAT_WS_ENDPOINT = "/api/v2/ws";
 
 /** Validate the connector's handshake frame against the generated HelloFrame. */

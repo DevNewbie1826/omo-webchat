@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	ContractVersion     = 2
+	ContractVersion     = 3
 	defaultWriteTimeout = 10 * time.Second
 	controlFrameTimeout = 15 * time.Second
 	// openFrameTimeout preserves the previous effective HistoryTimeout maximum

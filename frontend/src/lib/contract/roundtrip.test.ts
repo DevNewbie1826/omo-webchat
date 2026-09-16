@@ -220,3 +220,37 @@ describe("queue wire contract", () => {
     }
   });
 });
+
+describe("entries progressive hydration", () => {
+  it("round-trips optional segment and historyComplete, and still parses when they are absent", () => {
+    const withBoth = {
+      type: "entries",
+      sessionId: "sess-1",
+      entries: [],
+      final: false,
+      segment: "head",
+      historyComplete: true,
+    };
+    expect(parseServerFrame(withBoth)).toEqual(withBoth);
+
+    const without = {
+      type: "entries",
+      sessionId: "sess-1",
+      entries: [],
+      final: true,
+    };
+    expect(parseServerFrame(without)).toEqual(without);
+  });
+
+  it("rejects a segment other than head", () => {
+    expect(
+      parseServerFrame({
+        type: "entries",
+        sessionId: "sess-1",
+        entries: [],
+        final: false,
+        segment: "tail",
+      }),
+    ).toBeNull();
+  });
+});
