@@ -317,7 +317,7 @@ export function ChatTranscript({
   const clearDeferredAdjustment = useCallback(() => {
     deferredAdjustmentRef.current = 0;
   }, []);
-  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
+  const { scrollRef, contentRef, showScrollToBottom, onScroll, scrollToBottom, isFollowing, noteProgrammaticWrite, isRecentProgrammaticWrite } = useChatScroll(restoreVersion, focused, clearDeferredAdjustment);
   // Lane width feeding the row-height estimator. Tracked via ResizeObserver
   // so metrics recompute only on an actual width change, never per render.
   const [laneWidth, setLaneWidth] = useState(0);
@@ -563,9 +563,6 @@ export function ChatTranscript({
   // block above it grows. Null whenever no warm chunk is settling.
   const leadingKeyRef = useRef<string | undefined>(undefined);
   const anchorRef = useRef<{ readonly key: string; readonly index: number; readonly start: number } | null>(null);
-  // The offset our own compensation last wrote. A scroll event reporting
-  // exactly that offset is our echo, not the reader taking the viewport over.
-  const anchorWriteRef = useRef<number | null>(null);
   // Row identity is assigned over the FULL merged list before any hiding:
   // an empty assistant completion (invisible but state-retained as a
   // current-turn tool anchor) permanently occupies its message ordinal, so
@@ -718,14 +715,14 @@ export function ChatTranscript({
     if (start === undefined || start === anchor.start) return;
     anchorRef.current = { ...anchor, start };
     element.scrollTop += start - anchor.start;
-    anchorWriteRef.current = element.scrollTop;
+    noteProgrammaticWrite();
   });
 
   // The reader moving the viewport themselves retires the anchor: from here
   // their own position, not the pre-chunk one, is what later rows are held
   // against. Our own compensation write is not that signal.
   const onTranscriptScroll: typeof onScroll = (event) => {
-    if (scrollRef.current?.scrollTop !== anchorWriteRef.current) anchorRef.current = null;
+    if (!isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
     onScroll(event);
   };
 
@@ -741,6 +738,7 @@ export function ChatTranscript({
       if (pending === 0) return;
       deferredAdjustmentRef.current = 0;
       element.scrollTop += pending;
+      noteProgrammaticWrite();
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScrollDebounce = (): void => {
@@ -771,7 +769,7 @@ export function ChatTranscript({
       element.removeEventListener("scroll", onScrollDebounce);
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [scrollRef]);
+  }, [scrollRef, noteProgrammaticWrite]);
 
   // Focus GAIN / session-restore pin to the end regardless of follow intent.
   // Losing focus must NOT move the viewport: the reader keeps their parked

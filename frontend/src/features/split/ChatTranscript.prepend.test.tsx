@@ -209,6 +209,42 @@ it("leaves the viewport alone once the reader has scrolled into the warm history
   }
 });
 
+it("keeps compensating later warm chunks when a late echo of a programmatic write arrives between chunks", () => {
+  const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const first = [...rows("chunk-a", 2), ...tail];
+    h.render(first);
+    expect(h.getTop()).toBe(1000 + 2 * ROW_HEIGHT);
+
+    // A compensation echo starts the observed scroll interval. A tail-row
+    // measurement queues a separate write, applied when that interval ends.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const tailRow = h.instance.measurementsCache[2];
+    if (!tailRow) throw new Error("missing tail measurement");
+    act(() => h.instance.resizeItem(2, tailRow.size + 20));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    const flushedTop = 1000 + 2 * ROW_HEIGHT + 20;
+    expect(h.getTop()).toBe(flushedTop);
+
+    // The flush's late echo differs from the anchor compensation's write.
+    // Earlier warm rows can still settle while the next chunk arrives.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    const warmRow = h.instance.measurementsCache[0];
+    if (!warmRow) throw new Error("missing warm measurement");
+    act(() => h.instance.resizeItem(0, warmRow.size + 30));
+    expect(h.getTop()).toBe(flushedTop + 30);
+
+    h.render([...rows("chunk-b", 3), ...first]);
+    expect(h.getTop()).toBe(flushedTop + 30 + 3 * ROW_HEIGHT);
+  } finally {
+    unmount(h);
+    clock.mockRestore();
+  }
+});
+
 it("still corrects a measured row above the reader that is not a warm chunk", () => {
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);

@@ -17,6 +17,7 @@
   padding: var(--th-space-5) 0;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-gutter: stable both-edges;
 }

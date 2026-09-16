@@ -93,6 +93,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
   observed.scrollToIndexCalls = [];
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -102,6 +103,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
   delete observed.current;
   observed.scrollToIndexCalls = [];
 });
@@ -184,4 +186,62 @@ it("scrolls to the end on restoreVersion even when the reader is not following",
   })).toBe(true);
   expect(body.scrollTop).not.toBe(300);
   expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+});
+
+function prepareWarmFollow(): HTMLDivElement {
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={0} focused />,
+  ));
+  const body = requireBody(container);
+  const metrics = { scrollTop: 5600, scrollHeight: 6000, clientHeight: 400 };
+  installScroll(body, metrics);
+  // Install browser clamping before asking the app to write its bottom position.
+  let top = metrics.scrollTop;
+  Object.defineProperties(body, {
+    scrollTop: {
+      configurable: true,
+      get: () => top,
+      set: (value: number) => { top = Math.max(0, Math.min(value, metrics.scrollHeight - metrics.clientHeight)); },
+    },
+    scrollTo: {
+      configurable: true,
+      value: (options?: ScrollToOptions | number) => {
+        if (typeof options === "number") body.scrollTop = options;
+        else if (typeof options?.top === "number") body.scrollTop = options.top;
+      },
+    },
+  });
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(40)} restoreVersion={1} focused />,
+  ));
+  expect(body.scrollTop).toBe(5600);
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+  observed.scrollToIndexCalls = [];
+  metrics.scrollHeight = 11000;
+  return body;
+}
+
+it("keeps bottom follow when a late scroll echo of the app's own write arrives after content grows", () => {
+  const body = prepareWarmFollow();
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(41)} restoreVersion={1} focused />,
+  ));
+  expect(observed.scrollToIndexCalls).toContainEqual([40, { align: "end" }]);
+});
+
+it("still drops follow when the reader genuinely scrolls up while history warms", () => {
+  const body = prepareWarmFollow();
+  body.scrollTop = 9000;
+  act(() => body.dispatchEvent(new Event("scroll")));
+  expect(container.querySelector(".th-chat-scroll-bottom")).not.toBeNull();
+
+  act(() => root.render(
+    <ChatTranscript {...idle} items={transcriptRows(41)} restoreVersion={1} focused />,
+  ));
+  expect(observed.scrollToIndexCalls).toEqual([]);
+  expect(body.scrollTop).toBe(9000);
 });

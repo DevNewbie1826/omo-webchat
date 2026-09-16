@@ -5,6 +5,9 @@ import type { RefObject, UIEventHandler } from "react";
 // its scroll event, so a tight epsilon drops follow every tick and forces manual
 // scrolling. ~2 lines of slack keeps follow pinned without hiding the button.
 const BOTTOM_EPSILON = 40;
+const PROGRAMMATIC_WRITE_WINDOW_MS = 600;
+const PROGRAMMATIC_WRITE_EPSILON = 1;
+const PROGRAMMATIC_WRITE_LIMIT = 16;
 
 export interface ChatScrollState {
   readonly scrollRef: RefObject<HTMLDivElement>;
@@ -13,6 +16,8 @@ export interface ChatScrollState {
   readonly onScroll: UIEventHandler<HTMLDivElement>;
   readonly scrollToBottom: () => void;
   readonly isFollowing: () => boolean;
+  readonly noteProgrammaticWrite: () => void;
+  readonly isRecentProgrammaticWrite: (value: number) => boolean;
 }
 
 export function useChatScroll(
@@ -26,36 +31,48 @@ export function useChatScroll(
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
-  const programmaticRef = useRef(false);
+  // Mutable accumulator: writes and their delayed echoes span multiple renders.
+  const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
   const restoredVersionRef = useRef<number | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
   const isFollowing = useCallback(() => followRef.current, []);
 
+  const noteProgrammaticWrite = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const at = performance.now();
+    const writes = programmaticWritesRef.current.filter((write) => at - write.at <= PROGRAMMATIC_WRITE_WINDOW_MS);
+    writes.push({ value: element.scrollTop, at });
+    programmaticWritesRef.current = writes.slice(-PROGRAMMATIC_WRITE_LIMIT);
+  }, []);
+
+  const isRecentProgrammaticWrite = useCallback((value: number) => {
+    const now = performance.now();
+    return programmaticWritesRef.current.some((write) =>
+      now - write.at <= PROGRAMMATIC_WRITE_WINDOW_MS && Math.abs(write.value - value) <= PROGRAMMATIC_WRITE_EPSILON,
+    );
+  }, []);
+
   const scrollToBottom = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
     onScrollToBottomIntent?.();
-    const target = element.scrollHeight - element.clientHeight;
-    if (element.scrollTop !== target) programmaticRef.current = true;
     followRef.current = true;
     element.scrollTop = element.scrollHeight;
+    noteProgrammaticWrite();
     setShowScrollToBottom(false);
-  }, [onScrollToBottomIntent]);
+  }, [onScrollToBottomIntent, noteProgrammaticWrite]);
 
   const updateIntent = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
-    if (programmaticRef.current) {
-      programmaticRef.current = false;
-      followRef.current = true;
-      setShowScrollToBottom(false);
-      return;
-    }
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
+    // Content can grow before our write's echo arrives; that is not reader intent.
+    if (!atBottom && isRecentProgrammaticWrite(element.scrollTop)) return;
     followRef.current = atBottom;
     setShowScrollToBottom(!atBottom);
-  }, []);
+  }, [isRecentProgrammaticWrite]);
 
   useLayoutEffect(() => {
     if (restoredVersionRef.current === restoreVersion) return;
@@ -87,5 +104,7 @@ export function useChatScroll(
     onScroll: updateIntent,
     scrollToBottom,
     isFollowing,
+    noteProgrammaticWrite,
+    isRecentProgrammaticWrite,
   };
 }
