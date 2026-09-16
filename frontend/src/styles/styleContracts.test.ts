@@ -968,6 +968,38 @@ describe("approval question panel contracts", () => {
     expect(declarationValue(strip, "top")).toBe("0");
     expect(wholeVarToken(declarationValue(strip, "background"))).toBe("--th-surface");
   });
+
+  it("pins the action row while the keyboard holds the viewport short, without ever covering the tabs in the tight density", () => {
+    // The OS keyboard shrinks the visible column below the 500px container
+    // threshold that normally pins the action row, so the keyboard-held
+    // density must pin it from a 300px column instead — Next/Submit/Cancel
+    // stay reachable above the keyboard. The selector excludes the tight
+    // density explicitly: its scrollport is only a couple of rows tall, where
+    // a pinned footer would cover the pinned tab strip and make the tabs
+    // unclickable (the same reason the 500px threshold exists).
+    const keyboardBlock = approvalDock.match(
+      /@container chat-column \(min-height: 300px\) \{([\s\S]*?)^\}/m,
+    )?.[1] ?? "";
+    expect(keyboardBlock, "keyboard container block exists").not.toBe("");
+    const actions = ruleBody(keyboardBlock, ".th-approval-dock--keyboard:not(.th-approval-dock--tight) .th-approval-question-actions");
+    expect(actions, "keyboard action-row rule exists").not.toBe("");
+    expect(declarationValue(actions, "position")).toBe("sticky");
+    expect(declarationValue(actions, "bottom")).toBe("0");
+    // The tight density keeps its static fallback and wins the cascade even
+    // against the keyboard rule by never matching it in the first place.
+    const tight = ruleBody(approvalDock, ".th-approval-dock--tight .th-approval-question-actions");
+    expect(declarationValue(tight, "position")).toBe("static");
+    // Input-priority fallback: when the body slice cannot seat the pinned
+    // tab band + the focused input + the pinned action row, the tab band
+    // yields (static — scrolls with the content); the action row keeps its
+    // pin. Higher specificity than the tabs' own sticky rule.
+    const yieldBlock = ruleBody(
+      approvalDock,
+      ".th-approval-dock--input-priority .th-approval-question-tabs",
+    );
+    expect(yieldBlock, "input-priority tab-yield rule exists").not.toBe("");
+    expect(declarationValue(yieldBlock, "position")).toBe("static");
+  });
 });
 
 describe("pinned live-session section contracts", () => {

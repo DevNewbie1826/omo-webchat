@@ -4,6 +4,7 @@ import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
 import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
+import { useVisualViewport } from "../../lib/useVisualViewport";
 
 export interface ApprovalRequest {
 	readonly id: string;
@@ -60,6 +61,20 @@ function focusPaneComposer(section: HTMLElement | null): void {
 		?.focus();
 }
 
+/** Deferred focus handoffs, keyed by request id. An unmount alone is NOT
+ *  evidence of an exit: the same request id can be re-presented in one
+ *  commit (a re-keyed wrapper, a pendingApproval -> pendingQuestion
+ *  reclassification), which unmounts and remounts the dock without the
+ *  user ever answering. A same-id mount cancels the pending handoff, so
+ *  focus is only handed to the composer when the request really went away
+ *  (an external resolution - local exits hand off synchronously). */
+const pendingFocusHandoffs = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** A visual viewport shrink this large is a covering keyboard (the boot
+ *  script's data-th-keyboard-open threshold); smaller wobbles are URL-bar
+ *  and pinch-zoom noise. */
+const KEYBOARD_SHRINK_PX = 100;
+
 export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const { t } = useT();
 	const titleId = useId();
@@ -72,6 +87,31 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	// id still honours it.
 	const [collapsedForId, setCollapsedForId] = useState<string | null>(null);
 	const collapsed = collapsedForId === request.id;
+	// True from the moment a respond callback fires until the unmount cleanup
+	// consumes it: an exit the DOCK initiated hands focus to the composer
+	// synchronously (no task-queue hop that drops focus to <body> for a tick,
+	// which on iOS dismisses the keyboard mid-handoff).
+	const exitedRef = useRef(false);
+	// Keyboard awareness: the visual viewport is the only geometry that sees
+	// a covering keyboard (iOS never shrinks the layout viewport). The
+	// session's tallest observed viewport is the unobscured baseline; a
+	// shrink beyond KEYBOARD_SHRINK_PX is keyboard-like however it was caused
+	// (a genuinely smaller window has the same spatial problem).
+	const viewportBox = useVisualViewport();
+	const viewportBaselineRef = useRef<number>(Number.NaN);
+	if (viewportBox) {
+		viewportBaselineRef.current = Number.isNaN(viewportBaselineRef.current)
+			? Math.max(window.innerHeight, viewportBox.height)
+			: Math.max(viewportBaselineRef.current, viewportBox.height);
+	}
+	const keyboardLike =
+		viewportBox !== null &&
+		!Number.isNaN(viewportBaselineRef.current) &&
+		viewportBaselineRef.current - viewportBox.height > KEYBOARD_SHRINK_PX;
+	// The column clamp's measure() closure outlives renders; the keyboard
+	// floor below must price the budget with the CURRENT viewport regime.
+	const keyboardLikeRef = useRef(false);
+	keyboardLikeRef.current = keyboardLike;
 	// Explicit user expansion, keyed by request id: overrides the space floor
 	// so the toggle always works. A new request resets to the automatic
 	// presentation.
@@ -124,7 +164,32 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 				(Number.parseFloat(style.borderTopWidth) || 0) +
 				(Number.parseFloat(style.borderBottomWidth) || 0);
 			const minDockPx = headerHeightRef.current + borders + APPROVAL_BODY_FLOOR_PX;
-			const budget = computeShelfAvailableSpace(column, section, { minSelfPx: minDockPx });
+			// Input-priority floor: while the keyboard holds the viewport short,
+			// the transcript reserve yields further — enough body for the pinned
+			// tab strip + the focused answer input + the pinned actions row — so
+			// the slice the focused input must be visible in actually exists.
+			// This raises the budget's reserve-yield minimum ONLY: the collapse
+			// decision (floorCollapsed) and the inline ceilings keep pricing
+			// minDockPx, and the budget is still capped by the column's real
+			// available space, so an unachievable band floor merely yields the
+			// whole reserve — it can never push the composer out or collapse
+			// the dock to its summary.
+			let minSelfPx = minDockPx;
+			const bandTabs = section.querySelector<HTMLElement>(".th-approval-question-tabs");
+			const bandAnswer = section.querySelector<HTMLElement>(".th-approval-question-text");
+			const bandActions = section.querySelector<HTMLElement>(".th-approval-question-actions");
+			const bandBody = section.querySelector<HTMLElement>(".th-approval-dock-body");
+			if (keyboardLikeRef.current && bandTabs && bandAnswer && bandActions && bandBody) {
+				const bandPadBottom = Number.parseFloat(getComputedStyle(bandBody).paddingBottom) || 0;
+				minSelfPx =
+					headerHeightRef.current +
+					borders +
+					bandTabs.offsetHeight +
+					bandAnswer.offsetHeight +
+					bandActions.offsetHeight +
+					bandPadBottom;
+			}
+			const budget = computeShelfAvailableSpace(column, section, { minSelfPx });
 			const cap = Math.round(columnHeight * APPROVAL_DOCK_COLUMN_RATIO);
 			const clampPx = Math.min(budget, cap);
 			setColumnSpace((previous) =>
@@ -289,6 +354,119 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		if (rect.top < bodyRect.top) body.scrollTop -= bodyRect.top - rect.top;
 	}, [expanded, columnSpace.clampPx, request.id]);
 
+	// Keyboard-aware height: the dock's bottom must stay inside the visual
+	// viewport even in the frame before the column's ResizeObserver re-clamps
+	// the measured budget. The cap is measured per viewport change (the dock's
+	// top is laid out by the bands above it), floored at the same usable
+	// minimum as the measured clamp — a pending question always keeps a
+	// visible, clickable box — and never applied without a measurement.
+	const [viewportCapPx, setViewportCapPx] = useState<number | null>(null);
+	useLayoutEffect(() => {
+		const section = sectionRef.current;
+		if (!expanded || !viewportBox || !section) {
+			setViewportCapPx((previous) => (previous === null ? previous : null));
+			return;
+		}
+		const viewportBottom = viewportBox.offsetTop + viewportBox.height;
+		const cap = Math.round(viewportBottom - section.getBoundingClientRect().top);
+		setViewportCapPx((previous) =>
+			previous !== null && Math.abs(previous - cap) < 1 ? previous : Math.max(cap, 0),
+		);
+	}, [expanded, viewportBox]);
+
+	// Keyboard-aware scroll discipline: while an input inside the body holds
+	// focus and the visual viewport changes (the keyboard opening or closing
+	// reshapes the visible slice), keep the focused input inside the body's
+	// ACTUAL visible slice — the band between the pinned tab strip and the
+	// pinned actions row (either edge falls back to the body's own edge when
+	// that band is not pinned). When the bands plus the input cannot all
+	// fit, the focused input wins (it is the control being typed into): it
+	// scrolls at most until its top reaches the slice top — never above it.
+	// Input-priority fallback: when even that cannot seat the input above the
+	// pinned actions row, the TAB band yields (position: static via the dock's
+	// --input-priority modifier, so it scrolls with the content) — a pinned
+	// strip must never cover the focused input that owns the slice. The
+	// actions row keeps its pin (the documented secondary: Next/Submit stay
+	// reachable under the input's priority). Both regime checks read pinned
+	// offsets only (scroll-independent), so the decision cannot oscillate.
+	const [tabsYield, setTabsYield] = useState(false);
+	useLayoutEffect(() => {
+		if (!expanded || !viewportBox) return;
+		const section = sectionRef.current;
+		const body = section?.querySelector<HTMLElement>(".th-approval-dock-body");
+		if (!section || !body) return;
+		const active = document.activeElement;
+		if (!(active instanceof HTMLElement) || !body.contains(active)) return;
+		if (!active.matches("input, textarea")) return;
+		const tabs = body.querySelector<HTMLElement>(".th-approval-question-tabs");
+		const actions = body.querySelector<HTMLElement>(".th-approval-question-actions");
+		const bodyRect = body.getBoundingClientRect();
+		const inputRect = active.getBoundingClientRect();
+		const actionsRect = actions?.getBoundingClientRect();
+		const tabsRect = tabs?.getBoundingClientRect();
+		const actionsPinned =
+			!!actions &&
+			actionsRect !== undefined &&
+			getComputedStyle(actions).position === "sticky" &&
+			actionsRect.bottom <= bodyRect.bottom + 0.5;
+		const tabsSticky = !!tabs && tabsRect !== undefined && getComputedStyle(tabs).position === "sticky";
+		const tabsPinned = tabsSticky && tabsRect.top <= bodyRect.top + 0.5;
+		// The slice reserves BOTH pinned bands: content scrolled beneath the
+		// sticky tab strip is as invisible as content under the pinned actions.
+		const sliceTop = tabsPinned ? tabsRect.bottom : bodyRect.top;
+		const sliceBottom = actionsPinned && actionsRect ? actionsRect.top : bodyRect.bottom;
+		const inputFits = inputRect.height <= sliceBottom - sliceTop + 0.5;
+		if (tabsSticky && !tabsYield) {
+			if (!inputFits && inputRect.height <= sliceBottom - bodyRect.top + 0.5) {
+				// The slice cannot seat the input below the pinned tab band but
+				// can without it: yield the tab band and re-run — the re-render
+				// applies the modifier before this effect scrolls.
+				setTabsYield(true);
+				return;
+			}
+		} else if (
+			tabsYield &&
+			inputRect.height <= sliceBottom - (bodyRect.top + (tabsRect?.height ?? 0)) + 0.5
+		) {
+			setTabsYield(false);
+			return;
+		}
+		const overBottom = inputRect.bottom - sliceBottom;
+		const overTop = inputRect.top - sliceTop;
+		let delta = 0;
+		if (overTop < -0.5) delta = overTop;
+		else if (overBottom > 0.5) delta = Math.min(overBottom, overTop);
+		if (!actionsPinned && actionsRect) {
+			const actionsDelta = Math.max(actionsRect.bottom - bodyRect.bottom, 0);
+			// Scrolling past the input's top would push it above the slice:
+			// cap the actions pull-in at the slice top.
+			const cap = Math.max(overTop, delta);
+			delta = Math.max(delta, Math.min(actionsDelta, cap));
+		}
+		if (delta !== 0) body.scrollTop += delta;
+	}, [expanded, viewportBox, columnSpace.clampPx, tabsYield, request.id]);
+
+	// scrollIntoView on focus: the browser's native focus scroll does not
+	// reserve the pinned footer's band; scroll-padding-bottom on the body
+	// does, so an explicit nearest-scroll keeps a focused field clear of the
+	// actions row it would otherwise be scrolled under.
+	useEffect(() => {
+		const section = sectionRef.current;
+		if (!expanded || !section) return;
+		const onFocusIn = (event: FocusEvent): void => {
+			const target = event.target;
+			if (
+				target instanceof HTMLElement &&
+				target.matches("input, textarea") &&
+				typeof target.scrollIntoView === "function"
+			) {
+				target.scrollIntoView({ block: "nearest" });
+			}
+		};
+		section.addEventListener("focusin", onFocusIn);
+		return () => section.removeEventListener("focusin", onFocusIn);
+	}, [expanded]);
+
 	// A floor collapse unmounts the body without a user gesture; focus inside
 	// it drops to <body>. Hand it to the composer rather than losing it.
 	useEffect(() => {
@@ -309,30 +487,80 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		focusPaneComposer(sectionRef.current);
 	}, [collapsed]);
 
-	// Unmounting (answered, or resolved by another client) must not drop focus
-	// to document.body: if the dock still holds focus, hand it to the owning
-	// pane's composer. Focus elsewhere is left untouched — never steal it.
-	// Layout effect: its cleanup runs before the node leaves the DOM, while
+	// Unmounting with focus inside must not drop focus to document.body — but
+	// an unmount alone is not an exit (see pendingFocusHandoffs). Layout
+	// effect: its cleanup runs before the node leaves the DOM, while
 	// document.activeElement still points inside the dock.
 	useLayoutEffect(() => {
 		const section = sectionRef.current;
+		// A same-id mount after this instance's unmount is a remount, not an
+		// exit: cancel any handoff a previous unmount of this request deferred.
+		const cancelPending = (): void => {
+			const timer = pendingFocusHandoffs.get(request.id);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				pendingFocusHandoffs.delete(request.id);
+			}
+		};
+		cancelPending();
 		return () => {
 			if (!section?.contains(document.activeElement)) return;
-			focusPaneComposer(section);
+			if (exitedRef.current) {
+				// Answered or cancelled from this dock: hand off synchronously.
+				focusPaneComposer(section);
+				return;
+			}
+			// No local exit — an external resolution would still deserve the
+			// composer, but a remount must not steal focus. Defer by one task:
+			// a same-id mount (same commit or later tick) cancels it.
+			const id = request.id;
+			const paneComposer =
+				section
+					?.closest(".th-chat-pane")
+					?.querySelector<HTMLElement>(".th-chat-input textarea") ?? null;
+			const stale = pendingFocusHandoffs.get(id);
+			if (stale !== undefined) clearTimeout(stale);
+			const timer = setTimeout(() => {
+				pendingFocusHandoffs.delete(id);
+				// Only catch focus that actually died on <body>: if anything
+				// else already took it (a replacement request's arrival focus,
+				// a remounted control), it owns focus now — never steal it.
+				if (document.activeElement !== document.body) return;
+				// The pane may itself have gone away (route change): only hand
+				// off to a composer that is still connected.
+				if (paneComposer?.isConnected) paneComposer.focus();
+			}, 0);
+			pendingFocusHandoffs.set(id, timer);
 		};
-	}, []);
+		// request.id is read through the closure; the effect runs once per
+		// mount and the latest id is what a remount cancels against.
+	}, [request.id]);
 
-	const submitValue = (value: string): void => onRespond({ value });
-	const submitConfirm = (confirmed: boolean): void => onRespond({ confirmed });
-	const cancel = (): void => onRespond({ cancelled: true });
+	const submitValue = (value: string): void => {
+		exitedRef.current = true;
+		onRespond({ value });
+	};
+	const submitConfirm = (confirmed: boolean): void => {
+		exitedRef.current = true;
+		onRespond({ confirmed });
+	};
+	const cancel = (): void => {
+		exitedRef.current = true;
+		onRespond({ cancelled: true });
+	};
 
 	// Structured multi-question requests render as one tabbed panel owned by
 	// ApprovalDockQuestions.tsx (a tab per question, one structured response).
+	// The panel's own submit routes through the same exit discipline as every
+	// other respond path.
 	const questionPanel = request.method === "question" && (request.questions?.length ?? 0) > 0 && (
 		<ApprovalQuestionPanel
 			draftState={questionDraft}
 			questions={request.questions ?? []}
-			onSubmit={onRespond}
+			onSubmit={(response) => {
+				exitedRef.current = true;
+				onRespond(response);
+			}}
 			onCancel={cancel}
 		/>
 	);
@@ -343,6 +571,22 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 		</span>
 	);
 
+	// The expanded dock's inline ceiling: the measured column budget, further
+	// bounded by the visual viewport's remaining space below the dock's top
+	// when a viewport measurement exists. Both are floored at the same usable
+	// minimum — a pending question always keeps a visible, clickable box.
+	const viewportCeilingPx =
+		viewportCapPx === null ? null : Math.max(viewportCapPx, effectiveMinDockPx);
+	const expandedMaxPx =
+		effectiveClampPx !== null || viewportCeilingPx !== null
+			? Math.ceil(
+					Math.min(
+						effectiveClampPx ?? Number.POSITIVE_INFINITY,
+						viewportCeilingPx ?? Number.POSITIVE_INFINITY,
+					),
+				)
+			: null;
+
 	return (
 		<section
 			ref={sectionRef}
@@ -352,7 +596,11 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 					? "th-approval-dock th-approval-dock--tight"
 					: !expanded && expansionImpossible
 						? "th-approval-dock th-approval-dock--compact"
-						: "th-approval-dock"
+						: keyboardLike
+							? tabsYield
+								? "th-approval-dock th-approval-dock--keyboard th-approval-dock--input-priority"
+								: "th-approval-dock th-approval-dock--keyboard"
+							: "th-approval-dock"
 			}
 			aria-labelledby={titleId}
 			// While the clamp is measured, hold the yield with flex-shrink: 0 so a
@@ -362,13 +610,13 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			// is a fixed band: never let the column squeeze it into a sliver.
 			style={
 				expanded
-					? effectiveClampPx !== null
-						? // Round UP: rounding the fractional minimum down (74.34375 →
+				? expandedMaxPx !== null
+					? // Round UP: rounding the fractional minimum down (74.34375 →
 						  // 74) leaves the rendered body at 47.65625px — under the
 						  // 48px floor. Ceil guarantees body >= floor; the
 						  // sub-pixel difference comes out of the transcript
 						  // reserve, never out of the composer.
-							{ flexShrink: 0, maxHeight: `${Math.max(Math.ceil(effectiveClampPx), 0)}px` }
+							{ flexShrink: 0, maxHeight: `${Math.max(expandedMaxPx, 0)}px` }
 						: undefined
 					: // The collapsed summary is a fixed band (never squeezed);
 					  // when expansion is impossible the band is also bounded by

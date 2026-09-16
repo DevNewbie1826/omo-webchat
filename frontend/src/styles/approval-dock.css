@@ -463,6 +463,34 @@
   }
 }
 
+/* Keyboard-held viewport: the OS keyboard covers the visual viewport (iOS)
+   or shrinks it (Android), so the chat column no longer clears the 500px
+   threshold that normally pins the action row — yet Next/Submit/Cancel must
+   stay reachable in the remaining space while the user answers. From a 300px
+   column the body slice keeps the pinned tab strip clear of the pinned action
+   row; below that (and in the tight density, whose scrollport is only a
+   couple of rows tall) the actions scroll with the content instead — a
+   pinned row must never cover the tabs. The dock carries the modifier while
+   its visual viewport is keyboard-shrunk (ApprovalDock's viewport tracking). */
+@container chat-column (min-height: 300px) {
+  .th-approval-dock--keyboard:not(.th-approval-dock--tight) .th-approval-question-actions {
+    position: sticky;
+    bottom: 0;
+  }
+}
+
+/* Input-priority fallback: while the keyboard holds the viewport short
+   enough that the pinned tab band + the focused answer input + the pinned
+   action row cannot all fit the body slice, the dock carries this modifier
+   and the tab band yields (position: static — it scrolls with the content):
+   the focused input owns the slice, and a pinned strip must never cover it.
+   The action row keeps its pin; the input's visibility is first, the
+   actions' second. The modifier lifts as soon as the slice fits all three
+   again (ApprovalDock's scroll discipline measures and toggles it). */
+.th-approval-dock--input-priority .th-approval-question-tabs {
+  position: static;
+}
+
 .th-approval-question-actions .th-btn {
   min-width: 0;
   max-width: 100%;

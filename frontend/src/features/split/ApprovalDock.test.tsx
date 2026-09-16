@@ -233,6 +233,9 @@ describe("ApprovalDock inline panel", () => {
 		await act(async () => {
 			root.unmount();
 		});
+		// No local respond fired: this unmount is an external resolution, whose
+		// handoff is deferred one task so a same-id remount can cancel it.
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.activeElement).toBe(composer);
 		pane.remove();
 
@@ -251,6 +254,8 @@ describe("ApprovalDock inline panel", () => {
 		await act(async () => {
 			root.unmount();
 		});
+		// External-resolution semantics: the handoff lands after one task.
+		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(document.activeElement).toBe(composer);
 		pane.remove();
 
