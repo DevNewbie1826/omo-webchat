@@ -667,11 +667,9 @@ export function ChatTranscript({
       return estimateRowHeight(MISSING_ROW, rowMetrics);
     },
     overscan: 8,
-    // virtual-core passes `adjustments` ONLY for measurement-driven
-    // corrections; every explicit scrollToIndex/scrollToOffset passes
-    // undefined. Drop those corrections while a user scroll is in flight:
-    // any programmatic scroll write cancels the browser's in-flight scroll
-    // animation, so a mid-gesture correction would kill the fling dead.
+    // Undefined adjustments are NOT proof of explicit intent: virtual-core
+    // also retries clamped measurement writes through that path. Preserve
+    // gesture deferral there too; a programmatic write can kill a fling.
     scrollToFn: (offset, { adjustments, behavior }, instance) => {
       const element = instance.scrollElement;
       if (element === null) return;
@@ -683,10 +681,13 @@ export function ChatTranscript({
         // write (jump/focus/restore hand that intent back before positioning).
         // A rejected stale request must not discard measurement compensation.
         if (!isFollowing()) return;
-        deferredAdjustmentRef.current = 0;
+        // Explicit jump/focus/restore relinquishes reader ownership and clears
+        // our queue in scrollToBottom. A library retry does neither. Its delta
+        // is already queued: do not write it early or accumulate it twice.
+        if (instance.isScrolling && deferredAdjustmentRef.current !== 0) return;
         const previous = element.scrollTop;
         element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
-        if (element.scrollTop !== previous) noteProgrammaticWrite();
+        if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
         return;
       }
       // virtual-core 3.17.6 hands over the PER-CALL delta on every path, never
@@ -708,7 +709,7 @@ export function ChatTranscript({
       const previous = element.scrollTop;
       const top = previous + adjustments;
       element.scrollTo?.(behavior === undefined ? { top } : { top, behavior });
-      if (element.scrollTop !== previous) noteProgrammaticWrite();
+      if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
     },
     // Finish compensation with the native gesture, not a later idle timer
     // which can replay it after focus has moved to another scroll owner.
@@ -760,7 +761,7 @@ export function ChatTranscript({
     // retire the applied delta; browser clamping leaves the rest for that
     // commit even when the measurement itself no longer changes.
     anchorRef.current = { ...anchor, start: anchor.start + element.scrollTop - previous };
-    if (element.scrollTop !== previous) noteProgrammaticWrite();
+    if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
   });
 
   useLayoutEffect(() => {
@@ -802,7 +803,7 @@ export function ChatTranscript({
       deferredAdjustmentRef.current = 0;
       const previous = element.scrollTop;
       element.scrollTop += pending;
-      if (element.scrollTop !== previous) noteProgrammaticWrite();
+      if (element.scrollTop !== previous) noteProgrammaticWrite("measurement");
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     const onScrollDebounce = (): void => {

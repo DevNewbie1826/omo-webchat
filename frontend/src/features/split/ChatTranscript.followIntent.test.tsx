@@ -600,7 +600,7 @@ describe("reader ownership provenance and contacts", () => {
     scroll();
     time(350);
     scroll();
-    state.noteProgrammaticWrite();
+    state.noteProgrammaticWrite("measurement");
     time(450);
     scroll();
     time(500.001);
