@@ -12,6 +12,8 @@ const READER_INPUT_GRACE_MS = 300;
 const MOTION_STREAK_GAP_MS = 250;
 const MOTION_STREAK_DISTANCE = 400;
 
+type ProgrammaticWriteOrigin = "pin-intent" | "measurement";
+
 export interface ChatScrollState {
   readonly scrollRef: RefObject<HTMLDivElement>;
   readonly contentRef: RefObject<HTMLDivElement>;
@@ -20,7 +22,7 @@ export interface ChatScrollState {
   readonly scrollToBottom: (options?: { automatic?: boolean }) => void;
   readonly isFollowing: () => boolean;
   readonly isReaderInputActive: () => boolean;
-  readonly noteProgrammaticWrite: () => void;
+  readonly noteProgrammaticWrite: (origin: ProgrammaticWriteOrigin) => void;
   readonly isRecentProgrammaticWrite: (value: number) => boolean;
 }
 
@@ -43,8 +45,8 @@ export function useChatScroll(
   // one, and neutral echoes leave its position/time unchanged.
   const lastScrollEventRef = useRef<{ pos: number; at: number } | null>(null);
   // Mutable accumulator: writes and their delayed echoes span multiple renders.
-  const programmaticWritesRef = useRef<Array<{ value: number; at: number }>>([]);
-  const pendingEchoRef = useRef<{ value: number; at: number } | null>(null);
+  const programmaticWritesRef = useRef<Array<{ value: number; at: number; origin: ProgrammaticWriteOrigin }>>([]);
+  const pendingEchoRef = useRef<{ value: number; at: number; origin: ProgrammaticWriteOrigin } | null>(null);
   const restoredVersionRef = useRef<number | undefined>(undefined);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
@@ -111,23 +113,25 @@ export function useChatScroll(
     };
   }, []);
 
-  const noteProgrammaticWrite = useCallback(() => {
+  const noteProgrammaticWrite = useCallback((origin: ProgrammaticWriteOrigin) => {
     const element = scrollRef.current;
     if (!element) return;
     const at = performance.now();
     const writes = programmaticWritesRef.current.filter((write) => at - write.at <= PROGRAMMATIC_WRITE_WINDOW_MS);
-    const write = { value: element.scrollTop, at };
+    const write = { value: element.scrollTop, at, origin };
     pendingEchoRef.current = write;
     writes.push(write);
     programmaticWritesRef.current = writes.slice(-PROGRAMMATIC_WRITE_LIMIT);
   }, []);
 
-  const isRecentProgrammaticWrite = useCallback((value: number) => {
+  const recentProgrammaticWrite = useCallback((value: number) => {
     const now = performance.now();
-    return programmaticWritesRef.current.some((write) =>
+    return [...programmaticWritesRef.current].reverse().find((write) =>
       now - write.at <= PROGRAMMATIC_WRITE_WINDOW_MS && Math.abs(write.value - value) <= PROGRAMMATIC_WRITE_EPSILON,
     );
   }, []);
+  const isRecentProgrammaticWrite = useCallback((value: number) =>
+    recentProgrammaticWrite(value) !== undefined, [recentProgrammaticWrite]);
 
   const scrollToBottom = useCallback((options?: { automatic?: boolean }) => {
     if (!options?.automatic) {
@@ -143,17 +147,22 @@ export function useChatScroll(
     const previous = element.scrollTop;
     if (previous !== target) {
       element.scrollTop = element.scrollHeight;
-      if (element.scrollTop !== previous) noteProgrammaticWrite();
+      if (element.scrollTop !== previous) noteProgrammaticWrite("pin-intent");
     }
     setShowScrollToBottom(false);
   }, [onScrollToBottomIntent, noteProgrammaticWrite]);
 
-  const updateIntent = useCallback(() => {
+  const updateIntent = useCallback((echoOrigin?: ProgrammaticWriteOrigin, readerMotion = false) => {
     const element = scrollRef.current;
     if (!element) return;
     const atBottom = element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_EPSILON;
-    const appOwned = isRecentProgrammaticWrite(element.scrollTop);
-    if (isReaderInputActive()) {
+    const readerActive = isReaderInputActive();
+    const origin = echoOrigin ?? (readerMotion && readerActive ? undefined : recentProgrammaticWrite(element.scrollTop)?.origin);
+    // Compensation may temporarily reach the DOM end while its sizer lags.
+    // Its echo cannot grant follow intent (or revoke it), even mid-gesture.
+    if (origin === "measurement") return;
+    const appOwned = origin === "pin-intent";
+    if (readerActive) {
       followRef.current = atBottom;
       setShowScrollToBottom(!atBottom);
       return;
@@ -161,7 +170,7 @@ export function useChatScroll(
     if (!atBottom && appOwned) return;
     followRef.current = atBottom;
     setShowScrollToBottom(!atBottom);
-  }, [isReaderInputActive, isRecentProgrammaticWrite]);
+  }, [isReaderInputActive, recentProgrammaticWrite]);
 
   const onScroll = useCallback<UIEventHandler<HTMLDivElement>>(() => {
     const element = scrollRef.current;
@@ -174,7 +183,7 @@ export function useChatScroll(
     pendingEchoRef.current = null;
     if (pending !== null && at - pending.at <= PROGRAMMATIC_WRITE_WINDOW_MS
       && Math.abs(pos - pending.value) <= PROGRAMMATIC_WRITE_EPSILON) {
-      updateIntent();
+      updateIntent(pending.origin);
       return;
     }
     const previous = lastScrollEventRef.current;
@@ -192,7 +201,7 @@ export function useChatScroll(
       || (distance > 0 && at - previous.at > MOTION_STREAK_GAP_MS))) {
       lastScrollEventRef.current = { pos, at };
     }
-    updateIntent();
+    updateIntent(undefined, true);
   }, [isReaderInputActive, isRecentProgrammaticWrite, updateIntent]);
 
   useLayoutEffect(() => {
