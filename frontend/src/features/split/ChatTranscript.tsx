@@ -590,6 +590,36 @@ export function ChatTranscript({
     for (const key of estimateCache.keys()) {
       if (!live.has(key)) estimateCache.delete(key);
     }
+    // Validate an armed anchor before fallback selection. A later warm chunk
+    // can fold its orphan row away too: use the nearest retained row on the
+    // following side of the old seam. A preceding warm row would miss the
+    // removed row's height. Use a predecessor only if no successor survives.
+    const anchor = anchorRef.current;
+    if (anchor !== null) {
+      const index = keys.indexOf(anchor.key);
+      if (index >= 0) {
+        anchorRef.current = { ...anchor, index };
+      } else {
+        const committed = previousStartsRef.current.get(anchor.key) ?? anchor.start;
+        const pending = committed - anchor.start;
+        let nearest = Infinity;
+        let foundSuccessor = false;
+        anchorRef.current = null;
+        keys.forEach((key, index) => {
+          const start = previousStartsRef.current.get(key);
+          if (start === undefined) return;
+          const successor = start >= committed;
+          const distance = Math.abs(start - committed);
+          if (foundSuccessor && !successor) return;
+          if (successor === foundSuccessor && distance > nearest) return;
+          nearest = distance;
+          foundSuccessor = successor;
+          // Preserve any correction the old anchor could not apply while the
+          // DOM sizer lagged behind its committed measurement position.
+          anchorRef.current = { key, index, start: start - pending };
+        });
+      }
+    }
     // A warm chunk can fold the old leading orphan tool result into its
     // newly loaded invocation. Anchor the first surviving row instead, using
     // its committed start (not zero). A replaced chat has no surviving row.
@@ -604,13 +634,6 @@ export function ChatTranscript({
         }
       }
       leadingKeyRef.current = leading;
-    }
-    // Keep the armed anchor addressed by the CURRENT row list: hidden rows and
-    // later chunks move its index, and a replaced transcript retires it.
-    const anchor = anchorRef.current;
-    if (anchor !== null) {
-      const index = keys.indexOf(anchor.key);
-      anchorRef.current = index < 0 ? null : { ...anchor, index };
     }
     return { rows, keys };
   }, [items, rowMetrics, estimateCache]);
@@ -653,8 +676,13 @@ export function ChatTranscript({
       const element = instance.scrollElement;
       if (element === null) return;
       if (adjustments === undefined) {
-        // Genuine scroll intent (scrollToIndex/scrollToOffset): the viewport
-        // is being moved deliberately, so any deferred compensation is moot.
+        // These calls also include later animation-frame reconciliation of
+        // scrollToIndex, not just its initial intent. After a prepend that
+        // saved numeric index addresses an earlier row. The reader may have
+        // parked since the request: only current follow intent authorizes the
+        // write (jump/focus/restore hand that intent back before positioning).
+        // A rejected stale request must not discard measurement compensation.
+        if (!isFollowing()) return;
         deferredAdjustmentRef.current = 0;
         const previous = element.scrollTop;
         element.scrollTo?.(behavior === undefined ? { top: offset } : { top: offset, behavior });
@@ -748,7 +776,14 @@ export function ChatTranscript({
   // their own position, not the pre-chunk one, is what later rows are held
   // against. Our own compensation write is not that signal.
   const onTranscriptScroll: typeof onScroll = (event) => {
+    const wasFollowing = isFollowing();
     onScroll(event);
+    if (wasFollowing && !isFollowing()) {
+      // Retire the old numeric-index target through the public API. The
+      // scrollToFn ownership check makes this a write-free cancellation;
+      // otherwise a later jump could reauthorize that old reconciliation.
+      virtualizer.scrollToOffset(event.currentTarget.scrollTop);
+    }
     if (isReaderInputActive() || !isRecentProgrammaticWrite(event.currentTarget.scrollTop)) anchorRef.current = null;
   };
 

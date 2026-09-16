@@ -183,6 +183,94 @@ it("anchors a retained row when warming folds away the old leading row", () => {
   }
 });
 
+it.each([false, true])("rejects an old bottom-index reconciliation after parking and prepending (jump again=%s)", async (jump) => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    await act(async () => h.instance.scrollToIndex(TAIL_ROWS - 1, { align: "end" }));
+    park(h, h.body.scrollHeight - CLIENT_HEIGHT - 400);
+    const visible = viewportOffset(h, "tail row 13");
+    h.render([...rows("head", 3), ...tail]);
+    // Unequal row heights change the old numeric index's target, as in Chrome.
+    await act(async () => h.instance.resizeItem(0, ROW_HEIGHT + 20));
+    expect(distanceFromBottom(h)).toBe(400);
+    const height = h.body.scrollHeight;
+    // The old index now addresses an earlier row. Deliver the real library's
+    // pending reconciliation only after warm compensation and its echo.
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    if (jump) {
+      const button = h.container.querySelector<HTMLButtonElement>(".th-chat-scroll-bottom");
+      if (!button) throw new Error("missing jump control");
+      act(() => button.click());
+      expect(distanceFromBottom(h)).toBe(0);
+    }
+    const pending = [...frames.values()];
+    frames.clear();
+    expect(pending.length).toBeGreaterThan(0);
+    await act(async () => { for (const callback of pending) callback(performance.now()); });
+    expect(h.body.scrollHeight).toBe(height);
+    expect.soft(distanceFromBottom(h)).toBe(jump ? 0 : 400);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(jump ? visible - 400 : visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("remaps an armed warm anchor when a later chunk folds its row away", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, 1000);
+    const distance = distanceFromBottom(h);
+    const visible = viewportOffset(h, "tail row 1");
+    const earlier = rows("earlier", 2);
+    h.render([...earlier, ...tail]);
+    expect(distanceFromBottom(h)).toBe(distance);
+    expect(viewportOffset(h, "tail row 1")).toBe(visible);
+    act(() => h.body.dispatchEvent(new Event("scroll")));
+    act(() => h.body.dispatchEvent(new Event("scrollend")));
+    h.render([...rows("head", 3), ...earlier, ...tail.slice(1)]);
+    expect.soft(distanceFromBottom(h)).toBe(distance);
+    expect.soft(viewportOffset(h, "tail row 1")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
+it("carries a clamped correction across an armed anchor's disappearance", () => {
+  const tail = rows("tail", TAIL_ROWS);
+  const h = mountTranscript(tail);
+  try {
+    park(h, TAIL_HEIGHT - CLIENT_HEIGHT - 400);
+    const visible = viewportOffset(h, "tail row 13");
+    let lagging = true;
+    Object.defineProperty(h.body, "scrollTop", {
+      configurable: true, get: h.getTop,
+      set: (value: number) => h.setTop(Math.max(0, Math.min(value,
+        (lagging ? TAIL_HEIGHT : h.body.scrollHeight) - CLIENT_HEIGHT))),
+    });
+    const earlier = rows("earlier", 8);
+    h.render([...earlier, ...tail]);
+    expect(h.getTop()).toBe(TAIL_HEIGHT - CLIENT_HEIGHT);
+    expect(distanceFromBottom(h)).toBeGreaterThan(400);
+    lagging = false;
+    h.render([...rows("head", 3), ...earlier, ...tail.slice(1)]);
+    expect.soft(distanceFromBottom(h)).toBe(400);
+    expect.soft(viewportOffset(h, "tail row 13")).toBe(visible);
+  } finally {
+    unmount(h);
+  }
+});
+
 it("replays warm compensation clamped before the DOM sizer catches up", () => {
   const tail = rows("tail", TAIL_ROWS);
   const h = mountTranscript(tail);
