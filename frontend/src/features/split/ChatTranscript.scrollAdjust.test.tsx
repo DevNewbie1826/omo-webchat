@@ -284,6 +284,57 @@ it.each(["jump", "restore", "focus"])("hands ownership to explicit %s without sc
   }
 });
 
+it("holds compensation until scrollend when the committed DOM sizer lags measurements", () => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let frameId = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = ++frameId;
+    frames.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+  const h = mountTranscript();
+  try {
+    const sizer = h.container.querySelector<HTMLDivElement>(".th-chat-history");
+    if (!sizer) throw new Error("missing committed DOM sizer");
+    Object.defineProperties(h.body, {
+      scrollHeight: { configurable: true, get: () => Number.parseFloat(sizer.style.height) },
+      scrollTop: { configurable: true, get: h.getTop, set: (value: number) => {
+        h.setTop(Math.max(0, Math.min(value, h.body.scrollHeight - CLIENT_HEIGHT)));
+      } },
+      scrollTo: { configurable: true, value: (options?: ScrollToOptions) => {
+        if (options?.top !== undefined) h.body.scrollTop = options.top;
+      } },
+    });
+    act(() => h.instance.scrollToIndex(ROW_COUNT - 1, { align: "end" }));
+    dispatchScroll(h);
+    dispatchScrollend(h);
+    beginGesture(h, h.getTop() - 30);
+    act(() => h.body.dispatchEvent(new WheelEvent("wheel", { deltaY: 20 })));
+    beginGesture(h, h.getTop() + 20);
+    expect(h.instance.scrollDirection).toBe("forward");
+    expect(h.container.querySelector(".th-chat-scroll-bottom")).toBeNull();
+    expect(h.container.textContent).toContain("row 13");
+    const row = h.instance.measurementsCache[13];
+    if (!row) throw new Error("missing measured row");
+    expect(h.instance.itemSizeCache.has(row.key)).toBe(true);
+    const before = h.getTop();
+    const writes = vi.spyOn(h.body, "scrollTo");
+    const positions = vi.spyOn(h.body, "scrollTop", "set");
+    resizeBy(h, 13, 30);
+    expect.soft(h.getTop()).toBe(before);
+    expect.soft(writes).not.toHaveBeenCalled();
+    expect.soft(positions).not.toHaveBeenCalled();
+    dispatchScrollend(h);
+    expect(h.getTop()).toBe(before + 30);
+    expect(positions).toHaveBeenCalledExactlyOnceWith(before + 30);
+    dispatchScrollend(h);
+    expect(positions).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount(h);
+  }
+});
+
 it("applies a measurement correction immediately when no gesture is in flight", () => {
   const h = mountTranscript();
   try {

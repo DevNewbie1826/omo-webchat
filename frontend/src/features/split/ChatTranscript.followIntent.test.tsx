@@ -590,6 +590,39 @@ describe("reader ownership provenance and contacts", () => {
     expect(state.isFollowing()).toBe(false);
   });
 
+  it.each([false, true])("measurement echoes at a lagging DOM bottom cannot repin a parked reader (active=%s)", (active) => {
+    automaticBottom();
+    scroll();
+    body.scrollTop = 5200;
+    scroll();
+    expect(state.isFollowing()).toBe(false);
+    if (!active) dispatch(new Event("scrollend"));
+    // Warm compensation reaches the current DOM clamp before its next sizer
+    // commit. Neither its fresh echo nor a ResizeObserver repeat owns intent.
+    body.scrollTop = 5600;
+    state.noteProgrammaticWrite("measurement");
+    scroll();
+    automaticBottom();
+    expect(state.isFollowing()).toBe(false);
+    expect(container.querySelector("button")).not.toBeNull();
+    height += 400;
+    automaticBottom();
+    expect(top).toBe(5600);
+    expect(state.isFollowing()).toBe(false);
+  });
+
+  it("measurement echoes away from bottom cannot revoke follow during reader grace", () => {
+    automaticBottom();
+    scroll();
+    dispatch(new WheelEvent("wheel", { deltaY: 10 }));
+    height += 100;
+    body.scrollTop += 20;
+    state.noteProgrammaticWrite("measurement");
+    scroll();
+    expect(state.isFollowing()).toBe(true);
+    expect(container.querySelector("button")).toBeNull();
+  });
+
   it("stationary app echoes do not extend reader grace", () => {
     twoBottoms();
     dispatch(pointer("pointerdown", 1));
