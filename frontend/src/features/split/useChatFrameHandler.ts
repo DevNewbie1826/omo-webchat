@@ -35,8 +35,13 @@ interface ChatFrameHandlerBindings {
   readonly submitLatchRef: Current<boolean>;
   readonly sends: ChatSendStore;
   readonly offerFailedDraft: (request: ChatSendRequest) => void;
-  /** Record retained steer occurrences once the branch root is known. */
-  readonly settlePendingSteers: (sessionId: string) => void;
+  /** Record retained steer occurrences once the branch root is known.
+   * Returns true when marks were recorded against the given messages. */
+  readonly settlePendingSteers: (sessionId: string, messages: readonly UiMessage[]) => boolean;
+  /** Bind a live user message to a retained steer occurrence as its echo. */
+  readonly bindPendingSteerEcho: (sessionId: string, message: UiMessage) => void;
+  /** Retire retained steer occurrences whose run ended without an echo. */
+  readonly retireUnmaterializedPendingSteers: () => void;
   /** Drop a retained steer occurrence whose send was rejected. */
   readonly dropPendingSteer: (requestId: string) => void;
   readonly cancelQueuedRecovery: (requestIds: ReadonlySet<string>) => void;
@@ -192,18 +197,23 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
     const suffix = preserveCurrent
       ? messagesSinceSnapshot(bindings.messagesRef.current, bindings.snapshotMessagesRef.current)
       : [];
+    const rootKnown = bindings.pageBuffer.historyRootKnown();
     const reconciliation = reconcileFrameHistory({
       entries,
       current: suffix,
       preserveCurrent,
-      steerMarks: bindings.pageBuffer.historyRootKnown() ? steerMarks(sessionId) : [],
+      steerMarks: rootKnown ? steerMarks(sessionId) : [],
     });
-    bindings.replaceMessages(reconciliation.history.messages);
-    // A committed snapshot is not another live receipt on a repeated terminal.
-    bindings.snapshotMessagesRef.current = reconciliation.history.messages.filter(message => !suffix.includes(message));
+    let messages = reconciliation.history.messages;
     // Steer occurrences retained while the client held only a bounded tail
-    // resolve their root-relative ordinals once the branch root is known.
-    if (bindings.pageBuffer.historyRootKnown()) bindings.settlePendingSteers(sessionId);
+    // resolve their root-relative ordinals once the branch root is known, and
+    // the resolved marks join this same reconciliation pass.
+    if (rootKnown && bindings.settlePendingSteers(sessionId, messages)) {
+      messages = chatState.applySteerMarks(messages, steerMarks(sessionId));
+    }
+    bindings.replaceMessages(messages);
+    // A committed snapshot is not another live receipt on a repeated terminal.
+    bindings.snapshotMessagesRef.current = messages.filter(message => !suffix.includes(message));
   };
   const completeExternalRecovery = (): void => {
     if (!bindings.externalRecoveryPendingRef.current
@@ -311,6 +321,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
           if (merged !== null) bindings.replaceToolCalls(merged);
           return;
         }
+        // A user message that arrives while a steer occurrence is retained
+        // may be that steer's echo: bind the occurrence identity so
+        // settlement resolves the message that was actually sent.
+        if (frame.message.role === "user") bindings.bindPendingSteerEcho(frame.sessionId, frame.message);
         bindings.messageVersionRef.current += 1;
         bindings.replaceMessages(chatState.applySteerMarks(
           [...bindings.messagesRef.current, frame.message],
@@ -346,6 +360,10 @@ export function createChatFrameHandler(bindings: ChatFrameHandlerBindings): (fra
             if (mark.ordinal > userCount) forgetSteerMark(frame.sessionId, mark.requestId);
           }
         }
+        // A retained steer occurrence whose run ends without its echo never
+        // materialized: retire it at the run boundary so it cannot resolve
+        // onto an unrelated later turn once history completes.
+        bindings.retireUnmaterializedPendingSteers();
         clearLiveSurfaces();
         const next = chatState.finalizeRunMessages(bindings.messagesRef.current, finalized);
         if (next) {

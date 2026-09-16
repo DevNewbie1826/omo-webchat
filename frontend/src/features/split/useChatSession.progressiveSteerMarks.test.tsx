@@ -136,6 +136,88 @@ describe("useChatSession progressive steer marks", () => {
     expect(current?.messages.find((message) => message.id === "e-61")?.customType).toBeUndefined();
   });
 
+  it("marks the steer's own echo when it arrives before the final head page", () => {
+    // 62 user turns on the branch; the tail holds the last 60. The steer's
+    // echo lands while the root is still unknown, so settlement must resolve
+    // THAT occurrence (root-relative ordinal 63), not count past it. A
+    // same-text decoy at ordinal 61 must stay unmarked.
+    const branch = branch62();
+    branch[60] = entry("e-61", "user", "warm steer", 610);
+
+    act(() => deliver({
+      type: "entries",
+      sessionId: session.id,
+      entries: branch.slice(2),
+      final: true,
+      historyComplete: false,
+    }));
+    act(() => deliver({ type: "run.started", sessionId: session.id }));
+    act(() => current?.steer("warm steer"));
+    const requestId = steerRequestId();
+
+    // The echo materializes before the branch root is known.
+    act(() => deliver({
+      type: "message",
+      sessionId: session.id,
+      message: { role: "user", blocks: [{ kind: "text", text: "warm steer" }], ts: 9999 },
+    }));
+
+    act(() => deliver({
+      type: "entries",
+      sessionId: session.id,
+      entries: branch.slice(0, 2),
+      final: false,
+      segment: "head",
+      historyComplete: true,
+    }));
+
+    expect(steerMarks(session.id)).toContainEqual({ requestId, text: "warm steer", ordinal: 63 });
+    const marked = current?.messages.filter((message) => message.customType === "steer") ?? [];
+    expect(marked).toHaveLength(1);
+    expect(marked[0]?.ts).toBe(9999);
+    expect(current?.messages.find((message) => message.id === "e-61")?.customType).toBeUndefined();
+  });
+
+  it("retires a pending steer whose run ends without an echo before history completes", () => {
+    // 62 user turns on the branch; the tail holds the last 60. The steer's
+    // run settles with no echo, so the retained occurrence never
+    // materialized: no mark may be recorded, and a later unrelated same-text
+    // user message must stay unmarked.
+    const branch = branch62();
+
+    act(() => deliver({
+      type: "entries",
+      sessionId: session.id,
+      entries: branch.slice(2),
+      final: true,
+      historyComplete: false,
+    }));
+    act(() => deliver({ type: "run.started", sessionId: session.id }));
+    act(() => current?.steer("warm steer"));
+    steerRequestId();
+
+    act(() => deliver({ type: "run.done", sessionId: session.id, reason: "stop" }));
+
+    act(() => deliver({
+      type: "entries",
+      sessionId: session.id,
+      entries: branch.slice(0, 2),
+      final: false,
+      segment: "head",
+      historyComplete: true,
+    }));
+
+    expect(steerMarks(session.id)).toEqual([]);
+
+    act(() => deliver({
+      type: "message",
+      sessionId: session.id,
+      message: { role: "user", blocks: [{ kind: "text", text: "warm steer" }], ts: 9999 },
+    }));
+
+    expect(current?.messages.some((message) => message.customType === "steer")).toBe(false);
+  });
+
   it("records a steer immediately when the terminal page already reaches the root", () => {
     act(() => deliver({
       type: "entries",

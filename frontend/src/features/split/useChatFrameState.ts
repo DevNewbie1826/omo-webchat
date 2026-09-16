@@ -4,7 +4,7 @@ import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObjec
 import type { ApprovalRequest } from "./ApprovalDock";
 import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
-import { type UiMessage } from "./chatEntries";
+import { messageText, type UiMessage } from "./chatEntries";
 import {
   applyActivityEvent,
   applyTaskHistorySnapshot,
@@ -207,6 +207,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     readonly requestId: string;
     readonly text: string;
     readonly sessionId: string;
+    /** The materialized occurrence, bound when its echo message arrives. */
+    readonly echo?: UiMessage;
   }>>([]);
   const noticeIdRef = useRef(0);
   const recoveryRef = useRef<RecoveryState | null>(null);
@@ -415,19 +417,52 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     }, HISTORY_STALL_MS);
   };
 
-  // Resolve retained steer occurrences in send order with the same
-  // root-relative rule used when the whole branch is already held. Reached
-  // from reconciliation only once the page buffer holds the branch from its
-  // root, so the loaded user-message count is the canonical one.
-  const settlePendingSteers = (sessionId: string): void => {
+  // Resolve retained steer occurrences in send order against the reconciled
+  // branch. An occurrence whose echo already materialized resolves to THAT
+  // message's root-relative ordinal; one still waiting for its echo keeps
+  // the append rule used when the whole branch is already held. Returns true
+  // when marks were recorded so the caller applies them in the same pass.
+  const settlePendingSteers = (sessionId: string, messages: readonly UiMessage[]): boolean => {
     const pending = pendingSteersRef.current;
-    if (pending.length === 0) return;
+    if (pending.length === 0) return false;
     pendingSteersRef.current = [];
     for (const steer of pending) {
-      const marks = steerMarks(steer.sessionId);
-      const ordinal = Math.max(messagesRef.current.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+      let ordinal: number | null = null;
+      if (steer.echo !== undefined) {
+        let position = 0;
+        for (const message of messages) {
+          if (message.role !== "user") continue;
+          position += 1;
+          if (message === steer.echo) {
+            ordinal = position;
+            break;
+          }
+        }
+      }
+      if (ordinal === null) {
+        const marks = steerMarks(steer.sessionId);
+        ordinal = Math.max(messages.filter(message => message.role === "user").length, ...marks.map(mark => mark.ordinal)) + 1;
+      }
       recordSteerMark(steer.sessionId, { requestId: steer.requestId, text: steer.text, ordinal });
     }
+    return true;
+  };
+  // Bind a live user message to the oldest retained steer occurrence still
+  // waiting for its echo: the occurrence identity survives warming, so
+  // settlement resolves the message that was actually sent.
+  const bindPendingSteerEcho = (sessionId: string, message: UiMessage): void => {
+    if (pendingSteersRef.current.length === 0) return;
+    const text = messageText(message);
+    const match = pendingSteersRef.current.find(pending =>
+      pending.sessionId === sessionId && pending.echo === undefined && pending.text === text);
+    if (match === undefined) return;
+    pendingSteersRef.current = pendingSteersRef.current.map(pending =>
+      pending === match ? { ...pending, echo: message } : pending);
+  };
+  // A run boundary without an echo retires the retained occurrences that
+  // never materialized; occurrences whose echo already arrived survive.
+  const retireUnmaterializedPendingSteers = (): void => {
+    pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.echo !== undefined);
   };
   const dropPendingSteer = (requestId: string): void => {
     pendingSteersRef.current = pendingSteersRef.current.filter(pending => pending.requestId !== requestId);
@@ -444,6 +479,8 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     sends,
     offerFailedDraft,
     settlePendingSteers,
+    bindPendingSteerEcho,
+    retireUnmaterializedPendingSteers,
     dropPendingSteer,
     cancelQueuedRecovery,
     messageVersionRef,
