@@ -207,6 +207,13 @@ func writeUpdatePackageManagerRecorder(t *testing.T, path, role string) {
 	writeUpdateFile(t, path, "#!/bin/sh\n"+tag+"exec "+shellQuote(exe)+" -test.run=^TestUpdatePackageManagerProcess$ -- \"$@\"\n")
 }
 
+// writeUpdateInvocationObserver installs an executable that appends its path
+// to receipt before exiting, so tests can observe whether a fixture binary ran.
+func writeUpdateInvocationObserver(t *testing.T, path, receipt string) {
+	t.Helper()
+	writeUpdateFile(t, path, "#!/bin/sh\nprintf '%s\\n' \"$0\" >> "+shellQuote(receipt)+"\nexit 98\n")
+}
+
 func updateInstallFixture(t *testing.T, manager string) (launcher, root, prefix string) {
 	t.Helper()
 	base, err := filepath.EvalSymlinks(t.TempDir())
@@ -460,6 +467,28 @@ func TestUpdateInstallationPrefersPrefixBun(t *testing.T) {
 	}
 }
 
+// The invocation observer must itself be able to record a real start; the
+// missing-runtime test then asserts that the same receipt stays absent.
+func TestUpdateInvocationObserverRecordsExecution(t *testing.T) {
+	dir := t.TempDir()
+	receipt := filepath.Join(dir, "invoked")
+	bin := filepath.Join(dir, "observed")
+	writeUpdateInvocationObserver(t, bin, receipt)
+	if _, err := os.Stat(receipt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("receipt existed before invocation: %v", err)
+	}
+	if err := exec.Command(bin).Run(); err == nil {
+		t.Fatal("observer exited successfully")
+	}
+	data, err := os.ReadFile(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != bin {
+		t.Fatalf("receipt = %q, want %q", got, bin)
+	}
+}
+
 // With no bun in the prefix and none on PATH, the update must fail without
 // starting any package-manager process, naming both searched locations.
 func TestUpdateInstallationBunMissingEverywhere(t *testing.T) {
@@ -467,15 +496,21 @@ func TestUpdateInstallationBunMissingEverywhere(t *testing.T) {
 	if err := os.Remove(filepath.Join(prefix, "bin", "bun")); err != nil {
 		t.Fatal(err)
 	}
-	// A poison PATH without any bun at all.
+	receipt := filepath.Join(t.TempDir(), "invoked")
+	entry, err := filepath.EvalSymlinks(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeUpdateInvocationObserver(t, entry, receipt)
+	// A poison PATH without any bun at all. Alternate runtimes record an
+	// invocation receipt synchronously before exiting.
 	poison := t.TempDir()
 	for _, name := range []string{"omo", "npm", "node", "senpi"} {
-		writeUpdateFile(t, filepath.Join(poison, name), "#!/bin/sh\nexit 98\n")
+		writeUpdateInvocationObserver(t, filepath.Join(poison, name), receipt)
 	}
 	t.Setenv("PATH", poison)
-	events := updateProcessListener(t)
 	prefixBun := filepath.Join(prefix, "bin", "bun")
-	err := UpdateInstallation(t.Context(), launcher)
+	err = UpdateInstallation(t.Context(), launcher)
 	if err == nil {
 		t.Fatal("update without any bun succeeded")
 	}
@@ -485,12 +520,8 @@ func TestUpdateInstallationBunMissingEverywhere(t *testing.T) {
 	if !strings.Contains(err.Error(), "PATH") {
 		t.Errorf("error %v does not mention PATH", err)
 	}
-	if !strings.Contains(err.Error(), "matching package-manager runtime is unavailable") {
-		t.Errorf("error %v lost the unavailability prefix", err)
-	}
-	select {
-	case event := <-events:
-		t.Fatalf("package manager started despite the missing runtime: %+v", event.report)
-	default:
+	if _, statErr := os.Stat(receipt); !errors.Is(statErr, os.ErrNotExist) {
+		data, _ := os.ReadFile(receipt)
+		t.Fatalf("package-manager process ran despite the missing runtime: %q", data)
 	}
 }
