@@ -353,6 +353,7 @@
   "activity.emptyDag": "아직 DAG 실행이 없습니다",
   "approval.question.tab": "질문 {index}",
   "approval.question.invalidated": "{question}: 질문이 업데이트되어 이전 답변이 삭제되었습니다. 확인 후 다시 선택해 주세요.",
+  "approval.question.removed": "{question}: 업데이트로 이 질문이 삭제되었습니다. 이전 답변은 폐기되었으며 전송되지 않습니다.",
   "approval.question.answerPlaceholder": "답변을 입력하세요",
   "approval.question.commentPlaceholder": "코멘트 추가 (선택 사항)"
 }

@@ -37,6 +37,62 @@ it.each([false, true])("retains an invalidation status through refresh and prese
  expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({ first: { selected: ["C"] }, last: { selected: ["Z"] } });
 });
 
+const environment = { id: "environment", header: "Environment", multiSelect: true, options: [{ label: "Production" }, { label: "Staging" }] };
+const reason = { id: "reason", header: "Reason" };
+const inputText = (value: string) => act(() => {
+ const input = requireElement(container.querySelector("input"), "answer input");
+ Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+ input.dispatchEvent(new Event("input", { bubbles: true }));
+});
+
+it.each([false, true])("names a removed question persistently when a chosen answer is retired (inline=%s)", async inline => {
+ // Given an unsent chosen answer.
+ const { deliver, sent } = renderChatPane(root);
+ await act(async () => deliver({ ...request, questions: [environment, reason] }));
+ click("Production");
+ // When the question is removed, including a later no-op/presentation refresh.
+ await act(async () => deliver({ ...request, questions: [reason] }));
+ await act(async () => deliver({ ...request, nonBlocking: inline, questions: [reason] }));
+ // Then its status remains identifiable without sending a response.
+ expect([...container.querySelectorAll('[role="status"] [data-question-key]')].map(el => el.getAttribute("data-question-key"))).toEqual([environment.id]);
+ expect(sent.filter(frame => frame.type === "approval.respond")).toEqual([]);
+});
+
+it("excludes a retired selection when a removed question returns before submission", async () => {
+ // Given a selected question removed from the request.
+ const { deliver, sent } = renderChatPane(root);
+ await act(async () => deliver({ ...request, questions: [environment, reason] }));
+ click("Production");
+ await act(async () => deliver({ ...request, questions: [reason] }));
+ await act(async () => deliver({ ...request, questions: [environment, reason] }));
+ // When submitting without choosing it again.
+ click("approval.submit");
+ // Then the retired value is absent.
+ expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({});
+});
+
+it.each(["", "   "])("shows no loss notice when erased text %j becomes options", async empty => {
+ // Given text typed and cleared without answering.
+ const { deliver } = renderChatPane(root);
+ await act(async () => deliver({ ...request, questions: [reason] }));
+ inputText("temporary"); inputText(empty);
+ // When the same question becomes a choice.
+ await act(async () => deliver({ ...request, questions: [{ ...reason, options: [{ label: "Deploy" }] }] }));
+ // Then nothing the user chose was lost.
+ expect(container.querySelector('[role="status"] [data-question-key]')).toBeNull();
+});
+
+it.each([{ questions: [environment, reason] }, { questions: [reason] }])("names lost text when its question changes: $questions", async ({ questions }) => {
+ // Given meaningful text on Environment.
+ const { deliver } = renderChatPane(root);
+ await act(async () => deliver({ ...request, questions: [{ id: environment.id, header: environment.header }, reason] }));
+ inputText("chosen reason");
+ // When the text answer can no longer be represented.
+ await act(async () => deliver({ ...request, questions }));
+ // Then the affected question has a status.
+ expect([...container.querySelectorAll('[role="status"] [data-question-key]')].map(el => el.getAttribute("data-question-key"))).toEqual([environment.id]);
+});
+
 it("keeps one request cancellable when invalidation, an unsent draft, and colliding labels interact", async () => {
  // Given a committed first choice and an unsent multi-selection.
  const { deliver, sent } = renderChatPane(root);

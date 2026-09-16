@@ -1,7 +1,8 @@
 import { createContext, useContext, useLayoutEffect, useState } from "react";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
-import { QuestionDraftNotice } from "./QuestionDraftNotice";
+import { lostQuestionAnswer, QuestionDraftNotice, RemovedQuestionNoticeContext } from "./QuestionDraftNotice";
+import type { QuestionDraftAnswer, RemovedQuestionNotice } from "./QuestionDraftNotice";
 import { questionKey } from "../../lib/chatWsParseApproval";
 import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
 
@@ -16,15 +17,6 @@ export interface ApprovalQuestionPanelProps {
 	readonly onCancel: () => void;
 }
 
-type QuestionDraftAnswer = {
-	readonly selected: readonly string[];
-	readonly text: string;
-	readonly textAnswered?: boolean;
-	/** Explicit single-choice activation or inline Send, never draft presence. */
-	readonly completed: boolean;
-	readonly invalidated?: boolean;
-};
-
 /** Draft state for a structured multi-question request: one entry per
  *  question id, plus the optional overall comment. Keyed by request id so a
  *  new request never inherits the previous request's answers. */
@@ -32,6 +24,8 @@ interface QuestionDraft {
 	readonly requestId: string;
 	readonly activeIndex: number;
 	readonly answers: ReadonlyMap<string, QuestionDraftAnswer>;
+	readonly questions: readonly Question[];
+	readonly removedQuestions: readonly RemovedQuestionNotice[];
 	readonly comment: string;
 	readonly answering: boolean;
 }
@@ -48,12 +42,21 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		const selected = question.multiSelect ? valid : valid.slice(0, 1);
 		const text = options.length === 0 ? entry.text : "";
 		const textAnswered = options.length === 0 ? entry.textAnswered : undefined;
+		const next = { selected, text, completed: false, ...(textAnswered !== undefined ? { textAnswered } : {}) };
 		answers.set(key, selected.length === entry.selected.length && text === entry.text && textAnswered === entry.textAnswered
-			? entry : { selected, text, completed: false, invalidated: true, ...(textAnswered !== undefined ? { textAnswered } : {}) });
+			? entry : { ...next, invalidated: entry.invalidated || lostQuestionAnswer(entry, next) });
+	});
+	const removed = draft.questions.flatMap((question, index) => {
+		const key = questionKey(question, index), entry = draft.answers.get(key);
+		return entry && !answers.has(key) && (entry.invalidated || lostQuestionAnswer(entry)) && !draft.removedQuestions.some(notice => notice.key === key)
+			? [{ key, name: question.header ?? question.question, index }] : [];
 	});
 	const activeIndex = Math.min(draft.activeIndex, Math.max(questions.length - 1, 0));
-	return activeIndex === draft.activeIndex && answers.size === draft.answers.size && [...answers].every(([key, entry]) => draft.answers.get(key) === entry)
-		? draft : { ...draft, activeIndex, answers };
+	const sameQuestions = questions.length === draft.questions.length && questions.every((question, index) =>
+		questionKey(question, index) === questionKey(draft.questions[index], index)
+		&& question.header === draft.questions[index]?.header && question.question === draft.questions[index]?.question);
+	return sameQuestions && activeIndex === draft.activeIndex && answers.size === draft.answers.size && [...answers].every(([key, entry]) => draft.answers.get(key) === entry)
+		? draft : { ...draft, activeIndex, answers, questions, removedQuestions: removed.length ? [...draft.removedQuestions, ...removed] : draft.removedQuestions };
 }
 
 type QuestionDraftState = readonly [QuestionDraft, Dispatch<SetStateAction<QuestionDraft>>];
@@ -65,7 +68,9 @@ export function QuestionDraftProvider({ requestId, children }: {
 	readonly children: ReactElement<{ readonly request: { readonly questions?: readonly Question[] } }>;
 }) {
 	const draftState = useApprovalQuestionDraft(requestId, children.props.request.questions ?? []);
-	return <QuestionDraftContext.Provider value={draftState}>{children}</QuestionDraftContext.Provider>;
+	return <QuestionDraftContext.Provider value={draftState}>
+		<RemovedQuestionNoticeContext.Provider value={draftState[0].removedQuestions}>{children}</RemovedQuestionNoticeContext.Provider>
+	</QuestionDraftContext.Provider>;
 }
 
 /** Both presentations send the same per-question draft, including its comment. */
@@ -97,11 +102,12 @@ export function useApprovalQuestionDraft(requestId: string, questions?: readonly
 		requestId,
 		activeIndex: 0,
 		answers: new Map(),
+		questions: [], removedQuestions: [],
 		comment: "",
 		answering: false,
 	});
-	const current = draft.requestId !== requestId
-		? { requestId, activeIndex: 0, answers: new Map(), comment: "", answering: false }
+	const current: QuestionDraft = draft.requestId !== requestId
+		? { requestId, activeIndex: 0, answers: new Map(), questions: [], removedQuestions: [], comment: "", answering: false }
 		: questions ? reconcileDraft(draft, questions) : draft;
 	if (current !== draft) setDraft(current);
 
@@ -163,7 +169,7 @@ export function ApprovalQuestionPanel({
 
 	return (
 		<div className="th-approval-question">
-			<QuestionDraftNotice answers={draft.answers} questions={questions} />
+			<QuestionDraftNotice answers={draft.answers} questions={questions} removedQuestions={draft.removedQuestions} />
 			<div className="th-approval-question-tabs" role="tablist">
 				{questions.map((question, index) => (
 					<button

@@ -353,6 +353,7 @@
   "activity.emptyDag": "No DAG runs yet",
   "approval.question.tab": "Question {index}",
   "approval.question.invalidated": "{question}: an earlier answer was removed after an update. Review and choose again.",
+  "approval.question.removed": "{question}: this question was removed after an update. Your earlier answer was discarded and will not be sent.",
   "approval.question.answerPlaceholder": "Type your answer",
   "approval.question.commentPlaceholder": "Add a comment (optional)"
 }
