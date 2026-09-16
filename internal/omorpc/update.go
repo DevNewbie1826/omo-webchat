@@ -74,10 +74,24 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 		global := filepath.Dir(filepath.Dir(root))
 		prefix := filepath.Dir(filepath.Dir(global))
 		binDir = filepath.Join(prefix, "bin")
-		executable = filepath.Join(binDir, "bun")
 		args = []string{"add", "--cwd", root, "-g", "omo-ai@beta"}
 		cwd = root
 		env = setEnv(setEnv(setEnv(env, "BUN_INSTALL", prefix), "BUN_INSTALL_GLOBAL_DIR", global), "BUN_INSTALL_BIN", binDir)
+		// Observed installations keep the bun binary outside this prefix (for
+		// example installed system-wide next to a per-user global package
+		// directory), so fall back to PATH when the prefix has no bun.
+		preferred := filepath.Join(binDir, "bun")
+		if executable, err = exec.LookPath(preferred); err != nil {
+			if executable, err = exec.LookPath("bun"); err != nil {
+				return fmt.Errorf("matching package-manager runtime is unavailable: no bun at %s and no bun on PATH", preferred)
+			}
+		}
+		// Absolute so cmd.Dir cannot give a relative PATH hit another meaning.
+		if absolute, absErr := filepath.Abs(executable); absErr != nil {
+			return fmt.Errorf("matching package-manager runtime is unavailable: %w", absErr)
+		} else {
+			executable = absolute
+		}
 	case strings.HasSuffix(filepath.ToSlash(root), "/lib/node_modules/omo-ai"):
 		prefix := filepath.Dir(filepath.Dir(filepath.Dir(root)))
 		binDir = filepath.Join(prefix, "bin")
@@ -95,8 +109,10 @@ func UpdateInstallation(ctx context.Context, binary string) error {
 	default:
 		return errors.New("unsupported omo installation: expected an npm prefix or Bun global installation")
 	}
-	// Never use an unrelated PATH npm/bun. npm runs through this prefix's Node
-	// and receives an explicit prefix, overriding ambient npm configuration.
+	// npm runs through this prefix's Node and receives an explicit prefix,
+	// overriding ambient npm configuration. Bun's install target is pinned by
+	// --cwd plus the BUN_INSTALL* environment, so the prefix's bun is preferred
+	// but a PATH bun installs into the same place.
 	executable, err = exec.LookPath(executable)
 	if err != nil {
 		return fmt.Errorf("matching package-manager runtime is unavailable: %w", err)
