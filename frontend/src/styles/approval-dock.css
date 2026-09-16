@@ -315,11 +315,18 @@
 }
 
 
+/* The tab strip lives inside the dock body's scrollport: pin it to the
+   top edge so a long question can never scroll the only way back to an
+   earlier question out of view, and paint it with the dock's own surface
+   so scrolling content never shows through the pinned strip. */
 .th-approval-question-tabs {
   display: flex;
   gap: var(--th-space-1);
   overflow-x: auto;
   border-bottom: 1px solid var(--th-border);
+  position: sticky;
+  top: 0;
+  background: var(--th-surface);
 }
 
 .th-approval-question-tab {
@@ -403,6 +410,36 @@
 .th-approval-question-comment {
   flex: none;
   min-height: 0;
+}
+
+/* The overall comment is a request-level aside, not a question answer: its
+   labelled group sits below a hairline separator, visually apart from the
+   active question's options and answer box above it. */
+.th-approval-question-comment-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  padding-top: var(--th-space-2);
+  border-top: 1px solid var(--th-border);
+}
+
+.th-approval-question-comment-label {
+  color: var(--th-text-dim);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+}
+
+/* Remaining-question count in the action row: quiet meta text that leads
+   the row (the summary band's pattern) while the actions pin to its end. */
+.th-approval-question-unanswered {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: center;
+  color: var(--th-muted);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
 }
 
 /* Sticky footer, but only when the chat column is tall enough that the

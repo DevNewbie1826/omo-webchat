@@ -33,8 +33,14 @@ it.each(["options", "single", "text", "removed"])("reconciles preserved drafts w
  act(() => deliver({ ...request, nonBlocking: scenario === "options", questions: [refreshed] }));
  if (scenario !== "single") click("Blue");
  click(scenario === "options" ? "question.submit" : "approval.submit");
- // Then only valid selections are sent; single-select keeps the first valid choice.
- expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({ target: { selected: [scenario === "single" ? "Red" : "Blue"] } });
+ // Then only valid selections are sent; single-select keeps the first valid
+ // choice. A typed draft survives a refresh that turns the question into a
+ // choice question as that question's own free-text answer (the dedicated
+ // input under the options), so selected and text may coexist.
+ expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({ target: {
+  selected: [scenario === "single" ? "Red" : "Blue"],
+  ...(scenario === "text" ? { text: "obsolete" } : {}),
+ } });
 });
 
 it("bounds retained entries when a live request replaces its question thirty times", () => {

@@ -161,6 +161,8 @@ describe("ApprovalDock structured question panel", () => {
 			"true",
 		]);
 
+		// Submit lives on the last question; step there to send.
+		click(tabs()[1]);
 		submit();
 		expect(onRespond).toHaveBeenCalledTimes(1);
 		expect(onRespond).toHaveBeenCalledWith({
@@ -211,6 +213,8 @@ describe("ApprovalDock structured question panel", () => {
 			comment.dispatchEvent(new Event("input", { bubbles: true }));
 		});
 
+		// Submit lives on the last question; step there to send.
+		click(tabs()[1]);
 		submit();
 		expect(onRespond).toHaveBeenCalledWith({
 			answers: { q1: { selected: ["TS"] } },
@@ -222,6 +226,8 @@ describe("ApprovalDock structured question panel", () => {
 		const onRespond = vi.fn();
 		renderDock(TWO_QUESTIONS, onRespond);
 
+		// Submit lives on the last question; step there to send.
+		click(tabs()[1]);
 		submit();
 		expect(onRespond).toHaveBeenCalledWith({ answers: {} });
 	});

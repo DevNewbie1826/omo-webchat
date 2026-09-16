@@ -33,6 +33,8 @@ it.each([false, true])("retains an invalidation status through refresh and prese
  if (!inline) click("First");
  click("C");
  expect(container.querySelector('[role="status"] [data-question-key]')).toBeNull();
+ // Submit lives on the last question: return there before sending.
+ if (!inline) click("Last");
  click(inline ? "question.submit" : "approval.submit");
  expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({ first: { selected: ["C"] }, last: { selected: ["Z"] } });
 });
@@ -65,7 +67,8 @@ it("excludes a retired selection when a removed question returns before submissi
  click("Production");
  await act(async () => deliver({ ...request, questions: [reason] }));
  await act(async () => deliver({ ...request, questions: [environment, reason] }));
- // When submitting without choosing it again.
+ // When submitting without choosing it again (Submit lives on the last question).
+ click("Reason");
  click("approval.submit");
  // Then the retired value is absent.
  expect(sent.filter(frame => frame.type === "approval.respond").at(-1)?.answers).toEqual({});
@@ -82,15 +85,28 @@ it.each(["", "   "])("shows no loss notice when erased text %j becomes options",
  expect(container.querySelector('[role="status"] [data-question-key]')).toBeNull();
 });
 
-it.each([{ questions: [environment, reason] }, { questions: [reason] }])("names lost text when its question changes: $questions", async ({ questions }) => {
+it("names lost text when its question is removed from the request", async () => {
  // Given meaningful text on Environment.
  const { deliver } = renderChatPane(root);
  await act(async () => deliver({ ...request, questions: [{ id: environment.id, header: environment.header }, reason] }));
  inputText("chosen reason");
- // When the text answer can no longer be represented.
- await act(async () => deliver({ ...request, questions }));
+ // When the question is removed and its text can no longer be represented.
+ await act(async () => deliver({ ...request, questions: [reason] }));
  // Then the affected question has a status.
  expect([...container.querySelectorAll('[role="status"] [data-question-key]')].map(el => el.getAttribute("data-question-key"))).toEqual([environment.id]);
+});
+
+it("keeps typed text without a loss notice when its question gains options", async () => {
+ // Given meaningful text on Environment.
+ const { deliver } = renderChatPane(root);
+ await act(async () => deliver({ ...request, questions: [{ id: environment.id, header: environment.header }, reason] }));
+ inputText("chosen reason");
+ // When the same question becomes a choice question, its typed text stays
+ // representable through the dedicated input under the options.
+ await act(async () => deliver({ ...request, questions: [environment, reason] }));
+ // Then nothing the user typed was lost and no status is raised.
+ expect(container.querySelector('[role="status"] [data-question-key]')).toBeNull();
+ expect(container.querySelector<HTMLInputElement>(".th-approval-question-text")?.value).toBe("chosen reason");
 });
 
 it("keeps one request cancellable when invalidation, an unsent draft, and colliding labels interact", async () => {
