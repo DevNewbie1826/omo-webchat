@@ -355,5 +355,9 @@
   "approval.question.invalidated": "{question}: an earlier answer was removed after an update. Review and choose again.",
   "approval.question.removed": "{question}: this question was removed after an update. Your earlier answer was discarded and will not be sent.",
   "approval.question.answerPlaceholder": "Type your answer",
-  "approval.question.commentPlaceholder": "Add a comment (optional)"
+  "approval.question.commentPlaceholder": "Add a comment (optional)",
+  "approval.question.next": "Next",
+  "approval.question.unanswered": "{count} unanswered",
+  "approval.question.answerOptionPlaceholder": "Or type your own answer",
+  "approval.question.commentLabel": "Overall comment"
 }

@@ -20,6 +20,7 @@ const fileEditor = readStyle("file-editor");
 const appEmpty = readStyle("app-empty");
 const sidebar = readStyle("sidebar");
 const sidebarToggle = readStyle("sidebar-toggle");
+const approvalDock = readStyle("approval-dock");
 const allStyles = ["app-empty", "chat-transcript", "home-live", "login", "sidebar", "sidebar-live"]
   .map(readStyle)
   .join("\n");
@@ -952,6 +953,20 @@ describe("main-screen running-sessions contracts", () => {
     expect(declarationValue(emptyCol, "overflow-y")).toBe("auto");
     const wrap = ruleBody(split, ".th-pane-wrap:has(> .th-home-live)");
     expect(declarationValue(wrap, "overflow-y")).toBe("auto");
+  });
+});
+
+describe("approval question panel contracts", () => {
+  it("pins the question tab strip to the dock body scrollport top with an opaque surface", () => {
+    // The tab strip lives inside .th-approval-dock-body's scrollport; without
+    // stickiness it scrolls out of view on a long question, stranding the
+    // user on the last tab with no way back to an earlier question. Sticky
+    // must pair with the dock's own surface token so scrolled content never
+    // shows through the pinned strip.
+    const strip = ruleBody(approvalDock, ".th-approval-question-tabs");
+    expect(declarationValue(strip, "position")).toBe("sticky");
+    expect(declarationValue(strip, "top")).toBe("0");
+    expect(wholeVarToken(declarationValue(strip, "background"))).toBe("--th-surface");
   });
 });
 

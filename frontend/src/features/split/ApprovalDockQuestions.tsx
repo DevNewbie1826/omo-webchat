@@ -1,4 +1,4 @@
-import { createContext, useContext, useLayoutEffect, useState } from "react";
+import { createContext, useContext, useId, useLayoutEffect, useState } from "react";
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { useT } from "../../i18n";
 import { lostQuestionAnswer, QuestionDraftNotice, RemovedQuestionNoticeContext } from "./QuestionDraftNotice";
@@ -40,8 +40,11 @@ function reconcileDraft(draft: QuestionDraft, questions: readonly Question[]): Q
 		const options = question.options ?? [];
 		const valid = entry.selected.filter(label => options.some(option => option.label === label));
 		const selected = question.multiSelect ? valid : valid.slice(0, 1);
-		const text = options.length === 0 ? entry.text : "";
-		const textAnswered = options.length === 0 ? entry.textAnswered : undefined;
+		// Typed text is the question's own answer on refresh for options
+		// questions too (their dedicated input sits under the options): a
+		// refresh must never wipe it back to unanswered.
+		const text = entry.text;
+		const textAnswered = entry.textAnswered;
 		const next = { selected, text, completed: false, ...(textAnswered !== undefined ? { textAnswered } : {}) };
 		answers.set(key, selected.length === entry.selected.length && text === entry.text && textAnswered === entry.textAnswered
 			? entry : { ...next, invalidated: entry.invalidated || lostQuestionAnswer(entry, next) });
@@ -121,6 +124,7 @@ export function ApprovalQuestionPanel({
 	onCancel,
 }: ApprovalQuestionPanelProps) {
 	const { t } = useT();
+	const commentId = useId();
 	const draft = reconcileDraft(storedDraft, questions);
 	useLayoutEffect(() => {
 		if (draft !== storedDraft) setDraft(draft);
@@ -166,6 +170,11 @@ export function ApprovalQuestionPanel({
 	};
 
 	const submit = (): void => onSubmit(questionDraftResponse(draft, questions));
+	const isLastQuestion = activeIndex >= questions.length - 1;
+	const unanswered = questions.filter((question, index) => {
+		const entry = draft.answers.get(questionKey(question, index));
+		return !entry || (entry.selected.length === 0 && entry.text.trim() === "");
+	}).length;
 
 	return (
 		<div className="th-approval-question">
@@ -205,28 +214,41 @@ export function ApprovalQuestionPanel({
 							<p className="th-approval-question-text-prompt">{question.question}</p>
 						)}
 						{options.length > 0 ? (
-							<div className="th-approval-question-options">
-								{options.map((option) => {
-									const label = option.label ?? "";
-									const selected = entry.selected.includes(label);
-									return (
-										<button
-											key={label}
-											type="button"
-											className="th-approval-question-option"
-											aria-pressed={selected}
-											onClick={() => toggleOption(index, label)}
-										>
-											<span className="th-approval-question-option-label">{label}</span>
-											{option.description && (
-												<span className="th-approval-question-option-description">
-													{option.description}
-												</span>
-											)}
-										</button>
-									);
-								})}
-							</div>
+							<>
+								<div className="th-approval-question-options">
+									{options.map((option) => {
+										const label = option.label ?? "";
+										const selected = entry.selected.includes(label);
+										return (
+											<button
+												key={label}
+												type="button"
+												className="th-approval-question-option"
+												aria-pressed={selected}
+												onClick={() => toggleOption(index, label)}
+											>
+												<span className="th-approval-question-option-label">{label}</span>
+												{option.description && (
+													<span className="th-approval-question-option-description">
+														{option.description}
+													</span>
+												)}
+											</button>
+										);
+									})}
+								</div>
+
+								{/* The question's own answer box: free text typed here is
+								 * submitted as THIS question's answer alongside any selected
+								 * option - never as the overall comment below. */}
+								<input
+									type="text"
+									className="th-approval-input th-approval-question-text"
+									placeholder={t("approval.question.answerOptionPlaceholder")}
+									value={entry.text}
+									onChange={(event) => patchDraft(index, { text: event.target.value })}
+								/>
+							</>
 						) : (
 							<input
 								type="text"
@@ -239,17 +261,38 @@ export function ApprovalQuestionPanel({
 					</div>
 				);
 			})}
-			<input
-				type="text"
-				className="th-approval-input th-approval-question-comment"
-				placeholder={t("approval.question.commentPlaceholder")}
-				value={draft.comment}
-				onChange={(event) => setDraft({ ...draft, comment: event.target.value })}
-			/>
+			<div className="th-approval-question-comment-group">
+				<label className="th-approval-question-comment-label" htmlFor={commentId}>
+					{t("approval.question.commentLabel")}
+				</label>
+				<input
+					id={commentId}
+					type="text"
+					className="th-approval-input th-approval-question-comment"
+					placeholder={t("approval.question.commentPlaceholder")}
+					value={draft.comment}
+					onChange={(event) => setDraft({ ...draft, comment: event.target.value })}
+				/>
+			</div>
 			<div className="th-approval-question-actions">
-				<button type="button" className="th-btn" onClick={submit}>
-					{t("approval.submit")}
+				{unanswered > 0 && (
+					<span className="th-approval-question-unanswered">
+						{t("approval.question.unanswered", { count: unanswered })}
+					</span>
+				)}
+				{isLastQuestion ? (
+					<button type="button" className="th-btn" onClick={submit}>
+						{t("approval.submit")}
 				</button>
+				) : (
+					<button
+						type="button"
+						className="th-btn"
+						onClick={() => setDraft({ ...draft, activeIndex: activeIndex + 1 })}
+					>
+						{t("approval.question.next")}
+					</button>
+				)}
 				<button type="button" className="th-btn th-btn--ghost" onClick={onCancel}>
 					{t("approval.cancel")}
 				</button>
