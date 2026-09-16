@@ -126,6 +126,10 @@
   overflow: auto;
   overscroll-behavior: contain;
   padding: 0 var(--th-space-2) var(--th-space-2);
+  /* The question panel's sticky action row pins to the scrollport's bottom
+     edge; keep scrolled-into-view targets clear of it so a tab or option is
+     never covered (and never unclickable) beneath the sticky footer. */
+  scroll-padding-bottom: calc(34px + var(--th-space-2) + var(--th-space-2));
 }
 
 .th-approval-dock-summary {
@@ -283,4 +287,184 @@
   .th-approval-input {
     flex-basis: 100%;
   }
+}
+
+/* Structured multi-question panel: one dock, one tab per question. The tab
+   strip is a single row that scrolls sideways instead of wrapping (vertical
+   chrome is the scarce resource in the dock); the active question's options
+   stack as full-width rows so the label and its description stay together. */
+.th-approval-question {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-question-draft-notice {
+  flex: none;
+  min-width: 0;
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  overflow-wrap: anywhere;
+}
+
+.th-question-draft-notice:not(:empty) {
+  padding: var(--th-space-1) var(--th-space-2);
+}
+
+
+.th-approval-question-tabs {
+  display: flex;
+  gap: var(--th-space-1);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--th-border);
+}
+
+.th-approval-question-tab {
+  flex: none;
+  padding: var(--th-space-1) var(--th-space-2);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--th-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.th-approval-question-tab:hover {
+  color: var(--th-text);
+}
+
+.th-approval-question-tab[aria-selected="true"] {
+  border-bottom-color: var(--th-accent);
+  color: var(--th-text);
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-approval-question-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-2);
+  min-width: 0;
+}
+
+.th-approval-question-text-prompt {
+  margin: 0;
+  color: var(--th-text-dim);
+  font-size: var(--th-type-body-size);
+  line-height: var(--th-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.th-approval-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+}
+
+.th-approval-question-option {
+  display: flex;
+  flex-direction: column;
+  gap: var(--th-space-1);
+  min-width: 0;
+  padding: var(--th-space-2) var(--th-space-3);
+  border: 1px solid var(--th-border);
+  border-radius: var(--th-radius-sm);
+  background: var(--th-bg);
+  color: var(--th-text);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.th-approval-question-option:hover {
+  background: var(--th-hover);
+}
+
+.th-approval-question-option[aria-pressed="true"] {
+  border-color: var(--th-accent);
+  background: var(--th-surface);
+}
+
+.th-approval-question-option-label {
+  font-weight: var(--th-weight-emphasize);
+}
+
+.th-approval-question-option-description {
+  color: var(--th-text-dim);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+}
+
+.th-approval-question-text,
+.th-approval-question-comment {
+  flex: none;
+  min-height: 0;
+}
+
+/* Sticky footer, but only when the chat column is tall enough that the
+   body scrollport dwarfs the action row: then the submit row pins to the
+   scrollport's bottom edge and a long option list scrolls under it. In a
+   short (dense-split) column the scrollport can shrink below tab-row +
+   action-row height, where a sticky footer would cover the tabs and make
+   them unclickable — there the actions scroll with the content instead.
+   (The dock's tight class gets the same static fallback below.) */
+.th-approval-question-actions {
+  display: flex;
+  gap: var(--th-space-2);
+  padding: var(--th-space-1) 0;
+  background: var(--th-surface);
+}
+
+@container chat-column (min-height: 500px) {
+  .th-approval-question-actions {
+    position: sticky;
+    bottom: 0;
+  }
+}
+
+.th-approval-question-actions .th-btn {
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  min-height: 34px;
+  padding: var(--th-space-2) var(--th-space-3);
+  background: var(--th-accent);
+  color: var(--th-accent-fg);
+}
+
+.th-approval-question-actions .th-btn--ghost {
+  border: 1px solid var(--th-border);
+  background: transparent;
+  color: var(--th-text-dim);
+}
+
+/* Compact summary band: the panel takes the full wrapped row so the tabs
+   and options stay usable inside the band's own scrollport. */
+.th-approval-dock-summary .th-approval-question {
+  flex: 1 1 100%;
+}
+
+
+/* Minimal fallback note for a request type this client cannot fully render:
+   the dock still names the request and stays answerable (confirm, free text,
+   cancel); the note marks the limited support. Warning tone matches the
+   countdown's urgency cue. */
+.th-approval-fallback-note {
+  margin: 0 0 var(--th-space-2);
+  color: var(--th-warning);
+  font-size: var(--th-type-micro-size);
+  line-height: var(--th-type-micro-line);
+  letter-spacing: var(--th-type-micro-tracking);
+  overflow-wrap: anywhere;
+}
+
+/* Tight density: the body scrollport is only a couple of rows tall, so a
+   sticky action row would cover the tabs and make them unclickable. The
+   actions scroll with the content instead — reachable, never overlaying. */
+.th-approval-dock--tight .th-approval-question-actions {
+  position: static;
 }

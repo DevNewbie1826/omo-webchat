@@ -333,7 +333,7 @@ func spawnDaemonAttempt(ctx context.Context, cfg EnsureConfig, command string, a
 	}
 	provenance := newEndpointProvenance(cfg.SocketPath)
 	cmd.Dir = cfg.WorkingDir
-	cmd.Env = EnsureExtensionEventsCapability(env)
+	cmd.Env = EnsureClientCapabilities(env)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = stderr
@@ -780,18 +780,18 @@ func releaseEnsureLock(file *os.File) {
 	_ = file.Close()
 }
 
-// EnsureExtensionEventsCapability adds extension_events and
-// media_placeholders exactly once to both capability variables. Branded
-// hosts prefer OMO_RPC_CLIENT_CAPABILITIES when it is present, while an
-// unbranded native host reads the SENPI spelling.
-func EnsureExtensionEventsCapability(env []string) []string {
+// EnsureClientCapabilities merges the full client capability set into both
+// environment variables, preserving host order and removing duplicates.
+// A nil environment retains os/exec's environment inheritance semantics.
+func EnsureClientCapabilities(env []string) []string {
 	if env == nil {
 		return nil
 	}
+	required := clientHandshakeCapabilities()
 	for _, key := range []string{"SENPI_RPC_CLIENT_CAPABILITIES", "OMO_RPC_CLIENT_CAPABILITIES"} {
 		value, _ := lookupEnv(env, key)
 		seen := make(map[string]struct{})
-		capabilities := make([]string, 0, len(strings.Split(value, ","))+2)
+		capabilities := make([]string, 0, len(strings.Split(value, ","))+len(required))
 		for _, capability := range strings.Split(value, ",") {
 			capability = strings.TrimSpace(capability)
 			if capability == "" {
@@ -803,7 +803,7 @@ func EnsureExtensionEventsCapability(env []string) []string {
 			seen[capability] = struct{}{}
 			capabilities = append(capabilities, capability)
 		}
-		for _, capability := range []string{capExtensionEvents, capMediaPlaceholders} {
+		for _, capability := range required {
 			if _, exists := seen[capability]; !exists {
 				capabilities = append(capabilities, capability)
 			}
@@ -819,7 +819,7 @@ func EnsureExtensionEventsCapability(env []string) []string {
 // JSON profile below, rather than a plain display name.
 func nodeFallbackContext(cfg EnsureConfig, command string, nativeArgs []string) ([]string, []string, string, error) {
 	env := setEnv(cfg.Env, "OMO_RUNTIME", "node")
-	env = EnsureExtensionEventsCapability(setEnv(env, "SENPI_RUNTIME", "node"))
+	env = EnsureClientCapabilities(setEnv(env, "SENPI_RUNTIME", "node"))
 	if runtime.GOOS == "windows" || cfg.ChildCommand != "" || cfg.ArgsTemplate != nil {
 		return nativeArgs, env, "", nil
 	}

@@ -11,7 +11,9 @@ export function extractToolText(value?: { readonly content?: readonly { readonly
 }
 
 type ToolFrame = Extract<ChatServerFrame, { readonly type: "tool" }>;
-type ApprovalFrame = Extract<ChatServerFrame, { readonly type: "approval" }>;
+// The strict dock mapper takes only fully-parsed approval frames; the
+// FallbackApprovalFrame safety net never flows through it.
+type ApprovalFrame = Exclude<Extract<ChatServerFrame, { readonly type: "approval" }>, { readonly fallback: true }>;
 
 /** Images carried by a tool payload's content, in content order. The server
  * forwards the provider's native block discriminator (`type`) and may add a
@@ -143,7 +145,7 @@ export function mergeToolResultMedia(
 }
 
 /** Map a server approval frame onto the dock request, keeping defined fields only. */
-export function approvalRequestOf(frame: ApprovalFrame): ApprovalRequest {
+export function approvalRequestOf(frame: ApprovalFrame & { readonly method: ApprovalRequest["method"] }): ApprovalRequest {
   return {
     id: frame.id,
     method: frame.method,
@@ -154,6 +156,7 @@ export function approvalRequestOf(frame: ApprovalFrame): ApprovalRequest {
     ...(frame.placeholder ? { placeholder: frame.placeholder } : {}),
     ...(frame.deadlineAtMs !== undefined ? { deadlineAtMs: frame.deadlineAtMs } : {}),
     ...(frame.remainingMs !== undefined ? { remainingMs: frame.remainingMs } : {}),
+    ...(frame.questions ? { questions: frame.questions } : {}),
   };
 }
 

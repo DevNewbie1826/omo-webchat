@@ -3,7 +3,9 @@ import { queueClearFrame, queueMoveFrame, queueRemoveFrame, type ChatClient, typ
 import type { ChatSessionRef } from "../workspace/workspace";
 import { useT } from "../../i18n";
 import { newUuid } from "../../lib/uuid";
+import { isFallbackApprovalFrame } from "../../lib/chatWsParseFallback";
 import type { ChatDraft } from "./chatSessionTypes";
+import type { ApprovalResponse } from "./ApprovalDock";
 import { getChatActivity } from "./activityHistory";
 import { getChatGoal, type ChatGoal } from "./goalState";
 import { COMPACT_COMMAND, isCuratedCompact, isCuratedReload, RELOAD_COMMAND } from "./curatedCommands";
@@ -27,6 +29,12 @@ export function useChatSession(
   const markOpenRef = useRef<() => number>(() => 0);
   const markCloseRef = useRef<() => void>(() => undefined);
   const requestSeqRef = useRef(0);
+  // Receipt objects remain the owners while their responses are in flight.
+  // A new receipt supersedes a surface even when it is optimistically empty.
+  const requestOwners = useRef<{
+    approval: { readonly id: string; readonly generation: number } | null;
+    question: { readonly id: string; readonly generation: number } | null;
+  }>({ approval: null, question: null });
   frameHandlerRef.current = frameState.handleFrame;
   onChatNameRef.current = onChatName;
   markOpenRef.current = frameState.markOpen;
@@ -60,6 +68,12 @@ export function useChatSession(
       },
       onFrame: (frame) => {
         if (frame.sessionId !== undefined && frame.sessionId !== session.id) return;
+        if (frame.type === "approval") {
+          const surface = !isFallbackApprovalFrame(frame) && frame.method === "question" ? "question" : "approval";
+          const other = surface === "question" ? "approval" : "question";
+          requestOwners.current[surface] = { id: frame.id, generation: ++requestSeqRef.current };
+          if (requestOwners.current[other]?.id === frame.id) requestOwners.current[other] = null;
+        }
         if (frame.type === "ready") {
           setActivityBinding((current) => current.key === bindingKey
             ? { key: bindingKey, generation: current.generation + 1 }
@@ -335,22 +349,34 @@ export function useChatSession(
     return true;
   };
 
-  const respondApproval = (response: { value?: string; confirmed?: boolean; cancelled?: boolean }): boolean => {
-    const request = frameState.pendingApproval;
-    if (!request) return false;
+  const respondRequest = (id: string | undefined, response: ApprovalResponse): boolean => {
+    const approval = frameState.pendingApproval?.id === id ? frameState.pendingApproval : null;
+    const question = frameState.pendingQuestion?.id === id ? frameState.pendingQuestion : null;
+    if (!approval && !question) return false;
+    const approvalOwner = requestOwners.current.approval;
+    const questionOwner = requestOwners.current.question;
     const requestId = nextRequestId();
     if (!frameState.armControl(
       requestId,
-      "extension_ui_response",
-      () => frameState.setPendingApproval(request),
+      {
+        key: `extension_ui_response:${id}:${(approval ? approvalOwner : questionOwner)?.generation}`,
+        ownsRestore: () => approval
+          ? requestOwners.current.approval === approvalOwner
+          : requestOwners.current.question === questionOwner,
+      },
+      () => {
+        if (approval && requestOwners.current.approval === approvalOwner) frameState.setPendingApproval(approval);
+        if (question && requestOwners.current.question === questionOwner) frameState.setPendingQuestion(question);
+      },
       () => undefined,
     )) return false;
-    frameState.setPendingApproval(null);
+    if (approval) frameState.setPendingApproval(null);
+    if (question) frameState.setPendingQuestion(null);
     if (!sendControl({
       type: "approval.respond",
       sessionId: session.id,
       requestId,
-      id: request.id,
+      id: (approval ?? question)?.id ?? "",
       ...response,
     }, "Failed to send approval response.")) {
       frameState.rejectControl(requestId);
@@ -385,6 +411,7 @@ export function useChatSession(
     models: frameState.models,
     currentModelKey: frameState.currentModelKey,
     pendingApproval: frameState.pendingApproval,
+    pendingQuestion: frameState.pendingQuestion,
     restoreVersion: frameState.restoreVersion,
     retryDraft: frameState.retryDraft,
     failedDrafts: frameState.failedDrafts,
@@ -414,6 +441,7 @@ export function useChatSession(
     resyncDisabled: frameState.resyncDisabled,
     changeThinkingLevel,
     changeModel,
-    respondApproval,
+    respondApproval: (response: ApprovalResponse) => respondRequest(frameState.pendingApproval?.id, response),
+    respondQuestion: (response: ApprovalResponse) => respondRequest(frameState.pendingQuestion?.id, response),
   };
 }

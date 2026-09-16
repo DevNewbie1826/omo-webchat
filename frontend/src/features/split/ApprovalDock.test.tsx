@@ -377,6 +377,124 @@ describe("ApprovalDock inline panel", () => {
 		expect(countdown()).toBe("approval.remaining seconds=14");
 	});
 
+	it("re-anchors a remainingMs refresh of the same request to the moment it arrives", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		renderDock({ id: "confirm-1", method: "confirm", remainingMs: 30_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		expect(countdown()).toBe("approval.remaining seconds=30");
+		act(() => {
+			vi.advanceTimersByTime(3_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=27");
+
+		// A refresh of the SAME request carrying only remainingMs: the value is
+		// relative to the moment THIS update arrived, so the panel must read the
+		// new value — not the new value minus what the first one already burned.
+		rerender({ id: "confirm-1", method: "confirm", remainingMs: 45_000 });
+		expect(countdown()).toBe("approval.remaining seconds=45");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=44");
+	});
+
+	it("restarts the countdown when a refresh re-sends the same remainingMs value", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		renderDock({ id: "confirm-1", method: "confirm", remainingMs: 30_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		act(() => {
+			vi.advanceTimersByTime(3_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=27");
+
+		// Same value, delivered again: the grace period restarts from 30s rather
+		// than continuing the first delivery's descent.
+		rerender({ id: "confirm-1", method: "confirm", remainingMs: 30_000 });
+		expect(countdown()).toBe("approval.remaining seconds=30");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=29");
+	});
+
+	it("keeps counting down while the caller rebuilds an equal request wrapper each render", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		// The structured-question dock is assembled from the pending frame on
+		// every render of the pane, so the dock sees a NEW wrapper object around
+		// the SAME delivered questions whenever anything else in the pane changes
+		// (a streamed transcript row, a status frame). Those rebuilds are renders,
+		// not deliveries: the countdown must keep descending.
+		const questions = [
+			{ id: "q1", question: "Which stack?", options: [{ label: "Go" }, { label: "TS" }] },
+		];
+		renderDock({ id: "ask-1", method: "question", questions, remainingMs: 30_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		act(() => {
+			vi.advanceTimersByTime(3_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=27");
+
+		rerender({ id: "ask-1", method: "question", questions, remainingMs: 30_000 });
+		expect(countdown()).toBe("approval.remaining seconds=27");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=26");
+	});
+
+	it("restarts a structured question countdown when the request is delivered again", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		const question = { id: "q1", question: "Which stack?", options: [{ label: "Go" }] };
+		renderDock({ id: "ask-1", method: "question", questions: [question], remainingMs: 30_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		act(() => {
+			vi.advanceTimersByTime(3_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=27");
+
+		// A redelivery parses its own questions: a new delivery, so a new anchor.
+		rerender({ id: "ask-1", method: "question", questions: [{ ...question }], remainingMs: 30_000 });
+		expect(countdown()).toBe("approval.remaining seconds=30");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=29");
+	});
+
+	it("keeps a deadlineAtMs refresh of the same request absolute", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(1_000_000);
+		renderDock({ id: "confirm-1", method: "confirm", deadlineAtMs: 1_000_000 + 30_000 });
+
+		const countdown = (): string =>
+			container.querySelector(".th-approval-dock-countdown")?.textContent ?? "";
+		act(() => {
+			vi.advanceTimersByTime(3_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=27");
+
+		// An absolute deadline is measured against the wall clock, never against
+		// the moment the refresh arrived: 60s after 1_000_000, read at 1_003_000.
+		rerender({ id: "confirm-1", method: "confirm", deadlineAtMs: 1_000_000 + 60_000 });
+		expect(countdown()).toBe("approval.remaining seconds=57");
+		act(() => {
+			vi.advanceTimersByTime(1_000);
+		});
+		expect(countdown()).toBe("approval.remaining seconds=56");
+	});
+
 	it("keeps the countdown visible on the collapsed summary bar", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(1_000_000);

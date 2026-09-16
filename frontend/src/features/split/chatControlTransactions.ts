@@ -11,15 +11,22 @@
  * provider error (arriving after the ack) can still revert to the last
  * ack/state-confirmed value.
  */
+type ControlCommand = string | {
+  readonly key: string;
+  /** A superseded owner can never use its restore point again. */
+  readonly ownsRestore: () => boolean;
+};
+
 interface Transaction {
   readonly command: string;
+  readonly ownsRestore?: () => boolean;
   readonly rollback: () => void;
   readonly commit: () => void;
 }
 
 export interface ControlLedger {
   /** Register a transaction. Returns false when the command is already armed. */
-  arm(requestId: string, command: string, rollback: () => void, commit: () => void): boolean;
+  arm(requestId: string, command: ControlCommand, rollback: () => void, commit: () => void): boolean;
   /** Apply the ack for a requestId: run commit and keep the rollback as a restore point. */
   commit(requestId: string): boolean;
   /** Roll back the armed transaction or committed restore point for a requestId. */
@@ -36,7 +43,7 @@ export interface ControlLedger {
 export function controlLedger(): ControlLedger {
   const pending = new Map<string, Transaction>();
   const armedByCommand = new Map<string, string>();
-  const restorePoints = new Map<string, () => void>();
+  const restorePoints = new Map<string, Transaction>();
   const restoreByCommand = new Map<string, string>();
   // Model state may retire rollback before the correlated result arrives.
   const awaitingConfirmation = new Map<string, "set_model">();
@@ -59,10 +66,12 @@ export function controlLedger(): ControlLedger {
 
   return {
     arm(requestId, command, rollback, commit) {
-      if (armedByCommand.has(command)) return false;
-      pending.set(requestId, { command, rollback, commit });
-      if (command === "set_model") awaitingConfirmation.set(requestId, command);
-      armedByCommand.set(command, requestId);
+      const key = typeof command === "string" ? command : command.key;
+      if (armedByCommand.has(key)) return false;
+      pending.set(requestId, { command: key, rollback, commit,
+        ...(typeof command === "string" ? {} : { ownsRestore: command.ownsRestore }) });
+      if (key === "set_model") awaitingConfirmation.set(requestId, key);
+      armedByCommand.set(key, requestId);
       return true;
     },
     commit(requestId) {
@@ -78,8 +87,18 @@ export function controlLedger(): ControlLedger {
       if (transaction.command === "set_model") {
         for (const id of awaitingConfirmation.keys()) if (id !== requestId) awaitingConfirmation.delete(id);
       }
-      restorePoints.set(requestId, transaction.rollback);
-      restoreByCommand.set(transaction.command, requestId);
+      // Generation-specific commands may coexist while pending, but only their
+      // current owners need late-error recovery after settlement.
+      for (const [id, restore] of restorePoints) {
+        if (restore.ownsRestore?.() === false) {
+          restorePoints.delete(id);
+          restoreByCommand.delete(restore.command);
+        }
+      }
+      if (transaction.ownsRestore?.() !== false) {
+        restorePoints.set(requestId, transaction);
+        restoreByCommand.set(transaction.command, requestId);
+      }
       return true;
     },
     reject(requestId) {
@@ -111,10 +130,10 @@ export function controlLedger(): ControlLedger {
         const newerId = command === undefined ? undefined : armedByCommand.get(command);
         const newer = newerId === undefined ? undefined : pending.get(newerId);
         if (newer && newerId !== undefined) {
-          pending.set(newerId, { command: newer.command, rollback: restore, commit: newer.commit });
+          pending.set(newerId, { ...newer, rollback: restore.rollback });
           return true;
         }
-        restore();
+        restore.rollback();
         return true;
       }
       return false;

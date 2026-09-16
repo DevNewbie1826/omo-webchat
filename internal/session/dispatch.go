@@ -212,6 +212,7 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 				frame := *s.pendingApproval
 				frame.Data = updated
 				s.pendingApproval = &frame
+				s.publishLocked(frame)
 			}
 		}
 	case "entries.stream":

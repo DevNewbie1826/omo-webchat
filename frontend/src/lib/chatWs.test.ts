@@ -115,7 +115,13 @@ describe("parseChatServerFrame", () => {
     expect(parseChatServerFrame({ type: "message", sessionId: "c1" })).toBeNull();
     expect(parseChatServerFrame({ type: "tool", sessionId: "c1", toolCallId: "t", toolName: "bash", phase: "explode" })).toBeNull();
     expect(parseChatServerFrame({ type: "state", sessionId: "c1", isStreaming: "yes", isCompacting: false })).toBeNull();
-    expect(parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1" })).toBeNull();
+    // An approval request carrying an id is never dropped silently: with no
+    // method the panel knows, it lands in the dock as the minimal fallback.
+    expect(parseChatServerFrame({ type: "approval", sessionId: "c1", id: "a1" })).toMatchObject({
+      type: "approval",
+      fallback: true,
+      id: "a1",
+    });
     expect(parseChatServerFrame({ type: "commands", sessionId: "c1", commands: "nope" })).toBeNull();
   });
 

@@ -1,10 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
+import type { Question, QuestionAnswer } from "../../lib/contract/types_gen";
+import { ApprovalFallbackForm, ApprovalFallbackNote, ApprovalFallbackSummaryActions } from "./ApprovalFallback";
+import { ApprovalQuestionPanel, useApprovalQuestionDraft } from "./ApprovalDockQuestions";
 import { computeShelfAvailableSpace } from "./useShelfAvailableSpace";
 
 export interface ApprovalRequest {
 	readonly id: string;
-	readonly method: "select" | "confirm" | "input" | "editor";
+	readonly method: "select" | "confirm" | "input" | "editor" | "question" | "fallback";
 	readonly title?: string;
 	readonly message?: string;
 	readonly options?: readonly string[];
@@ -12,15 +15,20 @@ export interface ApprovalRequest {
 	readonly placeholder?: string;
 	readonly deadlineAtMs?: number;
 	readonly remainingMs?: number;
+	readonly questions?: readonly Question[];
+}
+
+export interface ApprovalResponse {
+	value?: string;
+	confirmed?: boolean;
+	cancelled?: boolean;
+	answers?: Record<string, QuestionAnswer>;
+	comment?: string;
 }
 
 export interface ApprovalDockProps {
 	readonly request: ApprovalRequest;
-	readonly onRespond: (response: {
-		value?: string;
-		confirmed?: boolean;
-		cancelled?: boolean;
-	}) => void;
+	readonly onRespond: (response: ApprovalResponse) => void;
 }
 
 const COUNTDOWN_TICK_MS = 1_000;
@@ -57,6 +65,7 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const titleId = useId();
 	const sectionRef = useRef<HTMLElement>(null);
 	const [text, setText] = useState(request.prefill ?? "");
+	const questionDraft = useApprovalQuestionDraft(request.id);
 	// Manual collapse is keyed by request id: it is the user's intent about
 	// THAT request. A new request id must never inherit it (a collapsed
 	// one-line summary would hide the arrival), while a replay of the same
@@ -185,11 +194,24 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 			? Math.max(columnSpace.clampPx, effectiveMinDockPx)
 			: null;
 
-	// Countdown target: an absolute deadline, or remainingMs anchored to the
-	// moment this request arrived. Re-anchored when a new request id shows up.
-	const anchorRef = useRef<{ id: string; atMs: number } | null>(null);
-	if (anchorRef.current?.id !== request.id) {
-		anchorRef.current = { id: request.id, atMs: Date.now() };
+	// Countdown target: an absolute deadline, or remainingMs measured from the
+	// moment the update that carried it arrived. `remainingMs` is relative to
+	// its own delivery, so the anchor follows the delivery rather than the
+	// request id: a refresh of the SAME request that moves remainingMs — or
+	// repeats the same value — restarts the countdown from that value. An
+	// absolute deadlineAtMs ignores the anchor and stays fixed to the wall clock.
+	//
+	// The delivery's mark is the request's own options/questions array when it
+	// has one, and otherwise the request object. Every delivery is parsed into
+	// fresh objects, so both change exactly once per update; but a caller may
+	// rebuild the request wrapper on every render (the structured-question dock
+	// is assembled from the pending frame each time) while passing the delivered
+	// array straight through, and re-anchoring on those rebuilds would peg the
+	// countdown at its full value instead of letting it descend.
+	const delivery: object = request.questions ?? request.options ?? request;
+	const anchorRef = useRef<{ delivery: object; atMs: number } | null>(null);
+	if (anchorRef.current?.delivery !== delivery) {
+		anchorRef.current = { delivery, atMs: Date.now() };
 	}
 	const targetMs =
 		request.deadlineAtMs ??
@@ -304,6 +326,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 	const submitConfirm = (confirmed: boolean): void => onRespond({ confirmed });
 	const cancel = (): void => onRespond({ cancelled: true });
 
+	// Structured multi-question requests render as one tabbed panel owned by
+	// ApprovalDockQuestions.tsx (a tab per question, one structured response).
+	const questionPanel = request.method === "question" && (request.questions?.length ?? 0) > 0 && (
+		<ApprovalQuestionPanel
+			draftState={questionDraft}
+			questions={request.questions ?? []}
+			onSubmit={onRespond}
+			onCancel={cancel}
+		/>
+	);
+
 	const countdown = countdownSeconds !== undefined && (
 		<span className="th-approval-dock-countdown">
 			{t("approval.remaining", { seconds: countdownSeconds })}
@@ -367,6 +400,15 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 							    primary actions as a compact row. No expand toggle —
 							    a toggle that could only produce an overflowing
 							    panel would be a lie. */}
+							{request.method === "question" && questionPanel}
+							{/* The unsupported fallback keeps its answerable compact row
+							    (rendering lives in ApprovalFallback). */}
+							{request.method === "fallback" && (
+								<ApprovalFallbackSummaryActions
+									onConfirm={() => submitConfirm(true)}
+									onCancel={cancel}
+								/>
+							)}
 							{request.method === "select" && (
 								<div className="th-approval-dock-summary-actions">
 									{(request.options ?? []).map((opt, index) => (
@@ -492,9 +534,12 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 						</button>
 					</div>
 					<div className="th-approval-dock-body">
+						{request.method === "fallback" && <ApprovalFallbackNote />}
 						{request.message && (
 							<p className="th-approval-message">{request.message}</p>
 						)}
+
+						{request.method === "question" && questionPanel}
 
 						{request.method === "select" && (
 							<div className="th-approval-options">
@@ -585,7 +630,17 @@ export function ApprovalDock({ request, onRespond }: ApprovalDockProps) {
 								>
 									{t("approval.cancel")}
 								</button>
-							</form>
+								</form>
+						)}
+						{request.method === "fallback" && (
+							<ApprovalFallbackForm
+								placeholder={request.placeholder}
+								value={text}
+								onValueChange={setText}
+								onSubmitValue={submitValue}
+								onConfirm={() => submitConfirm(true)}
+								onCancel={cancel}
+							/>
 						)}
 					</div>
 				</>

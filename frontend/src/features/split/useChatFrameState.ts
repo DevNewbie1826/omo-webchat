@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n";
 import type { ChatClient, ChatServerFrame, CommandEntry, ContextUsage, JsonObject, ResumeCandidate } from "../../lib/chatWs";
 import type { ApprovalRequest } from "./ApprovalDock";
+import type { ApprovalFrame } from "../../lib/contract/types_gen";
 import { useConfirmedControls } from "./chatConfirmedControls";
 import { type UiMessage } from "./chatEntries";
 import {
@@ -137,6 +138,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
   const [commands, setCommands] = useState<readonly CommandEntry[]>([]);
   const [models, setModels] = useState<readonly { readonly provider: string; readonly modelId: string; readonly name?: string; readonly input?: readonly string[] }[]>([]);
   const [pendingApproval, setPendingApproval] = useState<ApprovalRequest | null>(null);
+  const [pendingQuestion, setPendingQuestion] = useState<ApprovalFrame | null>(null);
   const [restoreVersion, setRestoreVersion] = useState(0);
   const [retryDraft, setRetryDraft] = useState<RecoveredChatDraft | null>(null);
   const [sendError, setSendError] = useState<JsonObject | null>(null);
@@ -475,6 +477,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setCommands,
     setModels,
     setPendingApproval,
+    setPendingQuestion,
     setRestoreVersion,
     setSendError,
     pushNotice,
@@ -721,6 +724,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     models,
     currentModelKey: controls.currentModelKey,
     pendingApproval,
+    pendingQuestion,
     restoreVersion,
     retryDraft,
     failedDrafts,
@@ -747,6 +751,7 @@ export function useChatFrameState(session?: Pick<ChatSessionRef, "wsId" | "id">)
     setThinkingLevel: controls.setThinkingLevel,
     setCurrentModelKey: controls.setCurrentModelKey,
     setPendingApproval,
+    setPendingQuestion,
     reportError: applyError,
     reportParseError,
     beginExternalWriteRecovery,

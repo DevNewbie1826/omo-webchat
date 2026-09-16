@@ -1,4 +1,5 @@
 import type { ChatServerFrame } from "./chatWs";
+import { parseApprovalFrame } from "./chatWsParseApproval";
 import type { QueueEngine, QueueEngineOrderedItem, QueueItem } from "./contract/types_gen";
 import {
   isRecord,
@@ -6,7 +7,6 @@ import {
   optBoolean,
   optNumber,
   optString,
-  optStringArray,
   parseCommandEntry,
   parseContextUsage,
   parseModelEntry,
@@ -194,31 +194,7 @@ export function parseSessionFrame(
     }
     case "approval": {
       if (sessionId === null) return null;
-      const id = reqString(msg, "id");
-      const method = msg["method"];
-      if (id === null) return null;
-      if (method !== "select" && method !== "confirm" && method !== "input" && method !== "editor") return null;
-      const title = optString(msg, "title");
-      const message = optString(msg, "message");
-      const options = optStringArray(msg, "options");
-      const prefill = optString(msg, "prefill");
-      const placeholder = optString(msg, "placeholder");
-      const deadlineAtMs = optNumber(msg, "deadlineAtMs");
-      const remainingMs = optNumber(msg, "remainingMs");
-      if (title === null || message === null || options === null || prefill === null || placeholder === null || deadlineAtMs === null || remainingMs === null) return null;
-      return {
-        type: "approval",
-        sessionId,
-        id,
-        method,
-        ...(title !== undefined ? { title } : {}),
-        ...(message !== undefined ? { message } : {}),
-        ...(options !== undefined ? { options } : {}),
-        ...(prefill !== undefined ? { prefill } : {}),
-        ...(placeholder !== undefined ? { placeholder } : {}),
-        ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
-        ...(remainingMs !== undefined ? { remainingMs } : {}),
-      };
+      return parseApprovalFrame(msg, sessionId);
     }
     case "commands": {
       if (sessionId === null) return null;
