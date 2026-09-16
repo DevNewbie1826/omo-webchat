@@ -226,6 +226,19 @@ export function ApprovalQuestionPanel({
 												className="th-approval-question-option"
 												aria-pressed={selected}
 												onClick={() => toggleOption(index, label)}
+												// Keyboard continuity: tapping a non-input moves focus
+												// to it, blurring the answer box below and dismissing
+												// the software keyboard on iOS - so a user mixing
+												// typed answers with option taps must reopen the
+												// keyboard on every tap. Canceling the pointerdown
+												// default keeps focus in the input (the click still
+												// fires); mousedown mirrors it for environments
+												// without pointer events. Tabs and the action row
+												// keep default focus behavior: they switch or end
+												// the editing context, where focus-follows-tap is
+												// the honest outcome.
+												onPointerDown={(event) => event.preventDefault()}
+												onMouseDown={(event) => event.preventDefault()}
 											>
 												<span className="th-approval-question-option-label">{label}</span>
 												{option.description && (
