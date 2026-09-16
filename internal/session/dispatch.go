@@ -185,10 +185,16 @@ func (s *Session) dispatch(ev *omorpc.Event) {
 			s.publishLocked(Frame{Kind: FrameNotice, SessionID: s.durableID, Data: payload})
 			return
 		}
-		frame := Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: eventPayload(raw)}
+		awaitsAnswer, known := approvalAwaitsAnswer(stringValue(raw["method"]))
+		payload := eventPayload(raw)
+		delete(payload, "awaitsAnswer")
+		if known {
+			payload["awaitsAnswer"] = awaitsAnswer
+		}
+		frame := Frame{Kind: FrameApproval, SessionID: s.durableID, RequestID: stringValue(raw["requestId"]), ApprovalID: stringValue(raw["id"]), Data: payload}
 		// Interactive methods await a client answer; retain the latest one so a
 		// subscriber attaching after the broadcast still sees the pending ask.
-		if approvalInteractive(raw["method"]) {
+		if awaitsAnswer {
 			s.pendingApproval = &frame
 		}
 		s.publishLocked(frame)
@@ -540,15 +546,19 @@ func commandSource(raw map[string]any) string {
 	return x
 }
 
-// approvalInteractive reports whether an extension_ui_request method blocks on a
-// client answer. Fire-and-forget methods (notify, setStatus, setWidget, ...)
-// are still broadcast live but must not be retained as a pending ask.
-func approvalInteractive(method any) bool {
+// approvalAwaitsAnswer classifies known methods for both publication and replay.
+// Unknown methods carry no classification and are not retained as pending asks.
+func approvalAwaitsAnswer(method string) (awaitsAnswer, known bool) {
 	switch method {
 	case "select", "confirm", "input", "editor", "question":
-		return true
+		return true, true
+	case "notify",
+		"setStatus",
+		"setWidget":
+		return false, true
+	default:
+		return false, false
 	}
-	return false
 }
 
 // transcriptShownCustomTypes documents observed engine behavior: these are the
